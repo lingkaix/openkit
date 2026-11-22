@@ -55,7 +55,7 @@ export function ReportedActivityView({ activity }: { activity: ReportedActivity 
   const groups = activity ? groupReportedLabels(activity.entries) : [];
   return (
     <section aria-label={timelineCopy.reportedActivityHeading} className="mt-4 text-sm">
-      <h3 className="font-semibold text-fg">{timelineCopy.reportedActivityHeading}</h3>
+      <h3 className="font-bold text-fg">{timelineCopy.reportedActivityHeading}</h3>
       <p className="mt-1 text-fg-muted">
         {coverageCopy(activity?.coverage === 'partial' ? 'partial' : 'unavailable')}
       </p>

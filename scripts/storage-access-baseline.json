@@ -205,6 +205,7 @@
     "apps/nanocore/worker-mcp-lifecycle.fixture.ts\tfs:writeFileSync\t7f190daf550fee978e62f106a2c899f0063709ff458f1e7408900fb1328faaef": 1,
     "apps/nanocore/worker-mcp-lifecycle.fixture.ts\tfs:writeFileSync\t95a0c095c3e6befe0a85d3548e3484b7d1af0beea4cb8f83a87c84f394ecd76f": 1,
     "apps/nanocore/worker-mcp-lifecycle.fixture.ts\tfs:writeFileSync\td3bfc2ac77ec0987a3e82872070213fdf85f701a028e1702001f3c8ec15c4241": 1,
+    "apps/web/scripts/gen-tokens.mjs\tfs:writeFileSync\td602dc1e6715a4852681d49eacb23f057855b33eb56f064961cad26785df1ab1": 1,
     "apps/web/scripts/generate-brand.mjs\tfs:mkdirSync\t30e91db76931e4d7b88bdc188dcf4a947d59184d140bc057fa49d2e6919a5b8f": 1,
     "apps/web/scripts/generate-brand.mjs\tfs:writeFileSync\t3818c4eb3b9b2aa51823916d0960fe7af479592797e6f33ed6927883d02725dd": 1,
     "apps/web/scripts/generate-brand.mjs\tfs:writeFileSync\t9d7e86b1a19bd21c5cb7b4351c7c993c30bc2fec1ff8f01b10c64d9f86a0a74c": 1,

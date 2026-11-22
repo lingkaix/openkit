@@ -90,7 +90,7 @@ function mount(
   const tree = (props = options.props) => (
     <QueryClientProvider client={query}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={[`/chat/${f.workspaceId}/${f.threadId}`]}>
+        <MemoryRouter initialEntries={[`/w/${f.workspaceId}/t/${f.threadId}`]}>
           <Profiler id="production-thread-stream" onRender={() => options.onCommit?.()}>
             <ThreadStream
               workspaceId={f.workspaceId}

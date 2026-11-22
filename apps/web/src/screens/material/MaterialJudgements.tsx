@@ -32,7 +32,7 @@ export function MaterialJudgements(props: {
     <section aria-label="Material revision judgements" className="flex flex-col gap-3">
       <Button
         size="sm"
-        variant="outline"
+        variant="secondary"
         isDisabled={props.disabled || props.unavailable}
         onPress={() => {
           props.onInspect?.();
@@ -135,7 +135,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={disabled || !target || props.applyDisabled}
           onPress={() => correct('apply')}
         >
@@ -143,7 +143,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
         </Button>
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={disabled || !target}
           onPress={() => correct('reject')}
         >
@@ -181,7 +181,7 @@ function MaterialAssessment(props: Parameters<typeof MaterialJudgements>[0]) {
         (correction.isError && judgementRefused(correction.error))) ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || props.unavailable}
           onPress={() => void refreshRefused()}
         >

@@ -720,7 +720,7 @@ const AEP_SNAPSHOT_DETAIL = {
   },
 };
 
-const DEBUG_FIELD_POISONS = [
+const DIAGNOSTICS_FIELD_POISONS = [
   'evidence-response-poison-should-never-render',
   'evidence-row-poison-should-never-render',
   'raw-evidence-locator-should-never-render',
@@ -1402,14 +1402,17 @@ describe('Vault settings (board 15)', () => {
   });
 });
 
-describe('Debug settings (board 11)', () => {
+describe('Diagnostics settings (board 11)', () => {
   it('reads selected-Workspace evidence and AEP snapshots, then lazily loads one snapshot detail', async () => {
     const user = userEvent.setup();
     const client = makeClient();
-    renderApp('/settings/debug', client);
+    renderApp('/settings/diagnostics', client);
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
-    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Diagnostics' })
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve plan' })).not.toBeInTheDocument();
     expect(
       await screen.findByText('Goal evidence is ready with [redacted].', { exact: true })
     ).toBeInTheDocument();
@@ -1437,7 +1440,7 @@ describe('Debug settings (board 11)', () => {
 
     const serializedDom = document.documentElement.outerHTML;
     expect(serializedDom).not.toContain(POISON_SECRET);
-    for (const poison of DEBUG_FIELD_POISONS) expect(serializedDom).not.toContain(poison);
+    for (const poison of DIAGNOSTICS_FIELD_POISONS) expect(serializedDom).not.toContain(poison);
     expect({
       bundles: vi.mocked(client.operations['evidence.bundle-list']).mock.calls,
       runtime: vi.mocked(client.operations['evidence.runtime-list']).mock.calls,
@@ -1455,7 +1458,7 @@ describe('Debug settings (board 11)', () => {
     });
   });
 
-  it('keeps other Debug sections visible and retries a typed evidence denial', async () => {
+  it('keeps other Diagnostics sections visible and retries a typed evidence denial', async () => {
     const user = userEvent.setup();
     const listWorkspaceEvidenceBundles = vi
       .fn()
@@ -1469,10 +1472,12 @@ describe('Debug settings (board 11)', () => {
       app: {},
       operations: { 'evidence.bundle-list': listWorkspaceEvidenceBundles },
     });
-    renderApp('/settings/debug', client);
+    renderApp('/settings/diagnostics', client);
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
-    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Diagnostics' })
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
     expect(
       await screen.findByText('Worker checkpoint terminal: completed.', { exact: true })
     ).toBeInTheDocument();
@@ -1495,7 +1500,7 @@ describe('Debug settings (board 11)', () => {
     expect(
       await screen.findByText('Goal evidence is ready with [redacted].', { exact: true })
     ).toBeInTheDocument();
-    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
     expect(
       screen.getByText('Worker checkpoint terminal: completed.', { exact: true })
     ).toBeInTheDocument();
@@ -1504,7 +1509,7 @@ describe('Debug settings (board 11)', () => {
 
   it('shows content-shaped loading skeletons while Workspace discovery is pending', async () => {
     renderApp(
-      '/settings/debug',
+      '/settings/diagnostics',
       makeClient({
         core: {},
         operations: { 'workspace.list': vi.fn().mockReturnValue(new Promise(() => {})) },
@@ -1512,7 +1517,9 @@ describe('Debug settings (board 11)', () => {
     );
 
     expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
-    expect(screen.queryByRole('heading', { level: 1, name: 'Debug' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { level: 1, name: 'Diagnostics' })
+    ).not.toBeInTheDocument();
     expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Evidence bundles' })).not.toBeInTheDocument();
     expect(screen.queryByText('No workspace selected', { exact: true })).not.toBeInTheDocument();
@@ -1520,7 +1527,7 @@ describe('Debug settings (board 11)', () => {
 
   it('shows an empty state when no Workspace is selected', async () => {
     renderApp(
-      '/settings/debug',
+      '/settings/diagnostics',
       makeClient({
         core: {},
         operations: {
@@ -1540,7 +1547,7 @@ describe('Debug settings (board 11)', () => {
     );
 
     expect(await screen.findByText('No workspace selected', { exact: true })).toBeInTheDocument();
-    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
     expect(
       screen.queryByText('Goal evidence is ready with [redacted].', { exact: true })
     ).not.toBeInTheDocument();
@@ -1581,7 +1588,7 @@ describe('Debug settings (board 11)', () => {
         }),
       },
     });
-    renderApp('/settings/debug', client);
+    renderApp('/settings/diagnostics', client);
 
     const snapshotButton = await screen.findByRole('button', { name: 'aepsnap_1' });
     await user.click(snapshotButton);
@@ -1654,7 +1661,7 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.getByText('Actor not recorded')).toBeVisible();
     expect(screen.getByRole('link', { name: 'Open the Assistant' })).toHaveAttribute(
       'href',
-      `/chat/${WORKSPACE.id}/${threadId}`
+      `/w/${WORKSPACE.id}/t/${threadId}`
     );
     expect(screen.getByText(`Turn: ${turnId}`)).toBeVisible();
     expect(screen.getByText(`Request: ${requestId}`)).toBeVisible();
@@ -1705,8 +1712,8 @@ describe('Usage and audit settings (board 17)', () => {
     ]) {
       expect(screen.getByText(label, { exact: true })).toBeVisible();
     }
-    expect(screen.getAllByText('Logical model: gpt-5')).toHaveLength(6);
-    expect(screen.getByText('Logical model: Not recorded')).toBeVisible();
+    expect(screen.getAllByText('Model: gpt-5')).toHaveLength(6);
+    expect(screen.getByText('Model: Not recorded')).toBeVisible();
     expect(screen.getByText('chat_completions', { exact: true })).toBeVisible();
     expect(document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`)).toHaveLength(10);
     expect(document.body.textContent).not.toContain('untrusted:input');
@@ -2162,9 +2169,11 @@ describe('Gateway (board 20)', () => {
     const client = makeClient();
     renderApp('/settings/ai-interface', client);
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Models and providers' })
+    ).toBeInTheDocument();
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Models and providers' })).toBeInTheDocument();
     expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
@@ -2391,7 +2400,9 @@ describe('Gateway (board 20)', () => {
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
     renderApp('/settings/ai-interface', client);
-    expect(await screen.findByRole('heading', { name: 'Gateway' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Models and providers' })
+    ).toBeInTheDocument();
     await waitFor(
       () => {
         expect(screen.getByRole('button', { name: /Refresh status/i })).toBeDisabled();
@@ -2403,7 +2414,9 @@ describe('Gateway (board 20)', () => {
 
   it('exposes landmarks and headings for a11y', async () => {
     renderApp('/settings/ai-interface', makeClient());
-    expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Models and providers' })
+    ).toBeInTheDocument();
     expect(await screen.findByText('Codex primary')).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
   });

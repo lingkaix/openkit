@@ -1,4 +1,4 @@
-import { Button, Card, ErrorBanner, StatusChip } from '../../primitives';
+import { Button, Card, InlineAlert, StatusLight } from '../../primitives';
 import {
   type AccountWorkspaceInvitation,
   type MyInvitationDecisionVariables,
@@ -53,7 +53,7 @@ export function InvitationsPanel() {
     <section aria-label="My invitations">
       <Card className="flex flex-col gap-3">
         <div>
-          <h2 className="text-lg font-extrabold text-fg-strong">My invitations</h2>
+          <h2 className="text-lg font-heading text-fg-strong">My invitations</h2>
           <p className="mt-1 text-xs text-fg-muted">
             Invitations addressed to this account across Workspaces.
           </p>
@@ -68,13 +68,13 @@ export function InvitationsPanel() {
           </div>
         ) : null}
         {myInvitations.invitations.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load My invitations."
             onRetry={() => void myInvitations.invitations.refetch()}
           />
         ) : null}
         {myInvitations.decision.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={myInvitations.decision.error.message}
             onRetry={canRetryDecision ? retryDecision : undefined}
           />
@@ -99,11 +99,11 @@ export function InvitationsPanel() {
                           <p className="mt-1 text-xs text-fg-muted">{invitation.workspaceId}</p>
                         ) : null}
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <StatusChip
+                          <StatusLight
                             tone={invitation.effectiveStatus === 'pending' ? 'notice' : 'neutral'}
                           >
                             {invitation.effectiveStatus}
-                          </StatusChip>
+                          </StatusLight>
                           <span className="text-xs text-fg-muted">Full member access</span>
                         </div>
                       </td>
@@ -119,7 +119,8 @@ export function InvitationsPanel() {
                             </Button>
                             <Button
                               size="sm"
-                              variant="negative-outline"
+                              variant="negative"
+                              fillStyle="outline"
                               isDisabled={myInvitations.decision.isPending}
                               onPress={() => decide(invitation, 'decline')}
                             >

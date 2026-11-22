@@ -190,7 +190,7 @@ describe('TW8 independent behavior regressions', () => {
       <Routes>
         <Route path="/source" element={<Link to={href}>Open addressed review</Link>} />
         <Route
-          path="/goals/:workspaceId/:threadId/artifacts/:artifactId"
+          path="/w/:workspaceId/t/:threadId/artifacts/:artifactId"
           element={<ArtifactReviewScreen />}
         />
       </Routes>
@@ -287,7 +287,7 @@ describe('TW8 independent behavior regressions', () => {
     await refresh(query);
     await waitFor(() =>
       expect(
-        toasts().find((toast) => toast.textContent?.includes('Open Action Center'))
+        toasts().find((toast) => toast.textContent?.includes('Open Needs you'))
       ).toHaveTextContent('+2 more')
     );
     rows = [...rows, f.attention('request-4', ids[4], 'Approve lane 5')];
@@ -295,7 +295,7 @@ describe('TW8 independent behavior regressions', () => {
     await waitFor(() => {
       expect(toasts()).toHaveLength(3);
       expect(
-        toasts().find((toast) => toast.textContent?.includes('Open Action Center'))
+        toasts().find((toast) => toast.textContent?.includes('Open Needs you'))
       ).toHaveTextContent('+3 more');
     });
   });

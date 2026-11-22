@@ -52,8 +52,8 @@ function renderSender(submit: ReturnType<typeof vi.fn>) {
           <ToastProvider />
           <Routes>
             <Route path="/" element={<Sender />} />
-            <Route path="/tasks/:workspaceId/:threadId" element={<LocationProbe />} />
-            <Route path="/goals/:workspaceId/:threadId" element={<LocationProbe />} />
+            <Route path="/w/:workspaceId/t/:threadId" element={<LocationProbe />} />
+            <Route path="/w/:workspaceId/t/:threadId" element={<LocationProbe />} />
           </Routes>
         </MemoryRouter>
       </CoreClientProvider>
@@ -93,12 +93,12 @@ describe('admission toast', () => {
       {
         outcome: 'task-handoff',
         message: 'Sent to a task',
-        path: `/tasks/${WORKSPACE}/${OTHER}`,
+        path: `/w/${WORKSPACE}/t/${OTHER}`,
       },
       {
         outcome: 'goal-handoff',
         message: 'Sent to a goal',
-        path: `/goals/${WORKSPACE}/${OTHER}`,
+        path: `/w/${WORKSPACE}/t/${OTHER}`,
       },
     ];
     for (const handoff of cases) {
@@ -111,7 +111,8 @@ describe('admission toast', () => {
       const view = renderSender(submit);
       await user.click(screen.getByRole('button', { name: 'Send' }));
       const action = await screen.findByRole('button', { name: 'View' });
-      expect(action).toHaveClass('min-h-11', 'min-w-11');
+      // S control drawn; the 44px touch target is the coarse-pointer hit area (e2e).
+      expect(action).toHaveClass('h-control-sm');
       expect(screen.getByRole('alertdialog')).toHaveAccessibleName(handoff.message);
       await user.click(action);
       expect(await screen.findByText(handoff.path)).toBeInTheDocument();

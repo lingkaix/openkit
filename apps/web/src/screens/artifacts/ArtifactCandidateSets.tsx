@@ -5,15 +5,16 @@ import { Link as AriaLink } from 'react-aria-components';
 import { Link, useNavigate } from 'react-router-dom';
 import { useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   EmptyState,
-  ErrorBanner,
-  Select,
+  InlineAlert,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
-import { chatThreadPath, classifiedThreadPath, useConversationNavigation } from '../chat/data';
+import { classifiedThreadPath, threadPath, useConversationNavigation } from '../chat/data';
 import { useThreads } from './data';
 import {
   candidateCommandError,
@@ -188,14 +189,14 @@ export function ArtifactCandidateSets(props: {
               <span className="break-all">
                 {candidate.artifactId} · version {candidate.artifactVersion}
               </span>
-              <Button
+              <ActionButton
                 size="sm"
-                variant="quiet"
+                isQuiet
                 isDisabled={commandLocked || props.disabled}
                 onPress={() => props.onRemoveCandidate(candidate)}
               >
                 Remove version {candidate.artifactVersion}
-              </Button>
+              </ActionButton>
             </li>
           ))}
         </ol>
@@ -216,16 +217,16 @@ export function ArtifactCandidateSets(props: {
         Create comparison
       </Button>
       {create.isPending || select.isPending ? (
-        <StatusChip tone="notice">
+        <StatusLight tone="notice">
           {create.isPending ? 'Creating comparison' : 'Recording choice'}
-        </StatusChip>
+        </StatusLight>
       ) : null}
-      {create.isError ? <ErrorBanner message={candidateCommandError(create.error)} /> : null}
-      {select.isError ? <ErrorBanner message={candidateCommandError(select.error)} /> : null}
+      {create.isError ? <InlineAlert message={candidateCommandError(create.error)} /> : null}
+      {select.isError ? <InlineAlert message={candidateCommandError(select.error)} /> : null}
       {create.isError && canRetryCandidateCommand(create.error) ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || create.variables?.workspaceId !== workspaceId}
           onPress={() => {
             if (create.variables) create.mutate(create.variables);
@@ -237,7 +238,7 @@ export function ArtifactCandidateSets(props: {
       {select.isError && canRetryCandidateCommand(select.error) ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || select.variables?.workspaceId !== workspaceId}
           onPress={() => {
             if (select.variables) select.mutate(select.variables);
@@ -250,7 +251,7 @@ export function ArtifactCandidateSets(props: {
         <>
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={props.disabled || create.isPending || select.isPending}
             onPress={() => void refreshComparison()}
           >
@@ -264,7 +265,7 @@ export function ArtifactCandidateSets(props: {
             (select.isError && canEditCandidateCommand(select.error))) ? (
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               isDisabled={props.disabled}
               onPress={() => {
                 if (create.isError && canEditCandidateCommand(create.error)) create.reset();
@@ -277,7 +278,7 @@ export function ArtifactCandidateSets(props: {
         </>
       ) : null}
       {list.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load comparisons. Their current content is unavailable."
           onRetry={() => void list.refetch()}
         />
@@ -291,7 +292,7 @@ export function ArtifactCandidateSets(props: {
                 <li key={record.candidateSetId}>
                   <Button
                     size="sm"
-                    variant="outline"
+                    variant="secondary"
                     onPress={() => {
                       setInspection({ workspaceId, candidateSetId: record.candidateSetId });
                       setRefreshed(false);
@@ -307,7 +308,7 @@ export function ArtifactCandidateSets(props: {
           ) : null}
           {selectedId ? (
             detail.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't read that comparison. Its candidates and choices are unavailable."
                 onRetry={() => void detail.refetch()}
               />
@@ -315,7 +316,7 @@ export function ArtifactCandidateSets(props: {
               <Skeleton lines={4} />
             ) : visibleSet ? (
               originals.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't read every exact candidate. Comparison content and use are unavailable."
                   onRetry={() => void originals.refetch()}
                 />
@@ -366,7 +367,7 @@ export function ArtifactCandidateSets(props: {
                         {record.version.threadId ? (
                           <Link
                             className="text-sm text-accent underline"
-                            to={chatThreadPath(workspaceId, record.version.threadId)}
+                            to={threadPath(workspaceId, record.version.threadId)}
                           >
                             View producing conversation
                           </Link>
@@ -394,7 +395,7 @@ export function ArtifactCandidateSets(props: {
                       </article>
                     ))}
                   </section>
-                  <Select
+                  <Picker
                     label="Candidate choice"
                     items={originals.data.map((record, index) => ({
                       id: String(index),
@@ -455,7 +456,7 @@ export function ArtifactCandidateSets(props: {
                       {currentCandidate.artifactVersion}
                     </p>
                   ) : null}
-                  <Select
+                  <Picker
                     label="Next conversation"
                     items={authorizedThreads.map((thread) => ({
                       id: thread.id,
@@ -468,7 +469,7 @@ export function ArtifactCandidateSets(props: {
                     isDisabled={writeBlocked || !threads.isSuccess}
                   />
                   {threads.isError ? (
-                    <ErrorBanner
+                    <InlineAlert
                       message="Couldn't load conversations."
                       onRetry={() => void threads.refetch()}
                     />

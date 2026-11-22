@@ -1,5 +1,14 @@
 import { type FormEvent, useState } from 'react';
-import { Button, Card, Dialog, ErrorBanner, Modal, StatusChip, TextField } from '../../primitives';
+import {
+  Button,
+  Card,
+  Dialog,
+  DialogFooter,
+  InlineAlert,
+  Modal,
+  StatusLight,
+  TextField,
+} from '../../primitives';
 import {
   type AccountWorkspaceInvitation,
   type AccountWorkspaceMember,
@@ -38,22 +47,22 @@ function LeaveConfirmation({
   return (
     <Modal
       trigger={
-        <Button variant="negative-outline" size="sm">
+        <Button variant="negative" fillStyle="outline" size="sm">
           Leave Workspace
         </Button>
       }
     >
       <Dialog title="Confirm leave Workspace">
         <p>Leave {workspaceName}? You will lose access to this Workspace.</p>
-        {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
-        <div className="flex justify-end gap-2">
-          <Button slot="close" variant="quiet">
+        {errorMessage ? <InlineAlert message={errorMessage} /> : null}
+        <DialogFooter>
+          <Button slot="close" variant="secondary">
             Cancel
           </Button>
           <Button variant="negative" isDisabled={pending} onPress={onConfirm}>
             Confirm leave
           </Button>
-        </div>
+        </DialogFooter>
       </Dialog>
     </Modal>
   );
@@ -74,21 +83,21 @@ function ConfirmAction({
   return (
     <Modal
       trigger={
-        <Button aria-label={label} variant="negative-outline" size="sm">
+        <Button aria-label={label} variant="negative" fillStyle="outline" size="sm">
           {label === 'Transfer ownership' ? 'Transfer' : label}
         </Button>
       }
     >
       <Dialog title={`Confirm ${label.toLowerCase()}`}>
         <p>{message}</p>
-        <div className="flex justify-end gap-2">
-          <Button slot="close" variant="quiet">
+        <DialogFooter>
+          <Button slot="close" variant="secondary">
             Cancel
           </Button>
           <Button slot="close" variant="negative" isDisabled={pending} onPress={onConfirm}>
             Confirm
           </Button>
-        </div>
+        </DialogFooter>
       </Dialog>
     </Modal>
   );
@@ -158,7 +167,7 @@ export function MembersScreen() {
           )}
         </Card>
       </section>
-      {selfLeave.leave.isError ? <ErrorBanner message={selfLeave.leave.error.message} /> : null}
+      {selfLeave.leave.isError ? <InlineAlert message={selfLeave.leave.error.message} /> : null}
 
       {transferSuccess ? (
         <p
@@ -177,7 +186,7 @@ export function MembersScreen() {
         </p>
       ) : null}
       {management.transferOwnership.isError ? (
-        <ErrorBanner message={management.transferOwnership.error.message} />
+        <InlineAlert message={management.transferOwnership.error.message} />
       ) : null}
 
       {management.canManage && workspaceId && workspace ? (
@@ -185,20 +194,20 @@ export function MembersScreen() {
           <section aria-label="Workspace members">
             <Card className="flex flex-col gap-3">
               <div>
-                <h2 className="text-lg font-extrabold text-fg-strong">Workspace members</h2>
+                <h2 className="text-lg font-heading text-fg-strong">Workspace members</h2>
                 <p className="mt-1 text-xs text-fg-muted">Current owner: {workspace.ownerUserId}</p>
               </div>
               {management.members.isPending ? (
                 <CollectionLoading label="Workspace members" />
               ) : null}
               {management.members.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load Workspace members."
                   onRetry={() => void management.members.refetch()}
                 />
               ) : null}
               {management.removeMember.isError ? (
-                <ErrorBanner message={management.removeMember.error.message} />
+                <InlineAlert message={management.removeMember.error.message} />
               ) : null}
               {management.members.isSuccess ? (
                 management.members.data.items.length > 0 ? (
@@ -219,7 +228,7 @@ export function MembersScreen() {
                             <td className="min-w-0 py-3 pr-3">
                               <p className="text-sm font-bold text-fg-strong">{member.userId}</p>
                               <div className="mt-1 flex items-center gap-2">
-                                <StatusChip
+                                <StatusLight
                                   tone={member.status === 'removed' ? 'neutral' : 'informative'}
                                 >
                                   {member.status === 'removed' ? (
@@ -229,7 +238,7 @@ export function MembersScreen() {
                                       {isOwner ? 'Owner' : 'Active member'}
                                     </span>
                                   )}
-                                </StatusChip>
+                                </StatusLight>
                               </div>
                             </td>
                             {activeNonOwner ? (
@@ -276,7 +285,7 @@ export function MembersScreen() {
 
           <section aria-label="Workspace invitations">
             <Card className="flex flex-col gap-3">
-              <h2 className="text-lg font-extrabold text-fg-strong">Workspace invitations</h2>
+              <h2 className="text-lg font-heading text-fg-strong">Workspace invitations</h2>
               <form
                 className="mt-3 flex flex-wrap items-end gap-2"
                 aria-label="Create Workspace invitation"
@@ -304,19 +313,19 @@ export function MembersScreen() {
               ) : null}
               {management.createInvitation.isError ? (
                 <div className="mt-3">
-                  <ErrorBanner message={management.createInvitation.error.message} />
+                  <InlineAlert message={management.createInvitation.error.message} />
                 </div>
               ) : null}
               {management.revokeInvitation.isError ? (
                 <div className="mt-3">
-                  <ErrorBanner message={management.revokeInvitation.error.message} />
+                  <InlineAlert message={management.revokeInvitation.error.message} />
                 </div>
               ) : null}
               {management.invitations.isPending ? (
                 <CollectionLoading label="Workspace invitations" />
               ) : null}
               {management.invitations.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load Workspace invitations."
                   onRetry={() => void management.invitations.refetch()}
                 />
@@ -336,13 +345,13 @@ export function MembersScreen() {
                                 {invitation.inviteeUserId}
                               </p>
                               <div className="mt-1 flex items-center gap-2">
-                                <StatusChip
+                                <StatusLight
                                   tone={
                                     invitation.effectiveStatus === 'pending' ? 'notice' : 'neutral'
                                   }
                                 >
                                   {invitation.effectiveStatus}
-                                </StatusChip>
+                                </StatusLight>
                                 <span className="text-xs text-fg-muted">Full member access</span>
                               </div>
                             </td>

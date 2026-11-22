@@ -12,7 +12,7 @@ const MAINTENANCE = [
   {
     path: '/settings/gateway',
     title: 'Gateway',
-    hint: 'Inspect Providers, accounts, models and logical routes.',
+    hint: 'Inspect Providers, accounts, models and model routes.',
   },
   {
     path: '/settings/vault-admin',
@@ -63,7 +63,7 @@ export function ServerOperationsScreen() {
       <ServerHealthPanel />
       <AdministratorCleanupPanel />
       <section className="flex flex-col gap-3" aria-labelledby="server-maintenance">
-        <h2 id="server-maintenance" className="text-lg font-extrabold text-fg-strong">
+        <h2 id="server-maintenance" className="text-lg font-heading text-fg-strong">
           Maintenance and recovery
         </h2>
         <div className="grid gap-3 md:grid-cols-2">
@@ -71,7 +71,7 @@ export function ServerOperationsScreen() {
             <Card key={destination.path} className="flex flex-col gap-2">
               <Link
                 to={destination.path}
-                className="text-sm font-bold text-accent hover:underline focus-visible:outline focus-visible:outline-focus"
+                className="text-sm font-bold text-accent hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
               >
                 {destination.title}
               </Link>

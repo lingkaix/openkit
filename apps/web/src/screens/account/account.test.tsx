@@ -836,7 +836,8 @@ function expectAuthorizedWorkspaceIds(queryClient: QueryClient, workspaceIds: st
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
-  useThemeStore.setState({ theme: 'spectrum' });
+  useThemeStore.setState({ theme: 'system' });
+  delete document.documentElement.dataset.colorScheme;
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
@@ -921,16 +922,15 @@ describe('protected-read account gate', () => {
     expectNoDeploymentAdmissionProbes(forbidden);
   });
 
-  it('offers theme selection on direct logged-out /login', async () => {
-    const user = userEvent.setup();
+  it('keeps theme choice out of logged-out /login; the stored choice still applies', async () => {
+    useThemeStore.setState({ theme: 'dark' });
     const { client } = makeClient({
       listAuthorizedWorkspaces: vi.fn().mockRejectedValue(AUTH_REQUIRED()),
     });
     renderApp('/login', client);
     await screen.findByRole('form', { name: /account access/i });
-    await user.click(screen.getByRole('button', { name: /Color theme/ }));
-    await user.click(screen.getByRole('option', { name: 'Noir' }));
-    expect(document.documentElement).toHaveClass('ok-theme-noir');
+    expect(screen.queryByRole('button', { name: /Color theme/ })).not.toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute('data-color-scheme', 'dark');
     expect(screen.getByRole('button', { name: /sign in/i })).toBeEnabled();
   });
 
@@ -940,7 +940,7 @@ describe('protected-read account gate', () => {
     const { client, forbidden } = makeClient({
       listAuthorizedWorkspaces,
     });
-    const { container, queryClient } = renderApp('/goals/ws1/deep-thread', client);
+    const { container, queryClient } = renderApp('/w/ws1/t/deep-thread', client);
 
     await screen.findByRole('form', { name: /account access/i });
     expectAccountGate();

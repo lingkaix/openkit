@@ -18,10 +18,12 @@ import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import {
-  Button,
+  ActionButton,
+  ActionGroup,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Skeleton,
+  ToggleButton,
   TurnSeparator,
   toastQueue,
 } from '../../primitives';
@@ -992,7 +994,7 @@ export function ThreadStream({
   const locateKey =
     missingUnread.length === 0 || missingUnread.length > EARLIER_UNREAD_LOCATE_LIMIT
       ? ''
-      : [...missingUnread].sort().join('\n');
+      : missingUnread.toSorted().join('\n');
   useEffect(() => {
     if (!timelineOn || !workspaceId || locateKey.length === 0) {
       setLocatedUnread((current) => (current.length === 0 ? current : []));
@@ -1274,7 +1276,7 @@ export function ThreadStream({
 
   if (historyDenied || (historyError && !retainHistory)) {
     return (
-      <ErrorBanner
+      <InlineAlert
         message={historyDenied ? timelineCopy.deniedRead : "Couldn't load this thread."}
         onRetry={() => void (timelineOn ? timelineWindow.refetch() : items.refetch())}
       />
@@ -1485,27 +1487,22 @@ export function ThreadStream({
         {placedChrome}
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
           {lensProp === undefined ? (
-            <fieldset
-              aria-label={timelineCopy.lensName}
-              className="m-0 flex min-w-0 gap-2 border-0 p-0"
-            >
-              <Button
-                variant={lens === 'work' ? 'outline' : 'quiet'}
+            <ActionGroup aria-label={timelineCopy.lensName} size="sm">
+              <ToggleButton
                 size="sm"
                 aria-label={timelineCopy.lensWorkName}
-                aria-pressed={lens === 'work'}
+                isSelected={lens === 'work'}
                 onPress={() => {
                   setInternalLens('work');
                   writeStoredLens('work');
                 }}
               >
                 {timelineCopy.lensWork}
-              </Button>
-              <Button
-                variant={lens === 'full' ? 'outline' : 'quiet'}
+              </ToggleButton>
+              <ToggleButton
                 size="sm"
                 aria-label={timelineCopy.lensFullName}
-                aria-pressed={lens === 'full'}
+                isSelected={lens === 'full'}
                 onPress={() => {
                   setInternalLens('full');
                   writeStoredLens('full');
@@ -1513,8 +1510,8 @@ export function ThreadStream({
                 }}
               >
                 {timelineCopy.lensFull}
-              </Button>
-            </fieldset>
+              </ToggleButton>
+            </ActionGroup>
           ) : null}
           <EmptyState
             icon="chat"
@@ -1840,27 +1837,22 @@ export function ThreadStream({
             </p>
           ) : null}
           {lensProp === undefined ? (
-            <fieldset
-              aria-label={timelineCopy.lensName}
-              className="m-0 flex min-w-0 gap-2 border-0 p-0"
-            >
-              <Button
-                variant={lens === 'work' ? 'outline' : 'quiet'}
+            <ActionGroup aria-label={timelineCopy.lensName} size="sm">
+              <ToggleButton
                 size="sm"
                 aria-label={timelineCopy.lensWorkName}
-                aria-pressed={lens === 'work'}
+                isSelected={lens === 'work'}
                 onPress={() => {
                   setInternalLens('work');
                   writeStoredLens('work');
                 }}
               >
                 {timelineCopy.lensWork}
-              </Button>
-              <Button
-                variant={lens === 'full' ? 'outline' : 'quiet'}
+              </ToggleButton>
+              <ToggleButton
                 size="sm"
                 aria-label={timelineCopy.lensFullName}
-                aria-pressed={lens === 'full'}
+                isSelected={lens === 'full'}
                 onPress={() => {
                   setInternalLens('full');
                   writeStoredLens('full');
@@ -1868,24 +1860,24 @@ export function ThreadStream({
                 }}
               >
                 {timelineCopy.lensFull}
-              </Button>
-            </fieldset>
+              </ToggleButton>
+            </ActionGroup>
           ) : null}
           {!windowRuns && earlierCursor ? (
-            <Button
-              variant="quiet"
+            <ActionButton
+              isQuiet
               size="sm"
               isDisabled={loadEarlier.isPending}
               onPress={() => loadEarlier.mutate(earlierCursor)}
             >
               Load earlier
-            </Button>
+            </ActionButton>
           ) : null}
           {unavailableTurn ? (
             <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>
           ) : null}
           {live.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Runtime activity is unavailable. Retry to refresh."
               onRetry={() => void live.refetch()}
             />
@@ -2090,8 +2082,8 @@ export function ThreadStream({
                     runningStatus={
                       runningStep && groupTurn ? (
                         <div role="status" className="ok-meta text-fg">
-                          <Button
-                            variant="quiet"
+                          <ActionButton
+                            isQuiet
                             size="sm"
                             onPress={() => {
                               if (phone) openSheet('steps', group.turnId);
@@ -2111,7 +2103,7 @@ export function ThreadStream({
                             </time>
                             <span aria-hidden="true"> · </span>
                             <span>{runningStep.tool}</span>
-                          </Button>
+                          </ActionButton>
                         </div>
                       ) : null
                     }
@@ -2153,7 +2145,7 @@ export function ThreadStream({
                           aria-live="polite"
                           className="rounded-ok border border-border bg-sunken p-4 text-sm"
                         >
-                          <h3 className="font-semibold text-fg">Runtime activity</h3>
+                          <h3 className="font-bold text-fg">Runtime activity</h3>
                           {activity.entries.length > 0 ? (
                             <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
                           ) : null}
@@ -2207,7 +2199,7 @@ export function ThreadStream({
                       <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
                     )
                   ) : null}
-                  {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
+                  {historicalFailure ? <InlineAlert message={historicalFailure} /> : null}
                   {windowRuns?.find((run) => run.id === group.turnId)?.restrictedReferences ||
                   windowRuns?.find((run) => run.id === group.turnId)?.interruptedBy.visibility ===
                     'restricted' ? (
@@ -2218,24 +2210,24 @@ export function ThreadStream({
                   (expandedTurnId === group.turnId || lens === 'full') ? (
                     <div className="flex gap-2">
                       {level2.data?.beforeCursor ? (
-                        <Button
-                          variant="quiet"
+                        <ActionButton
+                          isQuiet
                           size="sm"
                           onPress={level2.pageEarlier}
                           isDisabled={level2.paging}
                         >
                           {timelineCopy.loadEarlier}
-                        </Button>
+                        </ActionButton>
                       ) : null}
                       {level2.data?.afterCursor ? (
-                        <Button
-                          variant="quiet"
+                        <ActionButton
+                          isQuiet
                           size="sm"
                           onPress={level2.pageLater}
                           isDisabled={level2.paging}
                         >
                           {timelineCopy.loadLater}
-                        </Button>
+                        </ActionButton>
                       ) : null}
                     </div>
                   ) : null}
@@ -2343,25 +2335,21 @@ export function ThreadStream({
           <ul className="flex flex-col gap-2">
             {phone ? (
               <li>
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  onPress={() => openSheet('inspect', stepsSheetId)}
-                >
+                <ActionButton isQuiet size="sm" onPress={() => openSheet('inspect', stepsSheetId)}>
                   {timelineCopy.inspectRun}
-                </Button>
+                </ActionButton>
               </li>
             ) : null}
             {level2.data?.beforeCursor ? (
               <li>
-                <Button
-                  variant="quiet"
+                <ActionButton
+                  isQuiet
                   size="sm"
                   onPress={level2.pageEarlier}
                   isDisabled={level2.paging}
                 >
                   {timelineCopy.loadEarlier}
-                </Button>
+                </ActionButton>
               </li>
             ) : null}
             {stepItems.map((item) => (
@@ -2371,14 +2359,14 @@ export function ThreadStream({
             ))}
             {level2.data?.afterCursor ? (
               <li>
-                <Button
-                  variant="quiet"
+                <ActionButton
+                  isQuiet
                   size="sm"
                   onPress={level2.pageLater}
                   isDisabled={level2.paging}
                 >
                   {timelineCopy.loadLater}
-                </Button>
+                </ActionButton>
               </li>
             ) : null}
           </ul>

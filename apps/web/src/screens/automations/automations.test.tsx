@@ -322,13 +322,13 @@ it('shows accepted-but-queued, typed failed attempts, exact ranges and bounded h
     .mockResolvedValue(second);
   fixture({ 'automation.history': history });
   await user.click(await screen.findByRole('button', { name: 'History Poll status' }));
-  expect(await screen.findByText('Admission accepted')).toBeInTheDocument();
+  expect(await screen.findByText('Accepted')).toBeInTheDocument();
   expect(screen.getByText('Scheduler: queued')).toBeInTheDocument();
   expect(screen.getByText(/queue_backlog_full/)).toBeInTheDocument();
   expect(screen.queryByText('Do not display raw dependency diagnostics')).not.toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'View Turn turn1' })).toHaveAttribute(
     'href',
-    '/chat/ws1/th1?turnId=turn1'
+    '/w/ws1/t/th1?turnId=turn1'
   );
   await user.click(screen.getByRole('button', { name: 'Load older history' }));
   expect(await screen.findByText(/60 expired instants/)).toBeInTheDocument();
@@ -554,15 +554,13 @@ it.each(['turn_missing', 'turn_contradictory'] as const)(
       await screen.findByText(/Inspection required \(recovery_required\)/)
     ).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /View Turn/ })).not.toBeInTheDocument();
-    await user.dblClick(screen.getByRole('button', { name: 'Cancel queued admission' }));
+    await user.dblClick(screen.getByRole('button', { name: 'Cancel queued start' }));
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledWith({ workspaceId: 'ws1', queueEntryId: 'queue1' });
-    expect(screen.getByRole('button', { name: 'Cancelling queued admission…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancelling queued start…' })).toBeDisabled();
     await act(async () => finish({ cancelled: true }));
     expect(await screen.findByText('Scheduler: cancelled')).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Cancel queued admission' })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel queued start' })).not.toBeInTheDocument();
     expect(operations['automation.create']).not.toHaveBeenCalled();
     expect(operations['automation.update']).not.toHaveBeenCalled();
     expect(history).toHaveBeenCalledTimes(2);
@@ -589,16 +587,16 @@ it('does not replay a queue cancellation after an unknown outcome', async () => 
     'scheduler.cancel': cancel,
   });
   await user.click(await screen.findByRole('button', { name: 'History Poll status' }));
-  await user.click(await screen.findByRole('button', { name: 'Cancel queued admission' }));
+  await user.click(await screen.findByRole('button', { name: 'Cancel queued start' }));
   expect(await screen.findByText(/Outcome unknown/)).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Cancel queued admission' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Cancel queued start' })).toBeDisabled();
   expect(cancel).toHaveBeenCalledTimes(1);
   expect(screen.queryByText('private cancellation detail')).not.toBeInTheDocument();
   await user.click(
     screen.getByRole('button', { name: 'Refresh history before another cancellation' })
   );
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Cancel queued admission' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel queued start' })).not.toBeDisabled()
   );
   expect(cancel).toHaveBeenCalledTimes(1);
 });

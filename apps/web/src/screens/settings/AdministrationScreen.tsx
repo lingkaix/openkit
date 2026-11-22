@@ -28,15 +28,16 @@ import {
   Button,
   Card,
   Dialog,
+  DialogFooter,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Modal,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   type StatusTone,
 } from '../../primitives';
 import {
@@ -108,7 +109,7 @@ function AdministratorWorkspaces() {
   return (
     <section className="flex flex-col gap-3" aria-labelledby="other-workspaces">
       <div>
-        <h2 id="other-workspaces" className="text-lg font-extrabold text-fg-strong">
+        <h2 id="other-workspaces" className="text-lg font-heading text-fg-strong">
           Other workspaces
         </h2>
         <p className="text-sm text-fg-muted">
@@ -124,11 +125,11 @@ function AdministratorWorkspaces() {
               <p className="truncate text-xs text-fg-muted">Owner {item.ownerUserId}</p>
             </div>
             <Button
-              variant="outline"
+              variant="secondary"
               aria-label={`Open ${item.workspace.name} owned by ${item.ownerUserId}`}
               onPress={() => {
                 setWorkspaceId(item.workspace.id);
-                navigate('/chat');
+                navigate('/new');
               }}
             >
               Open
@@ -315,7 +316,7 @@ export function AdministrationScreen() {
           action={<Button onPress={() => void access.refetch()}>Retry</Button>}
         />
       ) : access.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't verify administrator authority."
           onRetry={() => void access.refetch()}
         />
@@ -333,7 +334,7 @@ export function AdministrationScreen() {
                 <div>
                   <h2
                     id="administration-conversation"
-                    className="text-lg font-extrabold text-fg-strong"
+                    className="text-lg font-heading text-fg-strong"
                   >
                     Private conversation
                   </h2>
@@ -343,7 +344,7 @@ export function AdministrationScreen() {
                   </p>
                 </div>
                 {administrationThread.isError ? (
-                  <ErrorBanner
+                  <InlineAlert
                     message="This private administration Thread is unavailable."
                     onRetry={() => void administrationThread.refetch()}
                   />
@@ -362,11 +363,11 @@ export function AdministrationScreen() {
                   </Card>
                 ) : null}
                 {conversation.isError ? (
-                  <ErrorBanner message="Couldn't send that administration request." />
+                  <InlineAlert message="Couldn't send that administration request." />
                 ) : null}
                 {profile.state === 'error' ? null : (
                   <form
-                    className="rounded-ok-lg border border-border bg-card p-3 shadow-ok-card"
+                    className="rounded-ok-lg border border-border bg-card p-3 has-[textarea:focus-visible]:border-accent has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-solid has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-focus"
                     onSubmit={submit}
                   >
                     <textarea
@@ -533,7 +534,7 @@ function WorkerEnvironmentSection({
     <section className="flex flex-col gap-3" aria-labelledby="worker-environments">
       {administrationVisible ? (
         <div>
-          <h2 id="worker-environments" className="text-lg font-extrabold text-fg-strong">
+          <h2 id="worker-environments" className="text-lg font-heading text-fg-strong">
             Sandboxes
           </h2>
           <p className="text-sm font-bold text-fg">Target Workspace: {workspaceName ?? 'None'}</p>
@@ -567,7 +568,7 @@ function WorkerEnvironmentSection({
           ) : environments.isLoading ? (
             <Skeleton lines={4} />
           ) : environments.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load Sandboxes."
               onRetry={() => void environments.refetch()}
             />
@@ -620,8 +621,8 @@ function WorkerEnvironmentSection({
               hint="New Worker work creates retained storage when no environment is selected."
             />
           )}
-          {status.isError ? <ErrorBanner message="Couldn't inspect that environment." /> : null}
-          {purge.isError ? <ErrorBanner message="Couldn't delete that environment." /> : null}
+          {status.isError ? <InlineAlert message="Couldn't inspect that environment." /> : null}
+          {purge.isError ? <InlineAlert message="Couldn't delete that environment." /> : null}
           {purge.data ? <PurgeResult outcome={purge.data.outcome} /> : null}
           {status.data ? <EnvironmentStatus status={status.data} /> : null}
         </>
@@ -824,20 +825,20 @@ function EnvironmentPreparation({
             </p>
           </div>
           {configFiles.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load Server Agent configuration files."
               onRetry={() => void configFiles.refetch()}
             />
           ) : agentFiles.length ? (
             <div className="grid gap-3 md:grid-cols-2">
-              <Select
+              <Picker
                 label="Server Agent configuration"
                 items={agentFiles.map((file) => ({ id: file.id, label: file.path }))}
                 selectedKey={selectedFileId}
                 isDisabled={prepare.isPending}
                 onSelectionChange={(key) => setSelectedFileId(String(key))}
               />
-              <Select
+              <Picker
                 label="Activation impact"
                 items={[
                   { id: 'later', label: 'Later Agent admissions' },
@@ -856,7 +857,7 @@ function EnvironmentPreparation({
             <Skeleton lines={2} />
           )}
           {configFile.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't read the selected Server Agent configuration."
               onRetry={() => void configFile.refetch()}
             />
@@ -880,7 +881,7 @@ function EnvironmentPreparation({
                   above.
                 </p>
               ) : (
-                <Select
+                <Picker
                   label="Current Thread to replace"
                   items={(threads.data ?? []).map((thread) => ({
                     id: thread.id,
@@ -891,7 +892,7 @@ function EnvironmentPreparation({
                   onSelectionChange={(key) => setSelectedThreadId(String(key))}
                 />
               )}
-              <label className="flex flex-col gap-1 text-xs font-bold text-fg">
+              <label className="flex flex-col gap-1 ok-field-label text-fg-muted">
                 Successor Turn prompt
                 <textarea
                   aria-label="Successor Turn prompt"
@@ -900,7 +901,7 @@ function EnvironmentPreparation({
                   onChange={(event) => setPrompt(event.target.value)}
                   placeholder="Write the exact prompt for the ordinary successor Turn"
                   rows={3}
-                  className="w-full resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:cursor-not-allowed"
+                  className="w-full resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none placeholder:text-fg-muted focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:cursor-not-allowed"
                 />
               </label>
             </div>
@@ -911,7 +912,7 @@ function EnvironmentPreparation({
             </p>
           ) : null}
           {prepare.isError ? (
-            <ErrorBanner message="Preparation did not produce a resolved candidate. Inspect the private Thread for a recoverable authored candidate." />
+            <InlineAlert message="Preparation did not produce a resolved candidate. Inspect the private Thread for a recoverable authored candidate." />
           ) : null}
           <div className="flex justify-end">
             <Button
@@ -935,7 +936,7 @@ function EnvironmentPreparation({
       {administrationVisible && candidateLoading ? (
         <Skeleton lines={5} />
       ) : administrationVisible && candidateError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't inspect the prepared candidate."
           onRetry={onRetryCandidate}
         />
@@ -1004,7 +1005,7 @@ function RecoverableCandidateCard({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-bold text-fg-strong">Authored candidate needs recovery</h3>
-            <StatusChip tone="notice">Recovery required</StatusChip>
+            <StatusLight tone="notice">Recovery required</StatusLight>
           </div>
           <p className="mt-1 text-sm text-fg">
             Agent {candidate.details.target.agentId} · configuration{' '}
@@ -1079,7 +1080,7 @@ function PreparedCandidateReview({
   const blocked = hidden || confirmationBlocked || disconnected || attempted;
 
   return (
-    <div className="flex flex-col gap-3 rounded-ok border border-border bg-card p-3">
+    <div className="ok-card flex flex-col gap-3 rounded-ok-lg border border-separator bg-card p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           {hidden ? (
@@ -1088,7 +1089,7 @@ function PreparedCandidateReview({
             <>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-bold text-fg-strong">Prepared environment change</h3>
-                <StatusChip tone="notice">Ready for review</StatusChip>
+                <StatusLight tone="notice">Ready for review</StatusLight>
               </div>
               <p className="mt-1 text-sm text-fg">
                 Agent {candidate.details.target.agentId} · all later admissions across Workspaces
@@ -1119,8 +1120,8 @@ function PreparedCandidateReview({
                 </p>
               </>
             )}
-            <div className="flex justify-end gap-2">
-              <Button slot="close" variant="quiet">
+            <DialogFooter>
+              <Button slot="close" variant="secondary">
                 Cancel
               </Button>
               <Button
@@ -1134,13 +1135,13 @@ function PreparedCandidateReview({
               >
                 Activate candidate
               </Button>
-            </div>
+            </DialogFooter>
           </Dialog>
         </Modal>
       </div>
       {hidden ? null : <CandidateFacts candidate={candidate} compact />}
       {activate.isError ? (
-        <ErrorBanner message="Activation could not be confirmed. Inspect the exact configuration and environment status, then prepare a fresh candidate." />
+        <InlineAlert message="Activation could not be confirmed. Inspect the exact configuration and environment status, then prepare a fresh candidate." />
       ) : null}
       {activate.data && !hidden ? <ActivationResultCard result={activate.data} /> : null}
     </div>
@@ -1181,7 +1182,7 @@ function CandidateFacts({
             Environment defaults {details.image.environmentDefaults.defaultsDigest}
           </p>
           <p>Default names: {details.image.environmentDefaults.names.join(', ') || 'None'}</p>
-          <p>Default values are admitted only by this activation.</p>
+          <p>Default values apply only to this activation.</p>
         </>
       ) : null}
       <p>
@@ -1291,7 +1292,7 @@ function EnvironmentRow({
           <span className="font-bold text-fg-strong">
             Environment {shortRef(environment.storageRef)}
           </span>
-          <StatusChip tone={environmentTone(environment.state)}>{environment.state}</StatusChip>
+          <StatusLight tone={environmentTone(environment.state)}>{environment.state}</StatusLight>
         </div>
         <p className="mt-1 text-xs text-fg-muted">
           Revision {environment.revision} · {environment.layout.targets.length} retained targets ·{' '}
@@ -1299,7 +1300,7 @@ function EnvironmentRow({
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" isDisabled={pending} onPress={onInspect}>
+        <Button variant="secondary" size="sm" isDisabled={pending} onPress={onInspect}>
           Refresh status
         </Button>
         <Modal
@@ -1319,14 +1320,14 @@ function EnvironmentRow({
             <p className="text-xs text-fg-muted">
               Retained targets: {environment.layout.targets.map(({ target }) => target).join(', ')}
             </p>
-            <div className="flex justify-end gap-2">
-              <Button slot="close" variant="quiet">
+            <DialogFooter>
+              <Button slot="close" variant="secondary">
                 Cancel
               </Button>
               <Button slot="close" variant="negative" onPress={onPurge}>
                 Delete environment
               </Button>
-            </div>
+            </DialogFooter>
           </Dialog>
         </Modal>
       </div>
@@ -1363,14 +1364,16 @@ function EnvironmentStatus({ status }: { status: GetWorkerEnvironmentStatusRespo
       </h3>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-fg">Core association</span>
-        <StatusChip tone={environmentTone(status.environment.state)}>
+        <StatusLight tone={environmentTone(status.environment.state)}>
           {status.environment.state}
-        </StatusChip>
+        </StatusLight>
         <span className="text-xs text-fg-muted">revision {status.environment.revision}</span>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-fg">Host storage</span>
-        <StatusChip tone={environmentTone(status.storage.state)}>{status.storage.state}</StatusChip>
+        <StatusLight tone={environmentTone(status.storage.state)}>
+          {status.storage.state}
+        </StatusLight>
       </div>
       <p className="text-sm text-fg">
         {status.storage.attachment

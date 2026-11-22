@@ -5,13 +5,13 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
 import {
@@ -82,7 +82,7 @@ export function CatalogScreen() {
           title="Catalog"
           subtitle="Skills, MCP servers, and Agent Plugins for this workspace."
           actions={
-            disconnected ? <StatusChip tone="notice">Catalog may be stale</StatusChip> : null
+            disconnected ? <StatusLight tone="notice">Catalog may be stale</StatusLight> : null
           }
         />
         <Skeleton className="h-40" />
@@ -97,11 +97,11 @@ export function CatalogScreen() {
         <PageHeader
           title="Catalog"
           actions={
-            disconnected ? <StatusChip tone="notice">Catalog may be stale</StatusChip> : null
+            disconnected ? <StatusLight tone="notice">Catalog may be stale</StatusLight> : null
           }
         />
         <fieldset disabled={retryBlocked} className="contents">
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load the catalog."
             onRetry={retryBlocked ? undefined : () => void catalog.refetch()}
           />
@@ -120,7 +120,9 @@ export function CatalogScreen() {
       <PageHeader
         title="Catalog"
         subtitle="Skills, MCP servers, and Agent Plugins supplied to workers in this workspace."
-        actions={disconnected ? <StatusChip tone="notice">Catalog may be stale</StatusChip> : null}
+        actions={
+          disconnected ? <StatusLight tone="notice">Catalog may be stale</StatusLight> : null
+        }
       />
 
       {!workspaceId ? (
@@ -249,7 +251,7 @@ export function CatalogScreen() {
             )}
             {withdrawCandidate.isError &&
             withdrawCandidate.variables?.workspaceId === workspaceId ? (
-              <ErrorBanner message="Couldn't withdraw that proposal. The submitter or an authorized configuration owner can withdraw it; refresh the catalog before retrying." />
+              <InlineAlert message="Couldn't withdraw that proposal. The submitter or an authorized configuration owner can withdraw it; refresh the catalog before retrying." />
             ) : null}
             {proposed.length ? (
               <div className="flex flex-col gap-2 pt-3">
@@ -558,14 +560,14 @@ export function CatalogScreen() {
                   Import Skill folder
                 </Button>
               </div>
-              {skillTreeError ? <ErrorBanner message={skillTreeError} /> : null}
+              {skillTreeError ? <InlineAlert message={skillTreeError} /> : null}
               {importSkill.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(importSkill.error, "Couldn't import that Skill.")}
                 />
               ) : null}
               {submitCandidate.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(
                     submitCandidate.error,
                     "Couldn't submit that Skill update."
@@ -573,7 +575,7 @@ export function CatalogScreen() {
                 />
               ) : null}
               {decideCandidate.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(
                     decideCandidate.error,
                     "Couldn't decide that Skill update."
@@ -683,7 +685,7 @@ export function CatalogScreen() {
                 placeholder="Echo"
                 isDisabled={writeBlocked}
               />
-              <Select
+              <Picker
                 label="Transport"
                 selectedKey={mcpKind}
                 onSelectionChange={(key) => setMcpKind(String(key))}
@@ -751,7 +753,7 @@ export function CatalogScreen() {
                 Add inactive configuration
               </Button>
               {createMcp.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(
                     createMcp.error,
                     "Couldn't create that MCP configuration."
@@ -759,7 +761,7 @@ export function CatalogScreen() {
                 />
               ) : null}
               {updateBinding.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(updateBinding.error, "Couldn't update that MCP server.")}
                 />
               ) : null}
@@ -777,7 +779,7 @@ export function CatalogScreen() {
                 </Button>
               ) : null}
               {selectMcp.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message={mutationMessage(selectMcp.error, "Couldn't select that MCP version.")}
                 />
               ) : null}
@@ -845,7 +847,7 @@ export function CatalogScreen() {
               Import plugin package
             </Button>
             {importPlugin.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={mutationMessage(importPlugin.error, "Couldn't import that plugin.")}
               />
             ) : null}

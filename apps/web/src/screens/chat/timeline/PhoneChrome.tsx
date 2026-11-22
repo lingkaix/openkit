@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { usePersistentNavigation } from '../../../app/AppShell';
-import { Button, Icon } from '../../../primitives';
+import { ActionButton, Icon } from '../../../primitives';
 import { timelineCopy } from './copy';
 import type { NowModel } from './now';
 import {
@@ -147,7 +147,7 @@ export function PhoneBar({
   const nowText = now.kind === 'hidden' ? null : now.text;
   const label = phoneBarLabel(nowText, needsCount);
   const notice = <RequestUnavailableNotice unavailable={unavailable} />;
-  const className = 'ok-meta flex min-h-11 w-full items-center gap-2 text-left';
+  const className = 'ok-meta flex min-h-control-md w-full items-center gap-2 text-left';
   // Keep the row's height while Now is quiet so a later label does not push the timeline.
   if (!label) {
     return (
@@ -276,7 +276,7 @@ export function PhoneSheetFrame({
         {mode === 'partial' ? (
           <button
             type="button"
-            className="flex min-h-11 w-full items-center justify-center"
+            className="flex h-control-md w-full items-center justify-center"
             aria-label={expanded ? timelineCopy.collapseSheet : timelineCopy.expandSheet}
             onClick={onExpand}
           >
@@ -284,16 +284,16 @@ export function PhoneSheetFrame({
           </button>
         ) : null}
         <div className="flex items-center justify-between gap-2 px-3">
-          <h2 className="text-sm font-semibold text-fg">{label}</h2>
-          <Button
+          <h2 className="text-sm font-bold text-fg">{label}</h2>
+          <ActionButton
             size="sm"
-            variant="quiet"
+            isQuiet
             aria-label={timelineCopy.closeSheet}
-            className="min-h-11 min-w-11 shrink-0 px-0!"
+            className="shrink-0"
             onPress={onClose}
           >
             <Icon name="close" />
-          </Button>
+          </ActionButton>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4">{children}</div>
         {footer ? (

@@ -1,7 +1,7 @@
 import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, EmptyState, ErrorBanner, ListRow, Skeleton } from '../../primitives';
+import { Button, Card, EmptyState, InlineAlert, ListRow, Skeleton } from '../../primitives';
 
 /** Preserve denial status while excluding arbitrary upstream details from UI and caches. */
 function safeFailure(error: unknown) {
@@ -84,11 +84,11 @@ export function SharedMcpPanel({
       ) : supply.isLoading ? (
         <Skeleton lines={3} />
       ) : supply.isError ? (
-        <ErrorBanner message="Couldn't read current shared supply. Refresh before changing it." />
+        <InlineAlert message="Couldn't read current shared supply. Refresh before changing it." />
       ) : (
         <>
           {change.isError ? (
-            <ErrorBanner message="Shared supply change failed. Its outcome may be unknown. Refresh and inspect current state before a new change." />
+            <InlineAlert message="Shared supply change failed. Its outcome may be unknown. Refresh and inspect current state before a new change." />
           ) : null}
           {supply.data?.items.length ? (
             supply.data.items.map((entry) => (

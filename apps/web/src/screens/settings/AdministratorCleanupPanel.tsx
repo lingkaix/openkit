@@ -8,7 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Fragment, useId } from 'react';
 import { Disclosure, DisclosurePanel } from 'react-aria-components';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, Skeleton } from '../../primitives';
+import { ActionButton, Button, Card, InlineAlert, Skeleton } from '../../primitives';
 
 const SOURCE_LABELS: Record<AdministratorCleanupSource, string> = {
   'workspace-deletion': 'Workspace deletion',
@@ -143,9 +143,9 @@ function CleanupObservation({ item }: { item: AdministratorCleanupItem }) {
           <p className="text-sm text-fg">Unknown evidence: {item.evidence.reason}</p>
         )}
         <Disclosure className="min-w-0">
-          <Button slot="trigger" variant="quiet" size="sm">
+          <ActionButton slot="trigger" isQuiet size="sm">
             Inspection correlation
-          </Button>
+          </ActionButton>
           <DisclosurePanel className="min-w-0 pt-2">
             <div className="flex min-w-0 flex-col gap-2 text-sm text-fg">
               <p className="text-fg-muted">
@@ -203,7 +203,7 @@ export function AdministratorCleanupPanel() {
           Cleanup observations
         </h2>
         <Button
-          variant="outline"
+          variant="secondary"
           isDisabled={query.isFetching}
           onPress={() => void query.refetch()}
         >
@@ -218,7 +218,7 @@ export function AdministratorCleanupPanel() {
       {!query.isFetchedAfterMount || query.isPending || query.isFetching ? (
         <Skeleton lines={6} />
       ) : query.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={denied ? 'Administrator access required.' : 'Cleanup inspection failed.'}
         />
       ) : (

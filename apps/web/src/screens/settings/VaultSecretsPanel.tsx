@@ -6,7 +6,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, Select, TextField } from '../../primitives';
+import { Button, Card, InlineAlert, Picker, TextField } from '../../primitives';
 import { redactSecretShapedText } from './secret-safe';
 
 /** Retain status for access-denial handling without retaining server error content. */
@@ -210,13 +210,13 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
     );
   return (
     <Card className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold text-fg">Workspace secrets</h2>
+      <h2 className="text-lg font-heading text-fg">Workspace secrets</h2>
       <p className="text-sm text-fg-muted">
         Manage secrets for the selected Workspace. Revoking a secret destroys its stored values and
         revokes its grants.
       </p>
       {inventory.isError || mutation.isError ? (
-        <ErrorBanner message="Vault request failed. Refresh inventory before a new request." />
+        <InlineAlert message="Vault request failed. Refresh inventory before a new request." />
       ) : null}
       {grantStatus ? <p role="status">{grantStatus}</p> : null}
       <TextField
@@ -247,7 +247,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
       </Button>
       {rotating ? (
         <Button
-          variant="outline"
+          variant="secondary"
           isDisabled={busy}
           onPress={() => {
             setRotating(null);
@@ -257,10 +257,10 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           Cancel replacement
         </Button>
       ) : null}
-      <Button variant="outline" isDisabled={busy} onPress={refresh}>
+      <Button variant="secondary" isDisabled={busy} onPress={refresh}>
         Refresh inventory
       </Button>
-      <h3 className="font-semibold text-fg">Grant restrictions</h3>
+      <h3 className="font-bold text-fg">Grant restrictions</h3>
       <p className="text-sm text-fg-muted">
         These restrictions apply to the Create or Narrow action you select below. Blank targets add
         no restriction at creation and preserve existing targets when narrowing. Narrowing must
@@ -272,7 +272,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
         onChange={setTargetAgentId}
         isDisabled={disabled}
       />
-      <Select
+      <Picker
         label="Grant capability"
         selectedKey={targetCapabilityId || 'unchanged'}
         onSelectionChange={(key) =>
@@ -300,7 +300,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           {reference.status === 'active' ? (
             <div className="flex flex-wrap gap-2">
               <Button
-                variant="outline"
+                variant="secondary"
                 isDisabled={disabled}
                 onPress={() => {
                   setMaterial('');
@@ -310,14 +310,14 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
                 Rotate {reference.referenceId}
               </Button>
               <Button
-                variant="outline"
+                variant="secondary"
                 isDisabled={disabled}
                 onPress={() => submitGrant('grant', reference.referenceId)}
               >
                 Create gateway grant for {reference.referenceId}
               </Button>
               <Button
-                variant="outline"
+                variant="secondary"
                 isDisabled={disabled}
                 onPress={() => mutation.mutate({ action: 'revoke', id: reference.referenceId })}
               >
@@ -327,7 +327,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           ) : null}
         </div>
       ))}
-      <h3 className="font-semibold text-fg">Grants</h3>
+      <h3 className="font-bold text-fg">Grants</h3>
       <p className="text-sm text-fg-muted">
         Bind a gateway grant ID to the selected MCP server through catalog.mcp-binding.
       </p>
@@ -346,7 +346,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           <p>Policy decision: {grant.policyDecisionId ?? 'None'}</p>
           {grant.status === 'active' && grant.lifetime === 'workspace' ? (
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={disabled || Object.keys(constraints).length === 0}
               onPress={() => submitGrant('narrow-grant', grant.grantId)}
             >
@@ -355,7 +355,7 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
           ) : null}
           {grant.status === 'active' ? (
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={disabled}
               onPress={() => mutation.mutate({ action: 'revoke-grant', id: grant.grantId })}
             >

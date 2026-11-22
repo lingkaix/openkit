@@ -23,7 +23,7 @@ export function contentAdmitted(input: {
 
 /** Thread id in a chat, task or goal path, including a goal output opened under that thread. */
 export function viewingThreadId(pathname: string): string | null {
-  const match = /^\/(?:chat|tasks|goals)\/[^/]+\/([^/]+)/.exec(pathname);
+  const match = /^\/w\/[^/]+\/t\/([^/]+)/.exec(pathname);
   if (!match?.[1]) return null;
   try {
     return decodeURIComponent(match[1]);

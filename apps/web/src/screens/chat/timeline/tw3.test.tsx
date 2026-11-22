@@ -491,7 +491,7 @@ describe('alignment header', () => {
         turnId: 'tu_run',
         itemId: 'it_question',
       },
-      '/tasks/ws/th',
+      '/w/ws/t/th',
       'Weekly notes',
       'Which summary tone should the weekly note use?'
     );

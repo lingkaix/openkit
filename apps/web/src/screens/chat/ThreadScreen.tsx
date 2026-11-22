@@ -5,21 +5,25 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
+  ActionGroup,
   Button,
   Composer,
   type ComposerDraft,
   EmptyState,
-  ErrorBanner,
   Icon,
+  InlineAlert,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
+  ToggleButton,
 } from '../../primitives';
 import { useArtifacts, useArtifactVersion } from '../artifacts/data';
 import { PartOfGoal } from '../goal/PartOfGoal';
 import {
   chatKeys,
-  taskThreadPath,
+  threadPath,
+  threadRouteState,
   useArchiveThread,
   useComposerWorkerEnvironments,
   useConversationSubmission,
@@ -255,8 +259,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
       return;
     const response = submission.data;
     if (response.receivingThreadId !== threadId || response.receivingWorkspaceId !== workspaceId) {
-      navigate(taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId), {
+      navigate(threadPath(response.receivingWorkspaceId, response.receivingThreadId), {
         replace: true,
+        state: threadRouteState('task'),
       });
     } else {
       // Consume this navigation intent so a later visit never replays an old handoff.
@@ -373,7 +378,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   if (workspaces.isError && !openingShell) {
     return (
       <div className="m-6">
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't verify this Workspace."
           onRetry={() => void workspaces.refetch()}
         />
@@ -417,10 +422,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   parentThreadId={thread.data?.parentThreadId}
                 />
               ) : null}
-              <Button
+              <ActionButton
                 ref={renameButtonRef}
                 size="sm"
-                variant="quiet"
+                isQuiet
                 aria-label="Rename thread"
                 title="Rename thread"
                 className="h-8 w-8 shrink-0 px-0!"
@@ -438,10 +443,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 }}
               >
                 <Icon name="edit" size="lg" />
-              </Button>
-              <Button
+              </ActionButton>
+              <ActionButton
                 size="sm"
-                variant="quiet"
+                isQuiet
                 aria-label="Archive thread"
                 title="Archive thread"
                 className="h-8 w-8 shrink-0 px-0!"
@@ -453,15 +458,15 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 onPress={() => archive.mutate({ workspaceId: workspaceId ?? '', threadId })}
               >
                 <Icon name="archive" size="lg" />
-              </Button>
+              </ActionButton>
               {thread.data?.status === 'archived' ? (
-                <StatusChip tone="neutral">Archived</StatusChip>
+                <StatusLight tone="neutral">Archived</StatusLight>
               ) : null}
               {latestTurn?.status === 'interrupted' ? (
                 // Product projection that differs from sealed terminals: the interrupted header chip is interrupted-only.
-                <StatusChip tone="neutral">Interrupted</StatusChip>
+                <StatusLight tone="neutral">Interrupted</StatusLight>
               ) : null}
-              {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
+              {failedTurn ? <StatusLight tone="negative">Failed</StatusLight> : null}
             </div>
             {/* The phone header is the title only; the trigger line overlapped its icons at 360 px. */}
             {activeTurn && !phone ? (
@@ -489,7 +494,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   ) : null}
                   <Button
                     size="sm"
-                    variant="negative-outline"
+                    variant="negative"
+                    fillStyle="outline"
                     isDisabled={!workspaceId || interruptState?.status === 'pending'}
                     aria-describedby={
                       interruptState?.status === 'pending' ? 'stop-wait' : 'stop-consequence'
@@ -506,19 +512,15 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   </Button>
                 </div>
               ) : null}
-              <fieldset
-                aria-label={timelineCopy.lensName}
-                className="m-0 flex min-w-0 gap-1 border-0 p-0"
-              >
+              <ActionGroup aria-label={timelineCopy.lensName} size="sm">
                 {(['work', 'full'] as const).map((choice) => (
-                  <Button
+                  <ToggleButton
                     key={choice}
                     size="sm"
-                    variant={lens === choice ? 'outline' : 'quiet'}
                     aria-label={
                       choice === 'work' ? timelineCopy.lensWorkName : timelineCopy.lensFullName
                     }
-                    aria-pressed={lens === choice}
+                    isSelected={lens === choice}
                     onPress={() => {
                       setLens(choice);
                       writeStoredLens(choice);
@@ -529,9 +531,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                     }}
                   >
                     {choice === 'work' ? timelineCopy.lensWork : timelineCopy.lensFull}
-                  </Button>
+                  </ToggleButton>
                 ))}
-              </fieldset>
+              </ActionGroup>
             </div>
           </header>
           {renameDraft ? (
@@ -547,9 +549,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                       )
                     }
                   />
-                  <Button
+                  <ActionButton
                     size="sm"
-                    variant="quiet"
+                    isQuiet
                     onPress={() => {
                       rename.reset();
                       setRenameDrafts((drafts) => drafts.filter((draft) => draft !== renameDraft));
@@ -557,7 +559,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                     }}
                   >
                     Cancel
-                  </Button>
+                  </ActionButton>
                   <Button
                     size="sm"
                     isDisabled={
@@ -574,7 +576,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   </Button>
                 </div>
                 {renameState?.status === 'error' && renameState.variables ? (
-                  <ErrorBanner
+                  <InlineAlert
                     message="Couldn't rename this thread."
                     onRetry={() => rename.mutate(renameState.variables!)}
                   />
@@ -584,7 +586,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           ) : null}
           {!renameDraft && renameState?.status === 'error' && renameState.variables ? (
             <div className="border-b border-separator px-6 py-3">
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't rename this thread."
                 onRetry={() => rename.mutate(renameState.variables!)}
               />
@@ -592,7 +594,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           ) : null}
           {archiveState?.status === 'error' && archiveState.variables ? (
             <div className="border-b border-separator px-6 py-3">
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't archive this thread."
                 onRetry={() => archive.mutate(archiveState.variables!)}
               />
@@ -600,7 +602,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           ) : null}
           {interruptState?.status === 'error' && interruptState.variables ? (
             <div className="border-b border-separator px-6 py-3">
-              <ErrorBanner
+              <InlineAlert
                 message={timelineCopy.stopFailed}
                 onRetry={() => interrupt.mutate(interruptState.variables!)}
               />
@@ -612,7 +614,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             </div>
           ) : failedTurnMessage ? (
             <div className="border-b border-separator px-6 py-3">
-              <ErrorBanner message={failedTurnMessage} />
+              <InlineAlert message={failedTurnMessage} />
             </div>
           ) : null}
 
@@ -624,7 +626,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
             <div className="mx-auto w-full max-w-[760px] px-6 py-6">
               {dashboard.isError && !dashboardAdmitted ? (
-                <ErrorBanner
+                <InlineAlert
                   message={timelineCopy.protectedEntryFailed}
                   onRetry={() => void dashboard.refetch()}
                 />
@@ -685,11 +687,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   <fieldset className="flex items-center gap-2">
                     <legend className="text-xs text-fg-muted">Was this helpful?</legend>
                     {(['good', 'bad'] as const).map((rating) => (
-                      <Button
+                      <ToggleButton
                         key={rating}
                         size="sm"
-                        variant={feedback.data?.rating === rating ? 'accent' : 'quiet'}
-                        aria-pressed={feedback.data?.rating === rating}
+                        isQuiet
+                        isSelected={feedback.data?.rating === rating}
                         isDisabled={feedbackOwner && submitFeedback.isPending}
                         onPress={() =>
                           submitFeedback.mutate({
@@ -701,11 +703,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                         }
                       >
                         {rating === 'good' ? 'Good' : 'Bad'}
-                      </Button>
+                      </ToggleButton>
                     ))}
                   </fieldset>
                   {feedbackOwner && submitFeedback.isError ? (
-                    <ErrorBanner
+                    <InlineAlert
                       message="Couldn't save feedback."
                       onRetry={() => submitFeedback.mutate(submitFeedback.variables)}
                     />
@@ -750,7 +752,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 </p>
               ) : null}
               {candidateUnavailable ? (
-                <ErrorBanner
+                <InlineAlert
                   message="The selected candidate is unavailable or has changed. Return to its review and select an available candidate."
                   onRetry={candidateContextMatches ? () => void candidate.refetch() : undefined}
                 />

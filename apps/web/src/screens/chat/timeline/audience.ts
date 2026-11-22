@@ -1,9 +1,9 @@
 import { useQueries } from '@tanstack/react-query';
 import { useCoreClient } from '../../../app/core-client';
-import { chatKeys, type conversationThreadPath } from '../data';
+import { chatKeys, type ThreadActivity } from '../data';
 import { isDeniedRead } from './degraded';
 
-export type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
+export type { ThreadActivity };
 
 /** What the navigation read says about one thread, before any title is shown. */
 export type ThreadAudience =

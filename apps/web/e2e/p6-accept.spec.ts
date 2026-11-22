@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import {
   ListHumanAttentionResponseSchema,
   OPERATION_DEFINITIONS,
@@ -12,6 +11,7 @@ import {
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId, type Item, ItemSchema, ProductTurnSchema } from '@openkit/protocol';
 import { expect, type Locator, type Page, test } from '@playwright/test';
+import { expectNoSeriousAxeViolations } from './_lib/axe.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 // P6 / U1,U3,U10–U12: assembled product acceptance, never query-result seeds.
@@ -405,28 +405,6 @@ async function thumb(locator: Locator) {
   expect(box!.height).toBeGreaterThanOrEqual(44);
   expect(box!.width).toBeGreaterThanOrEqual(44);
 }
-async function axe(page: Page) {
-  const require = createRequire(import.meta.url);
-  const path = createRequire(require.resolve('vitest-axe')).resolve('axe-core/axe.min.js');
-  await page.addScriptTag({ path });
-  const violations = await page.evaluate(async () => {
-    const engine = (
-      window as unknown as {
-        axe: {
-          run: (context: Element) => Promise<{
-            violations: { id: string; impact: string | null; nodes: { target: unknown }[] }[];
-          }>;
-        };
-      }
-    ).axe;
-    const result = await engine.run(document.body);
-    return result.violations
-      .filter((v) => v.impact === 'serious' || v.impact === 'critical')
-      .map((v) => ({ id: v.id, impact: v.impact, targets: v.nodes.map((n) => n.target) }));
-  });
-  console.log('P6 axe', JSON.stringify(violations));
-  expect(violations).toEqual([]);
-}
 
 test('P6 two-deep Steps to Inspector Back and focus restoration', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
@@ -509,7 +487,7 @@ test('P6 assembled S1 feed articles and axe', async ({ page }) => {
     .soft(await feed.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-busy'))))
     .toEqual(['false']);
   expect.soft(await feed.getByRole('article').count()).toBeGreaterThan(0);
-  await axe(page);
+  await expectNoSeriousAxeViolations(page, 'P6');
   expect(f.faults).toEqual([]);
 });
 
@@ -524,7 +502,7 @@ test('P6 assembled S2 Needs you decision sheet axe and keyboard trap', async ({ 
     await page.keyboard.press('Tab');
     expect(await decision.evaluate((node) => node.contains(document.activeElement))).toBe(true);
   }
-  await axe(page);
+  await expectNoSeriousAxeViolations(page, 'P6');
   expect(f.faults).toEqual([]);
 });
 
@@ -554,24 +532,27 @@ test('P6 keyboard paging keeps focus and reaches Needs you', async ({ page }) =>
   expect(f.faults).toEqual([]);
 });
 
-for (const theme of ['spectrum', 'paper', 'noir']) {
+for (const theme of ['light', 'dark']) {
   test(`P6 computed voices and typography in ${theme}`, async ({ page }) => {
     await page.addInitScript(
       (value) =>
         localStorage.setItem(
           'openkit-theme',
-          JSON.stringify({ state: { theme: value }, version: 0 })
+          JSON.stringify({ state: { theme: value }, version: 1 })
         ),
       theme
     );
     const f = await open(page, { interrupted: true });
-    await page.getByRole('button', { name: /^Full/ }).first().click();
+    await page
+      .getByRole('button', { name: /^All activity/ })
+      .first()
+      .click();
     await expect(page.getByText(GENERATED, { exact: true })).toBeVisible();
     const human = page.getByText(f.humanText, { exact: true });
     const claim = page.getByText(CLAIM, { exact: true });
     const fact = page
       .locator('p[data-voice="fact"]')
-      .filter({ hasText: 'counted from records' })
+      .filter({ hasText: 'from the run record' })
       .first();
     const generated = page.locator('[data-voice="derived"]').filter({ hasText: GENERATED }).first();
     const outcome = page
@@ -657,7 +638,7 @@ test('P6 rendered Work copy excludes identifiers enums digests and internal word
   page,
 }) => {
   const f = await open(page, { needs: true });
-  await expect(page.getByRole('button', { name: 'Work lens', exact: true })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: 'Summary', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true'
   );

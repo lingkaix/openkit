@@ -1,7 +1,7 @@
 /**
  * Workspace & Overview surfaces — boards 07 / 08 / 14 / 18 / 19.
  *
- * Overview Action Center, Agents roster, Knowledge slice, First-run welcome,
+ * Overview Needs you, Agents roster, Knowledge slice, First-run welcome,
  * New workspace create form, and Workspace governance.
  */
 export { AgentsScreen } from './AgentsScreen';

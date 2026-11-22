@@ -5,7 +5,7 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
@@ -86,17 +86,17 @@ export function VaultAdminScreen() {
           title="Access denied"
           hint="Vault administration requires derived server-admin authority on the signed-in session."
           action={
-            <Button variant="outline" onPress={retry}>
+            <Button variant="secondary" onPress={retry}>
               Retry
             </Button>
           }
         />
       ) : status.isError ? (
-        <ErrorBanner message="Couldn't load Vault backend status." onRetry={retry} />
+        <InlineAlert message="Couldn't load Vault backend status." onRetry={retry} />
       ) : (
         <>
           {operation.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Vault request failed. Its outcome may be unknown. Refresh status before explicitly trying again; rate-limited unlock attempts may require waiting."
               onRetry={retry}
             />
@@ -127,7 +127,7 @@ export function VaultAdminScreen() {
               Unlock
             </Button>
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!canLock}
               onPress={() => {
                 if (canLock) operation.mutate('lock');
@@ -135,7 +135,7 @@ export function VaultAdminScreen() {
             >
               Lock
             </Button>
-            <Button variant="outline" isDisabled={busy} onPress={retry}>
+            <Button variant="secondary" isDisabled={busy} onPress={retry}>
               Refresh status
             </Button>
           </Card>

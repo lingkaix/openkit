@@ -1,8 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { type ThemeName, useThemeStore } from '../../app/theme-store';
-import { Button, Card, ErrorBanner, Page, PageHeader, Select, TextField } from '../../primitives';
+import {
+  ActionButton,
+  Button,
+  Card,
+  InlineAlert,
+  Page,
+  PageHeader,
+  TextField,
+} from '../../primitives';
 import { InvitationsPanel } from './InvitationsPanel';
 import { MembersScreen } from './MembersScreen';
 import {
@@ -44,7 +51,7 @@ function AccountChecking() {
 function AccountReadFailure({ retry }: { retry: () => void }) {
   return (
     <AccountFrame>
-      <ErrorBanner message="Couldn't check account access." onRetry={retry} />
+      <InlineAlert message="Couldn't check account access." onRetry={retry} />
     </AccountFrame>
   );
 }
@@ -75,8 +82,6 @@ export function AccountBoundary({ children }: { children: ReactNode }) {
 /** Email/password account gate backed only by existing Core Client auth operations. */
 export function SignInScreen() {
   const client = useCoreClient();
-  const theme = useThemeStore((state) => state.theme);
-  const setTheme = useThemeStore((state) => state.setTheme);
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -163,7 +168,7 @@ export function SignInScreen() {
       <Card className="flex flex-col gap-5">
         <header>
           <p className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">OpenKit</p>
-          <h1 className="mt-1 text-title font-extrabold text-fg-strong">Account access</h1>
+          <h1 className="mt-1 text-title font-heading text-fg-strong">Account access</h1>
           <p className="mt-1 text-sm text-fg-muted">Sign in or create an account to continue.</p>
         </header>
         {showingToken ? (
@@ -184,7 +189,7 @@ export function SignInScreen() {
             />
             <div className="flex justify-end">
               <Button
-                variant="outline"
+                variant="secondary"
                 onPress={() => {
                   void navigator.clipboard?.writeText(adminToken).catch(() => undefined);
                 }}
@@ -206,11 +211,11 @@ export function SignInScreen() {
                 Signing in…
               </p>
             ) : null}
-            {mutation.isError ? <ErrorBanner message="Couldn't sign in. Try again." /> : null}
+            {mutation.isError ? <InlineAlert message="Couldn't sign in. Try again." /> : null}
             <div className="flex items-center justify-between gap-3 pt-1">
-              <Button variant="quiet" isDisabled={mutation.isPending} onPress={closeAdminToken}>
+              <ActionButton isQuiet isDisabled={mutation.isPending} onPress={closeAdminToken}>
                 Close
-              </Button>
+              </ActionButton>
               <Button
                 isDisabled={mutation.isPending || password.length === 0}
                 onPress={signInWithOwner}
@@ -274,24 +279,24 @@ export function SignInScreen() {
               </p>
             ) : null}
             {consumeFailure === 'session' ? (
-              <ErrorBanner message="A session is already present on this browser. Sign out, then return to finish bootstrap. The bootstrap token will not be sent again." />
+              <InlineAlert message="A session is already present on this browser. Sign out, then return to finish bootstrap. The bootstrap token will not be sent again." />
             ) : null}
             {consumeFailure === 'recovery' ? (
-              <ErrorBanner message="This attempt did not finish. The bootstrap token will not be sent again. If the owner was created, sign in. A lost administrator token is recovered on a stopped server and does not reopen bootstrap." />
+              <InlineAlert message="This attempt did not finish. The bootstrap token will not be sent again. If the owner was created, sign in. A lost administrator token is recovered on a stopped server and does not reopen bootstrap." />
             ) : null}
             {mutation.isError &&
             !isServerBootstrapRequired(mutation.error) &&
             consumeFailure === null ? (
-              <ErrorBanner
+              <InlineAlert
                 message={
                   signingUp ? "Couldn't sign up. Try again." : "Couldn't sign in. Try again."
                 }
               />
             ) : null}
             <div className="flex items-center justify-between gap-3 pt-1">
-              <Button
+              <ActionButton
                 type="button"
-                variant="quiet"
+                isQuiet
                 isDisabled={formBusy}
                 onPress={() => {
                   setMode(signingUp ? 'signIn' : 'signUp');
@@ -300,23 +305,13 @@ export function SignInScreen() {
                 }}
               >
                 {signingUp ? 'Sign in' : 'Sign up'}
-              </Button>
+              </ActionButton>
               <Button type="submit" isDisabled={formBusy || (signingUp && consumeClosed)}>
                 {signingUp ? 'Sign up' : 'Sign in'}
               </Button>
             </div>
           </form>
         )}
-        <Select
-          label="Color theme"
-          selectedKey={theme}
-          onSelectionChange={(key) => setTheme(key as ThemeName)}
-          items={[
-            { id: 'spectrum', label: 'Spectrum' },
-            { id: 'paper', label: 'Paper' },
-            { id: 'noir', label: 'Noir' },
-          ]}
-        />
       </Card>
     </AccountFrame>
   );
@@ -338,7 +333,7 @@ export function AccountScreen() {
           <p className="mt-1 text-xs text-fg-muted">Sign out on this browser.</p>
         </div>
         <Button
-          variant="outline"
+          variant="secondary"
           isDisabled={mutation.isPending}
           onPress={() =>
             mutation.mutate({
@@ -357,7 +352,7 @@ export function AccountScreen() {
           Signing out…
         </p>
       ) : null}
-      {mutation.isError ? <ErrorBanner message="Couldn't sign out. Try again." /> : null}
+      {mutation.isError ? <InlineAlert message="Couldn't sign out. Try again." /> : null}
       <InvitationsPanel />
       <MembersScreen />
     </Page>

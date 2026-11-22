@@ -255,7 +255,7 @@ describe('Workspace relationship consumers', () => {
         })
       );
       expect(screen.getByLabelText('Selected workspace')).toHaveTextContent(target.id);
-      expect(screen.getByLabelText('Current path')).toHaveTextContent('/chat');
+      expect(screen.getByLabelText('Current path')).toHaveTextContent('/new');
       expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(target.id);
     }
   );

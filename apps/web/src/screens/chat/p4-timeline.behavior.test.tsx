@@ -24,7 +24,7 @@ const APPROVAL_REQUEST_ID = 'ap_019a0000-0000-7000-8000-000000000220';
 const CURSOR = 'cur_019a0000-0000-7000-8000-000000000301';
 const TIMESTAMP = '2026-11-05T00:00:00.000Z';
 const COMPLETED_AT = '2026-11-05T00:00:02.000Z';
-const THREAD_PATH = `/chat/${WORKSPACE_ID}/${THREAD_ID}`;
+const THREAD_PATH = `/w/${WORKSPACE_ID}/t/${THREAD_ID}`;
 const APPROVAL_TITLE = 'Publish the summary?';
 const TOOL_TITLE = 'Read the export log';
 const NEXT_TOOL_TITLE = 'Write the summary';
@@ -104,7 +104,7 @@ function navigationRow(
   };
 }
 
-/** Builds one open decision that the Action Center counts while the approval is live. */
+/** Builds one open decision that the Needs you counts while the approval is live. */
 function approvalAttentionRow() {
   return {
     id: `approval:${APPROVAL_REQUEST_ID}`,
@@ -493,7 +493,7 @@ async function expectLiveApproval(surface: 'desktop' | 'phone', scroll: ReturnTy
   await waitFor(() => expect(announcedOrScrolled(APPROVAL_TITLE, scroll)).toBe(true));
 
   if (surface === 'desktop') {
-    const actionCenter = screen.getByRole('button', { name: /^Action Center/ });
+    const actionCenter = screen.getByRole('button', { name: /^Needs you/ });
     await waitFor(() => expect(within(actionCenter).getByText('1')).toBeInTheDocument(), {
       timeout: 8_000,
     });
@@ -521,7 +521,7 @@ afterEach(() => {
 });
 
 describe('P4 timeline disclosure', () => {
-  it('shows a live approval inline, announces it, and counts it in the Action Center while tool steps stay collapsed', async () => {
+  it('shows a live approval inline, announces it, and counts it in the Needs you while tool steps stay collapsed', async () => {
     const spy = installScrollSpy();
     try {
       const desktop = makeLiveApprovalClient();
@@ -541,8 +541,15 @@ describe('P4 timeline disclosure', () => {
   it('shows one progress line with elapsed time and the step title and updates it on a new tool call without a tool card', async () => {
     const startedAt = new Date(Date.now() - 12_000).toISOString();
     let release: (() => void) | undefined;
+    // The next tool call waits until the test has seen the first line. Without this gate the
+    // event can land before the first assertion runs, and the first line is already replaced.
+    let sendNext: (() => void) | undefined;
+    const nextSent = new Promise<void>((resolve) => {
+      sendNext = resolve;
+    });
     const subscribeTurnEvents = vi.fn().mockImplementation(() => {
       async function* stream() {
+        await nextSent;
         yield turnStreamEvent(1, 'item.created', {
           type: 'item-created',
           item: toolCall(NEXT_TOOL_ITEM_ID, NEXT_TOOL_TITLE, 'in_progress'),
@@ -585,6 +592,7 @@ describe('P4 timeline disclosure', () => {
     expect(
       screen.getAllByRole('status').filter((element) => element.textContent?.includes(TOOL_TITLE))
     ).toHaveLength(1);
+    sendNext?.();
 
     const updated = await waitFor(() => {
       const line = screen

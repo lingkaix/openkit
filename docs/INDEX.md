@@ -74,11 +74,11 @@ and are not listed here.
 
 ### architecture
 
-- `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Partial — Owns the Web product projection over NanoCore.
+- `docs/specs/20260628-web_product_surface_projection.md` — Accepted, Implemented — Owns the Web product projection over NanoCore.
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md` — Accepted, Partial — Owns how one NanoCore process starts, reports readiness, and shuts down for one data root.
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md` — Accepted, Implemented — Owns the deterministic Workflow Coordinator: explicit Task selection and the structured worker request.
 - `docs/specs/20260708-container_image_packaging.md` — Accepted, Partial — Owns the OpenKit container image taxonomy, the image catalog, and the publishing contract for OpenKit-owned images.
-- `docs/specs/20260710-web_ui_rebuild_stack.md` — Accepted, Partial — Owns the Web UI implementation stack and the token bridge.
+- `docs/specs/20260710-web_ui_rebuild_stack.md` — Accepted, Implemented — Owns the Web UI implementation stack and the token bridge.
 - `docs/specs/20260813-internal_agent_runtime.md` — Accepted, Partial — Owns the bounded runtime used by every NanoCore-internal model-using role.
 - `docs/specs/20260909-deployment_host_requirements.md` — Accepted, Implemented — Owns which machines may run NanoCore and the packaged NanoHost, and how a side-effect-free check reports that fact.
 - `docs/specs/20260909-internal_agent_resource_integration.md` — Accepted, Partial — Owns trusted assembly of selected Skills, internal MCP bindings, and native Kernel and UI Tools for the internal Assistant.

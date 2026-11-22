@@ -192,14 +192,20 @@ async function signIn(page: Page, account: { email: string }): Promise<void> {
   await expect(page.locator('body')).not.toContainText(password);
 }
 
-/** Selects one authorized Workspace through the sidebar menu. */
+/**
+ * Selects one authorized Workspace through the sidebar (B2): its group ⋯ menu's Workspace
+ * settings place, which opens Settings with that Workspace in the picker.
+ */
 async function selectWorkspace(page: Page, name: string): Promise<void> {
-  const navigation = page.getByRole('navigation', {
-    name: /Primary workspace navigation|Settings sections/,
-  });
-  await navigation.getByRole('button', { name: 'Personal', exact: true }).click();
-  await page.getByRole('menuitem', { name, exact: true }).click();
-  await expect(navigation.getByRole('button', { name, exact: true })).toBeVisible();
+  const primary = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+  const settings = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(primary.or(settings)).toBeVisible();
+  if (await settings.isVisible()) {
+    await settings.getByRole('button', { name: 'Back to app', exact: true }).click();
+  }
+  await primary.getByRole('button', { name: `${name} options`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Workspace settings', exact: true }).click();
+  await expect(settings.getByRole('button', { name, exact: true })).toBeVisible();
 }
 
 /** Signs out through the live shell, then waits for auth and protected admission to settle. */
@@ -227,7 +233,7 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
   );
   await page.getByRole('button', { name: 'Create workspace' }).click();
   const body = (await (await response).json()) as { id: string };
-  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Needs you' })).toBeVisible();
   await expect(page.getByText(workspaceName, { exact: true })).toBeVisible();
   return body.id;
 }
@@ -254,7 +260,13 @@ async function invite(page: Page, email: string): Promise<void> {
 async function openSelectedWorkspaceAccount(page: Page): Promise<void> {
   const heading = page.getByRole('heading', { name: 'Account' });
   if (!(await heading.isVisible())) {
-    await page.getByRole('button', { name: /^Settings$/ }).click();
+    // B2: Settings pages list Account themselves; app pages have the Settings gear.
+    const settings = page.getByRole('navigation', { name: 'Settings sections' });
+    if (await settings.isVisible()) {
+      await settings.getByRole('button', { name: 'Account', exact: true }).click();
+    } else {
+      await page.getByRole('button', { name: /^Settings$/ }).click();
+    }
   }
   await expect(heading).toBeVisible();
 }

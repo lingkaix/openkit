@@ -3,7 +3,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, Eyebrow } from '../../primitives';
+import { Button, Card, Eyebrow, InlineAlert } from '../../primitives';
 import {
   workspaceBlockerKindLabel,
   workspaceBlockerReasonLabel,
@@ -79,7 +79,7 @@ export function WorkspaceFreezeRefusalPanel({
         </ul>
         {onRetry ? (
           <div>
-            <Button variant="outline" onPress={onRetry}>
+            <Button variant="secondary" onPress={onRetry}>
               {frozen ? 'Retry shortly' : 'Retry original action'}
             </Button>
           </div>
@@ -108,7 +108,7 @@ function QuickActionButton({ action }: { action: WorkspaceQuickAction }) {
     return (
       <Link
         to={inspectHref}
-        className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:border-border-hover hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+        className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:border-border-hover hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
         {label}
       </Link>
@@ -119,14 +119,14 @@ function QuickActionButton({ action }: { action: WorkspaceQuickAction }) {
     <div className="flex flex-col gap-1">
       <Button
         size="sm"
-        variant="outline"
+        variant="secondary"
         isDisabled={mutation.isPending}
         onPress={() => mutation.mutate()}
       >
         {label}
       </Button>
       {mutation.isError ? (
-        <ErrorBanner message={quickActionErrorMessage(mutation.error, action.operationId)} />
+        <InlineAlert message={quickActionErrorMessage(mutation.error, action.operationId)} />
       ) : null}
     </div>
   );

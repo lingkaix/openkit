@@ -5,7 +5,15 @@ import {
 import { ApiCallError } from '@openkit/core-client';
 import type { Item } from '@openkit/protocol';
 import { Link } from 'react-router-dom';
-import { Button, Dialog, ErrorBanner, ItemCard, Modal, Skeleton } from '../../primitives';
+import {
+  Button,
+  Dialog,
+  DialogFooter,
+  InlineAlert,
+  ItemCard,
+  Modal,
+  Skeleton,
+} from '../../primitives';
 import { fillCopy } from '../chat/timeline/copy';
 import { timelineNotices } from '../chat/timeline/notices';
 import { useArtifactVersion } from './data';
@@ -22,17 +30,20 @@ export function ArtifactReference({ item }: { item: ArtifactReferenceItem }) {
       meta={`Saved output · Version ${item.artifactVersion}`}
       actions={
         <Modal
+          size="L"
           trigger={
-            <Button size="sm" variant="outline">
+            <Button size="sm" variant="secondary">
               View content
             </Button>
           }
         >
           <Dialog title={item.title}>
             <ArtifactContent item={item} />
-            <Button slot="close" variant="quiet">
-              Close
-            </Button>
+            <DialogFooter>
+              <Button slot="close" variant="secondary">
+                Close
+              </Button>
+            </DialogFooter>
           </Dialog>
         </Modal>
       }
@@ -66,7 +77,7 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
         <p>{fillCopy(timelineNotices.versionUnavailable, { version: item.artifactVersion })}</p>
         <Link
           to={`/artifacts?${params.toString()}`}
-          className="inline-flex min-h-11 items-center text-sm font-bold text-accent underline"
+          className="inline-flex items-center text-sm font-bold text-accent underline"
         >
           {timelineNotices.openVersionList}
         </Link>
@@ -75,7 +86,7 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
   }
   if (exact.isError || !exact.data) {
     return (
-      <ErrorBanner message="Couldn't load that artifact." onRetry={() => void exact.refetch()} />
+      <InlineAlert message="Couldn't load that artifact." onRetry={() => void exact.refetch()} />
     );
   }
   const artifact = exact.data.artifact;

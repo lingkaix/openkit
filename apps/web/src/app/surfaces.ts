@@ -10,7 +10,11 @@ import type { IconName } from '../primitives';
  */
 export type Tier = 'A' | 'B' | 'C';
 
-/** Where a surface appears in the sidebar; `route-only` surfaces are reached in-context. */
+/**
+ * Where a surface appears in the sidebar; `route-only` surfaces are reached in-context.
+ * `primary` rows sit in the sidebar's top block; `workspace-compact` places are listed in
+ * each Workspace group's ⋯ menu (ia.md §1).
+ */
 export type NavGroup =
   | 'primary'
   | 'workspace-compact'
@@ -46,9 +50,9 @@ export interface Surface {
 export const SURFACES: Surface[] = [
   // Tier A — primary destinations
   {
-    id: 'overview',
-    title: 'Action Center',
-    path: '/attention',
+    id: 'needs-you',
+    title: 'Needs you',
+    path: '/needs-you',
     tier: 'A',
     nav: 'route-only',
     icon: 'home',
@@ -66,12 +70,32 @@ export const SURFACES: Surface[] = [
     wp: 'WP-6',
   },
   {
-    id: 'chat',
-    title: 'Chat',
-    path: '/chat',
+    id: 'assistant',
+    title: 'Personal Assistant',
+    path: '/assistant',
     tier: 'A',
     nav: 'route-only',
     icon: 'chat',
+    board: '01',
+    wp: 'WEB-UX B1',
+  },
+  {
+    id: 'search',
+    title: 'Search',
+    path: '/search',
+    tier: 'A',
+    nav: 'route-only',
+    icon: 'search',
+    board: '12',
+    wp: 'WEB-UX B1',
+  },
+  {
+    id: 'new',
+    title: 'New',
+    path: '/new',
+    tier: 'A',
+    nav: 'route-only',
+    icon: 'add',
     board: '01',
     wp: 'WP-4',
   },
@@ -148,36 +172,19 @@ export const SURFACES: Surface[] = [
   },
   // Tier A — reached in-context (route-only)
   {
-    id: 'chat-thread',
-    title: 'Chat',
-    path: '/chat/:workspaceId/:threadId',
+    // One Thread route for Chat, Task and Goal (ia.md §2); /chat/, /tasks/, /goals/ redirect.
+    id: 'thread',
+    title: 'Thread',
+    path: '/w/:workspaceId/t/:threadId',
     tier: 'A',
     nav: 'route-only',
-    board: '02/03',
-    wp: 'WP-4',
-  },
-  {
-    id: 'task-thread',
-    title: 'Task',
-    path: '/tasks/:workspaceId/:threadId',
-    tier: 'A',
-    nav: 'route-only',
-    board: '04',
-    wp: 'WP-4',
-  },
-  {
-    id: 'goal',
-    title: 'Goal',
-    path: '/goals/:workspaceId/:threadId',
-    tier: 'A',
-    nav: 'route-only',
-    board: '05/05b/05c/06/21',
-    wp: 'WP-5',
+    board: '02/03/04/05/05b/05c/06/21',
+    wp: 'WEB-UX B1',
   },
   {
     id: 'artifact-review',
     title: 'Artifact review',
-    path: '/goals/:workspaceId/:threadId/artifacts/:artifactId',
+    path: '/w/:workspaceId/t/:threadId/artifacts/:artifactId',
     tier: 'A',
     nav: 'route-only',
     board: '12',
@@ -208,7 +215,7 @@ export const SURFACES: Surface[] = [
     title: 'Automations',
     path: '/automations',
     tier: 'A',
-    nav: 'workspace-compact',
+    nav: 'primary',
     icon: 'automations',
     board: '09/11/22',
     wp: 'WP-8',
@@ -298,7 +305,7 @@ export const SURFACES: Surface[] = [
   },
   {
     id: 'ai-interface',
-    title: 'Gateway',
+    title: 'Models and providers',
     path: '/settings/gateway',
     tier: 'A',
     nav: 'settings-server',
@@ -327,14 +334,14 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
   {
-    id: 'debug',
-    title: 'Debug',
-    path: '/settings/debug',
+    id: 'diagnostics',
+    title: 'Diagnostics',
+    path: '/settings/diagnostics',
     tier: 'A',
-    nav: 'settings-server',
+    nav: 'settings-admin',
     icon: 'file',
     board: '11',
-    wp: 'WP-2',
+    wp: 'WEB-UX A0',
   },
   {
     id: 'server-operations',

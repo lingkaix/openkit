@@ -7,22 +7,23 @@ import { ArtifactsScreen } from '../screens/artifacts';
 import { AutomationsScreen } from '../screens/automations';
 import { ChatStarter } from '../screens/chat';
 import { SteerFixtureScreen } from '../screens/chat/timeline/SteerFixtureScreen';
-import { SteerThreadScreen } from '../screens/chat/timeline/steer-screen';
 import { TimelineFixtureScreen } from '../screens/chat/timeline/TimelineFixtureScreen';
 import { GenerativeScreen } from '../screens/generative';
-import { ArtifactReviewScreen, GoalScreen } from '../screens/goal';
+import { ArtifactReviewScreen } from '../screens/goal';
 import { MaterialScreen } from '../screens/material';
 import { RecoveryScreen } from '../screens/operations';
 import { PortabilityScreen } from '../screens/portability';
+import { SearchScreen } from '../screens/search/SearchScreen';
 import {
   AccessTokensScreen,
   AdministrationScreen,
   AiInterfaceScreen,
+  AppearanceScreen,
   AppUpdateScreen,
   ChannelsScreen,
   ConfigurationScreen,
   DataRootBackupScreen,
-  DebugScreen,
+  DiagnosticsScreen,
   DisableUserScreen,
   GeneralSettingsScreen,
   MyAdminAccessScreen,
@@ -46,9 +47,11 @@ import {
 import { WorkspaceChangesScreen } from '../screens/workspace-sync';
 import { AppShell } from './AppShell';
 import { AssistantHome } from './AssistantHome';
+import { AssistantRoute } from './AssistantRoute';
 import { isSurfaceLive } from './flags';
+import { legacyTarget } from './legacy-routes';
 import { SURFACES, type Surface } from './surfaces';
-import { ThemePicker } from './ThemePicker';
+import { ThreadRoute } from './ThreadRoute';
 import { useDocumentTheme } from './theme-store';
 import { WorkScreen } from './WorkScreen';
 
@@ -59,7 +62,7 @@ function NotFound() {
       <EmptyState
         icon="search"
         title="This page doesn't exist"
-        hint="Check the address, or head back to Action Center."
+        hint="Check the address, or head back to Needs you."
       />
     </Page>
   );
@@ -72,9 +75,9 @@ function NotFound() {
  */
 export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   administration: <AdministrationScreen />,
-  debug: <DebugScreen />,
+  diagnostics: <DiagnosticsScreen />,
   account: <AccountScreen />,
-  appearance: <ThemePicker />,
+  appearance: <AppearanceScreen />,
   configuration: <ConfigurationScreen />,
   'app-update': <AppUpdateScreen />,
   settings: <GeneralSettingsScreen />,
@@ -88,13 +91,13 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'vault-admin': <VaultAdminScreen />,
   'workspace-access-recovery': <WorkspaceAccessRecoveryScreen />,
   'disable-user': <DisableUserScreen />,
-  chat: <ChatStarter />,
-  'chat-thread': <SteerThreadScreen mode="chat" />,
-  'task-thread': <SteerThreadScreen mode="task" />,
-  goal: <GoalScreen />,
+  assistant: <AssistantRoute />,
+  new: <ChatStarter />,
+  search: <SearchScreen />,
+  thread: <ThreadRoute />,
   'artifact-review': <ArtifactReviewScreen />,
   material: <MaterialScreen />,
-  overview: <OverviewScreen />,
+  'needs-you': <OverviewScreen />,
   agents: <AgentsScreen />,
   catalog: <CatalogScreen />,
   knowledge: <KnowledgeScreen />,
@@ -125,6 +128,21 @@ function AliasedScreen({ to, children }: { to?: string; children: ReactNode }) {
     if (to && pathname !== to) navigate(to, { replace: true });
   }, [navigate, pathname, to]);
   return children;
+}
+
+/** A moved Settings address: replaced by its current one, keeping search and hash. */
+function MovedTo({ to, from }: { to: string; from: string }) {
+  const { search, hash } = useLocation();
+  return <Navigate to={{ pathname: to, search, hash }} replace state={{ movedFrom: from }} />;
+}
+
+/** A retired address (WEB-UX B1): replaced by its current one, keeping search, hash and state. */
+function LegacyRedirect() {
+  const { pathname, search, hash, state } = useLocation();
+  const target = legacyTarget(pathname, search, hash);
+  if (!target) return <NotFound />;
+  const kept = state && typeof state === 'object' ? state : {};
+  return <Navigate to={target.to} replace state={{ ...kept, ...target.state }} />;
 }
 
 /**
@@ -160,16 +178,26 @@ export function AppRoutes() {
         <Route element={<AppShell />}>
           <Route element={<AssistantHome />}>
             <Route path="/" />
+            <Route path="/needs-you" />
             <Route path="/attention" />
           </Route>
           <Route path="/work" element={<WorkScreen />} />
-          {SURFACES.filter((surface) => isSurfaceLive(surface) && surface.id !== 'overview').map(
+          {SURFACES.filter((surface) => isSurfaceLive(surface) && surface.id !== 'needs-you').map(
             (surface) => (
               <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
             )
           )}
+          <Route path="/chat" element={<LegacyRedirect />} />
+          <Route path="/chat/:workspaceId/:threadId/*" element={<LegacyRedirect />} />
+          <Route path="/tasks/:workspaceId/:threadId/*" element={<LegacyRedirect />} />
+          <Route path="/goals/:workspaceId/:threadId/*" element={<LegacyRedirect />} />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
+          <Route path="/settings/appearance/components" element={SURFACE_ELEMENTS.appearance} />
+          <Route
+            path="/settings/debug"
+            element={<MovedTo to="/settings/diagnostics" from="/settings/debug" />}
+          />
           <Route
             path="/settings/ai-interface"
             element={

@@ -2,57 +2,108 @@ import { useEffect, useLayoutEffect } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-/** The three shipped OpenKit color themes (DESIGN.md §4.5). */
-export type ThemeName = 'spectrum' | 'paper' | 'noir';
+/** Appearance mode (DESIGN.md §4.5): follow the OS, or pin Light or Dark. */
+export type ThemeChoice = 'system' | 'light' | 'dark';
 
-/** Root class that scopes each theme; Spectrum is the unscoped default. */
-export const THEME_CLASS: Record<ThemeName, string> = {
-  spectrum: '',
-  paper: 'ok-theme-paper',
-  noir: 'ok-theme-noir',
-};
+/**
+ * Appearance style (engineer decision 2026-11-18): Spectrum, or Classic = Paper in
+ * light mode and Noir in dark mode. Independent of the mode, so Classic follows the
+ * OS under System.
+ */
+export type StyleChoice = 'spectrum' | 'classic';
+
+const STORAGE_KEY = 'openkit-theme';
+const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 interface ThemeState {
-  /** Currently active theme; `spectrum` is the default light look. */
-  theme: ThemeName;
-  /** Select a theme. */
-  setTheme: (theme: ThemeName) => void;
+  /** Current mode; `system` follows `prefers-color-scheme`. */
+  theme: ThemeChoice;
+  /** Current style. */
+  style: StyleChoice;
+  /** Select a mode. */
+  setTheme: (theme: ThemeChoice) => void;
+  /** Select a style. */
+  setStyle: (style: StyleChoice) => void;
+}
+
+type StoredTheme = Pick<ThemeState, 'theme' | 'style'>;
+
+/**
+ * Maps stored state of any earlier version onto mode × style. Pre-A1 theme names:
+ * `spectrum` is Light, `paper` is Classic in Light, `noir` is Classic in Dark. A stored
+ * mode keeps its style (Spectrum when absent). Unknown values fall back to System.
+ *
+ * @param stored Persisted state of any earlier version.
+ * @returns The current state shape.
+ */
+export function migrateThemeState(stored: unknown): StoredTheme {
+  const state = stored as { theme?: unknown; style?: unknown } | null;
+  const style: StyleChoice = state?.style === 'classic' ? 'classic' : 'spectrum';
+  switch (state?.theme) {
+    case 'paper':
+      return { theme: 'light', style: 'classic' };
+    case 'noir':
+      return { theme: 'dark', style: 'classic' };
+    case 'spectrum':
+      return { theme: 'light', style: 'spectrum' };
+    case 'light':
+    case 'dark':
+    case 'system':
+      return { theme: state.theme, style };
+    default:
+      return { theme: 'system', style };
+  }
 }
 
 /**
- * UI-only store for the active theme. Server state never lives here (that is
- * TanStack Query's domain); this is ephemeral cross-component UI state only. The
- * selection persists to local storage and restores on reload (DESIGN.md §4.5).
+ * UI-only store for the appearance choice. Server state never lives here (that is
+ * TanStack Query's domain). The choice persists to local storage and restores on
+ * reload (DESIGN.md §4.5).
  */
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'spectrum',
+      theme: 'system',
+      style: 'spectrum',
       setTheme: (theme) => set({ theme }),
+      setStyle: (style) => set({ style }),
     }),
-    { name: 'openkit-theme' }
+    { name: STORAGE_KEY, version: 2, migrate: migrateThemeState }
   )
 );
 
-/** Apply the saved theme to the whole document, including portaled controls and account pages. */
+/** Copies the rendered canvas color into `<meta name="theme-color">` for browser chrome. */
+function syncThemeColorMeta() {
+  const canvas = getComputedStyle(document.body).backgroundColor;
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (canvas && themeColor) themeColor.setAttribute('content', canvas);
+}
+
+/**
+ * Apply the saved choice to the whole document, including portaled controls and
+ * account pages: `data-color-scheme` pins Light or Dark; System leaves the root
+ * `color-scheme: light dark` to follow the OS. `data-style="classic"` selects Classic.
+ */
 export function useDocumentTheme() {
   const theme = useThemeStore((state) => state.theme);
+  const style = useThemeStore((state) => state.style);
   useLayoutEffect(() => {
     const root = document.documentElement;
-    const themeClass = THEME_CLASS[theme];
-    if (themeClass) root.classList.add(themeClass);
-    const canvas = getComputedStyle(root).getPropertyValue('--surface-page').trim();
-    const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (canvas && themeColor) themeColor.setAttribute('content', canvas);
-    return () => {
-      if (themeClass) root.classList.remove(themeClass);
-    };
-  }, [theme]);
+    if (theme === 'system') delete root.dataset.colorScheme;
+    else root.dataset.colorScheme = theme;
+    if (style === 'classic') root.dataset.style = 'classic';
+    else delete root.dataset.style;
+    syncThemeColorMeta();
+    if (theme !== 'system' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(DARK_QUERY);
+    media.addEventListener?.('change', syncThemeColorMeta);
+    return () => media.removeEventListener?.('change', syncThemeColorMeta);
+  }, [theme, style]);
 
   useEffect(() => {
-    /** Rehydrate another tab's persisted selection without writing it back. */
+    /** Rehydrate another tab's persisted choice without writing it back. */
     function syncTheme(event: StorageEvent) {
-      if (event.key === 'openkit-theme') void useThemeStore.persist.rehydrate();
+      if (event.key === STORAGE_KEY) void useThemeStore.persist.rehydrate();
     }
     window.addEventListener('storage', syncTheme);
     return () => window.removeEventListener('storage', syncTheme);

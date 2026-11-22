@@ -13,12 +13,12 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   Switch,
   TextField,
 } from '../../primitives';
@@ -120,6 +120,11 @@ export function AiInterfaceScreen() {
     })),
   });
   const listedAccounts = accountLists.flatMap((query) => (query.data ? [query.data] : []));
+  const lockedProviders = accountLists.flatMap((query, index) =>
+    query.isError && isProviderVaultLocked(query.error)
+      ? [inventory.data?.providers[index]?.displayName ?? '']
+      : []
+  );
   const quotaPairs = listedAccounts.flatMap((provider) =>
     provider.accounts.map(
       (account) => `${provider.subscriptionProviderId}/${account.accountSlotId}`
@@ -229,12 +234,11 @@ export function AiInterfaceScreen() {
   return (
     <Page>
       <PageHeader
-        title="Gateway"
-        subtitle="Deployment administration. Manage Providers, effective model metadata, and logical model routing for this deployment."
+        title="Models and providers"
+        subtitle="Deployment administration. Manage Providers, effective model metadata, and model routing for this deployment."
         actions={
           <Button
-            className="min-h-11"
-            variant="outline"
+            variant="secondary"
             isDisabled={
               disconnected ||
               inventory.isFetching ||
@@ -257,11 +261,11 @@ export function AiInterfaceScreen() {
           hint="Gateway requires derived server-admin authority on the signed-in session."
           action={
             <div className="flex flex-col gap-2">
-              <Button variant="outline" onPress={retry}>
+              <Button variant="secondary" onPress={retry}>
                 Retry
               </Button>
               {isAdminDenied(inventory.error) ? (
-                <Button variant="outline" onPress={() => void inventory.refetch()}>
+                <Button variant="secondary" onPress={() => void inventory.refetch()}>
                   Retry subscription inventory
                 </Button>
               ) : null}
@@ -269,7 +273,7 @@ export function AiInterfaceScreen() {
                 isAdminDenied(query.error) ? (
                   <Button
                     key={inventory.data!.providers[index]!.subscriptionProviderId}
-                    variant="outline"
+                    variant="secondary"
                     onPress={() => void query.refetch()}
                   >
                     Retry {inventory.data!.providers[index]!.displayName} account slots
@@ -280,7 +284,7 @@ export function AiInterfaceScreen() {
                 isAdminDenied(query.error) ? (
                   <Button
                     key={quotaPairs[index]}
-                    variant="outline"
+                    variant="secondary"
                     onPress={() => void query.refetch()}
                   >
                     Retry quota{' '}
@@ -304,31 +308,32 @@ export function AiInterfaceScreen() {
           }
         />
       ) : inventory.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load Gateway subscription inventory."
           onRetry={() => void inventory.refetch()}
         />
       ) : (
         <>
+          {/* F28: one Vault alert for every locked provider, not one card per provider. */}
+          {lockedProviders.length > 0 ? (
+            <InlineAlert
+              variant="notice"
+              title="Vault is locked."
+              message={`Account slots for ${lockedProviders.join(', ')} stay unavailable until the Vault is unlocked.`}
+              action={
+                <Link
+                  to="/settings/vault-admin"
+                  className="inline-flex items-center text-sm font-bold text-accent-content hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
+                >
+                  Open Vault
+                </Link>
+              }
+            />
+          ) : null}
           {accountLists.map((query, index) =>
             query.isError ? (
-              isProviderVaultLocked(query.error) ? (
-                <Card key={inventory.data!.providers[index]!.subscriptionProviderId}>
-                  <section
-                    aria-label={`${inventory.data!.providers[index]!.displayName} account slots`}
-                    className="flex flex-col gap-2"
-                  >
-                    <p className="text-sm text-fg">Vault is locked.</p>
-                    <Link
-                      to="/settings/vault-admin"
-                      className="inline-flex min-h-11 items-center text-sm font-bold text-accent hover:underline focus-visible:outline focus-visible:outline-focus"
-                    >
-                      Vault
-                    </Link>
-                  </section>
-                </Card>
-              ) : (
-                <ErrorBanner
+              isProviderVaultLocked(query.error) ? null : (
+                <InlineAlert
                   key={inventory.data!.providers[index]!.subscriptionProviderId}
                   message={dependencyMessage(
                     query.error,
@@ -342,7 +347,7 @@ export function AiInterfaceScreen() {
             ) : null
           )}
           {diagnostics.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={dependencyMessage(diagnostics.error, 'Gateway diagnostics')}
               onRetry={() => void diagnostics.refetch()}
             />
@@ -494,7 +499,7 @@ function GatewayNotSetUp({
     unboundProviders.some((provider) => provider.accounts.length > 0) || profileless.length > 0;
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-not-set-up">
-      <h2 id="gateway-not-set-up" className="text-lg font-bold text-fg-strong">
+      <h2 id="gateway-not-set-up" className="text-lg font-heading text-fg-strong">
         Not set up
       </h2>
       {diagnostics && !showDetails ? (
@@ -533,8 +538,7 @@ function GatewayNotSetUp({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-base text-fg">{provider.displayName}</p>
                 <Button
-                  className="min-h-11"
-                  variant="outline"
+                  variant="secondary"
                   aria-label={`Set up ${provider.displayName}`}
                   onPress={() => {
                     const target = document.getElementById('guided-subscription-setup');
@@ -592,7 +596,7 @@ function SubscriptionAccounts({
     >
       {showHeading ? (
         <div className="flex min-w-0 w-full flex-wrap items-baseline gap-2">
-          <h2 id="ai-connected-apps" className="text-lg font-bold text-fg-strong">
+          <h2 id="ai-connected-apps" className="text-lg font-heading text-fg-strong">
             Retained subscription slots
           </h2>
           <span className="text-wrap text-sm text-fg-muted">
@@ -704,7 +708,7 @@ function ProviderAccounts({
             isDisabled={disconnected || create.isPending}
           />
           {create.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={dependencyMessage(create.error, "Couldn't create that account slot.")}
               onRetry={() => create.mutate()}
             />
@@ -941,9 +945,9 @@ function AccountControls({
               {live.quotaBilling?.sharedAllowance === true ? ' · Shared allowance' : ''}
             </p>
           </div>
-          <StatusChip tone={disconnected ? 'notice' : statusLabel.tone} dot>
+          <StatusLight tone={disconnected ? 'notice' : statusLabel.tone}>
             {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
-          </StatusChip>
+          </StatusLight>
         </div>
         <QuotaStatus account={live} providerId={providerId} />
         {providerId === 'openai-codex' ? (
@@ -990,7 +994,7 @@ function AccountControls({
           <p className="min-w-0 w-full text-wrap text-xs text-fg">
             Open{' '}
             <a
-              className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+              className="font-bold text-accent outline-none hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
               href={live.verificationUrl}
               rel="noreferrer"
               target="_blank"
@@ -1001,48 +1005,43 @@ function AccountControls({
           </p>
         ) : null}
         {quotaRead.isError && !quota.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={dependencyMessage(quotaRead.error, 'account quota')}
             onRetry={() => void quotaRead.refetch()}
           />
         ) : null}
         {login.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={dependencyMessage(login.error, "Couldn't start login.")}
             onRetry={() => login.mutate()}
           />
         ) : null}
         {cancel.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={dependencyMessage(cancel.error, "Couldn't cancel login.")}
             onRetry={() => cancel.mutate()}
           />
         ) : null}
         {quota.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={dependencyMessage(quota.error, "Couldn't refresh quota.")}
             onRetry={refresh}
           />
         ) : null}
         {status.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={dependencyMessage(status.error, "Couldn't refresh login status.")}
             onRetry={() => void status.refetch()}
           />
         ) : null}
         <div className="flex min-w-0 w-full flex-wrap gap-2">
-          <Button
-            className="min-h-11"
-            size="sm"
-            isDisabled={disconnected || quota.isPending}
-            onPress={refresh}
-          >
+          <Button size="sm" isDisabled={disconnected || quota.isPending} onPress={refresh}>
             Refresh quota
           </Button>
           {live.status === 'pending' ? (
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               isDisabled={disconnected || cancel.isPending || !live.interactionId}
               onPress={() => cancel.mutate()}
             >
@@ -1053,7 +1052,6 @@ function AccountControls({
             live.status === 'error' ||
             live.status === 'unavailable' ? (
             <Button
-              className="min-h-11"
               size="sm"
               isDisabled={disconnected || login.isPending}
               onPress={() => login.mutate()}
@@ -1089,7 +1087,7 @@ function AccountControls({
                 <p className="text-xs text-fg-muted">Checking auto top-up…</p>
               ) : autoTopup.isError ||
                 autoTopup.data?.availability === 'temporarily_unavailable' ? (
-                <ErrorBanner
+                <InlineAlert
                   message={
                     isAdminDenied(autoTopup.error)
                       ? dependencyMessage(autoTopup.error, 'auto top-up')
@@ -1150,19 +1148,19 @@ function AccountControls({
               isDisabled={disconnected}
             />
             {rename.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={dependencyMessage(rename.error, "Couldn't rename this account.")}
                 onRetry={() => rename.mutate()}
               />
             ) : null}
             {remove.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={dependencyMessage(remove.error, "Couldn't delete this account.")}
                 onRetry={() => remove.mutate()}
               />
             ) : null}
             {logout.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={dependencyMessage(logout.error, "Couldn't log out this account.")}
                 onRetry={() => logout.mutate()}
               />
@@ -1170,25 +1168,24 @@ function AccountControls({
             <div className="flex min-w-0 w-full flex-wrap gap-2">
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 isDisabled={disconnected || rename.isPending || !displayName.trim()}
                 onPress={() => rename.mutate()}
               >
                 Rename account
               </Button>
               <Button
-                className="min-h-11"
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 isDisabled={disconnected || logout.isPending}
                 onPress={() => logout.mutate()}
               >
                 Log out
               </Button>
               <Button
-                className="min-h-11"
                 size="sm"
-                variant="negative-outline"
+                variant="negative"
+                fillStyle="outline"
                 isDisabled={disconnected || remove.isPending}
                 onPress={() => {
                   if (!window.confirm('Delete this account slot?')) return;
@@ -1493,7 +1490,7 @@ function CodexSubscriptionControls({
         Use credits
       </Switch>
       {updateSettings.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={dependencyMessage(updateSettings.error, "Couldn't update Codex settings.")}
           onRetry={() => updateSettings.mutate(updateSettings.variables ?? {})}
         />
@@ -1501,7 +1498,7 @@ function CodexSubscriptionControls({
       <div className="flex min-w-0 w-full flex-wrap gap-2">
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={resetBusy}
           onPress={() => useReset.mutate()}
         >
@@ -1509,7 +1506,7 @@ function CodexSubscriptionControls({
         </Button>
       </div>
       {useReset.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={dependencyMessage(useReset.error, "Couldn't use a Codex reset.")}
           onRetry={() => useReset.mutate()}
         />
@@ -1599,7 +1596,7 @@ function ProviderProfiles({
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-providers">
-      <h2 id="gateway-providers" className="text-lg font-bold text-fg-strong">
+      <h2 id="gateway-providers" className="text-lg font-heading text-fg-strong">
         Providers
       </h2>
       <p className="text-sm text-fg-muted">
@@ -1638,7 +1635,7 @@ function ProviderProfiles({
                   Account slot {pair.subscriptionProviderId} / {pair.accountSlotId} is missing or
                   unavailable.
                 </p>
-                <Button className="min-h-11" variant="outline" onPress={onAccountsChanged}>
+                <Button variant="secondary" onPress={onAccountsChanged}>
                   Retry account slots
                 </Button>
                 <p className="text-sm text-fg">Used by: {affected.join(', ') || 'None'}</p>
@@ -1800,7 +1797,7 @@ function ProviderProfileForm({
         onChange={setDisplayName}
         isDisabled={disconnected}
       />
-      <Select
+      <Picker
         label="Provider kind"
         items={PROVIDER_KINDS.map((item) => ({ id: item, label: item }))}
         selectedKey={kind}
@@ -1815,7 +1812,7 @@ function ProviderProfileForm({
         isDisabled={disconnected}
       />
       {kind === 'oauth' ? (
-        <Select
+        <Picker
           label="Subscription account"
           items={oauthSlots.map((slot) => ({ id: slot.id, label: slot.label }))}
           selectedKey={oauthAccountKey}
@@ -1848,7 +1845,7 @@ function ProviderProfileForm({
         isDisabled={disconnected}
       />
       {create.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={dependencyMessage(create.error, "Couldn't create that provider profile.")}
           onRetry={() => create.mutate()}
         />

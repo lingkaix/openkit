@@ -138,9 +138,9 @@ describe('TW57FIX2 independent behavior regressions', () => {
       'thread.timeline': async () => page('Coordinator progress'),
     });
     render(
-      <Harness api={api} cache={cache} entry={`/goals/${WS}/${THREAD}`}>
+      <Harness api={api} cache={cache} entry={`/w/${WS}/t/${THREAD}`}>
         <Routes>
-          <Route path="/goals/:workspaceId/:threadId" element={<GoalScreen />} />
+          <Route path="/w/:workspaceId/t/:threadId" element={<GoalScreen />} />
         </Routes>
       </Harness>
     );

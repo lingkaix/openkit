@@ -1,5 +1,5 @@
 import type { HumanAttentionSource } from '@openkit/app-api-schemas';
-import { conversationThreadPath } from '../data';
+import { threadPath } from '../data';
 import { fillCopy } from './copy';
 import { timelineNotices } from './notices';
 
@@ -152,10 +152,6 @@ function denyThread(facts: ResolveFacts, threadId: string): ResolvedUnavailable 
   return { unavailable: timelineNotices.sourceNotAvailable };
 }
 
-function activityOf(facts: ResolveFacts, threadId: string): ConversationActivity {
-  return facts.threads?.get(threadId)?.activity ?? 'unknown';
-}
-
 /**
  * Run anchor. `turn` is the spec name. `turnId` keeps the shipped window anchor working.
  * A request id is the strict timeline anchor. It is not searched for in the loaded window.
@@ -202,7 +198,7 @@ function resolveThread(ref: Extract<ObjectRef, { kind: 'thread' }>, facts: Resol
   const denied = denyThread(facts, ref.threadId);
   if (denied) return denied;
   return {
-    path: conversationThreadPath(ref.workspaceId, ref.threadId, activityOf(facts, ref.threadId)),
+    path: threadPath(ref.workspaceId, ref.threadId),
     search: threadSearch(ref.turnId, ref.itemId, ref.request),
     focus: ref.request ? null : (ref.itemId ?? ref.turnId ?? null),
     notice: ref.request ? null : threadNotice(ref.itemId, undefined),
@@ -307,7 +303,7 @@ function resolveAttention(
     params.set('review', source.reviewId);
     params.set('version', String(source.artifactVersion));
     return {
-      path: `/goals/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}/artifacts/${encodeURIComponent(source.artifactId)}`,
+      path: `${threadPath(source.workspaceId, source.threadId)}/artifacts/${encodeURIComponent(source.artifactId)}`,
       search: params.toString(),
       focus: `review-${source.reviewId}`,
       notice:
@@ -404,7 +400,7 @@ function resolveGoalCard(
   const params = new URLSearchParams();
   params.set('card', ref.cardId);
   return {
-    path: `/goals/${encodeURIComponent(ref.workspaceId)}/${encodeURIComponent(ref.threadId)}`,
+    path: threadPath(ref.workspaceId, ref.threadId),
     search: params.toString(),
     focus: `goal-card-${ref.cardId}`,
     notice: null,

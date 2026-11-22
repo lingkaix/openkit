@@ -57,12 +57,15 @@ describe('Gateway account slots', () => {
       )
     );
 
-    expect(await screen.findAllByText('Vault is locked.')).toHaveLength(2);
-    const links = screen.getAllByRole('link', { name: 'Vault' });
-    expect(links).toHaveLength(2);
-    for (const link of links) expect(link).toHaveAttribute('href', '/settings/vault-admin');
-    expect(screen.getByRole('region', { name: 'OpenAI Codex account slots' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'xAI account slots' })).toBeInTheDocument();
+    // F28 (WEB-UX A4): both locked providers share one alert with one next step.
+    expect(await screen.findAllByText('Vault is locked.')).toHaveLength(1);
+    const alert = screen.getByRole('status');
+    expect(alert).toHaveTextContent(
+      'Account slots for OpenAI Codex, xAI stay unavailable until the Vault is unlocked.'
+    );
+    const links = screen.getAllByRole('link', { name: 'Open Vault' });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/settings/vault-admin');
     expect(screen.queryByText("Couldn't load OpenAI Codex account slots.")).not.toBeInTheDocument();
     expect(screen.queryByText("Couldn't load xAI account slots.")).not.toBeInTheDocument();
   });

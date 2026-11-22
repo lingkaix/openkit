@@ -12,11 +12,11 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
   type StatusTone,
   Switch,
   TextField,
@@ -177,7 +177,7 @@ export function AppUpdateScreen() {
           }
           action={
             <Button
-              variant="outline"
+              variant="secondary"
               onPress={() => {
                 prepare.reset();
                 start.reset();
@@ -195,19 +195,19 @@ export function AppUpdateScreen() {
           }
         />
       ) : adminAccess.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't verify deployment-admin authority."
           onRetry={() => void adminAccess.refetch()}
         />
       ) : (
         <>
-          {error ? <ErrorBanner message={errorMessage(error)} /> : null}
+          {error ? <InlineAlert message={errorMessage(error)} /> : null}
           <Card className="flex flex-col gap-2">
             <h2 className="text-sm font-bold text-fg-strong">Operational diagnostics</h2>
             {!diagnostics.isFetchedAfterMount || diagnostics.fetchStatus !== 'idle' ? (
               <Skeleton lines={4} />
             ) : diagnostics.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message="Operational diagnostics unavailable."
                 onRetry={() => void diagnostics.refetch()}
               />
@@ -273,7 +273,7 @@ export function AppUpdateScreen() {
               }}
             />
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!requestId || refresh.isPending}
               onPress={() => {
                 refresh.mutate(requestId);
@@ -397,7 +397,7 @@ function StatusCard({ status }: { status: AppUpdateStatusResponse }) {
   return (
     <Card className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <StatusChip tone={statusTone(status.stage)}>{status.stage}</StatusChip>
+        <StatusLight tone={statusTone(status.stage)}>{status.stage}</StatusLight>
         <span className="text-sm text-fg-muted">{status.outcome}</span>
       </div>
       {status.jobId ? <p className="text-xs text-fg-muted">Job {status.jobId}</p> : null}

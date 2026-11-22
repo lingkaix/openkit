@@ -1,44 +1,41 @@
 /* ============================================================================
-   OpenKit token bridge — Spectrum-derived semantic tokens (the code side).
-   The SAME values back the Claude Design (Spectrum) side; see
-   docs/specs/20260710-web_ui_rebuild_stack.md (token-bridge contract) and
-   DESIGN.md §4. Component markup references ONLY these semantic tokens — never a
-   raw Spectrum palette swatch (`--spectrum-*`) and never a hard-coded literal.
+   OpenKit token bridge: Spectrum 2 semantic tokens (the code side).
+   Values come from `@adobe/spectrum-tokens` through spectrum.generated.css
+   (scripts/gen-tokens.mjs). This file only maps OpenKit semantic roles onto
+   those `--s2-*` properties; see docs/specs/20260710-web_ui_rebuild_stack.md
+   (token-bridge contract) and DESIGN.md §4. Component markup references ONLY
+   the semantic roles below, never `--s2-*` and never a hard-coded literal.
 
-   Three themes, all scoped overrides of the same semantic tokens:
-     - Spectrum  (default, light)   → :root  (+ explicit .ok-theme-spectrum reset)
-     - Paper     (light, warm)      → .ok-theme-paper
-     - Noir      (dark)             → .ok-theme-noir
-   Nothing applied → the Spectrum default. Worker-identity hues, elevation, and
-   motion are theme-invariant (DESIGN.md §4.3, §4.5, §7): they are
-   declared once at :root and never overridden by a theme.
-
-   Value provenance: every value below is the resolved Spectrum step used by the
-   Claude Design boards (see temp export themes.css / _ds palette). When Spectrum
-   changes, this file is the single point of update.
+   One theme, two color schemes. Every scheme-dependent role is a
+   `light-dark()` value, so it follows the element's `color-scheme`:
+     - System (default): `color-scheme: light dark` follows the OS.
+     - Light / Dark: `<html data-color-scheme="light|dark">` (Settings → Appearance).
+     - `.ok-scheme-light` / `.ok-scheme-dark` pin a subtree, for previews only.
+   Two styles (below): Spectrum (this block) and Classic (Paper / Noir).
    ============================================================================ */
+@import "./spectrum.generated.css";
 
 :root {
-  /* Yellow attention marker; paired with the theme notice border and a text description. */
-  --ok-attention-dot: #d5ac00;
+  color-scheme: light dark;
 
-  color-scheme: light;
+  /* Yellow attention marker; paired with the notice border and a text description. */
+  --ok-attention-dot: var(--s2-yellow-visual-color);
 
-  /* ---- Theme-invariant: worker identity hues (DESIGN.md §4.3) --------------
-     Each named worker keeps ONE hue on every surface and in every theme. Human
-     = circle (You/blue); worker = rounded-square. Never overridden per theme. */
-  --ok-worker-scout-bg: #65dad2; /* seafoam-400 */
-  --ok-worker-scout-fg: #053f27; /* green-1200 */
-  --ok-worker-quill-bg: #dbbbfe; /* purple-400 */
-  --ok-worker-quill-fg: #7326d3; /* purple-1000 */
-  --ok-worker-ledger-bg: #c1c4ff; /* indigo-400 */
-  --ok-worker-ledger-fg: #4046ca; /* indigo-1000 */
-  --ok-worker-pixel-bg: #fdd291; /* orange-300 */
-  --ok-worker-pixel-fg: #612300; /* orange-1200 */
-  --ok-worker-you-bg: #cae8ff; /* blue-200 */
-  --ok-worker-you-fg: #004491; /* blue-1100 */
+  /* ---- Worker identity hues (DESIGN.md §4.3) --------------------------------
+     Each named worker keeps ONE hue on every surface; the step adapts to the
+     scheme. Human = circle (You/blue); worker = rounded-square. */
+  --ok-worker-scout-bg: var(--s2-seafoam-400);
+  --ok-worker-scout-fg: var(--s2-seafoam-1200);
+  --ok-worker-quill-bg: var(--s2-purple-400);
+  --ok-worker-quill-fg: var(--s2-purple-1100);
+  --ok-worker-ledger-bg: var(--s2-indigo-400);
+  --ok-worker-ledger-fg: var(--s2-indigo-1100);
+  --ok-worker-pixel-bg: var(--s2-orange-300);
+  --ok-worker-pixel-fg: var(--s2-orange-1200);
+  --ok-worker-you-bg: var(--s2-blue-200);
+  --ok-worker-you-fg: var(--s2-blue-1100);
 
-  /* ---- Theme-invariant: elevation + motion (DESIGN.md §7) ------------------ */
+  /* ---- Scheme-invariant: elevation + motion (DESIGN.md §7) ----------------- */
   --ok-shadow-card: 0 1px 4px rgba(0, 0, 0, 0.09);
   --ok-shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.14);
   --ok-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.24);
@@ -48,243 +45,222 @@
   --ok-dur-overlay: 190ms;
   --ok-focus-ring-width: 2px;
   --ok-focus-ring-offset: 2px;
+  --ok-measure-prose: 72ch;
 
   /* ---- Accent -------------------------------------------------------------- */
-  --accent-background-color-default: #0265dc;
-  --accent-background-color-hover: #0054b6;
-  --accent-background-color-down: #004491;
-  --accent-content-color-default: #0265dc; /* links / active nav text */
-  --text-color-on-accent: #ffffff;
-  --focus-indicator-color: #0265dc;
+  --accent-background-color-default: var(--s2-accent-background-color-default);
+  --accent-background-color-hover: var(--s2-accent-background-color-hover);
+  --accent-background-color-down: var(--s2-accent-background-color-down);
+  --accent-content-color-default: var(--s2-accent-content-color-default);
+  --text-color-on-accent: var(--s2-white);
+  --focus-indicator-color: var(--s2-focus-indicator-color);
 
   /* ---- Text ---------------------------------------------------------------- */
-  --text-color-primary: #000000;
-  --text-color-default: #222222;
-  --text-color-secondary: #464646;
-  --text-color-disabled: #b1b1b1;
+  --text-color-primary: var(--s2-heading-color);
+  --text-color-default: var(--s2-neutral-content-color-default);
+  --text-color-secondary: var(--s2-neutral-subdued-content-color-default);
+  --text-color-disabled: var(--s2-disabled-content-color);
 
-  /* ---- Surfaces ------------------------------------------------------------ */
-  --surface-page: #ffffff;
-  --surface-card: #ffffff;
-  --surface-sunken: #f8f8f8;
-  --background-elevated-color: #ffffff; /* menus / popovers */
-  --background-layer-1-color: #fdfdfd; /* aux rail, kanban columns */
-  --background-layer-2-color: #f8f8f8;
-  --surface-skeleton: #e6e6e6;
+  /* ---- Surfaces: page = base, side rails = layer 1, cards = layer 2 -------- */
+  --surface-page: var(--s2-background-base-color);
+  --surface-card: var(--s2-background-layer-2-color);
+  --surface-sunken: var(--s2-background-layer-1-color);
+  --background-elevated-color: var(--s2-background-elevated-color);
+  --background-layer-1-color: var(--s2-background-layer-1-color);
+  --background-layer-2-color: var(--s2-background-layer-2-color);
+  --surface-skeleton: var(--s2-gray-200);
 
   /* ---- Lines + overlays ---------------------------------------------------- */
-  --separator-color: #e6e6e6;
-  --border-color-default: #d5d5d5;
-  --border-color-hover: #b1b1b1;
-  --border-color-strong: #222222;
-  --highlight-selected: rgba(2, 101, 220, 0.1);
-  --highlight-selected-hover: rgba(2, 101, 220, 0.18);
-  --overlay-hover: rgba(0, 0, 0, 0.04);
-  --overlay-down: rgba(0, 0, 0, 0.08);
+  --separator-color: var(--s2-gray-200);
+  --border-color-default: var(--s2-gray-300);
+  --border-color-hover: var(--s2-gray-400);
+  --border-color-strong: var(--s2-gray-800);
+  /* Spectrum emphasized selection: accent at 10% (15% on hover). */
+  --highlight-selected: color-mix(
+    in srgb,
+    var(--s2-accent-background-color-default) 10%,
+    transparent
+  );
+  --highlight-selected-hover: color-mix(
+    in srgb,
+    var(--s2-accent-background-color-default) 15%,
+    transparent
+  );
+  --overlay-hover: light-dark(var(--s2-transparent-black-75), var(--s2-transparent-white-75));
+  --overlay-down: light-dark(var(--s2-transparent-black-100), var(--s2-transparent-white-100));
 
   /* ---- Disabled control surfaces ------------------------------------------- */
-  --disabled-background-color: #e6e6e6;
-  --disabled-content-color: #b1b1b1;
-  --disabled-border-color: #d5d5d5;
+  --disabled-background-color: var(--s2-disabled-background-color);
+  --disabled-content-color: var(--s2-disabled-content-color);
+  --disabled-border-color: var(--s2-disabled-border-color);
 
   /* ---- Status families (semantic; text + color per DESIGN.md §4.2) --------- */
-  --ok-informative-bg: #e0f2ff; /* blue-100 */
-  --ok-informative-fg: #0054b6; /* blue-1000 */
-  --ok-notice-bg: #ffeccc; /* orange-100 */
-  --ok-notice-fg: #7a2f00; /* orange-1100 */
-  --ok-positive-bg: #cef8e0; /* green-100 */
-  --ok-positive-fg: #00653e; /* green-1000 */
-  --ok-negative-bg: #ffebe7; /* red-100 */
-  --ok-negative-fg: #b40000; /* red-1000 */
-  --ok-neutral-bg: #e6e6e6; /* gray-200 */
-  --ok-neutral-fg: #464646; /* gray-700 */
+  --ok-informative-bg: var(--s2-informative-subtle-background-color-default);
+  --ok-informative-fg: var(--s2-blue-1100);
+  --ok-notice-bg: var(--s2-notice-subtle-background-color-default);
+  --ok-notice-fg: var(--s2-orange-1100);
+  --ok-positive-bg: var(--s2-positive-subtle-background-color-default);
+  --ok-positive-fg: var(--s2-green-1100);
+  --ok-negative-bg: var(--s2-negative-subtle-background-color-default);
+  --ok-negative-fg: var(--s2-red-1100);
+  /* Solid negative fill (destructive confirmation), white text. */
+  --negative-background-color-default: var(--s2-negative-background-color-default);
+  --negative-background-color-hover: var(--s2-negative-background-color-hover);
+  /* White on the red fill in every style (Noir puts dark text on its gold accent). */
+  --text-color-on-negative: var(--s2-white);
+  /* Button and ActionButton fills (DESIGN.md §9.3): primary = strong neutral with
+     base-colored text; secondary / ActionButton = gray-100, hover gray-200. */
+  --primary-background-color-default: var(--s2-neutral-background-color-default);
+  --primary-background-color-hover: var(--s2-neutral-background-color-hover);
+  --text-color-on-primary: var(--s2-background-base-color);
+  --secondary-background-color-default: var(--s2-gray-100);
+  --secondary-background-color-hover: var(--s2-gray-200);
+  --ok-neutral-bg: var(--s2-neutral-subtle-background-color-default);
+  --ok-neutral-fg: var(--s2-neutral-subdued-content-color-default);
 
   /* ---- Diff / provenance ink (artifact rows §9.9, phase-done §9.5) --------- */
-  --ok-diff-add: #007a4d; /* green-900 */
-  --ok-diff-del: #d31510; /* red-900 */
+  --ok-diff-add: var(--s2-green-1000);
+  --ok-diff-del: var(--s2-red-1000);
 
-  /* ---- Toast (the only floating dark layer, §9.10) ------------------------- */
-  --ok-toast-bg: #222222;
-  --ok-toast-fg: #ffffff;
+  /* ---- Toast (the only floating inverted layer, §9.10) --------------------- */
+  --ok-toast-bg: var(--s2-neutral-background-color-default);
+  --ok-toast-fg: var(--s2-background-base-color);
 
-  /* Timeline voices (U1) and the prose measure (U3). */
-  --ok-voice-fact: #464646;
-  --ok-voice-generated: #7326d3;
-  --ok-measure-prose: 72ch;
+  /* Timeline voices (U1). */
+  --ok-voice-fact: var(--s2-neutral-subdued-content-color-default);
+  --ok-voice-generated: var(--s2-purple-1000);
 }
 
-/* ===========================================================================
-   SPECTRUM — explicit reset back to the stock light theme. Only needed so a
-   Spectrum preview card can sit INSIDE a page already scoped to Paper/Noir
-   (e.g. the Settings → Appearance theme picker) and still render the true light
-   look. Mirrors the :root semantic values (DESIGN.md §4.5).
-   =========================================================================== */
-.ok-theme-spectrum {
+/* ---- Style: Spectrum (default) or Classic (engineer decision 2026-11-18) -------
+   Mode (System / Light / Dark) picks the color scheme; Style picks the look. Classic
+   = Paper in light, Noir in dark, so under System it follows the OS like Spectrum.
+   `<html data-style="classic">` applies it; `.ok-style-classic` / `.ok-style-spectrum`
+   pin a preview subtree. Classic values are generated (`--s2-classic-*`): warm grays
+   keep the Spectrum gray lightness with the Spectrum brown hue; the accents are the
+   Spectrum green (Paper) and yellow (Noir) ramps. Derived roles that read the accent
+   (selection tint) are re-declared so a pinned subtree re-resolves them. */
+:root[data-style="classic"],
+.ok-style-classic {
+  --accent-background-color-default: var(--s2-classic-accent-background-color-default);
+  --accent-background-color-hover: var(--s2-classic-accent-background-color-hover);
+  --accent-background-color-down: var(--s2-classic-accent-background-color-down);
+  --accent-content-color-default: var(--s2-classic-accent-content-color-default);
+  --text-color-on-accent: var(--s2-classic-text-color-on-accent);
+  --focus-indicator-color: var(--s2-classic-focus-indicator-color);
+  --text-color-primary: var(--s2-classic-heading-color);
+  --text-color-default: var(--s2-classic-content-color-default);
+  --text-color-secondary: var(--s2-classic-subdued-content-color-default);
+  --text-color-disabled: var(--s2-classic-disabled-content-color);
+  --surface-page: var(--s2-classic-background-base-color);
+  --surface-card: var(--s2-classic-background-layer-2-color);
+  --surface-sunken: var(--s2-classic-background-layer-1-color);
+  --background-elevated-color: var(--s2-classic-background-elevated-color);
+  --background-layer-1-color: var(--s2-classic-background-layer-1-color);
+  --background-layer-2-color: var(--s2-classic-background-layer-2-color);
+  --surface-skeleton: var(--s2-classic-skeleton-color);
+  --separator-color: var(--s2-classic-separator-color);
+  --border-color-default: var(--s2-classic-border-color-default);
+  --border-color-hover: var(--s2-classic-border-color-hover);
+  --border-color-strong: var(--s2-classic-border-color-strong);
+  --disabled-background-color: var(--s2-classic-disabled-background-color);
+  --disabled-content-color: var(--s2-classic-disabled-content-color);
+  --disabled-border-color: var(--s2-classic-disabled-border-color);
+  --primary-background-color-default: var(--s2-classic-primary-background-color-default);
+  --primary-background-color-hover: var(--s2-classic-primary-background-color-hover);
+  --text-color-on-primary: var(--s2-classic-background-base-color);
+  --secondary-background-color-default: var(--s2-classic-secondary-background-color-default);
+  --secondary-background-color-hover: var(--s2-classic-secondary-background-color-hover);
+  --ok-neutral-bg: var(--s2-classic-secondary-background-color-default);
+  --ok-neutral-fg: var(--s2-classic-subdued-content-color-default);
+  --ok-toast-bg: var(--s2-classic-primary-background-color-default);
+  --ok-toast-fg: var(--s2-classic-background-base-color);
+  --ok-voice-fact: var(--s2-classic-subdued-content-color-default);
+  --highlight-selected: color-mix(
+    in srgb,
+    var(--s2-classic-accent-background-color-default) 10%,
+    transparent
+  );
+  --highlight-selected-hover: color-mix(
+    in srgb,
+    var(--s2-classic-accent-background-color-default) 15%,
+    transparent
+  );
+}
+.ok-style-spectrum {
+  --accent-background-color-default: var(--s2-accent-background-color-default);
+  --accent-background-color-hover: var(--s2-accent-background-color-hover);
+  --accent-background-color-down: var(--s2-accent-background-color-down);
+  --accent-content-color-default: var(--s2-accent-content-color-default);
+  --text-color-on-accent: var(--s2-white);
+  --focus-indicator-color: var(--s2-focus-indicator-color);
+  --text-color-primary: var(--s2-heading-color);
+  --text-color-default: var(--s2-neutral-content-color-default);
+  --text-color-secondary: var(--s2-neutral-subdued-content-color-default);
+  --text-color-disabled: var(--s2-disabled-content-color);
+  --surface-page: var(--s2-background-base-color);
+  --surface-card: var(--s2-background-layer-2-color);
+  --surface-sunken: var(--s2-background-layer-1-color);
+  --background-elevated-color: var(--s2-background-elevated-color);
+  --background-layer-1-color: var(--s2-background-layer-1-color);
+  --background-layer-2-color: var(--s2-background-layer-2-color);
+  --surface-skeleton: var(--s2-gray-200);
+  --separator-color: var(--s2-gray-200);
+  --border-color-default: var(--s2-gray-300);
+  --border-color-hover: var(--s2-gray-400);
+  --border-color-strong: var(--s2-gray-800);
+  --disabled-background-color: var(--s2-disabled-background-color);
+  --disabled-content-color: var(--s2-disabled-content-color);
+  --disabled-border-color: var(--s2-disabled-border-color);
+  --primary-background-color-default: var(--s2-neutral-background-color-default);
+  --primary-background-color-hover: var(--s2-neutral-background-color-hover);
+  --text-color-on-primary: var(--s2-background-base-color);
+  --secondary-background-color-default: var(--s2-gray-100);
+  --secondary-background-color-hover: var(--s2-gray-200);
+  --ok-neutral-bg: var(--s2-neutral-subtle-background-color-default);
+  --ok-neutral-fg: var(--s2-neutral-subdued-content-color-default);
+  --ok-toast-bg: var(--s2-neutral-background-color-default);
+  --ok-toast-fg: var(--s2-background-base-color);
+  --ok-voice-fact: var(--s2-neutral-subdued-content-color-default);
+  --highlight-selected: color-mix(
+    in srgb,
+    var(--s2-accent-background-color-default) 10%,
+    transparent
+  );
+  --highlight-selected-hover: color-mix(
+    in srgb,
+    var(--s2-accent-background-color-default) 15%,
+    transparent
+  );
+}
+
+/* The user's Light or Dark override from Settings → Appearance. */
+:root[data-color-scheme="light"] {
+  color-scheme: light;
+}
+:root[data-color-scheme="dark"] {
+  color-scheme: dark;
+}
+
+/* Preview-only scheme pins (theme choice cards, gallery side by side). `color`
+   re-resolves here because an inherited color is already computed for the outer scheme. */
+/* A pinned style subtree re-resolves its inherited text color, like the scheme pins. */
+.ok-style-classic,
+.ok-style-spectrum {
+  color: var(--text-color-default);
+}
+
+.ok-scheme-light {
   color-scheme: light;
   color: var(--text-color-default);
-
-  --accent-background-color-default: #0265dc;
-  --accent-background-color-hover: #0054b6;
-  --accent-background-color-down: #004491;
-  --accent-content-color-default: #0265dc;
-  --text-color-on-accent: #ffffff;
-  --focus-indicator-color: #0265dc;
-
-  --text-color-primary: #000000;
-  --text-color-default: #222222;
-  --text-color-secondary: #464646;
-  --text-color-disabled: #b1b1b1;
-
-  --surface-page: #ffffff;
-  --surface-card: #ffffff;
-  --surface-sunken: #f8f8f8;
-  --background-elevated-color: #ffffff;
-  --background-layer-1-color: #fdfdfd;
-  --background-layer-2-color: #f8f8f8;
-  --surface-skeleton: #e6e6e6;
-
-  --separator-color: #e6e6e6;
-  --border-color-default: #d5d5d5;
-  --border-color-hover: #b1b1b1;
-  --border-color-strong: #222222;
-  --highlight-selected: rgba(2, 101, 220, 0.1);
-  --highlight-selected-hover: rgba(2, 101, 220, 0.18);
-  --overlay-hover: rgba(0, 0, 0, 0.04);
-  --overlay-down: rgba(0, 0, 0, 0.08);
-
-  --disabled-background-color: #e6e6e6;
-  --disabled-content-color: #b1b1b1;
-  --disabled-border-color: #d5d5d5;
-
-  --ok-informative-bg: #e0f2ff;
-  --ok-informative-fg: #0054b6;
-  --ok-notice-bg: #ffeccc;
-  --ok-notice-fg: #7a2f00;
-  --ok-positive-bg: #cef8e0;
-  --ok-positive-fg: #00653e;
-  --ok-negative-bg: #ffebe7;
-  --ok-negative-fg: #b40000;
-  --ok-neutral-bg: #e6e6e6;
-  --ok-neutral-fg: #464646;
-
-  --ok-diff-add: #007a4d;
-  --ok-diff-del: #d31510;
-
-  --ok-toast-bg: #222222;
-  --ok-toast-fg: #ffffff;
-
-  --ok-voice-fact: #464646;
-  --ok-voice-generated: #7326d3;
-  --ok-measure-prose: 72ch;
 }
-
-/* ===========================================================================
-   PAPER — light, cozy. Warm paper canvas (#E6DDC7), deep pine-green accent.
-   Status hues and diff ink are inherited from :root (they read as meaning on
-   the warm canvas). Only surfaces, text, borders, accent, and overlays retint.
-   =========================================================================== */
-.ok-theme-paper {
-  color-scheme: light;
-  color: var(--text-color-default);
-
-  --accent-background-color-default: #2e5d45;
-  --accent-background-color-hover: #244b37;
-  --accent-background-color-down: #1b3a2b;
-  --accent-content-color-default: #2e5d45;
-  --text-color-on-accent: #ffffff;
-  --focus-indicator-color: #2e5d45;
-
-  --text-color-primary: #1f1d10;
-  --text-color-default: #322f1e;
-  --text-color-secondary: #4e462f;
-  --text-color-disabled: #9c9070;
-
-  --surface-page: #e6ddc7;
-  --surface-card: #efe9d9;
-  --surface-sunken: #d9ceb5;
-  --background-elevated-color: #f4efe2;
-  --background-layer-1-color: #ede5d3;
-  --background-layer-2-color: #d9ceb5;
-  --surface-skeleton: #cbbfa6;
-
-  --separator-color: #cbbfa6;
-  --border-color-default: #bbaf93;
-  --border-color-hover: #9c9070;
-  --border-color-strong: #322f1e;
-  --highlight-selected: rgba(46, 93, 69, 0.12);
-  --highlight-selected-hover: rgba(46, 93, 69, 0.2);
-  --overlay-hover: rgba(52, 40, 16, 0.05);
-  --overlay-down: rgba(52, 40, 16, 0.1);
-
-  --disabled-background-color: #d9ceb5;
-  --disabled-content-color: #9c9070;
-  --disabled-border-color: #bbaf93;
-
-  --ok-voice-fact: #3d4a3a;
-  --ok-voice-generated: #5c3d7a;
-  --ok-measure-prose: 72ch;
-}
-
-/* ===========================================================================
-   NOIR — dark. Warm charcoal canvas (#1E1B14). Body text is warm off-white so
-   a conversation is readable; gold stays the accent, focus, and selected mark.
-   Status tints stay on their own backgrounds at a readable contrast.
-   =========================================================================== */
-.ok-theme-noir {
+.ok-scheme-dark {
   color-scheme: dark;
   color: var(--text-color-default);
+}
 
-  --accent-background-color-default: #c6a24c;
-  --accent-background-color-hover: #d6b45e;
-  --accent-background-color-down: #b48b3a;
-  --accent-content-color-default: #d8bc6a; /* gold links / active nav text */
-  --text-color-on-accent: #1e1b14; /* dark ink on gold fills */
-  --focus-indicator-color: #c6a24c;
-
-  --text-color-primary: #f4efe4;
-  --text-color-default: #f4efe4;
-  --text-color-secondary: #cfc4ab;
-  --text-color-disabled: #6b6249;
-
-  --surface-page: #1e1b14;
-  --surface-card: #2a251b;
-  --surface-sunken: #2c271d;
-  --background-elevated-color: #332e22;
-  --background-layer-1-color: #252118;
-  --background-layer-2-color: #2c271d;
-  --surface-skeleton: #3a3427;
-
-  --separator-color: #3a3427;
-  --border-color-default: #4e4735;
-  --border-color-hover: #6b6249;
-  --border-color-strong: #8f897a;
-  --highlight-selected: rgba(198, 162, 76, 0.16);
-  --highlight-selected-hover: rgba(198, 162, 76, 0.26);
-  --overlay-hover: rgba(244, 236, 214, 0.06);
-  --overlay-down: rgba(244, 236, 214, 0.11);
-
-  --disabled-background-color: #2c271d;
-  --disabled-content-color: #6b6249;
-  --disabled-border-color: #3a3427;
-
-  --ok-informative-bg: #20303c;
-  --ok-informative-fg: #93aac0;
-  --ok-notice-bg: #33300e;
-  --ok-notice-fg: #dcd654;
-  --ok-positive-bg: #282f14;
-  --ok-positive-fg: #aec163;
-  --ok-negative-bg: #331f22;
-  --ok-negative-fg: #cfa4ab;
-  --ok-neutral-bg: #3a3427;
-  --ok-neutral-fg: #cfc4ab;
-
-  --ok-diff-add: #9db456;
-  --ok-diff-del: #c99aa0;
-
-  --ok-toast-bg: #38332a;
-  --ok-toast-fg: #ffffff;
-
-  --ok-voice-fact: #d5d5d5;
-  --ok-voice-generated: #dbbbfe;
-  --ok-measure-prose: 72ch;
+/* Preview-only scale pins (gallery Desktop / Touch). The generated sheet sets the
+   size tokens; body text re-resolves here for the same reason as `color` above. */
+.ok-scale-desktop,
+.ok-scale-touch {
+  font-size: var(--s2-font-size-100);
 }

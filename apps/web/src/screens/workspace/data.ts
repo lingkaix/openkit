@@ -7,17 +7,11 @@ import {
 import { parseReferenceScope } from '@openkit/protocol';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
-import {
-  chatKeys,
-  chatThreadPath,
-  taskThreadPath,
-  useCurrentWorkspaceId,
-  useWorkspaces,
-} from '../chat/data';
+import { chatKeys, threadPath, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { attentionRefFromRow, resolve } from '../chat/timeline/resolve';
 
 /**
- * Workspace / Overview data hooks (WP-6). Action Center, Agents, Knowledge, and
+ * Workspace / Overview data hooks (WP-6). Needs you, Agents, Knowledge, and
  * first-run readiness all flow through `@openkit/core-client` under TanStack
  * Query — server state is never copied into Zustand.
  */
@@ -92,7 +86,7 @@ export const workspaceKeys = {
 };
 
 /** Re-export workspace selection and Worker conversation paths for Overview / Agents / Knowledge / First-run. */
-export { chatThreadPath, taskThreadPath, useCurrentWorkspaceId, useWorkspaces };
+export { threadPath, useCurrentWorkspaceId, useWorkspaces };
 
 /** Human attention row from `operations['attention.list']`. */
 export type AttentionRow = Awaited<
@@ -177,12 +171,10 @@ export type CheckKnowledgeHealthCommand = {
 
 /** Sort Needs-you rows longest-waiting first (oldest `createdAt` first). */
 export function sortByWaitingTime(rows: AttentionRow[]): AttentionRow[] {
-  return [...rows].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  return rows.toSorted((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
-/** List unified Action Center attention rows for the active workspace. */
+/** List unified Needs you attention rows for the active workspace. */
 export function useHumanAttention(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
@@ -495,7 +487,7 @@ export function useCreateWorkspace() {
   });
 }
 
-/** Exact inline Action Center decision, including the request identity reused on retry. */
+/** Exact inline Needs you decision, including the request identity reused on retry. */
 export type AttentionDecisionInput = {
   row: AttentionRow;
   action: AttentionRow['actions'][number];
@@ -512,7 +504,7 @@ function invalidateAttentionScope(
 }
 
 /**
- * Decide an Action Center row inline when the row carries enough ids.
+ * Decide an Needs you row inline when the row carries enough ids.
  * Approvals map to `core.respondApproval`; other kinds without a safe mutation
  * path are left for the caller to open in-context.
  */
@@ -574,7 +566,7 @@ export function useDecideAttention() {
   });
 }
 
-/** Product label for one inline Action Center action. */
+/** Product label for one inline Needs you action. */
 export function inlineAttentionActionLabel(action: AttentionRow['actions'][number]): string {
   if (action.kind === 'grant_approval') return 'Allow';
   if (action.kind === 'deny_approval') return 'Deny';
@@ -597,7 +589,7 @@ export function attentionDecisionErrorMessage(error: unknown): string {
   return "Couldn't save that decision.";
 }
 
-/** Whether an Action Center action can be decided inline from the row payload. */
+/** Whether an Needs you action can be decided inline from the row payload. */
 export function canDecideInline(
   row: AttentionRow,
   action: AttentionRow['actions'][number]
@@ -625,8 +617,7 @@ export function canDecideInline(
 
 /** A conversation route can open on an attention anchor. Artifact and material routes cannot. */
 function acceptsAttentionAnchor(path: string): boolean {
-  if (path.startsWith('/chat/') || path.startsWith('/tasks/')) return true;
-  return path.startsWith('/goals/') && !path.includes('/artifacts/');
+  return /^\/w\/[^/]+\/t\/[^/]+$/.test(path);
 }
 
 /** Open the owning workspace-change, thread, goal, or artifact surface for a Needs-you row. */

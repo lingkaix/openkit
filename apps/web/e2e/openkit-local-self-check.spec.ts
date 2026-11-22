@@ -31,7 +31,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Verifies private Assistant reuse, member navigation, refused undisclosed handoff, and safe Debug inspection.
+ * Verifies private Assistant reuse, member navigation, refused undisclosed handoff, and safe Diagnostics inspection.
  *
  * Contract: docs/specs/20260529-test_strategy.md
  */
@@ -57,7 +57,7 @@ test('completes the local Workspace self-check', async ({ page }) => {
     workspaceResponse.ok(),
     `Workspace creation returned HTTP ${workspaceResponse.status()}.`
   ).toBe(true);
-  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Needs you' })).toBeVisible();
 
   let threadCreates = 0;
   page.on('request', (request) => {
@@ -78,9 +78,15 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
   await page.getByRole('button', { name: /^Back to app$/ }).click();
+  // The opener runs on each visit and returns the same private Timeline.
+  const secondOpening = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
+  );
   await page.getByRole('button', { name: /^Personal Assistant$/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${assistant.id}$`));
-  expect(threadCreates).toBe(1);
+  expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
+  await expect(page).toHaveURL(new RegExp(`/w/[^/]+/t/${assistant.id}$`));
+  expect(threadCreates).toBe(2);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   // The accepted Assistant composer offers no Worker target and never falls back to one.
@@ -120,15 +126,20 @@ test('completes the local Workspace self-check', async ({ page }) => {
     )
   ).toEqual([{ id: assistant.id, visibility: 'private' }]);
 
-  await page.getByRole('button', { name: /^Settings$/ }).click();
-  await page.getByRole('button', { name: /^General$/ }).click();
+  // B2: the Personal Assistant lives in the personal Workspace, so opening it selected that
+  // Workspace. The Story Workspace group's ⋯ menu opens its settings.
+  await page
+    .getByRole('navigation', { name: 'Primary workspace navigation' })
+    .getByRole('button', { name: 'Story Workspace options', exact: true })
+    .click();
+  await page.getByRole('menuitem', { name: 'Workspace settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
   // The heading renders before the separate Workspace read supplies the form.
   await expect(page.getByLabel('Display name')).toHaveValue('Story Workspace', {
     timeout: 15_000,
   });
-  await page.getByRole('button', { name: /^Debug$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
+  await page.getByRole('button', { name: /^Diagnostics$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Diagnostics' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Runtime evidence' })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('sk-openkit');
 });
@@ -1138,7 +1149,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(projected?.thread.owner).toEqual({ kind: 'workspace', workspaceId: sourceWorkspaceId });
   expect(projected?.activity).toBe('task');
   await page.getByRole('button', { name: 'Use in next Turn', exact: true }).click();
-  await expect(page).toHaveURL(`${stack.webUrl}/tasks/${sourceWorkspaceId}/${threadId}`);
+  await expect(page).toHaveURL(`${stack.webUrl}/w/${sourceWorkspaceId}/t/${threadId}`);
   await expect(page.getByRole('group', { name: 'Selected artifacts' })).toBeVisible();
   expect(await threadTurnIds(threadId)).toEqual(beforeUse);
   await page

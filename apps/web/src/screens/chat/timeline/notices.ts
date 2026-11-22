@@ -13,7 +13,7 @@ export const timelineNotices = {
   backLinkNoTime: 'From: {title}',
   runAt: 'run at {time}',
   mergedDecisions: '{count} decisions need you in {thread}',
-  moreToasts: '+{count} more · Open Action Center',
+  moreToasts: '+{count} more · Open Needs you',
   opensRunNotMessage: 'Opens the run (not the exact message)',
   opensRunNotRequest: 'Opens the run (not the request)',
   opensKnowledge: 'Opens Knowledge (not the page)',

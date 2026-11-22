@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
 import { useConnection, useCoreClient } from '../../app/core-client';
-import { Button, DiffView, ErrorBanner, Select, TextField } from '../../primitives';
+import { ActionButton, Button, DiffView, InlineAlert, Picker, TextField } from '../../primitives';
 import { workspaceKeys } from './data';
 import {
   isKnowledgePageState,
@@ -129,13 +129,13 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
         isInvalid={pageTooLarge}
         className="flex flex-col gap-1"
       >
-        <Label className="text-xs font-bold text-fg">Page text/Markdown</Label>
+        <Label className="ok-field-label text-fg-muted">Page text/Markdown</Label>
         <TextArea
           rows={12}
-          className="rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
+          className="rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
         />
       </AriaTextField>
-      <Select
+      <Picker
         label="Page state"
         items={PAGE_STATE_OPTIONS}
         selectedKey={state}
@@ -158,10 +158,10 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
         isInvalid={summaryTooLarge}
       />
       {pageTooLarge ? (
-        <ErrorBanner message="Page text exceeds the 2 MiB limit. Reduce the text before applying the edit." />
+        <InlineAlert message="Page text exceeds the 2 MiB limit. Reduce the text before applying the edit." />
       ) : null}
       {summaryTooLarge ? (
-        <ErrorBanner message="Edit summary exceeds the 4 KiB limit. Shorten the summary before applying the edit." />
+        <InlineAlert message="Edit summary exceeds the 4 KiB limit. Shorten the summary before applying the edit." />
       ) : null}
       {!pageTooLarge ? (
         <DiffView
@@ -174,9 +174,9 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
       <div className="flex gap-2">
         {!frozen ? (
           <>
-            <Button size="sm" variant="quiet" isDisabled={blocked} onPress={props.onClose}>
+            <ActionButton size="sm" isQuiet isDisabled={blocked} onPress={props.onClose}>
               Cancel edit
-            </Button>
+            </ActionButton>
             <Button
               size="sm"
               isDisabled={
@@ -189,14 +189,14 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
           </>
         ) : null}
         {update.isError ? (
-          <Button size="sm" variant="quiet" isDisabled={blocked} onPress={props.onInspect}>
+          <ActionButton size="sm" isQuiet isDisabled={blocked} onPress={props.onInspect}>
             Close edit and inspect current history
-          </Button>
+          </ActionButton>
         ) : null}
         {unknownResult && intent ? (
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={blocked}
             onPress={() => update.mutate(intent)}
           >
@@ -211,7 +211,7 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
         </p>
       ) : null}
       {update.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={
             unknownResult
               ? `Page edit result is unknown (${cause}). Retry the saved request or inspect current history before another edit.`

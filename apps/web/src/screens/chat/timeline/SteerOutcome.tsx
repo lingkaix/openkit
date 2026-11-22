@@ -22,12 +22,12 @@ export function SteerOutcome({
       <p role="status">{copy.title}</p>
       {copy.detail ? <p>{copy.detail}</p> : null}
       {replay && receipt.state === 'unknown' ? (
-        <button type="button" className="min-h-11 underline" onClick={() => onReplay?.(replay)}>
+        <button type="button" className="underline" onClick={() => onReplay?.(replay)}>
           {steerCopy.check}
         </button>
       ) : null}
       {replay && receipt.state === 'not-delivered' ? (
-        <button type="button" className="min-h-11 underline" onClick={() => onReplay?.(replay)}>
+        <button type="button" className="underline" onClick={() => onReplay?.(replay)}>
           {steerCopy.retry}
         </button>
       ) : null}

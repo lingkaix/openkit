@@ -3,18 +3,20 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
+  Badge,
   Button,
   Card,
   Dialog,
+  DialogFooter,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   ListRow,
   Modal,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
   type StatusTone,
 } from '../../primitives';
 import { useArtifact } from '../goal/data';
@@ -79,7 +81,7 @@ export function WorkspaceChangesScreen() {
     return (
       <Page>
         <WorkspaceChangesHeader />
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -156,7 +158,7 @@ export function WorkspaceChangesScreen() {
       <WorkspaceChangesHeader stale={disconnected || projection.isFetching} />
 
       {projection.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspace changes."
           onRetry={() => void projection.refetch()}
         />
@@ -219,7 +221,7 @@ function WorkspaceSyncSections({
     <>
       <section className="flex flex-col gap-3" aria-label="Reviews">
         <Eyebrow>Reviews</Eyebrow>
-        {reviewError ? <ErrorBanner message={reviewError} onRetry={onRetryReview} /> : null}
+        {reviewError ? <InlineAlert message={reviewError} onRetry={onRetryReview} /> : null}
         {data.reviews.length === 0 ? (
           <EmptyState
             icon="file"
@@ -239,9 +241,9 @@ function WorkspaceSyncSections({
                       <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">
                         {changedPathSummary(item.changeSet.changedPaths) || item.review.riskSummary}
                       </p>
-                      <StatusChip tone={statusTone(item.review.status)} dot>
+                      <StatusLight tone={statusTone(item.review.status)}>
                         {workspaceSyncStatusLabel(item.review.status)}
-                      </StatusChip>
+                      </StatusLight>
                     </div>
                     <p className="text-sm text-fg">{item.review.riskSummary}</p>
                     {noticeableChecks.map((check) => (
@@ -279,7 +281,7 @@ function WorkspaceSyncSections({
                             <Button
                               key={action.decision}
                               size="sm"
-                              variant={action.decision === 'accepted' ? 'accent' : 'outline'}
+                              variant={action.decision === 'accepted' ? 'accent' : 'secondary'}
                               aria-label={`${action.label} ${item.review.id}`}
                               isDisabled={reviewBusy}
                               onPress={() => onReview(item.review.id, action.decision)}
@@ -289,7 +291,7 @@ function WorkspaceSyncSections({
                           ))}
                           <Button
                             size="sm"
-                            variant="outline"
+                            variant="secondary"
                             aria-label={`Inspect ${item.artifactId}`}
                             onPress={() => setInspectedArtifactId(item.artifactId)}
                           >
@@ -336,7 +338,7 @@ function WorkspaceSyncSections({
           {data.snapshots.map((snapshot) => (
             <ListRow key={snapshot.id}>
               <p className="min-w-0 flex-1 text-sm text-fg">{snapshot.strategy}</p>
-              <StatusChip tone="neutral">{snapshot.backend.kind}</StatusChip>
+              <Badge>{snapshot.backend.kind}</Badge>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -349,7 +351,7 @@ function WorkspaceSyncSections({
           {data.materializations.map((record) => (
             <ListRow key={record.id}>
               <p className="min-w-0 flex-1 text-sm text-fg">{record.strategy}</p>
-              <StatusChip tone="neutral">{record.backendKind}</StatusChip>
+              <Badge>{record.backendKind}</Badge>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -362,9 +364,9 @@ function WorkspaceSyncSections({
           {data.handles.map((handle) => (
             <ListRow key={handle.id}>
               <p className="min-w-0 flex-1 text-sm text-fg">{handle.backendKind}</p>
-              <StatusChip tone={statusTone(handle.cleanupStatus)}>
+              <StatusLight tone={statusTone(handle.cleanupStatus)}>
                 {workspaceSyncStatusLabel(handle.cleanupStatus)}
-              </StatusChip>
+              </StatusLight>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -379,7 +381,7 @@ function WorkspaceSyncSections({
               <p className="min-w-0 flex-1 text-sm text-fg">
                 {changedPathSummary(manifest.changedPaths)}
               </p>
-              <StatusChip tone="neutral">{manifest.strategy}</StatusChip>
+              <StatusLight tone="neutral">{manifest.strategy}</StatusLight>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -394,7 +396,7 @@ function WorkspaceSyncSections({
               <p className="min-w-0 flex-1 text-sm text-fg">
                 {changedPathSummary(changeSet.changedPaths)}
               </p>
-              <StatusChip tone="neutral">{changeSet.strategy}</StatusChip>
+              <StatusLight tone="neutral">{changeSet.strategy}</StatusLight>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -407,9 +409,9 @@ function WorkspaceSyncSections({
           {data.staged.map((review) => (
             <ListRow key={review.id}>
               <p className="min-w-0 flex-1 text-sm text-fg">{review.id}</p>
-              <StatusChip tone={statusTone(review.status)} dot>
+              <StatusLight tone={statusTone(review.status)}>
                 {workspaceSyncStatusLabel(review.status)}
-              </StatusChip>
+              </StatusLight>
             </ListRow>
           ))}
         </SummaryRegion>
@@ -423,9 +425,9 @@ function WorkspaceSyncSections({
         {data.plans.map((plan) => (
           <ListRow key={plan.id}>
             <p className="min-w-0 flex-1 text-sm text-fg">{plan.plannedWrites.join(', ')}</p>
-            <StatusChip tone={statusTone(plan.approvalState)}>
+            <StatusLight tone={statusTone(plan.approvalState)}>
               {workspaceSyncStatusLabel(plan.approvalState)}
-            </StatusChip>
+            </StatusLight>
           </ListRow>
         ))}
       </SummaryRegion>
@@ -438,16 +440,16 @@ function WorkspaceSyncSections({
         {data.results.map((result) => (
           <ListRow key={result.id}>
             <p className="min-w-0 flex-1 text-sm text-fg">{result.appliedPaths.join(', ')}</p>
-            <StatusChip tone={statusTone(result.status)}>
+            <StatusLight tone={statusTone(result.status)}>
               {workspaceSyncStatusLabel(result.status)}
-            </StatusChip>
+            </StatusLight>
           </ListRow>
         ))}
       </SummaryRegion>
 
       <section className="flex flex-col gap-3" aria-label="Recovery">
         <Eyebrow>Recovery</Eyebrow>
-        {recoveryError ? <ErrorBanner message={recoveryError} onRetry={onRetryRecovery} /> : null}
+        {recoveryError ? <InlineAlert message={recoveryError} onRetry={onRetryRecovery} /> : null}
         {data.recovery.length === 0 ? (
           <EmptyState
             icon="alert"
@@ -468,9 +470,9 @@ function WorkspaceSyncSections({
                   <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
                     <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
                       <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">{record.id}</p>
-                      <StatusChip tone={statusTone(record.stateAfter)} dot>
+                      <StatusLight tone={statusTone(record.stateAfter)}>
                         {workspaceSyncStatusLabel(record.stateAfter)}
-                      </StatusChip>
+                      </StatusLight>
                     </div>
                     <p className="text-xs text-fg-muted">{record.backendReachability.status}</p>
                     {record.collectedOutputManifestIds.map((manifestId) => (
@@ -507,7 +509,7 @@ function WorkspaceSyncSections({
                                 <Button
                                   size="sm"
                                   variant={
-                                    action.decision === 'resume_collection' ? 'accent' : 'outline'
+                                    action.decision === 'resume_collection' ? 'accent' : 'secondary'
                                   }
                                   aria-label={`${action.label} ${record.id}`}
                                   aria-description={preview}
@@ -526,7 +528,7 @@ function WorkspaceSyncSections({
                               trigger={
                                 <Button
                                   size="sm"
-                                  variant="outline"
+                                  variant="secondary"
                                   aria-label={`${action.label} ${record.id}`}
                                   aria-description={preview}
                                   isDisabled={recoveryBusy}
@@ -541,8 +543,8 @@ function WorkspaceSyncSections({
                                   This recovery becomes unrecoverable. Teardown-backend proceeds and
                                   retained evidence stays associated with this record.
                                 </p>
-                                <div className="flex justify-end gap-2">
-                                  <Button slot="close" variant="quiet">
+                                <DialogFooter>
+                                  <Button slot="close" variant="secondary">
                                     Cancel
                                   </Button>
                                   <Button
@@ -553,7 +555,7 @@ function WorkspaceSyncSections({
                                   >
                                     Abandon
                                   </Button>
-                                </div>
+                                </DialogFooter>
                               </Dialog>
                             </Modal>
                           );
@@ -578,9 +580,9 @@ function WorkspaceSyncSections({
             <p className="min-w-0 flex-1 text-sm text-fg">
               {workspaceSyncStatusLabel(record.failureKind)}
             </p>
-            <StatusChip tone={statusTone(record.resolution)}>
+            <StatusLight tone={statusTone(record.resolution)}>
               {workspaceSyncStatusLabel(record.resolution)}
-            </StatusChip>
+            </StatusLight>
           </ListRow>
         ))}
       </SummaryRegion>
@@ -625,7 +627,7 @@ function WorkspaceChangesHeader({ stale = false }: { stale?: boolean }) {
       eyebrow="Workspace"
       title="Workspace changes"
       subtitle="Review staged worker changes, apply outcomes, and recovery decisions for the selected Workspace."
-      actions={stale ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
+      actions={stale ? <StatusLight tone="notice">Status may be stale</StatusLight> : null}
     />
   );
 }
@@ -643,7 +645,7 @@ function ChangedPathPreview({ path }: { path: ChangedPath }) {
     <div className="mt-2 flex flex-col gap-1">
       <p className="text-sm text-fg">{path.path}</p>
       {path.oldPath ? <p className="text-xs text-fg-muted">{path.oldPath}</p> : null}
-      <StatusChip tone="neutral">{workspaceSyncStatusLabel(path.status)}</StatusChip>
+      <StatusLight tone="neutral">{workspaceSyncStatusLabel(path.status)}</StatusLight>
       {path.binaryReview ? (
         <>
           <p className="text-xs text-fg">{path.binaryReview.summary}</p>
@@ -674,7 +676,7 @@ function InspectedWorkspaceArtifact({ artifactId }: { artifactId: string }) {
   }
   if (artifact.isError || !artifact.data) {
     return (
-      <ErrorBanner message="Couldn't load that artifact." onRetry={() => void artifact.refetch()} />
+      <InlineAlert message="Couldn't load that artifact." onRetry={() => void artifact.refetch()} />
     );
   }
   return (

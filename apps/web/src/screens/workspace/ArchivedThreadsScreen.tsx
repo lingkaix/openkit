@@ -1,14 +1,14 @@
 import { useNavigate } from 'react-router-dom';
 import {
-  Button,
+  ActionButton,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   NavRow,
   Page,
   PageHeader,
   Skeleton,
 } from '../../primitives';
-import { chatThreadPath, useCurrentWorkspaceId, useRestoreThread, useThreads } from '../chat/data';
+import { threadPath, useCurrentWorkspaceId, useRestoreThread, useThreads } from '../chat/data';
 
 /**
  * Archived threads for the selected Workspace (DESIGN.md §3.1 compact row).
@@ -35,7 +35,7 @@ export function ArchivedThreadsScreen() {
       {!workspaceId || threads.isLoading ? (
         <Skeleton lines={4} />
       ) : threads.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load archived threads."
           onRetry={() => void threads.refetch()}
         />
@@ -48,7 +48,7 @@ export function ArchivedThreadsScreen() {
       ) : (
         <div className="flex flex-col gap-6">
           {failedRestore && failedRestore.workspaceId === workspaceId ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't restore that thread."
               onRetry={() => restore.mutate(failedRestore)}
             />
@@ -60,19 +60,19 @@ export function ArchivedThreadsScreen() {
                   <NavRow
                     icon="chat"
                     label={thread.name ?? thread.preview}
-                    onPress={() => workspaceId && navigate(chatThreadPath(workspaceId, thread.id))}
+                    onPress={() => workspaceId && navigate(threadPath(workspaceId, thread.id))}
                   />
                 </div>
-                <Button
+                <ActionButton
                   size="sm"
-                  variant="quiet"
+                  isQuiet
                   isDisabled={!workspaceId || restore.isPending}
                   onPress={() =>
                     restore.mutate({ workspaceId: workspaceId ?? '', threadId: thread.id })
                   }
                 >
                   Restore
-                </Button>
+                </ActionButton>
               </div>
             ))}
           </section>

@@ -427,21 +427,21 @@ describe('catch-up opening', () => {
       runStaysNew({ status: 'completed', messages: 0, admissionOrder: 4, catchUpOrder: null })
     ).toBe(false);
     const itemJump = timelineJump({
-      pathname: '/tasks/ws/th',
+      pathname: '/w/ws/t/th',
       search: `?turnId=${turnId}&turn=${turnId}&attention=row&row=row-1&catchUp=1&request=req_1`,
       jump: { kind: 'item', itemId },
     });
     expect(itemJump).toEqual({
-      pathname: '/tasks/ws/th',
+      pathname: '/w/ws/t/th',
       search: `?item=${itemId}`,
       replace: true,
     });
     expect(
-      timelineJump({ pathname: '/chat/ws/th', search: '', jump: { kind: 'catch-up' } })
-    ).toEqual({ pathname: '/chat/ws/th', search: '?catchUp=1', replace: true });
+      timelineJump({ pathname: '/w/ws/t/th', search: '', jump: { kind: 'catch-up' } })
+    ).toEqual({ pathname: '/w/ws/t/th', search: '?catchUp=1', replace: true });
     expect(
-      timelineJump({ pathname: '/chat/ws/th', search: `?item=${itemId}`, jump: { kind: 'latest' } })
-    ).toEqual({ pathname: '/chat/ws/th', search: '', replace: true });
+      timelineJump({ pathname: '/w/ws/t/th', search: `?item=${itemId}`, jump: { kind: 'latest' } })
+    ).toEqual({ pathname: '/w/ws/t/th', search: '', replace: true });
   });
 
   it('offers the earlier-unread jump and no digest list', async () => {

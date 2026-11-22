@@ -1,9 +1,10 @@
 import { ApiCallError } from '@openkit/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
@@ -36,7 +37,7 @@ export function ServerAuditScreen() {
         subtitle="Read-only server audit events and permission decisions recorded by NanoCore."
         actions={
           <Button
-            variant="outline"
+            variant="secondary"
             isDisabled={records.isFetching}
             onPress={() => void records.refetch()}
           >
@@ -55,13 +56,13 @@ export function ServerAuditScreen() {
             title="Access denied"
             hint="Server audit requires derived server-admin authority on the signed-in session."
             action={
-              <Button variant="outline" onPress={() => void records.refetch()}>
+              <Button variant="secondary" onPress={() => void records.refetch()}>
                 Retry
               </Button>
             }
           />
         ) : (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load server audit records."
             onRetry={() => void records.refetch()}
           />
@@ -209,14 +210,14 @@ export function ServerAuditScreen() {
               )}
             />
             {records.hasNextPage ? (
-              <Button
-                variant="quiet"
-                className="min-h-11 justify-start px-3"
+              <ActionButton
+                isQuiet
+                className="justify-start px-3"
                 isDisabled={records.isFetchingNextPage}
                 onPress={() => void records.fetchNextPage()}
               >
                 Load more
-              </Button>
+              </ActionButton>
             ) : null}
           </>
         )

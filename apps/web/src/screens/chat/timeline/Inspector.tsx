@@ -2,7 +2,7 @@ import type { TimelineRunEntry } from '@openkit/app-api-schemas';
 import type { TurnErrorPresentation } from '@openkit/protocol';
 import type { ReactNode, Ref } from 'react';
 import { Link } from 'react-router-dom';
-import { Button, Icon } from '../../../primitives';
+import { ActionButton, Icon } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { timelineCopy } from './copy';
@@ -103,14 +103,14 @@ export function Inspector({
       }}
       className={
         sheet
-          ? `fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-y-auto rounded-t-ok-xl border border-separator bg-layer-1 p-3 shadow-ok-modal outline-none focus:ring-2 focus:ring-focus ${expanded ? 'top-0 h-full' : 'h-[60vh]'}`
-          : 'absolute inset-y-0 right-0 z-10 flex w-full shrink-0 flex-col overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu outline-none focus:ring-2 focus:ring-focus @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none'
+          ? `fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-y-auto rounded-t-ok-xl border border-separator bg-layer-1 p-3 shadow-ok-modal outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus ${expanded ? 'top-0 h-full' : 'h-[60vh]'}`
+          : 'absolute inset-y-0 right-0 z-10 flex w-full shrink-0 flex-col overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none'
       }
     >
       {sheet ? (
         <button
           type="button"
-          className="flex min-h-11 w-full items-center justify-center"
+          className="flex h-control-md w-full items-center justify-center"
           aria-label={expanded ? timelineCopy.collapseSheet : timelineCopy.expandSheet}
           onClick={onExpand}
         >
@@ -123,16 +123,16 @@ export function Inspector({
         />
       )}
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-fg">{timelineCopy.inspectorLabel}</h2>
-        <Button
+        <h2 className="text-sm font-bold text-fg">{timelineCopy.inspectorLabel}</h2>
+        <ActionButton
           size="sm"
-          variant="quiet"
+          isQuiet
           aria-label={timelineCopy.closeInspector}
-          className="min-h-11 min-w-11 shrink-0 px-0!"
+          className="shrink-0"
           onPress={onClose}
         >
           <Icon name="close" />
-        </Button>
+        </ActionButton>
       </div>
       {sheet ? (
         <RunEnvironment
@@ -145,7 +145,7 @@ export function Inspector({
       ) : null}
       {presentation ? <OwnerRunError presentation={presentation} /> : null}
       <section className="mt-3" aria-label={timelineCopy.identifiersHeading}>
-        <h3 className="text-xs font-semibold text-fg">{timelineCopy.identifiersHeading}</h3>
+        <h3 className="text-xs font-bold text-fg">{timelineCopy.identifiersHeading}</h3>
         <p className="mt-1 break-all text-xs text-fg-muted">{turnId}</p>
         <ul className="mt-2 flex flex-col gap-1">
           {items.map((item) => (
@@ -159,7 +159,7 @@ export function Inspector({
         </ul>
       </section>
       <section className="mt-4" aria-label={timelineCopy.rawOutputs}>
-        <h3 className="text-xs font-semibold text-fg">{timelineCopy.rawOutputs}</h3>
+        <h3 className="text-xs font-bold text-fg">{timelineCopy.rawOutputs}</h3>
         <div className="mt-2 flex flex-col gap-3">
           {items
             .filter((item) => isStepItem(item))
@@ -181,7 +181,7 @@ export function Inspector({
         <ReportedActivityView activity={runActivity} />
       ) : activity ? (
         <section aria-label="Runtime activity" aria-live="polite" className="mt-4 text-sm">
-          <h3 className="font-semibold text-fg">Runtime activity</h3>
+          <h3 className="font-bold text-fg">Runtime activity</h3>
           {activity.entries.length > 0 ? (
             <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
           ) : null}

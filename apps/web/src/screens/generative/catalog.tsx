@@ -10,6 +10,7 @@
 import type { ReactNode } from 'react';
 import {
   Button,
+  type ButtonFillStyle,
   type ButtonSize,
   type ButtonVariant,
   Card,
@@ -18,6 +19,28 @@ import {
 } from '../../primitives';
 
 /** Opaque props bag on a declarative A2UI node (strings, numbers, booleans, lists). */
+
+/**
+ * Maps an agent-supplied Button variant to a Button role. Agents may still send the
+ * pre-A3 names (outline, quiet, negative-outline); unknown names fall back to secondary.
+ */
+function generativeButtonRole(name: string): {
+  variant: ButtonVariant;
+  fillStyle?: ButtonFillStyle;
+} {
+  switch (name) {
+    case 'accent':
+    case 'primary':
+    case 'secondary':
+    case 'negative':
+      return { variant: name };
+    case 'negative-outline':
+      return { variant: 'negative', fillStyle: 'outline' };
+    default:
+      return { variant: 'secondary' };
+  }
+}
+
 export type A2UIProps = Record<string, unknown>;
 
 /**
@@ -92,10 +115,10 @@ export const A2UI_CATALOG: Readonly<Record<string, CatalogRenderer>> = {
   ),
   Button: (node) => {
     const label = asString(node.props?.label, node.content ?? '');
-    const variant = asString(node.props?.variant, 'accent') as ButtonVariant;
+    const { variant, fillStyle } = generativeButtonRole(asString(node.props?.variant, 'accent'));
     const size = asString(node.props?.size, 'sm') as ButtonSize;
     return (
-      <Button variant={variant} size={size}>
+      <Button variant={variant} fillStyle={fillStyle} size={size}>
         {label}
       </Button>
     );

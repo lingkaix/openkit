@@ -5,16 +5,17 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { Collection, Link, Tree, TreeItem, TreeItemContent } from 'react-aria-components';
 import { useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   CodeView,
   EmptyState,
-  ErrorBanner,
   Icon,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
 } from '../../primitives';
 
 type RuntimeConfigFileList = Awaited<ReturnType<CoreClient['operations']['runtime.file-list']>>;
@@ -158,7 +159,7 @@ export function ConfigurationScreen() {
         </p>
         <Link
           href="/settings/administration"
-          className="rounded-ok text-sm font-bold text-accent-content outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+          className="rounded-ok text-sm font-bold text-accent-content outline-none hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           Open Administration
         </Link>
@@ -172,13 +173,13 @@ export function ConfigurationScreen() {
           title="Access denied"
           hint="Deployment configuration requires derived server-admin authority on the signed-in session."
           action={
-            <Button variant="outline" onPress={() => void files.refetch()}>
+            <Button variant="secondary" onPress={() => void files.refetch()}>
               Retry
             </Button>
           }
         />
       ) : files.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load deployment configuration."
           onRetry={() => void files.refetch()}
         />
@@ -191,8 +192,8 @@ export function ConfigurationScreen() {
       ) : (
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center gap-3">
-            <Button
-              variant="quiet"
+            <ActionButton
+              isQuiet
               size="sm"
               aria-expanded={filesVisible}
               aria-controls="configuration-files"
@@ -200,7 +201,7 @@ export function ConfigurationScreen() {
             >
               <Icon name="folder" size="sm" />
               {filesVisible ? 'Hide files' : 'Show files'}
-            </Button>
+            </ActionButton>
             <span className="text-xs text-fg-muted">{files.data?.files.length} files</span>
           </div>
           <div
@@ -219,7 +220,7 @@ export function ConfigurationScreen() {
               {file.isLoading ? (
                 <Skeleton lines={8} />
               ) : file.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load this configuration file."
                   onRetry={() => void file.refetch()}
                 />
@@ -231,12 +232,12 @@ export function ConfigurationScreen() {
                         {selectedFile.path}
                       </h2>
                       <p className="text-xs text-fg-muted">
-                        {selectedFile.kind} · JSON with comments · revision protected
+                        {selectedFile.kind} · JSON with comments · conflicts are detected
                       </p>
                     </div>
-                    <StatusChip tone={dirty ? 'notice' : 'positive'}>
+                    <StatusLight tone={dirty ? 'notice' : 'positive'}>
                       {saveFile.isPending ? 'Saving' : dirty ? 'Unsaved' : 'Saved'}
-                    </StatusChip>
+                    </StatusLight>
                   </div>
 
                   <JsoncEditor
@@ -247,19 +248,19 @@ export function ConfigurationScreen() {
 
                   {validation ? <ValidationResult result={validation} /> : null}
                   {validateDraft.isError ? (
-                    <ErrorBanner
+                    <InlineAlert
                       message="Couldn't validate this draft."
                       onRetry={() => validateDraft.mutate()}
                     />
                   ) : null}
                   {saveFile.isError ? (
-                    <ErrorBanner
+                    <InlineAlert
                       message={saveErrorMessage(saveFile.error)}
                       onRetry={() => saveFile.mutate()}
                     />
                   ) : null}
                   {applyConfiguration.isError ? (
-                    <ErrorBanner
+                    <InlineAlert
                       message="Couldn't apply the saved configuration."
                       onRetry={() => applyConfiguration.mutate()}
                     />
@@ -267,24 +268,24 @@ export function ConfigurationScreen() {
                   {reload ? <ReloadResult result={reload} /> : null}
 
                   <div className="flex flex-wrap justify-end gap-2">
-                    <Button
-                      variant="quiet"
+                    <ActionButton
+                      isQuiet
                       size="sm"
                       isDisabled={file.isFetching || saveFile.isPending}
                       onPress={reloadFile}
                     >
                       Reload file
-                    </Button>
-                    <Button
-                      variant="quiet"
+                    </ActionButton>
+                    <ActionButton
+                      isQuiet
                       size="sm"
                       isDisabled={!dirty || saveFile.isPending}
                       onPress={() => setDraft(savedContent)}
                     >
                       Reset draft
-                    </Button>
+                    </ActionButton>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       isDisabled={!selectedId || validateDraft.isPending || saveFile.isPending}
                       onPress={() => validateDraft.mutate()}
@@ -299,7 +300,7 @@ export function ConfigurationScreen() {
                       Save file
                     </Button>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       isDisabled={dirty || saveFile.isPending || applyConfiguration.isPending}
                       onPress={() => applyConfiguration.mutate()}
@@ -340,22 +341,22 @@ function SchemaReference({ kind }: { kind: RuntimeConfigFileSummary['kind'] }) {
   return (
     <Card className="flex min-w-0 flex-col gap-3">
       <div>
-        <Button
-          variant="quiet"
+        <ActionButton
+          isQuiet
           size="sm"
           aria-expanded={expanded}
           aria-controls="configuration-schema"
           onPress={() => setExpanded((value) => !value)}
         >
           {expanded ? 'Hide schema' : 'Show schema'}
-        </Button>
+        </ActionButton>
       </div>
       <div id="configuration-schema" hidden={!expanded}>
         {expanded ? (
           catalog.isLoading ? (
             <Skeleton lines={4} />
           ) : catalog.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={
                 isAdminDenied(catalog.error)
                   ? 'Schema access denied. Deployment-admin authority is required.'
@@ -453,7 +454,7 @@ function renderConfigTreeNode(node: ConfigTreeNode): ReactNode {
       id={node.id}
       textValue={node.name}
       aria-label={node.name}
-      className="rounded-ok outline-none hover:bg-overlay data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus data-[selected]:bg-selected data-[selected]:font-bold data-[selected]:text-accent-content"
+      className="rounded-ok outline-none hover:bg-overlay data-[focus-visible]:outline-2 data-[focus-visible]:outline-solid data-[focus-visible]:outline-offset-2 data-[focus-visible]:outline-focus data-[selected]:bg-selected data-[selected]:font-bold data-[selected]:text-accent-content"
     >
       <TreeItemContent>
         {({ isExpanded, level }) => (
@@ -464,10 +465,10 @@ function renderConfigTreeNode(node: ConfigTreeNode): ReactNode {
             {node.file ? (
               <Icon name="file" size="sm" />
             ) : (
-              <Button slot="chevron" variant="quiet" size="sm" className="shrink-0 px-1">
+              <ActionButton slot="chevron" isQuiet size="sm" className="shrink-0 px-1">
                 <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size="sm" />
                 <Icon name="folder" size="sm" />
-              </Button>
+              </ActionButton>
             )}
             <span className="truncate" title={node.file?.path ?? node.name}>
               {node.name}
@@ -492,7 +493,7 @@ function JsoncEditor({
 }) {
   const highlight = useRef<HTMLPreElement>(null);
   return (
-    <div className="relative h-[34rem] min-w-0 overflow-hidden rounded-ok border border-border bg-sunken focus-within:border-accent focus-within:ring-2 focus-within:ring-focus">
+    <div className="relative h-[34rem] min-w-0 overflow-hidden rounded-ok border border-border bg-sunken focus-within:border-accent focus-within:outline-2 focus-within:outline-solid focus-within:outline-offset-2 focus-within:outline-focus">
       <pre
         ref={highlight}
         aria-hidden

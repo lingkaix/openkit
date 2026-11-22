@@ -4,16 +4,18 @@ import { useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import {
+  ActionButton,
   Button,
   Card,
   DiffView,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   MaterialEditor,
   Page,
   PageHeader,
   Skeleton,
+  ToggleButton,
 } from '../../primitives';
 import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import {
@@ -67,13 +69,13 @@ function NewMaterialForm({
           <Eyebrow>New Material</Eyebrow>
           <p className="mt-1 text-sm text-fg-muted">Create a workspace-owned text resource.</p>
         </div>
-        <Button size="sm" variant="quiet" onPress={onCancel}>
+        <ActionButton size="sm" isQuiet onPress={onCancel}>
           Cancel
-        </Button>
+        </ActionButton>
       </div>
       <div className="mt-4 flex flex-col gap-4">
         {createError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't create this Material."
             onRetry={
               !disconnected && !isPending
@@ -82,18 +84,21 @@ function NewMaterialForm({
             }
           />
         ) : null}
-        <label className="flex flex-col gap-1 text-xs font-bold text-fg" htmlFor="material-title">
+        <label
+          className="flex flex-col gap-1 ok-field-label text-fg-muted"
+          htmlFor="material-title"
+        >
           Title
           <input
             id="material-title"
             value={title}
             onChange={(event) => setTitle(event.currentTarget.value)}
-            className="h-8 rounded-ok border border-border bg-card px-3 text-sm font-normal text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus:ring-2 focus:ring-focus"
+            className="h-control-md rounded-ok border border-border bg-card px-3 text-sm font-normal text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
             required
           />
         </label>
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-xs font-bold text-fg">Kind</legend>
+          <legend className="ok-field-label text-fg-muted">Kind</legend>
           <label className="flex items-center gap-2 text-sm text-fg">
             <input
               type="radio"
@@ -116,7 +121,7 @@ function NewMaterialForm({
           </label>
         </fieldset>
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-xs font-bold text-fg">Sensitivity</legend>
+          <legend className="ok-field-label text-fg-muted">Sensitivity</legend>
           {(['public', 'internal', 'restricted'] as const).map((value) => (
             <label key={value} className="flex items-center gap-2 text-sm capitalize text-fg">
               <input
@@ -242,7 +247,7 @@ function MaterialDetail({
   if (!record && material.isLoading) return <Skeleton lines={7} />;
   if (!record) {
     return (
-      <ErrorBanner message="Couldn't load this material." onRetry={() => void material.refetch()} />
+      <InlineAlert message="Couldn't load this material." onRetry={() => void material.refetch()} />
     );
   }
 
@@ -283,7 +288,7 @@ function MaterialDetail({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <Eyebrow>{record.kind === 'markdown' ? 'Markdown Material' : 'Text Material'}</Eyebrow>
-            <h2 className="mt-1 truncate text-lg font-extrabold text-fg-strong">{record.title}</h2>
+            <h2 className="mt-1 truncate text-lg font-heading text-fg-strong">{record.title}</h2>
             <p className="mt-1 font-mono text-xs text-fg-muted">{record.materialId}</p>
           </div>
           <span className="rounded-full bg-sunken px-2 py-1 text-xs capitalize text-fg-muted">
@@ -292,12 +297,12 @@ function MaterialDetail({
         </div>
         {conflict || revisionHeld ? (
           <div className="mt-4">
-            <ErrorBanner message="This material changed since you opened it. Keep the draft and save again after reviewing the current revision." />
+            <InlineAlert message="This material changed since you opened it. Keep the draft and save again after reviewing the current revision." />
           </div>
         ) : null}
         {material.isError ? (
           <div className="mt-4">
-            <ErrorBanner
+            <InlineAlert
               message="The latest Material details could not be refreshed."
               onRetry={() => void material.refetch()}
             />
@@ -305,7 +310,7 @@ function MaterialDetail({
         ) : null}
         {currentRevision.isError ? (
           <div className="mt-4">
-            <ErrorBanner
+            <InlineAlert
               message="The current saved revision could not be refreshed."
               onRetry={() => void currentRevision.refetch()}
             />
@@ -341,14 +346,14 @@ function MaterialDetail({
           <Skeleton lines={4} />
         </Card>
       ) : revisions.isError && !revisions.data ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load revision history."
           onRetry={() => void revisions.refetch()}
         />
       ) : (
         <>
           {revisions.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="The revision history could not be refreshed."
               onRetry={() => void revisions.refetch()}
             />
@@ -388,7 +393,7 @@ function MaterialDetail({
             <>
               {revision.isError ? (
                 <div className="mt-3">
-                  <ErrorBanner
+                  <InlineAlert
                     message="This opened revision could not be refreshed."
                     onRetry={() => void revision.refetch()}
                   />
@@ -406,7 +411,7 @@ function MaterialDetail({
             </>
           ) : revision.isError ? (
             <div className="mt-3">
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't load this revision."
                 onRetry={() => void revision.refetch()}
               />
@@ -427,7 +432,7 @@ function MaterialDetail({
           </p>
           {compareBefore.isError || compareAfter.isError ? (
             <div className="mt-3">
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't load both revisions for comparison."
                 onRetry={() => {
                   void compareBefore.refetch();
@@ -501,7 +506,7 @@ export function MaterialScreen() {
     return (
       <Page>
         {workspaces.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load workspaces"
             onRetry={() => void workspaces.refetch()}
           />
@@ -619,7 +624,7 @@ function MaterialSurfaceBody({
 
   if (!editorMaterialId && materialsLoading && !materials) return <Skeleton lines={5} />;
   if (!editorMaterialId && !materials) {
-    return <ErrorBanner message="Couldn't load Workspace Materials." onRetry={onRetryMaterials} />;
+    return <InlineAlert message="Couldn't load Workspace Materials." onRetry={onRetryMaterials} />;
   }
   if (!editorMaterialId) {
     return (
@@ -637,7 +642,7 @@ function MaterialSurfaceBody({
           />
         )}
         {materialsError ? (
-          <ErrorBanner
+          <InlineAlert
             message="The Material list could not be refreshed."
             onRetry={onRetryMaterials}
           />
@@ -662,16 +667,16 @@ function MaterialSurfaceBody({
               <Eyebrow>Workspace Materials</Eyebrow>
               <div className="mt-3 flex max-h-72 flex-col gap-1 overflow-y-auto">
                 {listedMaterials.map((material) => (
-                  <Button
+                  <ToggleButton
                     key={material.materialId}
                     size="sm"
-                    variant={material.materialId === selectedMaterialId ? 'outline' : 'quiet'}
-                    aria-pressed={material.materialId === selectedMaterialId}
+                    isQuiet
+                    isSelected={material.materialId === selectedMaterialId}
                     className="justify-start rounded-ok text-left"
                     onPress={() => onSelect(material.materialId)}
                   >
                     <span className="truncate">{material.title}</span>
-                  </Button>
+                  </ToggleButton>
                 ))}
               </div>
             </Card>
@@ -679,13 +684,13 @@ function MaterialSurfaceBody({
             materialsLoading ? (
               <Skeleton lines={5} />
             ) : (
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't load Workspace Materials."
                 onRetry={onRetryMaterials}
               />
             )
           ) : materialsError ? (
-            <ErrorBanner
+            <InlineAlert
               message="The Material list could not be refreshed."
               onRetry={onRetryMaterials}
             />
@@ -705,7 +710,7 @@ function MaterialSurfaceBody({
         </section>
       </div>
       {showCatalog && materialsError ? (
-        <ErrorBanner
+        <InlineAlert
           message="The Material list could not be refreshed."
           onRetry={onRetryMaterials}
         />

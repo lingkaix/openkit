@@ -31,16 +31,16 @@ export function SendFailure({
       </p>
       <div className="flex gap-2">
         {kind === 'unknown' ? (
-          <button type="button" className="min-h-11 underline" onClick={onRetry}>
+          <button type="button" className="underline" onClick={onRetry}>
             {timelineCopy.checkSend}
           </button>
         ) : null}
         {kind === 'not-sent' ? (
-          <button type="button" className="min-h-11 underline" onClick={onRetry}>
+          <button type="button" className="underline" onClick={onRetry}>
             {timelineCopy.retry}
           </button>
         ) : null}
-        <button type="button" className="min-h-11 underline" onClick={onEdit}>
+        <button type="button" className="underline" onClick={onEdit}>
           {timelineCopy.editDraft}
         </button>
       </div>

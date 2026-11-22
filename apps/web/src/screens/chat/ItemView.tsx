@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import {
   AssistantMessage,
   Button,
-  ErrorBanner,
+  InlineAlert,
   ItemCard,
   RadioGroup,
   TextField,
@@ -68,7 +68,7 @@ function ApprovalActions({
             size="sm"
             isDisabled={pending || held}
             aria-describedby={described(approveId, pendingDecision === 'granted')}
-            variant={emphasizePrimary === false ? 'outline' : 'accent'}
+            variant={emphasizePrimary === false ? 'secondary' : 'accent'}
             {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
             onPress={onApprove}
           >
@@ -77,7 +77,8 @@ function ApprovalActions({
         ) : null}
         <Button
           size="sm"
-          variant="negative-outline"
+          variant="negative"
+          fillStyle="outline"
           isDisabled={pending || held}
           aria-describedby={described(denyId, pendingDecision === 'denied')}
           onPress={onDeny}
@@ -194,6 +195,7 @@ function UserInputRequestView({
   return (
     <div role="status" aria-label="Needs your input">
       <ItemCard
+        decision
         kind="notice"
         title="Needs your input"
         meta={
@@ -273,7 +275,7 @@ function UserInputRequestView({
                 )}
               </div>
             ))}
-            {failed ? <ErrorBanner message="Couldn't submit answers." onRetry={onRetry} /> : null}
+            {failed ? <InlineAlert message="Couldn't submit answers." onRetry={onRetry} /> : null}
             {!readOnly ? (
               <>
                 <p id={`answer-why-${item.id}`}>{timelineCopy.answerConsequence}</p>
@@ -285,11 +287,12 @@ function UserInputRequestView({
                 ) : null}
                 <Button
                   type="submit"
+                  className="self-start"
                   isDisabled={!complete || pending}
                   aria-describedby={
                     pending || !complete ? `answer-wait-${item.id}` : `answer-why-${item.id}`
                   }
-                  variant={emphasizePrimary === false ? 'outline' : 'accent'}
+                  variant={emphasizePrimary === false ? 'secondary' : 'accent'}
                   {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
                 >
                   {pending ? 'Submitting answers' : 'Submit answers'}
@@ -506,6 +509,7 @@ export function ItemView({
             <TimelineTime iso={item.createdAt} />
           </p>
           <ItemCard
+            decision
             kind="notice"
             title={item.title}
             meta={item.description}
@@ -564,7 +568,7 @@ export function ItemView({
               <p role="status">{timelineCopy.waitForDecision}</p>
             ) : null}
             {approvalError && !resolvedApproval ? (
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't submit this decision."
                 onRetry={readOnly || approvalUnavailableReason ? undefined : onRetryApproval}
               />

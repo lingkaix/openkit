@@ -1,7 +1,7 @@
 import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
 import { Fragment, type ReactNode, type Ref, useState } from 'react';
 import { useOptionalCoreClient } from '../../../app/core-client';
-import { Button } from '../../../primitives';
+import { ActionButton } from '../../../primitives';
 import { type ThreadItem, useThreadDashboard } from '../data';
 import { ItemView } from '../ItemView';
 import { digestsCarriedWith } from './argument-digest';
@@ -126,14 +126,14 @@ function ClosedDecisionFold({
   const [open, setOpen] = useState(false);
   return (
     <div data-fold-depth="1" data-decision-fold="closed">
-      <Button
-        variant="quiet"
+      <ActionButton
+        isQuiet
         size="sm"
         aria-expanded={open}
         onPress={() => setOpen((value) => !value)}
       >
         {line}
-      </Button>
+      </ActionButton>
       {open
         ? members.map((item) => (
             <div key={item.id} data-fold-depth="2" data-decision-member={item.id}>
@@ -395,9 +395,9 @@ function RunEntryBody({
         <div key={preview.id} className="ok-prose" data-preview={preview.id}>
           <p>{preview.text}</p>
           {preview.truncated && onShowFullText ? (
-            <Button variant="quiet" size="sm" onPress={() => onShowFullText(preview)}>
+            <ActionButton isQuiet size="sm" onPress={() => onShowFullText(preview)}>
               {timelineCopy.showFullText}
-            </Button>
+            </ActionButton>
           ) : null}
         </div>
       ));
@@ -448,14 +448,14 @@ function RunEntryBody({
       />
       {earlierPlans.length > 0 ? (
         <div data-fold-depth="1">
-          <Button
-            variant="quiet"
+          <ActionButton
+            isQuiet
             size="sm"
             aria-expanded={showEarlierPlans}
             onPress={() => setShowEarlierPlans((open) => !open)}
           >
             {fillCopy(timelineCopy.earlierPlans, { count: earlierPlans.length })}
-          </Button>
+          </ActionButton>
           {showEarlierPlans ? (
             <ul data-fold-depth="2">
               {earlierPlans.map((plan) => (
@@ -478,14 +478,14 @@ function RunEntryBody({
       })}
       {notes.earlierCount > 0 ? (
         <div data-fold-depth="1">
-          <Button
-            variant="quiet"
+          <ActionButton
+            isQuiet
             size="sm"
             aria-expanded={showEarlierNotes}
             onPress={() => setShowEarlierNotes((open) => !open)}
           >
             {fillCopy(timelineCopy.earlierNotes, { count: notes.earlierCount })}
-          </Button>
+          </ActionButton>
           {showEarlierNotes
             ? entry.notes
                 .map((note) => note.itemId)
@@ -518,8 +518,8 @@ function RunEntryBody({
       ) : null}
       {steps.length > 0 || entry.stats.stepCount > 0 ? (
         <div data-fold-depth="1">
-          <Button
-            variant="quiet"
+          <ActionButton
+            isQuiet
             size="sm"
             data-fold-control="true"
             aria-expanded={stepsInSheet ? Boolean(stepsSheetOpen) : runLens === 'full' || stepsOpen}
@@ -534,19 +534,19 @@ function RunEntryBody({
             }}
           >
             {stepsFoldLabel(entry.stats.stepCount, entry.stats.failedStepCount)}
-          </Button>
+          </ActionButton>
           {offersOpenAllSteps(entry.stats.stepCount) ? (
-            <Button variant="quiet" size="sm" onPress={onOpenAllSteps}>
+            <ActionButton isQuiet size="sm" onPress={onOpenAllSteps}>
               {timelineCopy.openAllSteps}
-            </Button>
+            </ActionButton>
           ) : null}
           {!stepsInSheet && (runLens === 'full' || stepsOpen) ? (
             <ul data-fold-depth="2" className="mt-2 flex flex-col gap-2">
               {groups.map((group) =>
                 group.items.length > 1 ? (
                   <li key={group.key} data-step-members={group.digest ?? group.key}>
-                    <Button
-                      variant="quiet"
+                    <ActionButton
+                      isQuiet
                       size="sm"
                       aria-expanded={openGroups.has(group.key)}
                       onPress={() =>
@@ -559,7 +559,7 @@ function RunEntryBody({
                       }
                     >
                       {group.label}
-                    </Button>
+                    </ActionButton>
                     {openGroups.has(group.key)
                       ? group.items.map((item) => (
                           <div
@@ -619,15 +619,15 @@ function RunEntryBody({
       ) : showActivity ? (
         activityLine
       ) : null}
-      <Button
+      <ActionButton
         ref={inspectRef}
-        variant="quiet"
+        isQuiet
         size="sm"
         aria-expanded={inspected}
         onPress={onInspect}
       >
         {timelineCopy.inspectRun}
-      </Button>
+      </ActionButton>
     </article>
   );
 }

@@ -107,7 +107,7 @@ function ToastHold({
  * width floor. The action is a 44px target. Transient, dismissible, and
  * non-blocking, for events that finished while the user was elsewhere (D-006 #3).
  * This component is presentational; the mounted provider owns announcements.
- * Keeps an explicit dark fill under Noir.
+ * The fill inverts the canvas: dark on a light page, light on a dark page.
  */
 export function Toast({ message, actionLabel = 'View', onAction, onDismissAction }: ToastProps) {
   return (
@@ -117,7 +117,7 @@ export function Toast({ message, actionLabel = 'View', onAction, onDismissAction
         <button
           type="button"
           onClick={onAction}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-2 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          className="inline-flex h-control-sm shrink-0 items-center justify-center rounded-full border border-toast-fg px-3 text-xs font-bold outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           {actionLabel}
         </button>
@@ -126,7 +126,7 @@ export function Toast({ message, actionLabel = 'View', onAction, onDismissAction
         type="button"
         onClick={onDismissAction}
         aria-label="Dismiss notification"
-        className="rounded-ok p-0.5 outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-focus"
+        className="rounded-ok p-0.5 outline-none hover:opacity-80 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
         <Icon name="close" size="sm" />
       </button>

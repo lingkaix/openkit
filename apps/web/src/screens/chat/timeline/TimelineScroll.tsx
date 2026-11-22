@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Button } from '../../../primitives';
+import { ActionButton } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
 import { writeTimelineHistory } from './navigation-state';
 import { isFollowing, scrollCorrection, sentinelDistancePx, shouldPageEdge } from './window';
@@ -695,15 +695,15 @@ export function TimelineScroll({
 
   const newUpdatesButton =
     newCount > 0 && !following ? (
-      <Button
-        variant="quiet"
+      <ActionButton
+        isQuiet
         size="sm"
         className={updatesHost ? undefined : 'self-center'}
         data-emphasis={decisionNew ? 'decision' : undefined}
         onPress={onCatchUp}
       >
         {fillCopy(timelineCopy.newUpdates, { count: newCount })}
-      </Button>
+      </ActionButton>
     ) : null;
   const newUpdates = updatesHost ? createPortal(newUpdatesButton, updatesHost) : newUpdatesButton;
 
@@ -720,9 +720,9 @@ export function TimelineScroll({
     >
       <div ref={topSentinel} aria-hidden="true" />
       {canEarlier ? (
-        <Button
+        <ActionButton
           ref={earlierRef}
-          variant="quiet"
+          isQuiet
           size="sm"
           onPress={() => {
             restoreEarlierFocus.current = true;
@@ -731,25 +731,25 @@ export function TimelineScroll({
           }}
         >
           {timelineCopy.loadEarlier}
-        </Button>
+        </ActionButton>
       ) : null}
       {children}
       {canLater ? (
-        <Button variant="quiet" size="sm" onPress={onLater}>
+        <ActionButton isQuiet size="sm" onPress={onLater}>
           {timelineCopy.loadLater}
-        </Button>
+        </ActionButton>
       ) : null}
       <div ref={bottomSentinel} aria-hidden="true" />
       {showJump ? (
-        <Button
+        <ActionButton
           ref={jumpRef}
-          variant="quiet"
+          isQuiet
           size="sm"
           className="sticky bottom-3 z-10 self-center"
           onPress={onJump}
         >
           {timelineCopy.jumpToLatest}
-        </Button>
+        </ActionButton>
       ) : null}
       {newUpdates}
     </div>

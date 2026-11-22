@@ -3,9 +3,10 @@ import type { CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
+import { threadActivityHint } from '../chat/data';
 import { ThreadScreen } from '../chat/ThreadScreen';
 import { lintCopyText, timelineCopy } from '../chat/timeline/copy';
 import { GoalScreen } from './GoalScreen';
@@ -184,9 +185,19 @@ function threadRecord(threadId: string) {
   };
 }
 
+/** The Thread route's page choice, reduced to the opener hint: a Task link opens a Task. */
+function ThreadByHint() {
+  const { state } = useLocation();
+  return threadActivityHint(state) === 'task' ? (
+    <ThreadScreen key="task" mode="task" />
+  ) : (
+    <GoalScreen key="goal" />
+  );
+}
+
 function mount(
   data = view(),
-  entry = `/goals/${WS}/${GOAL_THREAD}`,
+  entry = `/w/${WS}/t/${GOAL_THREAD}`,
   timeline?: (input: { anchor?: { kind?: string; itemId?: string } }) => unknown
 ) {
   const threadItems = vi.fn(async ({ threadId }: { threadId: string }) => {
@@ -290,8 +301,7 @@ function mount(
       <CoreClientProvider client={client}>
         <MemoryRouter initialEntries={[entry]}>
           <Routes>
-            <Route path="/goals/:workspaceId/:threadId" element={<GoalScreen />} />
-            <Route path="/tasks/:workspaceId/:threadId" element={<ThreadScreen mode="task" />} />
+            <Route path="/w/:workspaceId/t/:threadId" element={<ThreadByHint />} />
           </Routes>
         </MemoryRouter>
       </CoreClientProvider>
@@ -328,7 +338,7 @@ it('merges the Goal and Task Needs you rows and labels each Task', async () => {
   const user = userEvent.setup();
   const board = await screen.findByRole('heading', { name: 'Cards' });
   const summary = await screen.findByRole('button', { name: /3 need you/ });
-  const lens = await screen.findByRole('group', { name: 'Work | Full' });
+  const lens = await screen.findByRole('group', { name: 'Timeline view' });
   expect(board.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(summary.compareDocumentPosition(lens) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await user.click(summary);
@@ -388,7 +398,7 @@ it('opens a card Task and comes back to that card', async () => {
 });
 
 it('opens the Goal on the card named in the link', async () => {
-  mount(view(), `/goals/${WS}/${GOAL_THREAD}?card=c2`);
+  mount(view(), `/w/${WS}/t/${GOAL_THREAD}?card=c2`);
   await waitFor(() => expect(document.getElementById('goal-card-c2')).toHaveFocus());
 });
 
@@ -497,7 +507,7 @@ it('moves the Goal narrative to the item named in the link', async () => {
     restrictedReferences: false,
     echoedAnchor: input.anchor ?? null,
   }));
-  mount(view(), `/goals/${WS}/${GOAL_THREAD}?item=${GOAL_ITEM}`, timeline);
+  mount(view(), `/w/${WS}/t/${GOAL_THREAD}?item=${GOAL_ITEM}`, timeline);
   await waitFor(() => expect(screen.getByText(GOAL_NOTE)).toBeVisible());
   await waitFor(() => expect(document.activeElement?.id).toBe(`timeline-item-${GOAL_ITEM}`));
   expect(timeline.mock.calls.map((call) => call[0].anchor)).toContainEqual({

@@ -1,30 +1,33 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Button, ToastProvider } from '../primitives';
+import { ActionButton, ToastProvider } from '../primitives';
 import { AppUpdatePrompt } from '../pwa/AppUpdatePrompt';
 import { TimelineToasts } from '../screens/chat/timeline/TimelineToasts';
 import { DisconnectedBanner } from './DisconnectedBanner';
 import { usePersistentNavigation } from './persistent-nav';
 import { Sidebar } from './Sidebar';
+import { SearchPaletteProvider } from './search/SearchPalette';
+import { useThreadActivityAt } from './thread-activity';
 
 export { usePersistentNavigation } from './persistent-nav';
 
-/** Phone sections. Action Center is a count on Work's Tasks segment and a More row. */
+/** Phone sections. Needs you is a count on Work's Tasks segment and a More row. */
 function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => void }) {
-  const { pathname } = useLocation();
+  const { pathname, state } = useLocation();
   const navigate = useNavigate();
+  const thread = useThreadActivityAt(pathname, state);
   const items: { label: string; path: string; active: boolean }[] = [
     {
       label: 'Assistant',
-      path: '/',
-      active: pathname === '/' || pathname.startsWith('/chat'),
+      path: '/assistant',
+      active:
+        pathname === '/' || pathname === '/assistant' || pathname === '/new' || thread === 'chat',
     },
     {
       label: 'Work',
       path: '/work',
-      active:
-        pathname === '/work' || pathname.startsWith('/tasks') || pathname.startsWith('/goals'),
+      active: pathname === '/work' || thread === 'task' || thread === 'goal',
     },
     {
       label: 'Knowledge',
@@ -40,24 +43,24 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
   return (
     <nav aria-label="Sections" className="flex shrink-0 border-t border-separator bg-canvas">
       {items.map((item) => (
-        <Button
+        <ActionButton
           key={item.label}
-          variant="quiet"
-          className="min-h-11 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-sm"
+          isQuiet
+          className="min-h-12 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-xs"
           aria-current={item.active ? 'page' : undefined}
           onPress={() => navigate(item.path)}
         >
           {item.label}
-        </Button>
+        </ActionButton>
       ))}
-      <Button
-        variant="quiet"
-        className="min-h-11 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-sm"
+      <ActionButton
+        isQuiet
+        className="min-h-12 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-xs"
         aria-expanded={drawerOpen}
         onPress={onMore}
       >
         More
-      </Button>
+      </ActionButton>
     </nav>
   );
 }
@@ -65,7 +68,7 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
 /**
  * App shell (DESIGN.md §3): two persistent regions plus one optional auxiliary.
  *
- * Left sidebar (264px) · centered main column (the routed surface). The optional
+ * Left sidebar (240px) · centered main column (the routed surface). The optional
  * auxiliary rail is never a required region and never a decorative empty strip
  * (§3.3, Principle 8), so a surface that has an index renders its own rail (e.g.
  * the chat thread's artifacts rail) rather than the shell reserving dead space.
@@ -74,10 +77,11 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
  * width, and wide content scrolls inside its own region. Safe-area insets pad
  * the shell. Below 800px the sidebar is gone. Five buttons sit on the bottom:
  * Assistant, Work, Knowledge, Artifacts, and More. Each label stays on one line
- * so a 390px bar cannot break a word. More opens the supporting drawer. The bar
+ * so a 390px bar cannot break a word. More opens the drawer, which holds the same
+ * content as the desktop sidebar (ia.md §1). The bar
  * hides while a composer field is focused.
- * The global disconnected banner sits above the work area (§9.12). Search lives
- * on the sidebar brand row, not as a pinned main-view strip.
+ * The global disconnected banner sits above the work area (§9.12). Search is the
+ * sidebar Search row and ⌃K / ⌘K anywhere (ia.md §1a), never a pinned main-view strip.
  */
 export function AppShell() {
   const persistentNav = usePersistentNavigation();
@@ -107,41 +111,39 @@ export function AppShell() {
     };
   }, []);
 
-  const sidebar = persistentNav ? (
-    <Sidebar />
-  ) : (
-    <Sidebar variant="more" onClose={() => setDrawerOpen(false)} />
-  );
+  const sidebar = persistentNav ? <Sidebar /> : <Sidebar onClose={() => setDrawerOpen(false)} />;
 
   return (
-    <div className="ok-safe-shell flex h-full min-h-0 min-w-0 bg-canvas text-fg">
-      {persistentNav ? sidebar : null}
-      {!persistentNav ? (
-        <ModalOverlay
-          isDismissable
-          isOpen={drawerOpen}
-          onOpenChange={setDrawerOpen}
-          className="fixed inset-0 z-50 flex justify-start bg-fg/40"
-        >
-          <Modal className="h-full outline-none">
-            <Dialog aria-label="More" className="flex h-full outline-none">
-              {sidebar}
-            </Dialog>
-          </Modal>
-        </ModalOverlay>
-      ) : null}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <AppUpdatePrompt />
-        <DisconnectedBanner />
-        <main aria-label="Workspace" className="min-h-0 flex-1 overflow-y-auto">
-          <Outlet />
-        </main>
-        {!persistentNav && !composerFocused ? (
-          <PhoneNav drawerOpen={drawerOpen} onMore={() => setDrawerOpen(true)} />
+    <SearchPaletteProvider>
+      <div className="ok-safe-shell flex h-full min-h-0 min-w-0 bg-canvas text-fg">
+        {persistentNav ? sidebar : null}
+        {!persistentNav ? (
+          <ModalOverlay
+            isDismissable
+            isOpen={drawerOpen}
+            onOpenChange={setDrawerOpen}
+            className="fixed inset-0 z-50 flex justify-start bg-fg/40"
+          >
+            <Modal className="h-full outline-none">
+              <Dialog aria-label="More" className="flex h-full outline-none">
+                {sidebar}
+              </Dialog>
+            </Modal>
+          </ModalOverlay>
         ) : null}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <AppUpdatePrompt />
+          <DisconnectedBanner />
+          <main aria-label="Workspace" className="min-h-0 flex-1 overflow-y-auto">
+            <Outlet />
+          </main>
+          {!persistentNav && !composerFocused ? (
+            <PhoneNav drawerOpen={drawerOpen} onMore={() => setDrawerOpen(true)} />
+          ) : null}
+        </div>
+        <ToastProvider />
+        <TimelineToasts />
       </div>
-      <ToastProvider />
-      <TimelineToasts />
-    </div>
+    </SearchPaletteProvider>
   );
 }

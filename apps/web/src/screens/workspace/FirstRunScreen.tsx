@@ -5,11 +5,11 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
 } from '../../primitives';
 import { useWorkspaces } from './data';
 
@@ -17,7 +17,7 @@ import { useWorkspaces } from './data';
  * First-run welcome (WP-6, board 18) — the app-level empty / onboarding state.
  *
  * Surfaces connect/runtime readiness with retry, then workspace creation. When a
- * workspace already exists, offers a short "you're set" path back to Action Center.
+ * workspace already exists, offers a short "you're set" path back to Needs you.
  */
 export function FirstRunScreen() {
   const { connected, checking, failed, retry } = useConnection();
@@ -53,7 +53,7 @@ export function FirstRunScreen() {
     return (
       <Page>
         <PageHeader eyebrow="Welcome" title="Your agent team, ready for real work" />
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -69,18 +69,18 @@ export function FirstRunScreen() {
         <PageHeader
           eyebrow="Welcome"
           title="You're set"
-          subtitle="A workspace is ready. Head to Action Center to see what needs you."
+          subtitle="A Workspace is ready. Open Needs you to see what is waiting for you."
         />
         <EmptyState
           icon="home"
-          title="Go to Action Center"
-          hint="Action Center is the home for Needs you and work in motion."
+          title="Go to Needs you"
+          hint="Needs you lists the decisions waiting for you and the work in progress."
           action={
             <Link
-              to="/"
-              className="inline-flex min-h-11 items-center rounded-full bg-accent px-4 text-sm font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              to="/needs-you"
+              className="inline-flex items-center rounded-full bg-accent px-4 text-sm font-bold text-on-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
             >
-              Action Center
+              Needs you
             </Link>
           }
         />
@@ -101,11 +101,7 @@ export function FirstRunScreen() {
           done
           title="Agent runtime connected"
           help="Local NanoCore is reachable."
-          trailing={
-            <StatusChip tone="positive" dot>
-              Ready
-            </StatusChip>
-          }
+          trailing={<StatusLight tone="positive">Ready</StatusLight>}
         />
         <SetupRow
           step={2}
@@ -114,7 +110,7 @@ export function FirstRunScreen() {
           trailing={
             <Link
               to="/settings/workspaces/new"
-              className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+              className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
             >
               Create workspace
             </Link>

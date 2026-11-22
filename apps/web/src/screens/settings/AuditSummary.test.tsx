@@ -199,7 +199,7 @@ describe('Usage & audit summaries and long lists (P8)', () => {
 
     expect(threadLinks.length).toBeGreaterThan(0);
     for (const link of threadLinks) {
-      expect(link).toHaveAttribute('href', `/tasks/${WORKSPACE_ID}/${THREAD_ID}`);
+      expect(link).toHaveAttribute('href', `/w/${WORKSPACE_ID}/t/${THREAD_ID}`);
     }
   });
 

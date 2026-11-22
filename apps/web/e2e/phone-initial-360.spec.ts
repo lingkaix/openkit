@@ -25,22 +25,16 @@ async function stopStack(stack: IsolatedWebStack | null) {
 }
 
 async function selectWorkspace(page: Page, workspaceName: string) {
-  // `/` replaces itself with Action Center and that navigation closes More.
+  // `/` replaces itself with Needs you and that navigation closes More.
   await page.waitForURL((url) => url.pathname !== '/');
   const sections = page.getByRole('navigation', { name: 'Sections' });
   await expect(sections.getByRole('button')).toHaveCount(5);
   await sections.getByRole('button', { name: 'More', exact: true }).click();
   const drawer = page.getByRole('dialog', { name: 'More' });
   await expect(drawer).toBeVisible();
-  const selected = drawer.getByRole('button', { name: workspaceName, exact: true });
-  const personal = drawer.getByRole('button', { name: 'Personal', exact: true });
-  await expect(selected.or(personal)).toBeVisible();
-  if ((await selected.count()) === 0) {
-    await personal.click();
-    await page.getByRole('menuitem', { name: workspaceName, exact: true }).click();
-  }
-  await expect(selected).toBeVisible();
-  await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click();
+  // B2: the drawer has one group per Workspace. A place in the group ⋯ menu selects it.
+  await drawer.getByRole('button', { name: `${workspaceName} options`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Workspace settings', exact: true }).click();
   await expect(drawer).toBeHidden();
 }
 
@@ -93,17 +87,13 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
     await page.getByRole('tab', { name: 'Goals', exact: true }).click();
     await expect(page.getByRole('button', { name: 'New Goal', exact: true })).toBeVisible();
     await selectWorkspace(page, personal!.name);
-    await sections.getByRole('button', { name: 'Assistant', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
-    await expect(
-      page.getByRole('button', { name: 'Personal Assistant', exact: true })
-    ).toBeVisible();
+    // B2: the phone Assistant section opens the Personal Assistant (/assistant).
     const opening = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === '/api/app/operations/thread.create' &&
         response.request().method() === 'POST'
     );
-    await page.getByRole('button', { name: 'Personal Assistant', exact: true }).click();
+    await sections.getByRole('button', { name: 'Assistant', exact: true }).click();
     const createdResponse = await opening;
     expect(createdResponse.status()).toBe(200);
     const createdRequest = createdResponse.request().postDataJSON();
@@ -113,7 +103,7 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
     const assistant = ThreadSchema.parse(await createdResponse.json());
     expect(assistant.visibility).toBe('private');
     expect(assistant.owner).toEqual({ kind: 'workspace', workspaceId: personal!.id });
-    await expect(page).toHaveURL(new RegExp(`/chat/${personal!.id}/${assistant.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/w/${personal!.id}/t/${assistant.id}$`));
     await expect(page.getByRole('heading', { name: 'Assistant', exact: true })).toBeVisible();
     await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
     await expect(page.getByRole('button', { name: /Conversation agent$/ })).toHaveCount(0);
@@ -156,9 +146,16 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
       const active = document.activeElement;
       if (active instanceof HTMLElement) active.blur();
     });
+    // The opener runs again on each visit and returns the same private Timeline.
+    const reopening = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/app/operations/thread.create' &&
+        response.request().method() === 'POST'
+    );
     await sections.getByRole('button', { name: 'Assistant', exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`/chat/${personal!.id}/${assistant.id}$`));
-    expect(threadCreates).toBe(1);
+    expect(ThreadSchema.parse(await (await reopening).json()).id).toBe(assistant.id);
+    await expect(page).toHaveURL(new RegExp(`/w/${personal!.id}/t/${assistant.id}$`));
+    expect(threadCreates).toBe(2);
     await page.evaluate(() => {
       const active = document.activeElement;
       if (active instanceof HTMLElement) active.blur();
@@ -169,9 +166,11 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
     await sections.getByRole('button', { name: 'More', exact: true }).click();
     await page
       .getByRole('navigation', { name: 'Settings sections' })
-      .getByRole('button', { name: 'Gateway', exact: true })
+      .getByRole('button', { name: 'Models and providers', exact: true })
       .click();
-    await expect(page.getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Models and providers', exact: true })
+    ).toBeVisible();
     await expect(page).toHaveURL(/\/settings\/gateway$/);
     const overflow = await page.evaluate(() => ({
       bodyWidth: document.body.scrollWidth,
@@ -249,9 +248,7 @@ test('admits an empty Workspace Task from the phone Work list', async ({ page })
         { timeout: 15_000 }
       )
       .toBe('task');
-    await expect(page).toHaveURL(
-      new RegExp(`/tasks/${workspace.id}/${handoff.receivingThreadId}$`)
-    );
+    await expect(page).toHaveURL(new RegExp(`/w/${workspace.id}/t/${handoff.receivingThreadId}$`));
     expect(submissions).toHaveLength(1);
     expect(page.viewportSize()).toEqual({ width: 360, height: 800 });
   } finally {
@@ -516,9 +513,7 @@ test('routes the selected artifact version from the phone without submitting', a
     await comparison
       .getByRole('button', { name: 'Use selected in next Turn', exact: true })
       .click();
-    await expect(page).toHaveURL(
-      new RegExp(`/tasks/${workspace.id}/${handoff.receivingThreadId}$`)
-    );
+    await expect(page).toHaveURL(new RegExp(`/w/${workspace.id}/t/${handoff.receivingThreadId}$`));
     await expect(page.getByRole('button', { name: 'Remove Comparison report' })).toBeVisible();
     expect(submissions).toHaveLength(submitsBeforeUse);
     // Preserve the retained phone failure as a regression; Use itself must not submit.
@@ -566,20 +561,18 @@ function register_phone_shell_spec_ts_0() {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.goto(stack.webUrl);
     await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Needs you', exact: true })).toBeVisible();
 
     const sections = page.getByRole('navigation', { name: 'Sections' });
     await expect(sections.getByRole('button')).toHaveCount(5);
-    await sections.getByRole('button', { name: 'Assistant', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
     await sections.getByRole('button', { name: 'Work', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toBeVisible();
     await sections.getByRole('button', { name: 'More', exact: true }).click();
     await page
       .getByRole('dialog')
-      .getByRole('button', { name: /^Action Center/ })
+      .getByRole('button', { name: /^Needs you/ })
       .click();
-    await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Needs you', exact: true })).toBeVisible();
     await sections.getByRole('button', { name: 'Knowledge', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Knowledge', exact: true })).toBeVisible();
     await expect(sections.getByRole('button', { name: 'More', exact: true })).toBeVisible();
@@ -591,7 +584,7 @@ function register_phone_shell_spec_ts_0() {
     );
     await page.getByRole('button', { name: 'Personal Assistant', exact: true }).click();
     await opening;
-    await expect(page).toHaveURL(/\/chat\/[^/]+\/[^/]+$/);
+    await expect(page).toHaveURL(/\/w\/[^/]+\/t\/[^/]+$/);
 
     await page.setViewportSize({ width: 360, height: 800 });
     await expect(page.getByRole('heading', { name: 'Assistant', exact: true })).toBeVisible();
@@ -608,9 +601,11 @@ function register_phone_shell_spec_ts_0() {
     await more.click();
     await page
       .getByRole('navigation', { name: 'Settings sections' })
-      .getByRole('button', { name: 'Gateway', exact: true })
+      .getByRole('button', { name: 'Models and providers', exact: true })
       .click();
-    await expect(page.getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Models and providers', exact: true })
+    ).toBeVisible();
     await expect(page).toHaveURL(/\/settings\/gateway$/);
   });
 }

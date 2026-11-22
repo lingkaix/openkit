@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Button, Dialog, Modal, Select, TextField } from '../../primitives';
+import { Button, Dialog, Modal, Picker, TextField } from '../../primitives';
 
 /** Client-side filters. These governance reads do not accept them on the wire. */
 export interface ListFilter {
@@ -154,7 +154,7 @@ export function LongList({
   const [open, setOpen] = useState(false);
   const fields = (
     <div className="flex flex-col gap-3">
-      <Select
+      <Picker
         label="Outcome"
         items={OUTCOMES}
         selectedKey={filter.outcome}
@@ -195,8 +195,7 @@ export function LongList({
   );
   const recordButton = (
     <Button
-      variant="outline"
-      className="min-h-11"
+      variant="secondary"
       aria-expanded={phone ? undefined : open}
       onPress={phone ? undefined : () => setOpen((current) => !current)}
     >
@@ -209,26 +208,14 @@ export function LongList({
       <h2 className="text-sm font-bold text-fg-strong">Failed or needs a decision</h2>
       <div className="flex flex-col gap-2 text-sm text-fg">{summary(filter)}</div>
       {phone ? (
-        <Modal
-          trigger={
-            <Button variant="outline" className="min-h-11">
-              Filters
-            </Button>
-          }
-        >
+        <Modal trigger={<Button variant="secondary">Filters</Button>}>
           <Dialog title="Filters">{fields}</Dialog>
         </Modal>
       ) : (
         fields
       )}
       {phone ? (
-        <Modal
-          trigger={
-            <Button variant="outline" className="min-h-11">
-              Records
-            </Button>
-          }
-        >
+        <Modal trigger={<Button variant="secondary">Records</Button>}>
           <Dialog title="Records">{records(filter)}</Dialog>
         </Modal>
       ) : (

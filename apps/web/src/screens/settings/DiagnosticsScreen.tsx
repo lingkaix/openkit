@@ -1,17 +1,17 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
-  Button,
   Card,
   EmptyState,
-  ErrorBanner,
-  Gallery,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
   Skeleton,
+  ToggleButton,
 } from '../../primitives';
-import { chatThreadPath } from '../chat/data';
+import { threadPath } from '../chat/data';
+import { ALL_COMPONENTS_PATH } from './AppearanceScreen';
 import {
   type AepSnapshotDetailRow,
   type AepSnapshotListRow,
@@ -25,8 +25,11 @@ import {
   useWorkspaces,
 } from './data';
 
-/** Settings home for the component catalog and selected-Workspace inspection reads. */
-export function DebugScreen() {
+/**
+ * Server diagnostics: selected-Workspace evidence bundles, runtime evidence and package
+ * snapshots. Component specimens live on the separate Components page (WEB-UX P14).
+ */
+export function DiagnosticsScreen() {
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId();
   const bundles = useEvidenceBundles(workspaceId);
@@ -39,18 +42,28 @@ export function DebugScreen() {
   const selectedSnapshotId =
     selection && workspaceId && selection.workspaceId === workspaceId ? selection.snapshotId : null;
   const snapshotDetail = useAepSnapshotDetail(workspaceId, selectedSnapshotId);
+  const { state } = useLocation();
+  const movedFromDebug = (state as { movedFrom?: string } | null)?.movedFrom === '/settings/debug';
 
   return (
     <Page>
       <PageHeader
-        eyebrow="Developer tools"
-        title="Debug"
-        subtitle="Component catalog and inspection tools."
+        eyebrow="Administration"
+        title="Diagnostics"
+        subtitle="Evidence and package snapshots for the selected Workspace."
       />
-      <Gallery />
+      {movedFromDebug ? (
+        <p className="text-sm text-fg-muted">
+          The component gallery moved to{' '}
+          <Link className="text-accent-content underline" to={ALL_COMPONENTS_PATH}>
+            Appearance → All components
+          </Link>
+          .
+        </p>
+      ) : null}
 
       {workspaces.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -68,8 +81,8 @@ export function DebugScreen() {
         />
       ) : (
         <>
-          <DebugList
-            id="debug-evidence-bundles"
+          <DiagnosticsList
+            id="diagnostics-evidence-bundles"
             title="Evidence bundles"
             emptyTitle="No evidence bundles"
             emptyHint="Workspace evidence summaries will appear here when collected."
@@ -81,10 +94,10 @@ export function DebugScreen() {
             {(bundles.data ?? []).map((bundle) => (
               <EvidenceRow key={bundle.id} bundle={bundle} />
             ))}
-          </DebugList>
+          </DiagnosticsList>
 
-          <DebugList
-            id="debug-runtime-evidence"
+          <DiagnosticsList
+            id="diagnostics-runtime-evidence"
             title="Runtime evidence"
             emptyTitle="No runtime evidence"
             emptyHint="Workspace runtime summaries will appear here when collected."
@@ -96,10 +109,10 @@ export function DebugScreen() {
             {(runtime.data ?? []).map((record) => (
               <RuntimeRow key={record.id} record={record} />
             ))}
-          </DebugList>
+          </DiagnosticsList>
 
-          <DebugList
-            id="debug-aep-snapshots"
+          <DiagnosticsList
+            id="diagnostics-aep-snapshots"
             title="Package snapshots"
             emptyTitle="No package snapshots"
             emptyHint="Agent Environment Package snapshots will appear here when recorded."
@@ -120,13 +133,13 @@ export function DebugScreen() {
                 }}
               />
             ))}
-          </DebugList>
+          </DiagnosticsList>
 
           {selectedSnapshotId ? (
             snapshotDetail.isLoading ? (
               <Skeleton lines={2} />
             ) : snapshotDetail.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't load package snapshot."
                 onRetry={() => void snapshotDetail.refetch()}
               />
@@ -141,11 +154,11 @@ export function DebugScreen() {
 }
 
 /**
- * Renders one independent Debug inspection family with its own loading, empty, and retry states.
+ * Renders one independent Diagnostics inspection family with its own loading, empty, and retry states.
  *
  * @param props Section identity, query state, and projected rows.
  */
-function DebugList({
+function DiagnosticsList({
   id,
   title,
   emptyTitle,
@@ -175,7 +188,7 @@ function DebugList({
       {isLoading ? (
         <Skeleton lines={3} />
       ) : isError ? (
-        <ErrorBanner message={errorMessage} onRetry={onRetry} />
+        <InlineAlert message={errorMessage} onRetry={onRetry} />
       ) : empty ? (
         <EmptyState icon="search" title={emptyTitle} hint={emptyHint} />
       ) : (
@@ -227,14 +240,9 @@ function SnapshotRow({
 }) {
   return (
     <ListRow>
-      <Button
-        variant={selected ? 'outline' : 'quiet'}
-        size="sm"
-        aria-pressed={selected}
-        onPress={onSelect}
-      >
+      <ToggleButton isQuiet size="sm" isSelected={selected} onPress={onSelect}>
         {snapshot.snapshotId}
-      </Button>
+      </ToggleButton>
     </ListRow>
   );
 }
@@ -251,7 +259,7 @@ function SnapshotDetail({ detail }: { detail: AepSnapshotDetailRow }) {
       <p className="text-sm text-fg">{detail.packageId}</p>
       <Link
         className="text-sm text-accent underline"
-        to={chatThreadPath(detail.workspaceId, detail.threadId)}
+        to={threadPath(detail.workspaceId, detail.threadId)}
       >
         Open Thread {detail.threadId}
       </Link>

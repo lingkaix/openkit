@@ -70,7 +70,7 @@ describe('Discord settings', () => {
         items: [
           {
             id: '10000000-0000-4000-8000-000000000003',
-            appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
+            appPath: `/w/${workspaceId}/t/${threadId}?requestId=req_channels`,
             source: {
               workspaceId,
               threadId,
@@ -108,7 +108,7 @@ describe('Discord settings', () => {
       binding: { discordUserId: 'prior-account', pairedAt: 1 },
     });
     queryClient.setQueryData(oldDeliveriesKey, {
-      items: [{ appPath: `/chat/${workspaceId}/${threadId}` }],
+      items: [{ appPath: `/w/${workspaceId}/t/${threadId}` }],
     });
     const pairing = queryClient.getMutationCache().build(queryClient, {
       mutationKey: [...accountChannelsKey, 'pair'],
@@ -199,7 +199,7 @@ describe('Discord settings', () => {
       recipientUserId,
       channel: 'discord',
       createdAt: '2026-10-16T00:00:00Z',
-      appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
+      appPath: `/w/${workspaceId}/t/${threadId}?requestId=req_channels`,
     };
     const value = client({
       'channel.discord.status': vi.fn().mockResolvedValue({
@@ -250,7 +250,7 @@ describe('Discord settings', () => {
       recipientUserId,
       channel: 'discord' as const,
       createdAt: '2026-10-16T00:00:00Z',
-      appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
+      appPath: `/w/${workspaceId}/t/${threadId}?requestId=req_channels`,
       attempt: null,
     };
     const list = vi.fn(async (input: { limit?: number; cursor?: string }) =>

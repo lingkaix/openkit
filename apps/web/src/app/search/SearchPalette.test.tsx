@@ -4,9 +4,9 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
-import { CoreClientProvider } from '../../app/core-client';
-import { AppSearch } from './AppSearch';
-import { operationsKeys } from './data';
+import { operationsKeys } from '../../screens/operations/data';
+import { CoreClientProvider } from '../core-client';
+import { SearchPalette } from './SearchPalette';
 
 const QUERY = 'planning';
 const RESPONSE = {
@@ -22,7 +22,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Uses the published search and discovery hooks with the production stale time. */
+/** Uses the published search and discovery hooks with the production stale time (the AppSearch rules the palette keeps). */
 function searchHarness(search = vi.fn().mockResolvedValue(RESPONSE)) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
@@ -41,14 +41,15 @@ function searchHarness(search = vi.fn().mockResolvedValue(RESPONSE)) {
       <QueryClientProvider client={queryClient}>
         <CoreClientProvider client={client}>
           <MemoryRouter>
-            <AppSearch />
+            <SearchPalette onClose={() => {}} />
           </MemoryRouter>
         </CoreClientProvider>
       </QueryClientProvider>
     );
+  // The palette searches as the query settles; there is no submit step.
   const submit = async () => {
     const field = screen.getByRole('searchbox', { name: 'Search' });
-    await userEvent.type(field, `${QUERY}{Enter}`);
+    await userEvent.type(field, QUERY);
   };
   return { mount, queryClient, search, submit };
 }
@@ -58,7 +59,7 @@ describe('current search observations', () => {
     const { mount, queryClient, search, submit } = searchHarness();
     mount();
     await submit();
-    await screen.findByRole('button', { name: 'Private plan' });
+    await screen.findByRole('menuitem', { name: 'Private plan' });
     try {
       onlineManager.setOnline(false);
       await act(async () => {
@@ -67,12 +68,15 @@ describe('current search observations', () => {
       expect(queryClient.getQueryState(operationsKeys.search(QUERY))?.fetchStatus).toBe('paused');
       expect(search).toHaveBeenCalledTimes(1);
       await waitFor(() =>
-        expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('menuitem', { name: 'Private plan' })).not.toBeInTheDocument()
       );
     } finally {
       onlineManager.setOnline(true);
     }
-    expect(await screen.findByRole('button', { name: 'Private plan' })).toBeEnabled();
+    expect(await screen.findByRole('menuitem', { name: 'Private plan' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
   });
 
@@ -82,24 +86,30 @@ describe('current search observations', () => {
       const { mount, queryClient, search, submit } = searchHarness();
       mount();
       await submit();
-      expect(await screen.findByRole('button', { name: 'Private plan' })).toBeEnabled();
+      expect(await screen.findByRole('menuitem', { name: 'Private plan' })).not.toHaveAttribute(
+        'aria-disabled',
+        'true'
+      );
       search.mockRejectedValueOnce(new ApiCallError(status, 'Private failure body'));
       await act(async () => {
         await queryClient.refetchQueries({ queryKey: operationsKeys.search(QUERY), exact: true });
       });
       expect(await screen.findByText("Couldn't search.")).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
-      expect(screen.queryByText('No search results')).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Private plan' })).not.toBeInTheDocument();
+      expect(screen.queryByText('No matching names.')).not.toBeInTheDocument();
       const current = deferred<typeof RESPONSE>();
       search.mockImplementationOnce(() => current.promise);
       await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
       await waitFor(() => expect(search).toHaveBeenCalledTimes(3));
-      expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: 'Private plan' })).not.toBeInTheDocument();
       await act(async () => {
         current.resolve({ items: [{ ...RESPONSE.items[0]!, title: 'Current plan' }] });
         await current.promise;
       });
-      expect(await screen.findByRole('button', { name: 'Current plan' })).toBeEnabled();
+      expect(await screen.findByRole('menuitem', { name: 'Current plan' })).not.toHaveAttribute(
+        'aria-disabled',
+        'true'
+      );
       expect(screen.queryByText('Private plan')).not.toBeInTheDocument();
     }
   );
@@ -108,19 +118,22 @@ describe('current search observations', () => {
     const { mount, search, submit } = searchHarness();
     const previous = mount();
     await submit();
-    await screen.findByRole('button', { name: 'Private plan' });
+    await screen.findByRole('menuitem', { name: 'Private plan' });
     previous.unmount();
     const current = deferred<typeof RESPONSE>();
     search.mockImplementationOnce(() => current.promise);
     mount();
     await submit();
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
-    expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Private plan' })).not.toBeInTheDocument();
     await act(async () => {
       current.resolve({ items: [{ ...RESPONSE.items[0]!, title: 'Current plan' }] });
       await current.promise;
     });
-    expect(await screen.findByRole('button', { name: 'Current plan' })).toBeEnabled();
+    expect(await screen.findByRole('menuitem', { name: 'Current plan' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
   });
 
   it('does not reuse a departed mount transport for a later search', async () => {
@@ -142,11 +155,14 @@ describe('current search observations', () => {
       previousRead.resolve(RESPONSE);
       await previousRead.promise;
     });
-    expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Private plan' })).not.toBeInTheDocument();
     await act(async () => {
       currentRead.resolve({ items: [{ ...RESPONSE.items[0]!, title: 'Current plan' }] });
       await currentRead.promise;
     });
-    expect(await screen.findByRole('button', { name: 'Current plan' })).toBeEnabled();
+    expect(await screen.findByRole('menuitem', { name: 'Current plan' })).not.toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
   });
 });

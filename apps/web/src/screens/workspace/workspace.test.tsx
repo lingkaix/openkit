@@ -1052,7 +1052,7 @@ async function proveWriteDoesNotRetarget(
   expect(method.mock.calls.every((call) => call[0]?.workspaceId === workspaceId)).toBe(true);
 }
 
-/** Viewer-authorized conversation activity used by Action Center ongoing work. */
+/** Viewer-authorized conversation activity used by Needs you ongoing work. */
 function overviewConversation(input: {
   id: string;
   name: string;
@@ -1096,17 +1096,17 @@ beforeEach(() => {
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
-describe('Action Center (board 07)', () => {
+describe('Needs you (board 07)', () => {
   it('shows a loading skeleton while Needs-you rows load', async () => {
     const client = makeClient({
       operations: { 'attention.list': vi.fn().mockReturnValue(new Promise(() => {})) },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
   it('shows the empty "caught up" state when nothing needs you', async () => {
-    renderApp('/attention', makeClient());
+    renderApp('/needs-you', makeClient());
     expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
     expect(screen.queryByText('Competitive pricing report')).not.toBeInTheDocument();
     expect(screen.queryByText('4 of 6 steps moving')).not.toBeInTheDocument();
@@ -1121,7 +1121,7 @@ describe('Action Center (board 07)', () => {
         'thread.dashboard': vi.fn().mockReturnValue(detail.promise),
       },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
@@ -1181,7 +1181,7 @@ describe('Action Center (board 07)', () => {
         }),
       },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     expect(
       await screen.findByText(
         'Exact effect unavailable; approval disabled: Complete detail cannot be loaded.'
@@ -1220,7 +1220,7 @@ describe('Action Center (board 07)', () => {
           }),
         },
       });
-      renderApp('/attention', client);
+      renderApp('/needs-you', client);
       expect(
         await screen.findByText('Scout asks to sign in to the vendor portal')
       ).toBeInTheDocument();
@@ -1241,7 +1241,7 @@ describe('Action Center (board 07)', () => {
 
       core: {},
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
 
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
@@ -1273,12 +1273,12 @@ describe('Action Center (board 07)', () => {
     const client = makeClient({
       operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [OPEN_ONLY_ROW] }) },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
     const href = screen.getByRole('link', { name: 'Open thread' }).getAttribute('href') ?? '';
     expect(
       href.startsWith(
-        '/chat/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7c00-b9fc-382312fdf476'
+        '/w/ws_00000000-0000-73c3-900f-8d310e4ba201/t/th_00000000-0000-7c00-b9fc-382312fdf476'
       )
     ).toBe(true);
     expect(href).toContain('attention=question%3Aq1');
@@ -1307,7 +1307,7 @@ describe('Action Center (board 07)', () => {
         actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
       };
       renderApp(
-        '/attention',
+        '/needs-you',
         makeClient({
           operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
         })
@@ -1330,7 +1330,7 @@ describe('Action Center (board 07)', () => {
     const client = makeClient({
       operations: { 'attention.list': listHumanAttention },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     expect(await screen.findByText(/Couldn't load what needs you/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listHumanAttention).toHaveBeenCalledTimes(2));
@@ -1342,7 +1342,7 @@ describe('Action Center (board 07)', () => {
 
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp('/attention', client);
+    renderApp('/needs-you', client);
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
@@ -1391,7 +1391,7 @@ describe('Action Center (board 07)', () => {
       }),
     ];
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: { 'conversation.navigation': vi.fn().mockResolvedValue({ items }) },
 
@@ -1406,11 +1406,11 @@ describe('Action Center (board 07)', () => {
     ).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: 'Open goal' })[0]).toHaveAttribute(
       'href',
-      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7b19-b5bb-af56be77aa80'
+      '/w/ws_00000000-0000-73c3-900f-8d310e4ba201/t/th_00000000-0000-7b19-b5bb-af56be77aa80'
     );
     expect(screen.getAllByRole('link', { name: 'Open task' })[0]).toHaveAttribute(
       'href',
-      `/tasks/ws_00000000-0000-73c3-900f-8d310e4ba201/${items[1]!.thread.id}`
+      `/w/ws_00000000-0000-73c3-900f-8d310e4ba201/t/${items[1]!.thread.id}`
     );
     expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();
@@ -1422,8 +1422,8 @@ describe('Action Center (board 07)', () => {
   });
 
   it.each([
-    ['task', 'Open task', '/tasks/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
-    ['goal', 'Open goal', '/goals/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
+    ['task', 'Open task', '/w/ws%2Fspace%20%3F%23%25/t/th%2Fspace%20%3F%23%25'],
+    ['goal', 'Open goal', '/w/ws%2Fspace%20%3F%23%25/t/th%2Fspace%20%3F%23%25'],
   ] as const)(
     'encodes ongoing %s owner identifiers in its registered destination',
     async (activity, label, href) => {
@@ -1436,7 +1436,7 @@ describe('Action Center (board 07)', () => {
         state: 'working',
       });
       renderApp(
-        '/attention',
+        '/needs-you',
         makeClient({
           core: {},
           app: {},
@@ -1481,7 +1481,7 @@ describe('Action Center (board 07)', () => {
       state: 'working',
     });
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: {
           'conversation.navigation': vi
@@ -1501,7 +1501,7 @@ describe('Action Center (board 07)', () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1550,7 +1550,7 @@ describe('Action Center (board 07)', () => {
       .mockRejectedValueOnce(new ApiCallError(500, 'private-approval-failure', { code: 'failed' }))
       .mockResolvedValue({});
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1584,7 +1584,7 @@ describe('Action Center (board 07)', () => {
       .mockResolvedValueOnce({ items: [APPROVAL_ROW] })
       .mockResolvedValue({ items: [] });
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: { 'approval.respond': respondApproval, 'attention.list': listHumanAttention },
 
@@ -1607,7 +1607,7 @@ describe('Action Center (board 07)', () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockReturnValue(new Promise(() => {}));
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1642,7 +1642,7 @@ describe('Action Center (board 07)', () => {
       }));
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const queryClient = renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         core: {},
         app: {},
@@ -1697,7 +1697,7 @@ describe('Action Center (board 07)', () => {
       source: { ...APPROVAL_ROW.source, approvalRequestId: 'ap2' },
     };
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         core: {},
         app: {},
@@ -1761,7 +1761,7 @@ describe('Action Center (board 07)', () => {
       actions: [{ kind: 'accept_review', label: 'Accept', disabled: false }],
     };
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         app: {},
 
@@ -1787,7 +1787,7 @@ describe('Action Center (board 07)', () => {
 
   it('opens an Artifact Review for inspection and does not decide it inline', async () => {
     renderApp(
-      '/attention',
+      '/needs-you',
       makeClient({
         operations: {
           'attention.list': vi.fn().mockResolvedValue({ items: [ARTIFACT_INSPECTION_ROW] }),
@@ -1797,7 +1797,7 @@ describe('Action Center (board 07)', () => {
     expect(await screen.findByText('Review worker output')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
       'href',
-      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7bc1-aed1-ff6f35ab7b65/artifacts/ar_00000000-0000-74db-816f-1af8204a4ae4?review=rev1&version=1'
+      '/w/ws_00000000-0000-73c3-900f-8d310e4ba201/t/th_00000000-0000-7bc1-aed1-ff6f35ab7b65/artifacts/ar_00000000-0000-74db-816f-1af8204a4ae4?review=rev1&version=1'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();
@@ -1862,7 +1862,7 @@ describe('Action Center (board 07)', () => {
         },
       });
       useWorkspaceStore.setState({ currentWorkspaceId: workspaceId });
-      renderApp('/attention', client);
+      renderApp('/needs-you', client);
 
       await user.click(await screen.findByRole('link', { name: 'Open goal' }));
 
@@ -1871,7 +1871,7 @@ describe('Action Center (board 07)', () => {
       expect(readReviews.mock.calls).toEqual([[{ workspaceId, artifactId }]]);
       expect(screen.getByRole('link', { name: /back to goal/i })).toHaveAttribute(
         'href',
-        `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}?lens=plan`
+        `/w/${encodeURIComponent(workspaceId)}/t/${encodeURIComponent(threadId)}?lens=plan`
       );
       const provenance = screen.getByRole('complementary', { name: 'Provenance and review' });
       expect(within(provenance).getByText(threadId, { exact: true })).toBeInTheDocument();
@@ -2785,7 +2785,6 @@ describe('Catalog', () => {
 
 describe('Agents roster continued', () => {
   it('queries only the selected Workspace resources and does not project another Workspace roster', async () => {
-    const user = userEvent.setup();
     const getWorkspaceResources = vi
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
@@ -2826,8 +2825,10 @@ describe('Agents roster continued', () => {
     ).toBe(true);
     expect(list).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
-    await user.click(await screen.findByRole('menuitem', { name: WORKSPACE_B.name }));
+    // B2 has no Workspace switcher on app pages; the selection changes under the open page.
+    await act(async () => {
+      useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id });
+    });
 
     expect(await screen.findByText('Scout')).toBeInTheDocument();
     expect(screen.queryByText('Ledger')).not.toBeInTheDocument();
@@ -3205,10 +3206,10 @@ describe('Agents actual Workers', () => {
     expect(within(workers).getByText('No current assignment')).toBeInTheDocument();
     expect(
       within(workers).getByRole('link', { name: 'Open conversation Alpha thread' })
-    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_00000000-0000-71df-8935-a802c1b80094`);
+    ).toHaveAttribute('href', `/w/${WORKSPACE_A.id}/t/th_00000000-0000-71df-8935-a802c1b80094`);
     expect(
       within(workers).getByRole('link', { name: 'Open conversation Beta thread' })
-    ).toHaveAttribute('href', `/tasks/${WORKSPACE_A.id}/th_00000000-0000-7604-a755-bde28ca74914`);
+    ).toHaveAttribute('href', `/w/${WORKSPACE_A.id}/t/th_00000000-0000-7604-a755-bde28ca74914`);
     const idleDetails = within(workers)
       .getAllByText('View details')[1]
       ?.closest('details') as HTMLElement;
@@ -3358,7 +3359,6 @@ describe('Agents actual Workers', () => {
   });
 
   it('queries Workers only for the selected Workspace and replaces the previous Workspace rows', async () => {
-    const user = userEvent.setup();
     const listWorkspaceWorkers = vi
       .fn()
       .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
@@ -3409,8 +3409,10 @@ describe('Agents actual Workers', () => {
       expect(listWorkspaceWorkers).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id })
     );
 
-    await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
-    await user.click(await screen.findByRole('menuitem', { name: WORKSPACE_B.name }));
+    // B2 has no Workspace switcher on app pages; the selection changes under the open page.
+    await act(async () => {
+      useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id });
+    });
 
     expect(await screen.findByText('Visible B thread')).toBeInTheDocument();
     expect(screen.queryByText('Visible A thread')).not.toBeInTheDocument();
@@ -6137,7 +6139,9 @@ describe('First run (board 18)', () => {
     renderApp('/first-run', makeClient());
     expect(await screen.findByText(/You're set/i)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Overview/i })).not.toBeInTheDocument();
-    const homeLink = screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/');
+    const homeLink = screen
+      .getAllByRole('link')
+      .find((link) => link.getAttribute('href') === '/needs-you');
     expect(homeLink).toBeTruthy();
   });
 });

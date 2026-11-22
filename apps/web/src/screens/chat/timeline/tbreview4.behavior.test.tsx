@@ -427,7 +427,7 @@ function mount(
   f: Fixture,
   cache: QueryClient,
   children: ReactNode,
-  entry = `/tasks/${f.workspaceId}/${f.threadId}`
+  entry = `/w/${f.workspaceId}/t/${f.threadId}`
 ) {
   return render(
     <QueryClientProvider client={cache}>

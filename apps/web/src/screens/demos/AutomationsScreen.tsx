@@ -1,4 +1,5 @@
 import {
+  ActionButton,
   Button,
   Card,
   Eyebrow,
@@ -6,8 +7,8 @@ import {
   ListRow,
   Page,
   PageHeader,
-  Select,
-  StatusChip,
+  Picker,
+  StatusLight,
   Switch,
   TextField,
 } from '../../primitives';
@@ -45,7 +46,7 @@ export function AutomationsScreen() {
             label="What should happen"
             defaultValue="Check the five competitor pricing pages and update the comparison table."
           />
-          <Select
+          <Picker
             label="Workspace"
             items={[
               { id: 'ws_market', label: 'Market research' },
@@ -54,7 +55,7 @@ export function AutomationsScreen() {
             defaultSelectedKey="ws_market"
             placeholder="Market research"
           />
-          <Select
+          <Picker
             label="Schedule"
             items={[
               { id: 'mon9', label: 'Every Monday · 9:00' },
@@ -65,9 +66,9 @@ export function AutomationsScreen() {
           />
           <Switch defaultSelected>Ask me before sharing results</Switch>
           <div className="flex justify-end gap-2 pt-1">
-            <Button variant="quiet" size="sm">
+            <ActionButton isQuiet size="sm">
               Cancel
-            </Button>
+            </ActionButton>
             <Button size="sm">Create automation</Button>
           </div>
         </Card>
@@ -98,12 +99,10 @@ function AutomationListRow({ row }: { row: AutomationRow }) {
           {row.workspace}
         </span>
       </div>
-      <StatusChip tone={row.statusTone} dot>
-        {row.statusLabel}
-      </StatusChip>
-      <Button variant="quiet" size="sm" aria-label={`More actions for ${row.name}`}>
+      <StatusLight tone={row.statusTone}>{row.statusLabel}</StatusLight>
+      <ActionButton isQuiet size="sm" aria-label={`More actions for ${row.name}`}>
         <Icon name="more" />
-      </Button>
+      </ActionButton>
     </ListRow>
   );
 }

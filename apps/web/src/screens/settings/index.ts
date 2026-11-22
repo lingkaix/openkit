@@ -1,15 +1,16 @@
 /**
  * Settings screens for Workspace, User and deployment administration.
- * Appearance remains the ThemePicker mounted at `/settings/appearance`.
+ * Appearance holds the theme control, a live preview and the full component gallery.
  */
 export { AccessTokensScreen } from './AccessTokensScreen';
 export { AdministrationScreen } from './AdministrationScreen';
 export { AiInterfaceScreen } from './AiInterfaceScreen';
+export { AppearanceScreen } from './AppearanceScreen';
 export { AppUpdateScreen } from './AppUpdateScreen';
 export { ChannelsScreen } from './ChannelsScreen';
 export { ConfigurationScreen } from './ConfigurationScreen';
 export { DataRootBackupScreen } from './DataRootBackupScreen';
-export { DebugScreen } from './DebugScreen';
+export { DiagnosticsScreen } from './DiagnosticsScreen';
 export { DisableUserScreen } from './DisableUserScreen';
 export {
   overlayConnectedAppQuota,

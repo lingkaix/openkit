@@ -6,14 +6,14 @@ import {
   Composer,
   type ComposerDraft,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Skeleton,
 } from '../../primitives';
 import { useArtifacts } from '../artifacts/data';
 import {
-  chatThreadPath,
-  conversationThreadPath,
+  threadPath,
+  threadRouteState,
   useComposerWorkerEnvironments,
   useConversationNavigation,
   useConversationTargets,
@@ -85,7 +85,9 @@ export function ChatStarter() {
     }
     pendingRoute.current = null;
     setRouteError(null);
-    navigate(conversationThreadPath(receivingWorkspaceId, receivingThreadId, item.activity));
+    navigate(threadPath(receivingWorkspaceId, receivingThreadId), {
+      state: threadRouteState(item.activity),
+    });
     return true;
   }
 
@@ -105,22 +107,23 @@ export function ChatStarter() {
     if (!navigation.isSuccess) {
       throw new Error('Assistant navigation is not ready.');
     }
-    const assistant = (navigation.data ?? []).find((row) => row.activity === 'chat');
-    if (assistant) {
-      const response = await send.mutateAsync({
-        workspaceId,
-        threadId: assistant.thread.id,
-        draft,
-      });
+    // The origin always comes from Core: a private thread.create opens the caller's Assistant
+    // Timeline (the existing one, or a new one). Navigation rows never pick it. A shared chat row
+    // is refused (assistant_timeline_required), and a newer private Knowledge Manager Thread is
+    // also a private chat row but another entry path (thread_entry_path_mismatch).
+    const thread = await create.mutateAsync({ workspaceId, draft });
+    if ((navigation.data ?? []).some((row) => row.thread.id === thread.id)) {
+      // A listed Timeline: follow wherever Core accepted the request.
+      const response = await send.mutateAsync({ workspaceId, threadId: thread.id, draft });
       if (!mounted.current || currentWorkspace.current !== workspaceId) return;
       await openReceivingThread(response.receivingWorkspaceId, response.receivingThreadId);
       return;
     }
-    const thread = await create.mutateAsync({ workspaceId, draft });
+    // A Timeline that is not listed yet: open it now and show the submission there.
     const submission = send.mutateAsync({ workspaceId, threadId: thread.id, draft });
     if (mounted.current && currentWorkspace.current === workspaceId) {
-      navigate(chatThreadPath(workspaceId, thread.id), {
-        state: { submissionRequestId: draft.requestId },
+      navigate(threadPath(workspaceId, thread.id), {
+        state: { submissionRequestId: draft.requestId, threadActivity: 'chat' },
       });
     }
     // Keep failure observable through the mutation cache after this Composer unmounts.
@@ -130,20 +133,20 @@ export function ChatStarter() {
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-6 py-10">
       <div>
-        <h1 className="text-title font-extrabold text-fg-strong">What can we get done?</h1>
+        <h1 className="text-title font-heading text-fg-strong">What can we get done?</h1>
         <p className="mt-1 text-fg-muted">
           Describe what you need — from a quick question to a whole project.
         </p>
       </div>
 
       {createOwner && create.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't start that chat. Try again."
           onRetry={() => create.reset()}
         />
       ) : null}
       {routeError ? (
-        <ErrorBanner message={routeError} onRetry={() => void retryClassification()} />
+        <InlineAlert message={routeError} onRetry={() => void retryClassification()} />
       ) : null}
 
       <Composer
@@ -185,9 +188,9 @@ export function ChatStarter() {
       <section className="flex flex-col gap-2">
         <p className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">Recent</p>
         {disconnected ? (
-          <ErrorBanner message="Couldn't reach the local runtime." onRetry={retryConnection} />
+          <InlineAlert message="Couldn't reach the local runtime." onRetry={retryConnection} />
         ) : recentRead.isError || workspaceUnavailable ? (
-          <ErrorBanner
+          <InlineAlert
             message={
               workspaceUnavailable ? 'No workspace is available.' : "Couldn't load recent chats."
             }
@@ -208,14 +211,14 @@ export function ChatStarter() {
                 type="button"
                 onClick={() =>
                   navigate(
-                    conversationThreadPath(
+                    threadPath(
                       thread.owner.kind === 'workspace' ? thread.owner.workspaceId : '',
-                      thread.id,
-                      activity
-                    )
+                      thread.id
+                    ),
+                    { state: threadRouteState(activity) }
                   )
                 }
-                className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
               >
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
                   {thread.name ?? thread.preview}

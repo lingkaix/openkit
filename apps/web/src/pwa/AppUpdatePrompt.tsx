@@ -91,7 +91,7 @@ export function AppUpdatePrompt() {
       <p className="flex-1">A new version is ready</p>
       <button
         type="button"
-        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok bg-accent px-3 font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
+        className="inline-flex h-control-md items-center justify-center rounded-full bg-accent px-4 font-bold text-on-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
         disabled={hasUnsentDraft}
         onClick={reload}
       >

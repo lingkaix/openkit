@@ -5,7 +5,7 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   TextField,
@@ -39,13 +39,13 @@ export function NewWorkspaceScreen() {
         <EmptyState
           icon="folder"
           title="Runtime unreachable"
-          hint="Reconnect to create a workspace, or head back to Action Center."
+          hint="Reconnect to create a Workspace, or head back to Needs you."
           action={
             <Link
-              to="/attention"
-              className="inline-flex min-h-11 items-center rounded-full border border-border bg-card px-4 text-sm font-bold text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              to="/needs-you"
+              className="inline-flex items-center rounded-full border border-border bg-card px-4 text-sm font-bold text-fg outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
             >
-              Action Center
+              Needs you
             </Link>
           }
         />
@@ -67,7 +67,7 @@ export function NewWorkspaceScreen() {
           placeholder="e.g. Market research"
         />
         {create.isError ? (
-          <ErrorBanner message="Couldn't create that workspace." onRetry={submit} />
+          <InlineAlert message="Couldn't create that workspace." onRetry={submit} />
         ) : null}
         <div className="flex gap-2">
           <Button size="sm" isDisabled={create.isPending || !name.trim()} onPress={submit}>
@@ -75,7 +75,7 @@ export function NewWorkspaceScreen() {
           </Button>
           <Link
             to="/"
-            className="inline-flex h-7 items-center rounded-full px-3 text-xs font-bold text-fg-muted outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-focus"
+            className="inline-flex h-7 items-center rounded-full px-3 text-xs font-bold text-fg-muted outline-none hover:text-fg focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
             Cancel
           </Link>

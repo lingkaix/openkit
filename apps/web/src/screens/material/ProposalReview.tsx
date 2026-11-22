@@ -1,5 +1,5 @@
 import type { GetArtifactResponse } from '@openkit/core-client';
-import { Card, ErrorBanner, Eyebrow, Skeleton } from '../../primitives';
+import { Card, Eyebrow, InlineAlert, Skeleton } from '../../primitives';
 import type { ArtifactReview } from '../goal/data';
 import {
   useMaterialProposalText,
@@ -70,7 +70,7 @@ export function ProposalReview({
             <Skeleton lines={3} />
           </div>
         ) : fileProposal && proposalText.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load the reviewed proposal text."
             onRetry={() => void proposalText.refetch()}
           />
@@ -113,7 +113,7 @@ export function ProposalReview({
 
       {conflict && currentRevision.data ? (
         <>
-          <ErrorBanner
+          <InlineAlert
             message="The Material changed since the proposal base. Both versions remain unchanged."
             onRetry={onRefresh}
           />

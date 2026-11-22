@@ -83,7 +83,7 @@ export interface ToastPolicyInput {
 export interface ToastPolicyStep {
   session: ToastSession;
   visible: readonly PolicyToast[];
-  /** Row ids the step still leaves for Needs you and Action Center. Dismissal does not drop them. */
+  /** Row ids the step still leaves for Needs you. Dismissal does not drop them. */
   retainedRowIds: readonly string[];
 }
 
@@ -111,7 +111,7 @@ export function attentionObjectId(row: {
 }
 
 /**
- * Decision and failure toasts from an attention row. Anything else stays in Action Center.
+ * Decision and failure toasts from an attention row. Anything else stays in Needs you.
  * Failure requires origin.viewerStartedRun. Null, false, and a missing origin stay off.
  * The caller does not infer that fact. An attention row never becomes a handoff toast.
  * That toast comes only from the admitted confirm or selection response in this tab.
@@ -186,7 +186,7 @@ function toastOf(row: PolicyRow): PolicyToast {
   return {
     id: `toast-${row.objectId}`,
     message: parts.join(' · '),
-    href: row.href ?? '/attention',
+    href: row.href ?? '/needs-you',
     actionLabel: 'View',
     lifetimeMs: row.event === 'decision' ? null : FAILURE_TOAST_MS,
     objectIds: [row.objectId],
@@ -201,7 +201,7 @@ function mergedToast(rows: readonly PolicyRow[], now: number): PolicyToast {
   return {
     id: `toast-merge-${threadId ?? 'workspace'}-${now}`,
     message: fillCopy(timelineNotices.mergedDecisions, { count: rows.length, thread: threadName }),
-    href: rows[0]?.href ?? '/attention',
+    href: rows[0]?.href ?? '/needs-you',
     actionLabel: 'View',
     lifetimeMs: null,
     objectIds: rows.map((row) => row.objectId),
@@ -303,7 +303,7 @@ function capToasts(
   const collapse: PolicyToast = {
     id: `overflow-${now}`,
     message: fillCopy(timelineNotices.moreToasts, { count: hiddenIds.length }),
-    href: '/attention',
+    href: '/needs-you',
     actionLabel: 'View',
     lifetimeMs: null,
     objectIds: hiddenIds,

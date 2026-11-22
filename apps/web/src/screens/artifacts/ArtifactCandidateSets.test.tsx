@@ -160,8 +160,8 @@ function mount() {
               />
             }
           />
-          <Route path="/chat/:workspaceId/:threadId" element={<DraftHandoff />} />
-          <Route path="/tasks/:workspaceId/:threadId" element={<DraftHandoff />} />
+          <Route path="/w/:workspaceId/t/:threadId" element={<DraftHandoff />} />
+          <Route path="/w/:workspaceId/t/:threadId" element={<DraftHandoff />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -306,7 +306,7 @@ describe('exact Artifact candidate comparison', () => {
       candidateInput: { workspaceId, threadId, ...first },
     });
     expect(screen.getByLabelText('Draft path')).toHaveTextContent(
-      `/tasks/${workspaceId}/${threadId}`
+      `/w/${workspaceId}/t/${threadId}`
     );
     expect(versionRead).toHaveBeenCalledWith({ workspaceId, artifactId, artifactVersion: 1 });
   });
@@ -335,7 +335,7 @@ describe('exact Artifact candidate comparison', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Use selected in next Turn' }));
     expect(screen.getByLabelText('Draft path')).toHaveTextContent(
-      `/chat/${workspaceId}/${threadId}`
+      `/w/${workspaceId}/t/${threadId}`
     );
     expect(JSON.parse(screen.getByLabelText('Draft handoff').textContent ?? '{}')).toEqual({
       candidateInput: { workspaceId, threadId, ...first },

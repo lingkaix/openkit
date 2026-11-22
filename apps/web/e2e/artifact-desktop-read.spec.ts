@@ -212,9 +212,7 @@ test('reads retained desktop Artifact versions and uses one without submitting',
     await comparison
       .getByRole('button', { name: 'Use selected in next Turn', exact: true })
       .click();
-    await expect(page).toHaveURL(
-      new RegExp(`/tasks/${workspace.id}/${handoff.receivingThreadId}$`)
-    );
+    await expect(page).toHaveURL(new RegExp(`/w/${workspace.id}/t/${handoff.receivingThreadId}$`));
     await expect(page.getByRole('button', { name: 'Remove Comparison report' })).toBeVisible();
     expect(submissions).toHaveLength(submitsBeforeUse);
     // artifact-candidate-sets.spec.ts owns the explicit Send, artifactRefs version 1, and HTTP 202.

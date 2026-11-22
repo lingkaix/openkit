@@ -6,7 +6,7 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
@@ -67,7 +67,7 @@ export function DisableUserScreen() {
           hint="Disabling users requires derived server-admin authority on the signed-in session."
           action={
             <Button
-              variant="outline"
+              variant="secondary"
               onPress={() => {
                 disable.reset();
                 setUserInput('');
@@ -80,14 +80,14 @@ export function DisableUserScreen() {
           }
         />
       ) : adminAccess.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't verify deployment-admin authority."
           onRetry={() => void adminAccess.refetch()}
         />
       ) : (
         <>
           {disable.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="User disable request failed. Its outcome may be unknown. Inspect the user before explicitly submitting another request."
               onRetry={() => {
                 disable.reset();
@@ -114,7 +114,7 @@ export function DisableUserScreen() {
               isDisabled={!userId || busy}
             />
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!canDisable}
               onPress={() => {
                 if (!canDisable) return;

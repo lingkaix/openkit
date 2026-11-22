@@ -5,17 +5,20 @@ import { useRef, useState } from 'react';
 import { Link } from 'react-aria-components';
 import { useConnection } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   Dialog,
+  DialogFooter,
+  DisclosureButton,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   ListRow,
   Modal,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
   TextField,
 } from '../../primitives';
@@ -512,7 +515,7 @@ export function KnowledgeScreen() {
               isDisabled={entryWriteBlocked}
               placeholder="What should agents remember?"
             />
-            <Select
+            <Picker
               label="Registered source"
               items={[{ id: 'none', label: 'No registered source' }, ...sourceOptions]}
               selectedKey={addDraft.sourceReference ?? 'none'}
@@ -524,7 +527,7 @@ export function KnowledgeScreen() {
                 }))
               }
             />
-            <Select
+            <Picker
               label="Page state"
               items={PAGE_STATE_OPTIONS}
               selectedKey={addDraft.state}
@@ -545,7 +548,7 @@ export function KnowledgeScreen() {
             ) : null}
             {failedCreate ? (
               <fieldset disabled={entryWriteBlocked} className="contents">
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't save that entry."
                   onRetry={() => save(failedCreate)}
                 />
@@ -566,7 +569,7 @@ export function KnowledgeScreen() {
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onPress={() => {
                   if (workspaceId) resetForm(workspaceId);
                 }}
@@ -579,7 +582,7 @@ export function KnowledgeScreen() {
 
         {failedRemove ? (
           <fieldset disabled={entryWriteBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't remove that entry."
               onRetry={() => removeEntry(failedRemove)}
             />
@@ -588,7 +591,7 @@ export function KnowledgeScreen() {
 
         {knowledge.isError ? (
           <fieldset disabled={knowledge.isFetching} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load knowledge."
               onRetry={() => void retryKnowledgeRead()}
             />
@@ -623,24 +626,25 @@ export function KnowledgeScreen() {
                         State: {display.state ?? 'unstated'}
                       </p>
                       <div className="flex shrink-0 gap-2">
-                        <Button
+                        <ActionButton
                           ref={(node) => {
                             if (node) editButtonRefs.current.set(page.id, node);
                             else editButtonRefs.current.delete(page.id);
                           }}
                           size="sm"
-                          variant="quiet"
+                          isQuiet
                           aria-label={`Edit ${display.title}`}
                           isDisabled={entryWriteBlocked}
                           onPress={() => startEditing(page)}
                         >
                           {'Edit '}
-                        </Button>
+                        </ActionButton>
                         <Modal
                           trigger={
                             <Button
                               size="sm"
-                              variant="negative-outline"
+                              variant="negative"
+                              fillStyle="outline"
                               aria-label={`Remove ${display.title}`}
                               isDisabled={entryWriteBlocked}
                             >
@@ -652,13 +656,12 @@ export function KnowledgeScreen() {
                             <p className="text-sm text-fg-muted">
                               This removes the page from the workspace knowledge notebook.
                             </p>
-                            <div className="flex justify-end gap-2">
-                              <Button slot="close" size="sm" variant="quiet">
+                            <DialogFooter>
+                              <Button slot="close" variant="secondary">
                                 Cancel
                               </Button>
                               <Button
                                 slot="close"
-                                size="sm"
                                 variant="negative"
                                 isDisabled={entryWriteBlocked}
                                 onPress={() => {
@@ -678,13 +681,12 @@ export function KnowledgeScreen() {
                               >
                                 Remove
                               </Button>
-                            </div>
+                            </DialogFooter>
                           </Dialog>
                         </Modal>
-                        <Button
+                        <ActionButton
                           size="sm"
-                          variant="quiet"
-                          className="min-h-11"
+                          isQuiet
                           aria-expanded={detailsOpen}
                           aria-label={`Details for ${display.title}`}
                           onPress={() =>
@@ -692,7 +694,7 @@ export function KnowledgeScreen() {
                           }
                         >
                           Details
-                        </Button>
+                        </ActionButton>
                       </div>
                       {detailsOpen ? (
                         <div>
@@ -721,7 +723,7 @@ export function KnowledgeScreen() {
                             }
                             isDisabled={entryWriteBlocked}
                           />
-                          <Select
+                          <Picker
                             label="Page state"
                             items={PAGE_STATE_OPTIONS}
                             selectedKey={editDraft.state}
@@ -735,7 +737,7 @@ export function KnowledgeScreen() {
                           />{' '}
                           {failedUpdate ? (
                             <fieldset disabled={entryWriteBlocked} className="contents">
-                              <ErrorBanner
+                              <InlineAlert
                                 message="Couldn't save those changes."
                                 onRetry={() => saveEdit(failedUpdate)}
                               />
@@ -749,7 +751,7 @@ export function KnowledgeScreen() {
                             >
                               Save changes
                             </Button>
-                            <Button size="sm" variant="outline" onPress={stopEditing}>
+                            <Button size="sm" variant="secondary" onPress={stopEditing}>
                               Cancel
                             </Button>
                           </div>
@@ -764,15 +766,12 @@ export function KnowledgeScreen() {
         )}
 
         <div className="flex flex-col gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="min-h-11"
-            aria-expanded={maintainOpen}
+          <DisclosureButton
+            isExpanded={maintainOpen}
             onPress={() => setMaintainOpen((open) => !open)}
           >
             Maintain
-          </Button>
+          </DisclosureButton>
           {/* Stay mounted while collapsed. These catalogs use refetchOnMount always, so unmounting would read them again on open. */}
           <section aria-label="Maintain" hidden={!maintainOpen}>
             <KnowledgeSourcesPanel
@@ -798,7 +797,7 @@ export function KnowledgeScreen() {
           <Skeleton lines={2} />
         ) : attention.isError ? (
           <fieldset disabled={entryWriteBlocked || attention.isFetching} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't refresh knowledge proposals."
               onRetry={() => void attention.refetch()}
             />
@@ -810,7 +809,7 @@ export function KnowledgeScreen() {
             <Eyebrow>Knowledge proposals</Eyebrow>
             {failedProposalDecision ? (
               <fieldset disabled={proposalWriteBlocked} className="contents">
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't submit that proposal decision."
                   onRetry={
                     failedProposalDecision.decision === 'accepted'
@@ -948,7 +947,7 @@ function KnowledgeSourcesPanel({
       <Eyebrow>Sources</Eyebrow>
       {sources.isError ? (
         <fieldset disabled={catalogRetryBlocked} className="contents">
-          <ErrorBanner
+          <InlineAlert
             message={knowledgeActionErrorMessage(
               sources.error,
               "Couldn't load Knowledge Store details."
@@ -958,7 +957,7 @@ function KnowledgeSourcesPanel({
         </fieldset>
       ) : null}
       <Card className="flex flex-col gap-3">
-        <Select
+        <Picker
           label="Source kind"
           placeholder={
             draft.kind && isSourceKind(draft.kind) ? SOURCE_KIND_LABEL[draft.kind] : 'Select…'
@@ -984,7 +983,7 @@ function KnowledgeSourcesPanel({
         />
         {failedRegister ? (
           <fieldset disabled={fieldBlocked || register.isPending} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(
                 register.error,
                 "Couldn't register that source."
@@ -1011,7 +1010,7 @@ function KnowledgeSourcesPanel({
               </div>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 isDisabled={connectionBlocked || !workspaceId || read.isPending}
                 onPress={() => {
                   if (!workspaceId) return;
@@ -1026,7 +1025,7 @@ function KnowledgeSourcesPanel({
       ) : null}
       {failedRead ? (
         <fieldset disabled={connectionBlocked || read.isPending} className="contents">
-          <ErrorBanner
+          <InlineAlert
             message={knowledgeActionErrorMessage(read.error, "Couldn't load that source.")}
             onRetry={() => viewSource(failedRead)}
           />
@@ -1105,7 +1104,7 @@ function KnowledgeRetrievalPanel({
       <Eyebrow>Retrieval</Eyebrow>
       {indexes.isError ? (
         <fieldset disabled={connectionBlocked || indexes.isFetching} className="contents">
-          <ErrorBanner
+          <InlineAlert
             message={knowledgeActionErrorMessage(indexes.error, "Couldn't load indexes.")}
             onRetry={() => void indexes.refetch()}
           />
@@ -1120,7 +1119,7 @@ function KnowledgeRetrievalPanel({
         />
         {failedRetrieve ? (
           <fieldset disabled={retrieveBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(retrieve.error, "Couldn't retrieve knowledge.")}
               onRetry={() => submitRetrieve(failedRetrieve)}
             />
@@ -1128,7 +1127,7 @@ function KnowledgeRetrievalPanel({
         ) : null}
         {failedPrepare ? (
           <fieldset disabled={prepareBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(prepare.error, "Couldn't prepare context.")}
               onRetry={() => submitPrepare(failedPrepare)}
             />
@@ -1144,7 +1143,7 @@ function KnowledgeRetrievalPanel({
           </Button>
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={prepareBlocked || indexes.isError || !query.trim()}
             onPress={() => submitPrepare()}
           >
@@ -1183,7 +1182,7 @@ function KnowledgeRetrievalPanel({
                       <Link
                         aria-label={`View current content: ${entryDisplay.title}`}
                         href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
-                        className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                        className="text-sm text-accent underline outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
                       >
                         View current content
                       </Link>
@@ -1299,7 +1298,7 @@ function KnowledgeManagerPanel({
         />
         {failedAnswer ? (
           <fieldset disabled={answerBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(answer.error, "Couldn't answer.")}
               onRetry={() => submitAnswer(failedAnswer)}
             />
@@ -1307,7 +1306,7 @@ function KnowledgeManagerPanel({
         ) : null}
         {failedSuggest ? (
           <fieldset disabled={suggestBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(suggest.error, "Couldn't suggest repairs.")}
               onRetry={() => submitSuggest(failedSuggest)}
             />
@@ -1315,7 +1314,7 @@ function KnowledgeManagerPanel({
         ) : null}
         {failedHealth ? (
           <fieldset disabled={healthBlocked} className="contents">
-            <ErrorBanner
+            <InlineAlert
               message={knowledgeActionErrorMessage(health.error, "Couldn't check health.")}
               onRetry={() => submitHealth(failedHealth)}
             />
@@ -1331,7 +1330,7 @@ function KnowledgeManagerPanel({
           </Button>
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={suggestBlocked}
             onPress={() => submitSuggest()}
           >
@@ -1339,7 +1338,7 @@ function KnowledgeManagerPanel({
           </Button>
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={healthBlocked}
             onPress={() => submitHealth()}
           >
@@ -1400,7 +1399,7 @@ function KnowledgeManagerPanel({
                       <Link
                         aria-label={`View current content: ${entryDisplay.title}`}
                         href={`#${encodeURIComponent(knowledgeContentId(workspaceId, entry.id))}`}
-                        className="text-sm text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                        className="text-sm text-accent underline outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
                       >
                         View current content
                       </Link>

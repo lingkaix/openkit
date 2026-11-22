@@ -1,32 +1,41 @@
-import { useMutationState, useQueries } from '@tanstack/react-query';
-import { Fragment, useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { Button, CountBadge, Icon, type IconName, Menu, NavRow } from '../primitives';
+import { useEffect, useState } from 'react';
+import { RouterProvider } from 'react-aria-components';
+import { type NavigateOptions, useHref, useLocation, useNavigate } from 'react-router-dom';
 import {
-  chatKeys,
-  conversationThreadPath,
-  useConversationNavigation,
+  ActionButton,
+  Avatar,
+  CountBadge,
+  Icon,
+  Menu,
+  type MenuSection,
+  NavRow,
+} from '../primitives';
+import {
+  type useConversationNavigation,
   useCurrentWorkspaceId,
   useWorkspaceSummaries,
-  useWorkspaces,
   workspaceBelongsToCaller,
 } from '../screens/chat/data';
-import { goalKeys } from '../screens/goal/data';
-import { AppSearch } from '../screens/operations';
 import { useHumanAttention } from '../screens/workspace/data';
 import { useWorkspaceStore } from '../screens/workspace-store';
-import { AssistantEntry } from './AssistantEntry';
-import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
-import { useCoreClient } from './core-client';
 import { NewGoalDialog, NewTaskDialog } from './StartWorkDialogs';
+import { searchShortcutLabel, useSearchPalette, usesCommandKey } from './search/SearchPalette';
+import type { ThreadTypeFilter } from './sidebar/thread-tree';
+import { WorkspaceThreadTree } from './sidebar/WorkspaceThreadTree';
 import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
 
-/** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
+declare module 'react-aria-components' {
+  interface RouterConfig {
+    routerOptions: NavigateOptions;
+  }
+}
+
+/** The 20px mark for the brand row (ia.md §1: the 32px wordmark is gone). */
 function BrandMark() {
   return (
     <img
-      className="h-8 w-auto"
-      src={`${import.meta.env.BASE_URL}brand/openkit-wordmark.svg`}
+      className="size-5"
+      src={`${import.meta.env.BASE_URL}brand/openkit-mark-small.svg`}
       alt="OpenKit"
     />
   );
@@ -35,19 +44,7 @@ function BrandMark() {
 /** True when a surface's route is the one currently shown. */
 function isActive(surface: Surface, pathname: string): boolean {
   if (surface.path === '/settings/general') return pathname === '/settings/general';
-  if (surface.path.startsWith('/settings')) return pathname === surface.path;
   return pathname === surface.path || pathname.startsWith(`${surface.path}/`);
-}
-
-/** True when the current route is a Thread or other lineage-detail page. */
-function isLineageDetailPath(pathname: string): boolean {
-  return /^\/(chat|tasks|goals|materials)\//.test(pathname);
-}
-
-/** True when Artifacts inventory currently carries Workspace or Artifact identity. */
-function hasArtifactIdentityQuery(search: string): boolean {
-  const params = new URLSearchParams(search);
-  return Boolean(params.get('workspaceId')?.trim() || params.get('artifact')?.trim());
 }
 
 function NavSection({
@@ -81,12 +78,6 @@ function NavSection({
   );
 }
 
-function SectionLabel({ children }: { children: string }) {
-  return <p className="px-3 pb-1 pt-3 text-eyebrow font-bold text-fg-muted">{children}</p>;
-}
-
-type ListSegment = 'all' | 'tasks' | 'goals';
-
 /** Continues the bounded conversation list when the server returned a cursor. */
 export function ConversationLoadMore({
   navigation,
@@ -98,445 +89,376 @@ export function ConversationLoadMore({
 }) {
   if (!navigation.hasNextPage) return null;
   return (
-    <Button
-      variant="quiet"
-      className="min-h-11 justify-start px-3"
+    <ActionButton
+      isQuiet
+      className="justify-start px-3"
       isDisabled={navigation.isFetchingNextPage}
       onPress={() => void navigation.fetchNextPage()}
     >
       Load more
-    </Button>
+    </ActionButton>
   );
 }
 
+/** The New row's shortcut label: ⌘N on Apple platforms, ⌃N elsewhere. */
+export function newShortcutLabel(): string {
+  return usesCommandKey() ? '⌘N' : '⌃N';
+}
+
+/** The Search row (ia.md §1a): the palette on desktop, the `/search` page on a phone. */
+function SearchRow({ active }: { active: boolean }) {
+  const palette = useSearchPalette();
+  return (
+    <NavRow
+      icon="search"
+      label="Search"
+      active={active}
+      trailing={
+        <kbd aria-hidden className="font-sans text-xs text-fg-muted">
+          {searchShortcutLabel()}
+        </kbd>
+      }
+      onPress={palette.open}
+    />
+  );
+}
+
+/** A dialog opened from a group ⋯ menu, bound to that group's Workspace. */
+type StartRequest = { kind: 'task' | 'goal'; workspaceId: string; workspaceName: string };
+
+const FILTERS: { id: ThreadTypeFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'chat', label: 'Chats' },
+  { id: 'task', label: 'Tasks' },
+  { id: 'goal', label: 'Goals' },
+];
+
+/** The group ⋯ menu (ia.md §1): Workspace places, new work here, and the type filter. */
+function groupMenuSections(kind: string, filter: ThreadTypeFilter): MenuSection[] {
+  const places = surfacesInGroup('workspace-compact', kind);
+  return [
+    {
+      id: 'places',
+      items: [
+        { id: 'place:/settings/general', label: 'Workspace settings', icon: 'settings' },
+        ...(kind === 'general'
+          ? [{ id: 'place:/settings/account', label: 'Members', icon: 'settings' as const }]
+          : []),
+        ...places.map((surface) => ({
+          id: `place:${surface.path}`,
+          label: surface.title,
+          icon: surface.icon,
+        })),
+      ],
+    },
+    {
+      id: 'new',
+      items: [
+        { id: 'new:thread', label: 'New Thread here', icon: 'add' },
+        // Until B3's composer mode control, New Task and New Goal start from here.
+        { id: 'new:task', label: 'New Task', icon: 'agents' },
+        { id: 'new:goal', label: 'New Goal', icon: 'goal' },
+      ],
+    },
+    {
+      id: 'show',
+      title: 'Show',
+      selectedKey: `show:${filter}`,
+      items: FILTERS.map((item) => ({ id: `show:${item.id}`, label: item.label })),
+    },
+  ];
+}
+
 /**
- * Assistant, Tasks, and Goals as separate lists.
- *
- * Necessity: the phone Work tab and the desktop sidebar show the same rows.
- * Ablation: a second copy of the row renderer would drift from the route each activity opens.
+ * Workspace groups (ia.md §1): one Thread list each. The selected Workspace is first and
+ * open; the others follow alphabetically, closed, and load their Threads when opened.
  */
-export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
-  const { pathname } = useLocation();
+function WorkspaceGroups({ onStart }: { onStart: (request: StartRequest) => void }) {
   const navigate = useNavigate();
+  const summaries = useWorkspaceSummaries();
   const workspaceId = useCurrentWorkspaceId();
-  const workspaces = useWorkspaces();
-  const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  const navigation = useConversationNavigation(workspaceId);
-  const go = (path: string) => navigate(path);
-  const submissions = useMutationState({
-    filters: { mutationKey: chatKeys.submitMutation, status: 'pending' },
-    select: (mutation) => mutation.state.variables as { workspaceId: string; threadId: string },
-  });
-  const waiting = new Set(
-    submissions.filter((input) => input.workspaceId === workspaceId).map((input) => input.threadId)
-  );
-  const conversations = [...(navigation.data ?? [])].sort(
-    (a, b) => Number(waiting.has(b.thread.id)) - Number(waiting.has(a.thread.id))
-  );
-  const chats = conversations.filter((row) => row.activity === 'chat');
-  const assistant = chats.find((row) => row.thread.name === 'Assistant') ?? chats[0];
-  const tasks = conversations.filter((row) => row.activity === 'task');
-  const goals = conversations.filter((row) => row.activity === 'goal');
-  const unknown = conversations.filter((row) => row.activity === 'unknown');
-  const client = useCoreClient();
-  const goalViews = useQueries({
-    queries: goals.map(({ thread }) => ({
-      queryKey: goalKeys.view(workspaceId ?? '', thread.id),
-      queryFn: () =>
-        client.operations['goal.read']({
-          workspaceId: workspaceId as string,
-          threadId: thread.id,
-        }),
-      enabled: Boolean(workspaceId),
-      retry: false,
-      refetchInterval: 5_000,
-      refetchIntervalInBackground: false,
-    })),
-  });
-  const linkedTaskIds = new Set(
-    goalViews.flatMap((view) => view.data?.tasks.map((task) => task.threadId) ?? [])
-  );
-  const listedTasks = tasks.filter((row) => !linkedTaskIds.has(row.thread.id));
-
-  function renderConversation(
-    { thread, activity: observedActivity, state: serverState, unreadCount }: ConversationRow,
-    indent: 0 | 1 = 0,
-    linkedTask = false,
-    labelOverride?: string
-  ) {
-    if (!workspace) return null;
-    const activity = linkedTask ? 'task' : observedActivity;
-    const awaitingReply = waiting.has(thread.id);
-    const state =
-      serverState === 'needs-you' ? serverState : awaitingReply ? 'working' : serverState;
-    const icons: Record<typeof activity, IconName> = {
-      chat: 'chat',
-      task: 'agents',
-      goal: 'goal',
-      unknown: 'info',
-    };
-    const labels = {
-      chat: 'Personal Assistant',
-      task: 'Task',
-      goal: 'Goal',
-      unknown: 'Activity type unknown',
-    };
-    const status = navigation.isError
-      ? 'Status unavailable'
-      : state === 'working'
-        ? awaitingReply
-          ? 'Waiting for response'
-          : 'Working'
-        : state === 'needs-you'
-          ? 'Needs you'
-          : 'Idle';
-    const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
-    const exactUnread = typeof unreadCount === 'number' ? unreadCount : null;
-    const unreadSuffix =
-      !navigation.isError && exactUnread != null && exactUnread > 0
-        ? ` · ${exactUnread} unread ${exactUnread === 1 ? 'reply' : 'replies'}`
-        : '';
-    return (
-      <NavRow
-        key={thread.id}
-        indent={indent}
-        icon={icons[activity]}
-        label={labelOverride ?? thread.name ?? thread.preview}
-        description={`${labels[activity]} · ${status}${unreadSuffix}`}
-        trailing={
-          navigation.isError ? undefined : exactUnread != null && exactUnread > 0 ? (
-            <CountBadge count={exactUnread} tone="neutral" />
-          ) : exactUnread == null ? (
-            <span
-              aria-hidden
-              data-unread="unknown"
-              className="inline-block size-1.5 rounded-full bg-fg-muted"
-            />
-          ) : undefined
-        }
-        iconBadge={
-          !navigation.isError && state !== 'idle' ? (
-            <span
-              aria-hidden
-              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
-            />
-          ) : undefined
-        }
-        active={['chat', 'tasks', 'goals'].some(
-          (route) => pathname === `/${route}${suffix}` || pathname.startsWith(`/${route}${suffix}/`)
-        )}
-        onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
-      />
+  const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [filters, setFilters] = useState<Record<string, ThreadTypeFilter>>({});
+  const workspaces = (summaries.data ?? [])
+    .filter((item) => workspaceBelongsToCaller(item))
+    .map((item) => item.workspace)
+    .toSorted((a, b) =>
+      a.id === workspaceId ? -1 : b.id === workspaceId ? 1 : a.name.localeCompare(b.name)
     );
-  }
-
-  if (!workspace) return null;
-  const showAssistant = segment === 'all';
-  const showTasks = segment === 'all' || segment === 'tasks';
-  const showGoals = segment === 'all' || segment === 'goals';
 
   return (
-    <div className="flex flex-col gap-0.5">
-      {showAssistant ? (
-        <>
-          <SectionLabel>Assistant</SectionLabel>
-          {assistant ? (
-            renderConversation(assistant, 0, false, 'Personal Assistant')
-          ) : (
-            <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
-          )}
-        </>
-      ) : null}
-      {navigation.isPending ? (
-        <p role="status" className="px-3 text-xs text-fg-muted">
-          Loading conversations…
-        </p>
-      ) : null}
-      {navigation.isError ? (
-        <div role="status" className="px-3 text-xs text-notice-fg">
-          <p>
-            Conversation status unavailable
-            {conversations.length ? ' — showing the last update.' : '.'}
-          </p>
-          <Button
-            variant="quiet"
-            size="sm"
-            onPress={() => {
-              void navigation.refetch();
-            }}
-          >
-            Retry conversations
-          </Button>
-        </div>
-      ) : null}
-      {showTasks ? (
-        <>
-          {segment === 'all' ? <SectionLabel>Tasks</SectionLabel> : null}
-          <NewTaskDialog
-            key={`task:${workspace.id}`}
-            workspaceId={workspace.id}
-            workspaceLabel={workspace.name}
-          />
-          {listedTasks.map((row) => (
-            <Fragment key={row.thread.id}>{renderConversation(row)}</Fragment>
-          ))}
-        </>
-      ) : null}
-      {showGoals ? (
-        <>
-          {segment === 'all' ? <SectionLabel>Goals</SectionLabel> : null}
-          <NewGoalDialog key={`goal:${workspace.id}`} workspaceId={workspace.id} />
-          <ConversationGoalGroups
-            key={workspace.id}
-            workspaceId={workspace.id}
-            rows={goals}
-            unavailable={navigation.isError}
-            pathname={pathname}
-            go={go}
-            renderConversation={renderConversation}
-          />
-        </>
-      ) : null}
-      {segment === 'all' && unknown.length > 0 ? (
-        <>
-          <SectionLabel>Recovery</SectionLabel>
-          {unknown.map((row) => (
-            <Fragment key={row.thread.id}>{renderConversation(row)}</Fragment>
-          ))}
-        </>
-      ) : null}
-      <ConversationLoadMore navigation={navigation} />
+    <div className="flex flex-col gap-2 pt-3">
+      {workspaces.map((workspace) => {
+        const expanded = open[workspace.id] ?? workspace.id === workspaceId;
+        const filter = filters[workspace.id] ?? 'all';
+        const bodyId = `workspace-group-${workspace.id}`;
+        return (
+          <section key={workspace.id} aria-label={workspace.name} className="flex flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-1 pl-1">
+              <ActionButton
+                isQuiet
+                size="sm"
+                aria-expanded={expanded}
+                aria-controls={expanded ? bodyId : undefined}
+                className="min-w-0 flex-1 justify-start gap-1 px-2 text-eyebrow font-bold text-fg-muted"
+                onPress={() => setOpen({ ...open, [workspace.id]: !expanded })}
+              >
+                <span className="min-w-0 truncate">{workspace.name}</span>
+                <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size="sm" />
+              </ActionButton>
+              <Menu
+                icon="more"
+                label={`${workspace.name} options`}
+                sections={groupMenuSections(workspace.kind, filter)}
+                onAction={(key) => {
+                  const [kind, value] = String(key).split(/:(.*)/s);
+                  if (kind === 'show') {
+                    setFilters({ ...filters, [workspace.id]: value as ThreadTypeFilter });
+                    setOpen({ ...open, [workspace.id]: true });
+                    return;
+                  }
+                  setWorkspaceId(workspace.id);
+                  if (kind === 'place' && value) navigate(value);
+                  else if (value === 'thread') navigate('/new');
+                  else if (value === 'task' || value === 'goal') {
+                    onStart({
+                      kind: value,
+                      workspaceId: workspace.id,
+                      workspaceName: workspace.name,
+                    });
+                  }
+                }}
+              />
+            </div>
+            {expanded ? (
+              <div id={bodyId}>
+                <WorkspaceThreadTree
+                  workspaceId={workspace.id}
+                  workspaceName={workspace.name}
+                  filter={filter}
+                />
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }
 
-/** Brand-row Search command that opens the existing search overlay. */
-function BrandSearch() {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const restoreFocus = useRef(false);
-  const [open, setOpen] = useState(false);
-
-  function close() {
-    restoreFocus.current = true;
-    setOpen(false);
-  }
-
-  useEffect(() => {
-    if (open || !restoreFocus.current) return;
-    restoreFocus.current = false;
-    triggerRef.current?.focus();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      restoreFocus.current = true;
-      setOpen(false);
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open]);
-
+/**
+ * The account row (ia.md §1): avatar, "Account" and a menu with Profile and Appearance; the
+ * gear opens Settings. Sign out sits on the Profile page.
+ *
+ * The web app has no read for the caller's name yet (`caller.read` is roadmap R044), and the
+ * auth session route does not exist in local mode, so the row names the place, not the person.
+ */
+function AccountRow({ go }: { go: (path: string) => void }) {
   return (
-    <div>
-      <Button
-        ref={triggerRef}
-        variant="quiet"
-        aria-expanded={open}
-        aria-label="Search"
-        title="Search"
-        className="size-11 shrink-0 px-0!"
-        onPress={() => setOpen((current) => !current)}
+    <div className="flex min-w-0 items-center gap-1 border-t border-separator pt-2">
+      <div className="min-w-0 flex-1">
+        <Menu
+          label="Account"
+          trigger={
+            <>
+              <span aria-hidden className="contents">
+                <Avatar hue="you" initials="A" name="Account" size="sm" />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-left text-sm font-medium">Account</span>
+              <Icon name="chevron-down" size="sm" className="text-fg-muted" />
+            </>
+          }
+          items={[
+            { id: '/settings/account', label: 'Profile' },
+            { id: '/settings/appearance', label: 'Appearance' },
+          ]}
+          onAction={(key) => go(String(key))}
+        />
+      </div>
+      <ActionButton
+        isQuiet
+        aria-label="Settings"
+        title="Settings"
+        className="shrink-0"
+        onPress={() => go('/settings/account')}
       >
-        <Icon name="search" />
-      </Button>
-      {open ? (
-        <section
-          aria-label="Search"
-          className="absolute inset-x-0 top-full z-20 mt-1 rounded-ok-lg border border-border bg-elevated p-3 shadow-ok-menu"
-        >
-          <AppSearch onClose={close} />
-        </section>
-      ) : null}
+        <Icon name="settings" />
+      </ActionButton>
     </div>
   );
 }
 
 /** Optional overlay-drawer close control used by the narrow App shell. */
 export interface SidebarProps {
-  /** When set, the sidebar shows an explicit Close control. */
+  /** When set (the phone drawer), the sidebar shows an explicit Close control. */
   onClose?: () => void;
-  /** `more` is the phone drawer: Artifacts and supporting screens, not the five bottom-nav items. */
-  variant?: 'sidebar' | 'more';
 }
 
 /**
- * Left sidebar — navigation and persistent context (DESIGN.md §3.1).
+ * Left sidebar (DESIGN.md §3.1, ia.md §1), 240px. The phone drawer holds the same content.
  *
- * Desktop keeps Assistant, Tasks, Goals, Knowledge, Artifacts, and Action Center.
- * The phone More drawer lists Action Center and the supporting screens.
- * Theme selection is NOT here — it lives in Settings → Appearance (§4.5).
- * Identity lives inside Settings, not a stacked user row (D-002).
+ * Top: New (the only creation entry), Search, Needs you, Personal Assistant, Artifacts,
+ * Knowledge and Automations. Then one group per Workspace, each with one Thread list, and
+ * "New workspace". The account row and the Settings gear sit at the bottom.
+ * Settings pages swap the list for the settings sections.
  */
-export function Sidebar({ onClose, variant = 'sidebar' }: SidebarProps = {}) {
-  const { pathname, search } = useLocation();
+export function Sidebar({ onClose }: SidebarProps = {}) {
+  const { pathname } = useLocation();
   const navigate = useNavigate();
-  const workspaces = useWorkspaces();
   const summaries = useWorkspaceSummaries();
   const workspaceId = useCurrentWorkspaceId();
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
-  const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
+  const workspace =
+    summaries.data?.find((candidate) => candidate.workspace.id === workspaceId)?.workspace ?? null;
   const inSettings = pathname === '/workspace' || pathname.startsWith('/settings');
   const attention = useHumanAttention(inSettings ? null : workspaceId);
+  const [start, setStart] = useState<StartRequest | null>(null);
+  // A Workspace change drops an open New Task or New Goal, and its late result opens nothing.
+  if (start && start.workspaceId !== workspaceId) setStart(null);
   const go = (path: string) => navigate(path);
-  const compactSurfaces = surfacesInGroup('workspace-compact', workspace?.kind);
+  const persistent = !onClose;
 
-  function switchWorkspace(nextWorkspaceId: string) {
-    if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
-    setWorkspaceId(nextWorkspaceId);
-    if (isLineageDetailPath(pathname)) {
-      navigate('/chat');
-    } else if (pathname === '/artifacts' && hasArtifactIdentityQuery(search)) {
-      navigate('/artifacts');
+  // ⌃N / ⌘N opens New on the desktop shell. Browsers keep the key for a new window in a
+  // normal tab, so it works where the page receives it (an installed app window).
+  useEffect(() => {
+    if (!persistent) return undefined;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() !== 'n') return;
+      event.preventDefault();
+      navigate('/new');
     }
-  }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navigate, persistent]);
 
-  const moreDestinations =
-    variant === 'more' && !inSettings ? (
-      <>
-        {workspace ? (
-          <NavRow
-            icon="home"
-            label="Action Center"
-            active={pathname === '/attention' || pathname.startsWith('/attention/')}
-            trailing={
-              <CountBadge count={attention.data?.length ?? 0} label="need you" tone="notice" />
-            }
-            onPress={() => go('/attention')}
-          />
-        ) : null}
-        {compactSurfaces.map((surface) => (
-          <NavRow
-            key={surface.id}
-            icon={surface.icon}
-            label={surface.title}
-            active={isActive(surface, pathname)}
-            onPress={() => go(surface.path)}
-          />
-        ))}
-        {workspace?.kind === 'general' ? (
-          <NavRow icon="settings" label="Members" onPress={() => go('/settings/account')} />
-        ) : null}
-        <NavRow icon="settings" label="Settings" onPress={() => go('/settings/account')} />
-      </>
-    ) : null;
+  const top = ['artifacts', 'knowledge', 'automations']
+    .map((id) => surfacesInGroup('primary').find((surface) => surface.id === id))
+    .filter((surface): surface is Surface => Boolean(surface));
 
   return (
-    <nav
-      aria-label={inSettings ? 'Settings sections' : 'Primary workspace navigation'}
-      className="flex h-full w-[264px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-separator bg-sunken p-3"
-    >
-      <div className="relative mb-1 flex min-w-0 items-center justify-between gap-2">
-        <BrandMark />
-        <div className="flex min-w-0 items-center gap-1">
-          <BrandSearch />
+    <RouterProvider navigate={(path, options) => navigate(path, options)} useHref={useHref}>
+      <nav
+        aria-label={inSettings ? 'Settings sections' : 'Primary workspace navigation'}
+        className="flex h-full w-[240px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-separator bg-sunken p-3"
+      >
+        <div className="mb-2 flex min-w-0 items-center justify-between gap-2 px-1">
+          <BrandMark />
           {onClose ? (
-            <Button
-              variant="quiet"
+            <ActionButton
+              isQuiet
               aria-label="Close navigation"
               title="Close navigation"
-              className="size-11 shrink-0 px-0!"
+              className="shrink-0"
               onPress={onClose}
             >
               <Icon name="close" />
-            </Button>
+            </ActionButton>
           ) : null}
         </div>
-      </div>
-      <div className="mb-2">
-        <Menu
-          fill
-          label={workspace?.name ?? 'Select workspace'}
-          selectedKey={workspaceId}
-          items={(summaries.data ?? [])
-            .filter((item) => workspaceBelongsToCaller(item))
-            .map((item) => ({
-              id: item.workspace.id,
-              label: item.workspace.name,
-            }))}
-          onAction={(key) => switchWorkspace(String(key))}
-        />
-      </div>
-      {inSettings ? (
-        <>
-          <NavRow icon="chevron-right" label="Back to app" onPress={() => go('/')} />
-          {workspace ? (
+        {inSettings ? (
+          <>
+            <NavRow icon="chevron-right" label="Back to app" onPress={() => go('/')} />
+            <div className="my-2">
+              <Menu
+                fill
+                label={workspace?.name ?? 'Select workspace'}
+                selectedKey={workspaceId}
+                items={(summaries.data ?? [])
+                  .filter((item) => workspaceBelongsToCaller(item))
+                  .map((item) => ({ id: item.workspace.id, label: item.workspace.name }))}
+                onAction={(key) => setWorkspaceId(String(key))}
+              />
+            </div>
+            {workspace ? (
+              <NavSection
+                group="settings-workspace"
+                heading="Workspace"
+                pathname={pathname}
+                go={go}
+              />
+            ) : null}
+            <NavSection group="settings-user" heading="User" pathname={pathname} go={go} />
+            <NavSection group="settings-server" heading="Server" pathname={pathname} go={go} />
             <NavSection
-              group="settings-workspace"
-              heading="Workspace"
+              group="settings-admin"
+              heading="Administration"
               pathname={pathname}
               go={go}
             />
-          ) : null}
-          <NavSection group="settings-user" heading="User" pathname={pathname} go={go} />
-          <NavSection group="settings-server" heading="Server" pathname={pathname} go={go} />
-          <NavSection group="settings-admin" heading="Administration" pathname={pathname} go={go} />
-        </>
-      ) : variant === 'more' ? (
-        moreDestinations
-      ) : (
-        <>
-          <ThreadLists />
-          <NavSection group="primary" pathname={pathname} go={go} />
-          {workspace ? (
+          </>
+        ) : (
+          <>
+            <NavRow
+              icon="add"
+              label="New"
+              active={pathname === '/new'}
+              trailing={
+                persistent ? (
+                  <kbd aria-hidden className="font-sans text-xs text-fg-muted">
+                    {newShortcutLabel()}
+                  </kbd>
+                ) : undefined
+              }
+              onPress={() => go('/new')}
+            />
+            <SearchRow active={pathname === '/search'} />
             <NavRow
               icon="home"
-              label="Action Center"
-              active={pathname === '/attention' || pathname.startsWith('/attention/')}
+              label="Needs you"
+              active={pathname === '/needs-you' || pathname.startsWith('/needs-you/')}
               trailing={
                 <CountBadge count={attention.data?.length ?? 0} label="need you" tone="notice" />
               }
-              onPress={() => go('/attention')}
+              onPress={() => go('/needs-you')}
             />
-          ) : null}
-          {workspace?.kind === 'general' ? (
-            <NavRow icon="settings" label="Members" onPress={() => go('/settings/account')} />
-          ) : null}
-          <div className="mt-auto border-t border-separator pt-2">
-            <fieldset
-              className="grid min-w-0 grid-cols-4 justify-items-center gap-0.5 border-0 p-0"
-              aria-label="Sidebar shortcuts"
-            >
-              <Button
-                variant="quiet"
-                title="Settings"
-                aria-label="Settings"
-                className="size-11 shrink-0 px-0!"
-                onPress={() => go('/settings/account')}
-              >
-                <Icon name="settings" />
-              </Button>
-              {(workspace ? compactSurfaces : []).map((surface) => (
-                <Button
-                  key={surface.id}
-                  variant="quiet"
-                  title={surface.title}
-                  aria-label={surface.title}
-                  aria-current={isActive(surface, pathname) ? 'page' : undefined}
-                  className={[
-                    'size-11 shrink-0 px-0!',
-                    isActive(surface, pathname) ? 'bg-selected text-accent-content' : '',
-                  ].join(' ')}
-                  onPress={() => go(surface.path)}
-                >
-                  {surface.icon ? <Icon name={surface.icon} /> : null}
-                </Button>
-              ))}
-            </fieldset>
+            <NavRow
+              icon="chat"
+              label="Personal Assistant"
+              active={pathname === '/assistant'}
+              onPress={() => go('/assistant')}
+            />
+            {top.map((surface) => (
+              <NavRow
+                key={surface.id}
+                icon={surface.icon}
+                label={surface.title}
+                active={isActive(surface, pathname)}
+                onPress={() => go(surface.path)}
+              />
+            ))}
+            <WorkspaceGroups onStart={setStart} />
+            <NavRow
+              icon="add"
+              label="New workspace"
+              active={pathname === '/settings/workspaces/new'}
+              onPress={() => go('/settings/workspaces/new')}
+            />
+          </>
+        )}
+        {/* Settings lists Account and Appearance itself, so its sidebar has no account row. */}
+        {inSettings ? null : (
+          <div className="mt-auto pt-2">
+            <AccountRow go={go} />
           </div>
-        </>
-      )}
-    </nav>
+        )}
+        {start?.kind === 'task' ? (
+          <NewTaskDialog
+            key={`task:${start.workspaceId}`}
+            workspaceId={start.workspaceId}
+            workspaceLabel={start.workspaceName}
+            opener={{ open: true, onOpenChange: (next) => (next ? undefined : setStart(null)) }}
+          />
+        ) : null}
+        {start?.kind === 'goal' ? (
+          <NewGoalDialog
+            key={`goal:${start.workspaceId}`}
+            workspaceId={start.workspaceId}
+            opener={{ open: true, onOpenChange: (next) => (next ? undefined : setStart(null)) }}
+          />
+        ) : null}
+      </nav>
+    </RouterProvider>
   );
 }

@@ -69,7 +69,7 @@ export function DecisionSheet({
           {missing ? <p id={missingId}>{timelineCopy.exactEffectMissing}</p> : null}
           {holdReason ? <p id={holdId}>{holdReason}</p> : null}
           {failed && onRetry ? (
-            <button type="button" className="min-h-11 text-left underline" onClick={onRetry}>
+            <button type="button" className="text-left underline" onClick={onRetry}>
               Retry
             </button>
           ) : null}
@@ -86,8 +86,9 @@ export function DecisionSheet({
           {!question ? (
             <div className="flex gap-2">
               <Button
-                variant="negative-outline"
-                className="min-h-11 flex-1"
+                variant="negative"
+                fillStyle="outline"
+                className="flex-1"
                 isDisabled={Boolean(pending) || held}
                 aria-describedby={held ? holdId : denyId}
                 onPress={onDeny}
@@ -96,7 +97,7 @@ export function DecisionSheet({
               </Button>
               <Button
                 variant="accent"
-                className="min-h-11 flex-1"
+                className="flex-1"
                 isDisabled={missing || Boolean(pending) || held}
                 aria-describedby={held ? holdId : missing ? missingId : approveId}
                 onPress={onApprove}
@@ -106,7 +107,7 @@ export function DecisionSheet({
             </div>
           ) : null}
           {more > 0 && onNext ? (
-            <button type="button" className="min-h-11 text-left" onClick={onNext}>
+            <button type="button" className="text-left" onClick={onNext}>
               {fillCopy(timelineCopy.nextDecision, { count: more })}
             </button>
           ) : null}
@@ -175,7 +176,7 @@ export function DecisionRowSheet({
       footer={
         more > 0 && onNext ? (
           <div data-decision-footer="">
-            <button type="button" className="min-h-11 text-left" onClick={onNext}>
+            <button type="button" className="text-left" onClick={onNext}>
               {fillCopy(timelineCopy.nextDecision, { count: more })}
             </button>
           </div>
@@ -295,7 +296,7 @@ function QuestionSubmit({
         <p id={`${why}-wait`}>Answer every question first.</p>
       ) : null}
       <Button
-        className="min-h-11"
+        className="self-start"
         isDisabled={!complete || pending || held || !onSubmit}
         aria-describedby={held ? holdId : !complete || pending ? `${why}-wait` : why}
         onPress={() => {

@@ -2,7 +2,7 @@ import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, ErrorBanner } from '../../primitives';
+import { Button, InlineAlert } from '../../primitives';
 import { workspaceKeys } from './data';
 
 /** Exact retained Skill history in the selected Workspace; reads do not change selection. */
@@ -44,7 +44,7 @@ export function SkillHistory({
         <p className="text-xs text-fg-muted">Loading retained versions…</p>
       ) : null}
       {history.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't read Skill history."
           onRetry={blocked ? undefined : () => void history.refetch()}
         />
@@ -86,7 +86,7 @@ export function SkillHistory({
       {remove.isSuccess ? <p role="status">Skill removed from future selection.</p> : null}
       {remove.isError ? (
         <>
-          <ErrorBanner message={mutationFailure(remove.error, 'removal')} />
+          <InlineAlert message={mutationFailure(remove.error, 'removal')} />
           <Button
             size="sm"
             isDisabled={blocked || history.isFetching}
@@ -202,7 +202,7 @@ function SkillVersionDetails({
       <p className="text-xs break-all">Retained version {digest}</p>
       {version.isPending ? <p>Loading version…</p> : null}
       {version.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't read that Skill version."
           onRetry={blocked ? undefined : () => void version.refetch()}
         />
@@ -236,7 +236,7 @@ function SkillVersionDetails({
           ))}
           {content.isFetching ? <p>Loading file…</p> : null}
           {content.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't read that Skill file."
               onRetry={blocked ? undefined : () => void content.refetch()}
             />
@@ -265,7 +265,7 @@ function SkillVersionDetails({
           </Button>
           {check.data ? <p role="status">Source check: {check.data.status}</p> : null}
           {check.isError ? (
-            <ErrorBanner message="Couldn't check that Skill source. Retry the source check." />
+            <InlineAlert message="Couldn't check that Skill source. Retry the source check." />
           ) : null}
           {otherDigests.map((other) => (
             <Button
@@ -279,7 +279,7 @@ function SkillVersionDetails({
           ))}
           {diff.isFetching ? <p>Comparing versions…</p> : null}
           {diff.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't compare those versions."
               onRetry={blocked ? undefined : () => void diff.refetch()}
             />
@@ -346,7 +346,7 @@ function SkillVersionDetails({
           {purge.isSuccess ? <p role="status">Version bytes permanently deleted.</p> : null}
           {purge.isError ? (
             <>
-              <ErrorBanner message={mutationFailure(purge.error, 'deletion')} />
+              <InlineAlert message={mutationFailure(purge.error, 'deletion')} />
               <Button
                 size="sm"
                 isDisabled={blocked || version.isFetching}

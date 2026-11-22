@@ -60,6 +60,35 @@ async function settleRestoredAnchor(page: Page, id: string) {
   }, id);
 }
 
+type EarlierSample = { id: string; top: number };
+type PagingWindow = Window & {
+  __onEarlierRequest?: () => void;
+  __earlierSample?: EarlierSample | null;
+};
+
+/**
+ * Calls the armed sampler when the page sends its request for the older page. The product
+ * takes its prepend anchor in the same task, so the sample sees the layout the anchor saw.
+ * Chrome above the timeline (Needs you, read state) can change between the test's scroll
+ * and that request; that move is not paging and must not count against it.
+ */
+async function armEarlierRequestSample(page: Page) {
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const paging = window as PagingWindow;
+      const body = typeof init?.body === 'string' ? init.body : '';
+      if (paging.__onEarlierRequest && body.includes('"earlier-1"')) paging.__onEarlierRequest();
+      return original(input, init);
+    };
+  });
+}
+
+/** One rendered scroll step: offsets snap to device pixels, so a residual below one is not a move. */
+async function scrollStep(page: Page) {
+  return page.evaluate(() => 1 / window.devicePixelRatio);
+}
+
 /** Records layout shift for each document, ignoring shifts caused by input. */
 async function armLayoutShift(page: Page) {
   await page.addInitScript(() => {
@@ -405,6 +434,7 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
 
     await mkdir(shotsDir, { recursive: true });
     await armLayoutShift(page);
+    await armEarlierRequestSample(page);
     const prefix = `${stack.webUrl}/chat/${workspaceId}/${threadId}`;
 
     for (const viewport of [
@@ -438,18 +468,25 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
           return false;
         }
       });
-      const before = await scroller.evaluate((node) => {
-        node.scrollTop = 0;
-        const top = node.getBoundingClientRect().top;
-        const entry = [...document.querySelectorAll<HTMLElement>('[data-timeline-entry]')].find(
-          (candidate) => candidate.getBoundingClientRect().bottom > top + 8
-        );
-        return {
-          id: entry?.getAttribute('data-timeline-entry') ?? '',
-          top: entry?.getBoundingClientRect().top ?? 0,
+      await scroller.evaluate((node) => {
+        const paging = window as PagingWindow;
+        paging.__earlierSample = null;
+        paging.__onEarlierRequest = () => {
+          paging.__onEarlierRequest = undefined;
+          const top = node.getBoundingClientRect().top;
+          const entry = [...document.querySelectorAll<HTMLElement>('[data-timeline-entry]')].find(
+            (candidate) => candidate.getBoundingClientRect().bottom > top + 8
+          );
+          paging.__earlierSample = {
+            id: entry?.getAttribute('data-timeline-entry') ?? '',
+            top: entry?.getBoundingClientRect().top ?? 0,
+          };
         };
+        node.scrollTop = 0;
       });
       await olderPage;
+      const before = await page.evaluate(() => (window as PagingWindow).__earlierSample ?? null);
+      if (!before?.id) throw new Error('The older page was requested without a visible entry.');
       await expect
         .poll(async () => page.locator('[data-timeline-entry]').count())
         .toBeGreaterThan(31);
@@ -461,8 +498,9 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
         return entry?.getBoundingClientRect().top ?? 0;
       }, before.id);
       const prependDelta = Math.abs(afterTop - before.top);
-      console.log(`prepend-px ${viewport.name}=${prependDelta}`);
-      expect(prependDelta).toBeLessThanOrEqual(2);
+      const step = await scrollStep(page);
+      console.log(`prepend-px ${viewport.name}=${prependDelta} step=${step}`);
+      expect(prependDelta).toBeLessThanOrEqual(step);
       await page.screenshot({
         path: join(shotsDir, `${viewport.name}-earlier.png`),
         fullPage: false,
@@ -536,7 +574,9 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
         );
         return entry?.getBoundingClientRect().top ?? 0;
       }, held.id);
-      expect(Math.abs(still - held.top)).toBeLessThanOrEqual(2);
+      const heldDelta = Math.abs(still - held.top);
+      console.log(`held-px ${viewport.name}=${heldDelta}`);
+      expect(heldDelta).toBeLessThanOrEqual(await scrollStep(page));
       const samples = await page.evaluate(
         () => (window as unknown as { __keySamples?: number[] }).__keySamples ?? []
       );

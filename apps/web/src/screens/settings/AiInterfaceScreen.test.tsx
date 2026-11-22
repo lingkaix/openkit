@@ -1768,7 +1768,9 @@ describe('Unified Gateway acceptance', () => {
       operations: { 'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
     });
     renderScreen(client);
-    expect(await screen.findByRole('heading', { name: 'Gateway', level: 1 })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Models and providers', level: 1 })
+    ).toBeInTheDocument();
     for (const name of ['In use', 'Providers', 'Not set up'])
       expect(await screen.findByRole('heading', { name, level: 2 })).toBeInTheDocument();
     const card = screen.getByRole('region', { name: 'Codex work' });

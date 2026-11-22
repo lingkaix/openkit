@@ -261,7 +261,8 @@ function makeClient(
             thread: {
               ...thread,
               entryPath: 'conversation' as const,
-              visibility: 'workspace' as const,
+              visibility:
+                (thread as { visibility?: 'private' | 'workspace' }).visibility ?? 'workspace',
             },
           })),
       };
@@ -453,20 +454,28 @@ function OpenChatRoute({ path }: { path: string }) {
   );
 }
 
-/** Returns the persistent selected-Workspace switcher after discovery settles. */
+/** Returns the Workspace group header in the sidebar after discovery settles (B2). */
 function workspaceSelectTrigger(name = 'Market research'): Promise<HTMLElement> {
   return screen.findByRole('button', { name });
+}
+
+/**
+ * Selects another Workspace from the sidebar (B2): its group ⋯ menu's New Thread here selects
+ * the Workspace and opens its Chat starter.
+ */
+async function switchWorkspace(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(await screen.findByRole('button', { name: `${name} options` }));
+  await user.click(await screen.findByRole('menuitem', { name: 'New Thread here' }));
 }
 
 /** Switches the persistent Workspace context and opens one Thread from the starter list. */
 async function switchToThread(
   user: ReturnType<typeof userEvent.setup>,
-  currentWorkspaceName: string,
+  _currentWorkspaceName: string,
   nextWorkspaceName: string,
   threadName: string
 ) {
-  await user.click(await workspaceSelectTrigger(currentWorkspaceName));
-  await user.click(await screen.findByRole('menuitem', { name: nextWorkspaceName }));
+  await switchWorkspace(user, nextWorkspaceName);
   await user.click(
     await within(screen.getByRole('main', { name: 'Workspace' })).findByRole('button', {
       name: threadName,
@@ -493,7 +502,7 @@ beforeEach(() => {
 });
 
 describe.each([
-  ['starter', '/chat'],
+  ['starter', '/new'],
   [
     'Thread',
     `/chat/${THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : ''}/${THREAD.id}`,
@@ -569,8 +578,8 @@ describe.each([
 });
 
 describe.each([
-  ['starter', '/chat', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
-  ['starter with immediate acceptance', '/chat', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
+  ['starter', '/new', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
+  ['starter with immediate acceptance', '/new', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
   [
     'Thread',
     '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
@@ -643,7 +652,7 @@ describe.each([
     } else {
       expect(screen.queryByRole('button', { name: /Conversation agent/ })).not.toBeInTheDocument();
     }
-    await user.click(await screen.findByRole('button', { name: /Logical model/ }));
+    await user.click(await screen.findByRole('button', { name: /Model$/ }));
     await user.click(await screen.findByRole('option', { name: 'OrcaRouter' }));
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
@@ -673,7 +682,7 @@ describe.each([
     } else {
       expect(screen.queryByRole('button', { name: /Conversation agent/ })).not.toBeInTheDocument();
     }
-    expect(screen.getByRole('button', { name: /OrcaRouter.*Logical model/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /OrcaRouter.*Model$/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Remove Existing brief' })).not.toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Second message');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -720,7 +729,7 @@ describe('conversation failure identity', () => {
     renderApp(
       targetRef === 'new-task-worker'
         ? '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6'
-        : '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        : '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({}, { 'conversation.submit': submitConversation })
     );
     if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
@@ -778,7 +787,7 @@ describe('chat starter (board 01)', () => {
       { 'conversation.navigation': listConversationNavigation }
     );
 
-    renderApp('/chat', client);
+    renderApp('/new', client);
 
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
@@ -804,7 +813,7 @@ describe('chat starter (board 01)', () => {
       { 'conversation.navigation': listConversationNavigation }
     );
 
-    renderApp('/chat', client);
+    renderApp('/new', client);
 
     expect(listConversationNavigation).not.toHaveBeenCalled();
     await act(async () => {
@@ -864,7 +873,7 @@ describe('chat starter (board 01)', () => {
     const listWorkspaces = vi.fn().mockReturnValue(workspaces.promise);
     const listConversationNavigation = vi.fn().mockReturnValue(navigation.promise);
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         { 'workspace.list': listWorkspaces },
         { 'conversation.navigation': listConversationNavigation }
@@ -937,7 +946,7 @@ describe('chat starter (board 01)', () => {
       const failedRead = failure === 'discovery' ? listWorkspaces : listNavigation;
       failedRead.mockRejectedValue(new Error('Read unavailable'));
       renderApp(
-        '/chat',
+        '/new',
         makeClient(
           { 'workspace.list': listWorkspaces },
           { 'conversation.navigation': listNavigation }
@@ -1010,7 +1019,7 @@ describe('chat starter (board 01)', () => {
       { 'conversation.navigation': listNavigation }
     );
     Object.assign(client, { auth: { email: { getSession } } });
-    renderApp('/chat', client);
+    renderApp('/new', client);
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
     const recent = within(screen.getByText('Recent').closest('section')!);
@@ -1028,7 +1037,7 @@ describe('chat starter (board 01)', () => {
   it('does not present an unavailable Workspace as Recent empty', async () => {
     const listNavigation = vi.fn().mockResolvedValue({ items: [] });
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         { 'workspace.list': vi.fn().mockResolvedValue({ items: [] }) },
         { 'conversation.navigation': listNavigation }
@@ -1043,7 +1052,7 @@ describe('chat starter (board 01)', () => {
   });
 
   it('keeps disconnected Recent in error treatment even after an empty read', async () => {
-    renderApp('/chat', makeClient({ meta: vi.fn().mockRejectedValue(new Error('Offline')) }));
+    renderApp('/new', makeClient({ meta: vi.fn().mockRejectedValue(new Error('Offline')) }));
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
     const recent = within(screen.getByText('Recent').closest('section')!);
@@ -1058,11 +1067,10 @@ describe('chat starter (board 01)', () => {
   it('switches the active Workspace from Chat', async () => {
     const user = userEvent.setup();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat', makeClient({}, { 'conversation.navigation': listConversationNavigation }));
+    renderApp('/new', makeClient({}, { 'conversation.navigation': listConversationNavigation }));
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
-    await user.click(await workspaceSelectTrigger());
-    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
+    await switchWorkspace(user, 'Second workspace');
 
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
@@ -1120,7 +1128,7 @@ describe('chat starter (board 01)', () => {
       ],
     });
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         { 'thread.list': listThreads },
         { 'conversation.navigation': listConversationNavigation }
@@ -1161,7 +1169,7 @@ describe('chat starter (board 01)', () => {
         .fn()
         .mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
       renderApp(
-        '/chat',
+        '/new',
         makeClient(
           {
             'workspace.list': vi.fn().mockResolvedValue({
@@ -1241,7 +1249,7 @@ describe('chat starter (board 01)', () => {
       ],
     });
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         { 'thread.read': getThread },
         { 'conversation.navigation': listConversationNavigation }
@@ -1280,7 +1288,7 @@ describe('chat starter (board 01)', () => {
       { 'thread.create': createThread, 'thread.read': getThread, 'turn.start': startTurn },
       { 'conversation.submit': submitConversation }
     );
-    renderApp('/chat', client);
+    renderApp('/new', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Plan a launch');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -1311,7 +1319,7 @@ describe('chat starter (board 01)', () => {
     );
     expect(startTurn).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
-    expect(await screen.findByRole('group', { name: 'Work | Full' })).toBeInTheDocument();
+    expect(await screen.findByRole('group', { name: 'Timeline view' })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
@@ -1327,13 +1335,12 @@ describe('chat starter (board 01)', () => {
     const user = userEvent.setup();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({}, { 'conversation.navigation': listConversationNavigation })
     );
 
     await screen.findByRole('heading', { name: 'Competitive teardown' });
-    await user.click(await workspaceSelectTrigger());
-    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
+    await switchWorkspace(user, 'Second workspace');
 
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
@@ -1349,7 +1356,7 @@ describe('chat starter (board 01)', () => {
   it('fails closed when a canonical Thread route names an unavailable Workspace', async () => {
     const getThread = vi.fn();
     renderApp(
-      '/chat/ws_00000000-0000-7afd-8124-c249cdaf069a/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7afd-8124-c249cdaf069a/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.read': getThread })
     );
 
@@ -1365,7 +1372,7 @@ describe('chat starter (board 01)', () => {
       preview: 'Workspace B thread',
     };
     renderApp(
-      '/chat/ws_00000000-0000-7ec6-8e33-a3b1d758efc6/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7ec6-8e33-a3b1d758efc6/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.read': vi.fn().mockResolvedValue(workspaceBThread),
         'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
@@ -1388,14 +1395,14 @@ describe('chat starter (board 01)', () => {
   });
 
   it('keeps Chat starter on the persistent sidebar switcher', async () => {
-    renderApp('/chat', makeClient());
+    renderApp('/new', makeClient());
     expect(await workspaceSelectTrigger()).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Market research' })).toHaveLength(1);
   });
 
   it('keeps Thread on the persistent sidebar switcher', async () => {
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient()
     );
     expect(
@@ -1430,7 +1437,7 @@ describe('chat starter (board 01)', () => {
       ],
     });
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         { 'thread.create': createThread, 'thread.read': getThread },
         { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
@@ -1475,10 +1482,12 @@ describe('chat starter (board 01)', () => {
     async (receivingThreadId) => {
       const user = userEvent.setup();
       const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
+      // The listed origin is the caller's private Assistant Timeline.
       const origin = {
         ...THREAD,
         id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
         name: 'Origin Chat',
+        visibility: 'private' as const,
       };
       const destination = {
         ...THREAD,
@@ -1496,7 +1505,7 @@ describe('chat starter (board 01)', () => {
       const createThread = vi.fn().mockResolvedValue(origin);
       const submitConversation = vi.fn().mockReturnValue(started.promise);
       renderApp(
-        '/chat',
+        '/new',
         makeClient(
           {
             'thread.create': createThread,
@@ -1525,7 +1534,8 @@ describe('chat starter (board 01)', () => {
         });
         await started.promise;
       });
-      expect(createThread).not.toHaveBeenCalled();
+      // The origin is the Timeline Core's opener returned, not a navigation row.
+      expect(createThread).toHaveBeenCalledTimes(1);
       expect(submitConversation).toHaveBeenCalledWith(
         expect.objectContaining({ threadId: origin.id, input: 'Hand off this work' })
       );
@@ -1566,7 +1576,7 @@ describe('chat starter (board 01)', () => {
       );
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     renderApp(
-      '/chat',
+      '/new',
       makeClient(
         {
           'thread.create': vi.fn().mockResolvedValue(origin),
@@ -1618,7 +1628,7 @@ describe('chat starter (board 01)', () => {
       },
       { 'conversation.submit': submitConversation }
     );
-    renderApp('/chat', client);
+    renderApp('/new', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Story thread');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -1655,7 +1665,7 @@ describe('chat starter (board 01)', () => {
       { 'thread.create': createThread, 'thread.read': getThread },
       { 'conversation.submit': submitConversation }
     );
-    const queryClient = renderApp('/chat', client);
+    const queryClient = renderApp('/new', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Plan for A');
@@ -1704,7 +1714,7 @@ describe('chat starter (board 01)', () => {
 
   it('disables the composer with a reason when the runtime is unreachable', async () => {
     const client = makeClient({ meta: vi.fn().mockRejectedValue(new Error('down')) });
-    renderApp('/chat', client);
+    renderApp('/new', client);
     // useConnection retries once, so disconnection settles after ~1s.
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
@@ -1740,7 +1750,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     expect(
@@ -1776,7 +1786,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     expect(
@@ -1828,7 +1838,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
@@ -1866,7 +1876,7 @@ describe('chat thread (boards 02/03)', () => {
       completedAt: '2026-07-21T00:00:03.000Z',
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi
           .fn()
@@ -1879,7 +1889,7 @@ describe('chat thread (boards 02/03)', () => {
 
   it('keeps an unanswered approval actionable after its raising Turn ends', async () => {
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         {
@@ -1911,7 +1921,7 @@ describe('chat thread (boards 02/03)', () => {
     const pending = createDeferred<unknown>();
     const respondApproval = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue({});
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -1953,7 +1963,7 @@ describe('chat thread (boards 02/03)', () => {
   it('waits for authoritative task status before exposing approval actions', async () => {
     const dashboard = createDeferred<Pick<ThreadDashboardResponse, 'turns' | 'pendingRequests'>>();
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         { 'thread.dashboard': vi.fn().mockReturnValue(dashboard.promise) }
@@ -1986,7 +1996,7 @@ describe('chat thread (boards 02/03)', () => {
 
   it('keeps an undecided approval decidable while its raising Turn is still running', async () => {
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -2044,7 +2054,7 @@ describe('chat thread (boards 02/03)', () => {
       ]),
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
         {
@@ -2096,7 +2106,7 @@ describe('chat thread (boards 02/03)', () => {
     });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2146,7 +2156,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2220,7 +2230,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2276,7 +2286,7 @@ describe('chat thread (boards 02/03)', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2324,7 +2334,7 @@ describe('chat thread (boards 02/03)', () => {
       }),
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2360,7 +2370,7 @@ describe('chat thread (boards 02/03)', () => {
       'turn.start': startTurn,
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2382,7 +2392,7 @@ describe('chat thread (boards 02/03)', () => {
       { 'conversation.submit': submitConversation }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -2406,7 +2416,7 @@ describe('chat thread (boards 02/03)', () => {
   it('shows a skeleton while the stream loads', async () => {
     const client = makeClient({ 'thread.items': vi.fn().mockReturnValue(new Promise(() => {})) });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
@@ -2415,7 +2425,7 @@ describe('chat thread (boards 02/03)', () => {
   it('shows an inline error when the stream fails', async () => {
     const client = makeClient({ 'thread.items': vi.fn().mockRejectedValue(new Error('boom')) });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     expect(await screen.findByText(/Couldn't load this thread\./i)).toBeInTheDocument();
@@ -2462,7 +2472,7 @@ describe('chat thread (boards 02/03)', () => {
         }
       );
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
       await screen.findByText('Approve $5 spend');
@@ -2504,7 +2514,7 @@ describe('chat thread (boards 02/03)', () => {
         }
       );
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
       expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeDisabled();
@@ -2518,7 +2528,7 @@ describe('chat thread (boards 02/03)', () => {
       'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await screen.findByText('Approve $5 spend');
@@ -2588,7 +2598,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         }
       );
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
       const own = await screen.findByRole('article', {
@@ -2637,7 +2647,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const client = makeClient({ 'thread.update': updateThread });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2668,7 +2678,7 @@ describe('thread lifecycle and attribution (S7)', () => {
   it('returns focus to Rename thread when the rename bar is cancelled', async () => {
     const user = userEvent.setup();
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient()
     );
     const rename = await screen.findByRole('button', { name: 'Rename thread' });
@@ -2684,7 +2694,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const client = makeClient({ 'thread.archive': archiveThread });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2733,7 +2743,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -2832,7 +2842,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         }
       );
       const queryClient = renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
 
@@ -3023,7 +3033,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       );
 
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
 
@@ -3210,7 +3220,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3265,7 +3275,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
@@ -3273,8 +3283,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     await user.clear(name);
     await user.type(name, 'Workspace A draft');
 
-    await user.click(await workspaceSelectTrigger('Market research'));
-    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
+    await switchWorkspace(user, 'Second workspace');
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
@@ -3298,7 +3307,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const client = makeClient({ 'thread.archive': archiveThread });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
@@ -3363,7 +3372,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await user.click(await screen.findByRole('button', { name: 'Stop run' }));
@@ -3404,7 +3413,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       );
 
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
 
@@ -3458,7 +3467,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3498,7 +3507,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3580,7 +3589,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3641,7 +3650,7 @@ describe('live turn subscription (S6)', () => {
       { 'thread.dashboard': getThreadDashboard }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     const message = await screen.findByRole('article', { name: 'Message from Alex' });
@@ -3712,7 +3721,7 @@ describe('live turn subscription (S6)', () => {
       );
 
       renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client
       );
       await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
@@ -3811,7 +3820,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3873,7 +3882,7 @@ describe('live turn subscription (S6)', () => {
       }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -3955,7 +3964,7 @@ describe('live turn subscription (S6)', () => {
         'th_00000000-0000-70a0-9cde-4561f64881c6'
       );
       const queryClient = renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client,
         (cache) => {
           cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
@@ -4057,7 +4066,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client,
       (queryClient) => {
         queryClient.setQueryDefaults(
@@ -4158,7 +4167,7 @@ describe('live turn subscription (S6)', () => {
       }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client,
       (cache) => {
         cache.setQueryDefaults(
@@ -4290,7 +4299,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await screen.findByText('Draft a competitive teardown.');
@@ -4379,7 +4388,7 @@ describe('live turn subscription (S6)', () => {
       { 'thread.dashboard': vi.fn().mockReturnValue(dashboard) }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client,
       (cache) => {
         cache.setQueryData(
@@ -4504,7 +4513,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -4570,7 +4579,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -4636,7 +4645,7 @@ describe('live turn subscription (S6)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -4817,7 +4826,7 @@ describe('open thread external activity', () => {
     const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
     const listThreads = vi.fn(async () => ({ items: [THREAD] }));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, 'thread.list': listThreads },
         { 'thread.dashboard': getThreadDashboard }
@@ -4872,7 +4881,7 @@ describe('open thread external activity', () => {
       };
       const getThreadDashboard = vi.fn().mockResolvedValue(initialDashboard);
       const queryClient = renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         makeClient(
           {
             'thread.items': vi
@@ -4978,7 +4987,7 @@ describe('open thread external activity', () => {
     }));
     const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await waitFor(() => {
@@ -5000,7 +5009,7 @@ describe('open thread external activity', () => {
     const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
     const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await waitFor(() => {
@@ -5144,7 +5153,7 @@ describe('open thread external activity', () => {
       await new Promise(() => undefined);
     }
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
         {
@@ -5190,7 +5199,7 @@ describe('open thread external activity', () => {
       ],
     }));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await act(async () => {
@@ -5215,7 +5224,7 @@ describe('open thread external activity', () => {
       await new Promise(() => undefined);
     }
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
         { 'thread.dashboard': getThreadDashboard }
@@ -5249,7 +5258,7 @@ describe('open thread external activity', () => {
       await new Promise(() => undefined);
     }
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
         { 'thread.dashboard': getThreadDashboard }
@@ -5284,7 +5293,7 @@ describe('open thread external activity', () => {
     );
     const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await user.click(await screen.findByRole('button', { name: 'Load earlier' }));
@@ -5377,7 +5386,7 @@ describe('open thread external activity', () => {
           : THREAD
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.read': getThread,
@@ -5396,7 +5405,7 @@ describe('open thread external activity', () => {
       ),
       undefined,
       undefined,
-      <OpenChatRoute path="/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c00-b9fc-382312fdf476" />
+      <OpenChatRoute path="/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-7c00-b9fc-382312fdf476" />
     );
 
     await waitFor(() => {
@@ -5418,8 +5427,7 @@ describe('open thread external activity', () => {
       ).length
     ).toBe(th1ItemCalls);
 
-    await user.click(await workspaceSelectTrigger());
-    await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
+    await switchWorkspace(user, 'Second workspace');
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
@@ -5617,7 +5625,7 @@ describe('task thread (board 04)', () => {
       answeredAt: ITEMS[0]!.createdAt,
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.dashboard': vi.fn().mockResolvedValue({
           viewerUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
@@ -5734,7 +5742,7 @@ describe('mode entry and feedback (S8)', () => {
     );
 
     renderApp(
-      '/chat/ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Answer directly');
@@ -5804,7 +5812,7 @@ describe('mode entry and feedback (S8)', () => {
       { 'conversation.submit': submitConversation }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
@@ -5893,7 +5901,7 @@ describe('mode entry and feedback (S8)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
 
@@ -5987,7 +5995,7 @@ describe('mode entry and feedback (S8)', () => {
         }
       );
       const queryClient = renderApp(
-        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
         client,
         (cache) => {
           cache.setQueryData(
@@ -6097,7 +6105,7 @@ describe('mode entry and feedback (S8)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await screen.findByText('Here is the completed pricing comparison.');
@@ -6184,7 +6192,7 @@ describe('mode entry and feedback (S8)', () => {
     );
 
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     const goodButton = await screen.findByRole('button', { name: /good/i });
@@ -6260,7 +6268,7 @@ describe('mode entry and feedback (S8)', () => {
       }
     );
     const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       client,
       (cache) => {
         cache.setQueryData(
@@ -6390,7 +6398,7 @@ describe('conversation artifact inspection', () => {
       lastMutationRequestId: 'req-artifact-v2',
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({
           items: [reference, duplicate, laterVersion, file],
@@ -6416,7 +6424,7 @@ describe('conversation artifact inspection', () => {
     const user = userEvent.setup();
     const readVersion = vi.fn().mockResolvedValue(retainedVersion(artifact));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.version-read': readVersion,
@@ -6450,7 +6458,7 @@ describe('conversation artifact inspection', () => {
       .mockRejectedValueOnce(new Error('unavailable'))
       .mockRejectedValueOnce(new ApiCallError(404, 'not retained'));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.version-read': readVersion,
@@ -6484,7 +6492,7 @@ describe('conversation artifact inspection', () => {
     };
     const readVersion = vi.fn().mockResolvedValue(retainedVersion(historical));
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.version-read': readVersion,
@@ -6546,7 +6554,7 @@ describe('conversation artifact inspection', () => {
       },
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
         'artifact.version-read': vi
@@ -6585,7 +6593,7 @@ describe('approval decision evidence', () => {
       causationId: 'req-denial',
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: [...ITEMS, human], nextCursor: null }),
@@ -6628,7 +6636,7 @@ describe('approval decision evidence', () => {
       decision: 'granted',
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [...ITEMS, grant], nextCursor: null }),
       })
@@ -6644,7 +6652,7 @@ describe('approval decision evidence', () => {
 it('closes the inspector from inside and returns focus to its toggle', async () => {
   const user = userEvent.setup();
   renderApp(
-    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
     makeClient({
       'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
     })
@@ -6654,7 +6662,7 @@ it('closes the inspector from inside and returns focus to its toggle', async () 
   const panel = await screen.findByRole('complementary', { name: 'Inspector' });
   expect(panel).toHaveClass('w-full', '@min-[47rem]/thread:w-60');
   const close = within(panel).getByRole('button', { name: 'Close inspector' });
-  expect(close).toHaveClass('min-h-11', 'min-w-11');
+  expect(close).toHaveClass('ok-action-icon');
   close.focus();
   expect(screen.queryByRole('tooltip', { name: 'Close inspector' })).not.toBeInTheDocument();
   await user.click(close);
@@ -7080,7 +7088,7 @@ describe('Worker environment Advanced choice', () => {
       );
       await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
       await user.click(await screen.findByRole('option', { name: 'Assistant' }));
-      await user.click(await screen.findByRole('button', { name: /Logical model/ }));
+      await user.click(await screen.findByRole('button', { name: /Model$/ }));
       await user.click(await screen.findByRole('option', { name: 'Alternate model' }));
       await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
       await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
@@ -7098,7 +7106,7 @@ describe('Worker environment Advanced choice', () => {
       });
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original Chat draft');
       expect(
-        await screen.findByRole('button', { name: /Alternate model.*Logical model/ })
+        await screen.findByRole('button', { name: /Alternate model.*Model$/ })
       ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
       expect(randomUUID).toHaveBeenCalledTimes(1);

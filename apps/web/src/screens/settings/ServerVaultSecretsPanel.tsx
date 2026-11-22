@@ -6,7 +6,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, Select, Skeleton, TextField } from '../../primitives';
+import { Button, Card, InlineAlert, Picker, Skeleton, TextField } from '../../primitives';
 import { redactSecretShapedText } from './secret-safe';
 
 /** Preserve only the HTTP status and fixed safe diagnostic, never backend or submitted material. */
@@ -232,17 +232,17 @@ export function ServerVaultSecretsPanel() {
   }
   return (
     <Card className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold text-fg">Shared MCP secrets</h2>
+      <h2 className="text-lg font-heading text-fg">Shared MCP secrets</h2>
       <p className="text-sm text-fg-muted">
         Server-owned MCP credentials use Gateway-only visibility and Server lifetime. Grant issue
         does not create a catalog binding.
       </p>
       {inventory.isLoading ? <Skeleton lines={3} /> : null}
       {inventory.isError || mutation.isError ? (
-        <ErrorBanner message="Shared MCP Vault request failed. Refresh inventory before another action." />
+        <InlineAlert message="Shared MCP Vault request failed. Refresh inventory before another action." />
       ) : null}
       {notice ? <p role="status">{notice}</p> : null}
-      <Button variant="outline" isDisabled={busy} onPress={refresh}>
+      <Button variant="secondary" isDisabled={busy} onPress={refresh}>
         Refresh shared MCP secrets
       </Button>
       {denied ? (
@@ -273,7 +273,7 @@ export function ServerVaultSecretsPanel() {
           </Button>
           {rotating ? (
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={busy}
               onPress={() => {
                 setRotating(null);
@@ -290,7 +290,7 @@ export function ServerVaultSecretsPanel() {
             onChange={setAgentId}
             isDisabled={disabled}
           />
-          <Select
+          <Picker
             label="Shared grant capability"
             selectedKey={capabilityId || 'unrestricted'}
             items={[
@@ -322,7 +322,7 @@ export function ServerVaultSecretsPanel() {
               {reference.status === 'active' ? (
                 <div className="flex flex-wrap gap-2">
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => {
                       setMaterial('');
@@ -332,14 +332,14 @@ export function ServerVaultSecretsPanel() {
                     Rotate shared secret {reference.referenceId}
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => changeGrant('grant', reference.referenceId)}
                   >
                     Create shared gateway grant {reference.referenceId}
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => mutation.mutate({ action: 'revoke', id: reference.referenceId })}
                   >
@@ -349,7 +349,7 @@ export function ServerVaultSecretsPanel() {
               ) : null}
             </div>
           ))}
-          <h3 className="font-semibold text-fg">Shared MCP grants</h3>
+          <h3 className="font-bold text-fg">Shared MCP grants</h3>
           {inventory.data?.grants.length === 0 ? <p>No shared MCP grants.</p> : null}
           {inventory.data?.grants.map((grant) => (
             <div key={grant.grantId} className="flex flex-col gap-2">
@@ -372,14 +372,14 @@ export function ServerVaultSecretsPanel() {
               {grant.status === 'active' ? (
                 <>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled || Object.keys(constraints).length === 0}
                     onPress={() => changeGrant('narrow', grant.grantId)}
                   >
                     Narrow shared grant {grant.grantId}
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => mutation.mutate({ action: 'revoke-grant', id: grant.grantId })}
                   >
@@ -389,7 +389,7 @@ export function ServerVaultSecretsPanel() {
               ) : null}
             </div>
           ))}
-          <h3 className="font-semibold text-fg">Shared MCP delivery evidence</h3>
+          <h3 className="font-bold text-fg">Shared MCP delivery evidence</h3>
           <p>
             A plan describes intended delivery. A successful use records backend resolution. A
             receipt confirms credential delivery, independently of the upstream work result.

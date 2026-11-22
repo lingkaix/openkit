@@ -2,28 +2,38 @@ import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentType, Key, ReactElement, ReactNode } from 'react';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import { Gallery } from './Gallery';
 import * as P from './index';
 import {
+  ActionButton,
   Avatar,
   Button,
   Composer,
   CountBadge,
-  ErrorBanner,
+  InlineAlert,
   NavRow,
   PhaseStepper,
-  Select,
-  StatusChip,
+  Picker,
+  RadioGroup,
+  StatusLight,
   Switch,
+  Tag,
 } from './index';
 
 /** Every §9 primitive must be exported from the barrel (the A2UI catalog seed). */
 const REQUIRED_EXPORTS = [
   'Button',
-  'StatusChip',
-  'ContextChip',
+  'ButtonGroup',
+  'ActionButton',
+  'ActionGroup',
+  'ToggleButton',
+  'StatusLight',
+  'Badge',
+  'Tag',
+  'Tooltip',
   'Avatar',
   'CountBadge',
   'NavRow',
@@ -45,12 +55,13 @@ const REQUIRED_EXPORTS = [
   'Eyebrow',
   'Skeleton',
   'EmptyState',
-  'ErrorBanner',
+  'InlineAlert',
   'TextField',
   'Switch',
-  'Select',
+  'Picker',
   'Icon',
   'Dialog',
+  'DialogFooter',
   'Modal',
   'Menu',
   'Tabs',
@@ -117,6 +128,21 @@ function withoutReactAriaMeterFallbackFalsePositive(results: Awaited<ReturnType<
   };
 }
 
+/** Two-way lens used by the ToggleButton test. */
+function Lens() {
+  const [full, setFull] = useState(false);
+  return (
+    <P.ActionGroup aria-label="Lens" size="sm">
+      <P.ToggleButton size="sm" isSelected={!full} onChange={() => setFull(false)}>
+        Work
+      </P.ToggleButton>
+      <P.ToggleButton size="sm" isSelected={full} onChange={() => setFull(true)}>
+        Full
+      </P.ToggleButton>
+    </P.ActionGroup>
+  );
+}
+
 describe('primitive tier — completeness', () => {
   for (const name of REQUIRED_EXPORTS) {
     it(`exports ${name}`, () => {
@@ -125,11 +151,11 @@ describe('primitive tier — completeness', () => {
   }
 });
 
-describe('primitive tier — renders and is accessible under every theme', () => {
-  for (const theme of ['', 'ok-theme-paper', 'ok-theme-noir']) {
-    it(`the component sheet is axe-clean (${theme || 'spectrum'})`, async () => {
+describe('primitive tier — renders and is accessible in both color schemes', () => {
+  for (const scheme of ['ok-scheme-light', 'ok-scheme-dark']) {
+    it(`the component sheet is axe-clean (${scheme})`, async () => {
       const { container } = render(
-        <div className={theme}>
+        <div className={scheme}>
           <Gallery />
         </div>
       );
@@ -163,7 +189,7 @@ describe('primitive tier — behavior', () => {
     render(
       <Modal trigger={<Button>Open dialog</Button>}>
         <Dialog title="Confirm change">
-          <Button variant="quiet">Cancel</Button>
+          <ActionButton isQuiet>Cancel</ActionButton>
           <Button>Confirm</Button>
         </Dialog>
       </Modal>
@@ -237,10 +263,12 @@ describe('primitive tier — behavior', () => {
     );
 
     const tablist = screen.getByRole('tablist', { name: 'Goal lens' });
-    expect(tablist).toHaveClass('w-full');
-    expect(tablist).not.toHaveClass('ml-auto');
+    // S2 Tabs: an indicator under the selected tab, no segmented box (WEB-UX A5).
+    expect(tablist).toHaveClass('ok-tab-list');
+    expect(tablist).not.toHaveClass('ml-auto', 'bg-sunken');
     const thread = screen.getByRole('tab', { name: 'Thread' });
-    expect(thread).toHaveClass('min-h-11', 'flex-1');
+    expect(thread).toHaveClass('ok-tab');
+    expect(thread.querySelector('.ok-tab-indicator')).not.toBeNull();
     const plan = screen.getByRole('tab', { name: 'Plan' });
     expect(thread).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Thread content');
@@ -337,23 +365,23 @@ describe('primitive tier — behavior', () => {
     render(
       <RadioGroup
         aria-label="Color theme"
-        defaultValue="spectrum"
+        defaultValue="light"
         items={[
-          { id: 'spectrum', label: 'Spectrum' },
-          { id: 'paper', label: 'Paper' },
+          { id: 'light', label: 'Light' },
+          { id: 'dark', label: 'Dark' },
         ]}
         onChange={onChange}
       />
     );
 
     expect(screen.getByRole('radiogroup', { name: 'Color theme' })).toBeInTheDocument();
-    const spectrum = screen.getByRole('radio', { name: 'Spectrum' });
-    const paper = screen.getByRole('radio', { name: 'Paper' });
-    expect(spectrum).toBeChecked();
-    spectrum.focus();
+    const light = screen.getByRole('radio', { name: 'Light' });
+    const dark = screen.getByRole('radio', { name: 'Dark' });
+    expect(light).toBeChecked();
+    light.focus();
     await user.keyboard('{ArrowRight}');
-    expect(paper).toBeChecked();
-    expect(onChange).toHaveBeenCalledWith('paper');
+    expect(dark).toBeChecked();
+    expect(onChange).toHaveBeenCalledWith('dark');
   });
 
   it('a mounted ToastProvider raises and dismisses queued notifications', async () => {
@@ -395,22 +423,24 @@ describe('primitive tier — behavior', () => {
       toastQueue.add({ message: 'Message sent', onAction });
     });
     const action = await screen.findByRole('button', { name: 'View' });
-    expect(action).toHaveClass('min-h-11', 'min-w-11');
+    expect(action).toHaveClass('h-control-sm');
     await user.click(action);
     expect(onAction).toHaveBeenCalledOnce();
   });
 
-  it('gives the toast action a 44px target and no 340px width floor', () => {
+  it('draws the toast action at the S control height with no 340px width floor', () => {
     const Toast =
       requiredPrimitive<ComponentType<{ message: string; onAction: () => void }>>('Toast');
     render(<Toast message="Material saved" onAction={() => undefined} />);
     const action = screen.getByRole('button', { name: 'View' });
-    expect(action).toHaveClass('min-h-11', 'min-w-11');
+    // The 44px touch target is the coarse-pointer hit area (theme.css), measured in e2e.
+    expect(action).toHaveClass('h-control-sm');
+    expect(action).not.toHaveClass('min-h-11');
     expect(screen.getByText('Material saved')).toHaveClass('break-normal');
     expect(action.closest('.ok-toast')).not.toHaveClass('min-w-[340px]');
   });
 
-  it('stacks the Debug catalog in one column until 800px', () => {
+  it('stacks each component group in one column until 800px', () => {
     render(<Gallery />);
     const catalog = screen.getByRole('heading', { name: 'Buttons' }).parentElement?.parentElement;
     expect(catalog).toHaveClass('grid', 'grid-cols-1', 'min-[800px]:grid-cols-2');
@@ -583,6 +613,65 @@ describe('primitive tier — behavior', () => {
     button.focus();
     await user.keyboard('{Enter}');
     expect(onPress).toHaveBeenCalledTimes(2);
+  });
+
+  it('Button keeps the pill width floor for text labels only (DESIGN.md §6)', () => {
+    render(
+      <>
+        <Button size="sm">Approve</Button>
+        <Button aria-label="Search">
+          <P.Icon name="search" />
+        </Button>
+      </>
+    );
+    const text = screen.getByRole('button', { name: 'Approve' });
+    expect(text).toHaveClass('ok-button-sm', 'ok-button-text');
+    expect(screen.getByRole('button', { name: 'Search' })).not.toHaveClass('ok-button-text');
+  });
+
+  it('Button exposes its S2 role; secondary is outline and the others fill (P8)', () => {
+    render(
+      <>
+        <Button>Send</Button>
+        <Button variant="primary">Done</Button>
+        <Button variant="secondary">Cancel</Button>
+        <Button variant="negative" fillStyle="outline">
+          Disable
+        </Button>
+      </>
+    );
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('data-variant', 'accent');
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveClass('bg-accent');
+    expect(screen.getByRole('button', { name: 'Done' })).toHaveClass('bg-primary');
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveClass('border-border', 'bg-card');
+    expect(screen.getByRole('button', { name: 'Disable' })).toHaveClass('border-negative-fg');
+  });
+
+  it('ActionButton is an 8px-radius command; icon-only is square and quiet has no fill', () => {
+    render(
+      <>
+        <P.ActionButton isQuiet aria-label="Copy">
+          <P.Icon name="retry" />
+        </P.ActionButton>
+        <P.ActionButton>Retry</P.ActionButton>
+      </>
+    );
+    const copy = screen.getByRole('button', { name: 'Copy' });
+    expect(copy).toHaveClass('rounded-ok', 'ok-action-md', 'ok-action-icon', 'bg-transparent');
+    expect(copy).not.toHaveAttribute('data-variant');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toHaveClass('bg-secondary', 'font-medium');
+    expect(retry).not.toHaveClass('ok-action-icon');
+  });
+
+  it('ToggleButton reports pressed state inside a labelled ActionGroup', async () => {
+    const user = userEvent.setup();
+    render(<Lens />);
+    expect(screen.getByRole('group', { name: 'Lens' })).toHaveClass('pointer-coarse:gap-3.5');
+    expect(screen.getByRole('button', { name: 'Work' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: 'Full' }));
+    expect(screen.getByRole('button', { name: 'Full' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Work' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('Button shows the title hint on pointer hover and keyboard focus', async () => {
@@ -838,9 +927,7 @@ describe('primitive tier — behavior', () => {
         }}
       />
     );
-    expect(screen.getByRole('button', { name: /Logical model/ })).toHaveTextContent(
-      'Logical model'
-    );
+    expect(screen.getByRole('button', { name: /Model$/ })).toHaveTextContent('Model');
     const trigger = screen.getByRole('button', { name: /Conversation agent/ });
     await user.click(trigger);
     expect(
@@ -1374,20 +1461,63 @@ describe('primitive tier — behavior', () => {
     expect(screen.getByRole('img', { name: 'Scout' })).toBeInTheDocument();
   });
 
-  it('StatusChip states meaning as text, not color alone', () => {
-    render(<StatusChip tone="notice">Needs review</StatusChip>);
-    expect(screen.getByText('Needs review')).toBeInTheDocument();
+  it('StatusLight states meaning as text beside a dot, with no fill', () => {
+    const { container } = render(<StatusLight tone="notice">Needs review</StatusLight>);
+    const light = screen.getByText('Needs review');
+    expect(light).toHaveClass('ok-status-light', 'text-fg');
+    expect(light.className).not.toMatch(/\bbg-/);
+    expect(container.querySelector('.ok-status-dot')).toHaveClass('bg-notice-fg');
+    expect(container.querySelector('.ok-status-dot')).toHaveAttribute('aria-hidden');
   });
 
-  it('ErrorBanner offers a retry action', async () => {
+  it('InlineAlert offers a retry action and announces failures', async () => {
     const user = userEvent.setup();
     const onRetry = vi.fn();
-    render(<ErrorBanner message="Couldn't reach the local runtime." onRetry={onRetry} />);
+    render(<InlineAlert message="Couldn't reach the local runtime." onRetry={onRetry} />);
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't reach the local runtime.");
+    expect(screen.getByRole('alert')).toHaveClass('border-2', 'border-negative-fg');
     const retry = screen.getByRole('button', { name: 'Try again' });
-    expect(retry).toHaveClass('min-h-11', 'min-w-11');
+    expect(retry).toHaveAttribute('data-variant', 'secondary');
     await user.click(retry);
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it('InlineAlert in a non-negative family is a status with a title and its own action', () => {
+    render(
+      <InlineAlert
+        variant="notice"
+        title="Vault is locked"
+        message="Account slots stay unavailable until it is unlocked."
+        action={<Button variant="secondary">Open Vault</Button>}
+      />
+    );
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Vault is locked');
+    expect(status).toHaveClass('border-notice-fg');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open Vault' })).toBeInTheDocument();
+  });
+
+  it('Switch, RadioGroup and Tag use the S2 token classes', () => {
+    const { container } = render(
+      <>
+        <Switch defaultSelected>Ask first</Switch>
+        <RadioGroup
+          label="Reply length"
+          defaultValue="short"
+          items={[
+            { id: 'short', label: 'Short' },
+            { id: 'long', label: 'Detailed' },
+          ]}
+        />
+        <Tag>Market research</Tag>
+      </>
+    );
+    expect(screen.getByRole('switch', { name: 'Ask first' })).toBeChecked();
+    expect(container.querySelector('.ok-switch-track')).toHaveClass('ok-switch-selected');
+    expect(screen.getByRole('radiogroup', { name: 'Reply length' })).toBeInTheDocument();
+    expect(container.querySelectorAll('.ok-radio-control')).toHaveLength(2);
+    expect(screen.getByText('Market research').closest('.ok-tag')).toHaveClass('bg-secondary');
   });
 
   it('PageHeader keeps actions below the title until the desktop row', () => {
@@ -1405,9 +1535,9 @@ describe('primitive tier — behavior', () => {
     expect(actions).not.toHaveClass('shrink-0');
   });
 
-  it('Select is a labeled, listbox-backed control with its items wired', () => {
+  it('Picker is a labeled, listbox-backed control with its items wired', () => {
     const { container } = render(
-      <Select
+      <Picker
         label="Model"
         defaultSelectedKey="sonnet"
         items={[
@@ -1421,7 +1551,7 @@ describe('primitive tier — behavior', () => {
     // exist; RAC's virtual-focus listbox is flaky in jsdom.
     const trigger = screen.getByRole('button', { name: /Model/ });
     expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
-    expect(trigger).toHaveClass('min-h-11');
+    expect(trigger).toHaveClass('h-control-md');
     expect(trigger).toHaveTextContent('Claude Sonnet 5');
     // Items are wired into the control (RAC mirrors them into a hidden native select).
     expect(container.querySelectorAll('select option').length).toBeGreaterThanOrEqual(2);
@@ -1433,11 +1563,169 @@ it('keeps complete long context and menu labels available when their compact dis
   const label = 'ws_00000000-0000-7ffe-85b0-17809b0b4db8'.repeat(20);
   render(
     <>
-      <P.ContextChip>{label}</P.ContextChip>
+      <P.Tag>{label}</P.Tag>
       <P.Menu fill label={label} items={[{ id: 'one', label }]} onAction={() => {}} />
     </>
   );
   expect(screen.getByTitle(label)).toHaveTextContent(label);
   await user.click(screen.getByRole('button', { name: label }));
   expect(await screen.findByRole('menuitem', { name: label })).toBeVisible();
+});
+
+/**
+ * WEB-UX A5 surfaces (DESIGN.md §7, §9.1, §9.4-§9.8): S2 dialog sizes and footer, menu
+ * sections and shortcut slot, borderless table with a row menu, decision-only boxes,
+ * shadowless cards and S2 progress thickness.
+ */
+describe('surfaces (WEB-UX A5)', () => {
+  it('Modal sizes the S2 dialog and the footer puts Cancel before the main action', async () => {
+    const user = userEvent.setup();
+    render(
+      <P.Modal size="L" trigger={<P.Button>Open</P.Button>}>
+        <P.Dialog title="Edit route" closeLabel="Close">
+          <p>Body</p>
+          <P.DialogFooter>
+            <P.Button slot="close" variant="secondary">
+              Cancel
+            </P.Button>
+            <P.Button>Save</P.Button>
+          </P.DialogFooter>
+        </P.Dialog>
+      </P.Modal>
+    );
+    await user.click(screen.getByRole('button', { name: 'Open' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit route' });
+    const surface = dialog.closest('.ok-dialog');
+    expect(surface).toHaveClass('ok-dialog-l');
+    expect(screen.getByRole('heading', { name: 'Edit route' })).toHaveClass(
+      'text-title',
+      'font-heading'
+    );
+    const footer = dialog.querySelector('.ok-dialog-footer');
+    expect(
+      [...(footer?.querySelectorAll('button') ?? [])].map((button) => button.textContent)
+    ).toEqual(['Cancel', 'Save']);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('Modal opens from controlled state without a trigger', () => {
+    render(
+      <P.Modal isOpen onOpenChange={() => {}}>
+        <P.Dialog title="Share files">Body</P.Dialog>
+      </P.Modal>
+    );
+    expect(screen.getByRole('dialog', { name: 'Share files' }).closest('.ok-dialog')).toHaveClass(
+      'ok-dialog'
+    );
+  });
+
+  it('Menu renders titled sections, descriptions and the shortcut slot', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(
+      <P.Menu
+        label="Goal actions"
+        sections={[
+          { id: 'goal', items: [{ id: 'edit', label: 'Edit brief', icon: 'edit', shortcut: 'E' }] },
+          {
+            id: 'share',
+            title: 'Share',
+            items: [{ id: 'copy', label: 'Copy link', description: 'Members only' }],
+          },
+          { id: 'empty', title: 'Nothing', items: [] },
+        ]}
+        onAction={onAction}
+      />
+    );
+    await user.click(screen.getByRole('button', { name: 'Goal actions' }));
+    const menu = await screen.findByRole('menu', { name: 'Goal actions' });
+    expect(menu.querySelectorAll('[role="group"]')).toHaveLength(2);
+    expect(screen.getByText('Share')).toBeVisible();
+    expect(screen.queryByText('Nothing')).not.toBeInTheDocument();
+    const edit = screen.getByRole('menuitem', { name: 'Edit brief' });
+    expect(edit).toHaveClass('ok-menu-item');
+    expect(edit.querySelector('kbd')).toHaveTextContent('E');
+    expect(screen.getByRole('menuitem', { name: 'Copy link' })).toHaveAccessibleDescription(
+      'Members only'
+    );
+    await user.click(edit);
+    expect(onAction).toHaveBeenCalledWith('edit');
+  });
+
+  it('Table has no outer box and offers each row its own ⋯ menu', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(
+      <P.Table
+        aria-label="Workers"
+        columns={[{ id: 'worker', label: 'Worker' }]}
+        rows={[
+          { id: 'scout', cells: { worker: 'Scout' } },
+          { id: 'quill', cells: { worker: 'Quill' } },
+        ]}
+        rowActions={{
+          items: [{ id: 'pause', label: 'Pause' }],
+          label: (row) => `Actions for ${String(row.cells.worker)}`,
+          onAction,
+        }}
+      />
+    );
+    const grid = screen.getByRole('grid', { name: 'Workers' });
+    expect(grid.parentElement).not.toHaveClass('border');
+    expect(screen.getAllByRole('row').slice(1)[0]).toHaveClass('ok-table-row');
+    await user.click(screen.getByRole('button', { name: 'Actions for Quill' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Pause' }));
+    expect(onAction).toHaveBeenCalledWith('quill', 'pause');
+  });
+
+  it('ItemCard boxes only decisions; other items are unboxed rows', () => {
+    render(
+      <>
+        <P.ItemCard decision kind="notice" title="Approve the plan?" />
+        <P.ItemCard kind="informative" title="Plan updated" />
+      </>
+    );
+    const decision = screen.getByText('Approve the plan?').closest('.ok-item-card');
+    const row = screen.getByText('Plan updated').closest('.ok-item-card');
+    expect(decision).toHaveAttribute('data-item-look', 'decision');
+    expect(decision).toHaveClass('ok-card', 'bg-layer-1', 'rounded-ok-lg');
+    expect(decision?.className).not.toMatch(/shadow|border/);
+    expect(row).toHaveAttribute('data-item-look', 'row');
+    expect(row?.className).not.toMatch(/ok-card|bg-|border|shadow/);
+  });
+
+  it('Card and KanbanCard carry no shadow; Kanban columns have no border', () => {
+    render(
+      <>
+        <P.Card>Group</P.Card>
+        <P.KanbanColumn title="Review" count={2}>
+          <P.KanbanCard title="Final review" hue="you" initials="SW" worker="You" />
+        </P.KanbanColumn>
+      </>
+    );
+    expect(screen.getByText('Group')).toHaveClass('ok-card');
+    expect(screen.getByText('Group').className).not.toMatch(/shadow/);
+    const column = screen.getByRole('region', { name: 'Review' });
+    expect(column.className).not.toMatch(/border|shadow/);
+    expect(screen.getByRole('button', { name: /Final review/ }).className).not.toMatch(/shadow/);
+  });
+
+  it('Progress and Meter use the S2 M track by default and S on request', () => {
+    render(
+      <>
+        <P.Progress label="Upload" value={40} />
+        <P.Progress label="Index" size="S" value={40} />
+        <P.Meter label="Storage" value={40} />
+      </>
+    );
+    const track = (name: string) =>
+      screen
+        .getByRole(name === 'Storage' ? 'meter' : 'progressbar', { name })
+        .querySelector('[class*="-track"]');
+    expect(track('Upload')).toHaveClass('ok-progress-track');
+    expect(track('Upload')).not.toHaveClass('ok-progress-sm');
+    expect(track('Index')).toHaveClass('ok-progress-track', 'ok-progress-sm');
+    expect(track('Storage')).toHaveClass('ok-meter-track');
+  });
 });

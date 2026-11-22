@@ -39,19 +39,17 @@ test('contains long conversation previews and keeps the next row clickable', asy
   });
   await page.setViewportSize({ width: 824, height: 803 });
   await page.goto(stack.webUrl);
-  const row = page.getByRole('button', { name: title, exact: true });
-  // A second chat is the one Assistant row. Its button label is Personal Assistant.
-  const next = page.getByRole('button', { name: 'Personal Assistant', exact: true });
+  const row = page.getByRole('link', { name: title, exact: true });
+  // Thread rows are links in the Workspace group's tree (B2).
+  const next = page.getByRole('link', { name: 'Next conversation', exact: true });
   const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
-  const expander = page.getByRole('button', { name: `Show tasks for ${title}`, exact: true });
   await expect(row).toBeVisible();
-  await expect(expander).toBeVisible();
   const navigationBounds = await navigation.boundingBox();
-  const expanderBounds = await expander.boundingBox();
+  const rowBounds = await row.boundingBox();
   expect(navigationBounds).not.toBeNull();
-  expect(expanderBounds).not.toBeNull();
-  expect(expanderBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
-  expect(expanderBounds!.x + expanderBounds!.width).toBeLessThanOrEqual(
+  expect(rowBounds).not.toBeNull();
+  expect(rowBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
+  expect(rowBounds!.x + rowBounds!.width).toBeLessThanOrEqual(
     navigationBounds!.x + navigationBounds!.width
   );
   const navigationOverflow = await navigation.evaluate((element) => ({
@@ -78,18 +76,17 @@ test('contains long conversation previews and keeps the next row clickable', asy
   });
   expect(hit).toBe(true);
   await next.click({ timeout: 2000 });
-  await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${threadIds[1]}$`));
+  await expect(page).toHaveURL(new RegExp(`/w/[^/]+/t/${threadIds[1]}$`));
 
   // Below 800px the sidebar is replaced by the phone row; the Goal list is under Work.
   await page.setViewportSize({ width: 600, height: 803 });
-  // The timeline's Work | Full lens also has a Work button; take the section bar's.
+  // Take the section bar's Work button.
   await page
     .getByRole('navigation', { name: 'Sections' })
     .getByRole('button', { name: 'Work', exact: true })
     .click();
   await page.getByRole('tab', { name: 'Goals', exact: true }).click();
   await expect(row).toBeVisible();
-  await expect(expander).toBeVisible();
   const phoneRowBounds = await row.boundingBox();
   expect(phoneRowBounds).not.toBeNull();
   expect(phoneRowBounds!.x).toBeGreaterThanOrEqual(0);
@@ -112,7 +109,7 @@ test.afterEach(async () => {
 });
 
 /**
- * Minimal L4 smoke: rebuilt shell loads against a live NanoCore and reaches Settings → Debug.
+ * Minimal L4 smoke: rebuilt shell loads against a live NanoCore and reaches Settings → Diagnostics.
  */
 test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   const runtimeErrors: string[] = [];
@@ -130,8 +127,8 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
   ).toBeVisible();
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Action Center$/ })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Needs you$/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Needs you' })).toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: 'Primary workspace navigation' });
   const sidebarSize = await sidebar.evaluate((element) => ({
@@ -139,16 +136,17 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
     client: element.clientWidth,
     scroll: element.scrollWidth,
   }));
-  expect(sidebarSize.width).toBe(264);
+  expect(sidebarSize.width).toBe(240);
   expect(sidebarSize.scroll).toBeLessThanOrEqual(sidebarSize.client);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Search', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Search', exact: true })).toBeVisible();
   const searchSize = await sidebar.evaluate((element) => ({
     client: element.clientWidth,
     scroll: element.scrollWidth,
   }));
   expect(searchSize.scroll).toBeLessThanOrEqual(searchSize.client);
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Search', exact: true })).toBeHidden();
 
   const settings = page.getByRole('button', { name: /^Settings$/ });
   await settings.focus();
@@ -156,8 +154,8 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Settings sections' })).toBeVisible();
-  await page.getByRole('button', { name: /^Debug$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Debug' })).toBeVisible();
+  await page.getByRole('button', { name: /^Diagnostics$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Diagnostics' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Evidence bundles' })).toBeVisible();
 
   const viewport = await page.evaluate(() => ({
@@ -236,7 +234,7 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
-  await page.goto(`${stack.webUrl}/chat`);
+  await page.goto(`${stack.webUrl}/new`);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
@@ -249,7 +247,7 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
-  await page.goto(`${stack.webUrl}/chat`);
+  await page.goto(`${stack.webUrl}/new`);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
@@ -302,7 +300,8 @@ test('keeps a tall dialog action reachable by normal pointer interaction', async
   expect((await signInResponse).status()).toBe(200);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   await page.getByRole('button', { name: /^Settings$/ }).click();
-  await page.getByRole('button', { name: /^Debug$/ }).click();
+  await page.getByRole('button', { name: /^Appearance$/ }).click();
+  await page.getByRole('button', { name: 'All components' }).click();
 
   const trigger = page.getByRole('button', { name: 'Open dialog' });
   await trigger.click();

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { postWhenCaptureAllows } from './_lib/capture-fence.js';
+import { hitArea } from './_lib/hit-area.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 // Screenshots are evidence, not assertions. Set OPENKIT_E2E_SHOTS_DIR to keep them.
@@ -101,7 +102,7 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
 
     await page.goBack();
     await expect(decision).toBeHidden();
-    await expect(page).toHaveURL(new RegExp(`/tasks/${workspaceId}/${thread.id}`));
+    await expect(page).toHaveURL(new RegExp(`/w/${workspaceId}/t/${thread.id}`));
     await expect(bar).toBeFocused();
 
     const fold = page.getByRole('button', { name: /^\d+ steps/ }).first();
@@ -114,15 +115,16 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
     expect(stepsBox!.height).toBeGreaterThanOrEqual(740 * 0.55);
     expect(stepsBox!.height).toBeLessThanOrEqual(740 * 0.7);
     const stepsClose = steps.getByRole('button', { name: 'Close' });
-    const closeBox = await stepsClose.boundingBox();
-    expect(closeBox!.width).toBeGreaterThanOrEqual(44);
-    expect(closeBox!.height).toBeGreaterThanOrEqual(44);
+    // The S2 icon control keeps its drawn size; on a coarse pointer its hit area is 44px (A4).
+    const closeBox = await withCoarsePointer(page, () => hitArea(stepsClose));
+    expect(closeBox.width).toBeGreaterThanOrEqual(44);
+    expect(closeBox.height).toBeGreaterThanOrEqual(44);
     await page.screenshot({ path: `${SHOTS}/steps-sheet.png` });
     await steps.getByRole('button', { name: 'Expand' }).click();
     await expect(steps).toHaveAttribute('data-expanded', 'true');
     await page.goBack();
     await expect(steps).toBeHidden();
-    await expect(page).toHaveURL(new RegExp(`/tasks/${workspaceId}/${thread.id}`));
+    await expect(page).toHaveURL(new RegExp(`/w/${workspaceId}/t/${thread.id}`));
 
     await page.getByRole('button', { name: 'Inspect' }).first().click();
     const inspector = page.getByRole('dialog', { name: 'Inspector' });
@@ -225,7 +227,29 @@ async function assertNoHorizontalScroll(page: Page) {
   expect(width.scroll).toBeLessThanOrEqual(width.client);
 }
 
+/**
+ * Audits touch targets as a phone sees them: touch emulation turns on the coarse
+ * pointer, so the Spectrum touch scale and the 44px button hit area apply (DESIGN.md §6).
+ */
+async function withCoarsePointer<T>(page: Page, run: () => Promise<T>): Promise<T> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  try {
+    await expect
+      .poll(() => page.evaluate(() => matchMedia('(pointer: coarse)').matches))
+      .toBe(true);
+    return await run();
+  } finally {
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await cdp.detach();
+  }
+}
+
 async function assertTargets(page: Page) {
+  await withCoarsePointer(page, () => auditTargets(page));
+}
+
+async function auditTargets(page: Page) {
   const tooSmall = await page.evaluate(() => {
     const nodes = [
       ...document.querySelectorAll('button, a, input, textarea, [role="button"]'),
@@ -234,11 +258,27 @@ async function assertTargets(page: Page) {
       if (box.width === 0 || box.height === 0) return false;
       const style = getComputedStyle(node);
       if (style.visibility === 'hidden' || style.display === 'none') return false;
-      return box.width < 44 || box.height < 44;
+      const target = hitArea(node);
+      // Text fields draw at the S2 touch field height (40) and cannot carry a pseudo-element
+      // hit area; they are wide, so only their height is held to that token.
+      if (node.matches('input:not([type="checkbox"], [type="radio"]), textarea')) {
+        return target.width < 44 || target.height < 40;
+      }
+      return target.width < 44 || target.height < 44;
     });
-    return nodes.slice(0, 8).map((node) => {
+    /** The drawn box, or the larger touch hit area a button draws with ::after. */
+    function hitArea(node: Element) {
       const box = node.getBoundingClientRect();
-      return `${node.tagName} ${node.getAttribute('aria-label') ?? node.textContent?.trim().slice(0, 40)} ${Math.round(box.width)}x${Math.round(box.height)}`;
+      const after = getComputedStyle(node, '::after');
+      const extended = after.content !== 'none' && after.position === 'absolute';
+      return {
+        width: Math.max(box.width, extended ? Number.parseFloat(after.width) : 0),
+        height: Math.max(box.height, extended ? Number.parseFloat(after.height) : 0),
+      };
+    }
+    return nodes.slice(0, 8).map((node) => {
+      const target = hitArea(node);
+      return `${node.tagName} ${node.getAttribute('aria-label') ?? node.textContent?.trim().slice(0, 40)} ${Math.round(target.width)}x${Math.round(target.height)}`;
     });
   });
   expect(tooSmall, tooSmall.join('\n')).toEqual([]);

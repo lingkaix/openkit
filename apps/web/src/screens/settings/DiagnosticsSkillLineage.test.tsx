@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
-import { DebugScreen } from './DebugScreen';
+import { DiagnosticsScreen } from './DiagnosticsScreen';
 
 vi.mock('./data', async (load) => ({
   ...(await load<typeof import('./data')>()),
@@ -54,7 +54,7 @@ it('reads exact Turn Skill lineage on inspection without exposing the rest of th
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
         <CoreClientProvider client={client}>
-          <DebugScreen />
+          <DiagnosticsScreen />
         </CoreClientProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -68,7 +68,7 @@ it('reads exact Turn Skill lineage on inspection without exposing the rest of th
   expect(screen.getByText('Turn: tu_test')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Open Thread th_test' })).toHaveAttribute(
     'href',
-    '/chat/ws_test/th_test'
+    '/w/ws_test/t/th_test'
   );
   expect(read).toHaveBeenCalledWith({ workspaceId: 'ws_test', snapshotId: 'snapshot-one' });
   expect(document.body.textContent).not.toMatch(/unpublished-|\/private\/worker/);

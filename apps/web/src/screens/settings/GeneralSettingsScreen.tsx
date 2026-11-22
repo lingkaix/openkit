@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
 import { useCurrentWorkspaceId, useSettingsWorkspace, useUpdateWorkspaceName } from './data';
@@ -17,7 +18,7 @@ import { useCurrentWorkspaceId, useSettingsWorkspace, useUpdateWorkspaceName } f
  * General settings (WP-7, board 10).
  *
  * The shell sidebar owns category navigation; this page contains only Workspace-authorized settings.
- * Appearance lives at `/settings/appearance` (ThemePicker). Deployment administration for Configuration and Gateway is a separately gated Settings workflow.
+ * Appearance lives at `/settings/appearance` (AppearanceScreen). Deployment administration for Configuration and Gateway is a separately gated Settings workflow.
  * Honors §9.13: skeleton form, inline save error, and Save disabled when disconnected.
  */
 export function GeneralSettingsScreen() {
@@ -57,14 +58,16 @@ export function GeneralSettingsScreen() {
         title="General"
         subtitle="Workspace identity and knowledge."
         actions={
-          disconnected ? <StatusChip tone="notice">Save disabled — disconnected</StatusChip> : null
+          disconnected ? (
+            <StatusLight tone="notice">Save disabled — disconnected</StatusLight>
+          ) : null
         }
       />
 
       {loading ? (
         <Skeleton lines={6} />
       ) : loadError ? (
-        <ErrorBanner message="Couldn't load settings." onRetry={retry} />
+        <InlineAlert message="Couldn't load settings." onRetry={retry} />
       ) : (
         <>
           <section className="flex flex-col gap-3" aria-labelledby="settings-workspace">
@@ -80,30 +83,30 @@ export function GeneralSettingsScreen() {
                 value={displayName}
                 onChange={setDisplayName}
                 isDisabled={disconnected}
-                description="Shown in the sidebar and Action Center for this workspace."
+                description="Shown in the sidebar and in Needs you for this Workspace."
               />
               <p className="text-xs text-fg-muted">
                 Theme and density live under{' '}
                 <Link
                   to="/settings/appearance"
-                  className="font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
+                  className="font-bold text-accent outline-none hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
                 >
                   Appearance
                 </Link>
                 .
               </p>
               {updateName.isError ? (
-                <ErrorBanner message="Couldn't save that display name." onRetry={save} />
+                <InlineAlert message="Couldn't save that display name." onRetry={save} />
               ) : null}
               <div className="flex justify-end gap-2">
-                <Button
-                  variant="quiet"
+                <ActionButton
+                  isQuiet
                   size="sm"
                   isDisabled={disconnected || !dirty || updateName.isPending}
                   onPress={() => setDisplayName(workspace.data?.name ?? '')}
                 >
                   Reset
-                </Button>
+                </ActionButton>
                 <Button size="sm" isDisabled={saveDisabled} onPress={save}>
                   Save changes
                 </Button>
@@ -149,7 +152,7 @@ function KnowledgeSection({
         </div>
         <Link
           to="/knowledge"
-          className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:border-border-hover hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+          className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:border-border-hover hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
           Open Knowledge
         </Link>

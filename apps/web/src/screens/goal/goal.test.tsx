@@ -7,7 +7,6 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
-import { STATUS_CLASS } from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
 
 const TIMESTAMP = '2026-07-21T00:00:00.000Z';
@@ -263,7 +262,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -308,7 +307,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -353,7 +352,7 @@ describe('Artifact Review S14', () => {
         },
       });
       renderApp(
-        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
         client
       );
 
@@ -465,7 +464,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -556,7 +555,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -597,7 +596,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd?review=review-old&version=1',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd?review=review-old&version=1',
       client
     );
     expect(await screen.findByText('Review version 1')).toBeInTheDocument();
@@ -627,7 +626,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -707,7 +706,7 @@ describe('Artifact Review S14', () => {
         },
       });
       renderApp(
-        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+        '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
         client
       );
 
@@ -715,7 +714,8 @@ describe('Artifact Review S14', () => {
       const chip = within(status).queryByText(new RegExp(`^${statusText}$`, 'i'));
       expect.soft(chip, `${decision} status text`).not.toBeNull();
       if (chip) {
-        expect.soft(chip, `${decision} status tone`).toHaveClass(...STATUS_CLASS[tone].split(' '));
+        // StatusLight (WEB-UX A4): the family colors the dot, the word stays default text.
+        expect.soft(chip, `${decision} status tone`).toHaveAttribute('data-tone', tone);
       }
       const evidenceNodes = screen
         .queryAllByText(new RegExp(`^${evidence}$`, 'i'))
@@ -737,7 +737,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -758,7 +758,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -784,7 +784,7 @@ describe('Artifact Review S14', () => {
       },
     });
     renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+      '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
       client
     );
 
@@ -800,7 +800,7 @@ describe('Artifact Review S14', () => {
 });
 
 describe('Exact Review feedback and candidate choice', () => {
-  const path = `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
+  const path = `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
 
   it('shows binary metadata and exact original download instead of descriptor JSON', async () => {
     const binary = {
@@ -904,7 +904,7 @@ describe('Exact Review feedback and candidate choice', () => {
 });
 
 describe('Review read and selection failure boundaries', () => {
-  const path = `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
+  const path = `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`;
 
   it('hides cached Artifact facts after a current read denial, including decided Reviews', async () => {
     const read = vi
@@ -985,7 +985,7 @@ describe('Review read and selection failure boundaries', () => {
     await waitFor(() =>
       expect(location).toHaveBeenCalledWith(
         '',
-        `/tasks/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}`,
+        `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}`,
         {
           candidateInput: {
             workspaceId: ARTIFACT.workspaceId,
@@ -1041,7 +1041,7 @@ describe('Review read and selection failure boundaries', () => {
     await waitFor(() =>
       expect(location).toHaveBeenCalledWith(
         '',
-        `/chat/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}`,
+        `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}`,
         {
           candidateInput: {
             workspaceId: ARTIFACT.workspaceId,
@@ -1138,7 +1138,7 @@ describe('Exact decision retry', () => {
       },
     });
     const cache = renderApp(
-      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
+      `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
       client
     );
     await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');
@@ -1206,10 +1206,7 @@ describe('Exact decision retry', () => {
         }),
       },
     });
-    renderApp(
-      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
-      client
-    );
+    renderApp(`/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`, client);
     const evidence = await screen.findByRole('region', { name: 'Recorded feedback range' });
     expect(evidence).toHaveTextContent('Release');
     expect(evidence).toHaveTextContent(MATERIAL_BASE_REVISION.revisionId);
@@ -1235,7 +1232,7 @@ describe('Same-candidate read failure recovery', () => {
       },
     });
     const cache = renderApp(
-      `/goals/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
+      `/w/${ARTIFACT.workspaceId}/t/${ARTIFACT.threadId}/artifacts/${ARTIFACT.id}`,
       client
     );
     await user.type(await screen.findByRole('textbox', { name: 'Range start' }), '2');

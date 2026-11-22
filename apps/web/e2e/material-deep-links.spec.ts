@@ -10,7 +10,7 @@ test.afterEach(async () => {
 });
 
 /** Browser routing must preserve the exact owner tuple, using canonical identifiers. */
-test('opens and reloads the exact Artifact review from Action Center', async ({ page }) => {
+test('opens and reloads the exact Artifact review from Needs you', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const workspaceId = allocateEntityId('ws');
   const threadId = allocateEntityId('th');
@@ -132,7 +132,7 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
   });
   await page.goto(stack.webUrl);
   await page.getByRole('link', { name: 'Open goal' }).click();
-  const expectedPath = `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`;
+  const expectedPath = `/w/${encodeURIComponent(workspaceId)}/t/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`;
   const params = new URLSearchParams();
   params.set('review', reviewId);
   params.set('version', '1');

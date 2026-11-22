@@ -1,51 +1,45 @@
 import { useLayoutEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { EmptyState, ErrorBanner } from '../primitives';
+import { InlineAlert } from '../primitives';
 import {
-  chatThreadPath,
+  threadPath,
+  threadRouteState,
   useConversationNavigation,
   useCurrentWorkspaceId,
 } from '../screens/chat/data';
 import { OverviewScreen } from '../screens/workspace/OverviewScreen';
-import { usePersistentNavigation } from './AppShell';
-import { AssistantEntry } from './AssistantEntry';
 
 /**
- * Home address, also the host for Action Center.
+ * Home address, also the host for Needs you.
  *
- * Until this Workspace has an Assistant timeline, `/` opens Action Center.
+ * Until this Workspace has an Assistant timeline, `/` opens Needs you.
  * Once a chat-classified thread exists, `/` opens that timeline.
- * `/attention` stays on this same frame. Necessity: the decisions screen has to
+ * `/needs-you` stays on this same frame, and the retired `/attention` is replaced by
+ * `/needs-you` on it without a remount. Necessity: the decisions screen has to
  * subscribe to the workspace list in the shell's first commit. Ablation: a
  * `<Navigate>` mounts that screen later and reads the list a second time.
  *
- * Below 800px the sidebar row that creates the timeline is not mounted. The same
- * AssistantEntry stays on this frame until that timeline exists. Necessity: the
- * phone home would otherwise have no create control. Ablation: a new nav item
- * would duplicate Assistant.
+ * Needs you shows Needs you only. The Personal Assistant opens from its own row and
+ * the phone Assistant section, both `/assistant`.
  */
 export function AssistantHome() {
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search, hash } = useLocation();
   const workspaceId = useCurrentWorkspaceId();
   const navigation = useConversationNavigation(workspaceId);
-  const persistentNav = usePersistentNavigation();
   const chats = (navigation.data ?? []).filter((item) => item.activity === 'chat');
   const assistant = chats.find((item) => item.thread.name === 'Assistant') ?? chats[0];
   const pending = !workspaceId || navigation.isPending;
-  const phoneCreate =
-    !persistentNav &&
-    !pending &&
-    !navigation.isError &&
-    Boolean(workspaceId) &&
-    !assistant &&
-    (pathname === '/' || pathname === '/attention');
   // Phone chat unmounts this frame, so the navigation cache can still be the pre-create miss.
   // A miss counts only after a read that started on this visit. Necessity: `/` must open the
-  // timeline that already exists. Ablation: redirecting on the cached miss sends the bar to Action Center.
+  // timeline that already exists. Ablation: redirecting on the cached miss sends the bar to Needs you.
   const sawVisitFetch = useRef(false);
   if (pathname !== '/') sawVisitFetch.current = false;
   else if (navigation.isFetching) sawVisitFetch.current = true;
+
+  useLayoutEffect(() => {
+    if (pathname === '/attention') navigate(`/needs-you${search}${hash}`, { replace: true });
+  }, [hash, navigate, pathname, search]);
 
   useLayoutEffect(() => {
     if (pathname !== '/') return;
@@ -55,11 +49,14 @@ export function AssistantHome() {
     if (window.location.pathname !== '/') return;
     if (pending || navigation.isError || !workspaceId) return;
     if (assistant) {
-      navigate(chatThreadPath(workspaceId, assistant.thread.id), { replace: true });
+      navigate(threadPath(workspaceId, assistant.thread.id), {
+        replace: true,
+        state: threadRouteState('chat'),
+      });
       return;
     }
     if (!sawVisitFetch.current || navigation.isFetching) return;
-    navigate('/attention', { replace: true });
+    navigate('/needs-you', { replace: true });
   }, [
     assistant,
     navigate,
@@ -73,7 +70,7 @@ export function AssistantHome() {
   if (pathname === '/' && navigation.isError) {
     return (
       <div className="px-4 py-6">
-        <ErrorBanner message="Couldn't open Assistant." onRetry={() => void navigation.refetch()} />
+        <InlineAlert message="Couldn't open Assistant." onRetry={() => void navigation.refetch()} />
       </div>
     );
   }
@@ -92,14 +89,6 @@ export function AssistantHome() {
         <p role="status" className="px-4 py-6 text-sm text-fg-muted">
           Loading Assistant…
         </p>
-      ) : null}
-      {phoneCreate && workspaceId ? (
-        <EmptyState
-          icon="chat"
-          title="Personal Assistant"
-          hint="This Workspace does not have an Assistant timeline yet."
-          action={<AssistantEntry workspaceId={workspaceId} />}
-        />
       ) : null}
       <OverviewScreen />
     </>

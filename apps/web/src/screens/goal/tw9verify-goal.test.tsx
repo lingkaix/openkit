@@ -91,10 +91,10 @@ describe('TW9VERIFY Goal narrative links', () => {
         }),
       });
       render(
-        <Frame api={api} cache={owner} entry={`/goals/${WS}/${THREAD}`}>
+        <Frame api={api} cache={owner} entry={`/w/${WS}/t/${THREAD}`}>
           <Routes>
             <Route
-              path="/goals/:workspaceId/:threadId"
+              path="/w/:workspaceId/t/:threadId"
               element={
                 <>
                   <Location />

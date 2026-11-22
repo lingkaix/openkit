@@ -39,7 +39,7 @@ export function MaterialEditor({
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <span className="flex items-center justify-between gap-3">
-        <label htmlFor={editorId} className="text-xs font-bold text-fg-strong">
+        <label htmlFor={editorId} className="ok-field-label text-fg-muted">
           {label}
         </label>
         <span className="flex items-center gap-2 text-xs text-fg-muted">
@@ -56,7 +56,7 @@ export function MaterialEditor({
         id={editorId}
         value={draft}
         onChange={(event) => setDraft(event.currentTarget.value)}
-        className="min-h-48 resize-y rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none transition-colors hover:border-border-hover focus:border-accent focus:ring-2 focus:ring-focus"
+        className="min-h-48 resize-y rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none transition-colors hover:border-border-hover focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       />
       <span className="flex justify-end">
         <Button

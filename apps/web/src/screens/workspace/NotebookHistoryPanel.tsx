@@ -5,13 +5,16 @@ import { Checkbox, CheckboxGroup } from 'react-aria-components';
 import { useSearchParams } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   Dialog,
+  DialogFooter,
   DiffView,
+  DisclosureButton,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   Modal,
   RadioGroup,
   Skeleton,
@@ -170,9 +173,9 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
 
   return (
     <section className="flex flex-col gap-3">
-      <Button size="sm" variant="outline" aria-expanded={open} onPress={() => setOpen(!open)}>
-        {open ? 'Close Notebook history' : 'Notebook history'}
-      </Button>
+      <DisclosureButton isExpanded={open} onPress={() => setOpen(!open)}>
+        Notebook history
+      </DisclosureButton>
       {open ? (
         <Card>
           <div className="flex flex-col gap-4">
@@ -184,7 +187,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
             {history.isPending || history.isFetching ? (
               <Skeleton lines={3} />
             ) : history.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={knowledgeActionErrorMessage(
                   history.error,
                   "Couldn't read Notebook history."
@@ -238,9 +241,9 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                 ) : null}
                 <div className="flex gap-2">
                   {history.data.nextRevision ? (
-                    <Button
+                    <ActionButton
                       size="sm"
-                      variant="quiet"
+                      isQuiet
                       isDisabled={blocked}
                       onPress={() => {
                         setCursor(history.data.nextRevision);
@@ -249,12 +252,12 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                       }}
                     >
                       Older revisions
-                    </Button>
+                    </ActionButton>
                   ) : null}
                   {cursor ? (
-                    <Button
+                    <ActionButton
                       size="sm"
-                      variant="quiet"
+                      isQuiet
                       isDisabled={blocked}
                       onPress={() => {
                         setCursor(null);
@@ -263,23 +266,23 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                       }}
                     >
                       Newest revisions
-                    </Button>
+                    </ActionButton>
                   ) : null}
-                  <Button
+                  <ActionButton
                     size="sm"
-                    variant="quiet"
+                    isQuiet
                     isDisabled={connection.checking || connection.failed || restore.isPending}
                     onPress={refreshHistory}
                   >
                     Refresh history
-                  </Button>
+                  </ActionButton>
                 </div>
               </>
             ) : null}
             {forRestore ? (
-              <Button
+              <ActionButton
                 size="sm"
-                variant="quiet"
+                isQuiet
                 isDisabled={blocked}
                 onPress={() => {
                   setForRestore(false);
@@ -288,11 +291,11 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                 }}
               >
                 View historical diff
-              </Button>
+              </ActionButton>
             ) : null}
             {fromRevision && (diff.isPending || diff.isFetching) ? <Skeleton lines={3} /> : null}
             {fromRevision && diff.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={knowledgeActionErrorMessage(
                   diff.error,
                   "Couldn't read the complete restore preview."
@@ -322,7 +325,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                     {!forRestore ? (
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="secondary"
                         isDisabled={blocked || chosen.length === 0}
                         onPress={() => {
                           setPreviewPageIds(chosen.map((change) => change.path.slice(0, -3)));
@@ -343,7 +346,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                         <Checkbox
                           key={change.path}
                           value={change.path}
-                          className="flex cursor-pointer items-center gap-2 rounded-ok border border-border px-3 py-2 text-sm text-fg outline-none data-[selected]:border-accent data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus"
+                          className="flex cursor-pointer items-center gap-2 rounded-ok border border-border px-3 py-2 text-sm text-fg outline-none data-[selected]:border-accent data-[focus-visible]:outline-2 data-[focus-visible]:outline-solid data-[focus-visible]:outline-offset-2 data-[focus-visible]:outline-focus"
                         >
                           {({ isSelected }) => (
                             <>
@@ -368,7 +371,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                             <Button
                               key={change.path}
                               size="sm"
-                              variant="outline"
+                              variant="secondary"
                               isDisabled={blocked}
                               onPress={() => {
                                 setEditingPath(change.path);
@@ -431,7 +434,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                           trigger={
                             <Button
                               size="sm"
-                              variant="outline"
+                              variant="secondary"
                               isDisabled={!ready}
                               onPress={reviewRestore}
                             >
@@ -460,13 +463,12 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                                 The Notebook changed. Close this dialog and read the preview again.
                               </p>
                             ) : null}
-                            <div className="flex justify-end gap-2">
-                              <Button slot="close" size="sm" variant="quiet">
+                            <DialogFooter>
+                              <Button slot="close" variant="secondary">
                                 Cancel
                               </Button>
                               <Button
                                 slot="close"
-                                size="sm"
                                 isDisabled={!ready || !intentMatches}
                                 onPress={() => {
                                   if (intent && intentMatches && ready) restore.mutate(intent);
@@ -474,7 +476,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                               >
                                 Confirm restore
                               </Button>
-                            </div>
+                            </DialogFooter>
                           </Dialog>
                         </Modal>
                       </>
@@ -490,7 +492,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
             ) : null}
             {restore.isError ? (
               <>
-                <ErrorBanner
+                <InlineAlert
                   message={
                     unknownResult
                       ? 'Restore result is unknown. Retry the same request or inspect history.'
@@ -503,7 +505,7 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                 {unknownResult && restore.variables ? (
                   <Button
                     size="sm"
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={blocked}
                     onPress={() => {
                       if (restore.variables) restore.mutate(restore.variables);

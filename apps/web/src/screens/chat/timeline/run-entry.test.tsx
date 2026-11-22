@@ -74,7 +74,7 @@ describe('run entry presentation', () => {
     expect(screen.getByText('Third note')).toBeInTheDocument();
     expect(screen.queryByText('First note')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '105 steps · 6 failed' })).toBeInTheDocument();
-    expect(screen.getByText(/counted from records/)).toBeInTheDocument();
+    expect(screen.getByText(/from the run record/)).toBeInTheDocument();
     expect(document.querySelector('[data-voice="fact"]')).not.toBeNull();
     expect(document.querySelector('[data-voice="claim"]')).not.toBeNull();
     const depths = [...document.querySelectorAll('[data-fold-depth]')].map((node) =>

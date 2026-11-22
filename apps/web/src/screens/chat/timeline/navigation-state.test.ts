@@ -28,14 +28,14 @@ describe('navigation restore rules', () => {
   });
 
   it('reads the thread being viewed, including a goal output under that thread', () => {
-    expect(viewingThreadId('/tasks/ws/th_1')).toBe('th_1');
-    expect(viewingThreadId('/goals/ws/th_1/artifacts/art_1')).toBe('th_1');
-    expect(viewingThreadId('/attention')).toBeNull();
+    expect(viewingThreadId('/w/ws/t/th_1')).toBe('th_1');
+    expect(viewingThreadId('/w/ws/t/th_1/artifacts/art_1')).toBe('th_1');
+    expect(viewingThreadId('/needs-you')).toBeNull();
   });
 
   it('replaces jumps inside the thread and pushes another surface', () => {
-    expect(historyModeForHref('/tasks/ws/th_1', '/tasks/ws/th_1?turn=tu_1')).toBe('replace');
-    expect(historyModeForHref('/tasks/ws/th_1', '/workspace/usage')).toBe('push');
+    expect(historyModeForHref('/w/ws/t/th_1', '/w/ws/t/th_1?turn=tu_1')).toBe('replace');
+    expect(historyModeForHref('/w/ws/t/th_1', '/workspace/usage')).toBe('push');
   });
 
   it('accepts spec anchor names and the shipped names', () => {
@@ -56,7 +56,7 @@ describe('navigation restore rules', () => {
         this.state = state as typeof this.state;
       },
     };
-    writeTimelineHistory(history, { scrollTop: 40, expandedRunIds: ['tu_1'] }, '/tasks/ws/th');
+    writeTimelineHistory(history, { scrollTop: 40, expandedRunIds: ['tu_1'] }, '/w/ws/t/th');
     expect(readTimelineHistory(history.state)).toEqual({
       scrollTop: 40,
       expandedRunIds: ['tu_1'],

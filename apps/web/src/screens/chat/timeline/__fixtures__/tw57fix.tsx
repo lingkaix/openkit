@@ -234,7 +234,7 @@ export function Harness({
   children,
   api,
   cache,
-  entry = '/tasks/' + WS + '/' + THREAD,
+  entry = '/w/' + WS + '/t/' + THREAD,
 }: {
   children: ReactNode;
   api: CoreClient;

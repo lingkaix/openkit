@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Button } from './Button';
 import { Icon, type IconName } from './Icon';
 
 /**
@@ -49,17 +50,17 @@ export interface EmptyStateProps {
 
 /**
  * Empty state (`ok-empty`). A calm centered block: a soft round glyph, a short
- * title, one line of guidance, and a single primary action. First-run onboarding
+ * 18px title in the heading weight, one line of guidance, and a single primary action. First-run onboarding
  * is the app-level case of this pattern.
  */
 export function EmptyState({ icon = 'chat', title, hint, action }: EmptyStateProps) {
   return (
     <div className="mx-auto flex max-w-sm flex-col items-center gap-3 py-10 text-center">
-      <span className="flex size-11 items-center justify-center rounded-full bg-sunken text-fg-muted">
+      <span className="flex size-10 items-center justify-center rounded-full bg-sunken text-fg-muted">
         <Icon name={icon} size="lg" />
       </span>
       <div>
-        <p className="text-sm font-bold text-fg-strong">{title}</p>
+        <p className="text-lg font-heading text-fg-strong">{title}</p>
         {hint ? <p className="mt-1 text-sm text-fg-muted">{hint}</p> : null}
       </div>
       {action}
@@ -67,34 +68,83 @@ export function EmptyState({ icon = 'chat', title, hint, action }: EmptyStatePro
   );
 }
 
-export interface ErrorBannerProps {
-  /** Plain-language message; never a raw stack trace in the main flow. */
-  message: string;
+export type InlineAlertVariant = 'neutral' | 'informative' | 'positive' | 'notice' | 'negative';
+
+export interface InlineAlertProps {
+  /** Plain-language message: the cause in user words (P13); never a raw stack trace. */
+  message: ReactNode;
+  /** Optional bold heading above the message. */
+  title?: string;
+  /** Semantic family; defaults to negative (a failure). */
+  variant?: InlineAlertVariant;
   /** Called when the user retries. Renders a "Try again" action when provided. */
   onRetry?: () => void;
+  /** Another next step instead of (or beside) Try again, e.g. a Link or Button. */
+  action?: ReactNode;
 }
 
+const ALERT_BORDER: Record<InlineAlertVariant, string> = {
+  neutral: 'border-neutral-fg',
+  informative: 'border-info-fg',
+  positive: 'border-positive-fg',
+  notice: 'border-notice-fg',
+  negative: 'border-negative-fg',
+};
+
+const ALERT_ICON: Record<InlineAlertVariant, IconName | null> = {
+  neutral: null,
+  informative: 'info',
+  positive: 'check',
+  notice: 'alert',
+  negative: 'error',
+};
+
+const ALERT_INK: Record<InlineAlertVariant, string> = {
+  neutral: 'text-neutral-fg',
+  informative: 'text-info-fg',
+  positive: 'text-positive-fg',
+  notice: 'text-notice-fg',
+  negative: 'text-negative-fg',
+};
+
 /**
- * Error banner (`ok-error`). An inline negative-family banner with a plain
- * message and an optional Try again action. Errors are recoverable and stated in
- * plain language.
+ * InlineAlert (S2 InLineAlert, DESIGN.md §9.12; replaced the error banner in WEB-UX A4).
+ *
+ * A bordered notice in the flow of a surface: a 2px family-colored border on the card
+ * surface, the family icon at the end of the first line, the message in default text and
+ * one next step. Negative alerts announce as `alert`; the others as `status`. Show one alert
+ * per cause on a surface (F28): repeat targets go in the message, not in more alerts.
  */
-export function ErrorBanner({ message, onRetry }: ErrorBannerProps) {
+export function InlineAlert({
+  message,
+  title,
+  variant = 'negative',
+  onRetry,
+  action,
+}: InlineAlertProps) {
+  const icon = ALERT_ICON[variant];
   return (
     <div
-      role="alert"
-      className="flex items-center gap-2 rounded-ok bg-negative-bg px-3 py-2 text-sm font-medium text-negative-fg"
+      role={variant === 'negative' ? 'alert' : 'status'}
+      data-variant={variant}
+      className={`ok-inline-alert flex flex-col gap-2 rounded-ok-lg border-2 bg-card p-3 text-sm text-fg ${ALERT_BORDER[variant]}`}
     >
-      <Icon name="error" />
-      <span className="flex-1">{message}</span>
-      {onRetry ? (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-3 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
-        >
-          Try again
-        </button>
+      <div className="flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          {title ? <p className="font-bold text-fg-strong">{title}</p> : null}
+          <div className="min-w-0">{message}</div>
+        </div>
+        {icon ? <Icon name={icon} className={ALERT_INK[variant]} /> : null}
+      </div>
+      {onRetry || action ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {onRetry ? (
+            <Button variant="secondary" size="sm" onPress={onRetry}>
+              Try again
+            </Button>
+          ) : null}
+          {action}
+        </div>
       ) : null}
     </div>
   );

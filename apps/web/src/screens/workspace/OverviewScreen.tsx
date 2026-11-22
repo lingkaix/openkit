@@ -7,18 +7,19 @@ import {
   Card,
   CountBadge,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
   Icon,
   type IconName,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
 } from '../../primitives';
 import {
-  conversationThreadPath,
+  threadPath,
+  threadRouteState,
   useConversationNavigation,
   useThreadDashboard,
 } from '../chat/data';
@@ -47,14 +48,14 @@ const ACTIVITY_ICON: Record<ConversationItem['activity'], IconName> = {
 };
 
 const ACTIVITY_LABEL: Record<ConversationItem['activity'], string> = {
-  chat: 'Personal Assistant',
+  chat: 'Chat',
   task: 'Task',
   goal: 'Goal',
-  unknown: 'Activity type unknown',
+  unknown: 'Needs repair',
 };
 
 /**
- * Action Center (WP-6, board 07) — decisions and ongoing Tasks and Goals.
+ * Needs you (WP-6, board 07) — decisions and ongoing Tasks and Goals.
  *
  * Leads with Needs-you attention, then every ongoing Task and Goal from viewer
  * conversation navigation. Approvals Allow or Deny inline; Goal and Workspace
@@ -110,24 +111,21 @@ export function OverviewScreen() {
   return (
     <Page>
       <PageHeader
-        title="Action Center"
+        title="Needs you"
         subtitle="Ongoing Tasks and Goals, and anything that needs a decision."
         actions={
           <span className="flex items-center gap-2">
             <CountBadge count={needsYouCount} label="need you" />
-            {disconnected ? <StatusChip tone="notice">Counts may be stale</StatusChip> : null}
+            {disconnected ? <StatusLight tone="notice">Counts may be stale</StatusLight> : null}
           </span>
         }
       />
 
       <section className="flex flex-col gap-2">
-        <div className="flex items-baseline gap-2">
-          <Eyebrow>Needs you</Eyebrow>
-          <span className="text-xs text-fg-muted">Longest waiting first</span>
-        </div>
+        <p className="text-xs text-fg-muted">Longest waiting first</p>
 
         {currentDecision && decide.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={attentionDecisionErrorMessage(decide.error)}
             onRetry={disconnected || accessDenied ? undefined : retryDecision}
           />
@@ -136,7 +134,7 @@ export function OverviewScreen() {
         {!workspaceId || attention.isLoading ? (
           <Skeleton lines={4} />
         ) : attention.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load what needs you."
             onRetry={() => void attention.refetch()}
           />
@@ -181,7 +179,7 @@ export function OverviewScreen() {
           {!workspaceId || navigation.isLoading ? (
             <Skeleton lines={4} />
           ) : navigation.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load ongoing work."
               onRetry={() => void navigation.refetch()}
             />
@@ -277,9 +275,9 @@ function AttentionListRow({
           ))}
       </div>
       {conversation ? (
-        <StatusChip tone={conversation.state === 'needs-you' ? 'notice' : 'informative'} dot>
+        <StatusLight tone={conversation.state === 'needs-you' ? 'notice' : 'informative'}>
           {statusLabel(conversation.state)}
-        </StatusChip>
+        </StatusLight>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         {decidable.map((action) => (
@@ -289,7 +287,7 @@ function AttentionListRow({
             variant={
               action.kind === 'grant_approval' || action.kind === 'accept_review'
                 ? 'accent'
-                : 'outline'
+                : 'secondary'
             }
             isDisabled={disabled || action.disabled}
             onPress={() => onDecide(action)}
@@ -300,8 +298,9 @@ function AttentionListRow({
         {showOpen && openHref ? (
           <Link
             to={openHref}
-            aria-label={openLabelForHref(openHref)}
-            className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+            state={activity ? threadRouteState(activity) : undefined}
+            aria-label={openLabelFor(openHref, activity)}
+            className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
             Open
           </Link>
@@ -315,9 +314,7 @@ function AttentionListRow({
 function ConversationWorkRow({ item }: { item: ConversationItem }) {
   const threadWorkspaceId =
     item.thread.owner.kind === 'workspace' ? item.thread.owner.workspaceId : null;
-  const href = threadWorkspaceId
-    ? conversationThreadPath(threadWorkspaceId, item.thread.id, item.activity)
-    : null;
+  const href = threadWorkspaceId ? threadPath(threadWorkspaceId, item.thread.id) : null;
   const title = item.thread.name ?? ACTIVITY_LABEL[item.activity];
 
   return (
@@ -331,15 +328,16 @@ function ConversationWorkRow({ item }: { item: ConversationItem }) {
           {ACTIVITY_LABEL[item.activity]} · {statusLabel(item.state)}
         </p>
       </div>
-      <StatusChip tone={item.state === 'needs-you' ? 'notice' : 'informative'} dot>
+      <StatusLight tone={item.state === 'needs-you' ? 'notice' : 'informative'}>
         {statusLabel(item.state)}
-      </StatusChip>
+      </StatusLight>
       <div className="flex flex-wrap items-center gap-2">
         {href ? (
           <Link
             to={href}
-            aria-label={openLabelForHref(href)}
-            className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+            state={threadRouteState(item.activity)}
+            aria-label={openLabelFor(href, item.activity)}
+            className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
             Open
           </Link>
@@ -357,9 +355,13 @@ function statusLabel(state: ConversationItem['state']): string {
 }
 
 /** Gives each contextual destination an accessible link name. */
-function openLabelForHref(href: string): string {
-  if (href.split('?')[0] === '/workspace-changes') return 'Open workspace changes';
-  if (href.includes('/goals/')) return 'Open goal';
-  if (href.includes('/tasks/')) return 'Open task';
+function openLabelFor(href: string, activity: ConversationItem['activity'] | undefined): string {
+  const path = href.split('?')[0] ?? '';
+  if (path === '/workspace-changes') return 'Open workspace changes';
+  // An Artifact review lives only under a Goal.
+  if (/^\/w\/[^/]+\/t\/[^/]+\/artifacts\/[^/]+$/.test(path)) return 'Open goal';
+  if (!/^\/w\/[^/]+\/t\/[^/]+$/.test(path)) return 'Open thread';
+  if (activity === 'goal') return 'Open goal';
+  if (activity === 'task') return 'Open task';
   return 'Open thread';
 }

@@ -369,7 +369,7 @@ export function nowFromThread(input: {
   liveStep?: NowStep | null;
 }): NowModel {
   const turn =
-    [...input.turns].reverse().find((candidate) => candidate.status === 'running') ??
+    input.turns.findLast((candidate) => candidate.status === 'running') ??
     input.turns.at(-1) ??
     null;
   const mine = turn?.id ? input.items.filter((item) => item.turnId === turn.id) : input.items;

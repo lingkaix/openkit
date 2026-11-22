@@ -15,12 +15,10 @@ import {
 } from 'react';
 import {
   Button as AriaButton,
-  Modal as AriaModal,
   Dialog,
   DialogTrigger,
   ListBox,
   ListBoxItem,
-  ModalOverlay,
   Popover,
   Select,
   SelectValue,
@@ -29,10 +27,11 @@ import {
 import { setUnsentDraft } from '../pwa/unsent-draft';
 import { SteerOutcome } from '../screens/chat/timeline/SteerOutcome';
 import { steerCopy } from '../screens/chat/timeline/steer';
-import { Dialog as ConfirmationDialog } from './Dialog';
+import { Button } from './Button';
+import { Dialog as ConfirmationDialog, DialogFooter, Modal } from './Dialog';
 import { Icon } from './Icon';
-import { Select as FieldSelect } from './Select';
-import { ErrorBanner } from './states';
+import { Picker as FieldSelect } from './Picker';
+import { InlineAlert } from './states';
 import { useSteerController } from './steer-context';
 import { appendTranscript, VoiceInputControl, type VoiceTranscribe } from './voice-input';
 
@@ -549,7 +548,7 @@ export function Composer({
     <form
       onSubmit={(event) => void submit(event)}
       aria-disabled={disabled}
-      className="relative flex flex-col rounded-ok-xl border border-border bg-card p-3 shadow-ok-card"
+      className="relative flex flex-col rounded-ok-xl border border-border bg-card p-3 shadow-ok-card has-[textarea:focus-visible]:border-accent has-[textarea:focus-visible]:outline-2 has-[textarea:focus-visible]:outline-solid has-[textarea:focus-visible]:outline-offset-2 has-[textarea:focus-visible]:outline-focus"
     >
       <textarea
         ref={textareaRef}
@@ -581,7 +580,7 @@ export function Composer({
                   current.filter((candidate) => candidate.id !== artifact.id)
                 )
               }
-              className="rounded-full bg-overlay px-2 py-1 text-xs text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              className="rounded-full bg-overlay px-2 py-1 text-xs text-fg outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
               aria-label={`Remove ${artifact.label}`}
             >
               {artifact.label} ×
@@ -598,7 +597,7 @@ export function Composer({
               type="button"
               isDisabled={disabled}
               onPress={() => setFiles((current) => current.filter((_, index) => index !== ordinal))}
-              className="rounded-full bg-overlay px-2 py-1 text-xs text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              className="rounded-full bg-overlay px-2 py-1 text-xs text-fg outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
               aria-label={`Remove file ${file.name}`}
             >
               {file.name} ×
@@ -612,14 +611,11 @@ export function Composer({
             type="button"
             aria-label="Add artifact or upload attachment"
             isDisabled={disabled}
-            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
+            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:text-disabled-fg"
           >
             <Icon name="add" />
           </AriaButton>
-          <Popover
-            placement="top start"
-            className="z-20 w-72 rounded-ok border border-border bg-elevated p-2 text-fg shadow-ok-menu"
-          >
+          <Popover placement="top start" className="ok-popover z-20 w-72 text-fg">
             <Dialog aria-label="Attachments" className="outline-none">
               <p className="px-2 py-1 text-xs font-bold text-fg-muted">Artifacts</p>
               <div className="max-h-40 overflow-y-auto">
@@ -637,7 +633,7 @@ export function Composer({
                           : [...current, artifact]
                       );
                     }}
-                    className="block w-full rounded-ok px-2 py-1.5 text-left text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                    className="block w-full rounded-ok px-2 py-1.5 text-left text-sm text-fg outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
                   >
                     {artifact.label}
                   </button>
@@ -649,7 +645,7 @@ export function Composer({
               {
                 <>
                   {importFailed ? (
-                    <ErrorBanner message="Selected files exceed the combined 1,000,000,000-byte limit." />
+                    <InlineAlert message="Selected files exceed the combined 1,000,000,000-byte limit." />
                   ) : null}
                   <input
                     ref={fileInputRef}
@@ -667,7 +663,7 @@ export function Composer({
                     type="button"
                     disabled={disabled}
                     onClick={() => fileInputRef.current?.click()}
-                    className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+                    className="mt-1 w-full rounded-ok border-t border-separator px-2 py-2 text-left text-sm font-medium text-accent-content outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
                   >
                     Attach files
                   </button>
@@ -695,9 +691,9 @@ export function Composer({
         )}
         <InlineSelect
           isDisabled={disabled}
-          ariaLabel="Logical model"
+          ariaLabel="Model"
           selectedKey={logicalModelId}
-          placeholder="Logical model"
+          placeholder="Model"
           items={(selectedTarget?.logicalModels ?? []).map((model) => ({
             targetRef: model.id,
             label: model.label,
@@ -712,9 +708,9 @@ export function Composer({
         >
           <InlineSelect
             isDisabled={disabled || effortLevels.length === 0}
-            ariaLabel="Reasoning effort"
+            ariaLabel="Thinking"
             selectedKey={reasoningEffort ?? ''}
-            placeholder="Effort"
+            placeholder="Thinking"
             items={
               effortLevels.length
                 ? effortLevels.map((level) => ({
@@ -726,7 +722,7 @@ export function Composer({
                 : [
                     {
                       targetRef: 'reserved',
-                      label: 'Effort',
+                      label: 'Thinking',
                       availability: 'available' as const,
                       unavailableReason: null,
                     },
@@ -763,7 +759,7 @@ export function Composer({
             onMouseDown={(event) => {
               event.preventDefault();
             }}
-            className="flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
+            className="flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
           >
             <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
           </AriaButton>
@@ -894,54 +890,42 @@ export function Composer({
           </div>
         </div>
       ) : null}
-      <ModalOverlay
+      <Modal
         isOpen={fileHandoff !== null}
         onOpenChange={(open) => {
           if (!open) dismissFileHandoff();
         }}
-        isDismissable
-        className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6"
       >
-        <AriaModal className="max-h-full w-full max-w-lg overflow-y-auto rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none">
-          <ConfirmationDialog title="Share selected files with Worker">
-            <p>This work brief and the selected inputs will enter shared Worker work in:</p>
-            <p className="font-bold">{fileHandoff?.workspaceLabel}</p>
-            <section aria-label="Work brief">
-              <pre className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">
-                {fileHandoff?.draft.input}
-              </pre>
-            </section>
-            <ul aria-label="Files to share">
-              {fileHandoff?.draft.files?.map((file, ordinal) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: this read-only list displays the immutable draft order.
-                <li key={ordinal}>{file.name}</li>
-              ))}
-              {fileHandoff?.artifacts.map((artifact) => (
-                <li key={`${artifact.id}:${artifact.version}`}>
-                  {artifact.label} · Version {artifact.version}
-                </li>
-              ))}
-            </ul>
-            <div className="flex justify-end gap-2">
-              <AriaButton
-                onPress={dismissFileHandoff}
-                className="rounded-ok border border-border px-3 py-2"
-              >
-                Cancel
-              </AriaButton>
-              <AriaButton
-                onPress={confirmFileHandoff}
-                className="rounded-ok bg-accent px-3 py-2 text-on-accent"
-              >
-                Share files and send
-              </AriaButton>
-            </div>
-          </ConfirmationDialog>
-        </AriaModal>
-      </ModalOverlay>
+        <ConfirmationDialog title="Share selected files with Worker">
+          <p>This work brief and the selected inputs will enter shared Worker work in:</p>
+          <p className="font-bold">{fileHandoff?.workspaceLabel}</p>
+          <section aria-label="Work brief">
+            <pre className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">
+              {fileHandoff?.draft.input}
+            </pre>
+          </section>
+          <ul aria-label="Files to share">
+            {fileHandoff?.draft.files?.map((file, ordinal) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: this read-only list displays the immutable draft order.
+              <li key={ordinal}>{file.name}</li>
+            ))}
+            {fileHandoff?.artifacts.map((artifact) => (
+              <li key={`${artifact.id}:${artifact.version}`}>
+                {artifact.label} · Version {artifact.version}
+              </li>
+            ))}
+          </ul>
+          <DialogFooter>
+            <Button variant="secondary" onPress={dismissFileHandoff}>
+              Cancel
+            </Button>
+            <Button onPress={confirmFileHandoff}>Share files and send</Button>
+          </DialogFooter>
+        </ConfirmationDialog>
+      </Modal>
       {reasoningEffort && !effortLevels.includes(reasoningEffort) ? (
         <p className="mt-2 text-xs text-fg-muted">
-          Retained effort: {effortLabel(reasoningEffort)}. This model no longer advertises it.
+          Retained thinking level: {effortLabel(reasoningEffort)}. This model no longer offers it.
         </p>
       ) : null}
       {selectedEnvironment && !environmentApplicable ? (
@@ -952,7 +936,7 @@ export function Composer({
           <button
             type="button"
             onClick={() => setSelectedEnvironment(null)}
-            className="text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            className="text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
           >
             Use a fresh Sandbox
           </button>
@@ -1006,7 +990,7 @@ function WorkerEnvironmentPicker({
         if (event.currentTarget.open) environments?.onBrowse();
       }}
     >
-      <summary className="cursor-pointer px-2 py-1 text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+      <summary className="cursor-pointer px-2 py-1 text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
         Advanced settings
       </summary>
       <div className="mt-2 flex flex-col gap-1 px-2">
@@ -1109,20 +1093,20 @@ function InlineSelect({
       className="max-w-full shrink-0"
       data-composer-chip={ariaLabel}
     >
-      <AriaButton className="flex h-11 min-h-11 w-max max-w-full items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus">
+      <AriaButton className="flex h-11 min-h-11 w-max max-w-full items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
         <SelectValue className="whitespace-nowrap data-[placeholder]:text-fg-muted">
           {({ selectedText }) => selectedText || placeholder}
         </SelectValue>
         <Icon name="chevron-down" size="sm" />
       </AriaButton>
-      <Popover className="max-h-72 min-w-(--trigger-width) overflow-auto rounded-ok border border-border bg-elevated py-1 shadow-ok-menu">
+      <Popover className="ok-popover max-h-72 min-w-(--trigger-width) overflow-auto">
         <ListBox items={items} className="outline-none">
           {(item) => (
             <ListBoxItem
               id={item.targetRef}
               textValue={item.label}
               isDisabled={item.availability !== 'available'}
-              className="cursor-pointer px-3 py-1.5 text-sm text-fg outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-disabled-fg data-[focused]:bg-overlay data-[selected]:bg-selected"
+              className="cursor-pointer rounded-ok px-3 py-1.5 text-sm text-fg outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-disabled-fg data-[focused]:bg-overlay data-[selected]:bg-selected"
             >
               <Text slot="label">{item.label}</Text>
               {item.description || item.unavailableReason ? (

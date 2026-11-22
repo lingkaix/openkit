@@ -2,7 +2,7 @@ import type { CoreClient } from '@openkit/core-client';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, DiffView, ErrorBanner, ListRow, Skeleton } from '../../primitives';
+import { Button, DiffView, InlineAlert, ListRow, Skeleton } from '../../primitives';
 import type {
   AttentionRow,
   KnowledgeProposalDecision,
@@ -93,7 +93,7 @@ export function KnowledgeProposalRow({
         <div className="flex shrink-0 flex-wrap items-start gap-2">
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             aria-expanded={open}
             isDisabled={blocked}
             onPress={() => setOpen((value) => !value)}
@@ -106,7 +106,7 @@ export function KnowledgeProposalRow({
               <div key={action.kind} className="flex flex-col items-start gap-1">
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   isDisabled={
                     blocked || action.disabled === true || (decision === 'accepted' && !complete)
                   }
@@ -126,7 +126,7 @@ export function KnowledgeProposalRow({
         <div className="flex min-w-0 flex-col gap-3">
           {preview.isPending || preview.isFetching ? <Skeleton lines={2} /> : null}
           {preview.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't read the saved proposal. Refresh if its identity changed."
               onRetry={() => {
                 setInspected([]);
@@ -227,7 +227,7 @@ function ProposalPage({
     <div className="flex min-w-0 flex-col gap-2">
       <Button
         size="sm"
-        variant="outline"
+        variant="secondary"
         aria-expanded={open}
         isDisabled={blocked}
         onPress={() => setOpen((value) => !value)}
@@ -238,7 +238,7 @@ function ProposalPage({
         <>
           {chunks.isPending || chunks.isFetching ? <Skeleton lines={2} /> : null}
           {chunks.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={`Couldn't read ${path}. Acceptance remains unavailable.`}
               onRetry={() => {
                 void chunks.refetch();
@@ -264,7 +264,7 @@ function ProposalPage({
           {chunks.hasNextPage ? (
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               isDisabled={blocked || chunks.isFetching}
               onPress={() => {
                 void chunks.fetchNextPage();
@@ -275,7 +275,7 @@ function ProposalPage({
           ) : null}
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={blocked || !complete || inspected}
             onPress={onInspected}
           >

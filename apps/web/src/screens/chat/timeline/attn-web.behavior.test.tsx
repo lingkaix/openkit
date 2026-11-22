@@ -300,7 +300,7 @@ describe('unloaded attention question summary', () => {
   const asked = 'Which date format should exports use?';
 
   function barFor(summary: { text: string; truncated: boolean } | null, question?: string) {
-    const row = toNeedsYouRow(questionRow(summary), '/chat/ws/th', undefined, question);
+    const row = toNeedsYouRow(questionRow(summary), '/w/ws/t/th', undefined, question);
     const onOpen = vi.fn();
     render(<NeedsYouBar rows={[row]} emphasize={false} reducedMotion onOpen={onOpen} />);
     return { row, onOpen };
@@ -313,7 +313,7 @@ describe('unloaded attention question summary', () => {
     expect(button).not.toHaveTextContent('…');
     expect(button).not.toHaveTextContent('Answer required');
     await user.click(button);
-    expect(onOpen).toHaveBeenCalledWith(expect.stringContaining('/chat/ws/th'));
+    expect(onOpen).toHaveBeenCalledWith(expect.stringContaining('/w/ws/t/th'));
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Submit/ })).not.toBeInTheDocument();
   });
@@ -338,7 +338,7 @@ describe('unloaded attention question summary', () => {
   });
 
   it('shows the summary on the title-only sheet and does not submit from it', () => {
-    const row = toNeedsYouRow(questionRow({ text: asked, truncated: true }), '/chat/ws/th');
+    const row = toNeedsYouRow(questionRow({ text: asked, truncated: true }), '/w/ws/t/th');
     render(
       <TimelineNowProvider now={Date.parse('2026-11-08T12:00:00.000Z')}>
         <DecisionRowSheet

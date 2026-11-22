@@ -6,13 +6,13 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
-  type StatusChipProps,
+  StatusLight,
+  type StatusLightProps,
 } from '../../primitives';
 import {
   type AgentEntry,
@@ -20,7 +20,7 @@ import {
   agentInitials,
   agentLane,
   readinessLabel,
-  taskThreadPath,
+  threadPath,
   useAgent,
   useAgents,
   useCurrentWorkspaceId,
@@ -84,15 +84,17 @@ export function AgentsScreen() {
             >
               Refresh health
             </Button>
-            {disconnected ? <StatusChip tone="notice">Worker read may be stale</StatusChip> : null}
-            {disconnected ? <StatusChip tone="notice">Readiness may be stale</StatusChip> : null}
+            {disconnected ? (
+              <StatusLight tone="notice">Worker read may be stale</StatusLight>
+            ) : null}
+            {disconnected ? <StatusLight tone="notice">Readiness may be stale</StatusLight> : null}
           </>
         }
       />
 
       {failedRefreshWorkspaceId && failedRefreshWorkspaceId === workspaceId ? (
         <fieldset disabled={healthRefreshBlocked} className="contents">
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't refresh agent health."
             onRetry={() => void refreshHealth(failedRefreshWorkspaceId)}
           />
@@ -111,7 +113,7 @@ export function AgentsScreen() {
               <Skeleton lines={3} />
             ) : workers.isError ? (
               <fieldset disabled={workersRefreshBlocked} className="contents">
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load workers."
                   onRetry={() => void workers.refetch()}
                 />
@@ -137,7 +139,7 @@ export function AgentsScreen() {
             {agents.isLoading ? (
               <Skeleton lines={5} />
             ) : agents.isError ? (
-              <ErrorBanner message="Couldn't load agents." onRetry={() => void agents.refetch()} />
+              <InlineAlert message="Couldn't load agents." onRetry={() => void agents.refetch()} />
             ) : (agents.data?.length ?? 0) === 0 ? (
               <EmptyState
                 icon="agents"
@@ -173,7 +175,7 @@ function WorkerCard({
   worker: WorkspaceWorkerRow;
   workspaceId: string | null;
 }) {
-  const conversationHref = workspaceId ? taskThreadPath(workspaceId, worker.threadId) : null;
+  const conversationHref = workspaceId ? threadPath(workspaceId, worker.threadId) : null;
   return (
     <Card>
       <div className="flex min-w-0 items-start gap-3">
@@ -187,10 +189,10 @@ function WorkerCard({
             <p className="min-w-0 break-words text-sm font-bold text-fg-strong">
               {worker.agentName}
             </p>
-            <StatusChip tone={workerStatusTone(worker.status)} dot>
+            <StatusLight tone={workerStatusTone(worker.status)}>
               {capitalizeStatus(worker.status)}
-            </StatusChip>
-            {worker.stale ? <StatusChip tone="notice">Setup outdated</StatusChip> : null}
+            </StatusLight>
+            {worker.stale ? <StatusLight tone="notice">Setup outdated</StatusLight> : null}
           </div>
           <p className="mt-0.5 min-w-0 break-words text-xs text-fg-muted">{worker.threadTitle}</p>
           <p className="mt-2 min-w-0 break-words text-sm text-fg">{workAssignmentLabel(worker)}</p>
@@ -206,7 +208,7 @@ function WorkerCard({
             <Link
               to={conversationHref}
               aria-label={`Open conversation ${worker.threadTitle}`}
-              className="mt-2 inline-flex h-7 max-w-full items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+              className="mt-2 inline-flex h-7 max-w-full items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
             >
               Open conversation
             </Link>
@@ -215,7 +217,7 @@ function WorkerCard({
       </div>
 
       <details className="mt-3">
-        <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+        <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
           View details
         </summary>
         <dl className="mt-2 space-y-2 text-xs text-fg-muted">
@@ -229,13 +231,13 @@ function WorkerCard({
           </div>
         </dl>
         <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+          <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
             MCP and tool policy
           </summary>
           <div className="mt-2 min-w-0 text-xs text-fg-muted">{mcpPolicySummary(worker)}</div>
         </details>
         <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+          <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
             Policy summary
           </summary>
           <div className="mt-2 min-w-0 text-xs text-fg-muted">{policySummary(worker)}</div>
@@ -265,9 +267,7 @@ function AgentCard({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <p className="min-w-0 break-words text-sm font-bold text-fg-strong">{agent.name}</p>
-            <StatusChip tone={readiness.tone} dot>
-              {readiness.label}
-            </StatusChip>
+            <StatusLight tone={readiness.tone}>{readiness.label}</StatusLight>
           </div>
           <p className="mt-0.5 min-w-0 break-words text-xs text-fg-muted">
             {agentLane(agent.kind)}
@@ -291,12 +291,12 @@ function AgentCard({
           setDetailsOpen(event.currentTarget.open);
         }}
       >
-        <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus">
+        <summary className="cursor-pointer text-xs font-bold text-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus">
           View details
         </summary>
         {detailsOpen && detail.isError ? (
           <div className="mt-2">
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load agent details."
               onRetry={() => void detail.refetch()}
             />
@@ -344,7 +344,7 @@ function AgentCard({
 }
 
 /** Maps a recorded Worker status onto the existing chip tone vocabulary. */
-function workerStatusTone(status: WorkspaceWorkerRow['status']): StatusChipProps['tone'] {
+function workerStatusTone(status: WorkspaceWorkerRow['status']): StatusLightProps['tone'] {
   switch (status) {
     case 'busy':
     case 'created':

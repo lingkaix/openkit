@@ -95,7 +95,7 @@ describe('timeline object resolver', () => {
       threads(true)
     );
     expect(approval).toMatchObject({
-      path: `/tasks/${WS}/${THREAD}`,
+      path: `/w/${WS}/t/${THREAD}`,
       focus: null,
       notice: null,
     });
@@ -134,7 +134,7 @@ describe('timeline object resolver', () => {
 
   it('does not deny a thread when the audience read was not supplied', () => {
     const result = resolve({ kind: 'thread', workspaceId: WS, threadId: THREAD, turnId: TURN });
-    expect(hrefOf(result)).toBe(`/chat/${WS}/${THREAD}?turn=${TURN}&turnId=${TURN}`);
+    expect(hrefOf(result)).toBe(`/w/${WS}/t/${THREAD}?turn=${TURN}&turnId=${TURN}`);
   });
 
   it('pins an exact artifact version and never substitutes another', () => {
@@ -193,7 +193,7 @@ describe('timeline object resolver', () => {
       },
       threads(true)
     );
-    expect(hrefOf(review)).toBe(`/goals/${WS}/${THREAD}/artifacts/art_1?review=rev&version=3`);
+    expect(hrefOf(review)).toBe(`/w/${WS}/t/${THREAD}/artifacts/art_1?review=rev&version=3`);
     expect(review).toMatchObject({ focus: 'review-rev' });
     const recovery = resolve({
       kind: 'attention',
@@ -289,7 +289,7 @@ describe('timeline object resolver', () => {
       threads(true, 'goal')
     );
     expect(card).toMatchObject({
-      path: `/goals/${WS}/${THREAD}`,
+      path: `/w/${WS}/t/${THREAD}`,
       search: 'card=card_1',
       focus: 'goal-card-card_1',
     });

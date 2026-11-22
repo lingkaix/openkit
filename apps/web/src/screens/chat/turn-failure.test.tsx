@@ -161,6 +161,8 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
 
     operations: {
       'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
+      // A completed, empty navigation read: the Thread route opens with its default activity.
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       'turn.start': vi.fn(),
       'conversation.targets': vi.fn().mockResolvedValue({
         workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
@@ -220,7 +222,7 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
 
 function renderTask(
   client: CoreClient,
-  path = `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}`
+  path = `/w/${workspaceIdForOwner(THREAD.owner)}/t/${THREAD.id}`
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
@@ -268,7 +270,7 @@ describe('task runtime activity', () => {
         });
         renderTask(
           client,
-          `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
+          `/w/${workspaceIdForOwner(THREAD.owner)}/t/${THREAD.id}?turnId=${encodeURIComponent(target)}`
         );
         if (present) {
           expect(await screen.findByText('Selected run · Waiting to start')).toBeInTheDocument();

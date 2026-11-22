@@ -65,7 +65,7 @@ export function UserMessage({ author, isSelf, bodyRef, children }: UserMessagePr
       </div>
       <div
         ref={bodyRef}
-        className="max-w-[min(100%,620px)] whitespace-pre-wrap rounded-ok-xl bg-sunken px-4 py-2.5 text-fg"
+        className="max-w-[min(100%,620px)] whitespace-pre-wrap rounded-ok-xl bg-sunken px-4 py-2.5 text-base text-fg"
       >
         {children}
       </div>
@@ -120,13 +120,16 @@ export function AssistantMessage({
         {via ? <ChannelTag channel={via} /> : null}
       </div>
       {report === null ? (
-        <div ref={bodyRef} className="max-w-full whitespace-pre-wrap leading-relaxed text-fg">
+        <div
+          ref={bodyRef}
+          className="max-w-full whitespace-pre-wrap text-base leading-relaxed text-fg"
+        >
           {children}
         </div>
       ) : (
         <div
           ref={bodyRef}
-          className="ok-message-report min-w-0 w-full max-w-full leading-relaxed text-fg"
+          className="ok-message-report min-w-0 w-full max-w-full text-base leading-relaxed text-fg"
           // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it generates all markup with raw HTML and media disabled; links are HTTP(S) only.
           dangerouslySetInnerHTML={{ __html: report }}
         />

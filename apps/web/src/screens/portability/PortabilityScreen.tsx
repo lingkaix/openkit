@@ -5,15 +5,16 @@ import {
   Button,
   Card,
   Dialog,
+  DialogFooter,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   ListRow,
   Modal,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
 import { useVault } from '../settings/data';
@@ -49,7 +50,7 @@ export function PortabilityScreen() {
       {workspaces.isLoading && workspaces.data === undefined ? (
         <Skeleton lines={4} />
       ) : workspaces.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -99,7 +100,7 @@ function AdministratorExport({
   return (
     <section className="flex flex-col gap-3" aria-label="Export">
       <Eyebrow>Administrator export</Eyebrow>
-      {exportError ? <ErrorBanner message={exportError} /> : null}
+      {exportError ? <InlineAlert message={exportError} /> : null}
       {refusal ? (
         <WorkspaceFreezeRefusalPanel
           refusal={refusal}
@@ -120,7 +121,7 @@ function AdministratorExport({
           <div className="pt-2">
             <Link
               aria-label="Download archive (opens in a new tab)"
-              className="text-sm font-bold text-accent underline outline-none focus-visible:ring-2 focus-visible:ring-focus data-disabled:cursor-not-allowed data-disabled:text-disabled-fg data-disabled:no-underline"
+              className="text-sm font-bold text-accent underline outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus data-disabled:cursor-not-allowed data-disabled:text-disabled-fg data-disabled:no-underline"
               href={workspaceExportArchiveHref(workspaceId, exportSummary.exportId)}
               isDisabled={writeBlocked}
               rel="noopener noreferrer"
@@ -180,12 +181,12 @@ function ProjectVault({
     <section className="flex flex-col gap-3" aria-label="Vault references">
       <Eyebrow>Vault references</Eyebrow>
       {vault.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load vault references."
           onRetry={() => void vault.refetch()}
         />
       ) : null}
-      {rebindError ? <ErrorBanner message={rebindError} /> : null}
+      {rebindError ? <InlineAlert message={rebindError} /> : null}
       {vault.isSuccess && vault.fetchStatus === 'idle' && references.length === 0 ? (
         <EmptyState icon="key" title="No vault references" hint={unboundHint} />
       ) : null}
@@ -196,9 +197,9 @@ function ProjectVault({
               <p className="text-sm text-fg">{reference.secretKind}</p>
               <p className="text-xs text-fg-muted">{reference.referenceId}</p>
             </div>
-            <StatusChip tone={reference.status === 'active' ? 'positive' : 'notice'}>
+            <StatusLight tone={reference.status === 'active' ? 'positive' : 'notice'}>
               {portabilityVaultStatusLabel(reference.status)}
-            </StatusChip>
+            </StatusLight>
             {reference.status === 'unbound' ? (
               <Modal
                 trigger={
@@ -215,8 +216,8 @@ function ProjectVault({
                   <p>
                     Reference {reference.referenceId} becomes active and cannot be rebound again.
                   </p>
-                  <div className="flex justify-end gap-2">
-                    <Button slot="close" variant="quiet" onPress={() => setVaultMaterial('')}>
+                  <DialogFooter>
+                    <Button slot="close" variant="secondary" onPress={() => setVaultMaterial('')}>
                       Cancel
                     </Button>
                     <Button
@@ -226,7 +227,7 @@ function ProjectVault({
                     >
                       Confirm
                     </Button>
-                  </div>
+                  </DialogFooter>
                 </Dialog>
               </Modal>
             ) : null}
@@ -253,7 +254,7 @@ function PortabilityHeader({ stale = false }: { stale?: boolean }) {
       eyebrow="Administration"
       title="Portability"
       subtitle="Export a Workspace under administrator authority, download the portable archive, and rebind credential references that need a new secret."
-      actions={stale ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
+      actions={stale ? <StatusLight tone="notice">Status may be stale</StatusLight> : null}
     />
   );
 }

@@ -3,12 +3,12 @@ import { useConnection } from '../../app/core-client';
 import {
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
   type StatusTone,
 } from '../../primitives';
 import {
@@ -84,7 +84,7 @@ export function VaultScreen() {
           title="Vault"
           subtitle="Credential references, grants, and use evidence — never secret values."
         />
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -115,12 +115,12 @@ export function VaultScreen() {
         eyebrow="Workspace"
         title="Vault"
         subtitle="Credential references, grants, and use evidence — never secret values."
-        actions={disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
+        actions={disconnected ? <StatusLight tone="notice">Status may be stale</StatusLight> : null}
       />
 
       <VaultGrantRequestsPanel key={workspaceId} workspaceId={workspaceId} />
       {vault.isError ? (
-        <ErrorBanner message="Couldn't load Vault records." onRetry={() => void vault.refetch()} />
+        <InlineAlert message="Couldn't load Vault records." onRetry={() => void vault.refetch()} />
       ) : vault.data ? (
         <>
           <VaultList
@@ -203,17 +203,13 @@ export function VaultScreen() {
 }
 
 /**
- * Renders a fixed-vocabulary chip for one Vault lifecycle value.
+ * Renders a fixed-vocabulary status light for one Vault lifecycle value.
  *
  * @param props Vault lifecycle value to label.
  */
-function VaultStatusChip({ value }: { value: string }) {
+function VaultStatusLight({ value }: { value: string }) {
   const status = vaultStatus(value);
-  return (
-    <StatusChip tone={status.tone} dot>
-      {status.label}
-    </StatusChip>
-  );
+  return <StatusLight tone={status.tone}>{status.label}</StatusLight>;
 }
 
 /**
@@ -256,7 +252,7 @@ function VaultList({
       {isLoading ? (
         <Skeleton lines={3} />
       ) : isError ? (
-        <ErrorBanner message={errorMessage ?? "Couldn't load Vault records."} onRetry={onRetry} />
+        <InlineAlert message={errorMessage ?? "Couldn't load Vault records."} onRetry={onRetry} />
       ) : rows.length === 0 ? (
         <EmptyState icon="key" title={emptyTitle} hint={emptyHint} />
       ) : (
@@ -318,7 +314,7 @@ function ReferenceRow({ reference }: { reference: VaultReferenceRow }) {
           {reference.secretKind} · version {reference.currentVersion}
         </p>
       </div>
-      <VaultStatusChip value={reference.status} />
+      <VaultStatusLight value={reference.status} />
     </ListRow>
   );
 }
@@ -337,7 +333,7 @@ function GrantRow({ grant }: { grant: VaultGrantRow }) {
           {grant.vaultReferenceId} · {grant.lifetime} · {grant.allowedInjectionPaths.join(', ')}
         </p>
       </div>
-      <VaultStatusChip value={grant.status} />
+      <VaultStatusLight value={grant.status} />
     </ListRow>
   );
 }
@@ -356,7 +352,7 @@ function UseRow({ use }: { use: VaultUseRow }) {
           {use.resolvingPath} · {new Date(use.usedAt).toLocaleString()}
         </p>
       </div>
-      <VaultStatusChip value={use.outcome} />
+      <VaultStatusLight value={use.outcome} />
     </ListRow>
   );
 }
@@ -374,7 +370,7 @@ function PlanRow({ plan }: { plan: VaultInjectionPlanRow }) {
         <p className="text-xs text-fg-muted">{plan.injectionVisibility}</p>
         <p className="text-xs text-fg-muted">{plan.expirationBehavior}</p>
       </div>
-      <VaultStatusChip value={plan.status} />
+      <VaultStatusLight value={plan.status} />
     </ListRow>
   );
 }
@@ -391,7 +387,7 @@ function ReceiptRow({ receipt }: { receipt: VaultInjectionReceiptRow }) {
         <p className="text-sm font-bold text-fg-strong">{receipt.receiptId}</p>
         <p className="text-xs text-fg-muted">{receipt.backendSummary}</p>
       </div>
-      <VaultStatusChip value={receipt.revocationStatus} />
+      <VaultStatusLight value={receipt.revocationStatus} />
     </ListRow>
   );
 }

@@ -44,9 +44,15 @@ function implement(
   return createComponentImplementation(api as never, view as FC<ReactA2uiComponentProps<never>>);
 }
 
+/**
+ * Builds bound children, each in its own wrapper element.
+ *
+ * @param Item Wrapper element; List passes `li` so its `ul` holds only list items.
+ */
 function renderChildren(
   childList: unknown,
-  buildChild: (id: string, basePath?: string) => ReactNode
+  buildChild: (id: string, basePath?: string) => ReactNode,
+  Item: 'div' | 'li' = 'div'
 ): ReactNode {
   if (typeof childList === 'string') {
     return buildChild(childList);
@@ -56,16 +62,22 @@ function renderChildren(
   }
   return childList.map((child: BoundChild) => {
     if (typeof child === 'string') {
-      return <div key={child}>{buildChild(child)}</div>;
+      return <Item key={child}>{buildChild(child)}</Item>;
     }
     return (
-      <div key={`${child.id}:${child.basePath ?? ''}`}>{buildChild(child.id, child.basePath)}</div>
+      <Item key={`${child.id}:${child.basePath ?? ''}`}>
+        {buildChild(child.id, child.basePath)}
+      </Item>
     );
   });
 }
 
+/**
+ * Text inherits its color so the same node reads correctly in a Card and as a Button
+ * label on the accent fill; a span keeps the label valid phrasing content in a button.
+ */
 const text = implement(TextApi, ({ props }) => (
-  <p className="text-sm text-fg">{String(props.text ?? '')}</p>
+  <span className="block text-sm">{String(props.text ?? '')}</span>
 ));
 
 const row = implement(RowApi, ({ props, buildChild }) => (
@@ -79,7 +91,7 @@ const column = implement(ColumnApi, ({ props, buildChild }) => (
 ));
 
 const list = implement(ListApi, ({ props, buildChild }) => (
-  <ul className="flex flex-col gap-2">{renderChildren(props.children, buildChild)}</ul>
+  <ul className="flex flex-col gap-2">{renderChildren(props.children, buildChild, 'li')}</ul>
 ));
 
 const card = implement(CardApi, ({ props, buildChild }) => (

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { TextField as AriaTextField, Label, Text, TextArea } from 'react-aria-components';
-import { Button, TextField } from '../../primitives';
+import { ActionButton, Button, TextField } from '../../primitives';
 import type { ArtifactReviewDecisionInput } from '../goal/data';
 
 /** Exact range shape owned by the existing decision operation. */
@@ -72,7 +72,7 @@ export function MaterialRangeFeedback({
             );
             setEndText(String(originalOffset(revision.content, event.currentTarget.selectionEnd)));
           }}
-          className="min-h-32 w-full rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:text-disabled-fg"
+          className="min-h-32 w-full rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:text-disabled-fg"
         />
       </AriaTextField>
       <p className="font-mono text-xs text-fg-muted">
@@ -97,7 +97,7 @@ export function MaterialRangeFeedback({
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={isDisabled || !valid}
           onPress={() =>
             onChange({
@@ -113,9 +113,9 @@ export function MaterialRangeFeedback({
           Use feedback range
         </Button>
         {value ? (
-          <Button size="sm" variant="quiet" isDisabled={isDisabled} onPress={() => onChange(null)}>
+          <ActionButton size="sm" isQuiet isDisabled={isDisabled} onPress={() => onChange(null)}>
             Clear feedback range
-          </Button>
+          </ActionButton>
         ) : null}
       </div>
       {value ? (

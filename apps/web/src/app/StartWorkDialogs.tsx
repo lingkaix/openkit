@@ -1,19 +1,23 @@
 import type { ConversationTargetCatalog } from '@openkit/app-api-schemas';
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import {
-  Button as AriaButton,
-  Modal as AriaModal,
-  DialogTrigger,
-  ModalOverlay,
-} from 'react-aria-components';
 import { useNavigate } from 'react-router-dom';
-import { Button, Dialog, ErrorBanner, Select } from '../primitives';
+import {
+  ActionButton,
+  Button,
+  Dialog,
+  DialogFooter,
+  InlineAlert,
+  Modal,
+  Picker,
+  ToggleButton,
+} from '../primitives';
 import type { ComposerWorkerEnvironmentOption } from '../primitives/Composer';
 import { setUnsentDraft } from '../pwa/unsent-draft';
 import {
   type ConversationDraft,
-  conversationThreadPath,
+  threadPath,
+  threadRouteState,
   useComposerWorkerEnvironments,
   useConversationTargets,
   useCreateThread,
@@ -36,27 +40,30 @@ function StartDialog({
   onOpenChange,
   children,
 }: {
-  triggerLabel: string;
+  /** The list button that opens the form; omit when the caller opens it (a menu item). */
+  triggerLabel?: string;
   title: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: ReactNode;
 }) {
   return (
-    <DialogTrigger isOpen={open} onOpenChange={onOpenChange}>
-      <Button variant="outline" className="mx-3 my-1">
-        {triggerLabel}
-      </Button>
-      <ModalOverlay className="fixed inset-0 z-50 flex bg-fg/40 max-[799px]:items-stretch min-[800px]:items-center min-[800px]:justify-center min-[800px]:p-6">
-        <AriaModal className="flex max-h-full w-full flex-col overflow-y-auto border border-border bg-elevated outline-none max-[799px]:h-full max-[799px]:pb-safe-bottom min-[800px]:max-w-lg min-[800px]:rounded-ok-lg min-[800px]:shadow-ok-menu">
-          <div className="flex flex-1 flex-col p-5">
-            <Dialog title={title} closeLabel={`Close ${title}`}>
-              {children}
-            </Dialog>
-          </div>
-        </AriaModal>
-      </ModalOverlay>
-    </DialogTrigger>
+    <Modal
+      isOpen={open}
+      onOpenChange={onOpenChange}
+      isDismissable={false}
+      trigger={
+        triggerLabel ? (
+          <Button variant="secondary" className="mx-3 my-1">
+            {triggerLabel}
+          </Button>
+        ) : undefined
+      }
+    >
+      <Dialog title={title} closeLabel={`Close ${title}`}>
+        {children}
+      </Dialog>
+    </Modal>
   );
 }
 
@@ -100,13 +107,24 @@ function sandboxLabel(
   return duplicated > 1 ? `${item.sourceLabel} · ${item.storageRef.slice(-8)}` : item.sourceLabel;
 }
 
+/**
+ * Open state owned by the caller, for a dialog opened from a menu item. The caller keys the
+ * dialog by Workspace, so a Workspace change remounts it instead of rebinding it.
+ */
+export interface StartDialogOpener {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
 /** New Task from the Tasks list. The receiving thread, not the draft id, is opened. */
 export function NewTaskDialog({
   workspaceId,
   workspaceLabel,
+  opener,
 }: {
   workspaceId: string;
   workspaceLabel: string;
+  opener?: StartDialogOpener;
 }) {
   const navigate = useNavigate();
   const client = useCoreClient();
@@ -118,7 +136,9 @@ export function NewTaskDialog({
   const alive = useRef(true);
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = opener ? opener.open : ownOpen;
+  const setOpen = opener ? opener.onOpenChange : setOwnOpen;
   const [brief, setBrief] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const requestId = useRef<string | null>(null);
@@ -146,7 +166,7 @@ export function NewTaskDialog({
     setError(null);
     setPending(false);
     setHandoff(null);
-    setOpen(false);
+    setOwnOpen(false);
     requestId.current = null;
     confirmed.current = null;
   }
@@ -175,6 +195,12 @@ export function NewTaskDialog({
     setUnsentDraft(brief.trim().length > 0 || files.length > 0);
     return () => setUnsentDraft(false);
   }, [brief, files.length]);
+
+  // Read shared Sandboxes each time the dialog opens, also when a menu opens it already open.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once per open
+  useEffect(() => {
+    if (open) environments.onBrowse();
+  }, [open]);
 
   useEffect(() => {
     if (picked || targetRef || !fallback) return;
@@ -226,13 +252,9 @@ export function NewTaskDialog({
       confirmed.current = null;
       setCreatedThreadId(null);
       setOpen(false);
-      navigate(
-        conversationThreadPath(
-          response.receivingWorkspaceId,
-          response.receivingThreadId,
-          item.activity
-        )
-      );
+      navigate(threadPath(response.receivingWorkspaceId, response.receivingThreadId), {
+        state: threadRouteState(item.activity),
+      });
     } catch {
       if (!stillHere(origin)) return;
       setError("Couldn't start that task. Try again.");
@@ -289,25 +311,25 @@ export function NewTaskDialog({
   return (
     <>
       <StartDialog
-        triggerLabel="New Task"
+        triggerLabel={opener ? undefined : 'New Task'}
         title="New Task"
         open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (next) environments.onBrowse();
-        }}
+        onOpenChange={setOpen}
       >
-        <label className="flex flex-col gap-1 text-xs font-bold text-fg" htmlFor="new-task-brief">
+        <label
+          className="flex flex-col gap-1 ok-field-label text-fg-muted"
+          htmlFor="new-task-brief"
+        >
           Brief
           <textarea
             id="new-task-brief"
             value={brief}
             onChange={(event) => setBrief(event.target.value)}
-            className="min-h-20 rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus"
+            className="min-h-20 rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
           />
         </label>
-        <Select
-          label="Logical model"
+        <Picker
+          label="Model"
           items={(selected?.logicalModels ?? []).map((item) => ({
             id: item.id,
             label: item.label,
@@ -320,8 +342,8 @@ export function NewTaskDialog({
           isDisabled={!selected}
         />
         {effortLevels.length ? (
-          <Select
-            label="Effort"
+          <Picker
+            label="Thinking"
             items={effortLevels.map((level) => ({ id: level, label: effortLabel(level) }))}
             selectedKey={effort || null}
             onSelectionChange={(key) =>
@@ -329,7 +351,7 @@ export function NewTaskDialog({
             }
           />
         ) : null}
-        <Select
+        <Picker
           label="Sandbox"
           items={sandboxItems}
           selectedKey={sandboxKey}
@@ -349,97 +371,94 @@ export function NewTaskDialog({
           aria-label="Task files"
           onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
         />
-        <Button variant="quiet" onPress={() => fileInput.current?.click()}>
+        <ActionButton isQuiet onPress={() => fileInput.current?.click()}>
           Attach files
-        </Button>
+        </ActionButton>
         <details>
           <summary className="cursor-pointer text-sm font-bold">Someone already available</summary>
           <div className="mt-2 flex flex-col gap-1">
             {fallback ? (
-              <Button
-                variant={selected?.targetRef === fallback.targetRef ? 'outline' : 'quiet'}
-                aria-pressed={selected?.targetRef === fallback.targetRef}
+              <ToggleButton
+                isQuiet
+                isSelected={selected?.targetRef === fallback.targetRef}
                 onPress={() => chooseTarget(fallback)}
               >
                 New Task worker
-              </Button>
+              </ToggleButton>
             ) : null}
             {workers.map((worker) => (
-              <Button
+              <ToggleButton
                 key={worker.targetRef}
-                variant={selected?.targetRef === worker.targetRef ? 'outline' : 'quiet'}
-                aria-pressed={selected?.targetRef === worker.targetRef}
+                isQuiet
+                isSelected={selected?.targetRef === worker.targetRef}
                 isDisabled={worker.availability !== 'available'}
                 onPress={() => chooseTarget(worker)}
               >
                 {worker.label}
-              </Button>
+              </ToggleButton>
             ))}
           </div>
         </details>
-        {error ? <ErrorBanner message={error} onRetry={() => void start()} /> : null}
-        <AriaButton
-          onPress={() => void start()}
-          isDisabled={
-            pending || handoff !== null || !selected || (!brief.trim() && files.length === 0)
-          }
-          className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-accent px-4 font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg"
-        >
-          Start Task
-        </AriaButton>
+        {error ? <InlineAlert message={error} onRetry={() => void start()} /> : null}
+        <DialogFooter>
+          <Button
+            onPress={() => void start()}
+            isDisabled={
+              pending || handoff !== null || !selected || (!brief.trim() && files.length === 0)
+            }
+          >
+            Start Task
+          </Button>
+        </DialogFooter>
       </StartDialog>
-      <ModalOverlay
+      <Modal
         isOpen={handoff !== null}
         onOpenChange={(next) => {
           if (!next) setHandoff(null);
         }}
-        isDismissable
-        className="fixed inset-0 z-[60] flex items-center justify-center bg-fg/40 p-6"
       >
-        <AriaModal className="max-h-full w-full max-w-lg overflow-y-auto rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none">
-          <Dialog title="Share selected files with Worker">
-            <p>This work brief and the selected inputs will enter shared Worker work in:</p>
-            <p className="font-bold">{workspaceLabel}</p>
-            <section aria-label="Work brief">
-              <pre className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">
-                {handoff?.input}
-              </pre>
-            </section>
-            <ul aria-label="Files to share">
-              {handoff?.files?.map((file, ordinal) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: this read-only list displays the immutable draft order.
-                <li key={ordinal}>{file.name}</li>
-              ))}
-            </ul>
-            <div className="flex justify-end gap-2">
-              <AriaButton
-                onPress={() => setHandoff(null)}
-                className="rounded-ok border border-border px-3 py-2"
-              >
-                Cancel
-              </AriaButton>
-              <AriaButton
-                onPress={confirmHandoff}
-                className="rounded-ok bg-accent px-3 py-2 text-on-accent"
-              >
-                Share files and send
-              </AriaButton>
-            </div>
-          </Dialog>
-        </AriaModal>
-      </ModalOverlay>
+        <Dialog title="Share selected files with Worker">
+          <p>This work brief and the selected inputs will enter shared Worker work in:</p>
+          <p className="font-bold">{workspaceLabel}</p>
+          <section aria-label="Work brief">
+            <pre className="whitespace-pre-wrap break-words rounded-ok bg-overlay p-3">
+              {handoff?.input}
+            </pre>
+          </section>
+          <ul aria-label="Files to share">
+            {handoff?.files?.map((file, ordinal) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: this read-only list displays the immutable draft order.
+              <li key={ordinal}>{file.name}</li>
+            ))}
+          </ul>
+          <DialogFooter>
+            <Button variant="secondary" onPress={() => setHandoff(null)}>
+              Cancel
+            </Button>
+            <Button onPress={confirmHandoff}>Share files and send</Button>
+          </DialogFooter>
+        </Dialog>
+      </Modal>
     </>
   );
 }
 
 /** New Goal from the Goals list. Creation does not require an existing Goal route. */
-export function NewGoalDialog({ workspaceId }: { workspaceId: string }) {
+export function NewGoalDialog({
+  workspaceId,
+  opener,
+}: {
+  workspaceId: string;
+  opener?: StartDialogOpener;
+}) {
   const navigate = useNavigate();
   const client = useCoreClient();
   const alive = useRef(true);
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = opener ? opener.open : ownOpen;
+  const setOpen = opener ? opener.onOpenChange : setOwnOpen;
   const [intent, setIntent] = useState('');
   const requestId = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -450,7 +469,7 @@ export function NewGoalDialog({ workspaceId }: { workspaceId: string }) {
     setIntent('');
     setError(null);
     setPending(false);
-    setOpen(false);
+    setOwnOpen(false);
     requestId.current = null;
   }
 
@@ -490,7 +509,7 @@ export function NewGoalDialog({ workspaceId }: { workspaceId: string }) {
       setIntent('');
       requestId.current = null;
       setOpen(false);
-      navigate(`/goals/${origin}/${threadId}`);
+      navigate(threadPath(origin, threadId), { state: threadRouteState('goal') });
     } catch {
       if (!stillHere(origin)) return;
       setError("Couldn't create that Goal. Try again.");
@@ -500,24 +519,27 @@ export function NewGoalDialog({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <StartDialog triggerLabel="New Goal" title="New Goal" open={open} onOpenChange={setOpen}>
-      <label className="flex flex-col gap-1 text-xs font-bold text-fg" htmlFor="new-goal-intent">
+    <StartDialog
+      triggerLabel={opener ? undefined : 'New Goal'}
+      title="New Goal"
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <label className="flex flex-col gap-1 ok-field-label text-fg-muted" htmlFor="new-goal-intent">
         Goal intent
         <textarea
           id="new-goal-intent"
           value={intent}
           onChange={(event) => setIntent(event.target.value)}
-          className="min-h-20 rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus"
+          className="min-h-20 rounded-ok border border-border bg-card px-3 py-2 text-sm font-normal text-fg outline-none focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
         />
       </label>
-      {error ? <ErrorBanner message={error} onRetry={() => void createGoal()} /> : null}
-      <AriaButton
-        onPress={() => void createGoal()}
-        isDisabled={pending || !intent.trim()}
-        className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-accent px-4 font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:bg-disabled-bg disabled:text-disabled-fg"
-      >
-        Create Goal
-      </AriaButton>
+      {error ? <InlineAlert message={error} onRetry={() => void createGoal()} /> : null}
+      <DialogFooter>
+        <Button onPress={() => void createGoal()} isDisabled={pending || !intent.trim()}>
+          Create Goal
+        </Button>
+      </DialogFooter>
     </StartDialog>
   );
 }

@@ -4,7 +4,7 @@
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#0265dc",
+  "theme_color": "#3b63fb",
   "icons": [
     {
       "src": "brand/openkit-mark-192.png",

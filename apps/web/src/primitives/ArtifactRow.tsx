@@ -53,7 +53,7 @@ export function ArtifactRow({
         ref={buttonRef}
         type="button"
         onClick={onOpen}
-        className="flex w-full items-center gap-3 rounded-ok px-2 py-1.5 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+        className="flex w-full items-center gap-3 rounded-ok px-2 py-1.5 text-left outline-none hover:bg-overlay focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
         {content}
       </button>

@@ -9,16 +9,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   Dialog,
+  DialogFooter,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Modal,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
   TextField,
 } from '../../primitives';
@@ -104,25 +106,24 @@ export function AccessTokensScreen() {
 
       {issuedSecret ? (
         phone ? (
-          <Modal trigger={<Button className="min-h-11">Show issued token</Button>}>
+          <Modal trigger={<Button>Show issued token</Button>}>
             <Dialog title="Copy this token now">
               <p>
                 The plaintext secret is shown once and is not stored in this page after you dismiss
                 it.
               </p>
               <TextField label="Issued token" value={issuedSecret} isReadOnly />
-              <div className="flex justify-end gap-2">
+              <DialogFooter>
                 <Button
-                  variant="outline"
-                  className="min-h-11"
+                  variant="secondary"
                   onPress={() => void navigator.clipboard?.writeText(issuedSecret)}
                 >
                   Copy
                 </Button>
-                <Button variant="outline" className="min-h-11" onPress={dismissIssued}>
+                <Button variant="secondary" onPress={dismissIssued}>
                   Dismiss
                 </Button>
-              </div>
+              </DialogFooter>
             </Dialog>
           </Modal>
         ) : (
@@ -136,7 +137,7 @@ export function AccessTokensScreen() {
             </div>
             <TextField label="Issued token" value={issuedSecret} isReadOnly />
             <div className="flex justify-end">
-              <Button variant="outline" className="min-h-11" onPress={dismissIssued}>
+              <Button variant="secondary" onPress={dismissIssued}>
                 Dismiss
               </Button>
             </div>
@@ -153,7 +154,7 @@ export function AccessTokensScreen() {
             onChange={setOwnerUserId}
             autoComplete="off"
           />
-          <Select
+          <Picker
             label="Scope"
             items={SCOPE_ITEMS}
             selectedKey={scope}
@@ -171,7 +172,7 @@ export function AccessTokensScreen() {
             />
           ) : null}
           <TextField label="Expires at" value={expiresAt} onChange={setExpiresAt} />
-          {issue.isError ? <ErrorBanner message="Couldn't issue the access token." /> : null}
+          {issue.isError ? <InlineAlert message="Couldn't issue the access token." /> : null}
           <div className="flex justify-end">
             <Button isDisabled={!canIssue || issue.isPending} onPress={() => issue.mutate()}>
               Issue token
@@ -188,13 +189,13 @@ export function AccessTokensScreen() {
           title="Access denied"
           hint="Access-token administration requires derived server-admin authority on the signed-in session."
           action={
-            <Button variant="outline" onPress={() => void listed.refetch()}>
+            <Button variant="secondary" onPress={() => void listed.refetch()}>
               Retry
             </Button>
           }
         />
       ) : listed.isError ? (
-        <ErrorBanner message="Couldn't load access tokens." onRetry={() => void listed.refetch()} />
+        <InlineAlert message="Couldn't load access tokens." onRetry={() => void listed.refetch()} />
       ) : listed.data?.items.length === 0 ? (
         <EmptyState
           icon="key"
@@ -272,13 +273,13 @@ export function AccessTokensScreen() {
                         {item.id} · {credentialStatus(item)}
                       </p>
                     </div>
-                    <Button
-                      variant="quiet"
+                    <ActionButton
+                      isQuiet
                       isDisabled={revoke.isPending || credentialStatus(item) === 'closing'}
                       onPress={() => revoke.mutate(item)}
                     >
                       {item.kind === 'worker-run' ? 'End run' : 'Revoke'}
-                    </Button>
+                    </ActionButton>
                   </ListRow>
                 )
               )
@@ -286,7 +287,7 @@ export function AccessTokensScreen() {
         />
       )}
       {revoke.isError && revoke.variables?.kind !== 'nanohost-transport' ? (
-        <ErrorBanner message="Couldn’t revoke the credential." />
+        <InlineAlert message="Couldn’t revoke the credential." />
       ) : null}
     </Page>
   );
@@ -318,29 +319,17 @@ function NanoHostTokenRow({
       </div>
       {failed ? (
         <div className="basis-full">
-          <ErrorBanner message="Couldn't revoke the NanoHost transport token." />
+          <InlineAlert message="Couldn't revoke the NanoHost transport token." />
         </div>
       ) : null}
       <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-        <Button
-          size="sm"
-          variant="outline"
-          className="min-h-11"
-          isDisabled={busy || revoked}
-          onPress={onReview}
-        >
+        <Button size="sm" variant="secondary" isDisabled={busy || revoked} onPress={onReview}>
           {reviewing ? 'Keep transport token' : 'Review revoke'}
         </Button>
         {reviewing ? (
-          <Button
-            size="sm"
-            variant="quiet"
-            className="min-h-11"
-            isDisabled={busy || revoked}
-            onPress={onRevoke}
-          >
+          <ActionButton size="sm" isQuiet isDisabled={busy || revoked} onPress={onRevoke}>
             Revoke transport token
-          </Button>
+          </ActionButton>
         ) : null}
       </div>
     </ListRow>
@@ -370,22 +359,20 @@ function TokenRow({
       </div>
       <Button
         size="sm"
-        variant="outline"
-        className="min-h-11"
+        variant="secondary"
         isDisabled={busy || !canRotate || item.status !== 'active'}
         onPress={onRotate}
       >
         Rotate
       </Button>
-      <Button
+      <ActionButton
         size="sm"
-        variant="quiet"
-        className="min-h-11"
+        isQuiet
         isDisabled={busy || item.status === 'revoked'}
         onPress={onRevoke}
       >
         Revoke
-      </Button>
+      </ActionButton>
     </ListRow>
   );
 }

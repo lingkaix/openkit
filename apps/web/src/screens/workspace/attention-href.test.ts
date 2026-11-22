@@ -23,7 +23,7 @@ describe('attention row links', () => {
         },
       })
     );
-    expect(href?.startsWith('/chat/ws_1/th_1?')).toBe(true);
+    expect(href?.startsWith('/w/ws_1/t/th_1?')).toBe(true);
     expect(anchorFromSearch(href?.slice(href.indexOf('?')) ?? '')).toEqual({
       kind: 'attention',
       rowId: 'question:q1',

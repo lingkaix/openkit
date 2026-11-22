@@ -11,8 +11,8 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
-  Select,
+  InlineAlert,
+  Picker,
   Skeleton,
   TextField,
 } from '../../primitives';
@@ -196,7 +196,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
   }
   return (
     <Card className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold text-fg">Credential-use requests</h2>
+      <h2 className="text-lg font-heading text-fg">Credential-use requests</h2>
       <p className="text-sm text-fg-muted">
         Request exact credential-use bounds. Approval, grant issue, secret delivery and completed
         work are separate facts. Enter reference IDs only.
@@ -206,18 +206,18 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
         <p>Access denied. Current request or administrator authority is required.</p>
       ) : null}
       {threads.isError || requests.isError || action.isError ? (
-        <ErrorBanner message="Credential request failed. Refresh requests and grant inventory before another action." />
+        <InlineAlert message="Credential request failed. Refresh requests and grant inventory before another action." />
       ) : null}
       {disconnected ? (
         <p>Connection unavailable. Requests may be stale; actions are disabled.</p>
       ) : null}
       {notice ? <p role="status">{notice}</p> : null}
-      <Button variant="outline" isDisabled={busy} onPress={refresh}>
+      <Button variant="secondary" isDisabled={busy} onPress={refresh}>
         Refresh credential requests
       </Button>
       {!denied ? (
         <>
-          <Select
+          <Picker
             label="Request Thread"
             selectedKey={threadId}
             items={threadItems}
@@ -241,7 +241,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             onChange={setReferenceId}
             isDisabled={disabled}
           />
-          <Select
+          <Picker
             label="Requested reference scope"
             selectedKey={scope}
             items={[
@@ -256,7 +256,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             }}
           />
           <p>Requested lifetime: {scope}</p>
-          <Select
+          <Picker
             label="Requested visibility"
             selectedKey={visibility}
             items={[
@@ -289,7 +289,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             onChange={setSessionId}
             isDisabled={disabled}
           />
-          <Select
+          <Picker
             label="Requested capability"
             selectedKey={capabilityId || 'unrestricted'}
             items={[
@@ -317,7 +317,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
           ) : null}
           {requestItems.map((record) => (
             <div key={record.approvalRequestId} className="flex flex-col gap-2">
-              <h3 className="font-semibold text-fg">{record.approvalRequestId}</h3>
+              <h3 className="font-bold text-fg">{record.approvalRequestId}</h3>
               <p>
                 Request: {record.state} · decision:{' '}
                 {record.resolution ?? record.ending ?? 'pending'} · issue:{' '}
@@ -340,7 +340,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
               {record.state === 'pending' ? (
                 <>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => setReviewedId(record.approvalRequestId)}
                   >
@@ -372,14 +372,14 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
                     </>
                   ) : null}
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => action.mutate({ kind: 'deny', record })}
                   >
                     Deny request {record.approvalRequestId}
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disabled}
                     onPress={() => action.mutate({ kind: 'withdraw', record })}
                   >

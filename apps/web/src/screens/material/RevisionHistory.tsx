@@ -1,4 +1,4 @@
-import { Button, Card, Eyebrow } from '../../primitives';
+import { Button, Card, Eyebrow, ToggleButton } from '../../primitives';
 import type { WorkspaceMaterialRevision } from './data';
 
 /** Inputs for the immutable revision list and its client-only comparison action. */
@@ -29,7 +29,7 @@ export function RevisionHistory({
     <Card>
       <div className="flex items-center justify-between gap-3">
         <Eyebrow>Revision history</Eyebrow>
-        <Button size="sm" variant="outline" isDisabled={revisions.length < 2} onPress={onCompare}>
+        <Button size="sm" variant="secondary" isDisabled={revisions.length < 2} onPress={onCompare}>
           Compare revisions
         </Button>
       </div>
@@ -38,17 +38,17 @@ export function RevisionHistory({
           <p className="text-sm text-fg-muted">No saved revisions yet.</p>
         ) : (
           revisions.map((revision) => (
-            <Button
+            <ToggleButton
               key={revision.revisionId}
               size="sm"
-              variant={revision.revisionId === selectedRevisionId ? 'outline' : 'quiet'}
+              isQuiet
               className="justify-start rounded-ok text-left"
-              aria-pressed={revision.revisionId === selectedRevisionId}
+              isSelected={revision.revisionId === selectedRevisionId}
               onPress={() => onOpen(revision.revisionId)}
             >
               <span className="font-mono">{revision.revisionId}</span>
               <span className="ml-auto text-fg-muted">{revision.contentDigest.slice(0, 15)}</span>
-            </Button>
+            </ToggleButton>
           ))
         )}
       </div>

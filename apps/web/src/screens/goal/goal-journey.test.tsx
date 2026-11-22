@@ -150,11 +150,11 @@ function mount(data = view()) {
       <CoreClientProvider client={client}>
         <MemoryRouter
           initialEntries={[
-            '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+            '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
           ]}
         >
           <Routes>
-            <Route path="/goals/:workspaceId/:threadId" element={<GoalScreen />} />
+            <Route path="/w/:workspaceId/t/:threadId" element={<GoalScreen />} />
           </Routes>
         </MemoryRouter>
       </CoreClientProvider>
@@ -170,7 +170,7 @@ it('shows current cards, exact proposed commitment, and linked Task completion w
   expect(screen.getByText('Exact commitment')).toBeVisible();
   expect(screen.getByRole('link', { name: 'Verify release' })).toHaveAttribute(
     'href',
-    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c8c-8c46-80c1c4a0361b'
+    '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-7c8c-8c46-80c1c4a0361b'
   );
   expect(screen.getByText('Open')).toBeVisible();
 });

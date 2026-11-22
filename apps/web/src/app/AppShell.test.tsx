@@ -196,7 +196,7 @@ describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
   it('drops the phone row when the sidebar returns at 800px and restores it when narrowing', async () => {
     const user = userEvent.setup();
     setViewportWidth(600);
-    await renderShell('/chat');
+    await renderShell('/new');
     await user.click(screen.getByRole('button', { name: 'More' }));
     await screen.findByRole('dialog');
 
@@ -224,7 +224,7 @@ function register_p1_shell_behavior_test_tsx_0() {
    * "Shell, type, phone floor, install"; review amendment A5).
    *
    * These checks pin the accepted shell behavior, install metadata, naming,
-   * offline status, update prompt, and Noir text tokens. They are written against
+   * offline status and update prompt. They are written against
    * the design rather than the current implementation, so they fail until the P1
    * product change lands.
    */
@@ -323,20 +323,6 @@ function register_p1_shell_behavior_test_tsx_0() {
     return readFileSync(join(appRoot, relativePath), 'utf8');
   }
 
-  /**
-   * Extracts one declaration from the Noir theme block in `tokens.css`.
-   *
-   * @param css Token stylesheet text.
-   * @param name Custom property name, including the leading `--`.
-   * @returns The declared value.
-   */
-  function readNoirToken(css: string, name: string): string {
-    const noir = css.match(/\.ok-theme-noir\s*\{([^}]*)\}/)?.[1] ?? '';
-    const value = noir.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))?.[1];
-    if (!value) throw new Error(`Missing Noir token ${name}`);
-    return value.trim().toLowerCase();
-  }
-
   describe('P1 install metadata', () => {
     beforeEach(() => {
       mediaListeners.clear();
@@ -424,7 +410,9 @@ function register_p1_shell_behavior_test_tsx_0() {
 
     it('opens the Gateway heading from the retired ai-interface address', async () => {
       await renderShell('/settings/ai-interface');
-      expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeInTheDocument();
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Models and providers' })
+      ).toBeInTheDocument();
     });
 
     it('publishes the Gateway catalog path as /settings/gateway', () => {
@@ -438,41 +426,6 @@ function register_p1_shell_behavior_test_tsx_0() {
 
     it('publishes the General catalog path as /settings/general', () => {
       expect(surfaceById('settings')).toMatchObject({ path: '/settings/general' });
-    });
-  });
-
-  describe('P1 Noir text', () => {
-    beforeEach(() => {
-      mediaListeners.clear();
-      viewportWidth = 1024;
-      window.matchMedia = (query: string) =>
-        ({
-          get matches() {
-            return query === PERSISTENT_NAV_QUERY ? viewportWidth >= 800 : true;
-          },
-          media: query,
-          onchange: null,
-          addEventListener: (type: string, listener: EventListener) => {
-            if (type === 'change')
-              mediaListeners.add(listener as (event: MediaQueryListEvent) => void);
-          },
-          removeEventListener: (_type: string, listener: EventListener) => {
-            mediaListeners.delete(listener as (event: MediaQueryListEvent) => void);
-          },
-          addListener: () => undefined,
-          removeListener: () => undefined,
-          dispatchEvent: () => true,
-        }) as MediaQueryList;
-      useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_ID });
-    });
-    afterEach(() => {
-      window.matchMedia = originalMatchMedia;
-    });
-
-    it('is not gold body or primary text', () => {
-      const css = readAppFile('src/styles/tokens.css');
-      expect(readNoirToken(css, '--text-color-default')).not.toBe('#d4b15a');
-      expect(readNoirToken(css, '--text-color-primary')).not.toBe('#ebce7a');
     });
   });
 
@@ -514,7 +467,7 @@ function register_p1_shell_behavior_test_tsx_0() {
         expect(banner).not.toBeNull();
         expect(
           within(banner as HTMLElement).getByRole('button', { name: 'Try again' })
-        ).toHaveClass('min-h-11', 'min-w-11');
+        ).toHaveClass('h-control-sm');
       } finally {
         Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
         act(() => {
@@ -607,7 +560,7 @@ function register_p1_shell_behavior_test_tsx_0() {
           await Promise.resolve();
         });
         expect(await screen.findByText('A new version is ready')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Reload' })).toHaveClass('min-h-11', 'min-w-11');
+        expect(screen.getByRole('button', { name: 'Reload' })).toHaveClass('h-control-md');
       } finally {
         delete (navigator as { serviceWorker?: unknown }).serviceWorker;
       }
@@ -695,7 +648,7 @@ function register_p2_nav_behavior_test_tsx_1() {
     };
   }
 
-  /** Builds one open decision that Action Center shows without an approval dashboard read. */
+  /** Builds one open decision that Needs you shows without an approval dashboard read. */
   function attentionRow(id: string, title: string, threadId: string) {
     return {
       id: `question:${id}`,
@@ -734,9 +687,11 @@ function register_p2_nav_behavior_test_tsx_1() {
     threads?: ReturnType<typeof threadRecord>[];
     readThread?: ReturnType<typeof threadRecord>;
     createThread?: ReturnType<typeof vi.fn>;
+    /** `personal` makes Alpha the caller's personal Workspace, the Personal Assistant's home. */
+    kind?: 'general' | 'personal';
   }
 
-  /** Builds the minimal Core Client used by the routed shell, lists, and Action Center. */
+  /** Builds the minimal Core Client used by the routed shell, lists, and Needs you. */
   function makeClient(options: ClientOptions = {}): CoreClient {
     const readThread =
       options.readThread ?? threadRecord('th_019a0000-0000-7000-8000-000000000103', 'Assistant');
@@ -746,7 +701,7 @@ function register_p2_nav_behavior_test_tsx_1() {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [
             {
-              workspace: { id: WORKSPACE_ID, name: 'Alpha', kind: 'general' },
+              workspace: { id: WORKSPACE_ID, name: 'Alpha', kind: options.kind ?? 'general' },
               membershipStatus: 'active',
               accessCause: 'membership',
               effectiveRole: 'owner',
@@ -832,7 +787,7 @@ function register_p2_nav_behavior_test_tsx_1() {
       window.matchMedia = originalMatchMedia;
     });
 
-    it('shows Personal Assistant, Tasks, and Goals without a Conversations bucket or Agents row', async () => {
+    it('shows the top block and one Thread list without type sections or an Agents row', async () => {
       const client = makeClient({
         navigation: [
           navigationRow(
@@ -851,56 +806,50 @@ function register_p2_nav_behavior_test_tsx_1() {
           navigationRow('th_019a0000-0000-7000-8000-000000000113', 'Conversation 3', 'unknown'),
         ],
       });
-      renderAt('/attention', client);
+      renderAt('/needs-you', client);
 
       const navigation = await screen.findByRole('navigation', {
         name: 'Primary workspace navigation',
       });
 
-      const assistantRows = within(navigation).getAllByRole('button', {
-        name: 'Personal Assistant',
-      });
-      expect(assistantRows).toHaveLength(1);
+      expect(
+        within(navigation).getAllByRole('button', { name: 'Personal Assistant' })
+      ).toHaveLength(1);
       expect(within(navigation).queryByText('Conversations')).not.toBeInTheDocument();
       expect(within(navigation).queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument();
+      for (const name of ['New', 'Search', 'Needs you', 'Artifacts', 'Knowledge', 'Automations']) {
+        expect(within(navigation).getByRole('button', { name })).toBeVisible();
+      }
 
-      expect(within(navigation).getByRole('button', { name: 'Knowledge' })).toBeVisible();
-      expect(within(navigation).getByRole('button', { name: 'Artifacts' })).toBeVisible();
-      expect(within(navigation).getByRole('button', { name: 'Action Center' })).toBeVisible();
-
-      const taskRow = await within(navigation).findByRole('button', { name: 'Fix the export' });
+      const taskRow = await within(navigation).findByRole('link', { name: 'Fix the export' });
       expect(taskRow).toHaveAccessibleDescription(/^Task(?: ·|$)/);
       expect(taskRow).not.toHaveAccessibleDescription(/Worker task/);
-      const goalRow = await within(navigation).findByRole('button', { name: 'Launch notes' });
+      const goalRow = await within(navigation).findByRole('link', { name: 'Launch notes' });
       expect(goalRow).toHaveAccessibleDescription(/^Goal(?: ·|$)/);
       expect(
-        await within(navigation).findByRole('button', { name: 'Conversation 3' })
-      ).toHaveAccessibleDescription(/^Activity type unknown(?: ·|$)/);
-
-      const tasksLabel = within(navigation).getAllByText('Tasks', { exact: true })[0];
-      const goalsLabel = within(navigation).getAllByText('Goals', { exact: true })[0];
-      expect(tasksLabel, 'Tasks must label the Task list').toBeTruthy();
-      expect(goalsLabel, 'Goals must label the Goal list').toBeTruthy();
-      expectBefore(tasksLabel!, taskRow);
-      expectBefore(goalsLabel!, goalRow);
-      expectBefore(tasksLabel!, goalsLabel!);
+        await within(navigation).findByRole('link', { name: 'Conversation 3' })
+      ).toHaveAccessibleDescription(/^Needs repair(?: ·|$)/);
+      // One list for every type: the glyph tells the type, no Tasks or Goals sections.
+      expect(within(navigation).queryByText('Tasks', { exact: true })).not.toBeInTheDocument();
+      expect(within(navigation).queryByText('Goals', { exact: true })).not.toBeInTheDocument();
+      expectBefore(goalRow, taskRow);
 
       expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
       expect(within(navigation).queryByRole('button', { name: 'Work' })).not.toBeInTheDocument();
       expect(within(navigation).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     });
 
-    it('makes Action Center the decisions screen at /attention and keeps the decisions Overview shows today', async () => {
+    it('makes Needs you the decisions screen at /attention and keeps the decisions Overview shows today', async () => {
       const client = makeClient({
         attention: [
           attentionRow('q1', 'Answer required', 'th_019a0000-0000-7000-8000-000000000120'),
           attentionRow('q2', 'Pick the export scope', 'th_019a0000-0000-7000-8000-000000000121'),
         ],
       });
-      renderAt('/attention', client);
+      renderAt('/needs-you', client);
 
       expect(
-        await screen.findByRole('heading', { level: 1, name: 'Action Center' })
+        await screen.findByRole('heading', { level: 1, name: 'Needs you' })
       ).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Overview' })).not.toBeInTheDocument();
       const decision = await screen.findByRole('heading', { name: 'Answer required' });
@@ -911,7 +860,7 @@ function register_p2_nav_behavior_test_tsx_1() {
         name: 'Open thread',
       });
       const href = openThread.getAttribute('href') ?? '';
-      expect(href.startsWith(`/chat/${WORKSPACE_ID}/th_019a0000-0000-7000-8000-000000000120`)).toBe(
+      expect(href.startsWith(`/w/${WORKSPACE_ID}/t/th_019a0000-0000-7000-8000-000000000120`)).toBe(
         true
       );
       expect(href).toContain('attention=question%3Aq1');
@@ -920,11 +869,11 @@ function register_p2_nav_behavior_test_tsx_1() {
         itemId: 'it_019a0000-0000-7000-8000-000000000202',
       });
 
-      const actionCenter = await screen.findByRole('button', { name: /^Action Center/ });
+      const actionCenter = await screen.findByRole('button', { name: /^Needs you/ });
       expect(await within(actionCenter).findByText('2')).toBeInTheDocument();
     });
 
-    it('opens Action Center at / when the selected Workspace has no Assistant timeline', async () => {
+    it('opens Needs you at / when the selected Workspace has no Assistant timeline', async () => {
       const createThread = vi.fn().mockResolvedValue(threadRecord('th_assistant', 'Assistant'));
       const client = makeClient({
         createThread,
@@ -935,10 +884,10 @@ function register_p2_nav_behavior_test_tsx_1() {
       renderAt('/', client);
 
       await waitFor(() =>
-        expect(screen.getByLabelText('Location')).toHaveTextContent('/attention')
+        expect(screen.getByLabelText('Location')).toHaveTextContent('/needs-you')
       );
       expect(
-        await screen.findByRole('heading', { level: 1, name: 'Action Center' })
+        await screen.findByRole('heading', { level: 1, name: 'Needs you' })
       ).toBeInTheDocument();
       expect(createThread).not.toHaveBeenCalled();
     });
@@ -959,7 +908,7 @@ function register_p2_nav_behavior_test_tsx_1() {
 
       await waitFor(() =>
         expect(screen.getByLabelText('Location')).toHaveTextContent(
-          `/chat/${WORKSPACE_ID}/${chat.id}`
+          `/w/${WORKSPACE_ID}/t/${chat.id}`
         )
       );
       expect(createThread).not.toHaveBeenCalled();
@@ -967,25 +916,25 @@ function register_p2_nav_behavior_test_tsx_1() {
         await screen.findByRole('heading', { level: 1, name: 'Ship the notes' })
       ).toBeInTheDocument();
 
+      // The Personal Assistant is the personal Workspace's timeline, not this Chat.
       await user.click(await screen.findByRole('button', { name: 'Personal Assistant' }));
+      expect(screen.getByLabelText('Location')).toHaveTextContent('/assistant');
+      expect(await screen.findByText('Your account has no personal Workspace yet.')).toBeVisible();
       expect(createThread).not.toHaveBeenCalled();
-      expect(screen.getByLabelText('Location')).toHaveTextContent(
-        `/chat/${WORKSPACE_ID}/${chat.id}`
-      );
     });
 
     it('creates a missing Assistant timeline with thread.create and never submits a conversation', async () => {
       const user = userEvent.setup();
       const created = threadRecord('th_019a0000-0000-7000-8000-000000000150', 'Assistant');
       const createThread = vi.fn().mockResolvedValue(created);
-      const client = makeClient({ createThread });
-      renderAt('/attention', client);
+      const client = makeClient({ createThread, kind: 'personal' });
+      renderAt('/needs-you', client);
 
       await user.click(await screen.findByRole('button', { name: 'Personal Assistant' }));
 
       await waitFor(() =>
         expect(screen.getByLabelText('Location')).toHaveTextContent(
-          `/chat/${WORKSPACE_ID}/${created.id}`
+          `/w/${WORKSPACE_ID}/t/${created.id}`
         )
       );
       expect(createThread).toHaveBeenCalledWith({
@@ -1009,30 +958,34 @@ function register_p2_nav_behavior_test_tsx_1() {
       window.matchMedia = originalMatchMedia;
     });
 
-    it('creates the missing Assistant timeline from the phone home without submitting', async () => {
+    it('shows Needs you only, and opens the Personal Assistant from the phone bar without submitting', async () => {
       setViewportWidth(360);
       const user = userEvent.setup();
       const created = threadRecord('th_019a0000-0000-7000-8000-000000000190', 'Assistant');
       const createThread = vi.fn().mockResolvedValue(created);
-      const client = makeClient({ createThread });
+      const client = makeClient({ createThread, readThread: created, kind: 'personal' });
       renderAt('/', client);
 
       await waitFor(() =>
-        expect(screen.getByLabelText('Location')).toHaveTextContent('/attention')
+        expect(screen.getByLabelText('Location')).toHaveTextContent('/needs-you')
       );
       expect(
-        await screen.findByRole('heading', { level: 1, name: 'Action Center' })
+        await screen.findByRole('heading', { level: 1, name: 'Needs you' })
       ).toBeInTheDocument();
+      // B1 follow-up: the Needs you page holds Needs you only, and names it once.
+      expect(screen.queryByText('Personal Assistant')).not.toBeInTheDocument();
+      expect(screen.getAllByText('Needs you', { exact: true })).toHaveLength(1);
       expect(
         screen.queryByRole('navigation', { name: 'Primary workspace navigation' })
       ).not.toBeInTheDocument();
       expect(createThread).not.toHaveBeenCalled();
 
-      await user.click(screen.getByRole('button', { name: 'Personal Assistant' }));
+      const sections = screen.getByRole('navigation', { name: 'Sections' });
+      await user.click(within(sections).getByRole('button', { name: /^Assistant$/ }));
 
       await waitFor(() =>
         expect(screen.getByLabelText('Location')).toHaveTextContent(
-          `/chat/${WORKSPACE_ID}/${created.id}`
+          `/w/${WORKSPACE_ID}/t/${created.id}`
         )
       );
       expect(createThread).toHaveBeenCalledTimes(1);
@@ -1042,52 +995,14 @@ function register_p2_nav_behavior_test_tsx_1() {
         requestId: expect.any(String),
       });
       expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
-    });
-
-    it('reopens the Assistant timeline from the phone bar after the cached navigation missed it', async () => {
-      setViewportWidth(360);
-      const user = userEvent.setup();
-      const created = threadRecord('th_019a0000-0000-7000-8000-000000000191', 'Assistant');
-      let createdTimeline = false;
-      const listNavigation = vi.fn(async () => ({
-        items: createdTimeline ? [navigationRow(created.id, 'Assistant', 'chat')] : [],
-      }));
-      const createThread = vi.fn().mockResolvedValue(created);
-      const client = makeClient({ createThread, readThread: created });
-      (
-        client.operations as unknown as {
-          'conversation.navigation': typeof listNavigation;
-        }
-      )['conversation.navigation'] = listNavigation;
-      renderAt('/', client);
-
-      await waitFor(() =>
-        expect(screen.getByLabelText('Location')).toHaveTextContent('/attention')
-      );
-      await user.click(screen.getByRole('button', { name: 'Personal Assistant' }));
-      await waitFor(() =>
-        expect(screen.getByLabelText('Location')).toHaveTextContent(
-          `/chat/${WORKSPACE_ID}/${created.id}`
-        )
-      );
-      createdTimeline = true;
-      const readsBeforeReturn = listNavigation.mock.calls.length;
-
-      await user.click(
+      expect(
         within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('button', {
           name: /^Assistant$/,
         })
-      );
-
-      await waitFor(() => {
-        expect(listNavigation.mock.calls.length).toBeGreaterThan(readsBeforeReturn);
-        expect(screen.getByLabelText('Location')).toHaveTextContent(
-          `/chat/${WORKSPACE_ID}/${created.id}`
-        );
-      });
+      ).toHaveAttribute('aria-current', 'page');
     });
 
-    it('keeps attention out of the phone row and lists Action Center from More', async () => {
+    it('keeps attention out of the phone row and lists Needs you from More', async () => {
       const user = userEvent.setup();
       setViewportWidth(360);
       const client = makeClient({
@@ -1095,7 +1010,7 @@ function register_p2_nav_behavior_test_tsx_1() {
           attentionRow('q1', 'Answer required', 'th_019a0000-0000-7000-8000-000000000160'),
         ],
       });
-      renderAt('/attention', client);
+      renderAt('/needs-you', client);
 
       const navigation = await screen.findByRole('navigation', { name: 'Sections' });
       expect(
@@ -1104,8 +1019,13 @@ function register_p2_nav_behavior_test_tsx_1() {
 
       await user.click(within(navigation).getByRole('button', { name: 'More' }));
       const drawer = await screen.findByRole('dialog');
-      expect(within(drawer).getByRole('button', { name: /^Action Center/ })).toBeVisible();
-      expect(within(drawer).queryByRole('button', { name: 'Artifacts' })).not.toBeInTheDocument();
+      // The drawer holds the same content as the desktop sidebar (ia.md §1).
+      expect(within(drawer).getByRole('button', { name: /^Needs you/ })).toBeVisible();
+      for (const name of ['New', 'Search', 'Personal Assistant', 'Artifacts', 'Knowledge']) {
+        expect(within(drawer).getByRole('button', { name })).toBeVisible();
+      }
+      expect(within(drawer).getByRole('region', { name: 'Alpha' })).toBeInTheDocument();
+      expect(within(drawer).getByRole('button', { name: 'Close navigation' })).toBeVisible();
     });
 
     it('shows the attention count on the Tasks segment when a decision is waiting', async () => {
@@ -1129,7 +1049,7 @@ function register_p2_nav_behavior_test_tsx_1() {
           navigationRow('th_019a0000-0000-7000-8000-000000000180', 'Fix the export', 'task'),
         ],
       });
-      renderAt('/attention', client);
+      renderAt('/needs-you', client);
 
       const navigation = await screen.findByRole('navigation', {
         name: 'Primary workspace navigation',
@@ -1137,13 +1057,11 @@ function register_p2_nav_behavior_test_tsx_1() {
       expect(within(navigation).getByRole('button', { name: 'Personal Assistant' })).toBeVisible();
       expect(within(navigation).getByRole('button', { name: 'Knowledge' })).toBeVisible();
       expect(within(navigation).getByRole('button', { name: 'Artifacts' })).toBeVisible();
-      expect(within(navigation).getByRole('button', { name: 'Action Center' })).toBeVisible();
-      expect(
-        within(navigation).queryByRole('button', { name: 'Needs you' })
-      ).not.toBeInTheDocument();
+      expect(within(navigation).getAllByRole('button', { name: 'Needs you' })).toHaveLength(1);
+      expect(within(navigation).getByRole('button', { name: 'Needs you' })).toBeVisible();
       expect(within(navigation).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
       expect(
-        within(navigation).queryByRole('button', { name: 'Load more' })
+        within(navigation).queryByRole('button', { name: 'Show more' })
       ).not.toBeInTheDocument();
     });
 
@@ -1170,16 +1088,14 @@ function register_p2_nav_behavior_test_tsx_1() {
           'conversation.navigation': typeof list;
         }
       )['conversation.navigation'] = list;
-      renderAt('/attention', client);
+      renderAt('/needs-you', client);
 
       const navigation = await screen.findByRole('navigation', {
         name: 'Primary workspace navigation',
       });
+      expect(await within(navigation).findByRole('link', { name: 'Fix the export' })).toBeVisible();
       expect(
-        await within(navigation).findByRole('button', { name: 'Fix the export' })
-      ).toBeVisible();
-      expect(
-        within(navigation).queryByRole('button', { name: 'Weekly notes' })
+        within(navigation).queryByRole('link', { name: 'Weekly notes' })
       ).not.toBeInTheDocument();
       await waitFor(() =>
         expect(list).toHaveBeenCalledWith({
@@ -1187,15 +1103,15 @@ function register_p2_nav_behavior_test_tsx_1() {
           limit: CONVERSATION_NAVIGATION_PAGE_LIMIT,
         })
       );
-      await user.click(within(navigation).getByRole('button', { name: 'Load more' }));
-      expect(await within(navigation).findByRole('button', { name: 'Weekly notes' })).toBeVisible();
+      await user.click(within(navigation).getByRole('button', { name: 'Show more' }));
+      expect(await within(navigation).findByRole('link', { name: 'Weekly notes' })).toBeVisible();
       expect(list).toHaveBeenCalledWith({
         workspaceId: WORKSPACE_ID,
         limit: CONVERSATION_NAVIGATION_PAGE_LIMIT,
         cursor: 'cursor-2',
       });
       expect(
-        within(navigation).queryByRole('button', { name: 'Load more' })
+        within(navigation).queryByRole('button', { name: 'Show more' })
       ).not.toBeInTheDocument();
     });
   });

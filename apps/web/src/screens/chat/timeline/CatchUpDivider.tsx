@@ -1,6 +1,6 @@
 import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Button } from '../../../primitives';
+import { ActionButton } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
 import { digestAnchorLocation, type TimelineDigest, visibleDigest } from './digest';
 import { timelineJump } from './window';
@@ -47,15 +47,15 @@ export function CatchUpDivider({
         <Link
           to={{ pathname: catchUp.pathname, search: catchUp.search }}
           replace
-          className="inline-flex min-h-11 items-center"
+          className="inline-flex items-center"
         >
           {timelineCopy.newSinceHere}
         </Link>
       </p>
       <div className="ok-earlier-unread">
         {line?.kind === 'jump' ? (
-          <Button
-            variant="quiet"
+          <ActionButton
+            isQuiet
             size="sm"
             onPress={() => {
               const target = timelineJump({
@@ -67,7 +67,7 @@ export function CatchUpDivider({
             }}
           >
             {line.text}
-          </Button>
+          </ActionButton>
         ) : line?.kind === 'plain' ? (
           <p className="ok-meta">{line.text}</p>
         ) : null}
@@ -103,8 +103,8 @@ function DigestLines({ digest }: { digest: TimelineDigest }) {
         >
           {view.lines.map((line) => (
             <li key={line.kind}>
-              <Button
-                variant="quiet"
+              <ActionButton
+                isQuiet
                 size="sm"
                 data-digest-kind={line.kind}
                 onPress={() => {
@@ -117,7 +117,7 @@ function DigestLines({ digest }: { digest: TimelineDigest }) {
                 }}
               >
                 {line.label}
-              </Button>
+              </ActionButton>
             </li>
           ))}
         </ul>

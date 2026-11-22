@@ -1,88 +1,129 @@
-import { Page, PageHeader, RadioGroup } from '../primitives';
-import { type ThemeName, useThemeStore } from './theme-store';
+import type { ReactNode } from 'react';
+import { RadioGroup } from '../primitives';
+import { type StyleChoice, type ThemeChoice, useThemeStore } from './theme-store';
 
-interface ThemeOption {
-  id: ThemeName;
+interface Option<T> {
+  id: T;
   label: string;
   description: string;
-  /** Scoping class so each card previews its own look, even inside another theme. */
-  previewClass: string;
 }
 
-const THEME_OPTIONS: ThemeOption[] = [
-  {
-    id: 'spectrum',
-    label: 'Spectrum',
-    description: 'Light · Spectrum blue',
-    previewClass: 'ok-theme-spectrum',
-  },
-  {
-    id: 'paper',
-    label: 'Paper',
-    description: 'Warm light · pine green',
-    previewClass: 'ok-theme-paper',
-  },
-  { id: 'noir', label: 'Noir', description: 'Dark · gold', previewClass: 'ok-theme-noir' },
+const MODE_OPTIONS: Option<ThemeChoice>[] = [
+  { id: 'system', label: 'System', description: 'Follows your device' },
+  { id: 'light', label: 'Light', description: 'Always light' },
+  { id: 'dark', label: 'Dark', description: 'Always dark' },
 ];
 
-/** A compact preview: base surface + accent + a couple of status samples. */
-function Preview({ previewClass }: { previewClass: string }) {
+const STYLE_OPTIONS: Option<StyleChoice>[] = [
+  { id: 'spectrum', label: 'Spectrum', description: 'Neutral grays, blue accent' },
+  { id: 'classic', label: 'Classic', description: 'Paper when light, Noir when dark' },
+];
+
+/**
+ * A compact sample of one scheme in one style: canvas, accent and status inks. Half-width
+ * samples show two dots so they stay round on a phone.
+ */
+function SchemeSample({
+  scheme,
+  style,
+  compact,
+}: {
+  scheme: 'light' | 'dark';
+  style: StyleChoice;
+  compact: boolean;
+}) {
   return (
     <div
-      className={`${previewClass} flex flex-col gap-1.5 rounded-ok border border-border bg-canvas p-2`}
+      className={`ok-scheme-${scheme} ok-style-${style} flex min-w-0 flex-col gap-1.5 bg-canvas p-2`}
+      aria-hidden="true"
     >
       <div className="flex items-center gap-1.5">
-        <span className="h-4 w-8 rounded-full bg-accent" />
-        <span className="h-3 flex-1 rounded bg-sunken" />
+        <span className={`h-4 shrink-0 rounded-full bg-accent ${compact ? 'w-5' : 'w-8'}`} />
+        <span className="h-3 min-w-0 flex-1 rounded bg-sunken" />
       </div>
       <div className="flex gap-1">
-        <span className="h-2.5 w-2.5 rounded-full bg-info-fg" />
-        <span className="h-2.5 w-2.5 rounded-full bg-notice-fg" />
-        <span className="h-2.5 w-2.5 rounded-full bg-positive-fg" />
-        <span className="h-2.5 w-2.5 rounded-full bg-negative-fg" />
+        <span className="size-2.5 shrink-0 rounded-full bg-info-fg" />
+        {compact ? null : <span className="size-2.5 shrink-0 rounded-full bg-notice-fg" />}
+        <span className="size-2.5 shrink-0 rounded-full bg-positive-fg" />
+        {compact ? null : <span className="size-2.5 shrink-0 rounded-full bg-negative-fg" />}
       </div>
     </div>
   );
 }
 
+/** One sample frame: the listed schemes side by side in one style. */
+function Sample({ schemes, style }: { schemes: ('light' | 'dark')[]; style: StyleChoice }) {
+  return (
+    <div className="grid overflow-hidden rounded-ok border border-border [grid-template-columns:repeat(auto-fit,minmax(0,1fr))]">
+      {schemes.map((scheme) => (
+        <SchemeSample key={scheme} scheme={scheme} style={style} compact={schemes.length > 1} />
+      ))}
+    </div>
+  );
+}
+
+function schemesFor(mode: ThemeChoice): ('light' | 'dark')[] {
+  return mode === 'system' ? ['light', 'dark'] : [mode];
+}
+
+function cards<T extends string>(options: Option<T>[], sample: (id: T) => ReactNode) {
+  return options.map((option) => ({
+    id: option.id,
+    label: option.label,
+    content: (
+      <>
+        {sample(option.id)}
+        <div>
+          <p className="text-sm font-bold text-fg-strong">{option.label}</p>
+          <p className="text-xs text-fg-muted">{option.description}</p>
+        </div>
+      </>
+    ),
+  }));
+}
+
 /**
- * Appearance — the theme picker (DESIGN.md §4.5).
- *
- * Theme choice lives here in Settings, shown as compact preview cards, never in a
- * global header. The selection persists locally and restores on reload (see
- * `theme-store`). Each card scopes its own theme class so its preview is accurate
- * even while the surrounding app is on another theme.
+ * Appearance control for Settings → Appearance (DESIGN.md §4.5): Mode (System, Light,
+ * Dark) × Style (Spectrum, Classic = Paper in light and Noir in dark), shown as compact
+ * sample cards. Mode samples show the current style; Style samples show the schemes the
+ * current mode can show. The choice persists locally and restores on reload (see
+ * `theme-store`). Each sample pins its own scheme and style, so it stays accurate
+ * whatever the page currently shows.
  */
 export function ThemePicker() {
   const theme = useThemeStore((s) => s.theme);
+  const style = useThemeStore((s) => s.style);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const setStyle = useThemeStore((s) => s.setStyle);
 
   return (
-    <Page>
-      <PageHeader
-        eyebrow="Settings"
-        title="Appearance"
-        subtitle="Choose a color theme for OpenKit."
-      />
-      <RadioGroup
-        aria-label="Color theme"
-        value={theme}
-        onChange={(value) => setTheme(value as ThemeName)}
-        className="grid grid-cols-3 gap-3"
-        items={THEME_OPTIONS.map((option) => ({
-          id: option.id,
-          label: option.label,
-          content: (
-            <>
-              <Preview previewClass={option.previewClass} />
-              <div>
-                <p className="text-sm font-bold text-fg-strong">{option.label}</p>
-                <p className="text-xs text-fg-muted">{option.description}</p>
-              </div>
-            </>
-          ),
-        }))}
-      />
-    </Page>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2">
+        <h3 id="appearance-mode" className="text-sm font-bold text-fg-strong">
+          Mode
+        </h3>
+        <RadioGroup
+          aria-labelledby="appearance-mode"
+          value={theme}
+          onChange={(value) => setTheme(value as ThemeChoice)}
+          look="cards"
+          className="grid grid-cols-3 gap-3"
+          items={cards(MODE_OPTIONS, (mode) => <Sample schemes={schemesFor(mode)} style={style} />)}
+        />
+      </div>
+      <div className="flex flex-col gap-2">
+        <h3 id="appearance-style" className="text-sm font-bold text-fg-strong">
+          Style
+        </h3>
+        <RadioGroup
+          aria-labelledby="appearance-style"
+          value={style}
+          onChange={(value) => setStyle(value as StyleChoice)}
+          look="cards"
+          className="grid grid-cols-2 gap-3 sm:grid-cols-3"
+          items={cards(STYLE_OPTIONS, (id) => <Sample schemes={schemesFor(theme)} style={id} />)}
+        />
+      </div>
+    </div>
   );
 }

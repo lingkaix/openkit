@@ -54,7 +54,7 @@ export function DisconnectedBanner() {
       <button
         type="button"
         onClick={connection.retry}
-        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-3 font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        className="inline-flex h-control-sm items-center justify-center rounded-ok px-2 font-bold underline underline-offset-2 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       >
         {retryLabel}
       </button>

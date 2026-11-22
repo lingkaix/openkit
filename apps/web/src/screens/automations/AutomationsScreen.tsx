@@ -3,21 +3,23 @@ import { TextField as AriaTextField, Label, TextArea } from 'react-aria-componen
 import { Link } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   Dialog,
+  DialogFooter,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   Modal,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
-import { chatThreadPath, useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
+import { threadPath, useCurrentWorkspaceId, useThreads, useWorkspaces } from '../chat/data';
 import {
   type Automation,
   automationError,
@@ -63,7 +65,7 @@ export function AutomationsScreen() {
     <Page>
       <PageHeader title="Automations" />
       {workspaces.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={automationError(workspaces.error)}
           onRetry={() => void workspaces.refetch()}
         />
@@ -103,11 +105,11 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
       <div className="flex min-w-0 flex-1 flex-col gap-5">
         <PageHeader
           title="Automations"
-          subtitle="Fixed intervals and monthly UTC schedules in this Workspace. Admission, queue status, and execution are separate outcomes."
+          subtitle="Fixed intervals and monthly UTC schedules in this Workspace. Starting, waiting in the queue and running are shown separately."
         />
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            variant="outline"
+            variant="secondary"
             isDisabled={listed.isFetching || create.isPending}
             onPress={() => void refresh()}
           >
@@ -120,12 +122,12 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
           ) : null}
         </div>
         {connection.failed ? (
-          <ErrorBanner message="Couldn't reach NanoCore. Changes are disabled until the connection returns." />
+          <InlineAlert message="Couldn't reach NanoCore. Changes are disabled until the connection returns." />
         ) : null}
         {listed.isPending ? (
           <Skeleton lines={4} />
         ) : listed.isError ? (
-          <ErrorBanner message={automationError(listed.error)} />
+          <InlineAlert message={automationError(listed.error)} />
         ) : listed.data.length === 0 ? (
           <EmptyState
             icon="automations"
@@ -148,7 +150,7 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
             {message}
           </p>
         ) : null}
-        {create.isError ? <ErrorBanner message={automationError(create.error, true)} /> : null}
+        {create.isError ? <InlineAlert message={automationError(create.error, true)} /> : null}
       </div>
       {listed.isSuccess && !listed.isError ? (
         <aside className="w-full shrink-0 lg:max-w-sm">
@@ -161,7 +163,7 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
             {threads.isPending ? (
               <Skeleton lines={2} />
             ) : threads.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message="Couldn't load target Threads."
                 onRetry={() => void threads.refetch()}
               />
@@ -177,6 +179,7 @@ function WorkspaceAutomations({ workspaceId }: { workspaceId: string }) {
               disabled={blocked || !threads.isSuccess}
             />
             <Button
+              className="self-start"
               isDisabled={
                 blocked || !validFields(fields) || !targets.some((t) => t.id === fields.threadId)
               }
@@ -245,9 +248,9 @@ function AutomationRow({
             Responsible user: {record.responsibleUserId}
           </p>
         </div>
-        <StatusChip tone={record.status === 'active' ? 'positive' : 'neutral'}>
+        <StatusLight tone={record.status === 'active' ? 'positive' : 'neutral'}>
           {record.status}
-        </StatusChip>
+        </StatusLight>
       </div>
       <p className="whitespace-pre-wrap break-words text-sm text-fg">{record.prompt}</p>
       <p className="break-words text-xs text-fg-muted">Target Thread: {record.threadId}</p>
@@ -258,7 +261,7 @@ function AutomationRow({
       ) : null}
       <Link
         className="text-xs text-accent-content underline"
-        to={chatThreadPath(record.workspaceId, record.threadId)}
+        to={threadPath(record.workspaceId, record.threadId)}
       >
         View target Thread
       </Link>
@@ -273,7 +276,7 @@ function AutomationRow({
         {record.status === 'active' ? (
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             aria-label={`Pause ${record.name}`}
             isDisabled={blocked}
             onPress={() =>
@@ -296,7 +299,7 @@ function AutomationRow({
           <>
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               aria-label={`Resume ${record.name}`}
               isDisabled={blocked}
               onPress={() => {
@@ -308,9 +311,9 @@ function AutomationRow({
             >
               Resume
             </Button>
-            <Button
+            <ActionButton
               size="sm"
-              variant="quiet"
+              isQuiet
               aria-label={`Edit ${record.name}`}
               isDisabled={blocked}
               onPress={() => {
@@ -320,24 +323,25 @@ function AutomationRow({
               }}
             >
               Edit
-            </Button>
+            </ActionButton>
           </>
         ) : null}
-        <Button
+        <ActionButton
           size="sm"
-          variant="quiet"
+          isQuiet
           aria-label={`History ${record.name}`}
           aria-expanded={showHistory}
           onPress={() => setShowHistory(!showHistory)}
         >
           {showHistory ? 'Hide history' : 'History'}
-        </Button>
+        </ActionButton>
         {record.status !== 'deleted' ? (
           <Modal
             trigger={
               <Button
                 size="sm"
-                variant="negative-outline"
+                variant="negative"
+                fillStyle="outline"
                 aria-label={`Delete ${record.name}`}
                 isDisabled={blocked}
               >
@@ -350,8 +354,8 @@ function AutomationRow({
                 Future triggers stop and retained history remains. Accepted work continues; deletion
                 does not cancel it.
               </p>
-              <div className="flex justify-end gap-2">
-                <Button slot="close" variant="quiet">
+              <DialogFooter>
+                <Button slot="close" variant="secondary">
                   Cancel
                 </Button>
                 <Button
@@ -367,7 +371,7 @@ function AutomationRow({
                 >
                   Delete automation
                 </Button>
-              </div>
+              </DialogFooter>
             </Dialog>
           </Modal>
         ) : null}
@@ -383,7 +387,7 @@ function AutomationRow({
           />
           <div className="flex gap-2">
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={
                 blocked || !validFields(fields) || !targets.some((t) => t.id === fields.threadId)
               }
@@ -406,9 +410,9 @@ function AutomationRow({
             >
               Save changes
             </Button>
-            <Button variant="quiet" isDisabled={command.isPending} onPress={() => setMode(null)}>
+            <ActionButton isQuiet isDisabled={command.isPending} onPress={() => setMode(null)}>
               Close edit
-            </Button>
+            </ActionButton>
           </div>
         </div>
       ) : null}
@@ -441,9 +445,9 @@ function AutomationRow({
             >
               Confirm resume
             </Button>
-            <Button variant="quiet" isDisabled={command.isPending} onPress={() => setMode(null)}>
+            <ActionButton isQuiet isDisabled={command.isPending} onPress={() => setMode(null)}>
               Cancel resume
-            </Button>
+            </ActionButton>
           </div>
         </div>
       ) : null}
@@ -452,7 +456,7 @@ function AutomationRow({
           Saving definition…
         </p>
       ) : command.isError ? (
-        <ErrorBanner message={automationError(command.error, true)} />
+        <InlineAlert message={automationError(command.error, true)} />
       ) : command.isSuccess ? (
         <p role="status" className="text-sm text-fg-muted">
           {result}
@@ -460,7 +464,7 @@ function AutomationRow({
       ) : null}
       {command.isError ? (
         <Button
-          variant="outline"
+          variant="secondary"
           onPress={async () => {
             // A read is safe after an unknown write; the original write is never replayed.
             if (await onRefresh()) {
@@ -507,12 +511,12 @@ function DefinitionFields({
         isDisabled={disabled}
         className="flex flex-col gap-1"
       >
-        <Label className="text-xs font-bold text-fg">
+        <Label className="ok-field-label text-fg-muted">
           {editing ? 'Edit worker input' : 'Worker input'}
         </Label>
-        <TextArea className="min-h-24 rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
+        <TextArea className="min-h-24 rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
       </AriaTextField>
-      <Select
+      <Picker
         label={editing ? 'Edit cadence' : 'Cadence'}
         items={[
           { id: 'fixed', label: 'Fixed interval' },
@@ -552,7 +556,7 @@ function DefinitionFields({
           isDisabled={disabled}
         />
       )}
-      <Select
+      <Picker
         label={editing ? 'Edit target Thread' : 'Target Thread'}
         items={targets}
         selectedKey={fields.threadId || null}
@@ -588,19 +592,19 @@ function History({ workspaceId, automationId }: { workspaceId: string; automatio
     <section className="flex flex-col gap-3" aria-label="Occurrence history">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-bold text-fg-strong">Occurrence history</h3>
-        <Button
+        <ActionButton
           size="sm"
-          variant="quiet"
+          isQuiet
           isDisabled={query.isFetching}
           onPress={() => void query.refetch()}
         >
           Refresh history
-        </Button>
+        </ActionButton>
       </div>
       {query.isPending ? (
         <Skeleton lines={3} />
       ) : query.isError ? (
-        <ErrorBanner message={automationError(query.error)} />
+        <InlineAlert message={automationError(query.error)} />
       ) : (
         <>
           {query.data.pages.every((page) => page.items.length === 0) ? (
@@ -618,7 +622,7 @@ function History({ workspaceId, automationId }: { workspaceId: string; automatio
           )}
           {query.hasNextPage ? (
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={query.isFetching}
               onPress={() => void query.fetchNextPage()}
             >
@@ -684,18 +688,19 @@ function OccurrenceHistoryRow({
             Inspection required (recovery_required):{' '}
             {record.publicationIssue === 'turn_missing'
               ? 'accepted Turn is missing'
-              : 'accepted Turn contradicts its admission'}
+              : 'accepted Turn does not match its start record'}
             .
           </p>
           <p>
             {record.schedulerStatus === 'queued'
-              ? 'This admission cannot dispatch. Cancel its queued admission to release the waiting slot.'
+              ? 'This start cannot run. Cancel the queued start to release the waiting slot.'
               : 'This retained publication issue requires inspection.'}
           </p>
           {record.schedulerStatus === 'queued' && record.queueEntryId ? (
             <Button
               size="sm"
-              variant="negative-outline"
+              variant="negative"
+              fillStyle="outline"
               isDisabled={
                 connection.failed ||
                 connection.checking ||
@@ -709,16 +714,16 @@ function OccurrenceHistoryRow({
                 })
               }
             >
-              {cancellation.isPending ? 'Cancelling queued admission…' : 'Cancel queued admission'}
+              {cancellation.isPending ? 'Cancelling queued start…' : 'Cancel queued start'}
             </Button>
           ) : null}
         </>
       ) : null}
       {cancellation.isError ? (
         <>
-          <ErrorBanner message={automationError(cancellation.error, true)} />
+          <InlineAlert message={automationError(cancellation.error, true)} />
           <Button
-            variant="outline"
+            variant="secondary"
             onPress={async () => {
               if (await onRefresh()) cancellation.reset();
             }}
@@ -732,7 +737,7 @@ function OccurrenceHistoryRow({
       {record.turnId && record.publicationIssue === null ? (
         <Link
           className="text-accent-content underline"
-          to={`${chatThreadPath(record.workspaceId, record.snapshot.threadId)}?turnId=${encodeURIComponent(record.turnId)}`}
+          to={`${threadPath(record.workspaceId, record.snapshot.threadId)}?turnId=${encodeURIComponent(record.turnId)}`}
         >
           View Turn {record.turnId}
         </Link>
@@ -822,9 +827,9 @@ function validResume(value: string, fields: Fields) {
 /** Admission outcomes are distinct from scheduler and execution outcomes. */
 function stateLabel(state: Extract<HistoryItem, { kind: 'occurrence' }>['record']['state']) {
   return {
-    pending: 'Admission pending',
-    'admission-accepted': 'Admission accepted',
-    'admission-failed': 'Admission failed',
+    pending: 'Waiting to start',
+    'admission-accepted': 'Accepted',
+    'admission-failed': 'Not accepted',
     expired: 'Expired',
     cancelled: 'Trigger cancelled',
     recovery_required: 'Inspection required',

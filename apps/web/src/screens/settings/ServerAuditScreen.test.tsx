@@ -119,7 +119,7 @@ describe('Server audit administration', () => {
     expect(screen.getByText('Actor not recorded')).toBeVisible();
     expect(screen.getByRole('link', { name: 'Open the Assistant' })).toHaveAttribute(
       'href',
-      '/chat/ws_019a0000-0000-7000-8000-000000000011/th_019a0000-0000-7000-8000-000000000012'
+      '/w/ws_019a0000-0000-7000-8000-000000000011/t/th_019a0000-0000-7000-8000-000000000012'
     );
     expect(screen.getAllByRole('link', { name: 'Open the Assistant' })).toHaveLength(1);
     expect(screen.getByText('Turn: tu_019a0000-0000-7000-8000-000000000013')).toBeVisible();

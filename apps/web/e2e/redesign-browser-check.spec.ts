@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CoreClient, createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, type Locator, type Page, test } from '@playwright/test';
+import { hitArea } from './_lib/hit-area.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 /**
@@ -88,9 +89,7 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
 
     await check(`${viewport.name} more drawer`, async () => {
       if (!phone) {
-        await expect(
-          page.getByRole('button', { name: 'Action Center', exact: true })
-        ).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Needs you', exact: true })).toBeVisible();
         await shot(`${viewport.name}-more-drawer`);
         return;
       }
@@ -102,7 +101,7 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
       const drawer = page.getByRole('dialog', { name: 'More' });
       await shot(`${viewport.name}-more-drawer`);
       await expect(drawer.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
-      await expect(drawer.getByRole('button', { name: /^Action Center/ })).toBeVisible();
+      await expect(drawer.getByRole('button', { name: /^Needs you/ })).toBeVisible();
       await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click();
       await expect(drawer).toBeHidden();
     });
@@ -114,13 +113,23 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
           .getByRole('button', { name: 'Work', exact: true })
           .click();
         await page.getByRole('tab', { name: 'Tasks', exact: true }).click();
+        await page.getByRole('button', { name: 'New Task', exact: true }).click();
+      } else {
+        // B2: New Task lives in the Workspace group's ⋯ menu until the B3 Composer.
+        await page
+          .getByRole('navigation', { name: 'Primary workspace navigation' })
+          .getByRole('button', { name: / options$/ })
+          .first()
+          .click();
+        await page.getByRole('menuitem', { name: 'New Task', exact: true }).click();
       }
-      await page.getByRole('button', { name: 'New Task', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'New Task' });
       const sandbox = dialog.getByRole('button', { name: /Sandbox/ });
       await expect(sandbox).toBeVisible();
       const box = await sandbox.boundingBox();
-      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      // Spectrum 2 desktop component height on a fine pointer at any width (WEB-UX A2);
+      // the touch scale and its 44px hit area are measured in scale-and-type.spec.ts.
+      expect(Math.round(box?.height ?? 0)).toBe(32);
       await sandbox.click();
       await expect(page.getByRole('option', { name: 'Fresh', exact: true })).toBeVisible();
       await shot(`${viewport.name}-sandbox-select`);
@@ -136,7 +145,7 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
       await proveContinuation(page, {
         pathname: '/api/app/operations/conversation.navigation',
         ready: async () => {
-          await page.goto(`${stack!.webUrl}/chat`);
+          await page.goto(`${stack!.webUrl}/new`);
           await expect(page.getByRole('heading', { name: 'What can we get done?' })).toBeVisible();
         },
         button: () => recent.getByRole('button', { name: 'Load more', exact: true }),
@@ -266,30 +275,32 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
   await check('toast', async () => {
     // The local fixture does not publish a goal or task handoff. The design
     // has no toast for a same-thread send, so this check measures the toast
-    // primitive on Debug and confirms a thread page queues none.
+    // primitive in Appearance → All components and confirms a thread page queues none.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${stack!.webUrl}/tasks/${seeded.workspaceId}/${seeded.threadId}`);
     const composer = page.getByRole('textbox', { name: 'Message' });
     await expect(composer).toBeVisible();
     await expect(page.locator('.ok-toast')).toHaveCount(0);
-    await page.goto(`${stack!.webUrl}/settings/debug`);
+    await page.goto(`${stack!.webUrl}/settings/appearance/components`);
     const toast = page.locator('.ok-toast', { hasText: 'Scout finished the teardown.' });
     await toast.scrollIntoViewIfNeeded();
     await expect(toast).toBeVisible();
     const action = toast.getByRole('button', { name: 'View', exact: true });
-    const actionBox = await action.boundingBox();
-    expect(actionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
-    expect(actionBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+    // A4: the toast action draws at the S2 S height; a fine pointer gets the WCAG 2.5.8
+    // 24px floor and a coarse pointer the 44px hit area (scale-and-type.spec.ts).
+    const actionBox = await hitArea(action);
+    expect(actionBox.height).toBeGreaterThanOrEqual(24);
+    expect(actionBox.width).toBeGreaterThanOrEqual(44);
     await shot('phone-toast');
     await page.setViewportSize({ width: 1280, height: 800 });
     await toast.scrollIntoViewIfNeeded();
     await expect(action).toBeVisible();
-    const desktopBox = await action.boundingBox();
-    expect(desktopBox?.height ?? 0).toBeGreaterThanOrEqual(44);
-    expect(desktopBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+    const desktopBox = await hitArea(action);
+    expect(desktopBox.height).toBeGreaterThanOrEqual(24);
+    expect(desktopBox.width).toBeGreaterThanOrEqual(44);
     await shot('desktop-toast');
     notes.push(
-      'toast: finding, the fixture cannot hand off; Debug primitive View is 44px; a thread page queues no toast'
+      'toast: finding, the fixture cannot hand off; All components primitive View is an S2 S action (24px, 44px touch hit area); a thread page queues no toast'
     );
   });
 

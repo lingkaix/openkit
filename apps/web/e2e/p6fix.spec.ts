@@ -527,9 +527,9 @@ test('P6FIX F2 Work is identifier-safe and every offered history disclosure is m
   await user.evaluate((node) => {
     (node as HTMLElement).dataset.p6fixUserContent = 'true';
   });
-  for (const lens of ['Work', 'Full']) {
-    await page.getByRole('button', { name: `${lens} lens`, exact: true }).click();
-    await expect(page.getByRole('button', { name: `${lens} lens`, exact: true })).toHaveAttribute(
+  for (const lens of ['Summary', 'All activity']) {
+    await page.getByRole('button', { name: lens, exact: true }).click();
+    await expect(page.getByRole('button', { name: lens, exact: true })).toHaveAttribute(
       'aria-pressed',
       'true'
     );

@@ -63,10 +63,11 @@ test('compares two retained versions and sends the selected older candidate expl
       `${stack.webUrl}/artifacts?workspaceId=${workspace.id}&artifact=${imported.artifactId}`
     );
     const navigationBar = page.getByRole('navigation', { name: 'Primary workspace navigation' });
-    await expect(
-      navigationBar.getByRole('button', { name: workspace.name, exact: true })
-    ).toBeVisible();
-    await navigationBar.getByRole('button', { name: 'New Task', exact: true }).click();
+    // B2: New Task lives in the Workspace group's ⋯ menu until the B3 Composer.
+    await navigationBar
+      .getByRole('button', { name: `${workspace.name} options`, exact: true })
+      .click();
+    await page.getByRole('menuitem', { name: 'New Task', exact: true }).click();
     const newTask = page.getByRole('dialog', { name: 'New Task' });
     await newTask.getByRole('textbox', { name: 'Brief' }).fill('Candidate handoff');
     const provisionalThread = page.waitForResponse(
@@ -181,9 +182,7 @@ test('compares two retained versions and sends the selected older candidate expl
     await comparison
       .getByRole('button', { name: 'Use selected in next Turn', exact: true })
       .click();
-    await expect(page).toHaveURL(
-      new RegExp(`/tasks/${workspace.id}/${handoff.receivingThreadId}$`)
-    );
+    await expect(page).toHaveURL(new RegExp(`/w/${workspace.id}/t/${handoff.receivingThreadId}$`));
     await expect(page.getByRole('button', { name: 'Remove Comparison report' })).toBeVisible();
     expect(submissions).toHaveLength(submitsBeforeUse);
     await page

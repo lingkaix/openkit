@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { threadPath, threadRouteState } from '../chat/data';
 import { timelineCopy } from '../chat/timeline/copy';
 import { useGoalView } from './data';
 
@@ -23,7 +24,8 @@ export function PartOfGoal({
   return (
     <Link
       className="shrink-0 text-sm font-bold text-accent"
-      to={`/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(goal.threadId)}?card=${encodeURIComponent(task.cardId)}`}
+      to={`${threadPath(workspaceId, goal.threadId)}?card=${encodeURIComponent(task.cardId)}`}
+      state={threadRouteState('goal')}
     >
       {timelineCopy.partOfGoal}
     </Link>

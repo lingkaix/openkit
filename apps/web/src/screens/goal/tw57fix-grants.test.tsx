@@ -89,9 +89,9 @@ function mount(complete: boolean) {
     'thread.timeline': async () => page('Coordinator note'),
   });
   render(
-    <Harness api={api} cache={cache} entry={`/goals/${WS}/${THREAD}`}>
+    <Harness api={api} cache={cache} entry={`/w/${WS}/t/${THREAD}`}>
       <Routes>
-        <Route path="/goals/:workspaceId/:threadId" element={<GoalScreen />} />
+        <Route path="/w/:workspaceId/t/:threadId" element={<GoalScreen />} />
       </Routes>
     </Harness>
   );

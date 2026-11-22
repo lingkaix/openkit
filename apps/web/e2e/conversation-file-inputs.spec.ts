@@ -49,13 +49,8 @@ test('keeps files as local drafts and publishes exact originals only on the rece
     return response.json();
   };
   const before = await artifactInventory();
-  await page.goto(`${stack.webUrl}/chat`);
+  await page.goto(`${stack.webUrl}/new`);
   const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
-  await navigation.getByRole('button', { name: 'Personal', exact: true }).click();
-  await page.getByRole('menuitem', { name: workspace!.name, exact: true }).click();
-  await expect(
-    navigation.getByRole('button', { name: workspace!.name, exact: true })
-  ).toBeVisible();
   const originals = [
     {
       name: 'exact-original.bin',
@@ -65,7 +60,9 @@ test('keeps files as local drafts and publishes exact originals only on the rece
     { name: 'empty-original.data', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) },
   ];
   // The Assistant composer offers no Worker target, so shared Worker work starts from New Task.
-  await navigation.getByRole('button', { name: 'New Task', exact: true }).click();
+  // B2: New Task lives in the Workspace group's ⋯ menu until the B3 Composer.
+  await navigation.getByRole('button', { name: `${workspace!.name} options`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'New Task', exact: true }).click();
   const newTask = page.getByRole('dialog', { name: 'New Task' });
   await newTask
     .getByRole('textbox', { name: 'Brief' })

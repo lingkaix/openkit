@@ -16,11 +16,11 @@ export interface TextFieldProps extends AriaTextFieldProps {
 }
 
 /**
- * Text field (`ok-input` / `ok-field`, DESIGN.md §9.3).
+ * Text field (S2 TextField, DESIGN.md §9.3).
  *
- * React Aria `TextField` (label association, validation, ARIA) with a 32px,
- * 8px-radius Spectrum-tokened input: default / focus / with-value / disabled.
- * A real control, never a decorative div.
+ * React Aria `TextField` (label association, validation, ARIA) with a field-height
+ * input (32 desktop / 40 touch, the same as Picker and an M Button), an 8px radius and a
+ * detail-size regular label: default / hover / focus / disabled / invalid.
  */
 export function TextField({
   label,
@@ -32,19 +32,19 @@ export function TextField({
   return (
     <AriaTextField
       {...props}
-      className={`flex flex-col gap-1 ${typeof className === 'string' ? className : ''}`}
+      className={`ok-field flex flex-col gap-1 ${typeof className === 'string' ? className : ''}`}
     >
-      <Label className="text-xs font-bold text-fg">{label}</Label>
+      <Label className="ok-field-label text-fg-muted">{label}</Label>
       <Input
         placeholder={placeholder}
-        className="h-8 rounded-ok border border-border bg-card px-3 text-sm text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
+        className="ok-field-control h-control-md rounded-ok border border-border bg-card px-3 text-sm text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg data-[invalid]:border-negative-fg"
       />
       {description ? (
         <Text slot="description" className="text-xs text-fg-muted">
           {description}
         </Text>
       ) : null}
-      <FieldError className="text-xs font-medium text-negative-fg" />
+      <FieldError className="text-xs text-negative-fg" />
     </AriaTextField>
   );
 }

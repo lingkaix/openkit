@@ -4,7 +4,7 @@ import { useCoreClient } from '../../app/core-client';
 import {
   Button,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   RadioGroup,
@@ -47,13 +47,13 @@ export function MyAdminAccessScreen() {
           title="Access denied"
           hint="My admin access is available only to a signed-in canonical session."
           action={
-            <Button variant="outline" onPress={() => void listed.refetch()}>
+            <Button variant="secondary" onPress={() => void listed.refetch()}>
               Retry
             </Button>
           }
         />
       ) : listed.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load your server-admin tokens."
           onRetry={() => void listed.refetch()}
         />
@@ -66,7 +66,7 @@ export function MyAdminAccessScreen() {
       ) : (
         <div className="flex flex-col gap-3">
           {setDefault.isError ? (
-            <ErrorBanner message="Couldn't change the default server-admin token." />
+            <InlineAlert message="Couldn't change the default server-admin token." />
           ) : null}
           <RadioGroup
             aria-label="Effective default server-admin token"

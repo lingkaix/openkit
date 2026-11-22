@@ -10,15 +10,17 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import {
+  ActionButton,
   Button,
   Dialog,
-  ErrorBanner,
+  DialogFooter,
+  InlineAlert,
   Modal,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
-import { taskThreadPath } from '../chat/data';
+import { threadPath, threadRouteState } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
 import { runStatusLabel, timelineCopy } from '../chat/timeline/copy';
 import { GoalNeedsYou } from '../chat/timeline/NeedsYouBar';
@@ -88,7 +90,7 @@ function CardEditor({
       id={`goal-card-${card.cardId}`}
       tabIndex={-1}
       aria-label={label}
-      className="rounded-ok border border-border bg-card p-4 space-y-3 outline-none focus:ring-2 focus:ring-focus"
+      className="ok-card rounded-ok-lg border border-separator bg-card p-4 space-y-3 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
     >
       <h3>{label}</h3>
       {linked.length === 0 ? (
@@ -97,7 +99,9 @@ function CardEditor({
         <ul>
           {linked.map((task) => (
             <li key={task.threadId}>
-              <Link to={taskThreadPath(workspaceId, task.threadId)}>{label}</Link>
+              <Link to={threadPath(workspaceId, task.threadId)} state={threadRouteState('task')}>
+                {label}
+              </Link>
               <p>{taskState(task)}</p>
             </li>
           ))}
@@ -144,7 +148,8 @@ function CardEditor({
             isDisabled={disabled}
           />
           <Button
-            variant="negative-outline"
+            variant="negative"
+            fillStyle="outline"
             aria-describedby={CANCEL_CARD_CONSEQUENCE}
             isDisabled={disabled || !reason.trim()}
             onPress={() =>
@@ -164,7 +169,7 @@ function CardEditor({
 
 /** One Goal journey: board, then Needs you, then the Coordinator narrative. */
 export function GoalScreen() {
-  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useSurfaceParams('goal');
+  const { workspaceId: routeWorkspaceId = '', threadId = '' } = useSurfaceParams('thread');
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const navigate = useNavigate();
   const location = useLocation();
@@ -190,11 +195,11 @@ export function GoalScreen() {
       </div>
     );
   if (view.isError)
-    return <ErrorBanner message="Couldn't load this Goal." onRetry={() => void view.refetch()} />;
+    return <InlineAlert message="Couldn't load this Goal." onRetry={() => void view.refetch()} />;
   const data = view.data!;
   const goal = data.goal;
   const error = command.error ? (
-    <ErrorBanner
+    <InlineAlert
       message={
         command.error instanceof ApiCallError
           ? `Goal command rejected: ${command.error.code ?? command.error.status}.`
@@ -221,7 +226,10 @@ export function GoalScreen() {
               },
               {
                 onSuccess: (result) => {
-                  if (result.goal) void navigate(`/goals/${workspaceId}/${result.goal.threadId}`);
+                  if (result.goal)
+                    void navigate(threadPath(workspaceId, result.goal.threadId), {
+                      state: threadRouteState('goal'),
+                    });
                 },
               }
             )
@@ -254,15 +262,15 @@ export function GoalScreen() {
     >
       <header className="space-y-2">
         <h1>{goal.intent}</h1>
-        <StatusChip tone="neutral">{goalStatus(goal.disposition?.kind)}</StatusChip>
+        <StatusLight tone="neutral">{goalStatus(goal.disposition?.kind)}</StatusLight>
         <p>Worker results remain evidence until a person accepts completion.</p>
-        <Button
-          variant="quiet"
+        <ActionButton
+          isQuiet
           aria-label={timelineCopy.inspectGoal}
           onPress={() => setInspect((open) => !open)}
         >
           {timelineCopy.inspectRun}
-        </Button>
+        </ActionButton>
       </header>
       {inspect ? (
         <aside
@@ -339,7 +347,7 @@ export function GoalScreen() {
             ))}
           </ul>
           {/* goal.read is the only Task list. A new Goal does not include the origin Thread until admission writes the link. */}
-          {data.tasks.length === 0 ? <p>No Tasks admitted.</p> : null}
+          {data.tasks.length === 0 ? <p>No Tasks yet.</p> : null}
           <TextField
             label="New card description"
             value={description}
@@ -462,7 +470,7 @@ export function GoalScreen() {
                       {approve ? 'Approve Plan' : 'Accept completion'}
                     </Button>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       aria-describedby={DENY_CONSEQUENCE}
                       isDisabled={writesDisabled}
                       onPress={() =>
@@ -497,7 +505,8 @@ export function GoalScreen() {
             <Modal
               trigger={
                 <Button
-                  variant="negative-outline"
+                  variant="negative"
+                  fillStyle="outline"
                   aria-describedby={CANCEL_CONSEQUENCE}
                   isDisabled={disabled || !reason.trim()}
                 >
@@ -507,22 +516,24 @@ export function GoalScreen() {
             >
               <Dialog title="Cancel Goal">
                 <p>{timelineCopy.cancelGoalConsequence}</p>
-                <Button
-                  variant="negative"
-                  aria-describedby={CANCEL_CONSEQUENCE}
-                  isDisabled={disabled || !reason.trim()}
-                  onPress={() =>
-                    command.mutate({
-                      operation: 'goal.cancel',
-                      input: { ...scope, expectedRevision: goal.changeRevision, reason },
-                    })
-                  }
-                >
-                  {timelineCopy.confirmCancel}
-                </Button>
-                <Button slot="close" variant="quiet">
-                  {timelineCopy.keepGoal}
-                </Button>
+                <DialogFooter>
+                  <Button slot="close" variant="secondary">
+                    {timelineCopy.keepGoal}
+                  </Button>
+                  <Button
+                    variant="negative"
+                    aria-describedby={CANCEL_CONSEQUENCE}
+                    isDisabled={disabled || !reason.trim()}
+                    onPress={() =>
+                      command.mutate({
+                        operation: 'goal.cancel',
+                        input: { ...scope, expectedRevision: goal.changeRevision, reason },
+                      })
+                    }
+                  >
+                    {timelineCopy.confirmCancel}
+                  </Button>
+                </DialogFooter>
               </Dialog>
             </Modal>
           </section>

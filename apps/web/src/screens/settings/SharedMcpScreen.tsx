@@ -8,11 +8,11 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
   TextField,
 } from '../../primitives';
@@ -149,7 +149,7 @@ export function SharedMcpScreen() {
         subtitle="Configure Server supply. Workspaces keep their own selection, disablement and mutable server data."
       />
       {connection.failed ? (
-        <ErrorBanner message="Disconnected. Changes are unavailable." onRetry={connection.retry} />
+        <InlineAlert message="Disconnected. Changes are unavailable." onRetry={connection.retry} />
       ) : null}
       <Button isDisabled={busy || previewPending} onPress={() => void refresh()}>
         Reload current configuration
@@ -163,14 +163,14 @@ export function SharedMcpScreen() {
       ) : supply.isLoading ? (
         <Skeleton lines={6} />
       ) : supply.isError ? (
-        <ErrorBanner message="Couldn't read current Server supply." />
+        <InlineAlert message="Couldn't read current Server supply." />
       ) : (
         <div className="flex flex-col gap-6">
           {validationError ? (
-            <ErrorBanner message="Check configuration fields. No change was sent. Use Vault for credential material." />
+            <InlineAlert message="Check configuration fields. No change was sent. Use Vault for credential material." />
           ) : null}
           {previewFailure !== null ? (
-            <ErrorBanner
+            <InlineAlert
               message={
                 previewFailure === 409
                   ? 'Discovery requires inspection. Configuration may be stale or cleanup unconfirmed. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'
@@ -179,7 +179,7 @@ export function SharedMcpScreen() {
             />
           ) : null}
           {action.isError ? (
-            <ErrorBanner message="The change failed or its outcome is unknown. Your draft is kept. Inspect current state with Reload current configuration before another change." />
+            <InlineAlert message="The change failed or its outcome is unknown. Your draft is kept. Inspect current state with Reload current configuration before another change." />
           ) : null}
           {action.isSuccess ? (
             <p role="status" className="text-sm text-fg-muted">
@@ -224,7 +224,7 @@ export function SharedMcpScreen() {
           </Card>
           {selected && detail.isLoading ? <Skeleton lines={5} /> : null}
           {selected && detail.isError ? (
-            <ErrorBanner message="Couldn't read the selected configuration. Reload before changing it." />
+            <InlineAlert message="Couldn't read the selected configuration. Reload before changing it." />
           ) : null}
           {selected && detail.data && !detail.isError ? (
             <McpDiscoveryPreview
@@ -252,7 +252,7 @@ export function SharedMcpScreen() {
               onChange={setNewName}
               isDisabled={blocked}
             />
-            <Select
+            <Picker
               label="New transport"
               selectedKey={kind}
               onSelectionChange={(key) => setKind(String(key))}
@@ -395,7 +395,7 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
         onChange={setTimeout}
         isDisabled={unavailable}
       />
-      <Select
+      <Picker
         label="Schema policy"
         selectedKey={schemaPolicy}
         onSelectionChange={(key) => setSchemaPolicy(key === 'pinned' ? 'pinned' : 'tracking')}
@@ -443,7 +443,7 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
         onChange={setGrant}
         isDisabled={unavailable}
       />
-      <Select
+      <Picker
         label="Credential sink"
         selectedKey={sinkKind}
         onSelectionChange={(key) => setSinkKind(String(key))}
@@ -460,7 +460,7 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
         onChange={setSinkName}
         isDisabled={unavailable}
       />
-      <Select
+      <Picker
         label="Credential presentation"
         selectedKey={presentation}
         onSelectionChange={(key) => setPresentation(String(key))}
@@ -586,7 +586,7 @@ function McpEditor({ data, blocked, run }: { data: Detail; blocked: boolean; run
         availability. Removal retains immutable history and consuming Workspace data.
       </p>
       <Button
-        variant="outline"
+        variant="secondary"
         isDisabled={unavailable}
         onPress={() => setConfirmRemoval(!confirmRemoval)}
       >
@@ -629,8 +629,8 @@ function ArgumentsField({
       isDisabled={isDisabled}
       className="flex flex-col gap-1"
     >
-      <Label className="text-xs font-bold text-fg">{label}</Label>
-      <TextArea className="min-h-20 rounded-ok border border-border bg-card p-3 text-sm text-fg outline-none focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
+      <Label className="ok-field-label text-fg-muted">{label}</Label>
+      <TextArea className="min-h-20 rounded-ok border border-border bg-card p-3 text-sm text-fg outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
     </AriaTextField>
   );
 }

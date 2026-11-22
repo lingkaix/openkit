@@ -110,7 +110,8 @@ async function renderAt(
 
 beforeEach(() => {
   localStorage.clear();
-  useThemeStore.setState({ theme: 'spectrum' });
+  useThemeStore.setState({ theme: 'system' });
+  delete document.documentElement.dataset.colorScheme;
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
@@ -167,7 +168,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
       'Personal Assistant',
       'Knowledge',
       'Artifacts',
-      'Action Center',
+      'Needs you',
       'Automations',
     ]) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
@@ -184,15 +185,31 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     await renderAt('/settings');
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Channels' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Models and providers' })).toBeInTheDocument();
   });
 
-  it('mounts the component sheet under Settings → Debug', async () => {
+  it('opens the component gallery under Settings → Appearance → All components', async () => {
+    await renderAt('/settings/appearance/components');
+    const sections = screen.getByRole('navigation', { name: 'Settings sections' });
+    expect(within(sections).getByRole('button', { name: 'Appearance' })).toHaveAttribute(
+      'aria-current',
+      'page'
+    );
+    expect(within(sections).queryByRole('button', { name: 'Components' })).not.toBeInTheDocument();
+    expect(within(sections).queryByRole('button', { name: 'Debug' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Appearance' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Generative UI' })).toBeInTheDocument();
+  });
+
+  it('redirects the retired Debug address to Diagnostics with a link to the gallery', async () => {
     await renderAt('/settings/debug');
-    expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(screen.getByRole('button', { name: 'Debug' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Debug' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve plan' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Diagnostics' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Appearance → All components' })).toHaveAttribute(
+      'href',
+      '/settings/appearance/components'
+    );
   });
 
   it('mounts the deployment configuration editor under Settings without a credential prompt', async () => {
@@ -219,8 +236,8 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
   it('mounts the published Gateway under Settings without a credential prompt', async () => {
     await renderAt('/settings/ai-interface');
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
-    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Gateway' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Models and providers' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Models and providers' })).toBeInTheDocument();
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
     expect(screen.queryByText(/status only/i)).not.toBeInTheDocument();
@@ -247,12 +264,12 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'Portability' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Configuration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Models and providers' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Administration' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Credentials' })).toBeInTheDocument();
   });
 
-  it('shows current-workspace destinations once and switches authorized workspaces from the brand row', async () => {
+  it('lists Workspace places in the group menu and switches Workspaces in Settings', async () => {
     const user = userEvent.setup();
     await renderAt('/', {
       workspaces: [
@@ -262,7 +279,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     });
 
     expect(
-      await screen.findByRole('button', { name: 'Authoritative Workspace' })
+      await screen.findByRole('region', { name: 'Authoritative Workspace' })
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Personal Assistant' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
@@ -272,22 +289,24 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
     expect(screen.queryByText('Conversations')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument();
-    const destinations = screen.getByRole('group', { name: 'Sidebar shortcuts' });
-    expect(destinations).toHaveClass('grid', 'min-w-0', 'grid-cols-4');
-    expect(within(destinations).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    // B2: the group ⋯ menu replaces the 4x2 icon grid.
+    expect(screen.queryByRole('group', { name: 'Sidebar shortcuts' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Authoritative Workspace options' }));
+    const places = await screen.findByRole('menu');
+    for (const name of [
+      'Workspace settings',
+      'Workspace changes',
+      'Recovery',
+      'Archived threads',
+      'Vault',
+      'Usage & audit',
+    ]) {
+      expect(within(places).getByRole('menuitem', { name })).toBeInTheDocument();
+    }
     expect(
-      within(destinations).queryByRole('button', { name: 'Repositories' })
+      within(places).queryByRole('menuitem', { name: 'Repositories' })
     ).not.toBeInTheDocument();
-    expect(
-      within(destinations).getByRole('button', { name: 'Workspace changes' })
-    ).toBeInTheDocument();
-    expect(within(destinations).getByRole('button', { name: 'Recovery' })).toBeInTheDocument();
-    expect(
-      within(destinations).getByRole('button', { name: 'Archived threads' })
-    ).toBeInTheDocument();
-    expect(within(destinations).getByRole('button', { name: 'Vault' })).toBeInTheDocument();
-    expect(within(destinations).getByRole('button', { name: 'Usage & audit' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
     expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
     const settings = screen.getByRole('button', { name: 'Settings' });
     expect(settings.textContent).toBe('');
@@ -297,7 +316,6 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(
       await screen.findByRole('navigation', { name: 'Settings sections' })
     ).toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'General' }));
     expect(screen.getByRole('navigation')).toHaveAccessibleName('Settings sections');
     expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
@@ -321,13 +339,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(await screen.findByRole('searchbox', { name: /search/i })).toBeInTheDocument();
   });
 
-  it('keeps only the Settings shortcut without a selected workspace', async () => {
+  it('keeps the Settings gear and no Workspace group without a selected workspace', async () => {
     await renderAt('/', { workspaces: [] });
     const user = userEvent.setup();
-    const shortcuts = screen.getByRole('group', { name: 'Sidebar shortcuts' });
-    expect(within(shortcuts).getAllByRole('button')).toHaveLength(1);
-    await user.click(within(shortcuts).getByRole('button', { name: 'Settings' }));
-    expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: / options$/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
     expect(
       await screen.findByRole('navigation', { name: 'Settings sections' })
     ).toBeInTheDocument();
@@ -346,33 +362,39 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 });
 
 describe('app shell — theme lives in Settings, not a header (DESIGN.md §4.5)', () => {
-  it('redirects an admitted /login visit to Action Center', async () => {
+  it('redirects an admitted /login visit to Needs you', async () => {
     await renderAt('/login');
-    expect(await screen.findByRole('heading', { name: 'Action Center' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Needs you' })).toBeInTheDocument();
   });
 
-  it('syncs themes from another tab onto the document root', async () => {
+  it('syncs a pre-A1 theme from another tab, migrated to the Dark scheme', async () => {
     await renderAt('/settings/appearance');
     localStorage.setItem('openkit-theme', JSON.stringify({ state: { theme: 'noir' }, version: 0 }));
     await act(async () => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'openkit-theme' }));
     });
-    expect(document.documentElement).toHaveClass('ok-theme-noir');
-    expect(screen.getByRole('radio', { name: /Noir/ })).toBeChecked();
+    expect(document.documentElement).toHaveAttribute('data-color-scheme', 'dark');
+    expect(screen.getByRole('radio', { name: /^Dark/ })).toBeChecked();
   });
 
   it('offers no theme switcher on the home surface', async () => {
     await renderAt('/');
-    expect(screen.queryByRole('radio', { name: /Noir/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: /^Dark/ })).not.toBeInTheDocument();
   });
 
-  it('selects and persists a theme from Settings → Appearance', async () => {
+  it('follows the system by default and persists a Light or Dark choice', async () => {
     const user = userEvent.setup();
     await renderAt('/settings/appearance');
-    await user.click(screen.getByRole('radio', { name: /Noir/ }));
-    expect(useThemeStore.getState().theme).toBe('noir');
-    expect(document.documentElement).toHaveClass('ok-theme-noir');
-    expect(localStorage.getItem('openkit-theme')).toContain('noir');
+    expect(screen.getByRole('radio', { name: /^System/ })).toBeChecked();
+    expect(document.documentElement).not.toHaveAttribute('data-color-scheme');
+
+    await user.click(screen.getByRole('radio', { name: /^Dark/ }));
+    expect(useThemeStore.getState().theme).toBe('dark');
+    expect(document.documentElement).toHaveAttribute('data-color-scheme', 'dark');
+    expect(localStorage.getItem('openkit-theme')).toContain('"dark"');
+
+    await user.click(screen.getByRole('radio', { name: /^System/ }));
+    expect(document.documentElement).not.toHaveAttribute('data-color-scheme');
   });
 });
 

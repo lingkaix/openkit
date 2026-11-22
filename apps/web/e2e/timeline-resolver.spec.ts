@@ -303,9 +303,7 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       approvalRow(workspaceId, item.id, `Review lane ${index + 1}`)
     );
     await attention.prime(`${stack.webUrl}/artifacts?workspaceId=${workspaceId}`);
-    const overflow = page
-      .getByRole('alertdialog')
-      .filter({ hasText: '+2 more · Open Action Center' });
+    const overflow = page.getByRole('alertdialog').filter({ hasText: '+2 more · Open Needs you' });
     await expect(overflow).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('alertdialog')).toHaveCount(3);
     await page.screenshot({ path: join(shotsDir, 'desktop-toast-overflow.png'), fullPage: false });
@@ -331,7 +329,7 @@ test('resolves an exact output, hides a private source, and toasts within the ca
     });
     await page.goto(`${stack.webUrl}/chat/${workspaceId}/${thread.id}`);
     await expect(page.locator('[data-timeline-entry]').nth(10)).toBeVisible({ timeout: 20_000 });
-    await page.getByRole('button', { name: 'Full lens' }).click();
+    await page.getByRole('button', { name: 'All activity' }).click();
     await expect(page.locator('[data-timeline-lens="full"]')).toBeVisible();
     const savedTop = await page.locator('[data-timeline-scroll]').evaluate((node) => {
       const scroller = node as HTMLElement;
@@ -405,9 +403,7 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       approvalRow(workspaceId, item.id, `Review phone ${index + 1}`)
     );
     await attention.prime(`${stack.webUrl}/artifacts?workspaceId=${workspaceId}`);
-    const phoneMore = page
-      .getByRole('alertdialog')
-      .filter({ hasText: '+4 more · Open Action Center' });
+    const phoneMore = page.getByRole('alertdialog').filter({ hasText: '+4 more · Open Needs you' });
     await expect(phoneMore).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('alertdialog')).toHaveCount(1);
     await page.screenshot({ path: join(shotsDir, 'phone-toast-overflow.png'), fullPage: false });
@@ -420,7 +416,7 @@ test('resolves an exact output, hides a private source, and toasts within the ca
     await page.screenshot({ path: join(shotsDir, 'phone-sheet.png'), fullPage: false });
     await page.goBack();
     await expect(sheet).toHaveCount(0);
-    expect(page.url()).toContain(`/chat/${workspaceId}/${thread.id}`);
+    expect(page.url()).toContain(`/w/${workspaceId}/t/${thread.id}`);
     expect(page.url()).not.toContain('steps=');
     await page.screenshot({ path: join(shotsDir, 'phone-sheet-closed.png'), fullPage: false });
 

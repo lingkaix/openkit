@@ -3,7 +3,7 @@ import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, Card, EmptyState, ErrorBanner, Skeleton, StatusChip } from '../../primitives';
+import { Button, Card, EmptyState, InlineAlert, Skeleton, StatusLight } from '../../primitives';
 import { projectSafeValue } from './secret-safe';
 
 const SUBSYSTEMS = {
@@ -95,7 +95,7 @@ function bootTone(state: BootReadinessSnapshot['overall']) {
 function HealthSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-3" aria-label={title}>
-      <h3 className="text-lg font-extrabold text-fg-strong">{title}</h3>
+      <h3 className="text-lg font-heading text-fg-strong">{title}</h3>
       <Card className="flex flex-col gap-3">{children}</Card>
     </section>
   );
@@ -132,11 +132,11 @@ export function ServerHealthPanel() {
   return (
     <section className="flex flex-col gap-4" aria-labelledby="server-health">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="server-health" className="text-lg font-extrabold text-fg-strong">
+        <h2 id="server-health" className="text-lg font-heading text-fg-strong">
           Server health
         </h2>
         <Button
-          variant="outline"
+          variant="secondary"
           isDisabled={health.isFetching}
           onPress={() => void health.refetch()}
         >
@@ -154,7 +154,7 @@ export function ServerHealthPanel() {
             action={<Button onPress={() => void health.refetch()}>Retry</Button>}
           />
         ) : (
-          <ErrorBanner
+          <InlineAlert
             message="Couldn't load server health."
             onRetry={() => void health.refetch()}
           />
@@ -165,18 +165,18 @@ export function ServerHealthPanel() {
         <>
           <HealthSection title="Boot readiness">
             <div className="flex flex-wrap gap-2">
-              <StatusChip tone={bootTone(current.boot.overall)}>
+              <StatusLight tone={bootTone(current.boot.overall)}>
                 {current.boot.overall === 'ready'
                   ? 'Ready'
                   : current.boot.overall === 'failed'
                     ? 'Failed'
                     : 'Degraded'}
-              </StatusChip>
-              <StatusChip tone={current.boot.acceptingProductWork ? 'positive' : 'notice'}>
+              </StatusLight>
+              <StatusLight tone={current.boot.acceptingProductWork ? 'positive' : 'notice'}>
                 {current.boot.acceptingProductWork
                   ? 'Accepting product work'
                   : 'Product work blocked'}
-              </StatusChip>
+              </StatusLight>
             </div>
             {current.boot.subsystems.map((subsystem) => (
               <section
@@ -186,13 +186,13 @@ export function ServerHealthPanel() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <h4 className="text-sm font-bold text-fg-strong">{subsystem.label}</h4>
-                  <StatusChip tone={bootTone(subsystem.state)}>
+                  <StatusLight tone={bootTone(subsystem.state)}>
                     {subsystem.state === 'ready'
                       ? 'Ready'
                       : subsystem.state === 'failed'
                         ? 'Failed'
                         : 'Degraded'}
-                  </StatusChip>
+                  </StatusLight>
                 </div>
                 {subsystem.reasons.map((reason) => (
                   <div key={JSON.stringify(reason)} className="text-sm text-fg-muted">
@@ -210,7 +210,7 @@ export function ServerHealthPanel() {
             ) : (
               <>
                 <p>Service {current.readiness.serviceAvailability}</p>
-                <p>Product admission: {current.readiness.productWork}</p>
+                <p>Product work: {current.readiness.productWork}</p>
                 <p>
                   {current.readiness.update === 'configured'
                     ? 'Update helper configured; preparation required'

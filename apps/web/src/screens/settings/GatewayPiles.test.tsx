@@ -476,7 +476,9 @@ beforeEach(() => {
 describe('Gateway piles', () => {
   it('renders a level-1 Gateway heading', async () => {
     renderScreen(makeClient());
-    expect(await screen.findByRole('heading', { level: 1, name: 'Gateway' })).toBeVisible();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Models and providers' })
+    ).toBeVisible();
   });
 
   it('renders the three named piles', async () => {
@@ -497,7 +499,7 @@ describe('Gateway piles', () => {
     const inUse = await screen.findByRole('region', { name: 'In use' });
     const providers = screen.getByRole('region', { name: 'Providers' });
     const notSetUp = screen.getByRole('region', { name: 'Not set up' });
-    expect(within(inUse).getByText('No Logical models yet')).toBeVisible();
+    expect(within(inUse).getByText('No model routes yet')).toBeVisible();
     expect(within(providers).getByText('No Providers connected')).toBeVisible();
     expect(within(notSetUp).getByText('Nothing waiting to be set up')).toBeVisible();
   });

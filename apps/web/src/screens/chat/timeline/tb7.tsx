@@ -1,7 +1,7 @@
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Button } from '../../../primitives';
+import { ActionButton } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { fillCopy, timelineCopy } from './copy';
@@ -209,8 +209,8 @@ export function PlanSegments({
               </li>
             ) : (
               <li key={key} data-fold-depth="1" data-plan-segment={segment.stepId}>
-                <Button
-                  variant="quiet"
+                <ActionButton
+                  isQuiet
                   size="sm"
                   aria-expanded={open}
                   onPress={(event) => {
@@ -220,7 +220,7 @@ export function PlanSegments({
                   }}
                 >
                   {segmentLine(segment)}
-                </Button>
+                </ActionButton>
                 {open && view.unavailable ? (
                   <p data-fold-depth="2">{timelineCopy.intervalMembersUnavailable}</p>
                 ) : null}
@@ -243,19 +243,14 @@ export function PlanSegments({
       ) : null}
       {recorded.coverage === 'partial' ? <p>{timelineCopy.segmentsPartial}</p> : null}
       {showEarlier && stepPage ? (
-        <Button
-          variant="quiet"
-          size="sm"
-          isDisabled={stepPage.paging}
-          onPress={stepPage.pageEarlier}
-        >
+        <ActionButton isQuiet size="sm" isDisabled={stepPage.paging} onPress={stepPage.pageEarlier}>
           {timelineCopy.loadEarlier}
-        </Button>
+        </ActionButton>
       ) : null}
       {showLater && stepPage ? (
-        <Button variant="quiet" size="sm" isDisabled={stepPage.paging} onPress={stepPage.pageLater}>
+        <ActionButton isQuiet size="sm" isDisabled={stepPage.paging} onPress={stepPage.pageLater}>
           {timelineCopy.loadLater}
-        </Button>
+        </ActionButton>
       ) : null}
     </div>
   );

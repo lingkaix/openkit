@@ -70,10 +70,10 @@ it('does not take a steer receipt from a window the current read is not showing'
   render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter initialEntries={[`/tasks/${WS}/${THREAD}`]}>
+        <MemoryRouter initialEntries={[`/w/${WS}/t/${THREAD}`]}>
           <Routes>
             <Route
-              path="/tasks/:workspaceId/:threadId"
+              path="/w/:workspaceId/t/:threadId"
               element={
                 <SteerProvider mode="task">
                   <ShownReceipt itemId={ITEM} />

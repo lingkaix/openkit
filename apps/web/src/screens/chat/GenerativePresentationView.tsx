@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { nativeGenerativeCatalog } from '../../generative/native-catalog';
 import type { GenerativeTextSource } from '../../generative/source-groups';
-import { Card, ErrorBanner, ItemCard } from '../../primitives';
+import { Card, InlineAlert, ItemCard } from '../../primitives';
 import type { ThreadItem } from './data';
 
 /** Thread Item that references one retained native presentation. */
@@ -228,8 +228,8 @@ export function GenerativePresentationView({
           {observation?.refreshUnavailable ? ' · source unavailable' : ''}
         </p>
         {hasDraft ? <p className="text-xs text-fg-muted">Unsaved changes</p> : null}
-        {refreshError ? <ErrorBanner message={refreshError} /> : null}
-        {conflict ? <ErrorBanner message={conflict} /> : null}
+        {refreshError ? <InlineAlert message={refreshError} /> : null}
+        {conflict ? <InlineAlert message={conflict} /> : null}
         <A2uiSurface surface={surface} />
         {source ? (
           <details className="text-sm text-fg-muted">

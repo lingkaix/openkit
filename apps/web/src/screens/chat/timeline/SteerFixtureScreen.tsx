@@ -37,7 +37,7 @@ export function SteerFixtureScreen() {
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 p-4">
-      <h1 className="text-xl font-semibold">Steer fixture</h1>
+      <h1 className="text-xl font-heading">Steer fixture</h1>
       {receipt ? (
         <SteerOutcome
           receipt={receipt}

@@ -67,7 +67,7 @@ function useRecordedRunStart(
 }
 
 const linkClass =
-  'inline-flex min-h-11 items-center text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus';
+  'inline-flex items-center text-xs font-bold text-accent outline-none hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus';
 
 /**
  * "From: <title> · run at hh:mm" after the audience check.

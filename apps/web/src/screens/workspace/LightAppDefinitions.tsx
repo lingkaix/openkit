@@ -7,7 +7,7 @@ import { createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
-import { Button, Card, ErrorBanner, TextField } from '../../primitives';
+import { ActionButton, Button, Card, InlineAlert, TextField } from '../../primitives';
 
 /** An explicitly inspected parent; it applies only to the same authored catalog entry ID. */
 interface DefinitionParent {
@@ -42,7 +42,7 @@ function useLightAppChange(workspaceId: string) {
 /** Fixed product copy avoids exposing untrusted server errors or secret content. */
 function ChangeFailure({ failed }: { failed: boolean }) {
   return failed ? (
-    <ErrorBanner message="Couldn't complete that Light App change. Refresh and inspect the current state before trying again." />
+    <InlineAlert message="Couldn't complete that Light App change. Refresh and inspect the current state before trying again." />
   ) : null;
 }
 
@@ -81,7 +81,7 @@ export function LightAppDefinitions({
       </Button>
       {list.isPending ? <p>Loading Light App definitions…</p> : null}
       {list.isError ? (
-        <ErrorBanner message="Couldn't load Light App definitions. Refresh before making changes." />
+        <InlineAlert message="Couldn't load Light App definitions. Refresh before making changes." />
       ) : null}
       <div className="flex flex-col gap-3">
         {list.data?.entries.map((entry) => (
@@ -330,7 +330,7 @@ function DefinitionImport({
       <Button size="sm" isDisabled={disabled || !historyFile} onPress={() => void importFile(true)}>
         Import definition history
       </Button>
-      {inputError ? <ErrorBanner message={inputError} /> : null}
+      {inputError ? <InlineAlert message={inputError} /> : null}
       <ChangeFailure failed={change.isError} />
     </div>
   );
@@ -389,7 +389,7 @@ function DefinitionDetails({
         Refresh definition
       </Button>
       {read.isError ? (
-        <ErrorBanner message="Couldn't read this definition. Other definitions remain available." />
+        <InlineAlert message="Couldn't read this definition. Other definitions remain available." />
       ) : null}
       {read.data ? (
         <p className="text-xs text-fg-muted">
@@ -423,7 +423,7 @@ function DefinitionDetails({
           Download definition history
         </a>
       ) : null}
-      {exportError ? <ErrorBanner message="Couldn't export definition history." /> : null}
+      {exportError ? <InlineAlert message="Couldn't export definition history." /> : null}
       {version ? (
         <>
           <p className="break-all text-xs text-fg-muted">Version: {version.digest}</p>
@@ -566,7 +566,7 @@ function LiveApps({
       <Button size="sm" isDisabled={blocked || apps.isFetching} onPress={() => void apps.refetch()}>
         Refresh live apps
       </Button>
-      {apps.isError ? <ErrorBanner message="Couldn't list live apps." /> : null}
+      {apps.isError ? <InlineAlert message="Couldn't list live apps." /> : null}
       {apps.data?.items.map((app) => (
         <Button
           key={app.appId}
@@ -664,7 +664,7 @@ function AppActivation({
         Refresh selected app
       </Button>
       {app.isError ? (
-        <ErrorBanner message="Couldn't read this app. Refresh before changing it." />
+        <InlineAlert message="Couldn't read this app. Refresh before changing it." />
       ) : null}
       {current ? (
         <p className="break-all text-xs text-fg-muted">
@@ -716,7 +716,7 @@ function AppActivation({
       </Button>
       <h4 className="text-sm font-bold text-fg">Automatic snapshots</h4>
       {snapshots.isError ? (
-        <ErrorBanner message="Couldn't list this app's snapshots. App inspection remains available." />
+        <InlineAlert message="Couldn't list this app's snapshots. App inspection remains available." />
       ) : null}
       {snapshots.isSuccess && !snapshots.data.snapshots.length ? (
         <p>No automatic snapshots.</p>
@@ -786,14 +786,14 @@ function AppActivation({
           >
             Confirm restore and discard later data
           </Button>
-          <Button
+          <ActionButton
             size="sm"
-            variant="quiet"
+            isQuiet
             isDisabled={change.isPending}
             onPress={() => setRestore(null)}
           >
             Cancel restore
-          </Button>
+          </ActionButton>
         </div>
       ) : null}
       <ChangeFailure failed={change.isError} />

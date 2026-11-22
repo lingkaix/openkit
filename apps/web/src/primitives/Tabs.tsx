@@ -31,34 +31,34 @@ export interface TabsProps extends Omit<AriaTabsProps, 'aria-label' | 'children'
 }
 
 /**
- * OpenKit tabs primitive for lens-style navigation.
+ * OpenKit tabs (DESIGN.md §9.4): S2 Tabs at compact density. Plain 14px labels, 32/40
+ * tall and 24/30 apart, over a separator; the selected tab is marked only by its 2px
+ * indicator and strong text, never a box or fill.
  *
  * React Aria owns tab/list/panel semantics and keyboard selection. The optional
- * leading slot keeps lifecycle context beside a lens strip without giving a
+ * leading slot keeps lifecycle context beside the tab strip without giving a
  * screen a second implementation of tab behavior.
  */
 export function Tabs({ 'aria-label': ariaLabel, items, leading, className, ...props }: TabsProps) {
   return (
     <AriaTabs {...props} className={`flex min-h-0 flex-col ${className ?? ''}`}>
-      <div className="flex flex-wrap items-center gap-3 border-b border-separator px-6 py-3">
+      <div className="flex flex-wrap items-end gap-3 border-b border-separator px-6 pt-2">
         {leading}
         <AriaTabList
           aria-label={ariaLabel}
           items={items}
-          className={[
-            'flex items-center gap-0.5 rounded-ok bg-sunken p-0.5',
-            leading ? 'ml-auto' : 'w-full',
-          ].join(' ')}
+          className={`ok-tab-list flex items-end ${leading ? 'ml-auto' : ''}`}
         >
           {(item) => (
             <AriaTab
               id={item.id}
-              className={[
-                'cursor-pointer rounded-ok text-xs font-bold text-fg-muted outline-none hover:text-fg data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus data-[selected]:bg-card data-[selected]:text-fg data-[selected]:shadow-ok-card',
-                leading ? 'px-2.5 py-1' : 'flex min-h-11 flex-1 items-center justify-center px-4',
-              ].join(' ')}
+              className="ok-tab group relative flex cursor-pointer items-center text-sm text-fg-muted outline-none hover:text-fg data-[selected]:font-bold data-[selected]:text-fg-strong data-[focus-visible]:outline-2 data-[focus-visible]:outline-solid data-[focus-visible]:outline-offset-2 data-[focus-visible]:outline-focus"
             >
               {item.label}
+              <span
+                aria-hidden
+                className="ok-tab-indicator absolute inset-x-0 -bottom-px rounded-full bg-transparent group-data-[selected]:bg-fg-strong"
+              />
             </AriaTab>
           )}
         </AriaTabList>

@@ -17,7 +17,7 @@ The Web UI is a product surface over NanoCore and App API contracts, and it cons
 [`DESIGN.md`](../../DESIGN.md) owns:
 
 - information architecture
-- the three themes
+- the Spectrum 2 light and dark color schemes (System, Light or Dark)
 - component grammar
 - responsive behavior
 - accessibility
@@ -47,7 +47,7 @@ Biome lints and formats this package with the repo-wide config. Vitest and Testi
 
 Scanner-only JSONC highlighting and the assistant-report Markdown parser are under Implementation notes, Package checks and code placement.
 
-[`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md) (Current Implementation Projection and Stack-Conformance Backlog) owns the pinned A2UI packages and the hand-maintained token bridge. The stack specification stays `Partial` for the reason in that backlog.
+[`docs/specs/20260710-web_ui_rebuild_stack.md`](../../docs/specs/20260710-web_ui_rebuild_stack.md) (Current Implementation Projection and Stack-Conformance Backlog) owns the pinned A2UI packages and the token bridge. Spectrum values come from the pinned `@adobe/spectrum-tokens` package through the generated `src/styles/spectrum.generated.css` (`pnpm tokens:generate`); never edit that file by hand. `src/styles/tokens.css` maps the generated values to semantic roles, and `test/spectrum-tokens.test.ts` fails when the generated file drifts from the package.
 
 ## Brand
 
@@ -291,9 +291,11 @@ The live Chat surface renders `generative-ui-reference` Thread Items through the
 
 Generative refresh and action results preserve changed scalar fields from the rendered surface as a local draft. Surface construction has no ref side effect, so React Strict Mode cannot direct draft reads to a discarded surface. The presentation regression runs inside the same Strict Mode as the app.
 
-### Debug
+### Appearance, All components and Diagnostics
 
-The Settings **Debug** surface contains the component catalog and is the single Web placement for future developer-facing inspection panels after their contracts and authorization are accepted.
+Settings **User > Appearance** (`/settings/appearance`) holds the persisted theme, a short live preview that follows the chosen theme, and the component gallery as a collapsed **All components** disclosure. The gallery shows every primitive, grouped in review order, and the native Generative UI catalog rendered from fixtures through the same host renderers as live Threads. It loads only when expanded; `/settings/appearance/components` opens it expanded. Every user can see it and it reads no server data, so it is the proving surface for design-system changes; `src/screens/settings/AppearanceScreen.test.tsx` fails if it touches the Core Client.
+
+Settings **Administration > Diagnostics** (`/settings/diagnostics`) holds the selected-Workspace evidence bundles, runtime evidence and package snapshots, and is the single Web placement for future developer-facing inspection panels after their contracts and authorization are accepted. It renders no component specimens. The retired `/settings/debug` address redirects to Diagnostics with a link to Appearance → All components.
 
 ### Shared modals
 
@@ -381,7 +383,7 @@ Material, Artifact review, and Goal screens read their registered route through 
 
 The current account boundary uses `client.operations['workspace.list']({})` for admission, opens the account gate only for the exact typed `401 core.auth.unauthenticated`, offers the existing email/password sign-up and sign-in operations, and exposes sign-out on the authenticated Account route; focused tests and the isolated server-mode browser journey cover this boundary, while real-use proof remains [#247](https://github.com/lingkaix/openkit/issues/247). The personal Workspace keeps its owner role display but exposes no sharing-management reads or controls.
 
-Theme selection applies to the document root, so account pages, native selects, and React Aria portals share the selected semantic tokens and color scheme. Existing tabs rehydrate theme changes from browser storage. The Workspace switcher lists Workspaces the signed-in user belongs to through an active membership and persists an explicit authorized selection in `openkit-workspace`, scoped to that identity's personal Workspace. It restores the selection after reload only when that Workspace remains authorized; account transitions clear it. Workspaces visible only through current administrator eligibility are opened from Settings → Administration and stay out of the switcher. The sign-in form also offers the three themes and fills the viewport. `/login` uses the same account boundary as other routes and redirects admitted users to Overview. Composer attachments use a React Aria popover dialog with Escape, outside-interaction dismissal, and focus restoration.
+The Appearance choice (System, Light or Dark) applies to the document root, so account pages, native selects, and React Aria portals share the selected color scheme; System follows the operating system. Colors come from the pinned `@adobe/spectrum-tokens` package: `pnpm tokens:generate` rewrites `src/styles/spectrum.generated.css`, and `test/spectrum-tokens.test.ts` fails when it is stale. Existing tabs rehydrate theme changes from browser storage. The Workspace switcher lists Workspaces the signed-in user belongs to through an active membership and persists an explicit authorized selection in `openkit-workspace`, scoped to that identity's personal Workspace. It restores the selection after reload only when that Workspace remains authorized; account transitions clear it. Workspaces visible only through current administrator eligibility are opened from Settings → Administration and stay out of the switcher. The sign-in form fills the viewport and follows the stored Appearance choice. `/login` uses the same account boundary as other routes and redirects admitted users to Overview. Composer attachments use a React Aria popover dialog with Escape, outside-interaction dismissal, and focus restoration.
 
 Account groups the current Workspace name, id, role and non-owner leave action in one card. My invitations prefers names from the existing authorized-Workspace admission cache, keeps ids secondary, and uses an explicit id fallback for Workspaces outside that authorized collection without adding a metadata lookup.
 
@@ -435,7 +437,7 @@ Agents reads selected-Workspace current Workers through `client.operations['work
 
 ### Status inventory
 
-The current React baseline includes the app shell, three-theme token bridge, sidebar-triggered global application search, one persistent selected-Workspace switcher, one active Conversations list with the Assistant entry below it, archived Thread recovery, the Settings Debug component gallery and inspection panels, the deployment-admin Administration private conversation and retained-environment inspection and deletion controls, the deployment-admin Configuration file tree and JSONC editor, the deployment-admin Gateway destination for Providers, effective Models, Logical models, subscription accounts, API keys, and revision-protected configuration, live Chat, Task, Goal, Overview, selected-Workspace Agents, Knowledge, Artifacts, Recovery, Portability, Workspace changes, Workspace Vault, Usage & audit and Channels, the bounded live Plane 1 Material surface, live fixed-interval Automations, and internal unpublished Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence.
+The current React baseline includes the app shell, Spectrum 2 light and dark token bridge, sidebar-triggered global application search, one persistent selected-Workspace switcher, one active Conversations list with the Assistant entry below it, archived Thread recovery, the Settings Appearance component gallery and Diagnostics inspection panels, the deployment-admin Administration private conversation and retained-environment inspection and deletion controls, the deployment-admin Configuration file tree and JSONC editor, the deployment-admin Gateway destination for Providers, effective Models, Logical models, subscription accounts, API keys, and revision-protected configuration, live Chat, Task, Goal, Overview, selected-Workspace Agents, Knowledge, Artifacts, Recovery, Portability, Workspace changes, Workspace Vault, Usage & audit and Channels, the bounded live Plane 1 Material surface, live fixed-interval Automations, and internal unpublished Generative UI review implementations. The Material surface includes identity, editing, immutable-revision history and comparison; one singular Thread binding with inclusion and queue state; and version-keyed Artifact Review proposal, base, and current comparison with conflict-safe decisions and historical decision evidence.
 
 Thread and Overview approval cards show the bounded summary and the responsible user’s loaded complete exact effect before enabling grant. Unavailable detail states `Exact effect unavailable; approval disabled`; authorized denial and withdrawal stay available under the current request state. Detail is supplied by the existing Thread dashboard, without a preview acknowledgement command.
 

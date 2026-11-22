@@ -396,9 +396,9 @@ function mount(f: Fixture, children: ReactNode) {
   render(
     <QueryClientProvider client={cache}>
       <CoreClientProvider client={f.api}>
-        <MemoryRouter initialEntries={[`/tasks/${f.workspaceId}/${f.threadId}`]}>
+        <MemoryRouter initialEntries={[`/w/${f.workspaceId}/t/${f.threadId}`]}>
           <Routes>
-            <Route path="/tasks/:workspaceId/:threadId" element={children} />
+            <Route path="/w/:workspaceId/t/:threadId" element={children} />
           </Routes>
         </MemoryRouter>
       </CoreClientProvider>

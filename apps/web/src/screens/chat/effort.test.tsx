@@ -228,21 +228,21 @@ function effortCatalog() {
 
 /** Uses the existing React Aria model picker through its visible controls. */
 async function chooseEffortModel(user: ReturnType<typeof userEvent.setup>, label: string) {
-  await user.click(await screen.findByRole('button', { name: /Logical model/ }));
+  await user.click(await screen.findByRole('button', { name: /Model$/ }));
   await user.click(await screen.findByRole('option', { name: label }));
 }
 
 /** Selects an advertised effort through the same picker behavior as a model. */
 async function chooseEffort(user: ReturnType<typeof userEvent.setup>, label: string) {
-  await user.click(await screen.findByRole('button', { name: /Reasoning effort/ }));
+  await user.click(await screen.findByRole('button', { name: /Thinking/ }));
   await user.click(await screen.findByRole('option', { name: label }));
 }
 
 describe.each([
-  ['starter', '/chat'],
+  ['starter', '/new'],
   [
     'Thread',
-    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    '/w/ws_00000000-0000-7b10-9af8-12fd37a880e0/t/th_00000000-0000-70a0-9cde-4561f64881c6',
   ],
 ])('Composer reasoning effort on %s', (surface, path) => {
   it('offers only advertised efforts in canonical order and updates with the model', async () => {
@@ -251,7 +251,7 @@ describe.each([
       path,
       makeClient({}, { 'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()) })
     );
-    const trigger = await screen.findByRole('button', { name: /Reasoning effort/ });
+    const trigger = await screen.findByRole('button', { name: /Thinking/ });
     expect(trigger.closest('form')?.lastElementChild).toContainElement(trigger);
     await user.click(trigger);
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
@@ -265,7 +265,7 @@ describe.each([
     ]);
     await user.keyboard('{Escape}');
     await chooseEffortModel(user, 'Restricted');
-    await user.click(screen.getByRole('button', { name: /Reasoning effort/ }));
+    await user.click(screen.getByRole('button', { name: /Thinking/ }));
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Low',
       'Medium',
@@ -279,7 +279,7 @@ describe.each([
       makeClient({}, { 'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()) })
     );
     await chooseEffortModel(user, model);
-    expect(screen.queryByRole('button', { name: /Reasoning effort/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Thinking/ })).not.toBeInTheDocument();
   });
 
   it('preselects the last recorded admitted effort only on a Thread and submits it explicitly', async () => {
@@ -302,10 +302,10 @@ describe.each([
         }
       )
     );
-    const effort = await screen.findByRole('button', { name: /Reasoning effort/ });
+    const effort = await screen.findByRole('button', { name: /Thinking/ });
     if (surface === 'Thread') await waitFor(() => expect(effort).toHaveTextContent('High'));
     else {
-      expect(effort).toHaveTextContent('Effort');
+      expect(effort).toHaveTextContent('Thinking');
       await chooseEffort(user, 'High');
     }
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Use the visible effort');
@@ -339,9 +339,7 @@ describe.each([
           }
         )
       );
-      expect(await screen.findByRole('button', { name: /Reasoning effort/ })).toHaveTextContent(
-        'Effort'
-      );
+      expect(await screen.findByRole('button', { name: /Thinking/ })).toHaveTextContent('Thinking');
       await user.type(screen.getByRole('textbox', { name: 'Message' }), 'No override');
       await user.click(screen.getByRole('button', { name: 'Send message' }));
       await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
@@ -365,11 +363,11 @@ describe.each([
     );
     await chooseEffort(user, 'Max');
     await chooseEffortModel(user, 'Restricted');
-    expect(screen.getByRole('button', { name: /Reasoning effort/ })).toHaveTextContent('Effort');
+    expect(screen.getByRole('button', { name: /Thinking/ })).toHaveTextContent('Thinking');
     await chooseEffortModel(user, 'Reasoner');
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Reasoning effort/ })).toHaveTextContent(
-        surface === 'Thread' ? 'High' : 'Effort'
+      expect(screen.getByRole('button', { name: /Thinking/ })).toHaveTextContent(
+        surface === 'Thread' ? 'High' : 'Thinking'
       )
     );
   });
@@ -387,15 +385,15 @@ describe.each([
         }
       )
     );
-    const trigger = await screen.findByRole('button', { name: /Reasoning effort/ });
+    const trigger = await screen.findByRole('button', { name: /Thinking/ });
     await user.click(screen.getByRole('textbox', { name: 'Message' }));
     for (let step = 0; step < 8 && document.activeElement !== trigger; step += 1) {
       await user.tab();
     }
     expect(trigger).toHaveFocus();
-    expect(trigger).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-focus');
+    expect(trigger).toHaveClass('focus-visible:outline-2', 'focus-visible:outline-focus');
     await user.keyboard('{Enter}');
-    expect(await screen.findByRole('listbox', { name: 'Reasoning effort' })).toBeInTheDocument();
+    expect(await screen.findByRole('listbox', { name: 'Thinking' })).toBeInTheDocument();
     await user.keyboard('{ArrowDown}{ArrowDown}{Enter}');
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(trigger).toHaveTextContent('Low');
@@ -457,7 +455,7 @@ describe.each([
       expect(first?.[0]).toEqual({
         workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
         threadId:
-          path === '/chat'
+          path === '/new'
             ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
             : 'th_00000000-0000-70a0-9cde-4561f64881c6',
         input: 'Exact draft  ',
@@ -489,7 +487,7 @@ describe.each([
       ).toBeInTheDocument();
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Exact draft  ');
       expect(screen.getByRole('button', { name: 'Remove Brief' })).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: /Reasoning effort/ }));
+      await user.click(screen.getByRole('button', { name: /Thinking/ }));
       expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Low']);
       await user.keyboard('{Escape}');
       await user.click(screen.getByRole('button', { name: 'Send message' }));

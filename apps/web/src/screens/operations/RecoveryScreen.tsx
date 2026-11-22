@@ -3,12 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
 } from '../../primitives';
 import {
   createRequestId,
@@ -293,7 +293,7 @@ export function RecoveryScreen() {
         {workspaces.isError ? (
           <>
             <PageHeader title="Recovery" />
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load workspaces."
               onRetry={() => void workspaces.refetch()}
             />
@@ -500,7 +500,7 @@ export function RecoveryScreen() {
         <section className="flex flex-col gap-3" aria-label="Interrupted workers">
           <Eyebrow>Interrupted workers</Eyebrow>
           {workersAlert ? (
-            <ErrorBanner message={workersAlert.message} onRetry={workersAlert.onRetry} />
+            <InlineAlert message={workersAlert.message} onRetry={workersAlert.onRetry} />
           ) : null}
           {!workersQuery.isError &&
           workersQuery.fetchStatus === 'idle' &&
@@ -513,7 +513,7 @@ export function RecoveryScreen() {
               {workers.map((row) => (
                 <li
                   key={row.checkpointId}
-                  className="flex flex-col gap-2 rounded-ok-lg border border-separator bg-card p-3"
+                  className="ok-card flex flex-col gap-2 rounded-ok-lg border border-separator bg-card p-3"
                 >
                   <p className="text-sm font-bold text-fg-strong">
                     {row.diagnosticsSummary || row.checkpointId}
@@ -542,7 +542,7 @@ export function RecoveryScreen() {
                   <div className="flex flex-wrap gap-2">
                     {row.canInspect ? (
                       <Button
-                        variant="outline"
+                        variant="secondary"
                         size="sm"
                         aria-expanded={inspectedId === row.checkpointId}
                         aria-controls={inspectPanelId(row.checkpointId)}
@@ -578,7 +578,7 @@ export function RecoveryScreen() {
         <section className="flex flex-col gap-3" aria-label="Scheduler admissions">
           <Eyebrow>Scheduler admissions</Eyebrow>
           {schedulerAlert ? (
-            <ErrorBanner message={schedulerAlert.message} onRetry={schedulerAlert.onRetry} />
+            <InlineAlert message={schedulerAlert.message} onRetry={schedulerAlert.onRetry} />
           ) : null}
           {admissionsLoading ? <Skeleton lines={2} /> : null}
           {!admissionsQuery.isError &&
@@ -594,10 +594,10 @@ export function RecoveryScreen() {
                 return (
                   <li
                     key={row.queueEntryId}
-                    className="flex flex-col gap-2 rounded-ok-lg border border-separator bg-card p-3"
+                    className="ok-card flex flex-col gap-2 rounded-ok-lg border border-separator bg-card p-3"
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <StatusChip tone={status.tone}>{status.label}</StatusChip>
+                      <StatusLight tone={status.tone}>{status.label}</StatusLight>
                       <p className="text-sm font-bold text-fg-strong">{row.requestedAgentId}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -611,7 +611,7 @@ export function RecoveryScreen() {
                         </Button>
                       ) : null}
                       <Button
-                        variant="outline"
+                        variant="secondary"
                         size="sm"
                         isDisabled={schedulerActionsBlocked}
                         onPress={() => cancelAdmissionRow(row)}

@@ -80,7 +80,7 @@ function unloadedQuestionTitle(
 export function orderNeedsYou<T extends { blocking?: boolean; createdAt: string }>(
   rows: readonly T[]
 ): T[] {
-  return [...rows].sort((left, right) => {
+  return rows.toSorted((left, right) => {
     const leftRank = left.blocking === true ? 0 : 1;
     const rightRank = right.blocking === true ? 0 : 1;
     if (leftRank !== rightRank) return leftRank - rightRank;
@@ -201,7 +201,7 @@ export function openDecisionsAfter<T extends { id: string }>(
   return { count: rest.length, nextKey: rest[0]?.key ?? null };
 }
 
-/** Map one Action Center row. Age and blocking are copied, not derived. */
+/** Map one Needs you row. Age and blocking are copied, not derived. */
 export function toNeedsYouRow(
   row: Pick<
     HumanAttentionRow,

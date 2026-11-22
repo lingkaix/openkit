@@ -10,7 +10,16 @@ import {
 } from 'react-aria-components';
 import { Link } from 'react-router-dom';
 import { useCoreClient } from '../../app/core-client';
-import { Button, ErrorBanner, Select, Skeleton, StatusChip, TextField } from '../../primitives';
+import {
+  ActionButton,
+  Button,
+  InlineAlert,
+  Picker,
+  Skeleton,
+  StatusLight,
+  TextField,
+  ToggleButton,
+} from '../../primitives';
 import { useThreadAudience } from '../chat/timeline/audience';
 import { BackLink } from '../chat/timeline/BackLink';
 import { hrefOf, isUnavailable, resolve } from '../chat/timeline/resolve';
@@ -142,14 +151,9 @@ function ArtifactDetails(props: { mediaType: string | null; digest: string; arti
   const [open, setOpen] = useState(false);
   return (
     <div>
-      <Button
-        className="min-h-11"
-        variant="quiet"
-        aria-expanded={open}
-        onPress={() => setOpen((value) => !value)}
-      >
+      <ActionButton isQuiet aria-expanded={open} onPress={() => setOpen((value) => !value)}>
         Details
-      </Button>
+      </ActionButton>
       {open ? (
         <div className="mt-2 flex flex-col gap-1 text-sm text-fg">
           {props.mediaType ? <p>{props.mediaType}</p> : null}
@@ -232,7 +236,7 @@ export function ArtifactVersionHistory(props: {
       {props.unavailable ? (
         <Skeleton lines={4} />
       ) : history.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={
             isWorkspaceAccessDenied(history.error)
               ? 'Access denied.'
@@ -249,25 +253,25 @@ export function ArtifactVersionHistory(props: {
               <ol className="flex flex-wrap gap-2" aria-label="Artifact versions">
                 {history.data.map((version) => (
                   <li key={version.artifactVersion}>
-                    <Button
+                    <ToggleButton
                       size="sm"
-                      variant={selectedVersion === version.artifactVersion ? 'accent' : 'outline'}
-                      aria-pressed={selectedVersion === version.artifactVersion}
+                      isQuiet
+                      isSelected={selectedVersion === version.artifactVersion}
                       onPress={() => {
                         setSelectedVersion(version.artifactVersion);
                         props.onVersionChange(version.artifactVersion, false);
                       }}
                     >
                       View version {version.artifactVersion}
-                    </Button>
+                    </ToggleButton>
                   </li>
                 ))}
               </ol>
               <p className="text-sm text-fg">Viewing version {selectedVersion}</p>
               {headSelected ? (
-                <StatusChip tone="neutral">Current head</StatusChip>
+                <StatusLight tone="neutral">Current head</StatusLight>
               ) : (
-                <StatusChip tone="notice">Historical version</StatusChip>
+                <StatusLight tone="notice">Historical version</StatusLight>
               )}
             </>
           ) : (
@@ -279,19 +283,19 @@ export function ArtifactVersionHistory(props: {
               {pinnedUnavailable.fallback ? (
                 <Link
                   to={hrefOf(pinnedUnavailable) ?? pinnedUnavailable.fallback.path}
-                  className="inline-flex min-h-11 items-center text-sm font-bold text-accent underline"
+                  className="inline-flex items-center text-sm font-bold text-accent underline"
                 >
                   {pinnedUnavailable.fallback.label}
                 </Link>
               ) : null}
             </div>
           ) : history.isSuccess && !metadata && !(headSelected && history.data.length === 0) ? (
-            <ErrorBanner
+            <InlineAlert
               message="That version isn't available."
               onRetry={() => void history.refetch()}
             />
           ) : history.isSuccess && !headSelected && exact.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={
                 isWorkspaceAccessDenied(exact.error)
                   ? 'Access denied.'
@@ -302,7 +306,7 @@ export function ArtifactVersionHistory(props: {
           ) : history.isSuccess && !headSelected && !exact.isSuccess ? (
             <Skeleton lines={4} />
           ) : history.isSuccess && !preview ? (
-            <ErrorBanner
+            <InlineAlert
               message="That version no longer matches the inventory. Refresh the artifact."
               onRetry={() => void history.refetch()}
             />
@@ -335,7 +339,7 @@ export function ArtifactVersionHistory(props: {
       {readable && preview && props.onAddCandidate ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || props.comparisonDisabled}
           onPress={() =>
             props.onAddCandidate?.({
@@ -363,7 +367,7 @@ export function ArtifactVersionHistory(props: {
       ) : readable && selectedVersion === current.version ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled}
           onPress={() => setCreating(true)}
         >
@@ -457,7 +461,7 @@ function ArtifactVersionCreate(props: {
         Parent: version {parentVersion}. Previous versions stay available. The publishing
         conversation must be idle. Saving does not start agent work.
       </p>
-      {commit.isPending ? <StatusChip tone="notice">Saving new version</StatusChip> : null}
+      {commit.isPending ? <StatusLight tone="notice">Saving new version</StatusLight> : null}
       <TextField label="Version title" value={title} onChange={setTitle} isDisabled={blocked} />
       <TextField
         label="Version summary"
@@ -465,7 +469,7 @@ function ArtifactVersionCreate(props: {
         onChange={setSummary}
         isDisabled={blocked}
       />
-      <Select
+      <Picker
         label="Publishing conversation"
         items={availableThreads.map((thread) => ({
           id: thread.id,
@@ -476,7 +480,7 @@ function ArtifactVersionCreate(props: {
         isDisabled={blocked}
       />
       {threads.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load publishing conversations."
           onRetry={() => void threads.refetch()}
         />
@@ -489,7 +493,7 @@ function ArtifactVersionCreate(props: {
           if (chosen) setFile(chosen);
         }}
       >
-        <Button size="sm" variant="outline" isDisabled={blocked}>
+        <Button size="sm" variant="secondary" isDisabled={blocked}>
           Choose replacement file
         </Button>
       </FileTrigger>
@@ -498,13 +502,13 @@ function ArtifactVersionCreate(props: {
           <p className="text-sm text-fg-muted">
             {file.name} · {file.size.toLocaleString()} bytes
           </p>
-          <Button size="sm" variant="quiet" isDisabled={blocked} onPress={() => setFile(null)}>
+          <ActionButton size="sm" isQuiet isDisabled={blocked} onPress={() => setFile(null)}>
             Remove replacement file
-          </Button>
+          </ActionButton>
         </>
       ) : (
         <>
-          <Select
+          <Picker
             label="Version format"
             items={[
               { id: 'markdown', label: 'Markdown' },
@@ -523,16 +527,16 @@ function ArtifactVersionCreate(props: {
             onChange={setBody}
             isDisabled={blocked}
           >
-            <Label className="text-xs font-bold text-fg">Version content</Label>
-            <TextArea className="min-h-32 resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
+            <Label className="ok-field-label text-fg-muted">Version content</Label>
+            <TextArea className="min-h-32 resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none transition-colors focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
           </AriaTextField>
         </>
       )}
       {commit.isError ? (
-        <ErrorBanner message={artifactVersionCommitErrorMessage(commit.error)} />
+        <InlineAlert message={artifactVersionCommitErrorMessage(commit.error)} />
       ) : null}
       {refreshFailed || head.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't refresh the current version. The draft is retained."
           onRetry={() => void refreshCurrent()}
         />
@@ -560,7 +564,7 @@ function ArtifactVersionCreate(props: {
       {commit.isError || changedParent ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || commit.isPending || head.isFetching}
           onPress={() => void refreshCurrent()}
         >
@@ -578,7 +582,7 @@ function ArtifactVersionCreate(props: {
       !head.isFetching ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || commit.isPending}
           onPress={() => {
             setParentVersion(head.data.version);
@@ -596,7 +600,12 @@ function ArtifactVersionCreate(props: {
         >
           Save new version
         </Button>
-        <Button size="sm" variant="outline" isDisabled={commit.isPending} onPress={props.onCancel}>
+        <Button
+          size="sm"
+          variant="secondary"
+          isDisabled={commit.isPending}
+          onPress={props.onCancel}
+        >
           Cancel version draft
         </Button>
       </div>

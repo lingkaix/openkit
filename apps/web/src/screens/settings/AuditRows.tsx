@@ -1,12 +1,10 @@
 import { Link } from 'react-router-dom';
-import { ListRow, StatusChip, type StatusTone } from '../../primitives';
-import { conversationThreadPath } from '../chat/data';
+import { ListRow, StatusLight, type StatusTone } from '../../primitives';
+import { type ThreadActivity, threadPath, threadRouteState } from '../chat/data';
 import type { ThreadAudience } from '../chat/timeline/audience';
 import { useThreadAudience } from '../chat/timeline/audience';
 import { BackLink } from '../chat/timeline/BackLink';
 import type { AuditEventDisplayRow, PermissionDecisionDisplayRow } from './data';
-
-type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
 
 /**
  * Reads conversation.navigation for the workspaces on the loaded rows.
@@ -20,7 +18,7 @@ export function useThreadActivity(workspaceIds: readonly (string | null | undefi
 }
 
 const threadLinkClass =
-  'inline-flex min-h-11 items-center break-all text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus';
+  'inline-flex items-center break-all text-xs font-bold text-accent outline-none hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus';
 
 /** Activity route for one recorded thread. Pending navigation renders nothing. */
 export function ThreadLink({
@@ -34,7 +32,11 @@ export function ThreadLink({
 }) {
   if (!workspaceId || !threadId || activity === 'pending') return null;
   return (
-    <Link to={conversationThreadPath(workspaceId, threadId, activity)} className={threadLinkClass}>
+    <Link
+      to={threadPath(workspaceId, threadId)}
+      state={threadRouteState(activity)}
+      className={threadLinkClass}
+    >
       {activityLinkName(activity)}
     </Link>
   );
@@ -150,9 +152,7 @@ export function AuditEventRow({
         ) : null}
         <RecordedTime value={event.recordedAt} />
       </div>
-      <StatusChip tone={status.tone} dot>
-        {status.label}
-      </StatusChip>
+      <StatusLight tone={status.tone}>{status.label}</StatusLight>
     </ListRow>
   );
 }
@@ -174,9 +174,7 @@ export function PermissionDecisionRow({ decision }: { decision: PermissionDecisi
           ) : null}
           <RecordedTime value={decision.createdAt} />
         </div>
-        <StatusChip tone={status.tone} dot>
-          {status.label}
-        </StatusChip>
+        <StatusLight tone={status.tone}>{status.label}</StatusLight>
       </ListRow>
     </div>
   );

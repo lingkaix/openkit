@@ -15,15 +15,37 @@
 
 @theme inline {
   /* ---- Type ramp (DESIGN.md §5) ------------------------------------------- */
-  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "Source Code Pro", ui-monospace, "SFMono-Regular", monospace;
-  /* Named type roles so markup never hard-codes a font-size/tracking literal.
-     Body is the 14px base (see the base layer); these cover the distinctive roles. */
-  --text-title: 24px; /* page title */
+  /* Self-hosted OFL fonts (@fontsource-variable, imported in main.tsx). */
+  --font-sans: "Source Sans 3 Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Source Code Pro Variable", ui-monospace, "SFMono-Regular", monospace;
+  /* Spectrum 2 type ramp and control heights (WEB-UX A2). Desktop values at the
+     root, mobile values on coarse pointers, both pinnable by .ok-scale-desktop /
+     .ok-scale-touch (spectrum.generated.css). They reference --s2-* here, at the
+     use site, so a pinned subtree resolves its own scale: an intermediate root
+     variable would inherit the root's already-substituted value.
+     xs 12/15 · sm 14/17 (UI text) · base 16/19 (prose) · lg 18/22 · xl and title 22/27. */
+  --text-xs: var(--s2-font-size-75);
+  --text-sm: var(--s2-font-size-100);
+  --text-base: var(--s2-font-size-200);
+  --text-lg: var(--s2-font-size-300);
+  --text-xl: var(--s2-font-size-500);
+  --text-title: var(--s2-heading-size-m); /* page and dialog title (S2 heading M) */
   --text-title--line-height: 1.3;
-  --text-eyebrow: 14px; /* secondary labels; not an 11px uppercase content style */
+  --text-display: var(--s2-heading-size-l); /* Home only (S2 heading L) */
+  --text-display--line-height: 1.3;
+  --text-eyebrow: var(
+    --s2-font-size-100
+  ); /* secondary labels; not an 11px uppercase content style */
   --text-eyebrow--line-height: 1.4;
   --tracking-eyebrow: 0em;
+  /* S2 heading weight (`heading-sans-serif-font-weight` = extra-bold) for every heading at
+     a heading size: text-lg (heading XS), text-title (M), text-display (L). WEB-UX A5. */
+  --font-weight-heading: 800;
+
+  /* Control heights S / M / L: 24/32/40 desktop, 30/40/50 touch. */
+  --spacing-control-sm: var(--s2-component-height-75);
+  --spacing-control-md: var(--s2-component-height-100);
+  --spacing-control-lg: var(--s2-component-height-200);
 
   /* ---- Accent ------------------------------------------------------------- */
   --color-accent: var(--accent-background-color-default);
@@ -31,6 +53,7 @@
   --color-accent-down: var(--accent-background-color-down);
   --color-accent-content: var(--accent-content-color-default);
   --color-on-accent: var(--text-color-on-accent);
+  --color-on-negative: var(--text-color-on-negative);
   --color-focus: var(--focus-indicator-color);
 
   /* ---- Surfaces ----------------------------------------------------------- */
@@ -71,6 +94,13 @@
   --color-positive-fg: var(--ok-positive-fg);
   --color-negative-bg: var(--ok-negative-bg);
   --color-negative-fg: var(--ok-negative-fg);
+  --color-primary: var(--primary-background-color-default);
+  --color-primary-hover: var(--primary-background-color-hover);
+  --color-on-primary: var(--text-color-on-primary);
+  --color-secondary: var(--secondary-background-color-default);
+  --color-secondary-hover: var(--secondary-background-color-hover);
+  --color-negative: var(--negative-background-color-default);
+  --color-negative-hover: var(--negative-background-color-hover);
   --color-neutral-bg: var(--ok-neutral-bg);
   --color-neutral-fg: var(--ok-neutral-fg);
 
@@ -123,7 +153,7 @@
   body {
     margin: 0;
     font-family: var(--font-sans);
-    font-size: 16px;
+    font-size: var(--s2-font-size-100);
     line-height: 1.5;
     /* Emergency breaks also reduce flex/grid min-content widths for long IDs. */
     overflow-wrap: anywhere;
@@ -131,10 +161,28 @@
     background: var(--surface-page);
     -webkit-font-smoothing: antialiased;
   }
-  button,
-  [role="button"] {
-    min-width: 44px;
-    min-height: 44px;
+  /* Pointer targets: the WCAG 2.5.8 floor (24px, the Spectrum S height) on every
+     button. On coarse pointers an invisible ::after grows the hit area of every button
+     and link to 44px without changing the drawn control height (DESIGN.md §6; links
+     joined in A4 when the last min-h-11 overrides went). `:where` keeps both
+     rules overridable by component utilities. */
+  :where(button, [role="button"]) {
+    min-width: 24px;
+    min-height: 24px;
+  }
+  @media (pointer: coarse) {
+    :where(button, [role="button"], a[href]) {
+      position: relative;
+    }
+    :where(button, [role="button"], a[href])::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      transform: translate(-50%, -50%);
+    }
   }
   .ok-safe-shell {
     padding-top: env(safe-area-inset-top);
@@ -149,16 +197,260 @@
     bottom: calc(1.5rem + env(safe-area-inset-bottom));
   }
   @media (max-width: 799px) {
-    input,
-    textarea,
-    select {
-      min-height: 44px;
-    }
     .ok-toast-region {
       /* The composer and the section bar own the bottom edge. */
       top: calc(0.75rem + env(safe-area-inset-top));
       bottom: auto;
     }
+  }
+  /* Motion guard (DESIGN.md §7, WEB-UX A5): with reduced motion every transition and
+     animation of every primitive ends at once (state changes stay, movement goes).
+     `!important` in the base layer outranks the utilities layer's durations. */
+  /* biome-ignore-start lint/complexity/noImportantStyles: the reduced-motion guard must outrank every utility duration. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  /* biome-ignore-end lint/complexity/noImportantStyles: end of the reduced-motion guard. */
+}
+
+/*
+ * Button sizes S / M / L (DESIGN.md §6). In the components layer, so a call site's
+ * utility (h-11, min-w-0, px-0.5, text-sm) still overrides the default size. They read
+ * --s2-* directly so a .ok-scale-touch preview subtree re-scales them.
+ */
+@layer components {
+  .ok-button-sm {
+    height: var(--s2-component-height-75);
+    padding-inline: var(--s2-component-pill-edge-to-text-75);
+    font-size: var(--s2-font-size-75);
+  }
+  .ok-button-md {
+    height: var(--s2-component-height-100);
+    padding-inline: var(--s2-component-pill-edge-to-text-100);
+    font-size: var(--s2-font-size-100);
+  }
+  .ok-button-lg {
+    height: var(--s2-component-height-200);
+    padding-inline: var(--s2-component-pill-edge-to-text-200);
+    font-size: var(--s2-font-size-200);
+  }
+  .ok-button-sm.ok-button-text {
+    min-width: calc(var(--s2-component-height-75) * 3);
+  }
+  .ok-button-md.ok-button-text {
+    min-width: calc(var(--s2-component-height-100) * 3);
+  }
+  .ok-button-lg.ok-button-text {
+    min-width: calc(var(--s2-component-height-200) * 3);
+  }
+  /* ActionButton S / M / L: edge-to-text padding, square when icon-only. */
+  .ok-action-sm {
+    height: var(--s2-component-height-75);
+    padding-inline: var(--s2-component-edge-to-text-75);
+    font-size: var(--s2-font-size-75);
+  }
+  .ok-action-sm.ok-action-icon {
+    width: var(--s2-component-height-75);
+    padding-inline: 0;
+  }
+  .ok-action-md {
+    height: var(--s2-component-height-100);
+    padding-inline: var(--s2-component-edge-to-text-100);
+    font-size: var(--s2-font-size-100);
+  }
+  .ok-action-md.ok-action-icon {
+    width: var(--s2-component-height-100);
+    padding-inline: 0;
+  }
+  .ok-action-lg {
+    height: var(--s2-component-height-200);
+    padding-inline: var(--s2-component-edge-to-text-200);
+    font-size: var(--s2-font-size-200);
+  }
+  .ok-action-lg.ok-action-icon {
+    width: var(--s2-component-height-200);
+    padding-inline: 0;
+  }
+}
+
+/*
+ * WEB-UX A4 (DESIGN.md §8.1, §9.3). Workflow icons on the S2 scale: a control sets
+ * --ok-icon-size for the icons inside it (S 16/18, M 20/24, L 22/28); an explicit Icon
+ * size wins. Field, status and tooltip sizes read --s2-* so touch previews re-scale them.
+ */
+@layer components {
+  .ok-icon {
+    width: var(--ok-icon-size, var(--s2-workflow-icon-size-100));
+    height: var(--ok-icon-size, var(--s2-workflow-icon-size-100));
+  }
+  .ok-icon.ok-icon-sm {
+    width: var(--s2-workflow-icon-size-75);
+    height: var(--s2-workflow-icon-size-75);
+  }
+  .ok-icon.ok-icon-md {
+    width: var(--s2-workflow-icon-size-100);
+    height: var(--s2-workflow-icon-size-100);
+  }
+  .ok-icon.ok-icon-lg {
+    width: var(--s2-workflow-icon-size-200);
+    height: var(--s2-workflow-icon-size-200);
+  }
+  .ok-action-sm,
+  .ok-button-sm,
+  .ok-icon-context-sm {
+    --ok-icon-size: var(--s2-workflow-icon-size-75);
+  }
+  .ok-action-md,
+  .ok-button-md {
+    --ok-icon-size: var(--s2-workflow-icon-size-100);
+  }
+  .ok-action-lg,
+  .ok-button-lg {
+    --ok-icon-size: var(--s2-workflow-icon-size-200);
+  }
+  /* Switch M: 26x16 track desktop, 34x20 touch; the handle grows when selected. */
+  .ok-switch-track {
+    width: var(--s2-switch-control-width-medium);
+    height: var(--s2-switch-control-height-medium);
+  }
+  .ok-switch-handle {
+    width: var(--s2-switch-handle-size-medium);
+    height: var(--s2-switch-handle-size-medium);
+  }
+  .ok-switch-selected .ok-switch-handle {
+    width: var(--s2-switch-handle-selected-size-medium);
+    height: var(--s2-switch-handle-selected-size-medium);
+  }
+  .ok-radio-control {
+    width: var(--s2-radio-button-control-size-medium);
+    height: var(--s2-radio-button-control-size-medium);
+  }
+  .ok-checkbox-control {
+    width: var(--s2-checkbox-control-size-medium);
+    height: var(--s2-checkbox-control-size-medium);
+  }
+  /* StatusLight: dot + text, S2 dot sizes and text-to-visual gap. */
+  .ok-status-light {
+    gap: var(--s2-status-light-text-to-visual-100);
+  }
+  .ok-status-dot {
+    width: var(--s2-status-light-dot-size-medium);
+    height: var(--s2-status-light-dot-size-medium);
+  }
+  .ok-status-light-sm .ok-status-dot {
+    width: var(--s2-status-light-dot-size-small);
+    height: var(--s2-status-light-dot-size-small);
+  }
+  /* Badge and Tag: S2 small component height (20/26) and 24/30. */
+  .ok-badge {
+    min-height: var(--s2-component-height-50);
+    padding-inline: var(--s2-text-to-visual-100);
+    font-size: var(--s2-font-size-75);
+  }
+  .ok-tag {
+    height: var(--s2-component-height-75);
+    padding-inline: var(--s2-component-edge-to-text-75);
+    font-size: var(--s2-font-size-75);
+    --ok-icon-size: var(--s2-workflow-icon-size-75);
+  }
+  .ok-tooltip {
+    max-width: var(--s2-tooltip-maximum-width);
+    font-size: var(--s2-font-size-75);
+  }
+  /* Field label: S2 detail size, regular weight, subdued text. */
+  .ok-field-label {
+    font-size: var(--s2-font-size-75);
+  }
+
+  /* ---- Surfaces (WEB-UX A5, DESIGN.md §7, §9.5-§9.8) ----------------------- */
+  /* Dialog: S2 standard dialog, 10px radius, modal shadow, widths S/M/L 400/480/640
+     with a 288px floor. Below the 800px shell break it is a full-height sheet. */
+  .ok-dialog {
+    width: 100%;
+    min-width: min(var(--s2-standard-dialog-minimum-width), 100%);
+    max-width: var(--s2-standard-dialog-maximum-width-medium);
+    max-height: 100%;
+    overflow-y: auto;
+    border: 1px solid light-dark(transparent, var(--border-color-default));
+    border-radius: 10px; /* rounded-ok-lg */
+    background: var(--background-elevated-color);
+    box-shadow: var(--ok-shadow-modal);
+    padding: 1.5rem;
+  }
+  .ok-dialog.ok-dialog-s {
+    max-width: var(--s2-standard-dialog-maximum-width-small);
+  }
+  .ok-dialog.ok-dialog-l {
+    max-width: var(--s2-standard-dialog-maximum-width-large);
+  }
+  @media (max-width: 799px) {
+    .ok-dialog,
+    .ok-dialog.ok-dialog-s,
+    .ok-dialog.ok-dialog-l {
+      height: 100%;
+      max-width: none;
+      border-width: 0;
+      border-radius: 0;
+      box-shadow: none;
+      padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+    }
+  }
+  /* Popover (Menu, Picker): 8px radius, 8px edge to content, menu shadow. The edge
+     follows S2 popover-border-opacity: none in light schemes, the default border in dark. */
+  .ok-popover {
+    border: 1px solid light-dark(transparent, var(--border-color-default));
+    border-radius: 8px; /* rounded-ok */
+    background: var(--background-elevated-color);
+    box-shadow: var(--ok-shadow-menu);
+    padding: var(--s2-popover-edge-to-content-area);
+  }
+  /* Menu and Picker items: the M control height (32/40). */
+  .ok-menu-item {
+    min-height: var(--s2-component-height-100);
+    padding-inline: var(--s2-component-edge-to-text-100);
+  }
+  /* TableView: 40/50 rows, 12px cell padding, 16px at the table edges. */
+  .ok-table-row {
+    height: var(--s2-table-row-height-medium);
+  }
+  .ok-table-cell {
+    padding-inline: var(--s2-table-item-padding-regular);
+  }
+  .ok-table-cell:first-child {
+    padding-inline-start: var(--s2-table-edge-to-content);
+  }
+  .ok-table-cell:last-child {
+    padding-inline-end: var(--s2-table-edge-to-content);
+  }
+  /* Tabs (compact density): 32/40 items, 24/30 apart, a 2px selection indicator. */
+  .ok-tab-list {
+    column-gap: var(--s2-tab-item-to-tab-item-horizontal-medium);
+  }
+  .ok-tab {
+    height: var(--s2-tab-item-compact-height-medium);
+  }
+  .ok-tab-indicator {
+    height: var(--s2-tab-selection-indicator-thickness);
+  }
+  /* Progress bar and meter tracks: S2 M 6/8, S 4/5. */
+  .ok-progress-track {
+    height: var(--s2-progress-bar-thickness-medium);
+  }
+  .ok-progress-track.ok-progress-sm {
+    height: var(--s2-progress-bar-thickness-small);
+  }
+  .ok-meter-track {
+    height: var(--s2-meter-thickness-medium);
+  }
+  .ok-meter-track.ok-progress-sm {
+    height: var(--s2-meter-thickness-small);
   }
 }
 

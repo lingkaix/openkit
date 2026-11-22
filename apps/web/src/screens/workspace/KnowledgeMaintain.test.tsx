@@ -987,10 +987,9 @@ function register_knowledge_source_link_test_tsx_2() {
           queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
         });
       });
-      const retry = within(screen.getByText("Couldn't save that entry.").parentElement!).getByRole(
-        'button',
-        { name: 'Try again' }
-      );
+      const retry = within(
+        screen.getByText("Couldn't save that entry.").closest<HTMLElement>('[role="alert"]')!
+      ).getByRole('button', { name: 'Try again' });
       await waitFor(() => expect(retry).toBeEnabled());
       await user.click(retry);
 

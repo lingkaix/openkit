@@ -15,7 +15,7 @@ describe('catch-up anchor link', () => {
   it('opens the catch-up entry on the catch-up anchor', async () => {
     const user = userEvent.setup();
     render(
-      <MemoryRouter initialEntries={['/tasks/ws/th?turn=tu_1&item=it_1']}>
+      <MemoryRouter initialEntries={['/w/ws/t/th?turn=tu_1&item=it_1']}>
         <CatchUpDivider count={0} onEarlierUnread={() => undefined} digest={null} />
         <LocationProbe />
       </MemoryRouter>

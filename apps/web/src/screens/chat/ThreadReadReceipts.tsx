@@ -10,7 +10,7 @@ import {
   useRef,
 } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { Button, ErrorBanner } from '../../primitives';
+import { ActionButton, InlineAlert } from '../../primitives';
 import { chatKeys, type ThreadItem, useConversationNavigation } from './data';
 
 /** Server window for one thread.read-state call. Larger loaded sets are chunked. */
@@ -201,15 +201,15 @@ export function ThreadReadReceipts({
   return (
     <ReadReceiptContext.Provider value={context}>
       {viewerUserId && !disabled ? (
-        <div className="flex min-h-11 flex-col gap-2">
+        <div className="flex min-h-control-md flex-col gap-2">
           {state.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Read state is unavailable."
               onRetry={() => void state.refetch()}
             />
           ) : null}
           {mark.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Read state was not saved."
               onRetry={() => {
                 failed.current = false;
@@ -233,8 +233,8 @@ export function ThreadReadReceipts({
           ) : null}
           {unreadIds.size > 0 || exactUnread == null || exactUnread > 0 ? (
             <div data-read-dock="bar" className="flex justify-start">
-              <Button
-                variant="quiet"
+              <ActionButton
+                isQuiet
                 size="sm"
                 className="self-start"
                 isDisabled={mark.isPending}
@@ -251,7 +251,7 @@ export function ThreadReadReceipts({
                 }
               >
                 Mark read
-              </Button>
+              </ActionButton>
             </div>
           ) : null}
         </div>

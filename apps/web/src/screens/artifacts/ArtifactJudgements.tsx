@@ -1,7 +1,7 @@
 import type { JudgementRecord } from '@openkit/app-api-schemas';
 import { createRequestId } from '@openkit/core-client';
 import { useState } from 'react';
-import { Button, ErrorBanner, Skeleton, TextField } from '../../primitives';
+import { Button, InlineAlert, Skeleton, TextField } from '../../primitives';
 import {
   type AssessmentInput,
   judgementError,
@@ -45,10 +45,10 @@ export function AssessmentForm(props: {
         isDisabled={props.disabled}
       />
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" isDisabled={blocked} onPress={() => record('accept')}>
+        <Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => record('accept')}>
           Record accept assessment
         </Button>
-        <Button size="sm" variant="outline" isDisabled={blocked} onPress={() => record('reject')}>
+        <Button size="sm" variant="secondary" isDisabled={blocked} onPress={() => record('reject')}>
           Record reject assessment
         </Button>
       </div>
@@ -77,7 +77,7 @@ export function AssessmentForm(props: {
       </div>
       <Button
         size="sm"
-        variant="outline"
+        variant="secondary"
         isDisabled={blocked || !validRating}
         onPress={() => record('rate')}
       >
@@ -172,9 +172,9 @@ export function JudgementCommandStatus(props: {
           Recording judgement…
         </p>
       ) : null}
-      {props.failed ? <ErrorBanner message={judgementError(props.error)} /> : null}
+      {props.failed ? <InlineAlert message={judgementError(props.error)} /> : null}
       {props.failed && judgementRetryable(props.error) ? (
-        <Button size="sm" variant="outline" isDisabled={props.disabled} onPress={props.onRetry}>
+        <Button size="sm" variant="secondary" isDisabled={props.disabled} onPress={props.onRetry}>
           Retry same request
         </Button>
       ) : null}
@@ -196,7 +196,7 @@ export function ArtifactJudgements(props: {
     <section aria-label="Artifact version assessments" className="flex flex-col gap-3">
       <Button
         size="sm"
-        variant="outline"
+        variant="secondary"
         isDisabled={props.disabled || props.unavailable}
         onPress={() => setOpen(true)}
       >
@@ -241,7 +241,7 @@ function ArtifactAssessment(props: Parameters<typeof ArtifactJudgements>[0]) {
           The exact version is unavailable. Refresh its original before continuing.
         </p>
       ) : history.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load assessment history."
           onRetry={() => void history.refetch()}
         />
@@ -272,7 +272,7 @@ function ArtifactAssessment(props: Parameters<typeof ArtifactJudgements>[0]) {
       {command.isError && judgementRefused(command.error) ? (
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           isDisabled={props.disabled || props.unavailable || history.isFetching}
           onPress={async () => {
             const current = await history.refetch();

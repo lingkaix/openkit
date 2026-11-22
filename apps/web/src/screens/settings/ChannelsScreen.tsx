@@ -3,14 +3,15 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
+  ActionButton,
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
 } from '../../primitives';
 import { accountChannelsKey } from '../account/session';
 import { attentionSentence, isAttention, LongList, matchesLoadedRow } from './LongList';
@@ -145,18 +146,18 @@ export function ChannelsScreen() {
         title="Channels"
         subtitle="Private Discord attention links and exact request responses."
         actions={
-          <Button variant="quiet" onPress={refresh}>
+          <ActionButton isQuiet onPress={refresh}>
             Refresh
-          </Button>
+          </ActionButton>
         }
       />
       {disconnected ? (
-        <StatusChip tone="notice">Disconnected. Changes are disabled.</StatusChip>
+        <StatusLight tone="notice">Disconnected. Changes are disabled.</StatusLight>
       ) : null}
       {status.isLoading ? (
         <Skeleton lines={4} />
       ) : status.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Could not load your Discord settings."
           onRetry={() => void status.refetch()}
         />
@@ -199,7 +200,7 @@ export function ChannelsScreen() {
           )}
           {status.data?.binding || challenge ? (
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={disconnected || busy}
               onPress={() => revoke.mutate()}
             >
@@ -207,7 +208,7 @@ export function ChannelsScreen() {
             </Button>
           ) : null}
           {pair.isError || revoke.isError ? (
-            <ErrorBanner message="The account change could not be completed. Refresh before a new attempt." />
+            <InlineAlert message="The account change could not be completed. Refresh before a new attempt." />
           ) : null}
         </Card>
       )}
@@ -218,12 +219,12 @@ export function ChannelsScreen() {
           decided. Email carries links only.
         </p>
         {send.isError ? (
-          <ErrorBanner message="The send result could not be read. Refresh and inspect the request before retrying." />
+          <InlineAlert message="The send result could not be read. Refresh and inspect the request before retrying." />
         ) : null}
         {deliveries.isLoading ? (
           <Skeleton lines={3} />
         ) : deliveries.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message="Could not load delivery observations."
             onRetry={() => void deliveries.refetch()}
           />
@@ -280,7 +281,7 @@ export function ChannelsScreen() {
                       </p>
                       <Link
                         to={delivery.appPath}
-                        className="inline-flex min-h-11 items-center text-sm text-accent underline"
+                        className="inline-flex items-center text-sm text-accent underline"
                       >
                         Inspect request
                       </Link>
@@ -303,7 +304,6 @@ export function ChannelsScreen() {
                       {delivery.status === 'queued' || delivery.status === 'failed-no-send' ? (
                         <Button
                           size="sm"
-                          className="min-h-11"
                           isDisabled={
                             disconnected ||
                             busy ||
@@ -325,14 +325,14 @@ export function ChannelsScreen() {
               }
             />
             {deliveries.hasNextPage ? (
-              <Button
-                variant="quiet"
-                className="min-h-11 justify-start px-3"
+              <ActionButton
+                isQuiet
+                className="justify-start px-3"
                 isDisabled={deliveries.isFetchingNextPage}
                 onPress={() => void deliveries.fetchNextPage()}
               >
                 Load more
-              </Button>
+              </ActionButton>
             ) : null}
           </>
         )}

@@ -5,23 +5,19 @@ import { writeRetainedV1 } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import { type Ref, useEffect, useRef, useState } from 'react';
-import {
-  Dialog as AriaDialog,
-  Modal as AriaModal,
-  TextField as AriaTextField,
-  Label,
-  ModalOverlay,
-  TextArea,
-} from 'react-aria-components';
+import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
 import { useSearchParams } from 'react-router-dom';
 import {
+  ActionButton,
   Button,
   Card,
+  Dialog,
   EmptyState,
-  ErrorBanner,
-  Select,
+  InlineAlert,
+  Modal,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   Switch,
   TextField,
 } from '../../primitives';
@@ -181,20 +177,6 @@ function slotLabel(
   return slotNames[key] || slot.accountSlotId;
 }
 
-/** Phone sheet below the shell's 800px navigation breakpoint. */
-function usePhoneSheet(): boolean {
-  const [phone, setPhone] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia?.('(max-width: 799px)');
-    if (!media) return undefined;
-    const sync = () => setPhone(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
-  return phone;
-}
-
 /** Maps failures to fixed copy; private transport messages and credential values never enter the DOM. */
 function failureMessage(error: unknown, action: string): string {
   if (error instanceof ApiCallError && [401, 403].includes(error.status))
@@ -210,9 +192,9 @@ export function ProviderHeader({ profile }: { profile: ProviderRegistryEntry }) 
     <div className="flex min-w-0 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-bold text-fg-strong">{profile.displayName}</h3>
-        <StatusChip tone={profile.readiness?.status === 'ready' ? 'positive' : 'notice'}>
+        <StatusLight tone={profile.readiness?.status === 'ready' ? 'positive' : 'notice'}>
           {profile.readiness?.status ?? 'unknown'}
-        </StatusChip>
+        </StatusLight>
       </div>
       <p className="text-xs text-fg-muted">
         {profile.id} · {profile.kind}
@@ -267,7 +249,7 @@ export function ProfileRemoval({
   return (
     <div className="flex flex-col gap-2">
       {remove.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(remove.error, 'Profile removal')}
           onRetry={() => remove.mutate()}
         />
@@ -280,14 +262,14 @@ export function ProfileRemoval({
       ) : null}
       <div>
         <Button
-          className="min-h-11"
-          variant="negative-outline"
+          variant="negative"
+          fillStyle="outline"
           size="sm"
           isDisabled={disconnected || remove.isPending}
           onPress={() => {
             if (
               window.confirm(
-                `Remove Provider ${profile.displayName}? Its logical routes will stay authored. Subscription slots are retained.`
+                `Remove Provider ${profile.displayName}? Its model routes will stay authored. Subscription slots are retained.`
               )
             )
               remove.mutate();
@@ -345,7 +327,7 @@ export function KeyProviderCard({
               isDisabled={disconnected || save.isPending}
             />
             {save.isError ? (
-              <ErrorBanner
+              <InlineAlert
                 message={failureMessage(save.error, 'API-key replacement')}
                 onRetry={() => save.mutate()}
               />
@@ -357,7 +339,6 @@ export function KeyProviderCard({
             ) : null}
             <div>
               <Button
-                className="min-h-11"
                 size="sm"
                 isDisabled={disconnected || save.isPending || !key.trim()}
                 onPress={() => save.mutate()}
@@ -476,7 +457,7 @@ export function GuidedSubscriptionSetup({
     <div id="guided-subscription-setup" tabIndex={-1} className="outline-none">
       <Card className="flex min-w-0 flex-col gap-3" aria-label="Guided subscription setup">
         <h3 className="text-sm font-bold text-fg-strong">Add subscription Provider</h3>
-        <Select
+        <Picker
           label="Setup subscription provider"
           items={Object.keys(VENDORS).map((key) => ({
             id: key,
@@ -498,7 +479,7 @@ export function GuidedSubscriptionSetup({
           Use a retained account slot
         </Switch>
         {existing ? (
-          <Select
+          <Picker
             label="Setup retained slot"
             items={(
               accounts.find((row) => row.subscriptionProviderId === provider)?.accounts ?? []
@@ -567,7 +548,7 @@ export function GuidedSubscriptionSetup({
         {setup.isError && failedStep !== null && request ? (
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={disconnected}
             onPress={() => setup.mutate(request)}
           >
@@ -602,8 +583,8 @@ export function GuidedSubscriptionSetup({
           </Button>
         ) : null}
         {request && !setup.isPending ? (
-          <Button
-            variant="quiet"
+          <ActionButton
+            isQuiet
             size="sm"
             onPress={() => {
               setRequest(null);
@@ -616,7 +597,7 @@ export function GuidedSubscriptionSetup({
             }}
           >
             Start another setup
-          </Button>
+          </ActionButton>
         ) : null}
         <p className="text-xs text-fg-muted">
           Each step has its own owner. Completed steps are retained after failure; no automatic
@@ -655,10 +636,10 @@ function JsonDraft({
       isDisabled={disabled}
       className="flex min-w-0 flex-col gap-1"
     >
-      <Label className="text-xs font-bold text-fg">{label}</Label>
+      <Label className="ok-field-label text-fg-muted">{label}</Label>
       <TextArea
         spellCheck={false}
-        className="min-h-32 w-full rounded-ok border border-border bg-sunken p-3 font-mono text-xs text-fg outline-none focus:ring-2 focus:ring-focus"
+        className="min-h-32 w-full rounded-ok border border-border bg-sunken p-3 font-mono text-xs text-fg outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus"
       />
     </AriaTextField>
   );
@@ -742,8 +723,7 @@ function RouteChainEditor({
             />
             <div className="flex flex-wrap gap-2">
               <Button
-                className="min-h-11"
-                variant="outline"
+                variant="secondary"
                 isDisabled={disabled || index === 0}
                 aria-label={`Move up ${place}`}
                 onPress={() => move(index, -1)}
@@ -751,8 +731,7 @@ function RouteChainEditor({
                 Move up
               </Button>
               <Button
-                className="min-h-11"
-                variant="outline"
+                variant="secondary"
                 isDisabled={disabled || index === routes.length - 1}
                 aria-label={`Move down ${place}`}
                 onPress={() => move(index, 1)}
@@ -760,8 +739,8 @@ function RouteChainEditor({
                 Move down
               </Button>
               <Button
-                className="min-h-11"
-                variant="negative-outline"
+                variant="negative"
+                fillStyle="outline"
                 isDisabled={disabled || routes.length < 2}
                 aria-label={`Remove ${place}`}
                 onPress={() => {
@@ -786,8 +765,7 @@ function RouteChainEditor({
       })}
       <div>
         <Button
-          className="min-h-11"
-          variant="outline"
+          variant="secondary"
           isDisabled={disabled}
           onPress={() => {
             keysFor(routes.length).push(crypto.randomUUID());
@@ -852,7 +830,7 @@ function GatewayEditor({
             routing?: { autoFailover?: boolean };
           }[]
         ).find((model) => model.id === target.id);
-        if (!model) throw new Error('Logical model no longer authored.');
+        if (!model) throw new Error('Model route no longer authored.');
         setDraft(JSON.stringify(projectSafeValue(model.routes), null, 2));
         setAutoFailover(model.routing?.autoFailover ?? true);
       } else {
@@ -912,7 +890,7 @@ function GatewayEditor({
         const index = (source.logicalModels as { id: string }[]).findIndex(
           (model) => model.id === target.id
         );
-        if (index < 0) throw new Error('Logical model no longer authored.');
+        if (index < 0) throw new Error('Model route no longer authored.');
         content = applyEdits(
           content,
           modify(content, ['logicalModels', index, 'routes'], value, options)
@@ -970,7 +948,7 @@ function GatewayEditor({
         <Skeleton lines={3} />
       ) : read.isError ? (
         <>
-          <ErrorBanner
+          <InlineAlert
             message={failureMessage(read.error, 'Source read')}
             onRetry={async () => {
               const next = await read.refetch();
@@ -991,14 +969,14 @@ function GatewayEditor({
         </>
       ) : null}
       {create.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(create.error, 'Catalog creation')}
           onRetry={() => create.mutate()}
         />
       ) : null}
       {invalid ? (
-        <ErrorBanner
-          message="Authored source is invalid or the selected logical model is missing. Inspect Configuration and retry."
+        <InlineAlert
+          message="Authored source is invalid or the selected model route is missing. Inspect Configuration and retry."
           onRetry={() => {
             setInvalid(false);
             void read.refetch();
@@ -1034,7 +1012,6 @@ function GatewayEditor({
           </details>
           {target.type === 'routing' || target.type === 'transcription' ? (
             <Switch
-              className="min-h-11"
               isSelected={autoFailover}
               onChange={setAutoFailover}
               isDisabled={disconnected || save.isPending}
@@ -1049,7 +1026,7 @@ function GatewayEditor({
             </p>
           ) : null}
           {save.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={failureMessage(save.error, 'Configuration save')}
               onRetry={() => save.mutate()}
             />
@@ -1073,7 +1050,7 @@ function GatewayEditor({
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               isDisabled={read.isFetching || save.isPending}
               onPress={async () => {
                 const next = await read.refetch();
@@ -1084,8 +1061,7 @@ function GatewayEditor({
             </Button>
             {target.type === 'routing' || target.type === 'transcription' ? (
               <Button
-                className="min-h-11"
-                variant="outline"
+                variant="secondary"
                 isDisabled={disconnected || reload.isPending}
                 onPress={() => reload.mutate()}
               >
@@ -1200,8 +1176,7 @@ function ModelMetadata({
             </details>
             <div>
               <Button
-                className="min-h-11"
-                variant="outline"
+                variant="secondary"
                 onPress={() => {
                   if (profile.metadataKey)
                     onEdit({ type: 'metadata', key: profile.metadataKey, model: model.id });
@@ -1222,14 +1197,9 @@ function ContractDisclosure({ model }: { model: GatewayModel }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
-      <Button
-        className="min-h-11"
-        variant="quiet"
-        aria-expanded={open}
-        onPress={() => setOpen((value) => !value)}
-      >
+      <ActionButton isQuiet aria-expanded={open} onPress={() => setOpen((value) => !value)}>
         Contract
-      </Button>
+      </ActionButton>
       {open ? (
         <p className="mt-2 text-sm text-fg">
           {contractSummary(model)} · <span>{familyLabel(model)}</span>
@@ -1269,7 +1239,7 @@ function LogicalModelCard({
         className="flex min-w-0 flex-col gap-3 outline-none"
       >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-lg font-bold text-fg-strong">{model.displayName}</h3>
+          <h3 className="text-lg font-heading text-fg-strong">{model.displayName}</h3>
           <p className="text-sm text-fg">{logicalModelAvailability(model)}</p>
         </div>
         {routes.length > 0 ? (
@@ -1317,7 +1287,7 @@ function LogicalModelCard({
         ) : null}
         <ModelMetadata profiles={metadataProfiles} onEdit={onEditMetadata} />
         <div>
-          <Button className="min-h-11" variant="outline" onPress={onEditRoute}>
+          <Button variant="secondary" onPress={onEditRoute}>
             Edit route
           </Button>
         </div>
@@ -1374,7 +1344,7 @@ export function LocalSmallLlmCard({
       <h3 className="text-base font-bold text-fg-strong">Local Small LLM</h3>
       {status.isLoading ? <Skeleton lines={2} /> : null}
       {status.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(status.error, 'Local Small LLM status')}
           onRetry={() => status.refetch()}
         />
@@ -1400,8 +1370,8 @@ export function LocalSmallLlmCard({
           {llm.message ? <p className="text-sm text-fg-muted">{llm.message}</p> : null}
           {llm.enabled ? (
             <Button
-              className="min-h-11 w-fit"
-              variant="outline"
+              className="w-fit"
+              variant="secondary"
               isDisabled={disconnected || busy}
               onPress={() => disable.mutate()}
             >
@@ -1409,7 +1379,7 @@ export function LocalSmallLlmCard({
             </Button>
           ) : (
             <>
-              <Select
+              <Picker
                 label="Local LLM model"
                 items={LLM_MODELS.map((model) => ({ id: model.id, label: model.label }))}
                 selectedKey={modelId}
@@ -1419,7 +1389,6 @@ export function LocalSmallLlmCard({
                 isDisabled={disconnected || busy}
               />
               <Switch
-                className="min-h-11"
                 isSelected={accepted}
                 onChange={setAccepted}
                 isDisabled={disconnected || busy}
@@ -1427,7 +1396,7 @@ export function LocalSmallLlmCard({
                 I accept the model license
               </Switch>
               <Button
-                className="min-h-11 w-fit"
+                className="w-fit"
                 isDisabled={disconnected || busy || !accepted}
                 onPress={() => enable.mutate()}
               >
@@ -1438,13 +1407,13 @@ export function LocalSmallLlmCard({
         </>
       ) : null}
       {enable.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(enable.error, 'Enable local LLM')}
           onRetry={() => enable.mutate()}
         />
       ) : null}
       {disable.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(disable.error, 'Disable local LLM')}
           onRetry={() => disable.mutate()}
         />
@@ -1500,7 +1469,7 @@ export function TitleModelBinding({
   });
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <Select
+      <Picker
         label="Title model"
         items={items}
         selectedKey={selected}
@@ -1510,15 +1479,15 @@ export function TitleModelBinding({
         isDisabled={disconnected || save.isPending}
       />
       <Button
-        className="min-h-11 w-fit"
-        variant="outline"
+        className="w-fit"
+        variant="secondary"
         isDisabled={disconnected || save.isPending || selected === saved}
         onPress={() => save.mutate()}
       >
         Save title model
       </Button>
       {save.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(save.error, 'Save title model')}
           onRetry={() => save.mutate()}
         />
@@ -1566,7 +1535,7 @@ export function LocalSpeechCard({
       <h3 className="text-base font-bold text-fg-strong">Local speech</h3>
       {status.isLoading ? <Skeleton lines={2} /> : null}
       {status.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(status.error, 'Local speech status')}
           onRetry={() => status.refetch()}
         />
@@ -1592,8 +1561,8 @@ export function LocalSpeechCard({
           {speech.message ? <p className="text-sm text-fg-muted">{speech.message}</p> : null}
           {speech.enabled ? (
             <Button
-              className="min-h-11 w-fit"
-              variant="outline"
+              className="w-fit"
+              variant="secondary"
               isDisabled={disconnected || busy}
               onPress={() => disable.mutate()}
             >
@@ -1602,7 +1571,6 @@ export function LocalSpeechCard({
           ) : (
             <>
               <Switch
-                className="min-h-11"
                 isSelected={accepted}
                 onChange={setAccepted}
                 isDisabled={disconnected || busy}
@@ -1610,7 +1578,7 @@ export function LocalSpeechCard({
                 I accept the model license
               </Switch>
               <Button
-                className="min-h-11 w-fit"
+                className="w-fit"
                 isDisabled={disconnected || busy || !accepted}
                 onPress={() => enable.mutate()}
               >
@@ -1621,13 +1589,13 @@ export function LocalSpeechCard({
         </>
       ) : null}
       {enable.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(enable.error, 'Enable local speech')}
           onRetry={() => enable.mutate()}
         />
       ) : null}
       {disable.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={failureMessage(disable.error, 'Disable local speech')}
           onRetry={() => disable.mutate()}
         />
@@ -1666,7 +1634,6 @@ export function GatewayConfiguration({
     node.focus({ preventScroll: true });
   }, [requestedModel, diagnostics.gateway.models]);
   const [editing, setEditing] = useState<GatewayEdit | null>(null);
-  const phone = usePhoneSheet();
   const registry = diagnostics.providers.registry;
   const shownMetadata = new Set<string>();
   const cards = diagnostics.gateway.models.map((model) => {
@@ -1693,7 +1660,7 @@ export function GatewayConfiguration({
         : 'Edit route';
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-in-use">
-      <h2 id="gateway-in-use" className="text-lg font-bold text-fg-strong">
+      <h2 id="gateway-in-use" className="text-lg font-heading text-fg-strong">
         In use
       </h2>
       <p className="text-sm text-fg-muted">
@@ -1725,8 +1692,8 @@ export function GatewayConfiguration({
           <p className="text-sm text-fg-muted">No transcription route.</p>
         )}
         <Button
-          className="min-h-11 w-fit"
-          variant="outline"
+          className="w-fit"
+          variant="secondary"
           isDisabled={disconnected}
           onPress={() => setEditing({ type: 'transcription' })}
         >
@@ -1743,8 +1710,8 @@ export function GatewayConfiguration({
       {cards.length === 0 ? (
         <EmptyState
           icon="connect"
-          title="No Logical models yet"
-          hint="Logical models appear here when the Gateway catalog reports them."
+          title="No model routes yet"
+          hint="Model routes appear here when the Gateway catalog reports them."
         />
       ) : (
         cards.map(({ model, metadataProfiles }) => (
@@ -1764,51 +1731,24 @@ export function GatewayConfiguration({
         <ModelMetadata profiles={unreferenced} onEdit={setEditing} />
       ) : null}
       {editing ? (
-        <ModalOverlay
+        <Modal
           isOpen
-          isDismissable
+          size="L"
           onOpenChange={(open) => {
             if (!open) setEditing(null);
           }}
-          className={
-            phone
-              ? 'fixed inset-0 z-50 flex bg-fg/40'
-              : 'fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6'
-          }
         >
-          <AriaModal
-            className={
-              phone
-                ? 'h-full w-full overflow-y-auto bg-elevated p-4 outline-none'
-                : 'max-h-full w-full max-w-lg overflow-y-auto rounded-ok-lg border border-border bg-elevated p-5 shadow-ok-menu outline-none'
-            }
-          >
-            <AriaDialog aria-labelledby="gateway-editor-title" className="outline-none">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h2 id="gateway-editor-title" className="text-lg font-bold text-fg-strong">
-                    {editorTitle}
-                  </h2>
-                  {editingModel ? (
-                    <p className="text-sm text-fg-muted">{editingModel.displayName}</p>
-                  ) : null}
-                </div>
-                <Button className="min-h-11" variant="quiet" onPress={() => setEditing(null)}>
-                  Close
-                </Button>
-              </div>
-              <div className="mt-4">
-                <GatewayEditor
-                  key={JSON.stringify(editing)}
-                  client={client}
-                  disconnected={disconnected}
-                  target={editing}
-                  onChanged={onChanged}
-                />
-              </div>
-            </AriaDialog>
-          </AriaModal>
-        </ModalOverlay>
+          <Dialog title={editorTitle} closeLabel="Close">
+            {editingModel ? <p className="text-fg-muted">{editingModel.displayName}</p> : null}
+            <GatewayEditor
+              key={JSON.stringify(editing)}
+              client={client}
+              disconnected={disconnected}
+              target={editing}
+              onChanged={onChanged}
+            />
+          </Dialog>
+        </Modal>
       ) : null}
     </section>
   );
@@ -1872,15 +1812,14 @@ export function GatewayActivation({
           </div>
         ) : null}
         {reload.isError ? (
-          <ErrorBanner
+          <InlineAlert
             message={failureMessage(reload.error, 'Gateway reload')}
             onRetry={() => reload.mutate()}
           />
         ) : null}
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            className="min-h-11"
-            variant="outline"
+            variant="secondary"
             isDisabled={disconnected || reload.isPending}
             onPress={() => reload.mutate()}
           >

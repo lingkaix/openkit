@@ -1,6 +1,6 @@
 import type { OperationOutput } from '@openkit/app-api-schemas';
 import { useState } from 'react';
-import { Button, ErrorBanner, TextField } from '../../primitives';
+import { Button, InlineAlert, TextField } from '../../primitives';
 import { useUpdateMcpBinding } from './data';
 
 /** Edits existing Workspace rules at their observed binding and catalog revisions. */
@@ -60,7 +60,7 @@ export function WorkspaceMcpRules({
       {change.isSuccess ? <p role="status">Tool rules saved.</p> : null}
       {change.isError ? (
         <>
-          <ErrorBanner message="Tool-rule save could not be confirmed. Refresh and inspect the current binding before another change." />
+          <InlineAlert message="Tool-rule save could not be confirmed. Refresh and inspect the current binding before another change." />
           <Button
             size="sm"
             isDisabled={refreshBlocked}

@@ -52,7 +52,7 @@ function ownedCache() {
 
 function renderChat(operations: Record<string, unknown>, cache: ReturnType<typeof ownedCache>) {
   render(
-    <Frame api={client(operations)} cache={cache} entry={`/chat/${WS}/${THREAD}`}>
+    <Frame api={client(operations)} cache={cache} entry={`/w/${WS}/t/${THREAD}`}>
       <ThreadStream workspaceId={WS} threadId={THREAD} mode="chat" anchor={{ kind: 'catch-up' }} />
     </Frame>
   );

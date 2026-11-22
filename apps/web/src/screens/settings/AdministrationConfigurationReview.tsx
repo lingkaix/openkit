@@ -9,9 +9,10 @@ import {
   Button,
   Card,
   Dialog,
-  ErrorBanner,
+  DialogFooter,
+  InlineAlert,
   Modal,
-  StatusChip,
+  StatusLight,
   type StatusTone,
 } from '../../primitives';
 import { chatKeys } from '../chat/data';
@@ -96,10 +97,10 @@ export function AdministrationConfigurationReview({
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-lg font-extrabold text-fg-strong">
+                <h2 className="text-lg font-heading text-fg-strong">
                   Prepared configuration change
                 </h2>
-                <StatusChip tone={status.tone}>{status.label}</StatusChip>
+                <StatusLight tone={status.tone}>{status.label}</StatusLight>
               </div>
               <p className="mt-1 text-sm text-fg">
                 {targetLabel(candidate.details)} · base revision{' '}
@@ -125,20 +126,20 @@ export function AdministrationConfigurationReview({
                 </p>
               </>
             )}
-            <div className="flex justify-end gap-2">
-              <Button slot="close" variant="quiet">
+            <DialogFooter>
+              <Button slot="close" variant="secondary">
                 Cancel
               </Button>
               <Button slot="close" variant="negative" isDisabled={blocked} onPress={submitApply}>
                 Apply configuration
               </Button>
-            </div>
+            </DialogFooter>
           </Dialog>
         </Modal>
       </div>
       {hidden ? null : <CandidateFacts candidate={candidate} />}
       {apply.isError ? (
-        <ErrorBanner message="Configuration application could not be confirmed. Inspect persistence and reload, then prepare a fresh candidate." />
+        <InlineAlert message="Configuration application could not be confirmed. Inspect persistence and reload, then prepare a fresh candidate." />
       ) : null}
       {recorded && !hidden ? <ApplyResultCard result={recorded} /> : null}
     </Card>

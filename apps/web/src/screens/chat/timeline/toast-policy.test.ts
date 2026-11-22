@@ -18,7 +18,7 @@ function decision(id: string, blocking = true, threadId = 'th_launch'): PolicyRo
     event: 'decision',
     title: 'Review the draft',
     ageLabel: 'now',
-    href: `/tasks/ws/${threadId}?turn=tu_1&turnId=tu_1`,
+    href: `/w/ws/t/${threadId}?turn=tu_1&turnId=tu_1`,
   };
 }
 
@@ -129,15 +129,15 @@ describe('toast policy', () => {
     const rows = ['t1', 't2', 't3', 't4'].map((threadId) => decision(threadId, true, threadId));
     const desktop = stepToastPolicy(primed(), input(rows));
     expect(desktop.visible).toHaveLength(3);
-    expect(desktop.visible[2]?.message).toBe('+2 more · Open Action Center');
-    expect(desktop.visible[2]?.href).toBe('/attention');
+    expect(desktop.visible[2]?.message).toBe('+2 more · Open Needs you');
+    expect(desktop.visible[2]?.href).toBe('/needs-you');
     const again = stepToastPolicy(desktop.session, input(rows, { now: 2_000 }));
     expect(again.visible.map((toast) => toast.message)).toEqual(
       desktop.visible.map((toast) => toast.message)
     );
     const phone = stepToastPolicy(primed(), input(rows, { phone: true }));
     expect(phone.visible).toHaveLength(1);
-    expect(phone.visible[0]?.message).toBe('+4 more · Open Action Center');
+    expect(phone.visible[0]?.message).toBe('+4 more · Open Needs you');
   });
 
   it('does not toast the thread being viewed', () => {
@@ -172,7 +172,7 @@ describe('toast policy', () => {
     );
     const overflow = next.visible.find((toast) => toast.message.includes('more'));
     expect(overflow?.objectIds).toEqual(expect.arrayContaining(['t3', 't4', 't5']));
-    expect(overflow?.message).toBe('+3 more · Open Action Center');
+    expect(overflow?.message).toBe('+3 more · Open Needs you');
     expect(next.visible.filter((toast) => !toast.message.includes('more'))).toHaveLength(2);
   });
 

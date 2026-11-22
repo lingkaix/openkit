@@ -1,6 +1,6 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useConnection } from '../../app/core-client';
-import { Button, Card, ErrorBanner, Eyebrow, Skeleton } from '../../primitives';
+import { Button, Card, Eyebrow, InlineAlert, Skeleton } from '../../primitives';
 import {
   useBindThreadMaterial,
   useExcludeThreadMaterial,
@@ -70,7 +70,7 @@ export function ThreadMaterialPanel({
   if (!projection.data) {
     return (
       <section aria-label="Thread Material">
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load Thread Material."
           onRetry={() => void projection.refetch()}
         />
@@ -93,13 +93,13 @@ export function ThreadMaterialPanel({
           </div>
 
           {projection.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="The latest Thread Material projection could not be refreshed."
               onRetry={() => void projection.refetch()}
             />
           ) : null}
           {mutationError ? (
-            <ErrorBanner
+            <InlineAlert
               message={
                 conflict
                   ? 'This Thread Material changed since it was opened.'
@@ -171,7 +171,7 @@ export function ThreadMaterialPanel({
             ) : (
               <>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   isDisabled={disconnected || busy}
                   onPress={() =>
                     void unbind
@@ -183,7 +183,8 @@ export function ThreadMaterialPanel({
                 </Button>
                 {material.inclusionState === 'included' ? (
                   <Button
-                    variant="negative-outline"
+                    variant="negative"
+                    fillStyle="outline"
                     isDisabled={disconnected || busy || !canExclude}
                     onPress={() => {
                       if (queuedRevisionId) {
@@ -201,7 +202,7 @@ export function ThreadMaterialPanel({
                   </Button>
                 ) : (
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     isDisabled={disconnected || busy}
                     onPress={() =>
                       void restore

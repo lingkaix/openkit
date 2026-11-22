@@ -7,7 +7,7 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   Skeleton,
@@ -93,7 +93,7 @@ export function WorkspaceAccessRecoveryScreen() {
           hint="Workspace access recovery requires derived server-admin authority on the signed-in session."
           action={
             <Button
-              variant="outline"
+              variant="secondary"
               onPress={() => {
                 recovery.reset();
                 setWorkspaceInput('');
@@ -106,14 +106,14 @@ export function WorkspaceAccessRecoveryScreen() {
           }
         />
       ) : adminAccess.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't verify deployment-admin authority."
           onRetry={() => void adminAccess.refetch()}
         />
       ) : (
         <>
           {recovery.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message="Recovery request failed. Its outcome may be unknown. Load the current recovery state before explicitly choosing another action."
               onRetry={() => {
                 recovery.reset();
@@ -133,7 +133,7 @@ export function WorkspaceAccessRecoveryScreen() {
               isDisabled={busy}
             />
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!workspaceId || busy}
               onPress={() => {
                 setConfirmation('');
@@ -175,7 +175,7 @@ export function WorkspaceAccessRecoveryScreen() {
               isDisabled={!canRecover}
             />
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!canRecover || confirmation !== workspaceId}
               onPress={() => recover('transfer-ownership-to-self')}
             >

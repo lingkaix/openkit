@@ -10,7 +10,7 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
   TextField,
@@ -70,7 +70,7 @@ export function DataRootBackupScreen() {
           hint="Deployment backup requires derived server-admin authority on the signed-in session."
           action={
             <Button
-              variant="outline"
+              variant="secondary"
               onPress={() => {
                 backup.reset();
                 setKnownBackupId('');
@@ -83,7 +83,7 @@ export function DataRootBackupScreen() {
       ) : (
         <>
           {backup.isError && !denied ? (
-            <ErrorBanner
+            <InlineAlert
               message="Backup request failed. If creation was interrupted, its outcome may be unknown. Verify a known backup ID or explicitly create another backup."
               onRetry={() => backup.reset()}
             />
@@ -100,7 +100,7 @@ export function DataRootBackupScreen() {
               isDisabled={backup.isPending}
             />
             <Button
-              variant="outline"
+              variant="secondary"
               isDisabled={!validId || backup.isPending}
               onPress={() => backup.mutate({ kind: 'verify', backupId })}
             >

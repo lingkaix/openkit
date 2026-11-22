@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, ErrorBanner, StatusChip } from '../../primitives';
+import { ActionButton, Button, InlineAlert, StatusLight } from '../../primitives';
 import { type ArtifactFolderInput, useArtifactFolder, useExtractArtifactFolder } from './data';
 
 /** Explicit bounded ZIP inspection; original download remains on the Artifact surface. Remount with the exact source identity to discard prior pages and mutation state. */
@@ -21,18 +21,18 @@ export function ZipFolderPanel(props: { source: ArtifactFolderInput; disabled: b
         stay as files. The original stays unchanged.
       </p>
       {pending ? (
-        <StatusChip tone="notice">
+        <StatusLight tone="notice">
           {extract.isPending ? 'Extracting folder snapshot' : 'Checking folder snapshot'}
-        </StatusChip>
+        </StatusLight>
       ) : null}
       {folder.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Folder status is unavailable. Check the original download."
           onRetry={() => void folder.refetch()}
         />
       ) : null}
       {extractFailed ? (
-        <ErrorBanner
+        <InlineAlert
           message={
             extract.isError
               ? 'Folder extraction is unconfirmed. Check the original download before retrying.'
@@ -41,7 +41,7 @@ export function ZipFolderPanel(props: { source: ArtifactFolderInput; disabled: b
         />
       ) : null}
       <Button
-        variant="outline"
+        variant="secondary"
         size="sm"
         isDisabled={props.disabled || pending || folder.isError}
         onPress={() => {
@@ -75,18 +75,14 @@ export function ZipFolderPanel(props: { source: ArtifactFolderInput; disabled: b
           </ul>
           <div className="flex gap-2">
             {offset > 0 ? (
-              <Button
-                size="sm"
-                variant="quiet"
-                onPress={() => setOffset(Math.max(0, offset - 100))}
-              >
+              <ActionButton size="sm" isQuiet onPress={() => setOffset(Math.max(0, offset - 100))}>
                 Previous files
-              </Button>
+              </ActionButton>
             ) : null}
             {ready.nextOffset !== null ? (
-              <Button size="sm" variant="quiet" onPress={() => setOffset(ready.nextOffset!)}>
+              <ActionButton size="sm" isQuiet onPress={() => setOffset(ready.nextOffset!)}>
                 Next files
-              </Button>
+              </ActionButton>
             ) : null}
           </div>
         </>

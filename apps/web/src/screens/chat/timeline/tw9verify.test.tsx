@@ -188,7 +188,7 @@ describe('TW9VERIFY digest target selection', () => {
     },
   ])('opens the new $anchor.kind target instead of a retained alias', ({ search, anchor }) => {
     const destination = digestAnchorLocation({
-      pathname: `/tasks/${WS}/${THREAD}`,
+      pathname: `/w/${WS}/t/${THREAD}`,
       search,
       anchor,
     });
@@ -238,7 +238,7 @@ it('TW9VERIFY shows the retained outcome of an older steer in the catch-up windo
     <Frame api={api} cache={cache()}>
       <Routes>
         <Route
-          path="/tasks/:workspaceId/:threadId"
+          path="/w/:workspaceId/t/:threadId"
           element={
             <SteerProvider mode="task">
               <ThreadStream

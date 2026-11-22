@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { AppProviders } from './app/providers';
 import { registerShellWorker } from './pwa/register';
+import '@fontsource-variable/source-sans-3/wght.css';
+import '@fontsource-variable/source-code-pro/wght.css';
 import './styles/theme.css';
 
 registerShellWorker();

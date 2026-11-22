@@ -102,12 +102,12 @@ describe('catch-up digest lines', () => {
     ];
     for (const anchor of cases) {
       const target = digestAnchorLocation({
-        pathname: '/tasks/ws/th',
+        pathname: '/w/ws/t/th',
         search: '?turn=old&turnId=old&row=old&attention=old&item=old&catchUp=1',
         anchor,
       });
       expect(target.replace).toBe(true);
-      expect(target.pathname).toBe('/tasks/ws/th');
+      expect(target.pathname).toBe('/w/ws/t/th');
       expect(anchorFromSearch(target.search)).toEqual(anchor);
     }
   });
@@ -115,7 +115,7 @@ describe('catch-up digest lines', () => {
   it('renders the server line and replaces history when that count is opened', async () => {
     const user = userEvent.setup();
     render(
-      <MemoryRouter initialEntries={['/tasks/ws/th?catchUp=1']}>
+      <MemoryRouter initialEntries={['/w/ws/t/th?catchUp=1']}>
         <CatchUpDivider
           count={0}
           onEarlierUnread={() => undefined}
@@ -130,7 +130,7 @@ describe('catch-up digest lines', () => {
     expect(screen.getByRole('button', { name: '4 new messages' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /need you/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: '4 new messages' }));
-    expect(screen.getByTestId('loc').textContent).toBe(`/tasks/ws/th?item=${itemId}`);
+    expect(screen.getByTestId('loc').textContent).toBe(`/w/ws/t/th?item=${itemId}`);
   });
 
   it('shows the partial wording under the lines', () => {

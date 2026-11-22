@@ -7,9 +7,9 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
-  Select,
+  Picker,
   TextField,
 } from '../../primitives';
 import { redactSecretShapedText } from './secret-safe';
@@ -194,7 +194,7 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
         Server MCP {data.entry.id} · catalog revision {data.revision} · binding revision{' '}
         {data.entry.bindingRevision || 'none'}
       </p>
-      <Select
+      <Picker
         label="Preview retained version"
         selectedKey={version}
         onSelectionChange={(key) => {
@@ -260,7 +260,7 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
         }}
         isDisabled={unavailable}
       />
-      <Select
+      <Picker
         label="Preview sink kind"
         selectedKey={sinkKind}
         onSelectionChange={(key) => {
@@ -283,7 +283,7 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
         }}
         isDisabled={unavailable}
       />
-      <Select
+      <Picker
         label="Preview credential presentation"
         selectedKey={presentation}
         onSelectionChange={(key) => {
@@ -303,10 +303,10 @@ function Preview({ data, blocked, onFailure, onBusyChange }: Props) {
         Add temporary grant
       </Button>
       {validationError ? (
-        <ErrorBanner message="Check preview fields. No discovery request was sent. Use Vault for credential material." />
+        <InlineAlert message="Check preview fields. No discovery request was sent. Use Vault for credential material." />
       ) : null}
       {action.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message={
             action.error.status === 409
               ? 'Discovery requires inspection. Configuration may be stale or cleanup unconfirmed. Inspect before another invocation. Reload current configuration only reads configuration and does not prove cleanup. Any new preview must be deliberate and may contact upstream again.'

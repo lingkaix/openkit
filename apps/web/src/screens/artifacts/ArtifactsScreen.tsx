@@ -4,16 +4,17 @@ import { TextField as AriaTextField, FileTrigger, Label, TextArea } from 'react-
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
+  ActionButton,
   ArtifactRow,
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   Page,
   PageHeader,
-  Select,
+  Picker,
   Skeleton,
-  StatusChip,
+  StatusLight,
   type StatusTone,
   TextField,
 } from '../../primitives';
@@ -136,8 +137,8 @@ function ImportContentField(props: {
       onChange={props.onChange}
       isDisabled={props.isDisabled}
     >
-      <Label className="text-xs font-bold text-fg">Content</Label>
-      <TextArea className="min-h-32 resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
+      <Label className="ok-field-label text-fg-muted">Content</Label>
+      <TextArea className="min-h-32 resize-y rounded-ok border border-border bg-card px-3 py-2 text-sm text-fg outline-none transition-colors placeholder:text-fg-muted hover:border-border-hover focus:border-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus disabled:bg-disabled-bg disabled:text-disabled-fg" />
     </AriaTextField>
   );
 }
@@ -415,7 +416,7 @@ export function ArtifactsScreen() {
         {workspaces.isError ? (
           <>
             <PageHeader title="Artifacts" />
-            <ErrorBanner
+            <InlineAlert
               message="Couldn't load workspaces."
               onRetry={() => void workspaces.refetch()}
             />
@@ -457,7 +458,7 @@ export function ArtifactsScreen() {
     return (
       <Page>
         <PageHeader title="Artifacts" />
-        <ErrorBanner
+        <InlineAlert
           message={artifactListErrorMessage(artifacts.error)}
           onRetry={retryArtifactList}
         />
@@ -544,15 +545,14 @@ export function ArtifactsScreen() {
         subtitle="Documents, reports and files explicitly submitted as outputs or imported into this Workspace."
         actions={
           <>
-            {disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
-            <Button size="sm" variant="outline" onPress={() => setComparisonOpen(true)}>
+            {disconnected ? <StatusLight tone="notice">Status may be stale</StatusLight> : null}
+            <Button size="sm" variant="secondary" onPress={() => setComparisonOpen(true)}>
               Compare candidates
             </Button>
             {importing ? null : (
               <Button
                 ref={importButtonRef}
                 size="sm"
-                className="min-h-11"
                 isDisabled={importActionBlocked}
                 onPress={() => setImporting(true)}
               >
@@ -572,7 +572,7 @@ export function ArtifactsScreen() {
       </p>
 
       {listStale ? (
-        <ErrorBanner
+        <InlineAlert
           message={artifactListErrorMessage(artifacts.error)}
           onRetry={retryArtifactList}
         />
@@ -593,7 +593,7 @@ export function ArtifactsScreen() {
               );
             }}
           >
-            <Button variant="outline" isDisabled={importActionBlocked}>
+            <Button variant="secondary" isDisabled={importActionBlocked}>
               Choose file
             </Button>
           </FileTrigger>
@@ -619,8 +619,8 @@ export function ArtifactsScreen() {
               isDisabled={importActionBlocked}
             />
           ) : (
-            <Button
-              variant="quiet"
+            <ActionButton
+              isQuiet
               isDisabled={importActionBlocked}
               onPress={() => {
                 setFile(null);
@@ -628,26 +628,21 @@ export function ArtifactsScreen() {
               }}
             >
               Remove selected file
-            </Button>
+            </ActionButton>
           )}
           {importBound && importArtifact.isError ? (
             <fieldset disabled={disconnected} className="contents">
-              <ErrorBanner
+              <InlineAlert
                 message={artifactImportErrorMessage(importArtifact.error)}
                 onRetry={isRetryableImportError(importArtifact.error) ? retryImport : undefined}
               />
             </fieldset>
           ) : null}
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              className="min-h-11"
-              isDisabled={importSubmitBlocked}
-              onPress={tryImport}
-            >
+            <Button size="sm" isDisabled={importSubmitBlocked} onPress={tryImport}>
               Import
             </Button>
-            <Button size="sm" variant="outline" onPress={resetImportForm}>
+            <Button size="sm" variant="secondary" onPress={resetImportForm}>
               Cancel
             </Button>
           </div>
@@ -709,7 +704,7 @@ export function ArtifactsScreen() {
                             onOpen={() => openArtifact(item.id)}
                           />
                         </div>
-                        <StatusChip tone={status.tone}>{status.label}</StatusChip>
+                        <StatusLight tone={status.tone}>{status.label}</StatusLight>
                       </div>
                       <p className="px-2 text-sm text-fg-muted">
                         {ARTIFACT_KIND_LABEL[item.kind]} · v{item.version}
@@ -728,7 +723,7 @@ export function ArtifactsScreen() {
         {previewOpen ? (
           <div className="flex min-w-0 flex-col gap-3">
             {phone ? (
-              <Button className="min-h-11" variant="outline" onPress={closePreview}>
+              <Button variant="secondary" onPress={closePreview}>
                 Back
               </Button>
             ) : null}
@@ -739,7 +734,7 @@ export function ArtifactsScreen() {
               {unavailableArtifact ? (
                 <EmptyState icon="file" title="That artifact isn't available" />
               ) : listedItem && selected.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load that artifact."
                   onRetry={() => void selected.refetch()}
                 />
@@ -772,7 +767,7 @@ export function ArtifactsScreen() {
                 </p>
               ) : null}
               {threads.isError ? (
-                <ErrorBanner
+                <InlineAlert
                   message="Couldn't load conversations."
                   onRetry={() => void threads.refetch()}
                 />
@@ -781,7 +776,7 @@ export function ArtifactsScreen() {
               ) : !threads.data?.length ? (
                 <p className="text-sm text-fg-muted">No conversations in this Workspace.</p>
               ) : (
-                <Select
+                <Picker
                   label="Conversation"
                   placeholder=""
                   items={threads.data.map((thread) => ({
@@ -795,7 +790,7 @@ export function ArtifactsScreen() {
               )}
               {introduceBound && introduceArtifact.isError ? (
                 <fieldset disabled={disconnected} className="contents">
-                  <ErrorBanner
+                  <InlineAlert
                     message={artifactIntroduceErrorMessage(introduceArtifact.error)}
                     onRetry={
                       isRetryableIntroduceError(introduceArtifact.error)

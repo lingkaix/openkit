@@ -14,11 +14,14 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "brand:generate": "node scripts/generate-brand.mjs",
+    "tokens:generate": "node scripts/gen-tokens.mjs",
     "e2e": "playwright test"
   },
   "dependencies": {
     "@a2ui/react": "0.15.0",
     "@a2ui/web_core": "0.15.0",
+    "@fontsource-variable/source-code-pro": "5.3.1",
+    "@fontsource-variable/source-sans-3": "5.3.1",
     "@noble/hashes": "2.4.0",
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/core-client": "workspace:*",
@@ -35,6 +38,7 @@
     "zustand": "5.1.0"
   },
   "devDependencies": {
+    "@adobe/spectrum-tokens": "15.7.0",
     "@iconify-json/ri": "^1.2.10",
     "@playwright/test": "1.65.0",
     "@svgr/core": "^8.1.0",

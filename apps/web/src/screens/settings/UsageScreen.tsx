@@ -2,16 +2,16 @@ import { useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
-  Button,
+  ActionButton,
   Card,
-  ContextChip,
   EmptyState,
-  ErrorBanner,
+  InlineAlert,
   ListRow,
   Page,
   PageHeader,
   Skeleton,
-  StatusChip,
+  StatusLight,
+  Tag,
 } from '../../primitives';
 import type { ThreadAudience } from '../chat/timeline/audience';
 import { BackLink } from '../chat/timeline/BackLink';
@@ -71,7 +71,7 @@ export function UsageScreen() {
     return (
       <Page>
         <UsageHeader />
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load workspaces."
           onRetry={() => void workspaces.refetch()}
         />
@@ -97,14 +97,14 @@ export function UsageScreen() {
       <UsageHeader
         actions={
           <>
-            <ContextChip>{projectSafeValue(workspace.name) as string}</ContextChip>
-            {disconnected ? <StatusChip tone="notice">Status may be stale</StatusChip> : null}
+            <Tag>{projectSafeValue(workspace.name) as string}</Tag>
+            {disconnected ? <StatusLight tone="notice">Status may be stale</StatusLight> : null}
           </>
         }
       />
 
       {evidence.isError ? (
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load usage and audit records."
           onRetry={() => void evidence.refetch()}
         />
@@ -323,14 +323,14 @@ function UsageRecords({
         )}
       />
       {hasNextPage ? (
-        <Button
-          variant="quiet"
-          className="min-h-11 justify-start px-3"
+        <ActionButton
+          isQuiet
+          className="justify-start px-3"
           isDisabled={isFetchingNextPage}
           onPress={fetchNextPage}
         >
           Load more
-        </Button>
+        </ActionButton>
       ) : null}
     </>
   );
@@ -406,9 +406,7 @@ function CapabilityCallRow({
         />
         <RecordedTime value={call.startedAt} />
       </div>
-      <StatusChip tone={status.tone} dot>
-        {status.label}
-      </StatusChip>
+      <StatusLight tone={status.tone}>{status.label}</StatusLight>
     </ListRow>
   );
 }
@@ -438,7 +436,7 @@ function UsageRow({
         </p>
         <p className="text-xs text-fg-muted">{record.category}</p>
         {record.category === 'llm' ? (
-          <p className="text-xs text-fg-muted">Logical model: {record.modelId ?? 'Not recorded'}</p>
+          <p className="text-xs text-fg-muted">Model: {record.modelId ?? 'Not recorded'}</p>
         ) : null}
         <BackLink
           workspaceId={workspaceId}

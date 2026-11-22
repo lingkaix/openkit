@@ -15,6 +15,8 @@ const DRAFT_THREAD_ID = 'th_019a0000-0000-7000-8000-000000000104';
 const RECEIVING_THREAD_ID = 'th_019a0000-0000-7000-8000-000000000105';
 const GOAL_THREAD_ID = 'th_019a0000-0000-7000-8000-000000000106';
 const SHARED_SOURCE_THREAD_ID = 'th_019a0000-0000-7000-8000-000000000107';
+/** A private Knowledge Manager Thread: a private chat row that is not the Assistant Timeline. */
+const KNOWLEDGE_THREAD_ID = 'th_019a0000-0000-7000-8000-000000000108';
 const USER_ID = 'usr_019a0000-0000-7000-8000-000000000108';
 const OTHER_WORKSPACE_ID = 'ws_019a0000-0000-7000-8000-000000000102';
 const SHARED_STORAGE_REF = 'wst_019a0000-0000-7000-8000-000000000301';
@@ -112,7 +114,11 @@ function threadRecord(id: string, name: string) {
     name,
     preview: '',
     status: 'active' as const,
-    visibility: 'workspace' as const,
+    // The caller's Assistant Timeline and Knowledge Manager Threads are private; Task, Goal and
+    // shared Chat Threads are shared.
+    visibility: (id === ASSISTANT_THREAD_ID || id === KNOWLEDGE_THREAD_ID
+      ? 'private'
+      : 'workspace') as 'private' | 'workspace',
     entryPath: 'conversation' as const,
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
@@ -374,21 +380,27 @@ function expectBefore(first: Node, second: Node) {
   expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
-/** Opens New Task from the desktop Tasks list. */
+/** Opens New Task from the current Workspace group's ⋯ menu. */
 async function openDesktopNewTask(user: User) {
   const navigation = await screen.findByRole('navigation', {
     name: 'Primary workspace navigation',
   });
-  await user.click(await within(navigation).findByRole('button', { name: 'New Task' }));
+  // B2: New Task lives in the current Workspace group's ⋯ menu until the B3 Composer.
+  const [options] = await within(navigation).findAllByRole('button', { name: / options$/ });
+  await user.click(options!);
+  await user.click(await screen.findByRole('menuitem', { name: 'New Task' }));
   return await screen.findByRole('dialog', { name: 'New Task' });
 }
 
-/** Opens New Goal from the desktop Goals list. */
+/** Opens New Goal from the current Workspace group's ⋯ menu. */
 async function openDesktopNewGoal(user: User) {
   const navigation = await screen.findByRole('navigation', {
     name: 'Primary workspace navigation',
   });
-  await user.click(await within(navigation).findByRole('button', { name: 'New Goal' }));
+  // B2: New Goal lives in the current Workspace group's ⋯ menu until the B3 Composer.
+  const [options] = await within(navigation).findAllByRole('button', { name: / options$/ });
+  await user.click(options!);
+  await user.click(await screen.findByRole('menuitem', { name: 'New Goal' }));
   return await screen.findByRole('dialog', { name: 'New Goal' });
 }
 
@@ -404,9 +416,10 @@ afterEach(() => {
 });
 
 describe('P3 Assistant composer', () => {
-  it('sends a starter message on the existing Assistant thread without calling thread.create', async () => {
+  it('sends a starter message on the existing Assistant thread that thread.create opens', async () => {
     const user = userEvent.setup();
-    const createThread = vi.fn().mockResolvedValue(threadRecord(DRAFT_THREAD_ID, 'Task draft'));
+    // Core's private thread.create returns the existing Timeline; it does not make another one.
+    const createThread = vi.fn().mockResolvedValue(threadRecord(ASSISTANT_THREAD_ID, 'Assistant'));
     const submitConversation = vi
       .fn()
       .mockResolvedValue(
@@ -417,13 +430,13 @@ describe('P3 Assistant composer', () => {
       createThread,
       submitConversation,
     });
-    renderAt('/chat', client);
+    renderAt('/new', client);
 
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Hello Assistant');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(createThread).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledTimes(1);
     expect(submitConversation).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
@@ -436,13 +449,13 @@ describe('P3 Assistant composer', () => {
 
   it('offers no Conversation agent control on the Assistant composer', async () => {
     renderAt(
-      `/chat/${WORKSPACE_ID}/${ASSISTANT_THREAD_ID}`,
+      `/w/${WORKSPACE_ID}/t/${ASSISTANT_THREAD_ID}`,
       makeClient({ navigation: [navigationRow(ASSISTANT_THREAD_ID, 'Assistant', 'chat')] })
     );
 
     expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible();
-    expect(await screen.findByRole('button', { name: /Logical model/ })).toBeVisible();
-    expect(await screen.findByRole('button', { name: /effort/i })).toBeVisible();
+    expect(await screen.findByRole('button', { name: /Model$/ })).toBeVisible();
+    expect(await screen.findByRole('button', { name: /Thinking/ })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Add artifact or upload attachment' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeVisible();
 
@@ -467,7 +480,7 @@ describe('P3 New Task dialog', () => {
       createThread,
       submitConversation,
     });
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewTask(user);
     await user.type(
@@ -500,7 +513,7 @@ describe('P3 New Task dialog', () => {
 
     await waitFor(() =>
       expect(screen.getByLabelText('Location')).toHaveTextContent(
-        `/tasks/${WORKSPACE_ID}/${receiving.id}`
+        `/w/${WORKSPACE_ID}/t/${receiving.id}`
       )
     );
     expect(screen.getByLabelText('Location')).not.toHaveTextContent(created.id);
@@ -514,7 +527,7 @@ describe('P3 New Task dialog', () => {
         chatResponse(DRAFT_THREAD_ID, RECEIVING_THREAD_ID, NEW_TASK_TARGET.targetRef)
       );
     renderAt(
-      '/attention',
+      '/needs-you',
       makeClient({
         navigation: [navigationRow(RECEIVING_THREAD_ID, 'Fresh task', 'task')],
         submitConversation,
@@ -550,7 +563,7 @@ describe('P3 New Task dialog', () => {
         chatResponse(DRAFT_THREAD_ID, RECEIVING_THREAD_ID, NEW_TASK_TARGET.targetRef)
       );
     renderAt(
-      '/attention',
+      '/needs-you',
       makeClient({
         navigation: [navigationRow(RECEIVING_THREAD_ID, 'Shared task', 'task')],
         submitConversation,
@@ -564,12 +577,15 @@ describe('P3 New Task dialog', () => {
     expect(sandbox).toHaveTextContent('Fresh');
 
     await user.click(sandbox);
-    const options = await screen.findAllByRole('option');
-    const sharedOption = options.find(
-      (option) => !/^Fresh\b/.test(option.textContent?.trim() ?? '')
-    );
-    expect(sharedOption).toBeDefined();
-    await user.click(sharedOption!);
+    // The menu-opened dialog reads shared Sandboxes when it opens, so wait for the row.
+    const sharedOption = await waitFor(() => {
+      const found = screen
+        .getAllByRole('option')
+        .find((option) => !/^Fresh\b/.test(option.textContent?.trim() ?? ''));
+      expect(found).toBeDefined();
+      return found!;
+    });
+    await user.click(sharedOption);
 
     const consequence = within(dialog).getByText(
       /keeps its files for later work in this Workspace/i
@@ -603,7 +619,7 @@ describe('P3 New Task dialog', () => {
     const user = userEvent.setup();
     const submitConversation = vi.fn().mockRejectedValue(new Error('Submit failed'));
     renderAt(
-      '/attention',
+      '/needs-you',
       makeClient({
         navigation: [navigationRow(RECEIVING_THREAD_ID, 'Failed task', 'task')],
         submitConversation,
@@ -622,7 +638,7 @@ describe('P3 New Task dialog', () => {
 
   it('shows no Shard, host path, credential, or AgentSession', async () => {
     const user = userEvent.setup();
-    renderAt('/attention', makeClient());
+    renderAt('/needs-you', makeClient());
 
     const dialog = await openDesktopNewTask(user);
     expect(dialog).not.toHaveTextContent(/shard/i);
@@ -649,7 +665,7 @@ describe('P3 New Task dialog', () => {
     expect(within(dialog).getByRole('button', { name: 'Start Task' })).toBeVisible();
   });
 
-  it('closes the phone New Task and New Goal sheets from a 44px control', async () => {
+  it('closes the phone New Task and New Goal sheets from an icon control with a 44px touch hit area', async () => {
     setViewportWidth(390);
     const user = userEvent.setup();
     renderAt('/work', makeClient());
@@ -658,7 +674,7 @@ describe('P3 New Task dialog', () => {
     await user.click(await screen.findByRole('button', { name: 'New Task' }));
     const task = await screen.findByRole('dialog', { name: 'New Task' });
     const closeTask = within(task).getByRole('button', { name: 'Close New Task' });
-    expect(closeTask).toHaveClass('min-h-11', 'min-w-11');
+    expect(closeTask).toHaveClass('ok-action-icon');
     await user.click(closeTask);
     expect(screen.queryByRole('dialog', { name: 'New Task' })).not.toBeInTheDocument();
 
@@ -666,7 +682,7 @@ describe('P3 New Task dialog', () => {
     await user.click(await screen.findByRole('button', { name: 'New Goal' }));
     const goal = await screen.findByRole('dialog', { name: 'New Goal' });
     const closeGoal = within(goal).getByRole('button', { name: 'Close New Goal' });
-    expect(closeGoal).toHaveClass('min-h-11', 'min-w-11');
+    expect(closeGoal).toHaveClass('ok-action-icon');
     await user.click(closeGoal);
     expect(screen.queryByRole('dialog', { name: 'New Goal' })).not.toBeInTheDocument();
   });
@@ -677,15 +693,13 @@ describe('P3 New Goal dialog', () => {
     const user = userEvent.setup();
     const created = goalView('Plan the launch');
     const goalCreate = vi.fn().mockResolvedValue(created);
-    renderAt('/attention', makeClient({ goalCreate, goal: created }));
+    renderAt('/needs-you', makeClient({ goalCreate, goal: created }));
 
     const dialog = await openDesktopNewGoal(user);
     const intent = within(dialog).getByRole('textbox', { name: 'Goal intent' });
     expect(within(dialog).getAllByRole('textbox')).toHaveLength(1);
-    expect(
-      within(dialog).queryByRole('button', { name: /Logical model/i })
-    ).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: /effort/i })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /Model$/i })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /Thinking/ })).not.toBeInTheDocument();
 
     await user.type(intent, 'Plan the launch');
     await user.click(within(dialog).getByRole('button', { name: /Create Goal|Start Goal/ }));
@@ -702,7 +716,7 @@ describe('P3 New Goal dialog', () => {
 
     await waitFor(() =>
       expect(screen.getByLabelText('Location')).toHaveTextContent(
-        `/goals/${WORKSPACE_ID}/${GOAL_THREAD_ID}`
+        `/w/${WORKSPACE_ID}/t/${GOAL_THREAD_ID}`
       )
     );
   });
@@ -744,7 +758,7 @@ describe('P3 review: Assistant admission', () => {
         ],
       },
     });
-    renderAt('/chat', client);
+    renderAt('/new', client);
 
     expect(await screen.findByText('The Assistant is not available.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Conversation agent/ })).not.toBeInTheDocument();
@@ -756,7 +770,7 @@ describe('P3 review: Assistant admission', () => {
   it('waits for navigation before it will create an Assistant thread', async () => {
     const user = userEvent.setup();
     const pending: Array<(value: { items: ReturnType<typeof navigationRow>[] }) => void> = [];
-    const createThread = vi.fn();
+    const createThread = vi.fn().mockResolvedValue(threadRecord(ASSISTANT_THREAD_ID, 'Assistant'));
     const submitConversation = vi
       .fn()
       .mockResolvedValue(
@@ -772,7 +786,7 @@ describe('P3 review: Assistant admission', () => {
           })
       ),
     });
-    renderAt('/chat', client);
+    renderAt('/new', client);
 
     const input = await screen.findByRole('textbox', { name: 'Message' });
     expect(screen.getByText('Checking the Assistant.')).toBeInTheDocument();
@@ -790,9 +804,91 @@ describe('P3 review: Assistant admission', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(createThread).not.toHaveBeenCalled();
+    // Core's Timeline opener resolves the origin once navigation has loaded.
+    expect(createThread).toHaveBeenCalledTimes(1);
     expect(submitConversation).toHaveBeenCalledWith(
       expect.objectContaining({ threadId: ASSISTANT_THREAD_ID, input: 'Hello Assistant' })
+    );
+  });
+
+  it('never sends the New draft to a shared Chat; it opens the Assistant Timeline first', async () => {
+    const user = userEvent.setup();
+    const createThread = vi.fn().mockResolvedValue(threadRecord(ASSISTANT_THREAD_ID, 'Assistant'));
+    const submitConversation = vi
+      .fn()
+      .mockResolvedValue(
+        chatResponse(ASSISTANT_THREAD_ID, ASSISTANT_THREAD_ID, ASSISTANT_TARGET.targetRef)
+      );
+    const client = makeClient({
+      createThread,
+      submitConversation,
+      navigationOperation: vi.fn().mockResolvedValue({
+        items: [navigationRow(SHARED_SOURCE_THREAD_ID, 'Team chat', 'chat')],
+      }),
+    });
+    renderAt('/new', client);
+
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(input, 'A new topic');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    expect(createThread).toHaveBeenCalledTimes(1);
+    expect(createThread.mock.calls[0]?.[0]).not.toHaveProperty('visibility');
+    expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
+      submitConversation.mock.invocationCallOrder[0] ?? 0
+    );
+    expect(submitConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: ASSISTANT_THREAD_ID, input: 'A new topic' })
+    );
+    expect(submitConversation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: SHARED_SOURCE_THREAD_ID })
+    );
+  });
+
+  it('sends the New draft to the Timeline Core opens, never a newer private Knowledge Manager Thread', async () => {
+    const user = userEvent.setup();
+    const createThread = vi.fn().mockResolvedValue(threadRecord(ASSISTANT_THREAD_ID, 'Assistant'));
+    const submitConversation = vi
+      .fn()
+      .mockResolvedValue(
+        chatResponse(ASSISTANT_THREAD_ID, ASSISTANT_THREAD_ID, ASSISTANT_TARGET.targetRef)
+      );
+    const client = makeClient({
+      createThread,
+      submitConversation,
+      // Navigation lists the newer Knowledge Manager Thread first among the private chat rows.
+      navigationOperation: vi.fn().mockResolvedValue({
+        items: [
+          navigationRow(KNOWLEDGE_THREAD_ID, 'Knowledge query', 'chat'),
+          navigationRow(ASSISTANT_THREAD_ID, 'Assistant', 'chat'),
+        ],
+      }),
+    });
+    renderAt('/new', client);
+
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    await user.type(input, 'A new topic');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    expect(submitConversation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: KNOWLEDGE_THREAD_ID })
+    );
+    expect(submitConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: ASSISTANT_THREAD_ID, input: 'A new topic' })
+    );
+    expect(createThread).toHaveBeenCalledTimes(1);
+    expect(createThread.mock.calls[0]?.[0]).not.toHaveProperty('visibility');
+    expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
+      submitConversation.mock.invocationCallOrder[0] ?? 0
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText('Location')).toHaveTextContent(
+        `/w/${WORKSPACE_ID}/t/${ASSISTANT_THREAD_ID}`
+      )
     );
   });
 
@@ -801,7 +897,7 @@ describe('P3 review: Assistant admission', () => {
     const createThread = vi.fn();
     const navigation = vi.fn().mockRejectedValue(new Error('Navigation failed'));
     const client = makeClient({ createThread, navigationOperation: navigation });
-    renderAt('/chat', client);
+    renderAt('/new', client);
 
     expect(await screen.findByText("Couldn't load the Assistant.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
@@ -820,7 +916,7 @@ describe('P3 review: Assistant admission', () => {
       current: [navigationRow(ASSISTANT_THREAD_ID, 'Assistant', 'chat')],
     };
     const navigation = vi.fn().mockImplementation(async () => ({ items: rows.current }));
-    const createThread = vi.fn();
+    const createThread = vi.fn().mockResolvedValue(threadRecord(ASSISTANT_THREAD_ID, 'Assistant'));
     const submitConversation = vi
       .fn()
       .mockResolvedValue(
@@ -831,7 +927,7 @@ describe('P3 review: Assistant admission', () => {
       submitConversation,
       navigationOperation: navigation,
     });
-    renderAt('/chat', client);
+    renderAt('/new', client);
 
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(input, 'Hand off this work');
@@ -841,7 +937,7 @@ describe('P3 review: Assistant admission', () => {
     expect(alert).toHaveTextContent('The server did not classify that thread.');
     expect(input).toHaveValue('Hand off this work');
     expect(submitConversation).toHaveBeenCalledTimes(1);
-    expect(createThread).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledTimes(1);
     const requestId = submitConversation.mock.calls[0]?.[0]?.requestId;
 
     rows.current = [
@@ -852,12 +948,12 @@ describe('P3 review: Assistant admission', () => {
 
     await waitFor(() =>
       expect(screen.getByLabelText('Location')).toHaveTextContent(
-        `/tasks/${WORKSPACE_ID}/${RECEIVING_THREAD_ID}`
+        `/w/${WORKSPACE_ID}/t/${RECEIVING_THREAD_ID}`
       )
     );
     expect(submitConversation).toHaveBeenCalledTimes(1);
     expect(submitConversation.mock.calls[0]?.[0]?.requestId).toBe(requestId);
-    expect(createThread).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -882,7 +978,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
         ],
       },
     });
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewTask(user);
     const file = new File(['notes'], 'export.txt', { type: 'text/plain' });
@@ -951,7 +1047,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
         ],
       },
     });
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewTask(user);
     await user.click(within(dialog).getByText('Someone already available'));
@@ -988,7 +1084,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
       submitConversation,
     });
     allowWorkspaceSwitch(client);
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewTask(user);
     await user.type(within(dialog).getByRole('textbox', { name: 'Brief' }), 'Keep Alpha');
@@ -1027,7 +1123,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
       submitConversation,
     });
     allowWorkspaceSwitch(client);
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewTask(user);
     await user.type(within(dialog).getByRole('textbox', { name: 'Brief' }), 'In flight');
@@ -1040,7 +1136,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
     await act(async () => {
       release(chatResponse(DRAFT_THREAD_ID, RECEIVING_THREAD_ID, NEW_TASK_TARGET.targetRef));
     });
-    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent('/attention'));
+    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent('/needs-you'));
     expect(screen.getByLabelText('Location')).not.toHaveTextContent(RECEIVING_THREAD_ID);
     expect(screen.queryByDisplayValue('In flight')).not.toBeInTheDocument();
   });
@@ -1055,7 +1151,7 @@ describe('P3 review: New Goal Workspace scope', () => {
       .mockResolvedValue(goalView('Beta goal'));
     const client = makeClient({ goalCreate, goal: goalView('Beta goal') });
     allowWorkspaceSwitch(client);
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewGoal(user);
     await user.type(within(dialog).getByRole('textbox', { name: 'Goal intent' }), 'Keep Alpha');
@@ -1091,7 +1187,7 @@ describe('P3 review: New Goal Workspace scope', () => {
     );
     const client = makeClient({ goalCreate });
     allowWorkspaceSwitch(client);
-    renderAt('/attention', client);
+    renderAt('/needs-you', client);
 
     const dialog = await openDesktopNewGoal(user);
     await user.type(within(dialog).getByRole('textbox', { name: 'Goal intent' }), 'In flight');
@@ -1104,8 +1200,66 @@ describe('P3 review: New Goal Workspace scope', () => {
     await act(async () => {
       release(goalView('In flight'));
     });
-    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent('/attention'));
+    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent('/needs-you'));
     expect(screen.getByLabelText('Location')).not.toHaveTextContent('/goals/');
     expect(screen.queryByDisplayValue('In flight')).not.toBeInTheDocument();
+  });
+});
+
+describe('Thread route activity beyond the first navigation page', () => {
+  /** A first page of 50 Chat rows that ends with a continuation cursor. */
+  function firstPage() {
+    return {
+      items: Array.from({ length: 50 }, (_, index) =>
+        navigationRow(
+          `th_019a0000-0000-7000-8000-${String(900000000000 + index)}`,
+          `Chat ${index}`,
+          'chat'
+        )
+      ),
+      nextCursor: 'page-2',
+    };
+  }
+
+  it('reads the next page and opens a Goal there as a Goal, not as Chat', async () => {
+    const navigation = vi
+      .fn()
+      .mockImplementation(async ({ cursor }) =>
+        cursor === 'page-2'
+          ? { items: [navigationRow(GOAL_THREAD_ID, 'Plan the launch', 'goal')], nextCursor: null }
+          : firstPage()
+      );
+    const client = makeClient({ navigationOperation: navigation });
+    renderAt(`/w/${WORKSPACE_ID}/t/${GOAL_THREAD_ID}`, client);
+
+    await waitFor(() =>
+      expect(client.operations['goal.read']).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WORKSPACE_ID })
+      )
+    );
+    expect(navigation).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'page-2' }));
+  });
+
+  it('keeps a failed navigation read retryable instead of opening Chat', async () => {
+    const user = userEvent.setup();
+    const reads = { failing: true };
+    const navigation = vi.fn().mockImplementation(async () => {
+      if (reads.failing) throw new Error('offline');
+      return {
+        items: [navigationRow(GOAL_THREAD_ID, 'Plan the launch', 'goal')],
+        nextCursor: null,
+      };
+    });
+    const client = makeClient({ navigationOperation: navigation });
+    renderAt(`/w/${WORKSPACE_ID}/t/${GOAL_THREAD_ID}`, client);
+
+    const message = await screen.findByText("Couldn't open this Thread.");
+    expect(screen.queryByRole('group', { name: 'Timeline view' })).not.toBeInTheDocument();
+    expect(client.operations['goal.read']).not.toHaveBeenCalled();
+    const alert = message.closest('[role="alert"]') as HTMLElement;
+    reads.failing = false;
+    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+    // goal.read is the Goal page's read; a Chat visit never makes it.
+    await waitFor(() => expect(client.operations['goal.read']).toHaveBeenCalled());
   });
 });

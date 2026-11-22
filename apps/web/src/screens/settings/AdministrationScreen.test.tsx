@@ -428,7 +428,7 @@ describe('Administration', () => {
     });
     await user.click(within(others).getByRole('button', { name: /Open Other Quick Chat/ }));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(foreignQuickChat.id);
-    expect(screen.getByLabelText('Current path')).toHaveTextContent('/chat');
+    expect(screen.getByLabelText('Current path')).toHaveTextContent('/new');
   });
 
   it('waits for ownership discovery before reading the private Quick Chat', async () => {
@@ -939,9 +939,9 @@ describe('Administration', () => {
         )
       ).not.toHaveLength(0);
       expect(screen.getAllByText('Default names: LANG, PUBLIC_SETTING')).not.toHaveLength(0);
-      expect(
-        screen.getAllByText('Default values are admitted only by this activation.')
-      ).not.toHaveLength(0);
+      expect(screen.getAllByText('Default values apply only to this activation.')).not.toHaveLength(
+        0
+      );
       expect(activateWorkerEnvironment).not.toHaveBeenCalled();
 
       await user.click(screen.getByRole('button', { name: 'Activate candidate' }));

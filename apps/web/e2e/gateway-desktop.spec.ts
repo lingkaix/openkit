@@ -47,9 +47,11 @@ test('opens Gateway from desktop Settings and edits the seeded route', async ({ 
   await expect(page).toHaveURL(/\/settings\/account$/);
 
   const settings = page.getByRole('navigation', { name: 'Settings sections' });
-  await settings.getByRole('button', { name: 'Gateway', exact: true }).click();
+  await settings.getByRole('button', { name: 'Models and providers', exact: true }).click();
   await expect(page).toHaveURL(/\/settings\/gateway$/);
-  await expect(page.getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Models and providers', exact: true })
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Refresh status', exact: true })).toBeVisible();
   await expect(page.getByText('Access denied', { exact: true })).toHaveCount(0);
   await expect(page.getByLabel('Server admin token')).toHaveCount(0);
@@ -83,8 +85,9 @@ test('opens Gateway from desktop Settings and edits the seeded route', async ({ 
   const direct = page.getByRole('region', { name: 'OpenAI', exact: true });
   await expect(direct.getByRole('textbox', { name: 'Provider API key' })).toBeVisible();
   await expect(direct.getByRole('button', { name: 'Save or Replace API key' })).toBeDisabled();
-  await expect(page.getByText('Vault is locked.', { exact: true })).toHaveCount(2);
-  await expect(page.getByRole('link', { name: 'Vault', exact: true })).toHaveCount(2);
+  // F28 (WEB-UX A4): two locked providers share one Vault alert with one next step.
+  await expect(page.getByText('Vault is locked.', { exact: true })).toHaveCount(1);
+  await expect(page.getByRole('link', { name: 'Open Vault', exact: true })).toHaveCount(1);
   await expect(page.getByText('Nothing waiting to be set up', { exact: true })).toBeVisible();
   await expect(
     page.getByRole('heading', { name: 'Add subscription Provider', exact: true })
@@ -96,7 +99,9 @@ test('opens Gateway from desktop Settings and edits the seeded route', async ({ 
   await page.setViewportSize({ width: 900, height: 800 });
   await expect(page.getByRole('navigation', { name: 'Settings sections' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Sections', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Gateway', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Models and providers', exact: true })
+  ).toBeVisible();
   await expect(reasoning.getByText('Failover on', { exact: true })).toBeVisible();
   await page.setViewportSize({ width: 1280, height: 800 });
 
@@ -218,7 +223,7 @@ test('opens Gateway from desktop Settings and edits the seeded route', async ({ 
     .click();
   await page
     .getByRole('navigation', { name: 'Settings sections' })
-    .getByRole('button', { name: 'Gateway', exact: true })
+    .getByRole('button', { name: 'Models and providers', exact: true })
     .click();
   await expect(page).toHaveURL(/\/settings\/gateway$/);
   await expect(

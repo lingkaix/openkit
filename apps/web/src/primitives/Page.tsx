@@ -32,13 +32,16 @@ export interface PageHeaderProps {
   actions?: ReactNode;
 }
 
-/** Page header: optional eyebrow, page title (`ok-page-title`), subtitle, actions. */
+/**
+ * Page header: optional eyebrow, page title (S2 heading M, 22/27, heading weight),
+ * subtitle, actions.
+ */
 export function PageHeader({ eyebrow, title, subtitle, actions }: PageHeaderProps) {
   return (
     <header className="flex flex-col gap-3 min-[800px]:flex-row min-[800px]:items-start min-[800px]:justify-between min-[800px]:gap-4">
       <div className="min-w-0">
         {eyebrow ? <p className="mb-1 text-eyebrow font-bold text-fg-muted">{eyebrow}</p> : null}
-        <h1 className="text-title font-extrabold text-fg-strong">{title}</h1>
+        <h1 className="text-title font-heading text-fg-strong">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-fg-muted">{subtitle}</p> : null}
       </div>
       {actions ? (
@@ -64,12 +67,14 @@ export interface CardProps {
   className?: string;
 }
 
-/** Generic card (`ok-card`), soft 10px surface with a resting shadow. */
+/**
+ * Generic card (`ok-card`): a 10px card surface with a hairline edge and no shadow (P9).
+ * Cards are for repeated items and meaningful groups, never inside another card; the
+ * e2e nested-card check counts `.ok-card .ok-card` on the main routes.
+ */
 export function Card({ children, className }: CardProps) {
   return (
-    <div
-      className={`rounded-ok-lg border border-separator bg-card p-4 shadow-ok-card ${className ?? ''}`}
-    >
+    <div className={`ok-card rounded-ok-lg border border-separator bg-card p-4 ${className ?? ''}`}>
       {children}
     </div>
   );

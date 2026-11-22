@@ -8,14 +8,19 @@ import {
   Button,
   Card,
   EmptyState,
-  ErrorBanner,
   Eyebrow,
+  InlineAlert,
   Skeleton,
-  StatusChip,
+  StatusLight,
   TextField,
 } from '../../primitives';
 import { useArtifactVersion } from '../artifacts/data';
-import { classifiedThreadPath, useConversationNavigation } from '../chat/data';
+import {
+  classifiedThreadPath,
+  threadPath,
+  threadRouteState,
+  useConversationNavigation,
+} from '../chat/data';
 import { useMaterialProposalText, useWorkspaceMaterialRevision } from '../material/data';
 import { MaterialRangeFeedback } from '../material/MaterialRangeFeedback';
 import { ProposalReview } from '../material/ProposalReview';
@@ -94,7 +99,7 @@ export function ArtifactReviewScreen() {
   if (sourceUnavailable && !review) {
     return (
       <div className="mx-auto w-full max-w-[960px] px-6 py-8">
-        <ErrorBanner
+        <InlineAlert
           message="Couldn't load this artifact review."
           onRetry={() => {
             void reviews.refetch();
@@ -208,16 +213,16 @@ function ExactArtifactReview({
   if (sourceUnavailable)
     return (
       <div className="mx-auto w-full max-w-[960px] px-6 py-8">
-        <ErrorBanner message="Couldn't load this artifact review." onRetry={onRefresh} />
+        <InlineAlert message="Couldn't load this artifact review." onRetry={onRefresh} />
       </div>
     );
   if (review.decision === null && !exactArtifact)
     return (
-      <ErrorBanner message="This review is unavailable. Recovery is required before a decision can be recorded." />
+      <InlineAlert message="This review is unavailable. Recovery is required before a decision can be recorded." />
     );
   if (proposal && base.isError)
     return (
-      <ErrorBanner
+      <InlineAlert
         message="Couldn't load the recorded Material base."
         onRetry={() => void base.refetch()}
       />
@@ -232,7 +237,7 @@ function ExactArtifactReview({
       : null;
   if (proposal && base.data && !exactBase)
     return (
-      <ErrorBanner
+      <InlineAlert
         message="The recorded Material base does not match this Review."
         onRetry={() => void base.refetch()}
       />
@@ -273,7 +278,7 @@ function ExactArtifactReview({
               : null;
   const reviewStatus = (
     <>
-      <StatusChip
+      <StatusLight
         tone={
           review.decision === 'accepted'
             ? 'positive'
@@ -285,10 +290,9 @@ function ExactArtifactReview({
                   ? 'notice'
                   : 'neutral'
         }
-        dot
       >
         {reviewStatusText}
-      </StatusChip>
+      </StatusLight>
       <p className="text-xs text-fg-muted">
         Version {review.artifactVersion} · {review.contentDigest}
       </p>
@@ -308,12 +312,13 @@ function ExactArtifactReview({
       <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto mb-4 max-w-[760px]">
           <Link
-            to={`/goals/${encodeURIComponent(routeWorkspaceId)}/${encodeURIComponent(threadId)}?lens=plan`}
+            to={`${threadPath(routeWorkspaceId, threadId)}?lens=plan`}
+            state={threadRouteState('goal')}
             className="text-xs font-medium text-accent hover:underline"
           >
             ← Back to goal
           </Link>
-          <h1 className="mt-4 text-title font-extrabold text-fg-strong">
+          <h1 className="mt-4 text-title font-heading text-fg-strong">
             {exactArtifact?.title ?? `Artifact ${artifactId}`}
           </h1>
           <p className="mt-1 text-xs text-fg-muted">Review version {review.artifactVersion}</p>
@@ -429,7 +434,7 @@ function ExactArtifactReview({
           />
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             isDisabled={writeBlocked || candidateUnavailable}
             onPress={() => select.mutate(reason.trim() || undefined)}
           >
@@ -441,7 +446,7 @@ function ExactArtifactReview({
             </p>
           ) : null}
           {select.isError ? (
-            <ErrorBanner
+            <InlineAlert
               message={
                 select.error instanceof ApiCallError &&
                 (select.error.code === 'stale' || select.error.status === 404)
@@ -493,7 +498,7 @@ function ExactArtifactReview({
           )}
 
           {review.decision === null && decide.isError && !conflict ? (
-            <ErrorBanner
+            <InlineAlert
               message="The review decision could not be confirmed. Inspect the review or retry the same decision."
               onRetry={onRefresh}
             />
@@ -534,7 +539,7 @@ function ExactArtifactReview({
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onPress={() => submitDecision('needs_refinement')}
                 isDisabled={
                   writeBlocked ||
@@ -546,7 +551,7 @@ function ExactArtifactReview({
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onPress={() => submitDecision('redo')}
                 isDisabled={
                   writeBlocked ||
@@ -558,7 +563,8 @@ function ExactArtifactReview({
               </Button>
               <Button
                 size="sm"
-                variant="negative-outline"
+                variant="negative"
+                fillStyle="outline"
                 onPress={() => submitDecision('rejected')}
                 isDisabled={
                   writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'rejected')
@@ -568,7 +574,7 @@ function ExactArtifactReview({
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onPress={() => submitDecision('deferred')}
                 isDisabled={
                   writeBlocked || (decide.isUncertain && decide.variables?.decision !== 'deferred')

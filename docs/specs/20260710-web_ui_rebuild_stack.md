@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Partial
+implementation: Implemented
 kind: topology
 aspect: architecture
 ---
@@ -43,10 +43,10 @@ The rebuilt `apps/web` MUST use the following stack.
 
 ### Token-bridge contract
 
-- There MUST be a single source file that maps Adobe Spectrum tokens (global + alias/semantic) to OpenKit semantic Tailwind theme tokens: surface/background steps, foreground/text steps, primary/accent/neutral, `info`/`success`/`warning`/`error`, border tones, corner radii, spacing scale, and the type ramp.
-- The **same token values MUST back both sides** of the design loop: the Spectrum design authored in Claude Design and the Tailwind theme compiled into code. When Spectrum tokens change, the bridge file is the single point of update.
+- Spectrum values MUST come from the exactly pinned `@adobe/spectrum-tokens` package through one generated file (`apps/web/src/styles/spectrum.generated.css`, written by `apps/web/scripts/gen-tokens.mjs` from an allowlist, light and dark as `light-dark()` values). There MUST be a single semantic source file (`apps/web/src/styles/tokens.css`) that maps those values to OpenKit semantic Tailwind theme tokens: surface/background steps, foreground/text steps, primary/accent/neutral, `info`/`success`/`warning`/`error`, border tones, corner radii, spacing scale, and the type ramp.
+- The **same token values MUST back both sides** of the design loop: the Spectrum design authored in Claude Design and the Tailwind theme compiled into code. When Spectrum tokens change, the package pin is the single point of update: bump it, regenerate, and review the component gallery.
 - Component code MUST consume only the semantic theme tokens produced by the bridge. Raw Spectrum global tokens and hard-coded color/spacing/radius literals MUST NOT appear in component markup.
-- A parity check MUST verify that computed theme token values match the Spectrum token source, so drift is caught mechanically.
+- A parity check MUST verify that the generated file matches the pinned package output and that every semantic role resolves to a generated Spectrum token in both color schemes, so drift is caught mechanically.
 
 ### Layer boundaries
 
@@ -86,10 +86,11 @@ Remaining Spectrum and renderer work stays under the existing dependency procedu
 - `apps/web/src/styles/`
 - `apps/web/src/primitives/`
 - `apps/web/src/generative/`
+- Token bridge: `@adobe/spectrum-tokens` is an exactly pinned direct dependency of `apps/web`. `apps/web/scripts/gen-tokens.mjs` writes `apps/web/src/styles/spectrum.generated.css`, and `apps/web/src/styles/tokens.css` maps it to semantic roles. `apps/web/test/spectrum-tokens.test.ts` checks that the generated file matches the pinned package output, and `apps/web/src/test/tokens.test.ts` checks that every semantic role resolves to a generated token in both color schemes.
 
 ## Implementation Gaps
 
-- The Spectrum token package is a direct Web dependency and the Tailwind bridge derives from it - `apps/web/src/styles/tokens.css` is a hand-maintained copy and the package is absent from the Web manifest - #789
+None.
 
 ## Decisions
 

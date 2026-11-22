@@ -263,13 +263,13 @@ export interface VaultInjectionReceiptRow {
   revocationStatus: string;
 }
 
-/** Product-safe evidence-bundle summary exposed to Debug. */
+/** Product-safe evidence-bundle summary exposed to Diagnostics. */
 export interface EvidenceBundleRow {
   id: string;
   summary: string;
 }
 
-/** Product-safe runtime-evidence summary exposed to Debug. */
+/** Product-safe runtime-evidence summary exposed to Diagnostics. */
 export interface RuntimeEvidenceRow {
   id: string;
   summary: string;
@@ -1085,7 +1085,7 @@ export function useVaultInjectionReceipts(workspaceId: string | null) {
 }
 
 /**
- * Loads selected-Workspace evidence-bundle summaries for Debug.
+ * Loads selected-Workspace evidence-bundle summaries for Diagnostics.
  *
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
  * @returns TanStack query for product-safe evidence summaries.
@@ -1103,7 +1103,7 @@ export function useEvidenceBundles(workspaceId: string | null) {
 }
 
 /**
- * Loads selected-Workspace runtime-evidence summaries for Debug.
+ * Loads selected-Workspace runtime-evidence summaries for Diagnostics.
  *
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
  * @returns TanStack query for product-safe runtime summaries.
@@ -1121,7 +1121,7 @@ export function useRuntimeEvidence(workspaceId: string | null) {
 }
 
 /**
- * Loads selected-Workspace Agent Environment Package snapshot identities for Debug.
+ * Loads selected-Workspace Agent Environment Package snapshot identities for Diagnostics.
  *
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
  * @returns TanStack query for snapshot ids only.

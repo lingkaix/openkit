@@ -37,7 +37,7 @@ import RiWifiOffLine from '~icons/ri/wifi-off-line';
  *
  * Remix Icon glyphs, compiled offline to inline SVG by `unplugin-icons` — the
  * runtime icon stack the rebuild-stack spec fixes. Icons are monochrome and tint
- * with `currentColor`; sizes are 18px default / 16 sm / 20 lg. Add a new glyph by
+ * with `currentColor`; sizes are the Spectrum 2 workflow icon sizes. Add a new glyph by
  * importing its `~icons/ri/*` module and registering it below — never handcraft
  * an SVG when a Remix icon exists.
  */
@@ -110,13 +110,18 @@ const REGISTRY: Record<IconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   view: RiEyeLine,
 };
 
-const SIZE_PX = { sm: 16, md: 18, lg: 20 } as const;
+/**
+ * Spectrum 2 workflow icon sizes (theme.css components layer): sm 16 / 18, md 20 / 24,
+ * lg 22 / 28 (desktop / touch). Without `size` an icon takes the size its control sets
+ * (`--ok-icon-size`: S controls 16, M 20, L 22), else md.
+ */
+const SIZE_CLASS = { sm: 'ok-icon-sm', md: 'ok-icon-md', lg: 'ok-icon-lg' } as const;
 
 export interface IconProps {
   /** Registered Remix glyph name. */
   name: IconName;
-  /** 16 (sm) · 18 (md, default) · 20 (lg). */
-  size?: keyof typeof SIZE_PX;
+  /** Workflow icon size; omit to follow the surrounding control (DESIGN.md §8.1). */
+  size?: keyof typeof SIZE_CLASS;
   /**
    * Accessible label for a standalone/meaningful icon. Omit for a decorative
    * icon that sits beside a text label — it is then hidden from assistive tech.
@@ -126,14 +131,12 @@ export interface IconProps {
 }
 
 /** Render a Remix glyph, tinted with `currentColor`, correctly labeled. */
-export function Icon({ name, size = 'md', label, className }: IconProps) {
+export function Icon({ name, size, label, className }: IconProps) {
   const Svg = REGISTRY[name];
-  const px = SIZE_PX[size];
   return (
     <Svg
-      width={px}
-      height={px}
-      className={`shrink-0 ${className ?? ''}`}
+      data-icon={name}
+      className={`ok-icon shrink-0 ${size ? SIZE_CLASS[size] : ''} ${className ?? ''}`}
       aria-hidden={label ? undefined : true}
       role={label ? 'img' : undefined}
       aria-label={label}

@@ -138,7 +138,7 @@ test('phone retains a stable layout through a simulator run', async ({ page }) =
       throw new Error('The simulator must complete the submitted run with an assistant body.');
     }
     expect(message.text).toBe('Reviewing workspace context. Preparing a deterministic plan.');
-    await page.getByRole('button', { name: 'Full lens', exact: true }).click();
+    await page.getByRole('button', { name: 'All activity', exact: true }).click();
     await expect(page.getByRole('article').getByText(message.text, { exact: true })).toBeVisible({
       timeout: 60_000,
     });

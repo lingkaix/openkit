@@ -22,7 +22,7 @@ import { formatAgeSeconds, useReducedMotion } from './time';
 import { IDLE_POLL_MS } from './window';
 
 /**
- * Attention rows for the timeline. The same query Action Center uses.
+ * Attention rows for the timeline. The same query Needs you uses.
  * A missing operation yields an empty bar so a partial test client stays quiet.
  */
 export function useTimelineAttention(workspaceId: string | null) {

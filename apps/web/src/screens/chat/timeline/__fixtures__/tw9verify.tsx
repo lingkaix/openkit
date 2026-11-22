@@ -206,7 +206,7 @@ export function Frame({
   api,
   cache,
   children,
-  entry = `/tasks/${WS}/${THREAD}`,
+  entry = `/w/${WS}/t/${THREAD}`,
 }: {
   api: CoreClient;
   cache: QueryClient;

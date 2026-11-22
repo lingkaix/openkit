@@ -452,7 +452,14 @@ function renderApp(
   return client;
 }
 
-/** Types one global search query and submits it. */
+/** Opens the Search palette from the sidebar row and types one query; it searches as it settles. */
+/** Opens a Workspace place from the current Workspace group's ⋯ menu (B2). */
+async function openWorkspacePlace(user: User, name: string) {
+  const [options] = await screen.findAllByRole('button', { name: / options$/ });
+  await user.click(options!);
+  await user.click(await screen.findByRole('menuitem', { name }));
+}
+
 async function submitSearch(user: User, query = SEARCH_QUERY) {
   const searchbox = screen.queryByRole('searchbox', { name: /search/i });
   if (!searchbox) {
@@ -461,7 +468,6 @@ async function submitSearch(user: User, query = SEARCH_QUERY) {
   } else {
     await user.type(searchbox, query);
   }
-  await user.keyboard('{Enter}');
 }
 
 /** Returns the nearest row container for one labeled recovery item. */
@@ -860,9 +866,9 @@ describe('Recovery and search', () => {
         }),
       ]);
     });
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    await screen.findByRole('heading', { level: 1, name: 'Action Center' });
-    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    await screen.findByRole('heading', { level: 1, name: 'Needs you' });
+    await openWorkspacePlace(user, 'Recovery');
     await screen.findByRole('heading', { level: 1, name: 'Recovery' });
     // Refresh explicitly to isolate denial disposal from mount admission.
     await act(async () => {
@@ -1174,9 +1180,9 @@ describe('Recovery and search', () => {
         workerActionButton(screen.getByRole('region', { name: 'Interrupted workers' }))
       ).toBeEnabled()
     );
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    await screen.findByRole('heading', { level: 1, name: 'Action Center' });
-    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    await screen.findByRole('heading', { level: 1, name: 'Needs you' });
+    await openWorkspacePlace(user, 'Recovery');
     await screen.findByRole('heading', { level: 1, name: 'Recovery' });
     await waitFor(() => {
       expect(workersRead).toHaveBeenCalledTimes(2);
@@ -1209,9 +1215,9 @@ describe('Recovery and search', () => {
     });
     renderApp('/recovery', client, undefined, queryClient);
     await waitFor(() => expect(workersRead).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    await screen.findByRole('heading', { level: 1, name: 'Action Center' });
-    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    await screen.findByRole('heading', { level: 1, name: 'Needs you' });
+    await openWorkspacePlace(user, 'Recovery');
     await screen.findByRole('heading', { level: 1, name: 'Recovery' });
     await act(async () => {
       departedWorkers.resolve({ items: ALL_WORKERS });
@@ -1251,9 +1257,11 @@ describe('Recovery and search', () => {
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/doesn't exist/i)).not.toBeInTheDocument();
 
-    const destinations = await screen.findByRole('group', { name: 'Sidebar shortcuts' });
-    const navButton = screen.getByRole('button', { name: 'Recovery' });
-    expect(destinations).toContainElement(navButton);
+    // B2: Recovery is a place in the Workspace group's ⋯ menu.
+    const [options] = await screen.findAllByRole('button', { name: / options$/ });
+    await user.click(options!);
+    expect(await screen.findByRole('menuitem', { name: 'Recovery' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
     expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
@@ -1328,11 +1336,9 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(workerActionButton(workers)).toBeEnabled());
     expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled();
 
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Action Center' })
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Needs you' })).toBeInTheDocument();
+    await openWorkspacePlace(user, 'Recovery');
     expect(await screen.findByRole('heading', { level: 1, name: 'Recovery' })).toBeInTheDocument();
     await waitFor(() => {
       expect(listInterruptedWorkers).toHaveBeenCalledTimes(2);
@@ -1397,12 +1403,10 @@ describe('Recovery and search', () => {
       expect(within(scheduler).getByRole('button', { name: 'Retry' })).toBeEnabled()
     );
 
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Action Center' })
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Needs you' })).toBeInTheDocument();
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id }));
-    await user.click(screen.getByRole('button', { name: 'Recovery' }));
+    await openWorkspacePlace(user, 'Recovery');
     expect(await screen.findByRole('heading', { level: 1, name: 'Recovery' })).toBeInTheDocument();
     await waitFor(() => expect(workspaceAReads).toBeGreaterThan(1));
     const remountedScheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
@@ -1808,7 +1812,7 @@ describe('Recovery and search', () => {
     {
       name: 'shell search',
       kind: 'search' as const,
-      path: '/chat',
+      path: '/new',
       region: null,
       message: /couldn't search/i,
       privateText: 'search-private failure',
@@ -1869,7 +1873,7 @@ describe('Recovery and search', () => {
         within(screen.getByRole('region', { name: scenario.retainedRegion })).queryByRole('alert')
       ).toBeNull();
     } else if (scenario.kind === 'search') {
-      expect(screen.getByRole('region', { name: 'Search' })).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: 'Search' })).toBeInTheDocument();
       expect(screen.queryByRole('region', { name: 'Interrupted workers' })).toBeNull();
     } else {
       expect(
@@ -1928,9 +1932,9 @@ describe('Recovery and search', () => {
     },
     {
       name: 'search',
-      path: '/chat',
+      path: '/new',
       region: null,
-      empty: /no (search )?results/i,
+      empty: /no matching names/i,
       emptyOwner: 'search' as const,
       retainedRegion: null,
       retainedText: null,
@@ -1957,8 +1961,8 @@ describe('Recovery and search', () => {
           [{ query: SEARCH_QUERY }],
         ])
       );
+      expect(await screen.findByText(scenario.empty)).toBeInTheDocument();
       expect(screen.queryByText(SEARCH_THREAD.title)).not.toBeInTheDocument();
-      expect(screen.getByText(scenario.empty)).toBeInTheDocument();
       expect(client.operations['recovery.worker-list']).not.toHaveBeenCalled();
       expect(client.operations['scheduler.list']).not.toHaveBeenCalled();
     } else {
@@ -2046,7 +2050,7 @@ describe('Recovery and search', () => {
     const user = userEvent.setup();
     let pathname = '';
     const client = makeClient();
-    renderApp('/chat', client, (next) => {
+    renderApp('/new', client, (next) => {
       pathname = next;
     });
 
@@ -2064,12 +2068,12 @@ describe('Recovery and search', () => {
     );
     expect(await screen.findByText(SEARCH_THREAD.title)).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue(SEARCH_QUERY);
-    expect(pathname).toBe('/chat');
+    expect(pathname).toBe('/new');
     poisonDom();
 
     await user.keyboard('{Escape}{Escape}');
-    await user.click(screen.getByRole('button', { name: 'Action Center' }));
-    await waitFor(() => expect(pathname).toBe('/attention'));
+    await user.click(screen.getByRole('button', { name: 'Needs you' }));
+    await waitFor(() => expect(pathname).toBe('/needs-you'));
     await submitSearch(user);
     expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue(SEARCH_QUERY);
     expect(await screen.findByText(SEARCH_THREAD.title)).toBeInTheDocument();
@@ -2351,9 +2355,9 @@ describe('Recovery and search', () => {
     const client = makeClient({
       'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_CROSS_WORKSPACE] }),
     });
-    renderApp('/chat', client, (next) => {
+    renderApp('/new', client, (next) => {
       pathname = next;
-      if (next === `/chat/${WORKSPACE_B.id}/${SEARCH_CROSS_WORKSPACE.id}`) events.push('navigate');
+      if (next === `/w/${WORKSPACE_B.id}/t/${SEARCH_CROSS_WORKSPACE.id}`) events.push('navigate');
     });
 
     expect(SEARCH_CROSS_WORKSPACE.workspaceId).toBe(WORKSPACE_B.id);
@@ -2363,9 +2367,9 @@ describe('Recovery and search', () => {
     await submitSearch(user);
     expect(await screen.findByText(SEARCH_CROSS_WORKSPACE.title)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: SEARCH_CROSS_WORKSPACE.title }));
+    await user.click(screen.getByRole('menuitem', { name: SEARCH_CROSS_WORKSPACE.title }));
     await waitFor(() =>
-      expect(pathname).toBe(`/chat/${WORKSPACE_B.id}/${SEARCH_CROSS_WORKSPACE.id}`)
+      expect(pathname).toBe(`/w/${WORKSPACE_B.id}/t/${SEARCH_CROSS_WORKSPACE.id}`)
     );
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
     expect(events).toEqual(['workspace', 'navigate']);
@@ -2408,7 +2412,7 @@ describe('Recovery and search', () => {
   it('clears previous search query and results when submitting an empty query', async () => {
     const user = userEvent.setup();
     const client = makeClient();
-    renderApp('/chat', client);
+    renderApp('/new', client);
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
@@ -2716,7 +2720,7 @@ describe('Recovery and search', () => {
     const client = makeClient({
       'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_WORKSPACE] }),
     });
-    renderApp('/chat', client, (next) => {
+    renderApp('/new', client, (next) => {
       pathname = next;
       if (next === '/') events.push('navigate');
     });
@@ -2734,10 +2738,12 @@ describe('Recovery and search', () => {
       discovered.items.map((entry: { workspace: { id: string } }) => entry.workspace.id)
     ).toEqual([WORKSPACE.id, WORKSPACE_B.id]);
     await submitSearch(user);
-    expect(await screen.findByRole('button', { name: SEARCH_WORKSPACE.title })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('menuitem', { name: SEARCH_WORKSPACE.title })
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: SEARCH_WORKSPACE.title }));
-    await waitFor(() => expect(pathname).toBe('/attention'));
+    await user.click(screen.getByRole('menuitem', { name: SEARCH_WORKSPACE.title }));
+    await waitFor(() => expect(pathname).toBe('/needs-you'));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(SEARCH_WORKSPACE.id);
     expect(useWorkspaceStore.getState().currentWorkspaceId).not.toBe(WORKSPACE.id);
     expect(events).toEqual(['workspace', 'navigate']);
@@ -2747,7 +2753,7 @@ describe('Recovery and search', () => {
         limit: 50,
       })
     );
-    expect(screen.getByRole('heading', { level: 1, name: 'Action Center' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Needs you' })).toBeInTheDocument();
     unsubscribe();
     poisonDom();
   });
@@ -2817,7 +2823,7 @@ describe('Recovery and search', () => {
         'artifact.version-list': listVersions,
       }
     );
-    renderApp('/chat', client, (next) => {
+    renderApp('/new', client, (next) => {
       pathname = next;
       if (next === SEARCH_ARTIFACT_DESTINATION) events.push('navigate');
     });
@@ -2828,9 +2834,11 @@ describe('Recovery and search', () => {
       await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
     ).toBeInTheDocument();
     await submitSearch(user);
-    expect(await screen.findByRole('button', { name: SEARCH_ARTIFACT.title })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('menuitem', { name: SEARCH_ARTIFACT.title })
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: SEARCH_ARTIFACT.title }));
+    await user.click(screen.getByRole('menuitem', { name: SEARCH_ARTIFACT.title }));
     await waitFor(() => expect(pathname).toBe(SEARCH_ARTIFACT_DESTINATION));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
     expect(events).toEqual(['workspace', 'navigate']);
@@ -3977,13 +3985,13 @@ describe('Recovery and search', () => {
       name: 'Workspace search result',
       items: [SEARCH_WORKSPACE],
       title: SEARCH_WORKSPACE.title,
-      destination: '/attention',
+      destination: '/needs-you',
     },
     {
       name: 'cross-Workspace thread result',
       items: [SEARCH_CROSS_WORKSPACE],
       title: SEARCH_CROSS_WORKSPACE.title,
-      destination: `/chat/${WORKSPACE_B.id}/${SEARCH_CROSS_WORKSPACE.id}`,
+      destination: `/w/${WORKSPACE_B.id}/t/${SEARCH_CROSS_WORKSPACE.id}`,
     },
   ])(
     'does not navigate or read a $name under the wrong Workspace while authorized discovery is pending',
@@ -4030,7 +4038,7 @@ describe('Recovery and search', () => {
         }
       );
       useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
-      renderApp('/chat', client, (next) => {
+      renderApp('/new', client, (next) => {
         pathname = next;
         if (next === scenario.destination) events.push('navigate');
       });
@@ -4039,8 +4047,8 @@ describe('Recovery and search', () => {
       expect(
         screen.queryByRole('heading', { level: 1, name: 'What can we get done?' })
       ).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: scenario.title })).not.toBeInTheDocument();
-      expect(pathname).toBe('/chat');
+      expect(screen.queryByRole('menuitem', { name: scenario.title })).not.toBeInTheDocument();
+      expect(pathname).toBe('/new');
       expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
       expect([
         getWorkspaceDashboard.mock.calls.length,
@@ -4075,8 +4083,9 @@ describe('Recovery and search', () => {
         })
       );
       await submitSearch(user);
-      expect(await screen.findByText(scenario.title)).toBeInTheDocument();
-      expect(pathname).toBe('/chat');
+      // The sidebar group shows the Workspace name too, so wait for the Search result row.
+      expect(await screen.findByRole('menuitem', { name: scenario.title })).toBeInTheDocument();
+      expect(pathname).toBe('/new');
       const workspaceAReadsBeforeDestination = [
         getWorkspaceDashboard.mock.calls.filter(([input]) => input.workspaceId === WORKSPACE.id)
           .length,
@@ -4091,7 +4100,7 @@ describe('Recovery and search', () => {
       ];
 
       if (pathname !== scenario.destination) {
-        await user.click(screen.getByRole('button', { name: scenario.title }));
+        await user.click(screen.getByRole('menuitem', { name: scenario.title }));
       }
       await waitFor(() => expect(pathname).toBe(scenario.destination));
       expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
@@ -4108,7 +4117,7 @@ describe('Recovery and search', () => {
           ([{ workspaceId }]) => workspaceId === WORKSPACE.id
         ).length,
       ]).toEqual(workspaceAReadsBeforeDestination);
-      if (scenario.destination === '/' || scenario.destination === '/attention') {
+      if (scenario.destination === '/' || scenario.destination === '/needs-you') {
         await waitFor(() =>
           expect(listConversationNavigation).toHaveBeenCalledWith({
             workspaceId: WORKSPACE_B.id,
@@ -4155,7 +4164,7 @@ describe('Recovery and search', () => {
       admitted: [WORKSPACE],
       hit: SEARCH_WORKSPACE,
     },
-  ])('disables AppSearch hit buttons for a $name', async (scenario) => {
+  ])('disables Search palette hits for a $name', async (scenario) => {
     const user = userEvent.setup();
     const discovery = createDeferred<{
       items: Array<{ workspace: { id: string; name: string } }>;
@@ -4165,7 +4174,7 @@ describe('Recovery and search', () => {
       { 'workspace.list': vi.fn().mockReturnValue(discovery.promise) }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
-    renderApp('/chat', client);
+    renderApp('/new', client);
 
     expect(scenario.hit.kind === 'workspace' ? scenario.hit.id : scenario.hit.workspaceId).toBe(
       WORKSPACE_B.id
@@ -4194,13 +4203,16 @@ describe('Recovery and search', () => {
         await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
       ).toBeInTheDocument();
       await submitSearch(user);
-      expect(await screen.findByRole('button', { name: scenario.hit.title })).toBeDisabled();
+      expect(await screen.findByRole('menuitem', { name: scenario.hit.title })).toHaveAttribute(
+        'aria-disabled',
+        'true'
+      );
     } else {
       expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
       expect(
         screen.queryByRole('heading', { level: 1, name: 'What can we get done?' })
       ).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: scenario.hit.title })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: scenario.hit.title })).not.toBeInTheDocument();
     }
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
     poisonDom();

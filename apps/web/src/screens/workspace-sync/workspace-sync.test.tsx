@@ -720,9 +720,11 @@ describe('Workspace changes', () => {
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/doesn't exist/i)).not.toBeInTheDocument();
 
-    const destinations = await screen.findByRole('group', { name: 'Sidebar shortcuts' });
-    const navButton = screen.getByRole('button', { name: 'Workspace changes' });
-    expect(destinations).toContainElement(navButton);
+    // B2: Workspace changes is a place in the Workspace group's ⋯ menu.
+    const [options] = await screen.findAllByRole('button', { name: / options$/ });
+    await userEvent.click(options!);
+    expect(await screen.findByRole('menuitem', { name: 'Workspace changes' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
     expect(within(reviews).getAllByText('docs/spec.md').length).toBeGreaterThan(0);
@@ -999,8 +1001,15 @@ describe('Workspace changes', () => {
       expect(
         await screen.findByRole('heading', { level: 1, name: 'Workspace changes' })
       ).toBeInTheDocument();
-      expect(screen.getByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Workspace changes' })).toBeInTheDocument();
+      // B2: the Workspace group names the Workspace; its ⋯ menu lists Workspace changes.
+      expect(screen.getByRole('region', { name: PERSONAL_WORKSPACE.name })).toBeInTheDocument();
+      await userEvent.click(
+        screen.getByRole('button', { name: `${PERSONAL_WORKSPACE.name} options` })
+      );
+      expect(
+        await screen.findByRole('menuitem', { name: 'Workspace changes' })
+      ).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
       expect(await screen.findByText('No reviews', { exact: true })).toBeInTheDocument();
       expect(screen.getByRole('main', { name: 'Workspace' })).not.toHaveTextContent(
         /workspace changes is unavailable/i

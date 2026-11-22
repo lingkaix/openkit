@@ -315,40 +315,39 @@ export function useConversationTargets(workspaceId: string | null, threadId?: st
   });
 }
 
-/**
- * Builds a Chat deep link that retains the Thread's owning Workspace.
- *
- * @param workspaceId Workspace that owns the Thread.
- * @param threadId Thread to open.
- * @returns Chat route carrying the complete owner tuple.
- */
-export function chatThreadPath(workspaceId: string, threadId: string): string {
-  return `/chat/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
-}
-
-/** Builds a Task deep link that retains the Thread's owning Workspace. */
-export function taskThreadPath(workspaceId: string, threadId: string): string {
-  return `/tasks/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
-}
+/** Server-projected conversation activity of one Thread. */
+export type ThreadActivity = ConversationNavigationResponse['items'][number]['activity'];
 
 /**
- * Builds the existing destination for server-projected conversation activity.
+ * Builds the one Thread route (ia.md §2) that retains the Thread's owning Workspace.
+ * Chat, Task and Goal share it; the page adapts to the Thread's activity.
  *
  * @param workspaceId Workspace that owns the Thread.
  * @param threadId Thread to open, encoded as one route segment.
- * @param activity Current/latest navigation activity; unknown opens Chat without reclassifying it.
- * @returns A Chat, Task, or Goal route, not a rule for matching the active sidebar row.
+ * @returns `/w/:workspaceId/t/:threadId`.
  */
-export function conversationThreadPath(
-  workspaceId: string,
-  threadId: string,
-  activity: ConversationNavigationResponse['items'][number]['activity']
-): string {
-  if (activity === 'goal') {
-    return `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}`;
-  }
-  if (activity === 'task') return taskThreadPath(workspaceId, threadId);
-  return chatThreadPath(workspaceId, threadId);
+export function threadPath(workspaceId: string, threadId: string): string {
+  return `/w/${encodeURIComponent(workspaceId)}/t/${encodeURIComponent(threadId)}`;
+}
+
+/** History state that tells the Thread route which activity the opener already knows. */
+export interface ThreadRouteState {
+  readonly threadActivity: Exclude<ThreadActivity, 'unknown'>;
+}
+
+/**
+ * The activity hint for `navigate(threadPath(...), { state })` or `<Link state>`.
+ * Unknown activity carries no hint, so the route opens Chat without reclassifying it.
+ */
+export function threadRouteState(activity: ThreadActivity): ThreadRouteState | undefined {
+  return activity === 'unknown' ? undefined : { threadActivity: activity };
+}
+
+/** Reads a Thread route activity hint from history state, ignoring anything else. */
+export function threadActivityHint(state: unknown): ThreadRouteState['threadActivity'] | null {
+  if (!state || typeof state !== 'object' || !('threadActivity' in state)) return null;
+  const value = (state as { threadActivity: unknown }).threadActivity;
+  return value === 'chat' || value === 'task' || value === 'goal' ? value : null;
 }
 
 /**
@@ -368,7 +367,7 @@ export function classifiedThreadPath(
   ) {
     return null;
   }
-  return conversationThreadPath(workspaceId, threadId, item.activity);
+  return threadPath(workspaceId, threadId);
 }
 
 /** One authorized Workspace row with the caller's explicit relationship and access cause. */
@@ -1236,7 +1235,7 @@ function handoffToast(
     receivingWorkspaceId: string;
     receivingThreadId: string;
   }
-): { message: string; path: string } | null {
+): { message: string; path: string; activity: 'task' | 'goal' } | null {
   if (response.outcome !== 'task-handoff' && response.outcome !== 'goal-handoff') return null;
   if (
     response.receivingWorkspaceId === input.workspaceId &&
@@ -1247,12 +1246,14 @@ function handoffToast(
   if (response.outcome === 'goal-handoff') {
     return {
       message: 'Sent to a goal',
-      path: `/goals/${encodeURIComponent(response.receivingWorkspaceId)}/${encodeURIComponent(response.receivingThreadId)}`,
+      path: threadPath(response.receivingWorkspaceId, response.receivingThreadId),
+      activity: 'goal',
     };
   }
   return {
     message: 'Sent to a task',
-    path: taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId),
+    path: threadPath(response.receivingWorkspaceId, response.receivingThreadId),
+    activity: 'task',
   };
 }
 
@@ -1274,11 +1275,11 @@ export function useSendTurn() {
     onSuccess: (response, input) => {
       const toast = handoffToast(input, response);
       if (toast) {
-        const path = toast.path;
+        const { path, activity } = toast;
         toastQueue.add(
           {
             message: toast.message,
-            onAction: () => navigate(path),
+            onAction: () => navigate(path, { state: threadRouteState(activity) }),
           },
           { timeout: 15_000 }
         );
