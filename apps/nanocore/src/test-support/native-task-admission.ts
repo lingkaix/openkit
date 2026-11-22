@@ -339,6 +339,7 @@ export async function createNativeTaskAdmissionFixture(
       admitSubmission: owner.firstSubmission,
       readWorkerCompletion: owner.readWorkerCompletion,
       harnessTurnLifecycle: harnessWriter,
+      releaseTerminalScopes: owner.releaseTerminalScopes,
       writeStorageAttachment: owner.writeStorageAttachment,
       commitCloseout: owner.classifyRecovery,
     },
