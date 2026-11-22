@@ -34,6 +34,7 @@ import {
   ControlCoreNanoHostFinalInputSchema,
   ControlNanoHostFirstSubmissionInputSchema,
   ControlNanoHostOrphanRetirementInputSchema,
+  ControlNanoHostTerminalReleaseInputSchema,
 } from '../storage/core-journal-codecs.js';
 import {
   admitNanoHostFirstSubmissionInDb,
@@ -42,13 +43,17 @@ import {
   closeNanoHostFailedStartInDb,
   commitCoreNanoHostOrphanAuditInDb,
   inspectCoreNanoHostOrphanAudit,
+  inspectCoreNanoHostTerminalRelease,
+  nanoHostTerminalReleaseWorkspaceStep,
   observeAcceptedNanoHostFinalInDb,
   readCoreImageAcquisitionRef,
+  releaseCoreNanoHostTerminalInDb,
 } from '../storage/core-journal-native.js';
 import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
 import {
   nanoHostWorkerFinalDecisionFingerprint,
   readRetainedNanoHostSubmission,
@@ -106,6 +111,8 @@ import {
   inspectKernelProofReceipt,
   inspectRepairReservationStep,
   kernelSchedulerScopeIsHeld,
+  readExecutionJournalEndedStep,
+  readExecutionJournalInvocation,
   readExecutionJournalRoot,
   readKernelSchedulerGrantInDb,
   releaseKernelExecutionScopesInDb,
@@ -119,6 +126,7 @@ import type {
   ExecutionJournalSpan,
 } from './execution-step-journal.js';
 import { hasNanoHostAttemptPreEffectProof } from './nanohost-attempt-recovery.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
@@ -126,7 +134,10 @@ import {
 } from './worker-backend-session-records.js';
 import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 import { acceptWorkerControlSequence } from './worker-control-sequences.js';
-import { withPreparedWorkerSubmission } from './worker-governance-turn-executor.js';
+import {
+  prepareWorkerTurnJournalIntents,
+  withPreparedWorkerSubmission,
+} from './worker-governance-turn-executor.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -312,6 +323,40 @@ async function ending(
     terminalCause: null,
     exclusionRefs: intent.execution.exclusionRefs,
   };
+}
+
+function toReleaseSpanId(label: string): string {
+  return sha256CanonicalJson(label).slice(0, 16);
+}
+
+function addTerminalReleaseTestScope(f: ReturnType<typeof journalFixture>, grant: ExecutionGrant) {
+  f.db.sqlite.transaction(() => {
+    const root = readExecutionJournalRoot(f.db, grant.execution);
+    const base = f.intent(55);
+    const span = { ...root.span, spanId: base.span.spanId, endTimeUnixNano: null };
+    const intent = writeExecutionJournalIntent(f.db, {
+      ...base,
+      execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+      control: {
+        ...base.control,
+        kind: 'observe',
+        workId: root.workId,
+        definitionVersion: root.definitionVersion,
+      },
+      span,
+    });
+    const current = readExecutionJournalRoot(f.db, grant.execution);
+    settleExecutionJournalStep(f.db, {
+      ref: intent.ref,
+      expectedExecutionRevision: current.revision,
+      state: 'completed',
+      outputRefs: [],
+      span: { ...span, endTimeUnixNano: span.startTimeUnixNano, status: { code: 'OK' } },
+      nextPhase: 'closing',
+      terminalCause: current.terminalCause,
+      exclusionRefs: [...current.exclusionRefs, 'volume:outside-release'],
+    });
+  })();
 }
 
 describe('persisted execution journal contracts', () => {
@@ -595,6 +640,331 @@ describe('persisted execution journal contracts', () => {
       );
       expect(observe(retry)).toEqual({ state: 'unknown' });
       expect(history()).toEqual(settled);
+    }
+  );
+
+  it.each([false, true])(
+    'releases exact NanoHost terminal evidence for the next Workspace Turn (outside scope=%s)',
+    async (outsideScope) => {
+      const f = journalFixture();
+      const native = openNanoHostTestOwner();
+      const workspaceId = testEntityId('ws', 'terminal-release');
+      const workspace = openWorkspaceDb(f.root, workspaceId);
+      onTestFinished(() => workspace.sqlite.close());
+      applyScopedMigrations(workspace);
+      const userId = ensureLocalUser(f.db);
+      const actor = { kind: 'user' as const, id: userId };
+      recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+      const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+        suffix: 'terminal_release',
+        triggerActor: actor,
+        workspaceInputIds: [],
+      });
+      const { turnId, threadId, agentSessionId } = pkg.scope;
+      const entry = createSchedulerAdmissionEntry(f.db, {
+        backendId: 'nanohost',
+        queueEntryId: 'terminal-release-queue',
+        workspaceId,
+        threadId,
+        turnId,
+        inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original terminal input.'),
+        triggerActor: actor,
+        requestedAgentId: pkg.agent.agentId,
+      });
+      const bindingRef = 'terminal-release-binding';
+      const attempt = submitTestNanoHostWorkerLease(
+        f.db,
+        entry,
+        bindingRef,
+        {
+          agentSessionId,
+          packageSnapshotId: pkg.snapshotId,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        { nativePath: native.sqlite.name }
+      );
+      const {
+        lease: { grant },
+      } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+      const physicalAt = new Date(Date.parse(attempt.createdAt) + 3_000).toISOString();
+      const fenceRef = `worker-backend:${attempt.attemptId}:${physicalAt}`;
+      const target = getNanoHostRuntimeTarget(native, `test-target-${turnId}`)!;
+      const [materialize, terminal, release] = prepareWorkerTurnJournalIntents(
+        workspace,
+        pkg,
+        attempt,
+        {
+          backendKind: 'nanohost',
+          targetId: target.targetId,
+          allocationRef: bindingRef,
+        }
+      );
+      if (!materialize || !terminal || !release)
+        throw new Error('Fixture has no original Workspace intents.');
+      const consumeKey = {
+        harnessBindingRef: 'release-harness-binding',
+        operationId: 'd'.repeat(64),
+        sequence: 1,
+        resultFingerprint: 'e'.repeat(64),
+      };
+      const workspaceIntent = (
+        id: string,
+        kind: ExecutionJournalIntent['control']['kind'],
+        operation: string
+      ) => ({
+        ...materialize,
+        stepId: id,
+        control: { ...materialize.control, kind, invocationId: id },
+        carriage: { ...materialize.carriage, operation },
+        span: { ...materialize.span, spanId: toReleaseSpanId(id) },
+      });
+      const output = workspaceIntent('release-output', 'collect', 'worker.collect.publication');
+      const evidence = workspaceIntent('release-evidence', 'collect', 'worker.collect.transcript');
+      const collection = workspaceIntent('release-capture', 'collect', 'worker.collect.capture');
+      const draftConsume = workspaceIntent('release-consume', 'consume-receipt', 'turn.start');
+      const consume = {
+        ...draftConsume,
+        control: { ...draftConsume.control, inputRefs: [consumeKey.resultFingerprint] },
+        carriage: {
+          operation: 'turn.start',
+          bindingRef: consumeKey.harnessBindingRef,
+          requestId: consumeKey.operationId,
+          sequence: consumeKey.sequence,
+        },
+      };
+      workspace.sqlite.transaction(() => {
+        for (const intent of [
+          materialize,
+          terminal,
+          release,
+          output,
+          evidence,
+          collection,
+          consume,
+        ])
+          writeExecutionJournalIntent(workspace, intent);
+        for (const intent of [
+          materialize,
+          output,
+          evidence,
+          collection,
+          consume,
+          terminal,
+          release,
+        ]) {
+          const root = readExecutionJournalRoot(workspace, intent.execution.ref);
+          settleExecutionJournalStep(workspace, {
+            ref: { execution: root.ref, stepId: intent.stepId },
+            expectedExecutionRevision: root.revision,
+            state: 'completed',
+            outputRefs:
+              intent === release
+                ? [fenceRef]
+                : intent === consume
+                  ? [consumeKey.resultFingerprint]
+                  : [],
+            span: {
+              ...intent.span,
+              endTimeUnixNano: intent.span.startTimeUnixNano,
+              status: { code: 'OK' },
+            },
+            nextPhase: intent === release ? 'closed' : intent === terminal ? 'closing' : 'open',
+            terminalCause: 'completed',
+            exclusionRefs: intent === release ? [] : root.exclusionRefs,
+          });
+        }
+      })();
+      f.db.sqlite.transaction(() =>
+        admitNanoHostWorkerFinalInDb(
+          f.db,
+          {
+            lineage: {
+              workspaceId,
+              threadId,
+              turnId,
+              agentSessionId,
+              packageSnapshotId: pkg.snapshotId,
+              requestId: null,
+            },
+            sandboxBindingRef: bindingRef,
+            tokenHash: 'a'.repeat(64),
+            payload: {
+              sequence: 2,
+              acceptedAt: new Date(Date.parse(attempt.createdAt) + 1_000).toISOString(),
+              eventAcceptedAt: new Date(Date.parse(attempt.createdAt) + 1_001).toISOString(),
+              terminalData: {
+                status: 'completed',
+                stopReason: 'end_turn',
+                evidenceManifestDigests: {},
+              },
+            },
+          },
+          native.sqlite
+        )
+      )();
+      acceptSchedulerExecutionObservation(f.db, {
+        ...grant,
+        disposition: 'accepted',
+        execution: 'terminal',
+        outcomeRef: null,
+        fenceRef: null,
+      });
+      const { lease } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+      native.setup((sqlite) => {
+        const owner = { sqlite };
+        const key = { attemptId: attempt.attemptId, now: () => physicalAt };
+        const { proof } = readNanoHostRecoveryLease(sqlite, lease);
+        transitionWorkerBackendSessionState(owner, {
+          ...key,
+          fromState: 'launching',
+          toState: 'cleanup-pending',
+        });
+        transitionWorkerBackendSessionState(owner, {
+          ...key,
+          fromState: 'cleanup-pending',
+          toState: 'physical-cleaned',
+        });
+        sqlite
+          .prepare(
+            'UPDATE worker_backend_sessions SET worker_recovery_json = ? WHERE attempt_id = ?'
+          )
+          .run(
+            canonicalJsonText({
+              ...proof,
+              physicalCleanup: {
+                observedAt: physicalAt,
+                connectionGeneration: target.connectionGeneration,
+                physicalEpoch: target.physicalEpoch,
+              },
+            }),
+            attempt.attemptId
+          );
+        transitionWorkerBackendSessionState(owner, {
+          ...key,
+          fromState: 'physical-cleaned',
+          toState: 'cleaned',
+        });
+      });
+      closeSchedulerExecutionAttemptWithFence(f.db, {
+        correlation: schedulerExecutionCorrelation(lease.attempt),
+        fenceRef,
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+      if (outsideScope) addTerminalReleaseTestScope(f, grant);
+      const root = readExecutionJournalRoot(f.db, grant.execution);
+      const descriptor = (intent: ExecutionJournalIntent) => {
+        const ref = { execution: intent.execution.ref, stepId: intent.stepId };
+        return nanoHostTerminalReleaseWorkspaceStep(
+          readExecutionJournalEndedStep(workspace, ref),
+          readExecutionJournalInvocation(workspace, ref).carriage
+        );
+      };
+      const input = ControlNanoHostTerminalReleaseInputSchema.parse({
+        attemptId: attempt.attemptId,
+        target: {
+          targetId: target.targetId,
+          identityId: target.identityId,
+          deploymentId: target.deploymentId,
+          connectionGeneration: target.connectionGeneration,
+          physicalEpoch: target.physicalEpoch,
+        },
+        fenceRef,
+        coveredScopeRefs: root.exclusionRefs.filter((ref) => !ref.startsWith('volume:')),
+        workspaceExecutionId: release.execution.ref.executionId,
+        workspaceSteps: {
+          terminal: descriptor(terminal),
+          output: descriptor(output),
+          evidence: descriptor(evidence),
+          collection: descriptor(collection),
+          consume: descriptor(consume),
+          release: descriptor(release),
+        },
+      });
+      const decide = (command = input) =>
+        f.db.sqlite
+          .transaction(() =>
+            releaseCoreNanoHostTerminalInDb(f.db, command, {
+              workspace,
+              native: native.sqlite,
+              verifyDrainAndRevocation: () => true,
+            })
+          )
+          .immediate();
+      const successorTurn = testEntityId('tu', 'release-successor');
+      const successor = createSchedulerAdmissionEntry(f.db, {
+        backendId: 'nanohost',
+        queueEntryId: 'terminal-release-next',
+        workspaceId,
+        threadId,
+        turnId: successorTurn,
+        inputRef: schedulerFixtureInput(workspaceId, successorTurn, 'Next Turn.'),
+        triggerActor: actor,
+        requestedAgentId: pkg.agent.agentId,
+      });
+      const place = () =>
+        createSchedulerExecutionAttempt(f.db, { entry: successor, preparationInput: {} });
+      expect(() => place()).toThrow('Execution placement has an unresolved writer.');
+      expect(() => decide()).toThrow('Original Core consume acknowledgement is unavailable.');
+      f.db.sqlite.transaction(() =>
+        recordCoreHarnessConsumption(
+          f.db,
+          consumeKey,
+          canonicalJsonText({
+            workspaceId,
+            turnId,
+            executionId: release.execution.ref.executionId,
+            stepId: consume.stepId,
+          }),
+          physicalAt
+        )
+      )();
+      expect(() =>
+        decide({
+          ...input,
+          workspaceSteps: {
+            ...input.workspaceSteps,
+            evidence: { ...input.workspaceSteps.evidence, stepId: 'missing-evidence' },
+          },
+        })
+      ).toThrow();
+      expect(() =>
+        decide({
+          ...input,
+          workspaceSteps: {
+            ...input.workspaceSteps,
+            output: {
+              ...input.workspaceSteps.output,
+              digest: `sha256:${'f'.repeat(64)}`,
+            },
+          },
+        })
+      ).toThrow('Original Workspace release step conflicts.');
+      expect(
+        decide({ ...input, target: { ...input.target, physicalEpoch: 'f'.repeat(64) } })
+      ).toEqual({ state: 'unknown' });
+      expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+      expect(() => place()).toThrow('Execution placement has an unresolved writer.');
+      const released = decide();
+      expect(released.state).toBe('settled');
+      expect(readExecutionJournalRoot(f.db, grant.execution).exclusionRefs).toEqual(
+        outsideScope ? ['volume:outside-release'] : []
+      );
+      expect(place().turnId).toBe(successorTurn);
+      f.reopen();
+      expect(inspectCoreNanoHostTerminalRelease(f.db, input)).toEqual(released);
+      expect(decide()).toEqual(released);
+      expect(
+        inspectCoreNanoHostTerminalRelease(f.db, { ...input, fenceRef: 'changed-fence' })
+      ).toEqual({ state: 'conflict' });
     }
   );
 

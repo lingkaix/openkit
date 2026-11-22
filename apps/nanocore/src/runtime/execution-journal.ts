@@ -808,6 +808,9 @@ function endedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef): EndedExecut
   };
 }
 
+/** Reads the exact completed or failed Workspace/Core occurrence on its current snapshot. */
+export { endedStep as readExecutionJournalEndedStep };
+
 /** Reads the original linked inspection projection on the deciding connection without an async boundary. */
 export function readExecutionJournalLinkedInspections(
   db: CoreDb | WorkspaceDb,
@@ -1541,6 +1544,28 @@ function sameKernelAttemptPlacement(left: ExecutionGrant, right: ExecutionGrant)
   );
 }
 
+/** Inspects the original scoped release on a Core reader without replaying the writer. */
+export function inspectKernelExecutionReleaseInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  grant: ExecutionGrant,
+  expectedRevision: number
+): StorageReceiptLookup<ExecutionStepRef> {
+  const ref = { execution: grant.execution, stepId: proposal.stepId };
+  if (
+    !db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+      .get(ref.execution.executionId, ref.stepId)
+  )
+    return { state: 'absent' };
+  const original = storedStep(db, ref);
+  return original.row.state === 'completed' &&
+    original.control.kind === 'release' &&
+    original.control.fingerprint === kernelDecisionFingerprint([proposal, grant, expectedRevision])
+    ? { state: 'settled', receipt: ref }
+    : { state: 'conflict' };
+}
+
 /** Uses committed evidence from both owners to remove only the original proved holds. */
 export function releaseKernelExecutionScopesInDb(
   db: CoreDb,
@@ -1565,20 +1590,9 @@ export function releaseKernelExecutionScopesInDb(
     proposal.carriage.kernelEvidence !== undefined
   )
     return { state: 'conflict' };
+  const prior = inspectKernelExecutionReleaseInDb(db, proposal, grant, expectedRevision);
+  if (prior.state !== 'absent') return prior;
   const fingerprint = kernelDecisionFingerprint([proposal, grant, expectedRevision]);
-  const ref = { execution: root.ref, stepId: proposal.stepId };
-  if (
-    db.sqlite
-      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
-      .get(root.ref.executionId, proposal.stepId)
-  ) {
-    const original = storedStep(db, ref);
-    return original.row.state === 'completed' &&
-      original.control.kind === 'release' &&
-      original.control.fingerprint === fingerprint
-      ? { state: 'settled', receipt: ref }
-      : { state: 'conflict' };
-  }
   if (root.phase !== 'closing' || root.revision !== expectedRevision) return { state: 'conflict' };
   // Cancellation or acceptance cannot discharge the original input consumption obligation.
   const admitted = db.sqlite

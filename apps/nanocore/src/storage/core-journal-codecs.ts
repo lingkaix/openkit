@@ -181,6 +181,29 @@ export type ControlNanoHostOrphanRetirementInput = z.infer<
   typeof ControlNanoHostOrphanRetirementInputSchema
 >;
 
+const endedWorkerStep = z.strictObject({ stepId: text.max(128), digest: finalFingerprint });
+
+/** Original Workspace handoff, Native fence and scoped release occurrence. */
+export const ControlNanoHostTerminalReleaseInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  target: imageTarget,
+  fenceRef: text.max(512),
+  coveredScopeRefs: z.array(text.max(512)).min(1).max(4),
+  workspaceExecutionId: text.max(128),
+  workspaceSteps: z.strictObject({
+    terminal: endedWorkerStep,
+    output: endedWorkerStep,
+    evidence: endedWorkerStep,
+    collection: endedWorkerStep,
+    consume: endedWorkerStep,
+    release: endedWorkerStep,
+  }),
+});
+
+export type ControlNanoHostTerminalReleaseInput = z.infer<
+  typeof ControlNanoHostTerminalReleaseInputSchema
+>;
+
 /** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
 export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
   version: 'containment/v1',

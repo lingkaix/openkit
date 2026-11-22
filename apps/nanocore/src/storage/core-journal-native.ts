@@ -22,7 +22,11 @@ import {
 } from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
+import {
+  abandonCoreImageJournal,
+  readCoreHarnessConsumption,
+  settleCoreIdleJournal,
+} from '../runtime/core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithoutEffects,
@@ -42,22 +46,31 @@ import {
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
   executionJournalProcessWitness,
+  inspectKernelExecutionReleaseInDb,
   inspectKernelProofReceipt,
+  readExecutionJournalEndedStep,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
   readKernelSchedulerGrantInDb,
+  releaseKernelExecutionScopesInDb,
   settleExecutionJournalStep,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
 import type {
+  EndedExecutionStep,
+  ExecutionInvocationCarriage,
+  ExecutionJournalExecution,
   ExecutionJournalIntent,
   ExecutionStepRef,
 } from '../runtime/execution-step-journal.js';
 import { nanoHostStartupDeadline } from '../runtime/nanohost-attempt-clocks.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import {
   getWorkerBackendSessionByPackage,
   readNanoHostSubmissionPlacement,
+  readNanoHostWorkerLease,
 } from '../runtime/worker-backend-session-records.js';
 import {
   getWorkerControlAcceptedFinalStatus,
@@ -65,7 +78,13 @@ import {
 } from '../runtime/worker-control-records.js';
 import { matchesAcceptedWorkerControlSequence } from '../runtime/worker-control-sequences.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
-import type { ExecutionProofIntent, NanoHostCoreReads } from './control-kernel-port.js';
+import type {
+  ExecutionGrant,
+  ExecutionHandoff,
+  ExecutionProofIntent,
+  NanoHostCoreReads,
+} from './control-kernel-port.js';
+import type { KernelExecutionEvidence } from './control-kernel-proof-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
@@ -77,6 +96,7 @@ import {
   type ControlNanoHostFirstSubmissionResult,
   ControlNanoHostFirstSubmissionResultSchema,
   type ControlNanoHostOrphanRetirementInput,
+  type ControlNanoHostTerminalReleaseInput,
   CoreJournalRefusal,
   CoreNanoHostFinalIntakeSchema,
   readCoreJournalLineage,
@@ -84,6 +104,10 @@ import {
 } from './core-journal-codecs.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import {
+  type NanoHostRecoveryLease,
+  readNanoHostPhysicalCleanupReceipt,
+} from './nanohost-recovery-native.js';
 import {
   type NanoHostWorkerFinalDecision,
   nanoHostWorkerFinalDecisionFingerprint,
@@ -95,7 +119,12 @@ import {
 } from './nanohost-worker-binding.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
-import { type StorageResult, storageRequestId } from './storage-owner.js';
+import {
+  type StorageDecision,
+  type StorageReceiptLookup,
+  type StorageResult,
+  storageRequestId,
+} from './storage-owner.js';
 import {
   type ControlWorkerFinalStatusCommand,
   WorkerFinalStatusRefusal,
@@ -1011,6 +1040,358 @@ export function observeAcceptedNanoHostFinalInDb(
           receipt: result.receipt,
         })
       : { state: result.state };
+  })();
+}
+
+const terminalReleaseStepId = 'worker-terminal-release';
+type TerminalReleaseInput = ControlNanoHostTerminalReleaseInput;
+
+const workerHandoffSteps = [
+  ['terminal', 'terminal-publication', 'terminal-publication', 'worker.terminal-publication'],
+  ['output', 'output', 'collect', 'worker.collect.publication'],
+  ['evidence', 'evidence', 'collect', 'worker.collect.transcript'],
+  ['collection', 'outside-workspace-collection', 'collect', 'worker.collect.capture'],
+] as const;
+
+/** Names and hashes an immutable Workspace occurrence without carrying transcript or artifact bytes. */
+export function nanoHostTerminalReleaseWorkspaceStep(
+  ended: EndedExecutionStep,
+  carriage: ExecutionInvocationCarriage
+): { readonly stepId: string; readonly digest: string } {
+  const digest = sha256CanonicalJson(
+    JSON.parse(
+      encodeExecutionJournalValue({
+        ref: ended.ref,
+        state: ended.state,
+        control: ended.control,
+        carriage,
+        endedAt: ended.span.endTimeUnixNano,
+      })
+    )
+  );
+  return { stepId: ended.ref.stepId, digest: `sha256:${digest}` };
+}
+
+function readTerminalReleaseWorkspace(
+  db: CoreDb,
+  workspace: WorkspaceDb,
+  input: TerminalReleaseInput,
+  lease: NanoHostRecoveryLease
+) {
+  const { attempt, grant } = lease;
+  const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+  const execution = { owner, executionId: input.workspaceExecutionId };
+  const root = readExecutionJournalRoot(workspace, execution);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  if (
+    workspace.dataRoot !== db.dataRoot ||
+    workspace.workspaceId !== attempt.workspaceId ||
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== grant.turnId ||
+    root.phase !== 'closed' ||
+    root.openSteps.length !== 0 ||
+    root.exclusionRefs.length !== 0 ||
+    root.fingerprint !==
+      commandInputHash({
+        turnId: grant.turnId,
+        attemptId: grant.attemptId,
+        bindingRef: grant.bindingRef,
+        packageSnapshotId: grant.inputRef,
+      })
+  )
+    throw new CoreJournalRefusal('Original Workspace release is unresolved.');
+  const inspect = (
+    key: keyof TerminalReleaseInput['workspaceSteps'],
+    kind: EndedExecutionStep['control']['kind'],
+    operation: string
+  ) => {
+    const expected = input.workspaceSteps[key];
+    const ref = { execution, stepId: expected.stepId };
+    const ended = readExecutionJournalEndedStep(workspace, ref);
+    const invocation = readExecutionJournalInvocation(workspace, ref);
+    if (
+      ended.state !== 'completed' ||
+      ended.control.kind !== kind ||
+      ended.control.attemptId !== grant.attemptId ||
+      ended.control.workId !== grant.turnId ||
+      !isDeepStrictEqual(ended.control.actor, admission.triggerActor) ||
+      !isDeepStrictEqual(ended.control.authorityRefs, [
+        grant.turnId,
+        attempt.agentSessionId,
+        grant.attemptId,
+      ]) ||
+      invocation.carriage.operation !== operation ||
+      nanoHostTerminalReleaseWorkspaceStep(ended, invocation.carriage).digest !== expected.digest
+    )
+      throw new CoreJournalRefusal('Original Workspace release step conflicts.');
+    return { ended, carriage: invocation.carriage };
+  };
+  const handoffs = workerHandoffSteps.map(([key, kind, stepKind, operation]): ExecutionHandoff => {
+    const { ended, carriage } = inspect(key, stepKind, operation);
+    if (
+      carriage.bindingRef !== grant.bindingRef ||
+      !isDeepStrictEqual(ended.control.inputRefs, [grant.turnId, grant.inputRef])
+    )
+      throw new CoreJournalRefusal('Original Workspace handoff binding conflicts.');
+    return {
+      kind,
+      owner,
+      ref: `workspace-step/v1:${owner.workspaceId}:${execution.executionId}:${ended.ref.stepId}`,
+      digest: input.workspaceSteps[key].digest,
+    };
+  });
+  const release = inspect('release', 'release', 'worker.release');
+  if (
+    release.carriage.bindingRef !== grant.bindingRef ||
+    !isDeepStrictEqual(release.ended.control.outputRefs, [input.fenceRef])
+  )
+    throw new CoreJournalRefusal('Original Workspace release fence conflicts.');
+  const consume = inspect('consume', 'consume-receipt', 'turn.start');
+  const [fingerprint] = consume.ended.control.inputRefs;
+  if (
+    !fingerprint ||
+    !consume.carriage.bindingRef ||
+    consume.carriage.sequence === null ||
+    !isDeepStrictEqual(consume.ended.control.inputRefs, [fingerprint]) ||
+    !isDeepStrictEqual(consume.ended.control.outputRefs, [fingerprint])
+  )
+    throw new CoreJournalRefusal('Original Workspace consume acknowledgement conflicts.');
+  const consumer = readCoreHarnessConsumption(db, {
+    harnessBindingRef: consume.carriage.bindingRef,
+    operationId: consume.carriage.requestId,
+    sequence: consume.carriage.sequence,
+    resultFingerprint: fingerprint,
+  });
+  if (
+    !consumer ||
+    !isDeepStrictEqual(JSON.parse(consumer), {
+      workspaceId: attempt.workspaceId,
+      turnId: grant.turnId,
+      executionId: execution.executionId,
+      stepId: consume.ended.ref.stepId,
+    })
+  )
+    throw new CoreJournalRefusal('Original Core consume acknowledgement is unavailable.');
+  return { handoffs, consume: consume.carriage };
+}
+
+function terminalReleaseProposal(
+  db: CoreDb,
+  grant: ExecutionGrant,
+  root: ExecutionJournalExecution,
+  input: TerminalReleaseInput,
+  revision: number
+): ExecutionJournalIntent {
+  const span = { ...root.span, endTimeUnixNano: null, status: { code: 'UNSET' as const } };
+  const invocationId = `${grant.attemptId}:${terminalReleaseStepId}`;
+  const fingerprint = commandInputHash(input);
+  // The closed root's mutable revision, exclusions and diagnostic end clock do not enter replay.
+  return {
+    execution: {
+      ref: root.ref,
+      definitionVersion: root.definitionVersion,
+      workId: root.workId,
+      fingerprint: root.fingerprint,
+      exclusionRefs: [],
+      span,
+    },
+    stepId: terminalReleaseStepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    carriage: {
+      operation: terminalReleaseStepId,
+      requestId: grant.operationId,
+      sequence: null,
+      bindingRef: grant.bindingRef,
+    },
+    control: {
+      definitionVersion: root.definitionVersion,
+      kind: 'release',
+      target: null,
+      workId: grant.turnId,
+      operationId: grant.operationId,
+      invocationId,
+      attemptId: grant.attemptId,
+      actor: requireSchedulerExecutionAttemptAdmissionContext(db, grant.attemptId).triggerActor,
+      inputRefs: [fingerprint],
+      outputRefs: [],
+      fingerprint,
+      permittingDecisionRef: grant.operationId,
+      authorityRefs: [String(revision)],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    span: {
+      ...span,
+      name: terminalReleaseStepId,
+      spanId: sha256Hex(invocationId).slice(0, 16),
+      parentSpanId: span.spanId,
+    },
+  };
+}
+
+/** Inspects the stable release proposal against the original completed step without releasing again. */
+export function inspectCoreNanoHostTerminalRelease(
+  db: CoreDb,
+  input: TerminalReleaseInput
+): StorageReceiptLookup<ExecutionStepRef> {
+  const original = readRetainedNanoHostSubmission(db, input.attemptId);
+  if (!original) return { state: 'unknown' };
+  const { grant } = original.lease;
+  const ref = { execution: grant.execution, stepId: terminalReleaseStepId };
+  if (
+    !db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+      .get(ref.execution.executionId, ref.stepId)
+  )
+    return { state: 'absent' };
+  const step = readExecutionJournalInvocation(db, ref);
+  const [revision] = step.control.authorityRefs;
+  if (!revision || !/^[1-9][0-9]*$/.test(revision) || !Number.isSafeInteger(Number(revision)))
+    return { state: 'conflict' };
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const proposal = terminalReleaseProposal(db, grant, root, input, Number(revision));
+  return inspectKernelExecutionReleaseInDb(db, proposal, grant, Number(revision));
+}
+
+function commitTerminalReleaseEvidence(
+  db: CoreDb,
+  input: TerminalReleaseInput,
+  lease: NanoHostRecoveryLease,
+  handoffs: readonly ExecutionHandoff[],
+  physicalDigest: string
+): StorageDecision<ExecutionStepRef> {
+  const { grant } = lease;
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const proposal = terminalReleaseProposal(db, grant, root, input, root.revision);
+  const fence = {
+    kind: 'fence' as const,
+    fence: { backendId: 'nanohost', ref: input.fenceRef, digest: physicalDigest },
+    coveredScopeRefs: input.coveredScopeRefs,
+  };
+  const evidence = [
+    ...handoffs.map((handoff) => ({
+      kind: 'handoff' as const,
+      handoff,
+    })),
+    { kind: 'fence' as const, proof: fence },
+  ];
+  for (const fact of evidence) {
+    const occurrence = {
+      deploymentId: input.target.deploymentId,
+      sourceOwner: fact.kind === 'handoff' ? 'workspace' : 'nanohost',
+      verb: 'apply-execution-proof',
+      occurrenceKey: `worker-terminal-release:${grant.operationId}:${fact.kind === 'handoff' ? fact.handoff.kind : 'fence'}`,
+    } as const;
+    const intent: ExecutionProofIntent = {
+      ...occurrence,
+      requestId: storageRequestId(occurrence),
+      target: grant,
+      expectedGeneration: grant.generation,
+      inputDigest: sha256CanonicalJson(fact.kind === 'handoff' ? fact.handoff : fact.proof),
+    };
+    const retained: KernelExecutionEvidence = { version: 1, intent, ...fact };
+    const kind =
+      fact.kind === 'fence'
+        ? 'fence'
+        : fact.handoff.kind === 'terminal-publication'
+          ? 'terminal-publication'
+          : 'collect';
+    // The admitted peer readers already verified each fact in this same deciding savepoint.
+    const result = commitKernelExecutionEvidenceInDb(
+      db,
+      {
+        ...proposal,
+        stepId: intent.requestId,
+        carriage: { ...proposal.carriage, operation: kind, requestId: intent.requestId },
+        control: { ...proposal.control, kind },
+        span: { ...proposal.span, spanId: sha256Hex(intent.requestId).slice(0, 16) },
+      },
+      retained,
+      true,
+      () => true
+    );
+    if (result.state !== 'settled') return { state: result.state };
+  }
+  const revision = readExecutionJournalRoot(db, grant.execution).revision;
+  return releaseKernelExecutionScopesInDb(
+    db,
+    terminalReleaseProposal(db, grant, root, input, revision),
+    grant,
+    revision,
+    () => true
+  );
+}
+
+/** Commits the ordinary terminal Worker's exact scoped release from its pinned peer evidence. */
+export function releaseCoreNanoHostTerminalInDb(
+  db: CoreDb,
+  input: TerminalReleaseInput,
+  readers: {
+    readonly workspace: WorkspaceDb;
+    readonly native: Parameters<typeof readNanoHostPhysicalCleanupReceipt>[0];
+    readonly verifyDrainAndRevocation: (lease: NanoHostRecoveryLease) => boolean;
+  }
+): StorageDecision<ExecutionStepRef> {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal(
+      'Worker terminal release requires the Core writer transaction.'
+    );
+  const prior = inspectCoreNanoHostTerminalRelease(db, input);
+  if (prior.state !== 'absent') return prior;
+  const original = readRetainedNanoHostSubmission(db, input.attemptId);
+  if (!original || !readers.native.readonly) return { state: 'unknown' };
+  const { lease } = original;
+  const { grant, attempt } = lease;
+  const allowedScopes = [
+    `workspace:${attempt.workspaceId}`,
+    `thread:${attempt.threadId}`,
+    `turn:${attempt.turnId}`,
+    `session:${attempt.agentSessionId}`,
+  ];
+  if (
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'accepted' ||
+    attempt.fenceRef !== input.fenceRef ||
+    new Set(input.coveredScopeRefs).size !== input.coveredScopeRefs.length ||
+    input.coveredScopeRefs.some((scope) => !allowedScopes.includes(scope))
+  )
+    return { state: 'conflict' };
+  return db.sqlite.transaction((): StorageDecision<ExecutionStepRef> => {
+    const target = getNanoHostRuntimeTarget({ sqlite: readers.native }, input.target.targetId);
+    const physical = target && readNanoHostPhysicalCleanupReceipt(readers.native, lease, target);
+    if (
+      !target ||
+      !physical ||
+      physical.session.state !== 'cleaned' ||
+      physical.session.workspaceHandoffState !== 'complete' ||
+      target.identityId !== input.target.identityId ||
+      target.deploymentId !== input.target.deploymentId ||
+      target.connectionGeneration !== input.target.connectionGeneration ||
+      target.physicalEpoch !== input.target.physicalEpoch ||
+      input.fenceRef !== `worker-backend:${grant.attemptId}:${physical.observedAt}`
+    )
+      return { state: 'unknown' };
+    const native = readNanoHostWorkerLease({ sqlite: readers.native }, grant, attempt);
+    const workspace = readTerminalReleaseWorkspace(db, readers.workspace, input, lease);
+    if (
+      !native ||
+      native.binding.harnessOperationId !== workspace.consume.requestId ||
+      native.binding.harnessSequence !== workspace.consume.sequence ||
+      !readers.verifyDrainAndRevocation(lease)
+    )
+      return { state: 'unknown' };
+    const digest = commandInputHash({
+      grant,
+      backendSessionId: physical.session.backendSessionId,
+      target: input.target,
+      cleanedAt: physical.observedAt,
+      coveredScopeRefs: input.coveredScopeRefs,
+    });
+    return commitTerminalReleaseEvidence(db, input, lease, workspace.handoffs, digest);
   })();
 }
 
