@@ -20,7 +20,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from './test-support/store.js';
@@ -100,9 +100,10 @@ describe('E8 recorded Issues-only binding', () => {
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => snapshot,
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const gateway = createDefaultWorkerMcpGateway(coreDb);
     const app = createApp({
+      nanoHostStorage,
       coreDb,
       store,
       workerMcpGateway: gateway,

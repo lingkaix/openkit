@@ -34,7 +34,7 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import {
   createNativeCommandTurn,
   createNativeTaskAdmissionFixture,
@@ -71,7 +71,7 @@ async function fixture(
     requiredCapabilities: ['trusted-worker-inference-relay'],
   }).manifest;
   manifest.runtime.version = runtime.version;
-  admitTestNativeEnvironment(coreDb, manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   const store = await createDemoStore({ dataRoot: root, knowledge: [] });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: userId });
   const configuration = createInMemoryRuntimeConfigSnapshot({

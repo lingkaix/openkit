@@ -35,7 +35,7 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -229,7 +229,7 @@ async function faultFixture() {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const gateway = createDefaultWorkerControlGateway(coreDb);
   const effects: NanoHostSessionEffectRequest[] = [];
   const transcript = { events: '' };
