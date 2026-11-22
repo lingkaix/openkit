@@ -17,7 +17,10 @@ import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
-import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import {
+  readSchedulerExecutionAttemptPrefix,
+  type SchedulerExecutionAttemptRecord,
+} from './execution-attempt-records.js';
 import {
   getNanoHostRuntimeTarget,
   requireNanoHostPhysicalEpoch,
@@ -66,9 +69,7 @@ export interface ReadRuntimeCleanupViewInput {
 }
 
 /** Only known state and opaque target columns enter the projection, never private payloads. */
-const sourceSelects: Record<RuntimeSource, string> = {
-  'execution-attempt': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
-    phase, disposition FROM scheduler_execution_attempts ORDER BY attempt_id LIMIT ?`,
+const sourceSelects: Record<Exclude<RuntimeSource, 'execution-attempt'>, string> = {
   'backend-session': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
     state, workspace_handoff_state, physical_cleaned_at, updated_at, runtime_target_id,
     origin_physical_epoch, deployment_id
@@ -141,14 +142,21 @@ export function readRuntimeCleanupView(input: ReadRuntimeCleanupViewInput): Runt
         input.coreDb.sqlite.prepare('SELECT status FROM workspace_registry LIMIT 0').get();
       }
       const limit = Math.min(input.maxEntries - result.items.length + 1, remainingWork);
-      const rows = sqlite.prepare(sourceSelects[coverage.source]).iterate(limit);
+      const rows =
+        coverage.source === 'execution-attempt'
+          ? readSchedulerExecutionAttemptPrefix(input.coreDb, limit)
+          : sqlite.prepare(sourceSelects[coverage.source]).iterate(limit);
       for (const row of rows) {
         remainingWork -= 1;
         if (result.items.length === input.maxEntries) {
           exhausted = 'count_limit';
           break;
         }
-        const item = projectRecord(input.coreDb, sqlite, coverage.source, row, observedAt);
+        const facts =
+          coverage.source === 'execution-attempt'
+            ? projectAttempt((row as () => SchedulerExecutionAttemptRecord)())
+            : row;
+        const item = projectRecord(input.coreDb, sqlite, coverage.source, facts, observedAt);
         const addedBytes = jsonBytes(item) + (result.items.length > 0 ? 1 : 0);
         if (metadataBytes(result) + itemBytes + addedBytes > input.maxBytes) {
           exhausted = 'byte_limit';
@@ -271,6 +279,19 @@ function metadataBytes(result: RuntimeCleanupView): number {
   });
 }
 
+function projectAttempt(attempt: SchedulerExecutionAttemptRecord) {
+  return {
+    attempt_id: attempt.attemptId,
+    workspace_id: attempt.workspaceId,
+    thread_id: attempt.threadId,
+    turn_id: attempt.turnId,
+    agent_session_id: attempt.agentSessionId,
+    phase: attempt.phase,
+    disposition: attempt.disposition,
+    updated_at: attempt.updatedAt,
+  };
+}
+
 /** Admits a fixed source target before the public schema selects its known fields. */
 function projectRecord(
   coreDb: CoreDb,
@@ -296,8 +317,6 @@ function projectRecord(
     // Core rows alone cannot establish that audience; this read never opens Workspace content.
     throw new Error('Cleanup source audience is unavailable.');
   }
-  if (source === 'execution-attempt' && typeof row.attempt_id === 'string')
-    row.updated_at = requireSchedulerExecutionAttempt(coreDb, row.attempt_id).updatedAt;
   return projectKnownFields(sourceDb, source, row, observedAt);
 }
 
