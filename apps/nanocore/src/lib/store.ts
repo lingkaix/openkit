@@ -7073,8 +7073,15 @@ export class FsStore {
   /** Resolves an exact Item inside its current Workspace and Thread without reading siblings. */
   public getThreadItem(workspaceId: string, threadId: string, itemId: string): Item {
     this.getThread(workspaceId, threadId);
-    const item = this.dataRoot
-      ? readNativeThreadItem(this.nativeScope({ kind: 'workspace', workspaceId }), threadId, itemId)
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
+    const item = scope
+      ? readNativeThreadItem(
+          scope,
+          threadId,
+          itemId,
+          scope.sqlite ? undefined : getWorkspaceProductReadHandle(scope.path, owner)
+        )
       : this.items.get(itemId);
     if (!item || workspaceIdForOwner(item.owner) !== workspaceId || item.threadId !== threadId)
       throw new StoreRecordNotFoundError(`Item not found: ${itemId}`);

@@ -257,7 +257,10 @@ export function decode(
   return record;
 }
 
-type ProductReadStatements = Map<ControlProductKind | 'entries', Database.Statement>;
+type ProductReadStatements = Map<
+  ControlProductKind | 'entries' | 'thread-item',
+  Database.Statement
+>;
 
 /** Returns only native SQL metadata and its revision, never a file-backed fallback or cache. */
 export function readProduct(
@@ -333,16 +336,22 @@ export function readThreadItemEntry(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   threadId: string,
-  itemId: string
+  itemId: string,
+  prepared?: ProductReadStatements
 ): (ControlProductEntryView & { readonly turnId: string }) | undefined {
-  if (!readProduct(sqlite, owner, 'thread', threadId)) return undefined;
-  const row = sqlite
-    .prepare(`SELECT e.* FROM control_product_entries e
+  if (!readProduct(sqlite, owner, 'thread', threadId, prepared)) return undefined;
+  let statement = prepared?.get('thread-item');
+  if (!statement) {
+    statement = sqlite.prepare(`SELECT e.* FROM control_product_entries e
     JOIN control_turns t ON t.id=e.turn_id
-    WHERE e.kind='item' AND e.id=? AND t.thread_id=? ORDER BY e.revision DESC LIMIT 1`)
-    .get(itemId, threadId) as (ProductEntryRow & { turn_id: string }) | undefined;
+    WHERE e.kind='item' AND e.id=? AND t.thread_id=? ORDER BY e.revision DESC LIMIT 1`);
+    prepared?.set('thread-item', statement);
+  }
+  const row = statement.get(itemId, threadId) as
+    | (ProductEntryRow & { turn_id: string })
+    | undefined;
   if (!row) return undefined;
-  const turn = readProduct(sqlite, owner, 'turn', row.turn_id);
+  const turn = readProduct(sqlite, owner, 'turn', row.turn_id, prepared);
   if (!turn || turn.record.threadId !== threadId) throw new ControlProductPreconditionError();
   return { ...decodeProductEntry(row, owner), turnId: row.turn_id };
 }
@@ -789,6 +798,12 @@ export async function drainMainScopeReadHandles(paths: readonly string[]): Promi
   }
 }
 
+/** Admission and statement reuse expire with the actual query-only SQLite connection. */
+const admittedWorkspaceReads = new WeakMap<
+  Database.Database,
+  { identity: string; workspaceId: string; prepared: ProductReadStatements }
+>();
+
 const workspaceProductReaders = new Map<
   string,
   {
@@ -853,12 +868,25 @@ export function openControlStoreProductReadHandle(
   borrowed?: Database.Database
 ): ControlStoreProductReadHandle {
   StoredWorkOwnerV1Schema.parse(owner);
-  if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== resolve(dirname(path)))
+  const file = lstatSync(path);
+  if (!file.isFile() || realpathSync(dirname(path)) !== resolve(dirname(path)))
     throw new ControlProductPreconditionError();
   if (borrowed && (!borrowed.open || resolve(borrowed.name) !== resolve(path)))
     throw new ControlProductPreconditionError();
   if (borrowed && owner.kind === 'server' && admittedServerWorkReaders.has(borrowed))
     return bindProductReadHandle(borrowed, owner, false);
+  if (borrowed && owner.kind === 'workspace') {
+    const admitted = admittedWorkspaceReads.get(borrowed);
+    if (admitted) {
+      if (
+        admitted.identity !== `${file.dev}:${file.ino}` ||
+        admitted.workspaceId !== owner.workspaceId ||
+        !readProduct(borrowed, owner, 'workspace', owner.workspaceId, admitted.prepared)
+      )
+        throw new ControlProductPreconditionError();
+      return bindProductReadHandle(borrowed, owner, false);
+    }
+  }
   const sqlite = borrowed ?? new Database(path, { readonly: true, fileMustExist: true });
   try {
     assertSupportedNativeLedger(sqlite, owner.kind === 'server' ? 'core' : 'workspace');
@@ -881,6 +909,13 @@ export function openControlStoreProductReadHandle(
       sqlite.close();
       throw error;
     }
+  }
+  if (!borrowed && owner.kind === 'workspace') {
+    admittedWorkspaceReads.set(sqlite, {
+      identity: `${file.dev}:${file.ino}`,
+      workspaceId: owner.workspaceId,
+      prepared: new Map(),
+    });
   }
   return bindProductReadHandle(sqlite, owner, !borrowed);
 }
@@ -907,7 +942,9 @@ function bindProductReadHandle(
   ownsConnection: boolean
 ): ControlStoreProductReadHandle {
   // Only known metadata and entry queries are prepared; no canonical row survives a read.
-  const prepared: ProductReadStatements = new Map();
+  const shared =
+    owner.kind === 'workspace' ? admittedWorkspaceReads.get(sqlite)?.prepared : undefined;
+  const prepared: ProductReadStatements = shared ?? new Map();
   let closed = false;
   const assertReaderOpen = () => {
     if (!ownsConnection && closed) throw new ControlProductPreconditionError();
@@ -935,7 +972,7 @@ function bindProductReadHandle(
     /** Resolves only the requested Thread's exact Item descriptor. */
     threadItem(threadId, itemId) {
       assertReaderOpen();
-      return readThreadItemEntry(sqlite, owner, threadId, itemId);
+      return readThreadItemEntry(sqlite, owner, threadId, itemId, prepared);
     },
     /** Counts immutable first revisions in the requested Turn's index. */
     turnItemCounts(threadId, turnId) {
@@ -955,8 +992,11 @@ function bindProductReadHandle(
     /** Releases owned read resources; the admitted native connection keeps its original lifetime. */
     close() {
       closed = true;
-      prepared.clear();
-      if (ownsConnection) sqlite.close();
+      if (ownsConnection || !shared) prepared.clear();
+      if (ownsConnection) {
+        admittedWorkspaceReads.delete(sqlite);
+        sqlite.close();
+      }
     },
   };
 }
