@@ -18,7 +18,6 @@ import { OperationError } from '../operation-error.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
 import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import type { CoreDb } from '../storage/db.js';
-import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import {
@@ -54,6 +53,7 @@ import {
   type NanoHostTransportEnrollment,
   type NanoHostTransportTokenRecord,
   nanoHostTransportCommitState,
+  type PreparedNanoHostTransportWriter,
   prepareNanoHostTransportWriter,
   recordNanoHostTransportAudit,
   revokeNanoHostTransportTokenRecord,
@@ -237,13 +237,13 @@ export async function revokeNanoHostInboundCredential(
 /**
  * Records a server audit event for one successful NanoHost transport lifecycle operation.
  *
- * @param coreDb Server database that owns the event.
+ * @param writer Admitted Core Audit stage for the original lifecycle event.
  * @param action Stable NanoHost transport lifecycle action.
  * @param record Redacted token record affected by the operation.
  * @param actorUserId User id that requested the operation when authenticated.
  */
 async function recordNanoHostTransportLifecycleAuditEvent(
-  coreDb: CoreDb,
+  writer: CoreDb | PreparedNanoHostTransportWriter,
   action:
     | 'nanohost.transport.enroll'
     | 'nanohost.transport.issue'
@@ -252,7 +252,7 @@ async function recordNanoHostTransportLifecycleAuditEvent(
   record: NanoHostTransportTokenRecord,
   actorUserId: string | null
 ): Promise<void> {
-  await recordNanoHostTransportAudit(coreDb, {
+  await recordNanoHostTransportAudit(writer, {
     kind: 'lifecycle-audit',
     action,
     record,
@@ -272,6 +272,7 @@ export function createNanoHostOperationImplementations({
   readNanoHostTarget,
   nanoHostEnrollment,
   afterNanoHostTransportAcknowledgement,
+  administratorTransport,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly mode: CoreMode;
@@ -288,6 +289,9 @@ export function createNanoHostOperationImplementations({
     readonly storage: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
     readonly commitEnroll: NanoHostAdministratorEnroll;
   };
+  readonly administratorTransport?: PreparedNanoHostTransportWriter & {
+    readonly storage: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
+  };
 }) {
   /** Preserves the server-mode boundary after primary admission. */
   function requireNanoHostServerMode(): void {
@@ -299,10 +303,23 @@ export function createNanoHostOperationImplementations({
       );
   }
 
-  /** Holds the other administrator mutations until their deciding writers are joined. */
-  function requireNanoHostEnvironment(): void {
+  /** Requires the admitted Native reader and deciding writer before any Token mutation. */
+  function requireNanoHostEnvironment() {
     requireNanoHostServerMode();
-    if (readNanoHostTarget || nanoHostEnrollment || !coreDb) unavailableNanoHostTransportStorage();
+    if (!coreDb || administratorTransport?.storage.state !== 'ready')
+      return unavailableNanoHostTransportStorage();
+    const storage = administratorTransport.storage.value;
+    readTokenStore(storage, () => undefined);
+    return { storage, writer: administratorTransport };
+  }
+
+  function readTokenStore<Value>(
+    storage: AdmittedNanoHostTransportStorage,
+    read: (sqlite: CoreDb['sqlite']) => Value
+  ): Value {
+    const result = storage.owner.read(read);
+    if (result.state !== 'ready') return unavailableNanoHostTransportStorage();
+    return result.value;
   }
 
   /** Returns the configured NanoHost deployment or a fail-closed response. */
@@ -335,28 +352,39 @@ export function createNanoHostOperationImplementations({
   }
 
   /** Rechecks current credential facts immediately before a later Main sink effect. */
-  function requireCurrentDelivery(record: NanoHostTransportTokenRecord): void {
-    const current = getNanoHostTransportTokenRecord(coreDb!, record.tokenId);
-    if (
-      !current ||
-      current.ownerNanoHostIdentityId !== record.ownerNanoHostIdentityId ||
-      current.deploymentId !== record.deploymentId ||
-      !isNanoHostTransportIdentityActive(
-        coreDb!,
-        current.ownerNanoHostIdentityId,
-        current.deploymentId
-      ) ||
-      !evaluateNanoHostTransportTokenUsability(current).usable
-    )
-      throw new Error('NanoHost transport credential changed before delivery.');
+  function requireCurrentDelivery(
+    storage: AdmittedNanoHostTransportStorage,
+    record: NanoHostTransportTokenRecord
+  ): void {
+    const usable = readTokenStore(storage, (sqlite) => {
+      const current = getNanoHostTransportTokenRecord({ sqlite }, record.tokenId);
+      return (
+        current &&
+        current.ownerNanoHostIdentityId === record.ownerNanoHostIdentityId &&
+        current.deploymentId === record.deploymentId &&
+        isNanoHostTransportIdentityActive(
+          { sqlite },
+          current.ownerNanoHostIdentityId,
+          current.deploymentId
+        ) &&
+        evaluateNanoHostTransportTokenUsability(current).usable
+      );
+    });
+    if (!usable) throw new Error('NanoHost transport credential changed before delivery.');
   }
 
   /** Clears only this decommission's currently revoked credential after the native wait. */
-  function clearDecommissionedSlot(config: OpenKitNanoHostConfig, slot: 'A' | 'B'): void {
+  function clearDecommissionedSlot(
+    storage: AdmittedNanoHostTransportStorage,
+    config: OpenKitNanoHostConfig,
+    slot: 'A' | 'B'
+  ): void {
     const sink = configuredSink(config, slot);
     const tokenId = readNanoHostCredentialSlotTokenId(sink);
     if (tokenId !== null) {
-      const record = getNanoHostTransportTokenRecord(coreDb!, tokenId);
+      const record = readTokenStore(storage, (sqlite) =>
+        getNanoHostTransportTokenRecord({ sqlite }, tokenId)
+      );
       if (
         !record ||
         record.ownerNanoHostIdentityId !== config.identityId ||
@@ -371,18 +399,18 @@ export function createNanoHostOperationImplementations({
   /**
    * Counts durable tokens for one identity+deployment to derive issuance generation.
    *
-   * @param coreDb Server database that owns the tokens.
+   * @param storage Admitted NanoHost database that owns the Tokens.
    * @param ownerNanoHostIdentityId Configured NanoHost identity.
    * @param deploymentId Declared deployment binding.
    * @returns Positive issuance generation for the newest token row.
    */
   function nextIssuanceGeneration(
-    coreDb: CoreDb,
+    storage: AdmittedNanoHostTransportStorage,
     ownerNanoHostIdentityId: string,
     deploymentId: string
   ): number {
-    const row = requireNanoHostObservation(
-      coreDb,
+    const row = readTokenStore(
+      storage,
       (sqlite) =>
         sqlite
           .prepare(
@@ -398,13 +426,13 @@ export function createNanoHostOperationImplementations({
   /**
    * Delivers a newly issued secret to the named sink or revokes the token.
    *
-   * @param coreDb Server database that owns the token.
+   * @param storage Admitted NanoHost database that owns the Token.
    * @param issued Newly created token id and secret.
    * @param options Slot, sink, and companion identity fields.
    * @returns Redacted slot-result metadata when the write is proved.
    */
   async function deliverOrRevokeIssuedToken(
-    coreDb: CoreDb,
+    storage: AdmittedNanoHostTransportStorage,
     issued: { record: NanoHostTransportTokenRecord; secret: string; tokenId: string },
     options: {
       readonly deploymentId: string;
@@ -416,10 +444,10 @@ export function createNanoHostOperationImplementations({
   ): Promise<ReturnType<typeof deliverNanoHostTransportTokenToNamedSlot>> {
     try {
       await context.recheckAdmission?.();
-      requireCurrentDeploymentAdmin(coreDb, publicOperationActor(context));
-      requireCurrentDelivery(issued.record);
+      requireCurrentDeploymentAdmin(coreDb!, publicOperationActor(context));
+      requireCurrentDelivery(storage, issued.record);
       const issuanceGeneration = nextIssuanceGeneration(
-        coreDb,
+        storage,
         options.identityId,
         options.deploymentId
       );
@@ -435,7 +463,7 @@ export function createNanoHostOperationImplementations({
       });
     } catch (error) {
       // This remains the original separate compensator, without a fresh administrator requirement.
-      await revokeNanoHostTransportTokenRecord(coreDb, issued.tokenId);
+      await revokeNanoHostTransportTokenRecord(storage, issued.tokenId);
       throw error;
     }
   }
@@ -567,14 +595,14 @@ export function createNanoHostOperationImplementations({
 
     'nanohost.token-issue': async (input, context) => {
       const actor = context.actorRef;
-      requireNanoHostEnvironment();
+      const { storage, writer } = requireNanoHostEnvironment();
 
       const config = requireNanoHostConfig();
 
       try {
         const actorUserId = actor.id;
         const issued = await createNanoHostTransportTokenRecord(
-          coreDb!,
+          writer,
           {
             deploymentId: config.deploymentId,
             expiresAt: input.expiresAt,
@@ -585,7 +613,7 @@ export function createNanoHostOperationImplementations({
           context.recheckAdmission
         );
         const slotResult = await deliverOrRevokeIssuedToken(
-          coreDb!,
+          storage,
           issued,
           {
             deploymentId: config.deploymentId,
@@ -596,7 +624,7 @@ export function createNanoHostOperationImplementations({
           context
         );
         await recordNanoHostTransportLifecycleAuditEvent(
-          coreDb!,
+          writer,
           'nanohost.transport.issue',
           issued.record,
           actorUserId
@@ -620,7 +648,7 @@ export function createNanoHostOperationImplementations({
 
     'nanohost.token-rotate': async (input, context) => {
       const actor = context.actorRef;
-      requireNanoHostEnvironment();
+      const { storage, writer } = requireNanoHostEnvironment();
 
       const config = requireNanoHostConfig();
 
@@ -633,9 +661,22 @@ export function createNanoHostOperationImplementations({
             409
           );
         }
+        const predecessor = readTokenStore(storage, (sqlite) =>
+          getNanoHostTransportTokenRecord({ sqlite }, input.tokenId)
+        );
+        if (
+          !predecessor ||
+          predecessor.ownerNanoHostIdentityId !== config.identityId ||
+          predecessor.deploymentId !== config.deploymentId
+        )
+          return failure(
+            'NanoHost transport token not found or not rotatable.',
+            'nanohost_transport_token_not_found',
+            404
+          );
         const targetSlot = predecessorSlot === 'A' ? 'B' : 'A';
         const rotated = await rotateNanoHostTransportTokenRecord(
-          coreDb!,
+          writer,
           input.tokenId,
           {
             overlapSeconds: input.overlapSeconds,
@@ -655,14 +696,14 @@ export function createNanoHostOperationImplementations({
         try {
           await context.recheckAdmission?.();
           requireCurrentDeploymentAdmin(coreDb!, publicOperationActor(context));
-          requireCurrentDelivery(rotated.record);
+          requireCurrentDelivery(storage, rotated.record);
           if (configuredSlotForToken(config, input.tokenId) !== predecessorSlot)
             throw new Error('NanoHost predecessor slot changed before rotation delivery.');
           slotResult = deliverNanoHostTransportTokenToNamedSlot({
             deploymentId: config.deploymentId,
             identityId: config.identityId,
             issuanceGeneration: nextIssuanceGeneration(
-              coreDb!,
+              storage,
               config.identityId,
               config.deploymentId
             ),
@@ -674,7 +715,8 @@ export function createNanoHostOperationImplementations({
           });
         } catch (error) {
           if (sessionAuthority) {
-            await abortNanoHostTransportRotation(coreDb!, sessionAuthority, {
+            await abortNanoHostTransportRotation(storage, sessionAuthority, {
+              administratorTransport: writer,
               auditActorUserId: actor.id,
               predecessorTokenId: rotated.rotatedRecord.tokenId,
               successorSink: configuredSink(config, targetSlot),
@@ -685,7 +727,7 @@ export function createNanoHostOperationImplementations({
         }
 
         await recordNanoHostTransportLifecycleAuditEvent(
-          coreDb!,
+          writer,
           'nanohost.transport.rotate',
           rotated.record,
           actor.id
@@ -709,7 +751,7 @@ export function createNanoHostOperationImplementations({
     },
 
     'nanohost.token-rotation-abort': async (input, context) => {
-      requireNanoHostEnvironment();
+      const { storage, writer } = requireNanoHostEnvironment();
       const config = requireNanoHostConfig();
       if (!sessionAuthority) {
         return failure(
@@ -718,8 +760,14 @@ export function createNanoHostOperationImplementations({
           503
         );
       }
-      const successor = getNanoHostTransportTokenRecord(coreDb!, input.tokenId);
-      if (!successor?.predecessorTokenId) {
+      const successor = readTokenStore(storage, (sqlite) =>
+        getNanoHostTransportTokenRecord({ sqlite }, input.tokenId)
+      );
+      if (
+        !successor?.predecessorTokenId ||
+        successor.ownerNanoHostIdentityId !== config.identityId ||
+        successor.deploymentId !== config.deploymentId
+      ) {
         return failure(
           'NanoHost rotation not found.',
           'nanohost_transport_rotation_not_found',
@@ -735,9 +783,10 @@ export function createNanoHostOperationImplementations({
         );
       }
       const aborted = await abortNanoHostTransportRotation(
-        coreDb!,
+        storage,
         sessionAuthority,
         {
+          administratorTransport: writer,
           auditActorUserId: context.actorRef.id,
           predecessorTokenId: successor.predecessorTokenId,
           successorSink: configuredSink(config, successorSlot),
@@ -751,7 +800,7 @@ export function createNanoHostOperationImplementations({
 
     'nanohost.decommission': async (_input, context) => {
       const actor = context.actorRef;
-      requireNanoHostEnvironment();
+      const { storage, writer } = requireNanoHostEnvironment();
       const config = requireNanoHostConfig();
       if (!sessionAuthority) {
         return failure(
@@ -763,7 +812,6 @@ export function createNanoHostOperationImplementations({
       const snapshot = { deploymentId: config.deploymentId, identityId: config.identityId };
       const admin = { ...publicOperationActor(context) };
       const beforeSubmit = context.recheckAdmission;
-      const writer = await prepareNanoHostTransportWriter(coreDb!);
       await beforeSubmit?.();
       let records: NanoHostTransportTokenRecord[];
       try {
@@ -772,7 +820,7 @@ export function createNanoHostOperationImplementations({
         if (nanoHostTransportCommitState(error) === 'unknown') {
           try {
             await fenceNanoHostTransportAuthority(
-              coreDb!,
+              storage,
               sessionAuthority,
               snapshot.identityId,
               new Date().toISOString()
@@ -784,14 +832,16 @@ export function createNanoHostOperationImplementations({
         throw error;
       }
       await fenceNanoHostTransportAuthority(
-        coreDb!,
+        storage,
         sessionAuthority,
         snapshot.identityId,
         new Date().toISOString()
       );
-      clearDecommissionedSlot(config, 'A');
-      clearDecommissionedSlot(config, 'B');
-      const retainedRecords = listNanoHostTransportTokenRecords(coreDb!).filter(
+      clearDecommissionedSlot(storage, config, 'A');
+      clearDecommissionedSlot(storage, config, 'B');
+      const retainedRecords = readTokenStore(storage, (sqlite) =>
+        listNanoHostTransportTokenRecords({ sqlite })
+      ).filter(
         (record) =>
           record.ownerNanoHostIdentityId === config.identityId &&
           record.deploymentId === config.deploymentId
@@ -799,7 +849,7 @@ export function createNanoHostOperationImplementations({
       const tokenLineage = retainedRecords
         .map((record) => `${record.tokenId}<-${record.predecessorTokenId ?? 'root'}`)
         .join(',');
-      await recordNanoHostTransportAudit(coreDb!, {
+      await recordNanoHostTransportAudit(writer, {
         kind: 'decommission-audit',
         identityId: config.identityId,
         deploymentId: config.deploymentId,

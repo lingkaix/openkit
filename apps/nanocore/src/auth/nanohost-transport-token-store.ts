@@ -120,7 +120,12 @@ export type VerifiedNanoHostTransportTokenRecord = NanoHostTransportTokenRecord;
 
 type NanoHostTransportReadDb = { readonly sqlite: Pick<CoreDb['sqlite'], 'prepare'> };
 type NanoHostTransportMutationStorage = CoreDb | AdmittedNanoHostTransportStorage;
-interface PreparedNanoHostTransportWriter {
+type NanoHostTransportWriterSource =
+  | NanoHostTransportMutationStorage
+  | PreparedNanoHostTransportWriter;
+
+/** Existing deciding transport stage, bound to the current Native or Core opening. */
+export interface PreparedNanoHostTransportWriter {
   submit(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
 }
 
@@ -128,8 +133,9 @@ type TransportVerificationOptions = { channel?: string; now?: Date; source?: str
 
 /** Admits the owner before submission so an open failure carries no credential-commit uncertainty. */
 export async function prepareNanoHostTransportWriter(
-  storage: NanoHostTransportMutationStorage
+  storage: NanoHostTransportWriterSource
 ): Promise<PreparedNanoHostTransportWriter> {
+  if ('submit' in storage) return storage;
   if ('owner' in storage) {
     if (storage.owner.read(() => undefined).state !== 'ready')
       throw new ControlStoreWorkerError('precondition', 'not-committed');
@@ -186,7 +192,7 @@ function nativeResult<K extends ControlNanoHostTransportResult['kind']>(
 
 /** Submits one complete domain stage after opening the existing owner. */
 async function commitNanoHostTransportStage(
-  storage: NanoHostTransportMutationStorage,
+  storage: NanoHostTransportWriterSource,
   input: ControlNanoHostTransportInput,
   beforeSubmit?: () => Promise<void>
 ) {
@@ -223,7 +229,7 @@ function issuanceFacts(
 
 /** Creates one native-owned Token and pairs the acknowledged original row with its one-time Main secret. */
 export async function createNanoHostTransportTokenRecord(
-  storage: NanoHostTransportMutationStorage,
+  storage: NanoHostTransportWriterSource,
   input: CreateNanoHostTransportTokenRecordInput,
   actor?: Actor,
   beforeSubmit?: () => Promise<void>
@@ -366,7 +372,7 @@ export async function submitNanoHostTransportRevocation(
 
 /** Rotates the original two-row tuple atomically without moving its one-time secret into the worker wire. */
 export async function rotateNanoHostTransportTokenRecord(
-  storage: NanoHostTransportMutationStorage,
+  storage: NanoHostTransportWriterSource,
   tokenId: string,
   input: RotateNanoHostTransportTokenRecordInput,
   actor?: Actor,
@@ -466,10 +472,10 @@ export async function submitNanoHostTransportRotationAbort(
 
 /** Commits only the two existing successful Audit forms as their original separately awaited stage. */
 export async function recordNanoHostTransportAudit(
-  coreDb: CoreDb,
+  writer: CoreDb | PreparedNanoHostTransportWriter,
   input: Extract<ControlNanoHostTransportInput, { kind: 'lifecycle-audit' | 'decommission-audit' }>
 ): Promise<void> {
-  nativeResult(await commitNanoHostTransportStage(coreDb, input), 'audit');
+  nativeResult(await commitNanoHostTransportStage(writer, input), 'audit');
 }
 
 /** Existing Main read; this function has no mutation or post-ACK reconstruction. */
