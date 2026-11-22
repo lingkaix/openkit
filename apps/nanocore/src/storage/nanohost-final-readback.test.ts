@@ -1,6 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as realDelay } from 'node:timers/promises';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { canonicalJsonText, workspaceIdForOwner } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
@@ -25,6 +27,8 @@ import {
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from '../runtime/nanohost-attempt-recovery.js';
+import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { runSchedulerRestartRecovery } from '../runtime/scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import {
@@ -39,7 +43,12 @@ import {
 import { waitForWorkerControlFinalStatus } from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from '../runtime/worker-governance-turn-executor.js';
-import { hasPendingWorkspaceCapture } from '../runtime/workspace-reconciliation-records.js';
+import { workerStorageScopeDigest } from '../runtime/worker-storage-bindings.js';
+import {
+  hasPendingWorkspaceCapture,
+  listWorkspaceReconciliationRecords,
+} from '../runtime/workspace-reconciliation-records.js';
+import { preserveRawWorkspaceCapture } from '../runtime/workspace-snapshot-chain.js';
 import {
   currentAdmittedTestNanoHostOwner,
   mutateAdmittedTestNanoHost,
@@ -62,6 +71,7 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import {
   getControlStoreWorkerClient,
@@ -193,7 +203,10 @@ async function createFixture() {
       workerControlTokenHash: hashWorkerRouteToken(CONTROL_TOKEN),
       workerInferenceTokenHash: hashWorkerRouteToken(INFERENCE_TOKEN),
     },
-    { attemptId: ATTEMPT_ID }
+    {
+      attemptId: ATTEMPT_ID,
+      placementDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+    }
   );
   const { deploymentId } = readDataRootLayoutMarker(dataRoot);
   const { image } = environmentPackage.runtime;
@@ -691,119 +704,318 @@ function dispatchRows(coreDb: CoreDb) {
   };
 }
 
+/**
+ * Launches one real Worker Turn through the configured factory. The original Core process stops inside
+ * its live final waiter, so it never runs its own closeout. The Worker's final passes the production
+ * gateway: intake, Native FULL, then the deciding observation. With `loseObservationAck`, that
+ * observation commits and its reply is lost; the Worker retries the exact envelope.
+ */
+async function launchSettledTurn(input: { readonly loseObservationAck: boolean }) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-final-readback-launch-'));
+  ensureLayout(dataRoot);
+  const owned: {
+    coreDb: CoreDb;
+    cold?: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
+  } = { coreDb: openCoreDb(dataRoot) };
+  const { coreDb } = owned;
+  applyMigrations(coreDb);
+  const manifest = createTestAgentSetup({
+    imageRef: `sha256:${'a'.repeat(64)}`,
+    requiredCapabilities: ['trusted-worker-inference-relay'],
+  }).manifest;
+  await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+  const ownerUserId = ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+  const configuration = createInMemoryRuntimeConfigSnapshot({
+    ...loadRuntimeConfig(dataRoot),
+    agentManifests: [manifest],
+    gatewayConfig: createTestGatewayConfig(),
+    providerRegistry: new ProviderRegistry([
+      {
+        id: 'agent-openrouter',
+        displayName: 'Resident fixture',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+      },
+    ]),
+  });
+  // The Worker retries an ambiguous final failure with the exact same envelope.
+  const options = { readRuntimeConfig: () => configuration, retryAmbiguousFinal: true };
+  const waiter = vi.mocked(waitForWorkerControlFinalStatus);
+  const wait = waiter.getMockImplementation();
+  if (!wait) throw new Error('Final waiter spy has no original implementation.');
+  const live = await createNativeTaskAdmissionFixture(coreDb, store, options);
+  onTestFinished(async () => {
+    waiter.mockImplementation(wait);
+    await owned.cold?.restore();
+    await live.restore();
+    await shutdownControlStoreWorkerClient();
+    if (owned.coreDb.sqlite.open) owned.coreDb.sqlite.close();
+  });
+  const attemptId = testEntityId('attempt', 'attempt_final_readback_launch');
+  const agentSessionId = testEntityId('as', 'as_final_readback_launch');
+  const entry = await createTestQueueEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue:${attemptId}`,
+    requestId: testEntityId('tu', 'request_final_readback_launch').slice(3),
+    requestedAgentId: manifest.id,
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: DEMO_THREAD_ID,
+    turnId: testEntityId('tu', 'turn_final_readback_launch'),
+    text: 'Finish one exact worker Turn',
+    triggerActor: { kind: 'user', id: ownerUserId },
+  });
+  await publishPendingTurn(store, entry);
+  // The original Core process stops inside its live final waiter, so it never runs its own closeout.
+  waiter.mockImplementation((...args) =>
+    args[1].lineage.turnId === entry.turnId ? new Promise(() => {}) : wait(...args)
+  );
+  await live.admitTurn(entry, {
+    attemptId,
+    agentSessionId,
+    candidateAgentSessionId: agentSessionId,
+  });
+  // The Worker reports its final through the production gateway: intake, Native FULL, observation.
+  const client = getControlStoreWorkerClient() as unknown as FinalStageClient;
+  const post = client.workerControlFinalStage.bind(client);
+  let observations = 0;
+  const observe = vi
+    .spyOn(client, 'workerControlFinalStage')
+    .mockImplementation(async (database, command, stage) => {
+      const result = await post(database, command, stage);
+      if (stage.kind !== 'observe') return result;
+      observations += 1;
+      if (!input.loseObservationAck || observations > 1) return result;
+      throw new Error('Injected loss of the committed observation reply.');
+    });
+  live.executionFor(entry.turnId).completion.resolve();
+  const original = await vi.waitFor(() => {
+    const read = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId)
+    );
+    if (read.state !== 'settled') throw new Error(`Final readback is ${read.state}.`);
+    return read;
+  });
+  // After a lost reply, the Worker's exact retry replays the committed observation and is accepted.
+  await vi.waitFor(() => expect(observations).toBe(input.loseObservationAck ? 2 : 1));
+  observe.mockRestore();
+  const steps = executionSteps(coreDb, attemptId);
+  expect(steps.slice(-2)).toEqual(['worker-final-intake', original.receipt.intent.requestId]);
+  expect(store.getTurnById(entry.turnId).status).not.toBe('completed');
+  return {
+    dataRoot,
+    owned,
+    store,
+    options,
+    live,
+    entry,
+    attemptId,
+    original,
+    steps,
+    dispatch: dispatchRows(coreDb),
+  };
+}
+
+type SettledLaunch = Awaited<ReturnType<typeof launchSettledTurn>>;
+
+/** A cold Core runtime over the current owners. The Boot binding hands off to its factory closeout. */
+async function coldRestartRecovery(launch: SettledLaunch) {
+  const { coreDb } = launch.owned;
+  const cold = await createNativeTaskAdmissionFixture(
+    coreDb,
+    launch.store,
+    launch.options,
+    launch.live.outside
+  );
+  launch.owned.cold = cold;
+  const { runtime } = cold;
+  const executionBackend = runtime.turnExecutor.executionBackend!;
+  const submit = vi.spyOn(executionBackend, 'submit');
+  const closeout = vi.fn(runtime.reconcileAcceptedFinalStatus);
+  const recovery: RunNanoHostAttemptRecoveryInput = {
+    executionBackend,
+    store: launch.store,
+    cleanupBackendSession: runtime.cleanupBackendSession,
+    reconcileExecutions: () => runtime.executionReconciler.runOnce(),
+    prepareBackendCleanup: runtime.prepareBackendCleanup,
+    restoreBackendSession: runtime.restoreBackendSession,
+    isTurnExecutionActive: runtime.isTurnExecutionActive,
+    projectRecoveredTurn: async () => {
+      throw new Error('The accepted final keeps its restart closeout owner.');
+    },
+    admittedNanoHostRecovery: testBootNanoHostRecovery(coreDb, closeout),
+  };
+  return { cold, submit, closeout, recovery };
+}
+
+/** Stages one real pending turn-end Workspace capture source for the launched Turn. */
+async function stagePendingTurnEndCapture(launch: SettledLaunch) {
+  const { coreDb } = launch.owned;
+  const session = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, launch.attemptId)
+  )!;
+  const retained = launch.store.getAgentSession(session.agentSessionId).retainedStorage;
+  if (!retained?.attachmentGeneration)
+    throw new Error('The launched Turn has no retained storage.');
+  const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+  const collectionId = `turn-end-${digest(session.packageSnapshotId)}`;
+  const bytes = Buffer.from('pending turn-end capture');
+  const staging = join(launch.dataRoot, 'server/runtime/k8b-capture-staging');
+  mkdirSync(staging, { recursive: true });
+  writeFileSync(join(staging, 'complete'), bytes);
+  const head = (tree: string, manifest: string) => ({
+    tree: tree.repeat(40),
+    manifest: manifest.repeat(40),
+  });
+  await preserveRawWorkspaceCapture({
+    dataRoot: launch.dataRoot,
+    identity: {
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      turnId: session.turnId,
+      agentSessionId: session.agentSessionId,
+      packageSnapshotId: session.packageSnapshotId,
+      storageRef: retained.storageRef,
+      workSlot: retained.workSlotRef,
+      attachmentGeneration: retained.attachmentGeneration,
+      scopeDigest: workerStorageScopeDigest(session.workspaceId),
+      sandboxId: nanoHostSandboxIdFromBackendSessionId(session.backendSessionId),
+      collectionId,
+    },
+    staged: { bytes, path: join(staging, 'complete') },
+    admission: new FileStorageAdmission(launch.dataRoot, () => 0n),
+    result: {
+      outcome: 'candidate',
+      sha256: `sha256:${digest(bytes)}`,
+      byteLength: bytes.length,
+      head: head('1', '2'),
+      previousHead: head('3', '4'),
+      acceptedBase: head('3', '4'),
+      unstable: false,
+    },
+  });
+  const source = join(
+    launch.dataRoot,
+    'workspaces',
+    session.workspaceId,
+    'evidence/backend/workspace-capture',
+    collectionId,
+    'complete'
+  );
+  return {
+    /** Durable capture publications for this source. */
+    publications() {
+      const db = openWorkspaceDb(launch.dataRoot, session.workspaceId);
+      try {
+        return listWorkspaceReconciliationRecords(db, session.workspaceId)
+          .filter((record) => record.id === `wrr_capture_${collectionId}`)
+          .map((record) => record.stateAfter);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    /** Whether the original source bytes are still in place. */
+    preserved: () => readFileSync(source).equals(bytes),
+  };
+}
+
 describe('K8b accepted-final readback', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('W1 closes a launched Turn once through the production restart closeout from its original receipt', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-final-readback-launch-'));
-    ensureLayout(dataRoot);
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const manifest = createTestAgentSetup({
-      imageRef: `sha256:${'a'.repeat(64)}`,
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    }).manifest;
-    await admitTestNativeEnvironmentForRoot(coreDb, manifest);
-    const ownerUserId = ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
-    const configuration = createInMemoryRuntimeConfigSnapshot({
-      ...loadRuntimeConfig(dataRoot),
-      agentManifests: [manifest],
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Resident fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-    });
-    const options = { readRuntimeConfig: () => configuration };
-    const waiter = vi.mocked(waitForWorkerControlFinalStatus);
-    const wait = waiter.getMockImplementation();
-    if (!wait) throw new Error('Final waiter spy has no original implementation.');
-    const live = await createNativeTaskAdmissionFixture(coreDb, store, options);
-    let cold: typeof live | undefined;
-    onTestFinished(async () => {
-      waiter.mockImplementation(wait);
-      await cold?.restore();
-      await live.restore();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    });
-    const attemptId = testEntityId('attempt', 'attempt_final_readback_launch');
-    const agentSessionId = testEntityId('as', 'as_final_readback_launch');
-    const entry = await createTestQueueEntry(coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: `queue:${attemptId}`,
-      requestId: testEntityId('tu', 'request_final_readback_launch').slice(3),
-      requestedAgentId: manifest.id,
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: DEMO_THREAD_ID,
-      turnId: testEntityId('tu', 'turn_final_readback_launch'),
-      text: 'Finish one exact worker Turn',
-      triggerActor: { kind: 'user', id: ownerUserId },
-    });
-    await publishPendingTurn(store, entry);
-    // The original Core process stops inside its live final waiter, so it never runs its own closeout.
-    waiter.mockImplementation((...args) =>
-      args[1].lineage.turnId === entry.turnId ? new Promise(() => {}) : wait(...args)
-    );
-    await live.admitTurn(entry, {
-      attemptId,
-      agentSessionId,
-      candidateAgentSessionId: agentSessionId,
-    });
-    // The Worker reports its final through the production gateway: intake, Native FULL, observation.
-    live.executionFor(entry.turnId).completion.resolve();
-    const original = await vi.waitFor(() => {
-      const read = readAdmittedTestNanoHost(coreDb, (sqlite) =>
-        inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId)
-      );
-      if (read.state !== 'settled') throw new Error(`Final readback is ${read.state}.`);
-      return read;
-    });
-    const steps = executionSteps(coreDb, attemptId);
-    expect(steps.slice(-2)).toEqual(['worker-final-intake', original.receipt.intent.requestId]);
-    expect(store.getTurnById(entry.turnId).status).not.toBe('completed');
-    const dispatch = dispatchRows(coreDb);
+  it('W1 holds a lost-ACK restart while the original peer is away and closes the Turn once after readmission', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: true });
+    const { attemptId, dispatch, entry, original, steps, store } = launch;
 
-    // A cold Core runtime over the reopened NanoHost owner. The outside peer keeps its accepted facts.
-    await live.restore();
-    cold = await createNativeTaskAdmissionFixture(coreDb, store, options, live.outside);
-    const { runtime } = cold;
-    const executionBackend = runtime.turnExecutor.executionBackend!;
-    const submit = vi.spyOn(executionBackend, 'submit');
-    const closeout = vi.fn(runtime.reconcileAcceptedFinalStatus);
-    const recovery: RunNanoHostAttemptRecoveryInput = {
-      executionBackend,
-      store,
-      cleanupBackendSession: runtime.cleanupBackendSession,
-      reconcileExecutions: () => runtime.executionReconciler.runOnce(),
-      prepareBackendCleanup: runtime.prepareBackendCleanup,
-      restoreBackendSession: runtime.restoreBackendSession,
-      isTurnExecutionActive: runtime.isTurnExecutionActive,
-      projectRecoveredTurn: async () => {
-        throw new Error('The accepted final keeps its restart closeout owner.');
-      },
-      admittedNanoHostRecovery: testBootNanoHostRecovery(coreDb, closeout),
-    };
+    // Core restarts. Both owners reopen, and Boot fences the RuntimeTarget before it serves (index.ts).
+    await launch.live.restore();
+    launch.owned.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    const coreDb = openCoreDb(launch.dataRoot);
+    launch.owned.coreDb = coreDb;
+    const { path, contentMount } = nativeProductScope(launch.dataRoot, { kind: 'server' });
+    await getControlStoreWorkerClient().open({
+      database: `core:${path}`,
+      path,
+      dataRoot: launch.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: { kind: 'server' },
+      contentMount,
+    });
+    const { cold, submit, closeout, recovery } = await coldRestartRecovery(launch);
+    const native = await reopenAdmittedTestNanoHost(coreDb);
+    const fence = await transitionAdmittedNanoHostRuntimeTarget(native.value, {
+      kind: 'restart',
+      observedAt: new Date().toISOString(),
+    });
+    expect(fence.state).toBe('ready');
     // Boot order before listen: scheduler restart recovery and Native classification, then maintenance.
     await runSchedulerRestartRecovery(coreDb, recovery);
     await classifyNanoHostAttemptsAfterRestart(coreDb, recovery);
+    const durable = store.getTurnById(entry.turnId);
+    const phase = requireSchedulerExecutionAttempt(coreDb, attemptId).phase;
+    // The original peer is away. Collection has no current physical Epoch authority, which holds.
+    await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toThrow(
+      'Native attempt recovery failed.'
+    );
+    expect(closeout).toHaveBeenCalledTimes(1);
+    await expect(closeout.mock.results[0]!.value).rejects.toThrow(
+      'NanoHost current physical Epoch authority is unavailable.'
+    );
+    expect(store.getTurnById(entry.turnId)).toEqual(durable);
+    expect(
+      store
+        .getTurnEvents(entry.turnId)
+        .filter((event) => event.event === 'turn.completed' || event.event === 'turn.interrupted')
+    ).toEqual([]);
+    expect(requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe(phase);
+    expect(executionSteps(coreDb, attemptId)).toEqual(steps);
+
+    // The original peer is readmitted with its same physical Epoch on a new connection generation.
+    const session = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attemptId)
+    )!;
+    const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId)
+    )!;
+    const coordinates = {
+      targetId: target.targetId,
+      identityId: target.identityId,
+      deploymentId: target.deploymentId,
+    };
+    const allocated = await transitionAdmittedNanoHostRuntimeTarget(native.value, {
+      kind: 'allocate',
+      ...coordinates,
+      observedAt: new Date().toISOString(),
+    });
+    if (allocated.state !== 'ready' || !allocated.value)
+      throw new Error('The readmitted peer has no connection generation.');
+    const readmitted = await transitionAdmittedNanoHostRuntimeTarget(native.value, {
+      kind: 'ready',
+      ...coordinates,
+      connectionGeneration: allocated.value.connectionGeneration,
+      physicalEpoch: session.originPhysicalEpoch,
+      ready: true,
+      predecessorFenced: true,
+      freshEmpty: true,
+      observedAt: new Date().toISOString(),
+    });
+    expect(readmitted.state).toBe('ready');
     await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
     const effects = cold.effects.length;
     // A second pass finds the attempt closed and has no effect.
     await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
 
-    expect(closeout).toHaveBeenCalledTimes(1);
-    expect(closeout.mock.calls[0]![1]).toEqual(original);
+    expect(closeout).toHaveBeenCalledTimes(2);
+    expect(closeout.mock.calls.map((call) => call[1])).toEqual([original, original]);
     expect(store.getTurnById(entry.turnId)).toMatchObject({ status: 'completed' });
     expect(
       store.getTurnEvents(entry.turnId).filter((event) => event.event === 'turn.completed')
     ).toHaveLength(1);
+    expect(
+      store.getTurnEvents(entry.turnId).filter((event) => event.event === 'turn.interrupted')
+    ).toEqual([]);
     expect(cold.executor.releaseResults).toEqual([
       expect.objectContaining({ attemptId, state: 'released' }),
     ]);
@@ -923,7 +1135,7 @@ describe('K8b accepted-final readback', () => {
     expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
   });
 
-  it('W3 leaves a Native-only final at the original deadline through classification, the closing ACK and the first-cleanup hold', async () => {
+  it('W3 leaves a Native-only final at the original deadline through classification, the accepted closing ACK and the first-cleanup hold', async () => {
     const fixture = await createFixture();
     const credentials = fixture.seedRunCredentials();
     expect(credentials()).toEqual({ attempt: 'active', unrelated: 'active' });
@@ -960,23 +1172,57 @@ describe('K8b accepted-final readback', () => {
     expect(close).toHaveBeenCalledTimes(1);
     const waiting = fixture.session();
 
-    // The first pass at the deadline sends the closing ACK, keeps the first cause, then first cleanup.
+    // At the deadline the closing ACK is delayed. First cleanup waits for it, and a refusal keeps it at zero.
     clock = deadline;
-    await expect(
-      runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...boot })
-    ).rejects.toThrow('Native attempt recovery failed.');
-    expect(close).toHaveBeenCalledTimes(2);
-    expect(close.mock.calls[1]?.[0]).toMatchObject({
+    const { closeRecovery } = boot.admittedNanoHostRecovery.value.owner;
+    const delayAck = (answer: Parameters<typeof close.mockImplementationOnce>[0]) => {
+      const acknowledge = Promise.withResolvers<void>();
+      close.mockImplementationOnce(async (input) => {
+        await acknowledge.promise;
+        return answer(input);
+      });
+      const pass = runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, {
+        ...ports,
+        ...boot,
+      }).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      return { acknowledge: acknowledge.resolve, pass };
+    };
+    const refused = delayAck(async () => ({
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'recovery-required',
+    }));
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
+    await realDelay(1000);
+    expect(boot.cleanup).not.toHaveBeenCalled();
+    refused.acknowledge();
+    expect(((await refused.pass) as AggregateError).errors.map(String)).toEqual([
+      'Error: NanoHost recovery has no matching Core close acknowledgement.',
+    ]);
+    expect(boot.cleanup).not.toHaveBeenCalled();
+
+    // The next pass delays the actual closing ACK. It keeps the first cause, then first cleanup runs.
+    const accepted = delayAck(closeRecovery);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(3));
+    await realDelay(1000);
+    expect(boot.cleanup).not.toHaveBeenCalled();
+    accepted.acknowledge();
+    expect(await accepted.pass).toBeInstanceOf(AggregateError);
+    expect(close).toHaveBeenCalledTimes(3);
+    expect(close.mock.calls[2]?.[0]).toMatchObject({
       cause: 'native-liveness-expired',
       session: waiting,
       lease: readRetainedNanoHostSubmission(fixture.coreDb, ATTEMPT_ID)?.lease,
     });
-    await expect(close.mock.results[1]?.value).resolves.toMatchObject({
+    await expect(close.mock.results[2]?.value).resolves.toMatchObject({
       state: 'ready',
       value: { phase: 'closing', terminalCause: 'worker-final-status', fenceRef: null },
     });
     expect(boot.cleanup).toHaveBeenCalledTimes(1);
-    expect(close.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(close.mock.invocationCallOrder[2]).toBeLessThan(
       boot.cleanup.mock.invocationCallOrder[0] ?? 0
     );
     expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
@@ -1181,23 +1427,31 @@ describe('K8b accepted-final readback', () => {
     setSession('deployment_id', session.deploymentId);
     expect(fixture.readback()).toEqual(original);
 
-    // (b) After a good inspection: the guarded read compares the original physical session.
-    const { backend, calls } = recordingBackend(session);
-    const executor = new WorkerGovernanceTurnExecutor({
-      backend,
-      coreDb: fixture.coreDb,
-      environmentBackend: { kind: 'openshell' },
-    });
-    setSession('origin_physical_epoch', 'f'.repeat(64));
-    await expect(
-      executor.resumeAcceptedFinalStatus(
-        fixture.store,
-        fixture.environmentPackage,
-        session,
-        original
-      )
-    ).rejects.toThrow('Restart closeout final proof changed after recovery inspection.');
-    expect(calls).toEqual(['planSession']);
+    // (b) After a good inspection: the guarded read compares the original physical session. The
+    // origin Epoch is also in the submit placement digest; the backend session id is only in the proof.
+    for (const [column, value, restore] of [
+      ['origin_physical_epoch', 'f'.repeat(64), session.originPhysicalEpoch],
+      ['backend_session_id', `${session.backendSessionId}-successor`, session.backendSessionId],
+    ] as const) {
+      const { backend, calls } = recordingBackend(session);
+      const executor = new WorkerGovernanceTurnExecutor({
+        backend,
+        coreDb: fixture.coreDb,
+        environmentBackend: { kind: 'openshell' },
+      });
+      setSession(column, value);
+      await expect(
+        executor.resumeAcceptedFinalStatus(
+          fixture.store,
+          fixture.environmentPackage,
+          session,
+          original
+        )
+      ).rejects.toThrow('Restart closeout final proof changed after recovery inspection.');
+      expect(calls).toEqual(['planSession']);
+      setSession(column, restore);
+      expect(fixture.readback()).toEqual(original);
+    }
     expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID).phase).toBe('closing');
   });
 
@@ -1223,10 +1477,10 @@ describe('K8b accepted-final readback', () => {
       release = resolve;
     });
     let captures = 0;
-    // Call 1 is the first pass's own capture census; call 2 is its claimed factory closeout.
+    // Maintenance inspects a final before any capture census. Call 1 is the claimed factory closeout.
     capture.mockImplementation(async (...args) => {
       captures += 1;
-      if (captures === 2) {
+      if (captures === 1) {
         entered();
         await gate;
       }
@@ -1258,8 +1512,8 @@ describe('K8b accepted-final readback', () => {
       release();
       capture.mockImplementation(actual);
     }
-    // The first pass's census, its claimed closeout, and the second pass's census only.
-    expect(captures).toBe(3);
+    // Only the claimed closeout. The second pass skips the live Turn before inspection and capture.
+    expect(captures).toBe(1);
     expect(calls).toEqual([]);
     expect(runtime.isTurnExecutionActive(fixture.turnId)).toBe(false);
     expect(ports.executionBackend.submit).not.toHaveBeenCalled();
@@ -1286,5 +1540,201 @@ describe('K8b accepted-final readback', () => {
     expect(fixture.store.getTurnById(fixture.turnId)).toEqual(turn);
     expect(runtime.isTurnExecutionActive(fixture.turnId)).toBe(false);
     expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID).phase).toBe('closing');
+  });
+  it('W13 holds a missing Native final record while other accepted-final evidence survives', async () => {
+    // Each case keeps one kind of evidence: all of it, the Core receipt, the terminal event, its
+    // receipt, or only the final receipt (the r1 check).
+    const cases = [
+      { finalReceipt: false, event: true, eventReceipt: true, coreReceipt: true },
+      { finalReceipt: false, event: false, eventReceipt: false, coreReceipt: true },
+      { finalReceipt: false, event: true, eventReceipt: false, coreReceipt: false },
+      { finalReceipt: false, event: false, eventReceipt: true, coreReceipt: false },
+      { finalReceipt: true, event: false, eventReceipt: false, coreReceipt: false },
+    ];
+    for (const survives of cases) {
+      const fixture = await createFixture();
+      await fixture.recordFinal();
+      const settled = fixture.readback();
+      if (settled.state !== 'settled') throw new Error('Fixture has no settled readback.');
+      let clock = new Date(Date.parse(fixture.original.lease.grant.deadline) - 1).toISOString();
+      const ports = recoveryPorts(() => clock);
+      await fixture.restart(ports);
+      fixture.readyFreshEpoch();
+      mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) => {
+        const remove = (table: string, operation: string) =>
+          sqlite
+            .prepare(`DELETE FROM ${table} WHERE operation=? AND sequence=?`)
+            .run(operation, SEQUENCE);
+        remove('worker_control_records', 'final_status');
+        if (!survives.finalReceipt) remove('worker_control_sequence_fingerprints', 'final_status');
+        if (!survives.event) remove('worker_control_records', 'event_append');
+        if (!survives.eventReceipt) remove('worker_control_sequence_fingerprints', 'event_append');
+      });
+      if (!survives.coreReceipt)
+        fixture.coreDb.sqlite
+          .prepare('DELETE FROM control_execution_steps WHERE step_id=?')
+          .run(settled.receipt.intent.requestId);
+      expect(fixture.readback()).toEqual({ state: 'held', reason: 'missing' });
+      // Before and at the original deadline: the original session stays and no cleanup starts.
+      await expectBootHold(fixture, ports);
+      clock = fixture.original.lease.grant.deadline;
+      await expectBootHold(fixture, ports);
+      await shutdownControlStoreWorkerClient();
+    }
+  }, 120_000);
+
+  it('W14 checks the first inspection against the original submit placement digest', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: false });
+    const { attemptId, entry, original, store } = launch;
+    const { coreDb } = launch.owned;
+    // The production submit retains its queue entry and the digest of its exact placement.
+    const { grant } = readRetainedNanoHostSubmission(coreDb, attemptId)!.lease;
+    const submitted = coreDb.sqlite
+      .prepare(
+        'SELECT control_json AS control FROM control_execution_steps WHERE execution_id=? AND invocation_id=?'
+      )
+      .get(grant.execution.executionId, grant.operationId) as { control: string };
+    expect(JSON.parse(submitted.control).authorityRefs).toEqual([
+      entry.queueEntryId,
+      expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    ]);
+    await launch.live.restore();
+    const { cold, closeout, recovery } = await coldRestartRecovery(launch);
+    await runSchedulerRestartRecovery(coreDb, recovery);
+    await classifyNanoHostAttemptsAfterRestart(coreDb, recovery);
+    const session = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))!;
+    const placed = session();
+    const readback = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId)
+      );
+    const setPlacement = (originPhysicalEpoch: string, deploymentId: string) =>
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            'UPDATE worker_backend_sessions SET origin_physical_epoch=?, deployment_id=? WHERE attempt_id=?'
+          )
+          .run(originPhysicalEpoch, deploymentId, attemptId);
+        sqlite
+          .prepare('UPDATE nanohost_runtime_targets SET deployment_id=? WHERE target_id=?')
+          .run(deploymentId, placed.runtimeTargetId);
+      });
+    const turn = store.getTurnById(entry.turnId);
+    // A changed origin Epoch, then a target and session that agree on another deployment.
+    for (const [epoch, deployment] of [
+      ['f'.repeat(64), placed.deploymentId],
+      [placed.originPhysicalEpoch, 'other-deployment'],
+    ] as const) {
+      setPlacement(epoch, deployment);
+      expect(readback()).toEqual({ state: 'held', reason: 'conflict' });
+      // Selection: Boot inspection holds before closeout.
+      await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toThrow(
+        'Native attempt recovery failed.'
+      );
+      expect(closeout).not.toHaveBeenCalled();
+      // Handoff: the guarded closeout read holds the original commitment.
+      await expect(cold.runtime.reconcileAcceptedFinalStatus(session(), original)).rejects.toThrow(
+        'Restart closeout final proof changed after recovery inspection.'
+      );
+      setPlacement(placed.originPhysicalEpoch, placed.deploymentId);
+      expect(readback()).toEqual(original);
+    }
+    expect(store.getTurnById(entry.turnId)).toEqual(turn);
+    expect(cold.executor.releaseResults).toEqual([]);
+
+    // A legitimate successor Epoch keeps the historical readback: the digest uses the original grant
+    // generation and the session's origin Epoch.
+    const fixture = await createFixture();
+    await fixture.recordFinal();
+    const settled = fixture.readback();
+    expect(settled.state).toBe('settled');
+    await fixture.restart(recoveryPorts(() => new Date().toISOString()));
+    fixture.readyFreshEpoch();
+    const target = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      getNanoHostRuntimeTarget({ sqlite }, fixture.session().runtimeTargetId)
+    )!;
+    expect(target.physicalEpoch).not.toBe(fixture.session().originPhysicalEpoch);
+    expect(String(target.connectionGeneration)).not.toBe(fixture.original.lease.grant.generation);
+    expect(fixture.readback()).toEqual(settled);
+  }, 120_000);
+  it('W12 holds changed final proof in production maintenance before a pending capture publishes', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: false });
+    const { attemptId, entry, original, store } = launch;
+    const { coreDb } = launch.owned;
+    await launch.live.restore();
+    const { cold, submit, closeout, recovery } = await coldRestartRecovery(launch);
+    // Boot order before listen: scheduler restart recovery and Native classification, then maintenance.
+    await runSchedulerRestartRecovery(coreDb, recovery);
+    await classifyNanoHostAttemptsAfterRestart(coreDb, recovery);
+    const capture = await stagePendingTurnEndCapture(launch);
+    expect(capture.publications()).toEqual([]);
+    const turn = store.getTurnById(entry.turnId);
+    const phase = requireSchedulerExecutionAttempt(coreDb, attemptId).phase;
+    const effects = cold.effects.length;
+    const readback = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId)
+      );
+    const fingerprint = readAdmittedTestNanoHost(
+      coreDb,
+      (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT fingerprint FROM worker_control_sequence_fingerprints WHERE operation='final_status'"
+          )
+          .get() as { fingerprint: string }
+    ).fingerprint;
+    const setFinalFingerprint = (value: string) =>
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            "UPDATE worker_control_sequence_fingerprints SET fingerprint=? WHERE operation='final_status'"
+          )
+          .run(value)
+      );
+    const expectSourceHeld = () => {
+      expect(capture.publications()).toEqual([]);
+      expect(capture.preserved()).toBe(true);
+      expect(store.getTurnById(entry.turnId)).toEqual(turn);
+      expect(requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe(phase);
+      expect(cold.executor.releaseResults).toEqual([]);
+      expect(cold.effects).toHaveLength(effects);
+      expect(submit).not.toHaveBeenCalled();
+    };
+
+    const pass = () =>
+      runNanoHostAttemptRecoveryMaintenance(coreDb, recovery).then(
+        () => 'returned',
+        (error: unknown) => error
+      );
+
+    // (a) One changed final fingerprint: inspection holds before any capture publication.
+    setFinalFingerprint('{}');
+    const changed = await pass();
+    // The durable publication is the oracle, so it is checked first.
+    expectSourceHeld();
+    expect(readback().state).toBe('held');
+    expect(changed).toBeInstanceOf(AggregateError);
+    expect(closeout).not.toHaveBeenCalled();
+
+    // (b) The proof is good at inspection and at the factory's guarded read. It changes on entry to
+    // capture recovery, and the guarded read before publication holds.
+    setFinalFingerprint(fingerprint);
+    expect(readback()).toEqual(original);
+    const helper = vi.mocked(hasPendingWorkspaceCapture);
+    const actual = helper.getMockImplementation();
+    if (!actual) throw new Error('Capture spy has no original implementation.');
+    helper.mockImplementationOnce(async (...args) => {
+      setFinalFingerprint('{}');
+      return actual(...args);
+    });
+    const late = await pass();
+    expectSourceHeld();
+    expect(late).toBeInstanceOf(AggregateError);
+    expect(closeout).toHaveBeenCalledTimes(1);
+    await expect(closeout.mock.results[0]!.value).rejects.toThrow(
+      'Restart closeout final proof changed after recovery inspection.'
+    );
   });
 });

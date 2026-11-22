@@ -1088,6 +1088,16 @@ export function admitNanoHostWorkerFinalInDb(
   })();
 }
 
+/** The receipt occurrence depends only on the session deployment and the original submit operation. */
+function acceptedNanoHostFinalReceiptOccurrence(deploymentId: string, operationId: string) {
+  return {
+    deploymentId,
+    sourceOwner: 'nanohost',
+    verb: 'apply-execution-proof',
+    occurrenceKey: `worker-final-accepted:${operationId}`,
+  } as const;
+}
+
 /** The deterministic `worker-final-accepted` receipt identity for one original Core intake. */
 function acceptedNanoHostFinalReceiptIntent(
   deploymentId: string,
@@ -1108,12 +1118,7 @@ function acceptedNanoHostFinalReceiptIntent(
       }),
     },
   } as const;
-  const occurrence = {
-    deploymentId,
-    sourceOwner: 'nanohost',
-    verb: 'apply-execution-proof',
-    occurrenceKey: `worker-final-accepted:${grant.operationId}`,
-  } as const;
+  const occurrence = acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId);
   const intent: ExecutionProofIntent = {
     ...occurrence,
     requestId: storageRequestId(occurrence),
@@ -1237,11 +1242,19 @@ function hasCompleteExecutionHistory(
   return revision === 1 + steps + ended;
 }
 
-/** The Core submission retains its runtime target. A target never changes its deployment. */
+/**
+ * The Core submission retains its runtime target and the digest of its exact placement (`authorityRefs[1]`).
+ * The digest uses the original grant generation and origin Epoch, so a successor Epoch keeps the readback.
+ */
 function hasOriginalSubmissionPlacement(
   db: CoreDb,
   sqlite: FinalNativeReader,
   grant: NanoHostWorkerFinalDecision['grant'],
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+  },
   session: NanoHostAcceptedFinalProof['session']
 ): boolean {
   const step = db.sqlite
@@ -1255,9 +1268,25 @@ function hasOriginalSubmissionPlacement(
     stepId: step.stepId,
   });
   const target = getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+  if (
+    !target ||
+    submit.control.target?.targetId !== session.runtimeTargetId ||
+    target.deploymentId !== session.deploymentId
+  )
+    return false;
+  const placement = {
+    runtimeTargetId: session.runtimeTargetId,
+    identityId: target.identityId,
+    deploymentId: session.deploymentId,
+    physicalEpoch: session.originPhysicalEpoch,
+    connectionGeneration: Number(grant.generation),
+    workspaceId: lineage.workspaceId,
+    threadId: lineage.threadId,
+    agentSessionId: lineage.agentSessionId,
+  };
   return (
-    submit.control.target?.targetId === session.runtimeTargetId &&
-    target?.deploymentId === session.deploymentId
+    submit.control.authorityRefs.length === 2 &&
+    submit.control.authorityRefs[1] === commandInputHash(placement)
   );
 }
 
@@ -1390,7 +1419,8 @@ export function inspectAcceptedNanoHostFinalInDb(
             backendSessionId: native.session.backendSessionId,
           };
           // The receipt key uses the session deployment, so the original submission placement comes first.
-          if (!hasOriginalSubmissionPlacement(db, sqlite, grant, session)) return held('conflict');
+          if (!hasOriginalSubmissionPlacement(db, sqlite, grant, expected, session))
+            return held('conflict');
           const intake = readCoreWorkerFinalIntake(db, grant, command);
           if (!intake) return held('missing');
           if (!hasExactNativeWorkerFinal(sqlite, command, intake)) return held('conflict');
@@ -1448,6 +1478,48 @@ export function inspectAcceptedNanoHostFinalInDb(
     if (error instanceof WorkerFinalStatusRefusal) return held('conflict');
     return held('unknown');
   }
+}
+
+/**
+ * K8b: a missing Native final counts as absent only when no other accepted-final evidence survives.
+ * That evidence is a canonical terminal event, its sequence receipt, or the original Core
+ * `worker-final-accepted` receipt. A Core intake alone is a genuine crash before Native FULL.
+ *
+ * @param db Core snapshot that holds the original submitted grant and its receipt steps.
+ * @param sqlite Admitted NanoHost snapshot of the original session.
+ * @param attemptId Original submitted attempt.
+ * @param deploymentId Deployment of the original Native session, which keys the receipt.
+ * @returns Whether accepted-final evidence survives without its Native final.
+ */
+export function hasSurvivingNanoHostFinalEvidence(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string,
+  deploymentId: string
+): boolean {
+  const original = readRetainedNanoHostSubmission(db, attemptId);
+  if (!original) return false;
+  const { agentSessionId, packageSnapshotId } = nanoHostWorkerLineage(original);
+  const terminal = (column: string) => `CASE WHEN json_valid(${column})
+    THEN json_extract(${column}, '$.event.type') END IN ('turn.completed', 'turn.failed')`;
+  if (
+    sqlite
+      .prepare(`SELECT 1 FROM worker_control_records
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND ${terminal('record_json')}
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND ${terminal('fingerprint')}`)
+      .get(agentSessionId, packageSnapshotId, agentSessionId, packageSnapshotId)
+  )
+    return true;
+  const { grant } = original.lease;
+  return !!db.sqlite
+    .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(
+      grant.execution.executionId,
+      storageRequestId(acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId))
+    );
 }
 
 /** Reads the exact currently live route under the admitted Core and Native snapshots. */

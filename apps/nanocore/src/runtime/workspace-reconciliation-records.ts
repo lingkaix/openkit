@@ -116,6 +116,7 @@ function originalCaptureIdentity(
  * @param anchor Original backend identity or Core identity projection; full owner proof is required only when capture is present.
  * @param environmentPackage Already verified original snapshot; absent callers defer its owning read until a source or preclaim exists.
  * @param store Optional current Store; absent callers read the same admitted native database.
+ * @param beforePublication Optional synchronous guard run just before each capture publication; it throws to hold.
  * @returns Whether any of the three original boundaries lacks its exact durable abandon.
  * @throws For unavailable or contradictory original proof, source, evidence, or recovery authority.
  */
@@ -137,7 +138,8 @@ export async function hasPendingWorkspaceCapture(
       >
     >,
   environmentPackage?: AgentEnvironmentPackage,
-  store?: FsStore
+  store?: FsStore,
+  beforePublication?: () => void
 ): Promise<boolean> {
   if (
     coreDb.dataRoot !== db.dataRoot ||
@@ -221,9 +223,11 @@ export async function hasPendingWorkspaceCapture(
       prior &&
       (prior.stateAfter === 'requires-human' || prior.stateAfter === 'recovered')
     ) {
+      beforePublication?.();
       await publishWorkspaceCaptureCompletion(db, fullOwner!, identity, source);
       continue;
     }
+    beforePublication?.();
     const record = await publishWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
     const digest = record.backendHandleSummary.candidateDigest;
     if (digest !== null) {

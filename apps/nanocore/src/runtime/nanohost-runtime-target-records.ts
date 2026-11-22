@@ -19,6 +19,16 @@ export class NanoHostCleanupFencePendingError extends Error {
   }
 }
 
+/**
+ * Expected hold while no current physical Epoch authorizes a NanoHost effect, for example before the
+ * original peer is readmitted after a Core restart. It is not a refusal and carries no terminal outcome.
+ */
+export class NanoHostPhysicalAuthorityUnavailableError extends Error {
+  public constructor() {
+    super('NanoHost current physical Epoch authority is unavailable.');
+  }
+}
+
 /** Durable configured NanoHost target projection returned to scheduler consumers. */
 export interface NanoHostRuntimeTargetRecord {
   /** Scheduler target id. */
