@@ -136,7 +136,7 @@ fn startup_fixture(
     };
     let selection_context = CredentialSelectionContext {
         identity_id: "nanohost-a".into(),
-        deployment_id: "deployment-a".into(),
+        deployment_id: input["deploymentId"].as_str().unwrap().to_owned(),
     };
     write_credential_slot(
         &slot_paths,
