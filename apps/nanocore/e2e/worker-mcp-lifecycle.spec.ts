@@ -691,18 +691,36 @@ async function runPublicWorkerMcpTurn(input: {
     encoding: 'base64',
     data: observationBody.toString('base64'),
   });
-  // A real Worker sends observations before the host's turn.start result is acknowledged.
+  // The first live observation can already be committing when the result and the Worker call arrive.
+  const metadataAppend = append(observation);
+  const artifact =
+    expectedMcpCalls === 1
+      ? submitWorkerArtifact(h2, capabilityToken, lineage.agentSessionId)
+      : undefined;
+  void artifact?.catch(() => undefined);
   const result = settleHarness(h2, integrationBindingRef, started, {
     nativeHandleDigest: null,
     nativeHandleState: 'pending',
     state: 'started',
   });
-  const [metadata] = await Promise.all([sleep(10).then(() => append(observation)), result]);
+  const [metadata, harnessResult] = await Promise.allSettled([metadataAppend, result]);
+  if (harnessResult.status === 'rejected') {
+    const artifactFailure = await artifact?.then(
+      () => null,
+      (error: unknown) => error
+    );
+    throw new AggregateError(
+      [harnessResult.reason, artifactFailure].filter(Boolean),
+      `Harness contention: ${String(harnessResult.reason)}; capability: ${String(artifactFailure)}`
+    );
+  }
+  if (metadata.status === 'rejected') throw metadata.reason;
   assert.equal(
-    metadata.status,
+    metadata.value.status,
     200,
-    responseFailure('Worker observation during turn.start settlement', metadata)
+    responseFailure('Live Worker observation', metadata.value)
   );
+  const artifactId = await artifact;
   const body = await append(chunk);
   assert.equal(body.status, 200, responseFailure('Worker observation body', body));
 
@@ -875,10 +893,68 @@ async function runPublicWorkerMcpTurn(input: {
   assert.deepEqual(attention.items, [], 'Worker left a human-attention request.');
   assert.equal(task.turn?.id, environmentPackage.scope.turnId);
 
+  if (artifactId) {
+    const artifact = await publicOperation<{
+      title: string;
+      content: { byteLength: number };
+      origin: { turnId: string };
+    }>(app, 'artifact.read', { artifactId, workspaceId });
+    assert.equal(artifact.title, 'L3 artifact');
+    assert.equal(artifact.content.byteLength, Buffer.byteLength('L3 native artifact bytes'));
+    assert.equal(artifact.origin.turnId, task.turn.id);
+  }
   await assertPublicDurableOutcome(app, workspaceId, threadId, task.turn.id);
   assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
   assert.ok(importCount >= 1);
   return { turnId: task.turn.id, sandboxId };
+}
+
+/** Exercises the same built-in Work MCP and native file export used by hosted golden. */
+async function submitWorkerArtifact(
+  h2: ClientHttp2Session,
+  capabilityToken: string,
+  agentSessionId: string
+): Promise<string> {
+  const client = new Client({ name: 'openkit-public-work-l3', version: '1.0.0' });
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(
+        new URL('http://nanocore.test/capabilities/mcp/openkit-work'),
+        {
+          fetch: h2Fetch(h2),
+          requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+        }
+      )
+    );
+    let failure: unknown;
+    const result = client.callTool({
+      name: 'work_artifact_submit',
+      arguments: {
+        requestId: randomUUID(),
+        path: `/openkit/sessions/${agentSessionId}/outputs/golden-l3.txt`,
+        title: 'L3 artifact',
+        kind: 'file',
+        mediaType: 'text/plain',
+      },
+    });
+    void result.then(
+      (value) => {
+        if (value.isError) failure = new Error('Work artifact submission refused.');
+      },
+      (error: unknown) => {
+        failure = error;
+      }
+    );
+    const exported = await waitForEffect(h2, 'file.export', () => failure);
+    assert.equal(exported.command.slot, 'output');
+    await settleFileExport(h2, exported.command, Buffer.from('L3 native artifact bytes'));
+    const submitted = await result;
+    assert.notEqual(submitted.isError, true);
+    const payload = submitted.structuredContent as { artifactId?: string } | undefined;
+    return requireString(payload?.artifactId, 'Submitted Artifact id');
+  } finally {
+    await client.close();
+  }
 }
 
 describe('public Worker MCP lifecycle', () => {
@@ -1461,7 +1537,9 @@ function requireString(value: unknown, label: string): string {
 
 /** Formats a bounded private-route failure. */
 function responseFailure(label: string, response: Http2Response) {
-  return `${label} returned ${response.status}.`;
+  const diagnostic = response.status === 409 ? /^({.*})$/.exec(response.body)?.[1] : undefined;
+  const message = diagnostic ? (JSON.parse(diagnostic) as { message?: string }).message : undefined;
+  return `${label} returned ${response.status}.${message === 'Control database writer operation failed.' ? ` ${message}` : ''}`;
 }
 
 /** Propagates a public command failure without reading private process state. */
