@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { prepareNanoHostOwner } from '../app.js';
 import type { CreateConfiguredTurnExecutorOptions } from '../runtime/turn-executor-factory.js';
+import type { WorkerGovernanceTurnExecutorOptions } from '../runtime/worker-governance-turn-executor.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, serverStoragePath } from '../storage/db.js';
 import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
@@ -104,4 +105,21 @@ export function testNanoHostRecoveryJoins(
     writeStorageAttachment: owner.writeStorageAttachment,
     commitCloseout: owner.classifyRecovery,
   } satisfies NonNullable<CreateConfiguredTurnExecutorOptions['nanoHostRecovery']>;
+}
+
+/**
+ * The configured factory's admitted NanoHost joins of the Worker executor (`turn-executor-factory.ts`, keep
+ * identical): fixtures that construct `WorkerGovernanceTurnExecutor` by hand pass what the factory passes.
+ * @param storage Ready admitted NanoHost storage of the fixture root.
+ */
+export function testWorkerExecutorNanoHostJoins(
+  storage: Extract<Awaited<ReturnType<typeof prepareNanoHostOwner>>, { state: 'ready' }>
+) {
+  const joins = testNanoHostRecoveryJoins(storage);
+  return {
+    readNanoHostEnvironment: (read) => storage.value.owner.read(read),
+    admitNanoHostSubmission: joins.admitSubmission,
+    commitNanoHostCloseout: joins.commitCloseout,
+    releaseTerminalScopes: joins.releaseTerminalScopes,
+  } satisfies Partial<WorkerGovernanceTurnExecutorOptions>;
 }

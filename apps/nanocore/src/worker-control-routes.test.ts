@@ -36,18 +36,10 @@ import {
   classifyNanoHostAttemptsAfterRestart,
   runNanoHostAttemptRecoveryMaintenance,
 } from './runtime/nanohost-attempt-recovery.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  recordNanoHostRuntimeTargetConnectionClose,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
 import { projectWorkerBackendCleanup } from './runtime/worker-backend-cleanup-projection.js';
 import {
   getWorkerBackendSession,
-  markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
 import {
   hashWorkerRouteToken,
@@ -117,6 +109,10 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { submitTestNanoHostWorkerLease } from './test-support/nanohost-worker-lease.js';
+import {
+  recordTestNativeRuntimeTarget,
+  transitionTestNativeRuntimeTargetFields,
+} from './test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
@@ -482,22 +478,27 @@ async function recordWorkerControlBackendSession(
   sandboxBindingRef: string,
   backendSessionId: string
 ): Promise<string> {
-  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-worker-control-test',
-      identityId: 'identity-worker-control-test',
-      observedAt: '2026-06-16T00:00:00.000Z',
-      targetId: 'runtime-target-test',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...allocated,
-      freshEmpty: true,
-      observedAt: '2026-06-16T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
+  await admittedRouteNanoHost(coreDb);
+  // A submitted lease already holds its launched Native anchor; production never materializes a second one.
+  const leaseAttemptId = coreDb.sqlite
+    .prepare(
+      'SELECT attempt_id FROM scheduler_execution_attempts WHERE binding_ref = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
+    )
+    .pluck()
+    .get(sandboxBindingRef) as string | undefined;
+  const leaseAnchor =
+    leaseAttemptId &&
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, leaseAttemptId)
+    );
+  if (leaseAnchor) return leaseAnchor.attemptId;
+  // The RuntimeTarget belongs to the admitted NanoHost owner; an existing target is left untouched.
+  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+    deploymentId: 'deployment-worker-control-test',
+    identityId: 'identity-worker-control-test',
+    allocationAt: '2026-06-16T00:00:00.000Z',
+    readyAt: '2026-06-16T00:00:01.000Z',
+  });
   return (
     await recordWorkerBackendSessionMaterializing(coreDb, {
       backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
@@ -527,14 +528,18 @@ async function markWorkerControlBackendSessionCleaned(
   coreDb: CoreDb,
   attemptId: string
 ): Promise<void> {
+  const current = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, attemptId)
+  );
   const transitions = [
-    ['materializing', 'cleanup-pending'],
+    [current?.state === 'launching' ? 'launching' : 'materializing', 'cleanup-pending'],
     ['cleanup-pending', 'physical-cleaned'],
     ['physical-cleaned', 'cleaned'],
   ] as const;
 
+  const { value: native } = await openAdmittedTestNanoHost(coreDb);
   for (const [fromState, toState] of transitions) {
-    await transitionWorkerBackendSessionState(coreDb, { fromState, attemptId, toState });
+    await native.owner.backendSession({ kind: 'transition', fromState, attemptId, toState });
   }
 }
 
@@ -1144,24 +1149,8 @@ describe('worker control routes', () => {
           fixture.lineage,
           'process_key_reconnect'
         );
-        const attemptId = await recordWorkerControlBackendSession(
-          coreDb,
-          fixture.environmentPackage,
-          fixture.lineage,
-          binding,
-          'sandbox-process-key-reconnect'
-        );
-        await transitionWorkerBackendSessionState(coreDb, {
-          fromState: 'materializing',
-          attemptId,
-          toState: 'materialized',
-        });
-        await transitionWorkerBackendSessionState(coreDb, {
-          fromState: 'materialized',
-          attemptId,
-          toState: 'launching',
-        });
-        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
+        // The submitted lease already holds its launched Native anchor with the Workspace handoff complete.
+        const attemptId = testEntityId('attempt', 'lease_process_key_reconnect');
         const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
         const makeApp = () => {
           const gateway = durableWorkerControlGateway(coreDb);
@@ -1197,13 +1186,16 @@ describe('worker control routes', () => {
             method: 'POST',
           });
         const restart = () => {
-          coreDb.sqlite
-            .prepare(
-              `UPDATE scheduler_execution_attempts
-                 SET recovery_state = 'awaiting-reconnect', recovery_deadline = ?
+          // Restart classification arms reconnect on the Native recovery proof, bounded by the grant.
+          mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `UPDATE worker_backend_sessions SET worker_recovery_json = json_set(worker_recovery_json,
+                   '$.recoveryState', 'awaiting-reconnect', '$.recoveryDeadline', ?)
                  WHERE attempt_id = ?`
-            )
-            .run('2099-01-01T00:00:00.000Z', attemptId);
+              )
+              .run(absoluteDeadline, attemptId)
+          );
           return makeApp();
         };
         const firstApp = makeApp();
@@ -1215,15 +1207,17 @@ describe('worker control routes', () => {
         expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
         const restartedApp = restart();
         if (clearRuntimeTargetReadiness) {
-          await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+          await transitionTestNativeRuntimeTargetFields('close', coreDb, {
             authoritativeGeneration: null,
             closedGeneration: 1,
             observedAt: '2026-07-05T00:00:01.000Z',
-            targetId: 'runtime-target-test',
+            targetId: `test-target-${fixture.lineage.turnId}`,
           });
         }
         if (beginBackendCleanup) {
-          await transitionWorkerBackendSessionState(coreDb, {
+          const { value: native } = await openAdmittedTestNanoHost(coreDb);
+          await native.owner.backendSession({
+            kind: 'transition',
             fromState: 'launching',
             attemptId,
             toState: 'cleanup-pending',
@@ -2256,15 +2250,17 @@ describe('worker control routes', () => {
         coreDb,
         lineage.workspaceId
       );
-      const rejectedRow = coreDb.sqlite
-        .prepare(
-          `
+      const rejectedRow = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `
           SELECT route, operation, error_code AS errorCode, http_status AS httpStatus, thread_id AS threadId
           FROM worker_control_rejected_evidence
           WHERE agent_session_id = ?
           `
-        )
-        .get(lineage.agentSessionId) as
+          )
+          .get(lineage.agentSessionId)
+      ) as
         | {
             errorCode: string;
             httpStatus: number;
@@ -2376,9 +2372,9 @@ describe('worker control routes', () => {
       ];
       const quarantineCount = () =>
         (
-          coreDb.sqlite
-            .prepare('SELECT COUNT(*) AS count FROM worker_control_rejected_evidence')
-            .get() as { count: number }
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_rejected_evidence').get()
+          ) as { count: number }
         ).count;
       for (const request of requests) {
         const before = quarantineCount();
@@ -2395,9 +2391,9 @@ describe('worker control routes', () => {
         // lineage. The earlier admitted inner-lineage rejection remains retained.
         expect.soft(quarantineCount(), request.name).toBe(before);
       }
-      const evidence = coreDb.sqlite
-        .prepare('SELECT * FROM worker_control_rejected_evidence')
-        .all();
+      const evidence = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('SELECT * FROM worker_control_rejected_evidence').all()
+      );
       expect(JSON.stringify(evidence).includes(registration.token)).toBe(false);
       expect(
         workerControlJournal(coreDb)
@@ -3516,7 +3512,9 @@ describe('worker control routes', () => {
         binding,
         'sandbox_final_status_workspace'
       );
-      const backendSession = getWorkerBackendSession(coreDb, backendLeaseId)!;
+      const backendSession = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, backendLeaseId)
+      )!;
       const sessionCreatedAt = new Date().toISOString();
       await store.createAgentSession({
         id: lineage.agentSessionId,
@@ -3573,7 +3571,7 @@ describe('worker control routes', () => {
       });
       recordWorkspaceInputSnapshots(workspaceDb, inputSnapshots);
       recordWorkspaceMaterializationRecords(workspaceDb, materializations);
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendLeaseId });
+      // The submitted lease anchor already carries the complete Native Workspace handoff.
       await endWorkerTurnMaterialization(store, workspaceDb, lineage.turnId, 'completed', [
         backendSession.backendSessionId,
       ]);
@@ -4462,24 +4460,7 @@ describe('worker control routes', () => {
           `heartbeat_native_${kind}`
         );
         const attemptId = testEntityId('attempt', `lease_heartbeat_native_${kind}`);
-        const backendAttemptId = await recordWorkerControlBackendSession(
-          coreDb,
-          environmentPackage,
-          lineage,
-          binding,
-          `sandbox-heartbeat-native-${kind}`
-        );
-        await transitionWorkerBackendSessionState(coreDb, {
-          attemptId: backendAttemptId,
-          fromState: 'materializing',
-          toState: 'materialized',
-        });
-        await transitionWorkerBackendSessionState(coreDb, {
-          attemptId: backendAttemptId,
-          fromState: 'materialized',
-          toState: 'launching',
-        });
-        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendAttemptId });
+        // The submitted lease already holds its launched Native anchor with the Workspace handoff complete.
         let gateway = durableWorkerControlGateway(coreDb);
         const registration = registerDurableWorkerControlSession(
           gateway,

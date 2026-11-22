@@ -30,6 +30,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -81,7 +82,10 @@ import {
   postTestNativeWorkerHeartbeat,
   readTestNativeAttemptEvidence,
   removeTestNativeWorkerAnchor,
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
   seedTestNanoHostHeartbeat,
+  seedTestNanoHostWorkerLaunch,
   submitTestNanoHostWorkerLease,
 } from '../test-support/nanohost-worker-lease.js';
 import {
@@ -2919,10 +2923,8 @@ async function prepareReconnectLease(
 ): Promise<{ readonly lineage: WorkerControlLineage; readonly reconnectKey: string }> {
   dispatchLease(coreDb, suffix, undefined, false, true, threadId);
   await recordBackendSession(coreDb, suffix, 'launching', threadId, true);
-  const submitted = attempts.requireSchedulerExecutionAttempt(
-    coreDb,
-    testEntityId('attempt', `lease_${suffix}`)
-  );
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
   attempts.acceptSchedulerExecutionObservation(
     coreDb,
     await new SimulatedTurnExecutor({ coreDb }).submit({
@@ -2930,10 +2932,6 @@ async function prepareReconnectLease(
       deadline: submitted.deadline!,
     })
   );
-  await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-    attemptId: testEntityId('attempt', `lease_${suffix}`),
-    now: () => '2026-07-05T00:00:04.000Z',
-  });
   seedTestNanoHostHeartbeat(coreDb, {
     heartbeatTimeoutMs: 30_000,
     attemptId: testEntityId('attempt', `lease_${suffix}`),
@@ -2961,6 +2959,15 @@ async function prepareReconnectLease(
     },
     reconnectKey,
   };
+}
+
+/** The original submit operationId the production grant writer derives for one fixture suffix. */
+function fixtureSubmitOperationId(suffix: string): string {
+  return commandInputHash({
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
+    inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+    operation: 'submit',
+  });
 }
 
 /** Returns one production-shaped NanoHost backend attempt identity for a fixture suffix. */
@@ -3027,7 +3034,28 @@ async function recordBackendSession(
     now: () => '2026-07-05T00:00:03.000Z',
     sandboxBindingRef: `lease-binding:lease_${suffix}`,
   });
-  if (submitAfterAnchor) {
+  // A launching anchor takes its original submit grant from the production Core grant writer
+  // (operationId = commandInputHash of the submit) after its Native handoff, as production does.
+  const retainSubmission = () => {
+    const prepared = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          'SELECT connection_generation AS generation FROM nanohost_runtime_targets WHERE target_id = ?'
+        )
+        .get('runtime-target-test')
+    ) as { readonly generation: number };
+    retainPreparedTestNanoHostSubmission(coreDb, {
+      admission: requireSchedulerAdmissionEntry(coreDb, prepared.queueEntryId),
+      attemptId,
+      targetId: 'runtime-target-test',
+      generation: String(target.generation),
+      observedAt: prepared.createdAt,
+    });
+  };
+  // Other anchors keep the recorded Core operation: they never reach the Native launch precondition, and
+  // this fixture's simulated fence close does not settle a production grant's scheduler scope.
+  if (submitAfterAnchor && state !== 'launching') {
     const prepared = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
     attempts.recordSchedulerExecutionOperation(coreDb, {
       attemptId,
@@ -3054,21 +3082,34 @@ async function recordBackendSession(
   let fromState: WorkerBackendSessionState = 'materializing';
   for (const toState of path) {
     if (toState === 'launching') {
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState,
+      // Production launches only a submitted anchor whose Native Workspace handoff is complete.
+      if (!submitAfterAnchor)
+        throw new Error('A launching anchor requires its original submission.');
+      // The modeled backend has no Workspace handle rows for the owner's handoff gate to verify.
+      seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attemptId);
+      retainSubmission();
+      seedTestNanoHostWorkerLaunch(
+        coreDb,
         attemptId,
-        toState,
-        now: () => '2026-07-05T00:00:07.000Z',
-      });
-    } else {
-      await native.owner.backendSession({
-        kind: 'transition',
-        fromState,
-        attemptId,
-        toState,
-        observedAt: '2026-07-05T00:00:07.000Z',
-      });
+        {
+          agentSessionId: testEntityId('as', `as_${suffix}`),
+          packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        '2026-07-05T00:00:07.000Z'
+      );
+      fromState = toState;
+      continue;
     }
+    await native.owner.backendSession({
+      kind: 'transition',
+      fromState,
+      attemptId,
+      toState,
+      observedAt: '2026-07-05T00:00:07.000Z',
+    });
     fromState = toState;
   }
 }
@@ -4738,7 +4779,7 @@ describe('scheduler restart recovery', () => {
             )
           ).toMatchObject({
             phase: 'closing',
-            operationId: `operation_${suffix}`,
+            operationId: fixtureSubmitOperationId(suffix),
             disposition: 'unknown',
             fenceRef: null,
           });
@@ -4886,11 +4927,8 @@ describe('scheduler restart recovery', () => {
         suffix,
         workspaceInputIds: ['repo'],
       });
+      // The launching seed already completed the Native handoff, which production requires before launch.
       await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
-        now: () => '2026-07-05T00:00:11.000Z',
-      });
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -4916,7 +4954,7 @@ describe('scheduler restart recovery', () => {
         )
       ).toMatchObject({
         phase: 'closing',
-        operationId: `operation_${suffix}`,
+        operationId: fixtureSubmitOperationId(suffix),
         disposition: 'unknown',
         fenceRef: null,
       });
@@ -5936,7 +5974,7 @@ describe('scheduler restart recovery', () => {
         )
       ).toMatchObject({
         phase: 'closing',
-        operationId: `operation_${suffix}`,
+        operationId: fixtureSubmitOperationId(suffix),
         disposition: 'unknown',
         fenceRef: null,
       });

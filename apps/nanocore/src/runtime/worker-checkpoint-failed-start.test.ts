@@ -22,6 +22,7 @@ import {
   readAdmittedTestNanoHost,
   reopenAdmittedTestNanoHost,
   seedAdmittedTestNanoHost,
+  testWorkerExecutorNanoHostJoins,
 } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -38,10 +39,7 @@ import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { createNanoHostHarnessRuntime } from './nanohost-harness.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
-import {
-  getWorkerBackendSession,
-  transitionWorkerBackendSessionState,
-} from './worker-backend-sessions.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { getWorkerCheckpoint, listExportableWorkerCheckpoints } from './worker-checkpoints.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
@@ -155,15 +153,17 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };
-  const executor = new WorkerGovernanceTurnExecutor({
-    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-    backend,
-    coreDb,
-  });
   const setup = createTestAgentSetup({
     requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
   });
   const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
+  // The App factory binds these admitted joins; the injected executor takes the same ones.
+  const executor = new WorkerGovernanceTurnExecutor({
+    fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+    backend,
+    coreDb,
+    ...testWorkerExecutorNanoHostJoins(nanoHostStorage),
+  });
   const app = createApp({
     coreDb,
     dataRoot,
@@ -296,7 +296,8 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
       getWorkerBackendSession({ sqlite }, attempt.attemptId)
     )!;
     if (current.state !== state)
-      await transitionWorkerBackendSessionState(coreDb, {
+      await nanoHostStorage.value.owner.backendSession({
+        kind: 'transition',
         attemptId: attempt.attemptId,
         fromState: current.state,
         toState: state,
@@ -312,7 +313,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   await shutdownControlStoreWorkerClient();
   coreDb.sqlite.close();
   coreDb = openCoreDb(dataRoot);
-  await reopenAdmittedTestNanoHost(coreDb);
+  const reopened = await reopenAdmittedTestNanoHost(coreDb);
   store = new FsStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   const checkpoint = getWorkerCheckpoint(
@@ -344,6 +345,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
+    ...testWorkerExecutorNanoHostJoins(reopened),
   });
   const restartedApp = createApp({
     coreDb,
