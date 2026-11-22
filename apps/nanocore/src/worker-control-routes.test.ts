@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +59,7 @@ import {
   listWorkerControlAcceptedEvents,
   recoverWorkerObservationSource,
   resolveWorkerControlFinalStatusTokenBinding,
+  writeWorkerControlAcceptedRecord,
 } from './runtime/worker-control-records.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
@@ -95,11 +96,12 @@ import {
   CONTROL_WORKER_VERSION,
   isControlWorkerRequest,
 } from './storage/control-store-worker-protocol.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, serverStoragePath } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';
 import {
+  mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
 } from './test-support/admitted-nanohost.js';
@@ -1941,11 +1943,22 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
+      await openAdmittedTestNanoHost(coreDb);
       const gateway = new WorkerControlGateway({
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        acceptedRecordRecorder: {
+          record: (input) =>
+            mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+              writeWorkerControlAcceptedRecord({ sqlite }, input)
+            ),
+        },
         createToken: () => token,
         now: () => '2026-07-15T00:00:00.000Z',
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+        sequenceRecorder: {
+          accept: (input) =>
+            mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+              createWorkerControlSequenceRecorder({ sqlite }).accept(input)
+            ),
+        },
       });
       gateway.registerSession(environmentPackage);
       const app = createApp({
@@ -2017,20 +2030,22 @@ describe('worker control routes', () => {
         });
       }
 
-      const fingerprints = coreDb.sqlite
-        .prepare(
-          `SELECT operation, fingerprint
+      const { fingerprints, records } = readAdmittedTestNanoHost(coreDb, (sqlite) => ({
+        fingerprints: sqlite
+          .prepare(
+            `SELECT operation, fingerprint
              FROM worker_control_sequence_fingerprints
             ORDER BY operation`
-        )
-        .all() as Array<{ fingerprint: string; operation: string }>;
-      const records = coreDb.sqlite
-        .prepare(
-          `SELECT operation, record_json AS recordJson
+          )
+          .all() as Array<{ fingerprint: string; operation: string }>,
+        records: sqlite
+          .prepare(
+            `SELECT operation, record_json AS recordJson
              FROM worker_control_records
             ORDER BY operation`
-        )
-        .all() as Array<{ operation: string; recordJson: string }>;
+          )
+          .all() as Array<{ operation: string; recordJson: string }>,
+      }));
 
       expect(fingerprints.map(({ operation }) => operation)).toEqual(
         requests.map(({ operation }) => operation).sort()
@@ -2043,7 +2058,11 @@ describe('worker control routes', () => {
       expect(JSON.stringify(fingerprints)).not.toContain(token);
       expect(JSON.stringify(records)).not.toContain(token);
       coreDb.sqlite.close();
-      expect(readFileSync(coreDbPath(dataRoot)).includes(token)).toBe(false);
+      for (const path of [coreDbPath(dataRoot), serverStoragePath(dataRoot, 'nanohost')]) {
+        expect(readFileSync(path).includes(token)).toBe(false);
+        if (existsSync(`${path}-wal`))
+          expect(readFileSync(`${path}-wal`).includes(token)).toBe(false);
+      }
     } finally {
       if (coreDb.sqlite.open) {
         coreDb.sqlite.close();
