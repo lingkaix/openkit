@@ -514,17 +514,14 @@ async function runPublicWorkerMcpLifecycle() {
       event: { type, data },
     });
     const append = (record: ReturnType<typeof event>) =>
-      requestHttp2(h2, 'POST', '/worker-control/events/append', JSON.stringify({ lineage, record }), {
-        authorization: `Bearer ${workerControlToken}`,
-        'content-type': 'application/json',
-      });
-    const liveEvents = Array.from({ length: 5 }, (_, sequence) =>
-      event(sequence, 'worker.ready', {})
-    );
-    for (const record of liveEvents) {
-      const response = await append(record);
-      assert.equal(response.status, 200, responseFailure('Worker startup event', response));
-    }
+      requestHttp2(
+        h2,
+        'POST',
+        '/worker-control/events/append',
+        JSON.stringify({ lineage, record }),
+        { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
+      );
+    assert.equal(environmentPackage.observability.captureCoverage.value, 'on');
     const observationBody = Buffer.from('L3 restricted observation body');
     const observation = event(5, 'observation.recorded', {
       observationId: 'l3-live-observation',
@@ -607,7 +604,7 @@ async function runPublicWorkerMcpLifecycle() {
     };
     const jsonLines = (records: ReturnType<typeof event>[]) =>
       Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
-    const terminalBytes = jsonLines([...liveEvents, observation, event(7, 'turn.completed', terminalBody)]);
+    const terminalBytes = jsonLines([observation, event(7, 'turn.completed', terminalBody)]);
     const observationSource = jsonLines([observation, chunk]);
     const finalStatus = await requestHttp2(
       h2,

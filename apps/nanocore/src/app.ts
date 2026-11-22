@@ -245,6 +245,7 @@ import {
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
+import { prepareWorkerControlObservation } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
@@ -681,6 +682,7 @@ export function createDefaultWorkerControlGateway(
       return binding.value;
     },
     publishHeartbeat: (input) => publishObservation(() => owner.workerControlHeartbeat(input)),
+    prepareObservation: (record) => prepareWorkerControlObservation(coreDb, record, owner.read),
     publishControlOperation: ({ payload, fingerprint, ...coordinates }) =>
       publishObservation(async () => {
         const accepted = await owner.workerControlRecord({
