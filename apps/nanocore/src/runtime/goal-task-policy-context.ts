@@ -20,6 +20,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import {
   findSchedulerAdmissionForWorkerLineage,
   listSchedulerAdmissionEntriesForWorkspace,
@@ -452,7 +453,13 @@ export function readGoalTaskPolicyContext(input: {
     // Direct Task checkpoints hash the original entry request before its structured expansion.
     // Exact structured bytes and their canonical context digest are checked below.
     const initiatingItemId = deriveEntityId('it', ['task-user', turn.id]);
-    const initiatingItem = store.getThreadItem(scope.workspaceId, scope.threadId, initiatingItemId);
+    let initiatingItem: ReturnType<GoalTaskPolicyReadPort['getThreadItem']>;
+    try {
+      initiatingItem = store.getThreadItem(scope.workspaceId, scope.threadId, initiatingItemId);
+    } catch (error) {
+      if (error instanceof StoreRecordNotFoundError) throw unavailable();
+      throw error;
+    }
     if (
       !attempt ||
       attempts.length !== 1 ||
@@ -462,7 +469,6 @@ export function readGoalTaskPolicyContext(input: {
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== admission.requestedAgentId ||
       !isDeepStrictEqual(turn.triggerActor, admission.triggerActor) ||
-      !initiatingItem ||
       initiatingItem.id !== initiatingItemId ||
       initiatingItem.type !== 'user-message' ||
       initiatingItem.status !== 'completed' ||
