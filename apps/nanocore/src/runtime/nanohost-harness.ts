@@ -8,6 +8,7 @@ import type {
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type * as Records from './nanohost-harness-records.js';
+import type { NanoHostRuntimeTargetRecord } from './nanohost-runtime-target-records.js';
 
 export {
   type CreateNanoHostHarnessRuntimeInput,
@@ -243,20 +244,52 @@ export async function acknowledgeNanoHostHarnessResult(
   await publishHarness(coreDb, { ...input, kind: 'result.acknowledge' });
 }
 
+export type NanoHostIdleSandboxLifecycleInput = Extract<
+  ControlHarnessLifecycleInput,
+  { kind: 'sandbox.claim-idle-drain' | 'sandbox.restore-admission' }
+>;
+
+/** Ephemeral authority carried with the existing tuple under the admitted owner holds. */
+export interface NanoHostIdleSandboxAuthority {
+  readonly target: Pick<
+    NanoHostRuntimeTargetRecord,
+    'targetId' | 'identityId' | 'deploymentId' | 'connectionGeneration' | 'physicalEpoch'
+  >;
+  readonly rollback?: { readonly sandboxBindingRef: string; readonly claimedAt: string };
+}
+
+/** Publishes an existing idle Sandbox tuple on the held Native/Core pair. */
+export type WriteNanoHostIdleSandboxLifecycle = (
+  input: NanoHostIdleSandboxLifecycleInput,
+  authority: NanoHostIdleSandboxAuthority
+) => Promise<void>;
+
 /** Restores only the current healthy resident after native current capture dispositions and the covering FULL commit. */
 export async function restoreNanoHostSandboxAdmissionIfSafe(
   coreDb: CoreDb,
-  input: { readonly sandboxRuntimeId: string }
+  input: { readonly sandboxRuntimeId: string },
+  admitted?: {
+    readonly write: WriteNanoHostIdleSandboxLifecycle;
+    readonly authority: NanoHostIdleSandboxAuthority;
+  }
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'sandbox.restore-admission' });
+  const original = { ...input, kind: 'sandbox.restore-admission' } as const;
+  if (admitted) await admitted.write(original, admitted.authority);
+  else await publishHarness(coreDb, original);
 }
 
 /** Claims the existing reversible whole-Sandbox drain after the caller's durable proof handoff. */
 export async function claimNanoHostIdleSandboxDrain(
   coreDb: CoreDb,
-  input: Omit<Extract<ControlHarnessLifecycleInput, { kind: 'sandbox.claim-idle-drain' }>, 'kind'>
+  input: Omit<Extract<ControlHarnessLifecycleInput, { kind: 'sandbox.claim-idle-drain' }>, 'kind'>,
+  admitted?: {
+    readonly write: WriteNanoHostIdleSandboxLifecycle;
+    readonly authority: NanoHostIdleSandboxAuthority;
+  }
 ): Promise<void> {
-  await publishHarness(coreDb, { ...input, kind: 'sandbox.claim-idle-drain' });
+  const original = { ...input, kind: 'sandbox.claim-idle-drain' } as const;
+  if (admitted) await admitted.write(original, admitted.authority);
+  else await publishHarness(coreDb, original);
 }
 
 /** Claims only the exact healthy Harness drain after its Workspace capture recovery acknowledgement. */
