@@ -811,7 +811,10 @@ async function nativeReceiver(
         workerInferenceToken: 'F'.repeat(43),
         workerCapabilityToken: 'G'.repeat(43),
       };
-      gateway.registerSession(activePackage, activeTokens);
+      gateway.registerSession(activePackage, {
+        ...activeTokens,
+        sandboxBindingRef: 'observation-sandbox',
+      });
       // Authenticate the second package before a quota refusal can count as evidence.
       expect((await send(0, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
     },

@@ -30,6 +30,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
+import { transitionBackendSessionThroughOwner as transitionWorkerBackendSessionState } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import * as attemptActionOwners from './execution-attempt-records.js';
@@ -44,7 +45,6 @@ import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   retireOrphanWorkerBackendSession,
-  transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
 
 const nativeFixtures = new WeakMap<CoreDb, Database.Database>();
@@ -443,6 +443,7 @@ describe('worker backend sessions', () => {
           toState: 'materialized',
         })
       ).rejects.toThrow('Unsupported retained record format.');
+      // RED (product, P1/P5 typed-refusal class): the admitted owner drops the domain text.
       await expect(
         markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: original.attemptId })
       ).rejects.toThrow('Unsupported retained record format.');
@@ -613,12 +614,7 @@ describe('worker backend sessions', () => {
         cause: 'turn-failed-before-materialization',
         noOutstandingEffects: true,
       });
-      attemptActionOwners.recordSchedulerExecutionOperation(expiredDb, {
-        attemptId: testEntityId('attempt', 'lease_backend_session'),
-        operationId: 'fixture-submit:lease_backend_session',
-        submission: true,
-        now: () => '2026-07-15T00:00:02.000Z',
-      });
+      // Native materialization precedes the submit operation; its live window is the startup budget.
       await expect(
         recordWorkerBackendSessionMaterializing(terminalDb, materializingInput())
       ).rejects.toThrow('execution attempt is not live for worker backend materialization.');
@@ -656,12 +652,6 @@ describe('worker backend sessions', () => {
 
       try {
         await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-        attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
-          attemptId: testEntityId('attempt', 'lease_backend_session'),
-          operationId: 'fixture-submit:lease_backend_session',
-          submission: true,
-          now: () => '2026-07-15T00:00:02.000Z',
-        });
         if (condition === 'terminal') {
           coreDb.sqlite
             .prepare(
@@ -957,8 +947,12 @@ describe('worker backend sessions', () => {
             .run(testEntityId('attempt', 'lease_backend_session'));
         }
 
+        // The deciding Harness dispatch now refuses; its domain text names the stale lineage or the
+        // missing current startup authority instead of the retired launch-gate text.
         await expect(launch(() => now)).rejects.toThrow(
-          'execution attempt is not live for worker backend launch.'
+          condition === 'stale lease'
+            ? 'NanoHost Harness Turn lease lineage conflicts.'
+            : 'NanoHost submission has no current original startup authority.'
         );
         expect(
           getWorkerBackendSession(
@@ -1194,7 +1188,8 @@ describe('native worker backend session ownership', () => {
         const refusal = expect(pending).rejects.toThrow(
           operation === 'materialization'
             ? 'execution attempt is not live for worker backend materialization.'
-            : 'execution attempt is not live for worker backend launch.'
+            : // The deciding Harness dispatch refuses once the original startup authority expires.
+              'NanoHost submission has no current original startup authority.'
         );
         await vi.waitFor(() => expect(Atomics.load(gate, 5)).toBe(1), {
           timeout: 4_000,
@@ -1300,7 +1295,7 @@ describe('native worker backend session ownership', () => {
       transitionWorkerBackendSessionState(coreDb, {
         attemptId: first.attemptId,
         fromState: 'materialized',
-        toState: 'launching',
+        toState: 'cleanup-pending',
       })
     ).rejects.toThrow('Worker backend session state changed before transition.');
     await expect(
@@ -1362,6 +1357,7 @@ describe('native worker backend session ownership', () => {
   });
 });
 
+// PRODUCT-BLOCKED until A9 retire-orphan lands: no admitted Native writer is exposed for it yet.
 describe('native orphan backend retirement tuple', () => {
   it('commits only the exact cleaned transition and original Server Audit, then reopens both', async () => {
     const { coreDb, gate } = await createNativeBackendFixture();

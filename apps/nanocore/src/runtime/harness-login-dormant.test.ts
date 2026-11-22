@@ -13,6 +13,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import * as operationRoutes from '../operation-json-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -121,7 +122,7 @@ it('keeps the default App Login lifecycle uninstalled, unsupported and unavailab
     await dispatch.readiness(
       physicalConnection,
       Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-      { coreDb, ...target }
+      { coreDb, ...target, nativeStorage: (await openAdmittedTestNanoHost(coreDb)).value }
     );
     expect(authority.mayCarryWork(physicalConnection)).toBe(true);
     const unavailable = await post('/worker-control/harness/login');

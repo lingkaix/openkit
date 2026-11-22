@@ -22,6 +22,7 @@ import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
+import { requireTestNanoHostOwner } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createSchedulerExecutionAttempt,
@@ -222,6 +223,12 @@ async function admitAttachmentFixture(
       reserveWorkerStorageAttachment(coreDb, input, owner),
     activate: (input: Parameters<typeof activateWorkerStorageAttachment>[1]) =>
       activateWorkerStorageAttachment(coreDb, input, owner),
+    release: (input: Parameters<typeof releaseWorkerStorageAttachment>[1]) =>
+      releaseWorkerStorageAttachment(
+        coreDb,
+        input,
+        requireTestNanoHostOwner(coreDb).releaseIdleSandboxStorage
+      ),
   };
 }
 
@@ -961,7 +968,7 @@ describe('Worker storage bindings', () => {
         targets: first.targets.map((target) => ({ ...target, initialized: true })),
       });
       await expect(
-        releaseWorkerStorageAttachment(coreDb, {
+        attachment.release({
           attachmentGeneration: attached.attachmentGeneration,
           cleanupProved: false,
           expectedRevision: attached.revision,
@@ -969,7 +976,10 @@ describe('Worker storage bindings', () => {
           storageRef: binding.storageRef,
         })
       ).rejects.toThrow('cleanup is not proved');
-      const idle = await releaseWorkerStorageAttachment(coreDb, {
+      expect(
+        getWorkerStorageBinding(bindingDb(coreDb), { storageRef: binding.storageRef })
+      ).toEqual(attached);
+      const idle = await attachment.release({
         attachmentGeneration: attached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: attached.revision,
@@ -1001,7 +1011,7 @@ describe('Worker storage bindings', () => {
         storageRef: binding.storageRef,
         targets: successor.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const successorIdle = await releaseWorkerStorageAttachment(coreDb, {
+      const successorIdle = await attachment.release({
         attachmentGeneration: successorAttached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: successorAttached.revision,
@@ -1054,7 +1064,7 @@ describe('Worker storage bindings', () => {
         storageRef: binding.storageRef,
         targets: firstReservation.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const idle = await releaseWorkerStorageAttachment(coreDb, {
+      const idle = await attachment.release({
         attachmentGeneration: firstAttachment.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: firstAttachment.revision,
@@ -1125,7 +1135,7 @@ describe('Worker storage bindings', () => {
       ).toThrow('storage is fenced');
       expect(
         (
-          await releaseWorkerStorageAttachment(coreDb, {
+          await attachment.release({
             attachmentGeneration: unknown.attachmentGeneration,
             cleanupProved: true,
             expectedRevision: unknown.revision,

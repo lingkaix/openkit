@@ -11,6 +11,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
@@ -20,8 +21,11 @@ it('propagates completed export cleanup failure, preserves sibling bytes and per
   const root = await mkdtemp(join(tmpdir(), 'openkit-export-lifetime-'));
   const coreDb = createTestCoreDb(root);
   const authority = createNanoHostTransportSessionAuthority();
+  // Production serves the admitted Native owner; readiness and effects join it.
+  const nativeStorage = await openAdmittedTestNanoHost(coreDb);
   const dispatch = createNanoHostSessionDispatch({
     coreDb,
+    nativeStorage,
     sessionAuthority: authority,
     fileAdmission: new FileStorageAdmission(root, () => 0n),
   });
@@ -38,10 +42,13 @@ it('propagates completed export cleanup failure, preserves sibling bytes and per
       coreDb,
       deploymentId: 'export-lifetime',
       identityId: 'export-lifetime',
+      nativeStorage: nativeStorage.value,
       targetId: 'export-lifetime',
     };
     await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
-      ...target,
+      deploymentId: target.deploymentId,
+      identityId: target.identityId,
+      targetId: target.targetId,
       observedAt: new Date().toISOString(),
     });
     server.listen(0, '127.0.0.1');

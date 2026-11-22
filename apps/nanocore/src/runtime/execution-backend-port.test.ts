@@ -16,6 +16,10 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
+  testNanoHostRecoveryJoins,
+  testWorkerExecutorNanoHostJoins,
+} from '../test-support/admitted-nanohost.js';
+import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
@@ -34,6 +38,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
+import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import {
@@ -75,12 +80,25 @@ function attempts(db: ReturnType<typeof openCoreDb>): Record<string, unknown>[] 
       "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
     )
     .get();
-  return exists
-    ? (db.sqlite
-        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
-        .all() as Record<string, unknown>[])
-    : [];
+  if (!exists) return [];
+  const rows = db.sqlite
+    .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+    .all() as Record<string, unknown>[];
+  // The backend, outcome and fence are no longer attempt columns; read them from their owners
+  // through the production attempt projection.
+  return rows.map((row) => {
+    const projected = requireSchedulerExecutionAttempt(db, String(row.attempt_id));
+    return {
+      ...row,
+      backend_id: projected.backendId,
+      outcome_ref: projected.outcomeRef,
+      fence_ref: projected.fenceRef,
+    };
+  });
 }
+
+/** The production Native backend id; admitted Native materialization requires it on the attempt. */
+const FIXTURE_BACKEND_ID = 'nanohost';
 
 /** Composes the real queue, dispatch, Store and maintenance with an external-effect double. */
 async function fixture(
@@ -103,7 +121,7 @@ async function fixture(
   });
 
   const setup = createTestAgentSetup();
-  await admitTestNativeEnvironmentForRoot(db, setup.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(db, setup.manifest);
   const snapshots: Record<string, unknown>[][] = [];
   const effectCalls: Correlation[] = [];
   const nativeStarts: Correlation[] = [];
@@ -112,9 +130,17 @@ async function fixture(
   let lostSubmitHeld = false;
   const submitResponse = Promise.withResolvers<void>();
   const dispatchErrors: unknown[] = [];
+  // Admitted Native submission checks the attempt's real journal clock, so the fixture clock is real
+  // and records its readings for the exact-budget assertion.
+  const clockReadings: number[] = [];
+  const clock = () => {
+    const reading = Date.now();
+    clockReadings.push(reading);
+    return new Date(reading).toISOString();
+  };
   const observations = new Map<string, Observation | null>();
   const port = {
-    id: 'fixture-backend',
+    id: FIXTURE_BACKEND_ID,
     submit: vi.fn(async (input: Correlation & { readonly deadline: string }) => {
       snapshots.push(attempts(db));
       effectCalls.push(input);
@@ -165,7 +191,7 @@ async function fixture(
     readyAt: '2026-10-06T00:00:00.000Z',
     physicalEpoch: 'a'.repeat(64),
   });
-  const controlGateway = createDefaultWorkerControlGateway(db);
+  const controlGateway = createDefaultWorkerControlGateway(db, undefined, nanoHostStorage);
   const backend: WorkerGovernanceBackend = {
     ...port,
     describeCapabilities: async () => ({
@@ -211,11 +237,12 @@ async function fixture(
     collectTranscript: async () => ({}),
   };
   const executor = new WorkerGovernanceTurnExecutor({
+    ...testWorkerExecutorNanoHostJoins(nanoHostStorage),
     fileAdmission: new FileStorageAdmission(db.dataRoot, () => 0n),
     coreDb: db,
     backend,
     workerControlGateway: controlGateway,
-    now: () => '2026-10-06T00:00:00.000Z',
+    now: clock,
     awaitWorkerCompletion: () => new Promise(() => {}),
   });
   const providerRegistry = new ProviderRegistry([
@@ -235,7 +262,7 @@ async function fixture(
     gatewayConfig: createTestGatewayConfig(),
     executionBackend: port,
     maxDispatches: 1,
-    now: () => '2026-10-06T00:00:00.000Z',
+    now: clock,
   };
   const recoveryInput: RunSchedulerRestartRecoveryInput = {
     store,
@@ -315,6 +342,7 @@ async function fixture(
     snapshots,
     effectCalls,
     nativeStarts,
+    clockReadings,
     setPhysicalCapacityAvailable(available: boolean) {
       physicalCapacityAvailable = available;
     },
@@ -341,11 +369,10 @@ async function fixture(
 describe('execution backend port through real Core coordination', () => {
   it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
     const f = await fixture();
-    f.port.id = 'nanohost';
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    await admitTestNativeEnvironmentForRoot(f.db, setup.manifest);
+    const nativeStorage = await admitTestNativeEnvironmentForRoot(f.db, setup.manifest);
     const held = Promise.withResolvers<void>();
     const effects = vi.fn(async (request: { kind: string }) => {
       expect(request.kind).toBe('image.acquire');
@@ -360,6 +387,8 @@ describe('execution backend port through real Core coordination', () => {
       store: f.store,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
+      // Production joins the admitted NanoHost owner; the fixture runs that configuration.
+      nanoHostRecovery: testNanoHostRecoveryJoins(nativeStorage),
       nanoHostSessionDispatch: {
         effect: effects,
         async poll() {
@@ -420,12 +449,12 @@ describe('execution backend port through real Core coordination', () => {
         await f.queue('configured');
         await f.dispatch();
         expect(f.port.submit).toHaveBeenCalledOnce();
-        expect(f.effectCalls[0]).toMatchObject({ backendId: 'fixture-backend' });
+        expect(f.effectCalls[0]).toMatchObject({ backendId: FIXTURE_BACKEND_ID });
         const atCall = f.snapshots[0]![0]!;
         expect(atCall).toMatchObject({
           phase: 'open',
           disposition: 'unknown',
-          backend_id: 'fixture-backend',
+          backend_id: FIXTURE_BACKEND_ID,
         });
         expect(atCall.operation_id).toBe(f.effectCalls[0]!.operationId);
         expect(atCall.attempt_id).toBe(f.effectCalls[0]!.attemptId);
@@ -993,17 +1022,15 @@ describe('execution backend port through real Core coordination', () => {
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const submitted = f.port.submit.mock.calls[0]![0];
-      expect(Date.parse(submitted.deadline) - Date.parse('2026-10-06T00:00:00.000Z')).toBe(
-        7_200_000
-      );
+      // The deadline is exactly one fixture clock reading plus the 7200 second budget.
+      const startedAt = Date.parse(submitted.deadline) - 7_200_000;
+      expect(f.clockReadings).toContain(startedAt);
       const original = attempts(f.db)[0]!;
       expect(Number.isFinite(Date.parse(String(original.deadline)))).toBe(true);
       expect(original.deadline).toBe(submitted.deadline);
-      for (const now of [
-        '2026-10-06T00:00:10.000Z',
-        '2026-10-06T01:59:59.999Z',
-        '2026-10-06T02:00:00.000Z',
-      ]) {
+      for (const now of [10_000, 7_199_999, 7_200_000].map((offset) =>
+        new Date(startedAt + offset).toISOString()
+      )) {
         await runSchedulerRecoveryMaintenance(f.db, {
           ...f.recoveryInput,
           now: () => now,
