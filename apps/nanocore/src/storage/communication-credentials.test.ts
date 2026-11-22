@@ -65,7 +65,7 @@ describe('Communication credentials in the shared credential family', () => {
                 ...owners,
                 communicationCredentials: { readBinding: () => unavailable, unbind },
               });
-        expect(operations['credential.list']({}, context).items).toEqual([
+        expect((await operations['credential.list']({}, context)).items).toEqual([
           expect.objectContaining({ kind: 'access-token', id: tokenId }),
         ]);
         await expect(
@@ -109,7 +109,7 @@ describe('Communication credentials in the shared credential family', () => {
         mode: 'local',
         communicationCredentials: { readBinding, unbind },
       });
-      expect(operations['credential.list']({}, context).items).toEqual([
+      expect((await operations['credential.list']({}, context)).items).toEqual([
         expect.objectContaining({ kind: 'discord-pairing', id: revision }),
       ]);
       await expect(
@@ -197,7 +197,10 @@ describe('Independently admitted credential owners', () => {
         try {
           const inventory =
             path === 'default'
-              ? createCredentialOperationImplementations(owners)['credential.list']({}, context)
+              ? await createCredentialOperationImplementations(owners)['credential.list'](
+                  {},
+                  context
+                )
               : await createOperationInvocation({
                   ...owners,
                   communicationCredentialBinding: {},

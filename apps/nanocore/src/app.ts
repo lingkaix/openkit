@@ -2593,6 +2593,27 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nanoHostStorage.state === 'ready'
       ? nanoHostStorage.value.owner.readRuntimeTarget
       : () => nanoHostStorage;
+  const afterNanoHostTransportAcknowledgement:
+    | NanoHostOwnerBinding['afterNanoHostTransportAcknowledgement']
+    | undefined =
+    nanoHostStorage.state === 'ready'
+      ? async (read, signal) => {
+          try {
+            return await nanoHostStorage.value.owner.afterNanoHostTransportAcknowledgement(
+              read,
+              signal
+            );
+          } catch (error) {
+            if (error instanceof ControlStoreWorkerError)
+              throw new OperationError(
+                'nanohost_transport_storage_unavailable',
+                'NanoHost transport token storage is unavailable.',
+                503
+              );
+            throw error;
+          }
+        }
+      : undefined;
   const enrollmentWriter =
     nanoHostStorage.state === 'ready' ? nanoHostStorage.value.enrollTransport : undefined;
   const nanoHostEnrollment: import('./operation-composition.js').OperationInvocationDependencies['nanoHostEnrollment'] =
@@ -2615,11 +2636,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ? { state: 'ready' as const, value: nanoHostStorage.value.owner }
       : nanoHostStorage;
   let communicationCredentialBinding: CommunicationCredentialBinding = {
-    listNanoHostTransportTokens: () => {
+    listNanoHostTransportTokens: (signal) => {
       if (nanoHostStorage.state === 'ready')
-        return nanoHostStorage.value.owner.read((sqlite) =>
-          listNanoHostTransportTokenRecords({ sqlite })
-        );
+        return nanoHostStorage.value.owner.listTransportTokens(signal);
       return (
         (options.nanoHostStorage
           ? undefined
@@ -3442,6 +3461,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
     readNanoHostTarget,
+    ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
     ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
     nanoHostCleanupOwner,
   });
@@ -3513,6 +3533,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
     readNanoHostTarget,
+    ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
     ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
     nanoHostCleanupOwner,
   });
