@@ -23,7 +23,7 @@ import {
 } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -143,7 +143,7 @@ async function stoppedOriginalWorker() {
   });
   const target = await recordTestNativeRuntimeTarget(coreDb);
   const setup = createTestAgentSetup({ requiredCapabilities: ['worker.runtime-provenance.v1'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   await shutdownControlStoreWorkerClient();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();

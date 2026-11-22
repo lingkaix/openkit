@@ -14,6 +14,7 @@ import type {
 } from '../runtime/nanohost-session-dispatch.js';
 import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import * as bindings from '../runtime/worker-storage-bindings.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -276,11 +277,14 @@ async function fixture(kind: Kind) {
       throw new Error('Unexpected semantic route.');
     },
   };
+  // Image settlements and storage attachments are retained by the admitted NanoHost owner.
+  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
   const makeApp = (selectedStore: FsStore) =>
     createAppWithLocalIdentity({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       dataRoot,
+      nanoHostStorage,
       mode: 'local',
       llmGatewayDispatcher: {
         createResponses: async () => {

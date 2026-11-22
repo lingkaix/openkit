@@ -58,7 +58,7 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { disposeTestStore } from './test-support/store.js';
@@ -363,7 +363,7 @@ async function createSchedulerFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   // Prepare fixture-owned image evidence before any asynchronous native Core writer can start.
-  admitTestNativeEnvironment(coreDb, manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   const store = await createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
@@ -375,6 +375,7 @@ async function createSchedulerFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const app = createApp({
+    nanoHostStorage,
     ...config,
     agentManifests: [manifest],
     coreDb,

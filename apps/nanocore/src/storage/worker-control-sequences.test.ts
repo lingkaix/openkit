@@ -1,17 +1,32 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createWorkerControlSequenceRecorder } from '../runtime/worker-control-sequences.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { type CoreDb, openCoreDb } from './db.js';
-import { applyMigrations } from './migrate.js';
+import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
+
+const migrationsFolder = fileURLToPath(
+  new URL('../../drizzle/extensions/nanohost/', import.meta.url)
+);
+
+/** The fingerprint table is retained by the shipped NanoHost journal, not Core. */
+function openNanoHostOwner(dataRoot: string): { sqlite: Database.Database } {
+  const path = join(dataRoot, 'server/extensions', nanoHostStoreDescriptor.owner, 'state.sqlite');
+  mkdirSync(dirname(path), { recursive: true });
+  const sqlite = new Database(path);
+  migrate(drizzle(sqlite), { migrationsFolder });
+  return { sqlite };
+}
 
 describe('retained Worker control sequence fingerprints', () => {
   let dataRoot: string;
-  let coreDb: CoreDb;
+  let coreDb: { sqlite: Database.Database };
   const input = {
     lineage: {
       agentSessionId: testEntityId('as', 'retained-sequence'),
@@ -28,8 +43,7 @@ describe('retained Worker control sequence fingerprints', () => {
 
   beforeEach(() => {
     dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-control-sequence-'));
-    coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    coreDb = openNanoHostOwner(dataRoot);
   });
 
   afterEach(() => {
@@ -42,7 +56,7 @@ describe('retained Worker control sequence fingerprints', () => {
       createWorkerControlSequenceRecorder(coreDb).accept({ ...input, fingerprint: original })
     ).toMatchObject({ status: 'accepted', duplicate: false });
     coreDb.sqlite.close();
-    coreDb = openCoreDb(dataRoot);
+    coreDb = openNanoHostOwner(dataRoot);
     const recorder = createWorkerControlSequenceRecorder(coreDb);
 
     // Worker Control: identical canonical payloads replay; changed and stale sequences refuse.
@@ -80,7 +94,7 @@ describe('retained Worker control sequence fingerprints', () => {
       .prepare('UPDATE worker_control_sequence_fingerprints SET fingerprint = ?')
       .run('{');
     coreDb.sqlite.close();
-    coreDb = openCoreDb(dataRoot);
+    coreDb = openNanoHostOwner(dataRoot);
 
     let status = 'refused';
     try {

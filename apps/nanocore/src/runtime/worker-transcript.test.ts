@@ -1,15 +1,20 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
 import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { applyScopedMigrations } from '../storage/migrate.js';
+import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
 import { nativeProductScope, readNativeProductEntries } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -36,6 +41,19 @@ import {
   type WorkerTranscriptImportOptions,
   type WorkerTranscriptPayload,
 } from './worker-transcript.js';
+
+const nanoHostMigrations = fileURLToPath(
+  new URL('../../drizzle/extensions/nanohost/', import.meta.url)
+);
+
+/** Opens the shipped NanoHost journal at the fixture data root. */
+function openNanoHostJournal(dataRoot: string): { sqlite: Database.Database } {
+  const path = join(dataRoot, 'server/extensions', nanoHostStoreDescriptor.owner, 'state.sqlite');
+  mkdirSync(dirname(path), { recursive: true });
+  const sqlite = new Database(path);
+  migrate(drizzle(sqlite), { migrationsFolder: nanoHostMigrations });
+  return { sqlite };
+}
 
 /**
  * Creates a package fixture for transcript import tests.
@@ -307,8 +325,8 @@ describe('worker transcript product-safe diagnostics', () => {
         event: { ...knownEvent.event, [value]: true },
         [value]: true,
       };
-      const coreDb = openCoreDb(fixture.store.getDataRoot() as string);
-      applyMigrations(coreDb);
+      // Worker-control receipts and sequence fingerprints are retained by the NanoHost journal.
+      const coreDb = openNanoHostJournal(fixture.store.getDataRoot() as string);
       onTestFinished(() => coreDb.sqlite.close());
       const options: WorkerTranscriptImportOptions = { ...transcriptImportOptions };
       const matchedLive = failure === 'descriptive-addition';
