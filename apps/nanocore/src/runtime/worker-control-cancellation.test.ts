@@ -47,7 +47,11 @@ import {
   getWorkerBackendSession,
   transitionWorkerBackendSessionState,
 } from './worker-backend-session-records.js';
-import { hashWorkerRouteToken, type WorkerControlLineage } from './worker-control-gateway.js';
+import {
+  hashWorkerRouteToken,
+  WorkerControlGatewayError,
+  type WorkerControlLineage,
+} from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
@@ -339,7 +343,7 @@ function expectRefusal(fixture: Fixture, operation: () => unknown) {
   const before = fixture.durableState();
   const product = fixture.productState();
   const snapshot = fixture.gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId);
-  expect(operation).toThrow();
+  expect(operation).toThrow(WorkerControlGatewayError);
   expect(fixture.durableState()).toEqual(before);
   expect(fixture.productState()).toEqual(product);
   expect(fixture.gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)).toEqual(snapshot);
@@ -357,7 +361,7 @@ async function expectAsyncRefusal(fixture: Fixture, operation: () => Promise<unk
 }
 
 /** Checks that each credential family has lost ordinary effect authority. */
-function expectOrdinaryEffectsRefused(fixture: Fixture) {
+async function expectOrdinaryEffectsRefused(fixture: Fixture) {
   for (const [tokenFamily, token] of [
     ['worker-control', CONTROL_TOKEN],
     ['inference', INFERENCE_TOKEN],
@@ -367,7 +371,7 @@ function expectOrdinaryEffectsRefused(fixture: Fixture) {
       fixture.gateway.authenticatePackageToken(`Bearer ${token}`, { tokenFamily })
     );
   }
-  expectRefusal(fixture, () =>
+  await expectAsyncRefusal(fixture, async () =>
     fixture.gateway.appendEvent({
       authorization: `Bearer ${CONTROL_TOKEN}`,
       lineage: fixture.lineage,
@@ -438,7 +442,7 @@ describe('Core cancellation-only final admission', () => {
           fenceRef: null,
           outcomeRef: null,
         });
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         expect(
           readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
             resolveAdmittedNanoHostFinalBinding(fixture.coreDb, sqlite, {
@@ -461,7 +465,7 @@ describe('Core cancellation-only final admission', () => {
           nextExpectedSequence: 9,
         });
         expect(fixture.durableState()).toEqual(accepted);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus({ ...finalInput(fixture, status), sequence: 9 })
         );
@@ -481,7 +485,7 @@ describe('Core cancellation-only final admission', () => {
     const fixture = await createFixture();
     try {
       fixture.close();
-      expectRefusal(fixture, () =>
+      await expectAsyncRefusal(fixture, async () =>
         fixture.gateway.recordHeartbeat({
           authorization: `Bearer ${CONTROL_TOKEN}`,
           lineage: fixture.lineage,
@@ -507,7 +511,7 @@ describe('Core cancellation-only final admission', () => {
       const fixture = await createFixture();
       try {
         fixture.close(cause);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         const before = fixture.durableState();
         fixture.restart();
         expect(fixture.durableState()).toEqual(before);
@@ -560,7 +564,7 @@ describe('Core cancellation-only final admission', () => {
       });
       expect(fixture.durableState()).toEqual(closed);
       expectOneFinal(fixture, 'cancelled');
-      expectOrdinaryEffectsRefused(fixture);
+      await expectOrdinaryEffectsRefused(fixture);
       await expectAsyncRefusal(fixture, () =>
         fixture.gateway.recordFinalStatus({ ...finalInput(fixture), stopReason: 'error' })
       );
@@ -738,7 +742,7 @@ describe('Core cancellation-only final admission', () => {
         const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
         vi.setSystemTime(new Date(attempt.deadline!));
         if (restart) fixture.restart();
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
@@ -850,7 +854,7 @@ describe('Core cancellation-only final admission', () => {
         await fixture.restartThroughStartup(ports.input);
         if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, async () =>
           fixture.gateway.recordHeartbeat({
             authorization: `Bearer ${CONTROL_TOKEN}`,
@@ -993,7 +997,7 @@ describe('Core cancellation-only final admission', () => {
           )
         );
         await fixture.restartThroughStartup(ports.input);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
@@ -1086,7 +1090,7 @@ describe('Core cancellation-only final admission', () => {
         const deadlines = nativeDeadlines(fixture);
         const canonical = fixture.productState().canonical;
         await fixture.restartThroughStartup(ports.input);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
