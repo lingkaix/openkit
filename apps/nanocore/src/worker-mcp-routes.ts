@@ -138,6 +138,7 @@ import {
   type RaisePendingRequestInput,
 } from './runtime/pending-requests.js';
 import {
+  hashWorkerRouteBearer,
   type WorkerControlGateway,
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
@@ -506,12 +507,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         );
       }
       const requestSignal = context.req.raw.signal;
+      const authorization = context.req.header('authorization') ?? null;
       const environmentPackage = await afterAcknowledgement(
         () =>
-          input.workerControlGateway.authenticatePackageToken(
-            context.req.header('authorization') ?? null,
-            { tokenFamily: 'capability' }
-          ),
+          input.workerControlGateway.authenticatePackageToken(authorization, {
+            tokenFamily: 'capability',
+          }),
         requestSignal
       );
       if (!workerMcpExposureAvailable(input)) throw mcpDeniedError();
@@ -686,33 +687,39 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   try {
                     // Selectors come only from the authenticated original AEP. Native owns
                     // live lease/source/E4 checks, publication and repeat identity at FULLACK.
-                    await getControlStoreWorkerClient().standaloneAudit(input.coreDb!, {
-                      stage: 'security.canary',
-                      canaryLineage: {
-                        workspaceId: scope.workspaceId,
-                        threadId: scope.threadId,
-                        turnId: scope.turnId,
-                        agentSessionId: scope.agentSessionId,
-                        packageSnapshotId: environmentPackage.snapshotId,
-                        requestId: scope.requestId ?? null,
+                    const authenticatedCapabilityHash = hashWorkerRouteBearer(authorization);
+                    if (!authenticatedCapabilityHash) throw unavailableServer();
+                    await getControlStoreWorkerClient().standaloneAudit(
+                      input.coreDb!,
+                      {
+                        stage: 'security.canary',
+                        canaryLineage: {
+                          workspaceId: scope.workspaceId,
+                          threadId: scope.threadId,
+                          turnId: scope.turnId,
+                          agentSessionId: scope.agentSessionId,
+                          packageSnapshotId: environmentPackage.snapshotId,
+                          requestId: scope.requestId ?? null,
+                        },
+                        event: prepareServerAuditEvent({
+                          ...SECURITY_CANARY_AUDIT_FACT,
+                          coreDb: input.coreDb!,
+                          workspaceId: scope.workspaceId,
+                          threadId: scope.threadId,
+                          turnId: scope.turnId,
+                          agentSessionId: scope.agentSessionId,
+                          agentId: environmentPackage.agent.agentId,
+                          itemId: scope.itemId ?? null,
+                          requestId: RequestIdSchema.safeParse(scope.requestId).data ?? null,
+                          actor,
+                          subject: actor,
+                          category: 'capability',
+                          outcome: 'denied',
+                          severity: 'warning',
+                        }),
                       },
-                      event: prepareServerAuditEvent({
-                        ...SECURITY_CANARY_AUDIT_FACT,
-                        coreDb: input.coreDb!,
-                        workspaceId: scope.workspaceId,
-                        threadId: scope.threadId,
-                        turnId: scope.turnId,
-                        agentSessionId: scope.agentSessionId,
-                        agentId: environmentPackage.agent.agentId,
-                        itemId: scope.itemId ?? null,
-                        requestId: RequestIdSchema.safeParse(scope.requestId).data ?? null,
-                        actor,
-                        subject: actor,
-                        category: 'capability',
-                        outcome: 'denied',
-                        severity: 'warning',
-                      }),
-                    });
+                      authenticatedCapabilityHash
+                    );
                   } catch {
                     // A failed observation has no useful fallback or durable-trip claim.
                     throw unavailableServer();
