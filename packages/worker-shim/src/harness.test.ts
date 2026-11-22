@@ -27,6 +27,7 @@ import {
 import { allocateEntityId, isRecord } from '@openkit/protocol';
 
 import {
+  type HarnessResultEnvelope,
   HarnessSuccessBodySchemas,
   WorkerControlHeartbeatRequestSchema,
 } from '@openkit/worker-protocol';
@@ -1514,6 +1515,63 @@ describe('Worker Harness loop', () => {
         sequence: 1,
       },
     ]);
+  });
+
+  it('holds a conflicting result without replay or advance and keeps independent Harness work moving', async () => {
+    const held = { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-held' };
+    const heldSuccessor = { ...command('harness.drain', 1, {}), harnessInstanceId: 'harness-held' };
+    const allowed = { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-allowed' };
+    const polls: unknown[] = [];
+    const results: HarnessResultEnvelope[] = [];
+    const close = vi.fn(async () => undefined);
+    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+    const commands = [held, held, heldSuccessor, allowed];
+    loopFixture.client = {
+      close,
+      ready: Promise.resolve(),
+      harnessControlFetch: async (path: string, init: { body: string }) => {
+        expect(close).not.toHaveBeenCalled();
+        if (path.endsWith('/result')) {
+          const result = JSON.parse(init.body) as HarnessResultEnvelope;
+          results.push(result);
+          return {
+            status: result.harnessInstanceId === held.harnessInstanceId ? 409 : 204,
+            text: async () => '',
+          };
+        }
+        polls.push(JSON.parse(init.body).harnesses);
+        const next = commands.shift();
+        // A genuine route refusal still closes the Integration after the allowed result.
+        return { status: next ? 200 : 409, text: async () => (next ? JSON.stringify(next) : '') };
+      },
+    } as unknown as SandboxIntegrationClient;
+
+    await expect(
+      runWorkerHarness({ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+    ).rejects.toThrow('Harness poll failed with HTTP 409.');
+    expect(handle.mock.calls).toEqual([[held], [allowed]]);
+    expect(
+      results.map(({ harnessInstanceId, operationId, sequence }) => ({
+        harnessInstanceId,
+        operationId,
+        sequence,
+      }))
+    ).toEqual([
+      { harnessInstanceId: held.harnessInstanceId, operationId: held.operationId, sequence: 0 },
+      {
+        harnessInstanceId: allowed.harnessInstanceId,
+        operationId: allowed.operationId,
+        sequence: 0,
+      },
+    ]);
+    expect(polls).toEqual([
+      [],
+      [],
+      [],
+      [],
+      [{ harnessInstanceId: allowed.harnessInstanceId, nextSequence: 1 }],
+    ]);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it.each(['collected', 'text'] as const)(

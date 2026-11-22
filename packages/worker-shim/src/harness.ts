@@ -1047,7 +1047,10 @@ export async function runWorkerHarness(
   const integration = await openSandboxIntegration(
     options.signal ? { signal: options.signal } : undefined
   );
-  const harnesses = new Map<string, { readonly harness: WorkerHarness; nextSequence: number }>();
+  const harnesses = new Map<
+    string,
+    { readonly harness: WorkerHarness; nextSequence: number; resultRefused?: true }
+  >();
   try {
     process.stdout.write('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
     await integration.ready;
@@ -1060,14 +1063,25 @@ export async function runWorkerHarness(
         JSON.stringify({
           schemaVersion: 2,
           releaseIdentity,
-          harnesses: [...harnesses].map(([harnessInstanceId, owner]) => ({
-            harnessInstanceId,
-            nextSequence: owner.nextSequence,
-          })),
+          // Advertising the held sequence would invite redelivery of an already executed command.
+          harnesses: [...harnesses]
+            .filter(([, owner]) => !owner.resultRefused)
+            .map(([harnessInstanceId, owner]) => ({
+              harnessInstanceId,
+              nextSequence: owner.nextSequence,
+            })),
         }),
         options.signal
       );
-      if (response.status === 204) {
+      if (response.status !== 200 && response.status !== 204) {
+        throw new Error(`Harness poll failed with HTTP ${response.status}.`);
+      }
+      const command =
+        response.status === 200
+          ? HarnessCommandEnvelopeReaderSchema.parse(JSON.parse(await response.text()))
+          : null;
+      let owner = command ? harnesses.get(command.harnessInstanceId) : undefined;
+      if (!command || owner?.resultRefused) {
         // A timer may fire early against the monotonic clock, so wait until the minimum elapsed.
         for (;;) {
           const remaining = pollDeadline.remainingMs();
@@ -1076,11 +1090,6 @@ export async function runWorkerHarness(
         }
         continue;
       }
-      if (response.status !== 200) {
-        throw new Error(`Harness poll failed with HTTP ${response.status}.`);
-      }
-      const command = HarnessCommandEnvelopeReaderSchema.parse(JSON.parse(await response.text()));
-      let owner = harnesses.get(command.harnessInstanceId);
       if (!owner) {
         owner = {
           harness: new WorkerHarness({ environment: options.environment, integration }),
@@ -1100,6 +1109,12 @@ export async function runWorkerHarness(
         JSON.stringify(settled),
         options.signal
       );
+      if (resultResponse.status === 409) {
+        // A definite refusal holds this Harness at its original sequence until Sandbox recovery.
+        // Other work still needs its own admitted poll on the same Integration.
+        owner.resultRefused = true;
+        continue;
+      }
       if (resultResponse.status !== 204 || (await resultResponse.text()) !== '') {
         throw new Error('Harness result was not accepted with an empty 204.');
       }
@@ -1112,8 +1127,8 @@ export async function runWorkerHarness(
 
 /**
  * Sends one immutable private request and retries exactly that request, on a transport failure or
- * a retryable HTTP status, under the bounded monotonic outage budget. Any other status returns to
- * the caller, which treats it as terminal; a result is resent byte for byte, never re-executed.
+ * a retryable HTTP status, under the bounded monotonic outage budget. Other statuses return to
+ * the caller for disposition. A retry resends the original bytes without re-executing the command.
  */
 async function requestWithOutageBudget(
   integration: SandboxIntegrationClient,
