@@ -1,6 +1,5 @@
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
-import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
-import type { NanoHostOwnerBinding } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import {
@@ -8,38 +7,13 @@ import {
   reopenAdmittedTestNanoHost,
 } from './admitted-nanohost.js';
 
-/**
- * Same binding as Boot (`index.ts` `bindBootNanoHostAttemptRecovery`), which is private to the Boot module.
- * Keep it identical: the same owner close and classification writer, and the same holds for
- * `retire-orphan`, the inspect-only final join and the first physical cleanup.
- */
-export function bindTestBootNanoHostAttemptRecovery(
-  owner: NanoHostOwnerBinding
-): AdmittedNanoHostAttemptRecovery {
-  const hold = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' } as const;
-  return {
-    owner,
-    close: owner.closeRecovery,
-    commit: async (input) => {
-      if (input.kind === 'retire-orphan') return hold;
-      return owner.classifyRecovery(
-        input as Parameters<NanoHostOwnerBinding['classifyRecovery']>[0]
-      );
-    },
-    reconcileFinal: async () => {
-      throw new ControlProductPreconditionError();
-    },
-    cleanup: async () => hold,
-  };
-}
-
 /** The Boot recovery selection for a fixture root that holds an admitted NanoHost opening. */
 export function testBootNanoHostRecovery(
   coreDb: Pick<CoreDb, 'dataRoot'>
 ): StorageResult<'nanohost', AdmittedNanoHostAttemptRecovery> | undefined {
   if (directRecoveryRoots.has(coreDb.dataRoot)) return undefined;
   const owner = currentAdmittedTestNanoHostOwner(coreDb);
-  return owner ? { state: 'ready', value: bindTestBootNanoHostAttemptRecovery(owner) } : undefined;
+  return owner ? { state: 'ready', value: bindBootNanoHostAttemptRecovery(owner) } : undefined;
 }
 
 const directRecoveryRoots = new Set<string>();
