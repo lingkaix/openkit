@@ -28,7 +28,10 @@ import {
 import { openBootVerifiedWorkspaceDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { testNanoHostRecoveryJoins } from '../test-support/admitted-nanohost.js';
+import {
+  readAdmittedTestNanoHost,
+  testNanoHostRecoveryJoins,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -850,10 +853,12 @@ describe('Workspace execution journal producer boundaries', () => {
             if (response.status === 200)
               command = JSON.parse(response.body) as NanoHostHarnessCommand;
           }
-          const row = f.coreDb.sqlite
-            .prepare(`SELECT harness_instance_id AS harnessInstanceId
+          const row = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT harness_instance_id AS harnessInstanceId
           FROM harness_instance_records WHERE operation_id = ?`)
-            .get(child.carriage.requestId) as { harnessInstanceId: string } | undefined;
+              .get(child.carriage.requestId)
+          ) as { harnessInstanceId: string } | undefined;
           if (row)
             f.failHarnessDelivery(
               {
@@ -919,10 +924,12 @@ describe('Workspace execution journal producer boundaries', () => {
             AND inspected_execution_id = ? AND inspected_step_id = ?`)
           .all(original.executionId, original.stepId);
       const readReceipt = () =>
-        f.coreDb.sqlite
-          .prepare(`SELECT result_json AS bytes, result_fingerprint AS fingerprint
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT result_json AS bytes, result_fingerprint AS fingerprint
           FROM harness_instance_records WHERE harness_instance_id = ?`)
-          .get(opened.harnessInstanceId) as { bytes: string; fingerprint: string };
+            .get(opened.harnessInstanceId)
+        ) as { bytes: string; fingerprint: string };
       const beforeStep = readOriginal();
       const beforeRoot = readRoot();
       expect(readConsumption()).toEqual([]);
@@ -1496,18 +1503,20 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
       // Include accepted content chunks omitted by canonical-event readers.
       expect(
-        f.coreDb.sqlite
-          .prepare(`SELECT count(*) AS count FROM worker_control_records
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT count(*) AS count FROM worker_control_records
           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
             AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ? AND operation = 'event_append'`)
-          .get(
-            lineage.workspaceId,
-            lineage.threadId,
-            lineage.turnId,
-            lineage.agentSessionId,
-            lineage.packageSnapshotId,
-            lineage.requestId ?? null
-          )
+            .get(
+              lineage.workspaceId,
+              lineage.threadId,
+              lineage.turnId,
+              lineage.agentSessionId,
+              lineage.packageSnapshotId,
+              lineage.requestId ?? null
+            )
+        )
       ).toEqual({ count: 0 });
       expect(
         requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
@@ -1582,9 +1591,9 @@ describe('first-release worker faults (real Core crossings)', () => {
             writableFinished: true,
             resetCode: constants.NGHTTP2_CANCEL,
           });
-        const beforeReplay = f.coreDb.sqlite
-          .prepare('SELECT * FROM harness_instance_records')
-          .get();
+        const beforeReplay = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT * FROM harness_instance_records').get()
+        );
         await vi.advanceTimersByTimeAsync(250);
         const recovered = await f.poll(proof);
         expect(
@@ -1596,9 +1605,11 @@ describe('first-release worker faults (real Core crossings)', () => {
           recovered.body === f.droppedWire(),
           'redelivery must retain every original wire byte'
         ).toBe(true);
-        expect(f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
-          beforeReplay
-        );
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM harness_instance_records').get()
+          )
+        ).toEqual(beforeReplay);
         expect(
           f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
         ).toHaveLength(1);
@@ -1693,18 +1704,20 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
-          f.coreDb.sqlite
-            .prepare(`SELECT count(*) AS count FROM worker_control_records
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT count(*) AS count FROM worker_control_records
           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
             AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
-            .get(
-              lineage.workspaceId,
-              lineage.threadId,
-              lineage.turnId,
-              lineage.agentSessionId,
-              lineage.packageSnapshotId,
-              lineage.requestId ?? null
-            )
+              .get(
+                lineage.workspaceId,
+                lineage.threadId,
+                lineage.turnId,
+                lineage.agentSessionId,
+                lineage.packageSnapshotId,
+                lineage.requestId ?? null
+              )
+          )
         ).toEqual({ count: 0 });
         expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
         expect(
@@ -1773,18 +1786,20 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
-          f.coreDb.sqlite
-            .prepare(`SELECT count(*) AS count FROM worker_control_records
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT count(*) AS count FROM worker_control_records
           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
             AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
-            .get(
-              lineage.workspaceId,
-              lineage.threadId,
-              lineage.turnId,
-              lineage.agentSessionId,
-              lineage.packageSnapshotId,
-              lineage.requestId ?? null
-            )
+              .get(
+                lineage.workspaceId,
+                lineage.threadId,
+                lineage.turnId,
+                lineage.agentSessionId,
+                lineage.packageSnapshotId,
+                lineage.requestId ?? null
+              )
+          )
         ).toEqual({ count: 0 });
         expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
         expect(
@@ -1832,18 +1847,20 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
-          f.coreDb.sqlite
-            .prepare(`SELECT count(*) AS count FROM worker_control_records
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT count(*) AS count FROM worker_control_records
           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
             AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
-            .get(
-              lineage.workspaceId,
-              lineage.threadId,
-              lineage.turnId,
-              lineage.agentSessionId,
-              lineage.packageSnapshotId,
-              lineage.requestId ?? null
-            )
+              .get(
+                lineage.workspaceId,
+                lineage.threadId,
+                lineage.turnId,
+                lineage.agentSessionId,
+                lineage.packageSnapshotId,
+                lineage.requestId ?? null
+              )
+          )
         ).toEqual({ count: 0 });
         expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
         expect(
@@ -1874,18 +1891,20 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
-          f.coreDb.sqlite
-            .prepare(`SELECT count(*) AS count FROM worker_control_records
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT count(*) AS count FROM worker_control_records
           WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
             AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
-            .get(
-              lineage.workspaceId,
-              lineage.threadId,
-              lineage.turnId,
-              lineage.agentSessionId,
-              lineage.packageSnapshotId,
-              lineage.requestId ?? null
-            )
+              .get(
+                lineage.workspaceId,
+                lineage.threadId,
+                lineage.turnId,
+                lineage.agentSessionId,
+                lineage.packageSnapshotId,
+                lineage.requestId ?? null
+              )
+          )
         ).toEqual({ count: 0 });
         expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
         expect(

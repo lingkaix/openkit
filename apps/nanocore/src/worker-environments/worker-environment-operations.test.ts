@@ -8,6 +8,11 @@ import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
+  createSchedulerExecutionAttempt,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
+import {
+  type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
   createAndReserveWorkerStorageAttachment,
@@ -24,10 +29,16 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestSessionActor } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
@@ -54,8 +65,58 @@ interface Fixture {
 }
 
 const openDbs: CoreDb[] = [];
+const attachmentOwners = new Map<string, AdmittedWorkerStorageAttachment>();
+
+/**
+ * Production reserves Worker storage only inside one open execution attempt on the admitted NanoHost owner.
+ * The fixture keeps one such attempt per root for its setup writes.
+ */
+async function attachmentOwner(
+  coreDb: CoreDb,
+  workspaceId: string,
+  threadId: string
+): Promise<AdmittedWorkerStorageAttachment> {
+  const existing = attachmentOwners.get(coreDb.dataRoot);
+  if (existing) return existing;
+  await recordTestNativeRuntimeTarget(coreDb, 'target_1', {
+    deploymentId: 'deployment_1',
+    identityId: 'identity_1',
+    allocationAt: NOW,
+    readyAt: NOW,
+  });
+  const { value } = await openAdmittedTestNanoHost(coreDb);
+  const target = value.owner.readRuntimeTarget('target_1');
+  if (target.state !== 'ready' || !target.value) throw new Error('Fixture target is unavailable.');
+  const turnId = testEntityId('tu', 'turn-environment-fixture');
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue-environment-fixture',
+    requestedAgentId: 'agent-codex',
+    threadId,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Prepare the Worker environment.'),
+    workspaceId,
+  });
+  const attempt = createSchedulerExecutionAttempt(coreDb, {
+    entry,
+    preparationInput: { admission: entry },
+  });
+  const owner: AdmittedWorkerStorageAttachment = {
+    attemptId: attempt.attemptId,
+    target: target.value,
+    read: value.owner.read,
+    write: value.owner.writeStorageAttachment,
+    authorizeContributor: () => true,
+    isCurrentAttempt: () =>
+      requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).phase === 'open',
+  };
+  attachmentOwners.set(coreDb.dataRoot, owner);
+  return owner;
+}
 
 afterEach(async () => {
+  attachmentOwners.clear();
   await shutdownControlStoreWorkerClient();
   for (const coreDb of openDbs.splice(0)) coreDb.sqlite.close();
 });
@@ -88,40 +149,45 @@ async function createFixture(
     tokenId: 'token_admin_local',
     workspaceIds: [],
   });
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_runtime_targets (
-         target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, observed_at, slot_count
-       ) VALUES ('target_1', 'identity_1', 'deployment_1', 1, 1, 1, 1, ?, 1)`
-    )
-    .run(NOW);
-  const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
-    agentSessionId: testEntityId('as', 'session_1'),
-    authorizeContributor: () => true,
-    deploymentId: 'deployment_1',
-    layout: LAYOUT,
-    now: NOW,
-    purpose: 'work',
-    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    runtimeTargetId: 'target_1',
-    threadId: thread.id,
-    workspaceId: workspace.id,
-  });
-  const attached = await activateWorkerStorageAttachment(coreDb, {
-    attachmentGeneration: reserved.attachmentGeneration,
-    expectedRevision: reserved.revision,
-    sandboxBindingRef: 'sandbox_binding_1',
-    storageRef: reserved.storageRef,
-    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-  });
-  const binding = await releaseWorkerStorageAttachment(coreDb, {
-    attachmentGeneration: attached.attachmentGeneration,
-    cleanupProved: true,
-    expectedRevision: attached.revision,
-    sandboxBindingRef: 'sandbox_binding_1',
-    storageRef: reserved.storageRef,
-  });
+  const owner = await attachmentOwner(coreDb, workspace.id, thread.id);
+  const reserved = await createAndReserveWorkerStorageAttachment(
+    coreDb,
+    {
+      agentSessionId: testEntityId('as', 'session_1'),
+      authorizeContributor: () => true,
+      deploymentId: 'deployment_1',
+      layout: LAYOUT,
+      now: NOW,
+      purpose: 'work',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      runtimeTargetId: 'target_1',
+      threadId: thread.id,
+      workspaceId: workspace.id,
+    },
+    owner
+  );
+  const attached = await activateWorkerStorageAttachment(
+    coreDb,
+    {
+      attachmentGeneration: reserved.attachmentGeneration,
+      expectedRevision: reserved.revision,
+      sandboxBindingRef: 'sandbox_binding_1',
+      storageRef: reserved.storageRef,
+      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+    },
+    owner
+  );
+  const binding = await releaseWorkerStorageAttachment(
+    coreDb,
+    {
+      attachmentGeneration: attached.attachmentGeneration,
+      cleanupProved: true,
+      expectedRevision: attached.revision,
+      sandboxBindingRef: 'sandbox_binding_1',
+      storageRef: reserved.storageRef,
+    },
+    (await openAdmittedTestNanoHost(coreDb)).value.owner.releaseIdleSandboxStorage
+  );
   const runtimeEffects: WorkerEnvironmentRuntimeEffects = {
     inspectImage: vi.fn(),
     inspectStorage: async ({ authorize, binding: current }) => {
@@ -178,38 +244,51 @@ function addOtherMember(fixture: Fixture): void {
 /** Prepares a live shared attachment so another authorized caller can contribute during inspection. */
 async function prepareConcurrentContributor(fixture: Fixture): Promise<() => Promise<void>> {
   addOtherMember(fixture);
-  const reserved = await reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: testEntityId('as', 'session_status'),
-    authorizeContributor: () => true,
-    expectedRevision: fixture.binding.revision,
-    layout: LAYOUT,
-    purpose: 'work',
-    responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    runtimeTargetId: 'target_1',
-    storageRef: fixture.binding.storageRef,
-    threadId: fixture.threadId,
-    workspaceId: fixture.workspaceId,
-  });
-  fixture.binding = await activateWorkerStorageAttachment(fixture.coreDb, {
-    attachmentGeneration: reserved.attachmentGeneration,
-    expectedRevision: reserved.revision,
-    sandboxBindingRef: 'sandbox_status',
-    storageRef: reserved.storageRef,
-    targets: reserved.targets,
-  });
-  const thread = await fixture.store.createThread(fixture.workspaceId, 'Other shared work');
-  return async () => {
-    // This models another authorized caller's admission, not the status caller's authority.
-    await admitWorkerStorageContributor(fixture.coreDb, {
+  const owner = await attachmentOwner(fixture.coreDb, fixture.workspaceId, fixture.threadId);
+  const reserved = await reserveWorkerStorageAttachment(
+    fixture.coreDb,
+    {
+      agentSessionId: testEntityId('as', 'session_status'),
       authorizeContributor: () => true,
       expectedRevision: fixture.binding.revision,
       layout: LAYOUT,
       purpose: 'work',
-      responsibleUserId: testEntityId('usr', 'user_other'),
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      runtimeTargetId: 'target_1',
       storageRef: fixture.binding.storageRef,
-      threadId: thread.id,
+      threadId: fixture.threadId,
       workspaceId: fixture.workspaceId,
-    });
+    },
+    owner
+  );
+  fixture.binding = await activateWorkerStorageAttachment(
+    fixture.coreDb,
+    {
+      attachmentGeneration: reserved.attachmentGeneration,
+      expectedRevision: reserved.revision,
+      sandboxBindingRef: 'sandbox_status',
+      storageRef: reserved.storageRef,
+      targets: reserved.targets,
+    },
+    owner
+  );
+  const thread = await fixture.store.createThread(fixture.workspaceId, 'Other shared work');
+  return async () => {
+    // This models another authorized caller's admission, not the status caller's authority.
+    await admitWorkerStorageContributor(
+      fixture.coreDb,
+      {
+        authorizeContributor: () => true,
+        expectedRevision: fixture.binding.revision,
+        layout: LAYOUT,
+        purpose: 'work',
+        responsibleUserId: testEntityId('usr', 'user_other'),
+        storageRef: fixture.binding.storageRef,
+        threadId: thread.id,
+        workspaceId: fixture.workspaceId,
+      },
+      owner
+    );
   };
 }
 
@@ -444,9 +523,11 @@ describe('Worker environment operations', () => {
       'conversation',
       { privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', visibility: 'private' }
     );
-    fixture.coreDb.sqlite
-      .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
-      .run('thread_private_source', fixture.binding.storageRef);
+    mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      sqlite
+        .prepare('UPDATE worker_storage_contributors SET thread_id = ? WHERE storage_ref = ?')
+        .run('thread_private_source', fixture.binding.storageRef)
+    );
 
     expect(fixture.operations.list(context, { limit: 50 })).toEqual({
       items: [],
@@ -643,7 +724,9 @@ describe('Worker environment operations', () => {
         changesAfterAdmission
       );
       expect(
-        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.binding.storageRef })
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          getWorkerStorageBinding({ sqlite }, { storageRef: fixture.binding.storageRef })
+        )
       ).toMatchObject({ state: 'attached', revision: fixture.binding.revision + 1 });
     }
   );
@@ -708,7 +791,9 @@ describe('Worker environment operations', () => {
         changesAfterRevocation
       );
       expect(
-        getWorkerStorageBinding(fixture.coreDb, { storageRef: fixture.binding.storageRef })
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          getWorkerStorageBinding({ sqlite }, { storageRef: fixture.binding.storageRef })
+        )
       ).toEqual(fixture.binding);
     }
   );
@@ -867,7 +952,11 @@ describe('Worker environment operations', () => {
     } finally {
       replies.mockRestore();
     }
-    expect(getWorkerStorageBinding(fixture.coreDb, input)).toMatchObject({ state: 'purged' });
+    expect(
+      readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        getWorkerStorageBinding({ sqlite }, input)
+      )
+    ).toMatchObject({ state: 'purged' });
     expect(purgeCalls).toBe(1);
 
     await shutdownControlStoreWorkerClient();
@@ -916,13 +1005,15 @@ describe('Worker environment operations', () => {
     const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
 
     await fixture.operations.purge(context, input);
-    fixture.coreDb.sqlite
-      .prepare(
-        `UPDATE worker_storage_contributors
+    mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          `UPDATE worker_storage_contributors
          SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
          WHERE storage_ref = ?`
-      )
-      .run(fixture.binding.storageRef);
+        )
+        .run(fixture.binding.storageRef)
+    );
 
     await expect(fixture.operations.purge(context, input)).rejects.toMatchObject({
       code: 'not_found',
