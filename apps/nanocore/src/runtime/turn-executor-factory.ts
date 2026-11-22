@@ -196,6 +196,7 @@ import {
 import {
   getNanoHostRuntimeTarget,
   NanoHostCleanupFencePendingError,
+  NanoHostPhysicalAuthorityUnavailableError,
   requireStoredNanoHostPhysicalEpoch,
 } from './nanohost-runtime-target.js';
 import {
@@ -757,19 +758,32 @@ function createNanoHostWorkerLifecycleRuntime(
       return turnExecutor.runRestartCloseout(session.turnId, async (close) => {
         const environmentPackage = await restoreDurableSession(session);
         // K8b guarded read before publication-capable capture recovery and before its early return.
-        const readback = requireNanoHostObservation(
-          coreDb,
-          (sqlite) => inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, session.attemptId),
-          readNanoHostEnvironment
-        );
-        if (!isDeepStrictEqual(readback, commitment))
-          throw new Error('Restart closeout final proof changed after recovery inspection.');
+        const guardedRead = () => {
+          const readback = requireNanoHostObservation(
+            coreDb,
+            (sqlite) => inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, session.attemptId),
+            readNanoHostEnvironment
+          );
+          if (!isDeepStrictEqual(readback, commitment))
+            throw new Error('Restart closeout final proof changed after recovery inspection.');
+        };
+        guardedRead();
         const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
         let captureDisposed = false;
         let collected = false;
         const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
         try {
-          if (await hasPendingWorkspaceCapture(coreDb, db, session, environmentPackage, store)) {
+          // The capture helper repeats the guarded read just before each publication it writes.
+          if (
+            await hasPendingWorkspaceCapture(
+              coreDb,
+              db,
+              session,
+              environmentPackage,
+              store,
+              guardedRead
+            )
+          ) {
             const turn = store.getTurnById(session.turnId);
             if (
               turn.status === 'completed' ||
@@ -8985,7 +8999,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private requireCurrentPhysicalEpoch(runtimeTargetId: string): string {
     const physicalEpoch = this.readCurrentPhysicalEpoch(runtimeTargetId);
     if (!physicalEpoch) {
-      throw new Error('NanoHost current physical Epoch authority is unavailable.');
+      throw new NanoHostPhysicalAuthorityUnavailableError();
     }
     return physicalEpoch;
   }

@@ -44,6 +44,8 @@ export function retainPreparedTestNanoHostSubmission(
     generation: string;
     observedAt: string;
     exclusionRefs?: readonly string[];
+    /** Production submit authority: the queue entry and the exact placement digest. */
+    authorityRefs?: readonly string[];
   }
 ) {
   const { admission, attemptId, targetId, generation, observedAt: createdAt } = input;
@@ -102,7 +104,7 @@ export function retainPreparedTestNanoHostSubmission(
       outputRefs: [],
       fingerprint: admission.inputHash,
       permittingDecisionRef: null,
-      authorityRefs: [],
+      authorityRefs: [...(input.authorityRefs ?? [])],
       retryDeclarationRef: null,
       retryPermitted: false,
       deadlineUnixNano: null,
@@ -137,6 +139,8 @@ export function submitTestNanoHostWorkerLease(
     readonly nativePath?: string;
     readonly observedAt?: string;
     readonly exclusionRefs?: readonly string[];
+    /** Opt-in production placement: this deployment, with the submit placement digest. */
+    readonly placementDeploymentId?: string;
   } = {}
 ) {
   const createdAt = fixture.observedAt ?? new Date().toISOString();
@@ -154,6 +158,19 @@ export function submitTestNanoHostWorkerLease(
   bindSchedulerExecutionAttemptSession(coreDb, { attemptId, agentSessionId, now });
   finalizeSchedulerExecutionAttemptInput(coreDb, { attemptId, inputRef, bindingRef, now });
 
+  const deploymentId = fixture.placementDeploymentId ?? 'test-worker-deployment';
+  const epoch = 'a'.repeat(64);
+  // The production submit digests its exact placement (core-journal-native.ts first submission).
+  const placement = {
+    runtimeTargetId: targetId,
+    identityId: targetId,
+    deploymentId,
+    physicalEpoch: epoch,
+    connectionGeneration: 1,
+    workspaceId,
+    threadId,
+    agentSessionId,
+  };
   const { grant } = retainPreparedTestNanoHostSubmission(coreDb, {
     admission,
     attemptId,
@@ -161,11 +178,12 @@ export function submitTestNanoHostWorkerLease(
     generation: '1',
     observedAt: createdAt,
     ...(fixture.exclusionRefs === undefined ? {} : { exclusionRefs: fixture.exclusionRefs }),
+    ...(fixture.placementDeploymentId === undefined
+      ? {}
+      : { authorityRefs: [admission.queueEntryId, commandInputHash(placement)] }),
   });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 
-  const deploymentId = 'test-worker-deployment';
-  const epoch = 'a'.repeat(64);
   const startupDeadline = nanoHostStartupDeadline({ createdAt });
   const sqlite = new Database(
     fixture.nativePath ?? serverStoragePath(coreDb.dataRoot, 'nanohost'),

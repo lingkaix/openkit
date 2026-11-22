@@ -195,7 +195,10 @@ import { commandInputHash } from './idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from './nanohost-attempt-recovery.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
-import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  NanoHostPhysicalAuthorityUnavailableError,
+} from './nanohost-runtime-target-records.js';
 import type { NanoHostEnvironmentRead } from './native-environment.js';
 import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -4684,6 +4687,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             accepted.acceptedAt
           );
         } catch (error) {
+          // K8b: while the original peer is away, no current physical Epoch authorizes collection.
+          // That holds the last durable Turn state. Peer readmission lets this same closeout finish.
+          if (hasCause(error, NanoHostPhysicalAuthorityUnavailableError)) throw error;
           try {
             await terminalizeGovernedWorkerTurn(restartFailure);
           } catch (terminalError) {
@@ -7191,4 +7197,14 @@ export async function endWorkerTurnJournalRelease(
     terminalCause: release.root.terminalCause,
     exclusionRefs: canClose ? [] : release.root.exclusionRefs,
   });
+}
+
+/** True when `error` or one of its `cause` links is an instance of `type`. */
+function hasCause(error: unknown, type: abstract new (...args: never[]) => Error): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current instanceof Error && depth < 8; depth += 1) {
+    if (current instanceof type) return true;
+    current = (current as Error).cause;
+  }
+  return false;
 }

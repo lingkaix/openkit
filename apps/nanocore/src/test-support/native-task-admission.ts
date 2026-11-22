@@ -59,6 +59,11 @@ export async function createNativeTaskAdmissionFixture(
     workspaceGitBaseline?: { commit: string; tree: string };
     /** Models a stale Harness interrupt after observing the exact cancellation before polling. */
     beforeStaleInterruptPoll?: () => Promise<void>;
+    /**
+     * Models the Worker control client, which retries an ambiguous final status failure once with the
+     * exact same envelope. The default fixture Worker posts its final once.
+     */
+    retryAmbiguousFinal?: boolean;
     /** Delegates only interrupt refusal to the receiving Harness under test. */
     interruptRefusal?: (
       command: harnessOwner.NanoHostHarnessCommand
@@ -656,17 +661,18 @@ export async function createNativeTaskAdmissionFixture(
                 const data = { status, stopReason, evidenceManifestDigests: {} } as const;
                 const sequence = original.events.length + 1;
                 original.events.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
-                expect(
-                  (
-                    await workerControlGateway.recordFinalStatus({
-                      authorization: `Bearer ${wire.body.workerControlToken}`,
-                      tokenFamily: 'worker-control',
-                      lineage: nativeLineage,
-                      sequence,
-                      ...data,
-                    })
-                  ).accepted
-                ).toBe(true);
+                const post = () =>
+                  workerControlGateway.recordFinalStatus({
+                    authorization: `Bearer ${wire.body.workerControlToken}`,
+                    tokenFamily: 'worker-control',
+                    lineage: nativeLineage,
+                    sequence,
+                    ...data,
+                  });
+                const reply = options.retryAmbiguousFinal
+                  ? await post().catch(() => post())
+                  : await post();
+                expect(reply.accepted).toBe(true);
                 originalBinding.state = 'completed';
               };
               original.delivery = original.completion.promise

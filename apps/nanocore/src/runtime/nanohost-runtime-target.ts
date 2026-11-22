@@ -8,6 +8,7 @@ export {
   type AllocateNanoHostRuntimeTargetConnectionGenerationInput,
   getNanoHostRuntimeTarget,
   NanoHostCleanupFencePendingError,
+  NanoHostPhysicalAuthorityUnavailableError,
   type NanoHostRuntimeTargetRecord,
   type NanoHostRuntimeTargetStatusObservation,
   type RecordNanoHostRuntimeTargetConnectionCloseInput,

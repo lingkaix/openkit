@@ -13,6 +13,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import { hasSurvivingNanoHostFinalEvidence } from '../storage/core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
@@ -311,22 +312,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       const native = observation.attempt;
       assertSessionMatchesAttempt(session, native);
       const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
-      const captureWorkspace = openRecoveryWorkspace(coreDb, native);
-      try {
-        if (
-          await hasPendingWorkspaceCapture(
-            coreDb,
-            captureWorkspace.db,
-            session,
-            captureWorkspace.environmentPackage,
-            input.store
-          )
-        )
-          continue;
-      } finally {
-        captureWorkspace.db.sqlite.close();
-      }
-      const { final, finalReceipt } = readRecovery(recovery, (sqlite) =>
+      const { final, finalReceipt, evidence } = readRecovery(recovery, (sqlite) =>
         sqlite
           .transaction(() => ({
             final: getWorkerControlAcceptedFinalStatus(
@@ -345,12 +331,23 @@ export async function runNanoHostAttemptRecoveryMaintenance(
               .prepare(`SELECT 1 FROM worker_control_sequence_fingerprints
               WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = 'final_status'`)
               .get(native.agentSessionId, native.inputRef),
+            evidence: hasSurvivingNanoHostFinalEvidence(
+              coreDb,
+              sqlite,
+              attempt.attemptId,
+              session.deploymentId
+            ),
           }))
           .deferred()
       );
       // K8b: a final receipt without its final record is contradictory proof. It holds before expiry.
       if (!final && finalReceipt)
         throw new Error('Native final record is missing for its accepted final receipt.');
+      // The surviving terminal event, its receipt or the original Core receipt also contradict absence.
+      if (!final && evidence)
+        throw new Error(
+          'Native final record is missing for its surviving accepted final evidence.'
+        );
       if (final) {
         if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
         const lease = retainedLease(coreDb, session.attemptId);
@@ -358,6 +355,23 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         // K8b: a Native-only final waits only until the original absolute deadline. The first pass at or
         // after it takes the expiry path below: closing ACK with the first cause, then first cleanup.
         if (readback !== 'native-only' || lease.grant.deadline > timestamp) continue;
+      }
+      // K8b: publication-capable capture recovery runs only after a final has passed inspection.
+      // A settled final reaches it through the guarded restart closeout above.
+      const captureWorkspace = openRecoveryWorkspace(coreDb, native);
+      try {
+        if (
+          await hasPendingWorkspaceCapture(
+            coreDb,
+            captureWorkspace.db,
+            session,
+            captureWorkspace.environmentPackage,
+            input.store
+          )
+        )
+          continue;
+      } finally {
+        captureWorkspace.db.sqlite.close();
       }
       // The original Native and absolute deadlines bound this wait; cleanup resumes on expiry.
       if (
