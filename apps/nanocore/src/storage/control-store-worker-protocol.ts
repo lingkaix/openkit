@@ -897,11 +897,20 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
     input
   ): input is Extract<
     ControlHarnessLifecycleInput,
-    { kind: 'operation.queue' | 'operation.dispatch' | 'operation.settle' }
+    {
+      kind:
+        | 'operation.queue'
+        | 'operation.dispatch'
+        | 'operation.settle'
+        | 'sandbox.claim-idle-drain'
+        | 'sandbox.restore-admission';
+    }
   > =>
     input.kind === 'operation.queue' ||
     input.kind === 'operation.dispatch' ||
-    input.kind === 'operation.settle'
+    input.kind === 'operation.settle' ||
+    input.kind === 'sandbox.claim-idle-drain' ||
+    input.kind === 'sandbox.restore-admission'
 );
 
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
