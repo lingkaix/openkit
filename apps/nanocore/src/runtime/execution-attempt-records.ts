@@ -216,6 +216,24 @@ export function requireSchedulerExecutionAttempt(
   );
 }
 
+/**
+ * Reads at most the requested attempt-ID prefix inside the caller's Core snapshot.
+ * Invoke the returned decoder for an observed item only, after testing the count sentinel.
+ */
+export function* readSchedulerExecutionAttemptPrefix(
+  coreDb: CoreDb,
+  limit: number
+): Generator<() => SchedulerExecutionAttemptRecord, void, undefined> {
+  if (!Number.isSafeInteger(limit) || limit < 0)
+    throw new RangeError('Attempt prefix requires a finite nonnegative row limit.');
+  if (!coreDb.sqlite.inTransaction)
+    throw new ExecutionAttemptRefusal('Attempt prefix requires its Core snapshot.');
+  const rows = coreDb.sqlite
+    .prepare(`${attemptSelect} ORDER BY attempt.attempt_id LIMIT ?`)
+    .iterate(limit);
+  for (const row of rows) yield () => decodeAttempt(coreDb, row);
+}
+
 /** Lists exact Turn attempts in creation order; closed history cannot grant new authority. */
 export function listSchedulerExecutionAttemptsForTurn(
   coreDb: CoreDb,
