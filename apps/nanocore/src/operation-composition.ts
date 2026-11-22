@@ -231,6 +231,10 @@ export interface OperationInvocationDependencies {
   readonly readNanoHostTarget?: (
     targetId: string
   ) => StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
+  readonly afterNanoHostTransportAcknowledgement?: <Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ) => Promise<Value>;
   readonly nanoHostEnrollment?: Parameters<
     typeof createNanoHostOperationImplementations
   >[0]['nanoHostEnrollment'];
@@ -295,6 +299,12 @@ export function createOperationImplementations(dependencies: OperationInvocation
           ...(dependencies.readNanoHostTarget
             ? { readNanoHostTarget: dependencies.readNanoHostTarget }
             : {}),
+          ...(dependencies.afterNanoHostTransportAcknowledgement
+            ? {
+                afterNanoHostTransportAcknowledgement:
+                  dependencies.afterNanoHostTransportAcknowledgement,
+              }
+            : {}),
         }),
       store: dependencies.store!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
@@ -353,6 +363,12 @@ export function createOperationImplementations(dependencies: OperationInvocation
         : {}),
       ...(dependencies.readNanoHostTarget
         ? { readNanoHostTarget: dependencies.readNanoHostTarget }
+        : {}),
+      ...(dependencies.afterNanoHostTransportAcknowledgement
+        ? {
+            afterNanoHostTransportAcknowledgement:
+              dependencies.afterNanoHostTransportAcknowledgement,
+          }
         : {}),
       ...(dependencies.nanoHostSessionAuthority
         ? { sessionAuthority: dependencies.nanoHostSessionAuthority }

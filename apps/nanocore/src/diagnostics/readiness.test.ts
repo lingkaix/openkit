@@ -1,14 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
-import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { observeOperationalReadiness } from './readiness.js';
@@ -21,47 +12,42 @@ describe('operational readiness dimensions', () => {
   ])(
     'shows host observation age at $sampledAt without promoting future evidence',
     async ({ sampledAt, state, age, freshEmpty }) => {
-      const root = mkdtempSync(join(tmpdir(), 'openkit-host-age-'));
-      const coreDb = openCoreDb(root);
-      applyMigrations(coreDb);
       const observedAt = '2026-10-11T00:00:00.000Z';
       const nanoHostConfig = {
         identityId: 'nh_age',
         deploymentId: 'dep_00000000-0000-787c-af58-ea110715292e',
       };
-      try {
-        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-          ...nanoHostConfig,
-          targetId: nanoHostConfig.identityId,
-          observedAt,
-        });
-        await upsertNanoHostRuntimeTarget(coreDb, {
-          ...nanoHostConfig,
-          targetId: nanoHostConfig.identityId,
-          observedAt,
-          connectionGeneration: 1,
-          predecessorFenced: true,
-          ready: true,
-          freshEmpty: true,
-          physicalEpoch: 'a'.repeat(64),
-        });
-        const result = observeOperationalReadiness(
-          { coreDb, mode: 'server', nanoHostConfig },
-          computeBootReadinessSnapshot({ bootId: 'boot_stored_observation' }),
-          () => Date.parse(sampledAt)
-        );
-        expect(result.executionHost).toEqual({
-          state,
-          observedAt,
-          observationAgeMs: age,
-          freshEmpty,
-          liveProbe: false,
-        });
-        expect(result.maintenanceSafety).toEqual({ state: 'unknown', observation: null });
-      } finally {
-        coreDb.sqlite.close();
-        rmSync(root, { recursive: true, force: true });
-      }
+      const result = await observeOperationalReadiness(
+        {
+          coreDb: undefined,
+          mode: 'server',
+          nanoHostConfig,
+          readNanoHostTarget: (targetId) => ({
+            state: 'ready',
+            value: {
+              ...nanoHostConfig,
+              targetId,
+              observedAt,
+              connectionGeneration: 1,
+              predecessorFenced: true,
+              ready: true,
+              freshEmpty: true,
+              physicalEpoch: 'a'.repeat(64),
+              slotCount: 1,
+            },
+          }),
+        },
+        computeBootReadinessSnapshot({ bootId: 'boot_stored_observation' }),
+        () => Date.parse(sampledAt)
+      );
+      expect(result.executionHost).toEqual({
+        state,
+        observedAt,
+        observationAgeMs: age,
+        freshEmpty,
+        liveProbe: false,
+      });
+      expect(result.maintenanceSafety).toEqual({ state: 'unknown', observation: null });
     }
   );
 

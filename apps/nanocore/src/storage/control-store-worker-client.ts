@@ -746,6 +746,11 @@ export interface NanoHostOwnerBinding
     read: () => Value | Promise<Value>,
     signal?: AbortSignal
   ): Promise<Value>;
+  /** Joins the complete transport occurrence before administrator reads use the admitted file. */
+  afterNanoHostTransportAcknowledgement<Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ): Promise<Value>;
   workerControlHeartbeat(
     input: ControlWorkerHeartbeatCommand
   ): Promise<ControlWorkerHeartbeatResult>;
@@ -783,7 +788,9 @@ export interface NanoHostOwnerBinding
   ): StorageResult<'nanohost', Value> | { readonly state: 'pending' };
   beginEpochRetirement(placement: NanoHostEpochPlacement): Promise<StorageResult<'nanohost', void>>;
   readPendingEpochRetirement(): Promise<StorageResult<'nanohost', NanoHostEpochPlacement | null>>;
-  listTransportTokens(): Promise<StorageResult<'nanohost', NanoHostTransportTokenRecord[]>>;
+  listTransportTokens(
+    signal?: AbortSignal
+  ): Promise<StorageResult<'nanohost', NanoHostTransportTokenRecord[]>>;
 }
 
 /** Server work composition supplies retained owner reads and its closed activation predicate. */
@@ -905,12 +912,12 @@ interface Opening {
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
   nanoHostWritePending?: true | 'core-owner-read' | 'target-stable-write';
-  nanoHostTargetStableAcknowledgement?: Promise<void>;
+  nanoHostWriteAcknowledgement?: Promise<void>;
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
   nanoHostCoreHoldPending?: Promise<void>;
-  nanoHostTargetTransition?: true;
+  nanoHostTargetTransition?: Promise<void>;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
   prepareNanoHostBackend?(
@@ -3409,11 +3416,8 @@ class ControlStoreWorkerClient {
           (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
             ? 'target-stable-write'
             : true;
-        const acknowledged =
-          opening.nanoHostWritePending === 'target-stable-write'
-            ? Promise.withResolvers<void>()
-            : undefined;
-        if (acknowledged) opening.nanoHostTargetStableAcknowledgement = acknowledged.promise;
+        const acknowledged = Promise.withResolvers<void>();
+        opening.nanoHostWriteAcknowledgement = acknowledged.promise;
         try {
           const reply = (await this.request(
             { operation: 'nanohost-owner', database, openingRequestId, mutation },
@@ -3486,24 +3490,35 @@ class ControlStoreWorkerClient {
           throw error;
         } finally {
           delete opening.nanoHostWritePending;
-          if (acknowledged) {
-            delete opening.nanoHostTargetStableAcknowledgement;
-            acknowledged.resolve();
-          }
+          delete opening.nanoHostWriteAcknowledgement;
+          acknowledged.resolve();
         }
       };
 
-      const pendingWorkerControlAcknowledgement = () =>
-        !this.backupHold && !opening.nanoHostTargetTransition
-          ? (opening.nanoHostCoreHoldPending ?? opening.nanoHostTargetStableAcknowledgement)
-          : undefined;
+      const pendingAcknowledgement = (transport: boolean): Promise<void> | undefined => {
+        if (this.backupHold) return;
+        if (transport)
+          return (
+            opening.nanoHostTargetTransition ??
+            opening.nanoHostCoreHoldPending ??
+            opening.nanoHostWriteAcknowledgement
+          );
+        if (opening.nanoHostTargetTransition) return;
+        return (
+          opening.nanoHostCoreHoldPending ??
+          (opening.nanoHostWritePending === 'target-stable-write'
+            ? opening.nanoHostWriteAcknowledgement
+            : undefined)
+        );
+      };
 
-      const afterWorkerControlAcknowledgement = async <Value>(
+      const afterAcknowledgement = async <Value>(
+        transport: boolean,
         next: () => Value | Promise<Value>,
         signal?: AbortSignal
       ): Promise<Value> => {
         signal?.throwIfAborted();
-        let pending = pendingWorkerControlAcknowledgement();
+        let pending = pendingAcknowledgement(transport);
         if (pending) {
           // Retain a single budget even if another acknowledged write wins the next slot.
           const deadline = performance.now() + 5_000;
@@ -3520,7 +3535,7 @@ class ControlStoreWorkerClient {
               await Promise.race([pending, expired.promise]);
               signal?.throwIfAborted();
               if (performance.now() >= deadline) throw new NanoHostServingAcknowledgementTimeout();
-              pending = pendingWorkerControlAcknowledgement();
+              pending = pendingAcknowledgement(transport);
             }
           } finally {
             clearTimeout(timer);
@@ -3530,6 +3545,9 @@ class ControlStoreWorkerClient {
         // Read or reserve in this continuation before another producer can claim.
         return await next();
       };
+
+      const afterWorkerControlAcknowledgement: NanoHostOwnerBinding['afterWorkerControlAcknowledgement'] =
+        (next, signal) => afterAcknowledgement(false, next, signal);
 
       // Drain Core postings while the original authority is used by the Native writer.
       const withCoreHold = <Value>(submit: (identity: string) => Promise<Value>) =>
@@ -4128,6 +4146,8 @@ class ControlStoreWorkerClient {
           releaseTerminalScopes,
           writeStorageAttachment,
           afterWorkerControlAcknowledgement,
+          afterNanoHostTransportAcknowledgement: (read, signal) =>
+            afterAcknowledgement(true, read, signal),
           workerControlHeartbeat: (input) => {
             const original = structuredClone(input);
             return writeWorkerObservation((identity) =>
@@ -4286,7 +4306,8 @@ class ControlStoreWorkerClient {
                 owner,
                 new ControlStoreWorkerError('busy', 'not-committed')
               );
-            opening.nanoHostTargetTransition = true;
+            const acknowledged = Promise.withResolvers<void>();
+            opening.nanoHostTargetTransition = acknowledged.promise;
             try {
               return await this.runOperation(
                 () => transitionNanoHostRuntimeTarget(epoch, kernel, original),
@@ -4297,6 +4318,7 @@ class ControlStoreWorkerClient {
               return serverOwnerUnavailable(owner, error);
             } finally {
               delete opening.nanoHostTargetTransition;
+              acknowledged.resolve();
             }
           },
           beginEpochRetirement: epoch.beginEpochRetirement,
@@ -4304,8 +4326,17 @@ class ControlStoreWorkerClient {
           settleEpochInvalidation: epoch.settleEpochInvalidation,
           readEpochInvalidation: epoch.readEpochInvalidation,
           readPendingEpochRetirement: async () => read(readers.readPendingNanoHostEpochRetirement),
-          listTransportTokens: async () =>
-            read((handle) => readers.listNanoHostTransportTokenRecords({ sqlite: handle })),
+          listTransportTokens: (signal) =>
+            result(() =>
+              afterAcknowledgement(
+                true,
+                () =>
+                  readCurrent((handle) =>
+                    readers.listNanoHostTransportTokenRecords({ sqlite: handle })
+                  ),
+                signal
+              )
+            ),
           read,
         },
       };

@@ -27,6 +27,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import {
   ListHumanAttentionResponseSchema,
+  NanoHostRuntimeTargetStatusResponseSchema,
   StartTaskModeResponseSchema,
   SubmitAdministrationConversationResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -245,6 +246,10 @@ async function runPublicWorkerMcpLifecycle() {
     });
     assert.notEqual(firstTurn.turnId, siblingTurn.turnId);
     assert.equal(existsSync(dataRoot), true);
+    const previousTarget = NanoHostRuntimeTargetStatusResponseSchema.parse(
+      await publicOperation(app, 'nanohost.runtime-target', {})
+    );
+    assert.equal(previousTarget.ready, true);
     await stopWorkerPeer(harness, firstPeer.closed);
     assert.ok(mcpServerPids.size > 0);
     await Promise.all([...mcpServerPids].map(waitForProcessExit));
@@ -254,6 +259,11 @@ async function runPublicWorkerMcpLifecycle() {
     harness = await startNanoCoreHarness({
       coreMode: 'server',
       dataRoot,
+      env: {
+        NODE_OPTIONS: `--import=${new URL('./_lib/hold-worker-control-ack.mjs', import.meta.url).href}`,
+        OPENKIT_E2E_ACK_MARKERS: fixtureRoot,
+        OPENKIT_E2E_ACK_CASE: 'restart-admit',
+      },
       port: appPort,
       seedDemoWorkspace: false,
       useSimulator: false,
@@ -262,6 +272,36 @@ async function runPublicWorkerMcpLifecycle() {
       port: nanoHostPort,
       secret: nanoHostSecret,
       physicalEpoch: 'b'.repeat(64),
+      async pollDuringAdmission() {
+        await waitForHeldWorkerAcknowledgement(fixtureRoot, 'restart-admit');
+        const [samples, credentials, enrollment, diagnostics] = await Promise.all([
+          Promise.all(
+            Array.from({ length: 3 }, () => publicOperation(app, 'nanohost.runtime-target', {}))
+          ),
+          publicOperation<{ items: Array<{ kind: string }> }>(app, 'credential.list', {}),
+          publicOperation<{ code: string }>(
+            app,
+            'nanohost.enroll',
+            { targetSlot: 'B', expiresAt: '2999-01-01T00:00:00.000Z' },
+            409
+          ),
+          publicOperation<{ readiness: { executionHost: { state: string } } }>(
+            app,
+            'diagnostics.app',
+            {}
+          ),
+        ]);
+        assert.ok(credentials.items.some(({ kind }) => kind === 'nanohost-transport'));
+        assert.equal(enrollment.code, 'nanohost_already_enrolled');
+        assert.equal(diagnostics.readiness.executionHost.state, 'not-ready');
+        for (const sample of samples) {
+          const target = NanoHostRuntimeTargetStatusResponseSchema.parse(sample);
+          assert.equal(target.connectionGeneration, previousTarget.connectionGeneration + 1);
+          assert.equal(target.ready, false);
+          assert.equal(target.physicalEpoch, null);
+          assert.equal(target.predecessorFenced, true);
+        }
+      },
     });
     h2 = secondPeer.h2;
     const secondTurn = await runPublicWorkerMcpTurn({
@@ -358,22 +398,24 @@ async function createPublicWorkerThread(app: PublicApp, callFile: string, name: 
 }
 
 /** Authenticates the fixture peer against the currently serving Core and reports its own Epoch. */
-async function connectWorkerPeer(input: { port: number; secret: string; physicalEpoch: string }) {
+async function connectWorkerPeer(input: {
+  port: number;
+  secret: string;
+  physicalEpoch: string;
+  pollDuringAdmission?: () => Promise<void>;
+}) {
   const h2 = connectHttp2(`http://127.0.0.1:${input.port}`);
   const h2Closed = new Promise<void>((resolveClose) => h2.once('close', resolveClose));
   try {
     await waitForH2Connect(h2);
-    const admission = await requestHttp2(
-      h2,
-      'POST',
-      '/api/nanohost/transport/session/admit',
-      '{}',
-      {
-        authorization: `Bearer ${input.secret}`,
-        'content-type': 'application/json',
-        'x-openkit-nanohost-transport-revision': String(transportRevision),
-      }
-    );
+    const admitting = requestHttp2(h2, 'POST', '/api/nanohost/transport/session/admit', '{}', {
+      authorization: `Bearer ${input.secret}`,
+      'content-type': 'application/json',
+      'x-openkit-nanohost-transport-revision': String(transportRevision),
+    });
+    void admitting.catch(() => undefined);
+    await input.pollDuringAdmission?.();
+    const admission = await admitting;
     assert.equal(admission.status, 200, responseFailure('NanoHost admission', admission));
     assert.equal(
       admission.headers['x-openkit-nanohost-transport-revision'],
@@ -1088,7 +1130,10 @@ async function assertWorkerInferenceAnswer(
   assert.equal(frames.map((delta) => delta?.content ?? '').join(''), 'L3 inference complete');
 }
 
-async function waitForHeldWorkerAcknowledgement(root: string, sequence: number): Promise<void> {
+async function waitForHeldWorkerAcknowledgement(
+  root: string,
+  sequence: number | 'restart-admit'
+): Promise<void> {
   const marker = join(root, `held-${sequence}`);
   const deadline = performance.now() + 5_000;
   while (!existsSync(marker)) {

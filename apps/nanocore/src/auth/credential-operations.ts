@@ -206,7 +206,9 @@ const unavailableNanoHost = {
 export function createCommunicationCredentialOperationImplementations(
   owners: InboundCredentialOwners & {
     readonly communicationCredentials?: CommunicationCredentials;
-    readonly listNanoHostTransportTokens?: () => TransportTokens;
+    readonly listNanoHostTransportTokens?: (
+      signal?: AbortSignal
+    ) => TransportTokens | Promise<TransportTokens>;
     readonly revokeNanoHostTransportToken?: (
       tokenId: string,
       context: AdmittedOperationContext
@@ -243,9 +245,19 @@ export function createCommunicationCredentialOperationImplementations(
       return admission && responsibleUserIdForActor(admission.triggerActor) === userId;
     }) ?? [];
   return {
-    'credential.list': (_input, context) => {
+    'credential.list': async (_input, context) => {
       const actor = publicOperationActor(context);
       const db = storage();
+      let transportTokens: TransportTokens = unavailableNanoHost;
+      if (
+        owners.listNanoHostTransportTokens &&
+        owners.mode === 'server' &&
+        isCurrentDeploymentAdministrator(db, actor)
+      ) {
+        transportTokens = await owners.listNanoHostTransportTokens(context.signal);
+        context.signal?.throwIfAborted();
+        await context.recheckAdmission?.();
+      }
       const administrator = owners.mode === 'server' && isCurrentDeploymentAdministrator(db, actor);
       const items: InboundCredentialRecord[] = listOpenKitAccessTokenRecords(db)
         .filter((record) => administrator || record.ownerUserId === actor.userId)
@@ -294,7 +306,6 @@ export function createCommunicationCredentialOperationImplementations(
         });
       }
       if (administrator) {
-        const transportTokens = owners.listNanoHostTransportTokens?.() ?? unavailableNanoHost;
         if (transportTokens.state === 'ready')
           for (const record of transportTokens.value)
             items.push({ kind: 'nanohost-transport', id: record.tokenId, record });
