@@ -3504,25 +3504,40 @@ function flush(owner: OwnedDatabase): void {
               ? withCurrentPeerRead(
                   serverStoragePath(db.dataRoot, 'nanohost'),
                   request.nanoHostOwnerIdentity,
-                  (sqlite) =>
-                    applyControlCoreJournal(
+                  (sqlite) => {
+                    const nanoHostReads = createNanoHostCoreReads({
+                      read: (query) => {
+                        try {
+                          return { state: 'ready', value: query(sqlite) };
+                        } catch {
+                          return {
+                            state: 'unavailable',
+                            owner: 'nanohost',
+                            reason: 'recovery-required',
+                          };
+                        }
+                      },
+                    });
+                    if (request.input.kind === 'idle-intent') {
+                      return sqlite
+                        .transaction(() =>
+                          applyControlCoreJournal(
+                            db,
+                            request.input,
+                            owner.runtimePolicy,
+                            nanoHostReads,
+                            sqlite
+                          )
+                        )
+                        .deferred();
+                    }
+                    return applyControlCoreJournal(
                       db,
                       request.input,
                       owner.runtimePolicy,
-                      createNanoHostCoreReads({
-                        read: (query) => {
-                          try {
-                            return { state: 'ready', value: query(sqlite) };
-                          } catch {
-                            return {
-                              state: 'unavailable',
-                              owner: 'nanohost',
-                              reason: 'recovery-required',
-                            };
-                          }
-                        },
-                      })
-                    )
+                      nanoHostReads
+                    );
+                  }
                 )
               : applyControlCoreJournal(db, request.input, owner.runtimePolicy);
             outcome = {
