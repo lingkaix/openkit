@@ -1,4 +1,5 @@
 import { sha256Hex } from '@openkit/protocol/digest';
+import type Database from 'better-sqlite3';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
@@ -49,7 +50,7 @@ function withSchedulerInputReader<Value>(
 
 const pendingDeliveryStatements = new WeakMap<
   WorkspaceDb['sqlite'],
-  ReturnType<WorkspaceDb['sqlite']['prepare']>
+  Database.Statement<[string, string, string]>
 >();
 
 /** Resolves a carried batch by its original Turn and holds if its retained delivery link needs recovery. */
@@ -68,7 +69,7 @@ export function readFrozenSchedulerInputForTurn(
     if (manifestRef) return readFrozenSchedulerInput(dataRoot, scope, manifestRef, db);
     let pending = pendingDeliveryStatements.get(db.sqlite);
     if (!pending) {
-      pending = db.sqlite.prepare(
+      pending = db.sqlite.prepare<[string, string, string]>(
         'SELECT 1 FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? LIMIT 1'
       );
       pendingDeliveryStatements.set(db.sqlite, pending);
