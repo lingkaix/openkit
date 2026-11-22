@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import type { CoreDb } from '../storage/db.js';
+import { hasCoreIdleCleanupConsumption } from './core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
@@ -10,7 +11,6 @@ import {
   type ExecutionCandidate,
   listExecutionCandidates,
 } from './execution-journal.js';
-import type { ExecutionInvocation } from './execution-step-journal.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
@@ -151,7 +151,7 @@ export class ExecutionReconciler {
         throw new Error('Idle cleanup completion conflicts with its retained owner.');
       residentBinding = original.carriage.bindingRef;
       if (operation === 'sandbox.delete')
-        deleted = original.state === 'completed' && (await this.hasConsumption(original));
+        deleted = original.state === 'completed' && hasCoreIdleCleanupConsumption(db, original);
     }
     const currentTarget = nanoHost.readTarget(session.runtimeTargetId);
     const target = currentTarget.state === 'ready' ? currentTarget.value : null;
@@ -174,27 +174,6 @@ export class ExecutionReconciler {
   stop(): Promise<void> {
     this.stopped = true;
     return this.active ?? Promise.resolve();
-  }
-
-  /** Checks actual linked receipt consumption without inferring absence from metadata state. */
-  private async hasConsumption(original: ExecutionInvocation): Promise<boolean> {
-    if (
-      original.control.outputRefs.length !== 1 ||
-      !/^sha256:[0-9a-f]{64}$/.test(original.control.outputRefs[0]!)
-    )
-      return false;
-    const reader = createExecutionStepJournalReader(this.input.coreDb, { kind: 'server' });
-    const linked = await reader.readLinkedInspections(original.ref);
-    return linked.some(
-      ({ inspection }) =>
-        inspection.state === 'completed' &&
-        inspection.control.kind === 'consume-receipt' &&
-        inspection.ref.execution.executionId === original.ref.execution.executionId &&
-        inspection.ref.stepId === `${original.ref.stepId}:consume` &&
-        inspection.control.operationId === original.carriage.requestId &&
-        isDeepStrictEqual(inspection.control.inputRefs, original.control.outputRefs) &&
-        isDeepStrictEqual(inspection.control.outputRefs, original.control.outputRefs)
-    );
   }
 
   /** Reinterprets exact current rows; a candidate projection is never dispatch authority. */
@@ -276,7 +255,7 @@ export class ExecutionReconciler {
       throw new NanoHostCleanupFencePendingError();
     if (target.physicalEpoch !== session.originPhysicalEpoch)
       return { ...selected, action: 'release' };
-    const consumed = await this.hasConsumption(original);
+    const consumed = hasCoreIdleCleanupConsumption(db, original);
     if (original.state === 'completed' && consumed) {
       if (operation === 'sandbox.delete') return { ...selected, action: 'release' };
       const next = createNanoHostEffectRequest(session, session.attemptId, 'sandbox.delete', {
