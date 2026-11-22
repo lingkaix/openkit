@@ -6985,6 +6985,21 @@ export async function endWorkerTurnJournalStep(
   let settlement: Parameters<FsStore['settleWorkspaceExecutionJournalStep']>[1];
   try {
     const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
+    const { control, parent, carriage, inspectedStep } = intent;
+    const observedChild =
+      root.phase === 'open' &&
+      control.operationId !== null &&
+      control.attemptId !== null &&
+      [
+        'open-session',
+        'inspect-session',
+        'deliver-start',
+        'deliver-steer',
+        'collect',
+        'consume-receipt',
+      ].includes(control.kind)
+        ? { control, parent, carriage, inspectedStep }
+        : undefined;
     settlement = {
       ref: { execution: root.ref, stepId: intent.stepId },
       expectedExecutionRevision: root.revision,
@@ -6998,6 +7013,7 @@ export async function endWorkerTurnJournalStep(
       nextPhase: root.phase,
       terminalCause: root.terminalCause,
       exclusionRefs: root.exclusionRefs,
+      ...(observedChild ? { observedChild } : {}),
     };
   } finally {
     workspaceDb.sqlite.close();
