@@ -2890,7 +2890,7 @@ describe('admitted NanoHost owner worker', () => {
       const watchdog = AbortSignal.timeout(6500);
       await expect(
         f.owner.afterWorkerControlAcknowledgement(authority, watchdog)
-      ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+      ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed', status: 503 });
       expect(authority).not.toHaveBeenCalled();
       joined = f.owner.afterWorkerControlAcknowledgement(authority);
       expect(authority).not.toHaveBeenCalled();

@@ -476,6 +476,16 @@ export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
   }
 }
 
+/** The exact serving read or reserve never ran; its original writer retains the pending ACK. */
+class NanoHostServingAcknowledgementTimeout extends ControlStoreWorkerError {
+  readonly status = 503;
+
+  constructor() {
+    super('busy', 'not-committed');
+    this.name = 'NanoHostServingAcknowledgementTimeout';
+  }
+}
+
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 type WorkerControlFinalStage = NonNullable<
@@ -3499,7 +3509,7 @@ class ControlStoreWorkerClient {
           const deadline = performance.now() + 5_000;
           const expired = Promise.withResolvers<never>();
           const timer = setTimeout(
-            () => expired.reject(new ControlStoreWorkerError('busy', 'not-committed')),
+            () => expired.reject(new NanoHostServingAcknowledgementTimeout()),
             deadline - performance.now()
           );
           const abort = () => expired.reject(signal?.reason);
@@ -3507,10 +3517,9 @@ class ControlStoreWorkerClient {
           try {
             while (pending) {
               assertCurrent(true);
-              if (performance.now() >= deadline)
-                throw new ControlStoreWorkerError('busy', 'not-committed');
               await Promise.race([pending, expired.promise]);
               signal?.throwIfAborted();
+              if (performance.now() >= deadline) throw new NanoHostServingAcknowledgementTimeout();
               pending = pendingWorkerControlAcknowledgement();
             }
           } finally {
