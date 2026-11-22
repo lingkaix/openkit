@@ -29,13 +29,15 @@ import {
   type NanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WorkerControlGatewayError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { ControlCoreJournalInput } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import {
   type AdmittedNanoHostTransportStorage,
+  afterAdmittedNanoHostAcknowledgement,
+  NanoHostAcknowledgementUnavailable,
   transitionAdmittedNanoHostRuntimeTarget,
 } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
@@ -422,7 +424,8 @@ export interface NanoHostSessionDispatch {
     physicalConnection: object,
     operation: NanoHostEffectOperation,
     result: Readonly<Record<string, unknown>>,
-    telemetryHeaders?: Headers
+    telemetryHeaders?: Headers,
+    signal?: AbortSignal
   ): Promise<void>;
   /** Accepts one raw correlated file export on its fixed result path. */
   fileExportResult(physicalConnection: object, request: Request): Promise<void>;
@@ -567,7 +570,8 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
   readonly harnessCommandDispatched?:
     | ((
-        command: NanoHostHarnessCommand
+        command: NanoHostHarnessCommand,
+        signal?: AbortSignal
       ) => NanoHostHarnessCommand | null | Promise<NanoHostHarnessCommand | null>)
     | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
@@ -726,7 +730,12 @@ export function createNanoHostSessionDispatch(
           if (!input.coreDb || !['image.acquire', 'image.build'].includes(operation)) {
             throw new Error('Preparation image settlement is unavailable for this effect.');
           }
-          const known = readPreparedImageSettlement(currentReadiness, requestId);
+          const readiness = currentReadiness;
+          const known = await afterAdmittedNanoHostAcknowledgement(
+            readiness?.runtimeTarget.nativeStorage,
+            () => readPreparedImageSettlement(readiness, requestId),
+            request.signal
+          );
           if (known)
             return settledImageResult(known, request.imageSettlement, requestId, operation);
           // New carriage needs the original Core decision and a Native settlement ACK.
@@ -1339,7 +1348,7 @@ export function createNanoHostSessionDispatch(
       currentReadiness = acceptedReadiness;
     },
 
-    async result(physicalConnection, operation, result, telemetryHeaders) {
+    async result(physicalConnection, operation, result, telemetryHeaders, signal) {
       return settleNanoHostCorrelatedResult(
         input.coreDb,
         input.sessionAuthority,
@@ -1350,7 +1359,8 @@ export function createNanoHostSessionDispatch(
         operation,
         result,
         telemetryHeaders,
-        input.settlePreparedImage
+        input.settlePreparedImage,
+        signal
       );
     },
 
@@ -1797,7 +1807,8 @@ async function settleNanoHostCorrelatedResult(
   operation: NanoHostEffectOperation,
   result: Readonly<Record<string, unknown>>,
   telemetryHeaders: Headers | undefined,
-  settlePreparedImage: SettleNanoHostPreparedImage | undefined
+  settlePreparedImage: SettleNanoHostPreparedImage | undefined,
+  signal?: AbortSignal
 ): Promise<void> {
   requireAuthoritativeSession(sessionAuthority, physicalConnection);
   const isPreparedImageOperation = operation === 'image.acquire' || operation === 'image.build';
@@ -1805,6 +1816,15 @@ async function settleNanoHostCorrelatedResult(
     ? readyPhysicalConnections.get(physicalConnection)
     : undefined;
   if (isPreparedImageOperation && !imageReadiness) throw new WorkerImageSettlementDeferred();
+  const retainedImageReceipt = (readiness: NanoHostPhysicalReadiness, requestId: string) =>
+    afterAdmittedNanoHostAcknowledgement(
+      readiness.runtimeTarget.nativeStorage,
+      () => {
+        requireAuthoritativeSession(sessionAuthority, physicalConnection);
+        return readPreparedImageSettlement(readiness, requestId);
+      },
+      signal
+    );
   if (operation === 'workspace.collect') {
     const pending = pendingEffects.get(operation);
     if (!pending?.accepted || !pending.command)
@@ -1856,7 +1876,7 @@ async function settleNanoHostCorrelatedResult(
   const pending = pendingEffects.get(operation);
   if (!pending) {
     if (imageReadiness) {
-      const known = readPreparedImageSettlement(imageReadiness, requestId);
+      const known = await retainedImageReceipt(imageReadiness, requestId);
       if (known) {
         if (
           known.operation !== operation ||
@@ -2010,13 +2030,15 @@ async function settleNanoHostCorrelatedResult(
         },
         ...(pending.imageExecution ? { originalExecution: pending.imageExecution.ref } : {}),
       });
+      const retained = await retainedImageReceipt(imageReadiness, requestId);
       requireAuthoritativeSession(sessionAuthority, physicalConnection);
-      const retained = readPreparedImageSettlement(imageReadiness, requestId);
       if (!retained) throw new WorkerImageSettlementDeferred();
       if (JSON.stringify(retained) !== JSON.stringify(settlement))
         throw new WorkerImageSettlementConflict();
     } catch (error) {
       if (error instanceof WorkerImageSettlementConflict) throw error;
+      // The receipt may already exist. Keep its exact waiter for the original carriage retry.
+      if (isNativeAcknowledgementUnavailable(error) || signal?.aborted) throw error;
       const deferred = new WorkerImageSettlementDeferred();
       if (!pending.imageSettlementDeferred) {
         pending.imageSettlementDeferred = true;
@@ -2212,7 +2234,7 @@ export function registerNanoHostSessionSemanticRoutes(
     if (delivery.proofTimer) clearTimeout(delivery.proofTimer);
   };
   /** Reads exact dispatched authority; an accepted result or fenced successor always wins. */
-  const pendingDelivery = (command: NanoHostHarnessCommand) => {
+  const pendingDelivery = async (command: NanoHostHarnessCommand, signal?: AbortSignal) => {
     const read = (sqlite: CoreDb['sqlite']) =>
       sqlite
         .prepare(
@@ -2228,7 +2250,12 @@ export function registerNanoHostSessionSemanticRoutes(
       if (result.state === 'ready') return result.value;
     }
     if (input.nativeStorage?.state === 'ready') {
-      const result = input.nativeStorage.value.owner.read(read);
+      const storage = input.nativeStorage.value;
+      const result = await afterAdmittedNanoHostAcknowledgement(
+        storage,
+        () => storage.owner.read(read),
+        signal
+      );
       if (result.state === 'ready') return result.value;
     }
     throw effectTransportError(503, 'NanoHost Harness delivery storage is unavailable.');
@@ -2238,7 +2265,7 @@ export function registerNanoHostSessionSemanticRoutes(
     const delivery = deliveries.get(command.harnessInstanceId);
     if (delivery?.command.operationId === command.operationId) releaseDelivery(delivery);
     try {
-      const pending = pendingDelivery(command);
+      const pending = await pendingDelivery(command);
       if (!pending) return;
       const unknown = {
         harnessBindingRef: pending.harnessBindingRef,
@@ -2343,12 +2370,15 @@ export function registerNanoHostSessionSemanticRoutes(
         if (request.headers.get('content-type') !== 'application/json') {
           throw new Error('NanoHost private Harness content type must be application/json.');
         }
-        await input.dispatch.route(requirePhysicalConnection(context.env), {
-          body,
-          credentialClass: 'harness',
-          family: 'worker-control',
-          path,
-        });
+        const physicalConnection = requirePhysicalConnection(context.env);
+        const checkHarnessCarriage = () =>
+          input.dispatch.route(physicalConnection, {
+            body,
+            credentialClass: 'harness',
+            family: 'worker-control',
+            path,
+          });
+        await checkHarnessCarriage();
         const value = parseJsonObject(body, 'NanoHost private Harness body is invalid.');
         if (path === HARNESS_POLL_PATH) {
           if (value.schemaVersion !== 2) {
@@ -2359,22 +2389,22 @@ export function registerNanoHostSessionSemanticRoutes(
             throw effectTransportError(503, 'NanoHost Harness deciding storage is unavailable.');
           const incoming = (context.env as { incoming?: import('node:http2').Http2ServerRequest })
             ?.incoming;
-          // No await separates this check from dispatch: known cancelled carriage grants no delivery.
-          if (
+          const cancelled = () =>
             request.signal.aborted ||
             incoming?.aborted ||
             incoming?.stream.destroyed ||
-            incoming?.stream.rstCode
-          ) {
+            incoming?.stream.rstCode;
+          if (cancelled()) {
             return context.body(null, 204);
           }
           const progress = readHarnessPollProgress(value);
           let delivery: HarnessDelivery | undefined;
           for (const candidate of deliveries.values()) {
-            if (!pendingDelivery(candidate.command)) {
+            if (!(await pendingDelivery(candidate.command, request.signal))) {
               releaseDelivery(candidate);
               continue;
             }
+            if (deliveries.get(candidate.command.harnessInstanceId) !== candidate) continue;
             if (
               candidate.proofExpiresAt !== undefined &&
               performance.now() >= candidate.proofExpiresAt
@@ -2390,6 +2420,8 @@ export function registerNanoHostSessionSemanticRoutes(
               break;
             }
           }
+          await checkHarnessCarriage();
+          if (cancelled()) return context.body(null, 204);
           const dispatchStarted = performance.now();
           let command =
             delivery?.command ??
@@ -2405,21 +2437,22 @@ export function registerNanoHostSessionSemanticRoutes(
             // Repeated carriage uses the same exact invocation and cannot renew its allowance.
             const selectedCommand = command;
             try {
-              command = await input.harnessCommandDispatched(selectedCommand);
+              command = await input.harnessCommandDispatched(selectedCommand, request.signal);
             } catch (error) {
-              if (selectedCommand.operation === 'turn.steer') await failDelivery(selectedCommand);
+              if (
+                selectedCommand.operation === 'turn.steer' &&
+                !isNativeAcknowledgementUnavailable(error)
+              )
+                await failDelivery(selectedCommand);
               throw error;
             }
           }
           const boundAt = performance.now();
           if (!command) return context.body(null, 204);
-          if (
-            request.signal.aborted ||
-            incoming?.aborted ||
-            incoming?.stream.destroyed ||
-            incoming?.stream.rstCode ||
-            !pendingDelivery(command)
-          )
+          if (cancelled() || !(await pendingDelivery(command, request.signal)))
+            return context.body(null, 204);
+          await checkHarnessCarriage();
+          if (cancelled() || (delivery && deliveries.get(command.harnessInstanceId) !== delivery))
             return context.body(null, 204);
           const wire = JSON.stringify(command);
           if (delivery && delivery.wire !== wire)
@@ -2473,29 +2506,25 @@ export function registerNanoHostSessionSemanticRoutes(
               void failDelivery(selected);
               return;
             }
-            // A subsequent serial proof already resolved an older carriage's ambiguity.
-            if (
-              deliveries.get(selected.harnessInstanceId) !== selectedDelivery ||
-              selectedDelivery.carriage !== carriage
-            )
-              return;
-            try {
-              if (!pendingDelivery(selected)) {
-                releaseDelivery(selectedDelivery);
-                return;
-              }
-            } catch {
-              // Storage refusal must settle the live waiter, not escape a native event callback.
-              void failDelivery(selected);
-              return;
-            }
-            if (selectedDelivery.proofExpiresAt !== undefined) return;
+            const isCurrentCarriage = () =>
+              deliveries.get(selected.harnessInstanceId) === selectedDelivery &&
+              selectedDelivery.carriage === carriage;
+            if (!isCurrentCarriage() || selectedDelivery.proofExpiresAt !== undefined) return;
             selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
             selectedDelivery.proofTimer = setTimeout(
               () => void failDelivery(selected),
               HARNESS_DELIVERY_PROOF_MS
             );
             selectedDelivery.proofTimer.unref();
+            void pendingDelivery(selected).then(
+              (pending) => {
+                if (!pending && isCurrentCarriage()) releaseDelivery(selectedDelivery);
+              },
+              () => {
+                // An exact refusal still settles the live waiter through its existing owner.
+                if (isCurrentCarriage()) void failDelivery(selected);
+              }
+            );
           });
           return context.body(wire, 200, { 'content-type': 'application/json' });
         }
@@ -2896,7 +2925,8 @@ export function registerNanoHostSessionEffectRoutes(
             physicalConnection,
             operation,
             result,
-            context.req.raw.headers
+            context.req.raw.headers,
+            context.req.raw.signal
           );
           return context.body(null, 204);
         }
@@ -2917,7 +2947,13 @@ export function registerNanoHostSessionEffectRoutes(
             ? await readWorkspaceCollectionJson(context.req.raw, collectionDelivery?.signal)
             : await readBoundedJsonObject(context.req.raw);
         assertExposureAvailable(`POST ${resultPath}`);
-        await input.dispatch.result(physicalConnection, operation, result, context.req.raw.headers);
+        await input.dispatch.result(
+          physicalConnection,
+          operation,
+          result,
+          context.req.raw.headers,
+          context.req.raw.signal
+        );
         return context.body(null, 204);
       } catch (error) {
         if (operation === 'workspace.collect') {
@@ -4036,11 +4072,21 @@ function requirePhysicalConnection(environment: unknown): object {
   return physicalConnection;
 }
 
+function isNativeAcknowledgementUnavailable(error: unknown): boolean {
+  return (
+    error instanceof NanoHostAcknowledgementUnavailable ||
+    (error instanceof WorkerControlGatewayError &&
+      error.code === 'worker_observation_storage_unavailable' &&
+      error.status === 503)
+  );
+}
+
 /** Returns a bounded private transport error without exposing runtime inputs. */
 function privateEffectError(error: unknown): Response {
   if (error instanceof WorkerReleaseIncompatibleError)
     return asApiError(error.message, error.code, error.status);
-  if (error instanceof WorkerImageSettlementDeferred) return new Response(null, { status: 503 });
+  if (error instanceof WorkerImageSettlementDeferred || isNativeAcknowledgementUnavailable(error))
+    return new Response(null, { status: 503 });
   const message = error instanceof Error ? error.message : 'NanoHost effect request failed.';
   const explicitStatus = (error as { readonly status?: unknown } | null)?.status;
   const status =

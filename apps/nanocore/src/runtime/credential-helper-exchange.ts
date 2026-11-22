@@ -101,8 +101,9 @@ export function createCredentialHelperHandler(input: {
   readonly registerCredentialValues?: (
     lineage: WorkerLineage,
     receiptId: string,
-    values: readonly string[]
-  ) => void;
+    values: readonly string[],
+    signal?: AbortSignal
+  ) => void | Promise<void>;
 }): (request: Request) => Promise<Response> {
   return async (request) => {
     const { operations, gateway } = input;
@@ -127,35 +128,39 @@ export function createCredentialHelperHandler(input: {
         );
       const authorization = request.headers.get('authorization');
       // Refuse unknown or retired tokens before collecting any private request body.
-      gateway.authenticatePackageToken(authorization, { tokenFamily: 'worker-control' });
+      await gateway.afterWorkerControlAcknowledgement(
+        () => gateway.authenticatePackageToken(authorization, { tokenFamily: 'worker-control' }),
+        request.signal
+      );
       input.recheckAdmission?.();
       const command = await readHelperRequest(request);
-      const currentPackage = () => {
-        request.signal.throwIfAborted();
-        const authenticated = gateway.authenticatePackageRequest({
-          authorization,
-          tokenFamily: 'worker-control',
-          lineage: command.lineage,
-        });
-        input.recheckAdmission?.();
-        if (!authenticated.scope.workspaceId) return unavailable();
-        operations.store!.getWorkspace(authenticated.scope.workspaceId);
-        const db = workspaceDb(authenticated.scope.workspaceId);
-        try {
-          const canonical = AgentEnvironmentPackageSchema.parse(
-            requireAgentEnvironmentPackageSnapshot(
-              db,
-              authenticated.scope.workspaceId,
-              authenticated.snapshotId
-            ).snapshot
-          );
-          if (!isDeepStrictEqual(canonical, authenticated)) return unavailable();
-          return canonical;
-        } finally {
-          db.sqlite.close();
-        }
-      };
-      const original = currentPackage();
+      const currentPackage = () =>
+        gateway.afterWorkerControlAcknowledgement(() => {
+          request.signal.throwIfAborted();
+          const authenticated = gateway.authenticatePackageRequest({
+            authorization,
+            tokenFamily: 'worker-control',
+            lineage: command.lineage,
+          });
+          input.recheckAdmission?.();
+          if (!authenticated.scope.workspaceId) return unavailable();
+          operations.store!.getWorkspace(authenticated.scope.workspaceId);
+          const db = workspaceDb(authenticated.scope.workspaceId);
+          try {
+            const canonical = AgentEnvironmentPackageSchema.parse(
+              requireAgentEnvironmentPackageSnapshot(
+                db,
+                authenticated.scope.workspaceId,
+                authenticated.snapshotId
+              ).snapshot
+            );
+            if (!isDeepStrictEqual(canonical, authenticated)) return unavailable();
+            return canonical;
+          } finally {
+            db.sqlite.close();
+          }
+        }, request.signal);
+      const original = await currentPackage();
       const declarations = original.credentials.declarations.filter(
         (value) => value.id === command.declarationId
       );
@@ -163,8 +168,8 @@ export function createCredentialHelperHandler(input: {
       if (!declaration) return unavailable();
       assertCredentialHelperTarget(declaration, command.request);
       const planId = `plan_${original.snapshotId}_${declaration.id}`;
-      const current = () => {
-        const pkg = currentPackage();
+      const current = async () => {
+        const pkg = await currentPackage();
         if (!isDeepStrictEqual(pkg, original)) return unavailable();
         const authority = assertCurrentWorkerCredentialAuthority(
           coreDb,
@@ -183,9 +188,9 @@ export function createCredentialHelperHandler(input: {
           return unavailable();
         return authority;
       };
-      const selected = current();
+      const selected = await current();
       const check = async () => {
-        const value = current();
+        const value = await current();
         if (
           value.reference.currentVersion !== selected.reference.currentVersion ||
           value.reference.referenceId !== selected.reference.referenceId
@@ -243,10 +248,11 @@ export function createCredentialHelperHandler(input: {
       await check();
       if (!reply || receipt.receiptId !== receiptId) return unavailable();
       if ('credential' in reply && input.registerCredentialValues) {
-        input.registerCredentialValues(
+        await input.registerCredentialValues(
           command.lineage,
           receiptId,
-          credentialHelperComparisonValues(command.request, reply)
+          credentialHelperComparisonValues(command.request, reply),
+          request.signal
         );
         await check();
       }

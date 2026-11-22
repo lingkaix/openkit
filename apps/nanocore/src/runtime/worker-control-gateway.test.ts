@@ -46,7 +46,7 @@ import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js'
 import {
   hashWorkerRouteToken,
   WorkerControlGateway,
-  type WorkerControlGatewayError,
+  WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './worker-control-gateway.js';
 import { createWorkerControlAcceptedRecordRecorder } from './worker-control-records.js';
@@ -304,6 +304,74 @@ describe('descriptive admission normalization', () => {
 });
 
 describe('WorkerControlGateway', () => {
+  it.each(['accept', 'deny', 'timeout'] as const)(
+    'routes event authority across a delayed Worker ACK (%s)',
+    async (outcome) => {
+      const { environmentPackage, lineage } = await createWorkerControlFixture();
+      const acknowledgement = Promise.withResolvers<void>();
+      const signal = new AbortController().signal;
+      let held = true;
+      const unavailable = () =>
+        new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'Worker observation storage is unavailable.',
+          503
+        );
+      const resolveTokenBinding = vi.fn(() => {
+        if (held) throw unavailable();
+        return outcome === 'deny'
+          ? ({ status: 'rejected', reason: 'attempt-not-live' } as const)
+          : ({ status: 'accepted' } as const);
+      });
+      const publishControlOperation = vi.fn(async () => ({
+        duplicate: false,
+        nextExpectedSequence: 4,
+      }));
+      const gateway = new WorkerControlGateway({
+        resolveTokenBinding,
+        publishControlOperation,
+        async afterWorkerControlAcknowledgement(read, requestSignal) {
+          expect(requestSignal).toBe(signal);
+          await acknowledgement.promise;
+          if (outcome === 'timeout') throw unavailable();
+          return read();
+        },
+      });
+      const registration = registerAcceptedWorkerSession(
+        gateway,
+        environmentPackage,
+        'binding:ack'
+      );
+      const result = Promise.resolve().then(() =>
+        gateway.appendEvent({
+          authorization: `Bearer ${registration.token}`,
+          lineage,
+          record: createEventRecord(lineage, 3),
+          signal,
+        })
+      );
+      void result.catch(() => undefined);
+      await Promise.resolve();
+      expect(resolveTokenBinding).not.toHaveBeenCalled();
+      expect(publishControlOperation).not.toHaveBeenCalled();
+      held = false;
+      acknowledgement.resolve();
+
+      if (outcome === 'accept') {
+        await expect(result).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 4 });
+        expect(publishControlOperation).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(result).rejects.toMatchObject(
+          outcome === 'deny'
+            ? { code: 'worker_control_lease_not_live', status: 403 }
+            : { code: 'worker_observation_storage_unavailable', status: 503 }
+        );
+        expect(publishControlOperation).not.toHaveBeenCalled();
+      }
+      expect(resolveTokenBinding).toHaveBeenCalledTimes(outcome === 'timeout' ? 0 : 1);
+    }
+  );
+
   it.each(
     (['codex', 'opencode', 'pi', 'deepseek'] as const).flatMap((adapter) =>
       (['off', 'on'] as const).map((value) => ({ adapter, value }))

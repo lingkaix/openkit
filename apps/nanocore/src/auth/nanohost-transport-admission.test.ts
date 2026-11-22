@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { createOpenKitAccessTokenSecret, hashOpenKitAccessTokenSecret } from './access-token.js';
 import type { AuthVariables } from './middleware.js';
@@ -14,7 +15,10 @@ import {
 } from './nanohost-transport-admission.js';
 import { fenceNanoHostTransportAuthority } from './nanohost-transport-lifecycle.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
-import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from './nanohost-transport-session.js';
 import { revokeNanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
 
 /**
@@ -95,6 +99,85 @@ describe('NanoHost transport production admission', () => {
     expect(owner.read).toHaveBeenCalledOnce();
     expect(owner.transport).not.toHaveBeenCalled();
     expect(owner.transitionRuntimeTarget).not.toHaveBeenCalled();
+  });
+
+  it('closes only the original allocated generation when its acknowledged Token recheck is refused', async () => {
+    const nanoHost = openNanoHostTestOwner();
+    const now = new Date('2026-08-08T00:00:00.000Z');
+    const token = await issueTransportToken(nanoHost, now);
+    const authority = createNanoHostTransportSessionAuthority();
+    const originalOwner = nanoHost.storage.owner;
+    const recheckStarted = Promise.withResolvers<void>();
+    const acknowledgement = Promise.withResolvers<void>();
+    let allocated = false;
+    const transition = vi.fn<typeof originalOwner.transitionRuntimeTarget>(
+      async (kernel, original) => {
+        const result = await originalOwner.transitionRuntimeTarget(kernel, original);
+        allocated = original.input.kind === 'allocate' && result.state === 'ready';
+        return result;
+      }
+    );
+    const storage = {
+      ...nanoHost.storage,
+      owner: {
+        ...originalOwner,
+        transitionRuntimeTarget: transition,
+        async afterWorkerControlAcknowledgement<Value>(read: () => Value, signal?: AbortSignal) {
+          if (allocated && signal) {
+            recheckStarted.resolve();
+            await acknowledgement.promise;
+          }
+          return read();
+        },
+      },
+    };
+    const requestSignal = new AbortController().signal;
+    const admission =
+      Promise.withResolvers<Awaited<ReturnType<typeof admitNativeNanoHostTransportConnection>>>();
+    const server = createServer((request, response) => {
+      void admitNativeNanoHostTransportConnection(storage, authority, {
+        now,
+        physicalConnection: readNanoHostPhysicalConnectionContext(request),
+        secret: token.secret,
+        signal: requestSignal,
+        transportRevision: String(transportRevision),
+      }).then((result) => {
+        admission.resolve(result);
+        response.end();
+      }, admission.reject);
+    });
+    let client: ReturnType<typeof connect> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connect(`http://127.0.0.1:${address.port}`);
+      const stream = client.request({ ':path': '/' });
+      stream.resume();
+      await Promise.race([recheckStarted.promise, admission.promise]);
+      expect(transition.mock.calls.map(([, original]) => original.input.kind)).toEqual([
+        'allocate',
+      ]);
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+      acknowledgement.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      await expect(admission.promise).resolves.toEqual({
+        ok: false,
+        reason: 'storage_unavailable',
+      });
+      expect(transition.mock.calls.map(([, original]) => original.input)).toMatchObject([
+        { kind: 'allocate', targetId: token.identityId },
+        { kind: 'close', targetId: token.identityId, closedGeneration: 1 },
+      ]);
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+    } finally {
+      acknowledgement.resolve();
+      await authority.closeAllPhysicalConnections();
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      await shutdownControlStoreWorkerClient();
+    }
   });
 
   it('requires the shared transport revision before allocation and accepts a matching native admission, then refuses its revoked Token after reopen', async () => {

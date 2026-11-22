@@ -222,7 +222,11 @@ import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
 } from './worker-backend-session-records.js';
-import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  hashWorkerRouteToken,
+  type WorkerControlGateway,
+  WorkerControlGatewayError,
+} from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
@@ -462,11 +466,13 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly registerCredentialHelperComparisonValues?: (
     lineage: WorkerLineage,
     receiptId: string,
-    values: readonly string[]
-  ) => void;
+    values: readonly string[],
+    signal?: AbortSignal
+  ) => Promise<void>;
   /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
   readonly acceptNanoHostHarnessCommand: (
-    command: NanoHostHarnessCommand
+    command: NanoHostHarnessCommand,
+    signal?: AbortSignal
   ) => Promise<NanoHostHarnessCommand | null>;
   /** Advances one exact live producer after its durable Harness result settles. */
   readonly acceptNanoHostHarnessResult: (
@@ -720,12 +726,13 @@ function createNanoHostWorkerLifecycleRuntime(
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
     advanceIdleCleanup,
     captureArtifact: (input) => backend.captureArtifact(input),
-    registerCredentialHelperComparisonValues: (lineage, receiptId, values) =>
-      backend.registerCredentialHelperComparisonValues(lineage, receiptId, values),
+    registerCredentialHelperComparisonValues: (lineage, receiptId, values, signal) =>
+      backend.registerCredentialHelperComparisonValues(lineage, receiptId, values, signal),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     isTurnExecutionActive: (turnId) => turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
-    acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
+    acceptNanoHostHarnessCommand: (command, signal) =>
+      backend.acceptHarnessCommand(command, signal),
     acceptNanoHostHarnessResult: (result, settlement) =>
       backend.acceptHarnessResult(result, settlement),
     failNanoHostHarnessDelivery: (command, failure) =>
@@ -1136,6 +1143,14 @@ function workspaceMaterializationRefusalExplanation(
   return '';
 }
 
+function isWorkerAcknowledgementUnavailable(error: unknown): boolean {
+  return (
+    error instanceof WorkerControlGatewayError &&
+    error.code === 'worker_observation_storage_unavailable' &&
+    error.status === 503
+  );
+}
+
 /** NanoHost-backed effect boundary used by the sole production turn executor. */
 class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Configured identity is shared by admission, effects and observations; deployment placement adds no target. */
@@ -1246,6 +1261,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return requireNanoHostObservation(this.coreDb, (sqlite) => read({ sqlite }), owner?.value.read);
   }
 
+  /** Keeps serving reads inside the shared owner wait without moving an effect into it. */
+  private async afterWorkerControlAcknowledgement<Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ): Promise<Value> {
+    return this.workerControlGateway
+      ? this.workerControlGateway.afterWorkerControlAcknowledgement(read, signal)
+      : read();
+  }
+
   private readIdleCloseAuthority(input: Parameters<typeof readNanoHostIdleCloseAuthority>[1]) {
     if (!this.nanoHostOwner) return readNanoHostIdleCloseAuthority(this.coreDb, input);
     return this.readNanoHost((owner) => readNanoHostIdleCloseAuthority(this.coreDb, input, owner));
@@ -1353,7 +1378,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
   public async acceptHarnessCommand(
-    command: NanoHostHarnessCommand
+    command: NanoHostHarnessCommand,
+    signal?: AbortSignal
   ): Promise<NanoHostHarnessCommand | null> {
     const bindingId = command.body.agentSessionRuntimeBindingId;
     const session = [...this.sessions.values()].find(
@@ -1381,8 +1407,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       [...this.sharedHarnesses.values()].find(
         (harness) => harness.harnessInstanceId === command.harnessInstanceId
       );
-    if (pending.coreIdleClose) {
-      const prepared = pending.coreIdleClose.prepared;
+    const idleClose = pending.coreIdleClose;
+    if (idleClose) {
+      const prepared = idleClose.prepared;
       if (
         command.operation !== 'session.close' ||
         !prepared ||
@@ -1391,39 +1418,40 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('NanoHost idle close command conflicts with its exact Core producer.');
       pending.operationId = command.operationId;
-      if (pending.coreIdleClose.drain)
-        this.requireIdleSandboxCloseDrain(session, pending.coreIdleClose.drain);
-      const currentReceipt = this.readIdleCloseAuthority({
-        harnessInstanceId: command.harnessInstanceId,
-        harnessBindingRef: session.harnessBindingRef,
-        agentSessionId: session.environmentPackage.scope.agentSessionId,
-        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      });
-      const dispatched = this.readNanoHost(({ sqlite }) =>
-        sqlite
-          .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
-          WHERE harness_instance_id = ? AND harness_binding_ref = ? AND operation = 'session.close'
-            AND operation_state = 'dispatched' AND operation_id = ? AND operation_sequence = ?`)
-          .get(
-            command.harnessInstanceId,
-            session.harnessBindingRef,
-            command.operationId,
-            command.sequence
-          )
-      );
-      if (
-        !dispatched ||
-        !isDeepStrictEqual(currentReceipt, pending.coreIdleClose.authority) ||
-        session.pendingHarnessOperation !== pending ||
-        this.sessions.get(session.environmentPackage.snapshotId) !== session ||
-        Date.now() < pending.admittedUnixMs ||
-        Date.now() >= pending.deadlineUnixMs ||
-        performance.now() >= pending.deadlineMonotonicMs
-      )
-        throw new Error(
-          'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
+      await this.afterWorkerControlAcknowledgement(() => {
+        if (idleClose.drain) this.requireIdleSandboxCloseDrain(session, idleClose.drain);
+        const currentReceipt = this.readIdleCloseAuthority({
+          harnessInstanceId: command.harnessInstanceId,
+          harnessBindingRef: session.harnessBindingRef,
+          agentSessionId: session.environmentPackage.scope.agentSessionId,
+          agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        });
+        const dispatched = this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
+            WHERE harness_instance_id = ? AND harness_binding_ref = ? AND operation = 'session.close'
+              AND operation_state = 'dispatched' AND operation_id = ? AND operation_sequence = ?`)
+            .get(
+              command.harnessInstanceId,
+              session.harnessBindingRef,
+              command.operationId,
+              command.sequence
+            )
         );
-      readRetainedV1(dispatched, () => dispatched);
+        if (
+          !dispatched ||
+          !isDeepStrictEqual(currentReceipt, idleClose.authority) ||
+          session.pendingHarnessOperation !== pending ||
+          this.sessions.get(session.environmentPackage.snapshotId) !== session ||
+          Date.now() < pending.admittedUnixMs ||
+          Date.now() >= pending.deadlineUnixMs ||
+          performance.now() >= pending.deadlineMonotonicMs
+        )
+          throw new Error(
+            'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
+          );
+        readRetainedV1(dispatched, () => dispatched);
+      }, signal);
       if (
         sharedHarness?.knownLoginClose &&
         (sharedHarness.knownLoginClose.operationId !== command.operationId ||
@@ -1490,91 +1518,99 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       journal.workspaceScope.workspaceId,
       journal.child
     );
-    const remaining = Math.min(
-      invocation.remainingMs - (performance.now() - started),
-      pending.deadlineUnixMs - Date.now(),
-      pending.deadlineMonotonicMs - performance.now()
-    );
-    if (
-      remaining <= 0 ||
-      Date.now() < pending.admittedUnixMs ||
-      (session?.pendingHarnessOperation !== pending && closeOwner?.pending !== pending) ||
-      (session && this.sessions.get(session.environmentPackage.snapshotId) !== session)
-    ) {
-      throw new Error(
-        'NanoHost original native invocation allowance or current producer is unavailable.'
-      );
-    }
-    if (session && (command.operation === 'turn.start' || command.operation === 'session.open')) {
-      // Native journal admission can yield after resolution; current Vault authority still owns contact.
-      assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
-      const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
-      if (
-        session.turnStopSettlement !== null ||
-        attempt.phase !== 'open' ||
-        (attempt.deadline !== null && Date.parse(attempt.deadline) <= Date.now())
-      )
-        throw new Error('NanoHost dispatched execution no longer has its live attempt.');
-      if (command.operation === 'turn.start') {
-        const native = this.readSubmittedAttempt(session.attemptId);
-        if (
-          native.workerControlTokenHash !== journal.prepared.command.body.workerControlTokenHash ||
-          native.workerInferenceTokenHash !== journal.prepared.command.body.inferenceTokenHash ||
-          native.workerCapabilityTokenHash !== journal.prepared.command.body.capabilityTokenHash ||
-          native.recoveryState !== null ||
-          native.heartbeatDeadline <= new Date().toISOString()
-        )
-          throw new Error(
-            'NanoHost dispatched Turn credential binding changed during native proof.'
-          );
-      }
-    }
     const { child, prepared } = journal;
-    const currentBinding = this.readNanoHost(({ sqlite }) =>
-      sqlite
-        .prepare(`SELECT h.schema_version AS schemaVersion, b.schema_version AS bindingSchemaVersion,
-        h.lifecycle_state AS harnessState,
-        h.drain_state AS harnessDrain, s.lifecycle_state AS sandboxState,
-        s.health_state AS sandboxHealth, s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
-        FROM harness_instance_records h JOIN agent_session_runtime_bindings b
-          ON b.harness_instance_id = h.harness_instance_id
-        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
-        WHERE h.harness_instance_id = ? AND h.harness_binding_ref = ? AND h.operation_id = ? AND h.operation_sequence = ?
-          AND h.operation_state = 'dispatched' AND b.agent_session_runtime_binding_id = ?
-          AND b.agent_session_id = ?`)
-        .get(
-          command.harnessInstanceId,
-          child.carriage.bindingRef,
-          command.operationId,
-          command.sequence,
-          prepared.command.body.agentSessionRuntimeBindingId,
-          prepared.command.body.agentSessionId
+    const requireCurrentInvocation = () => {
+      const remaining = Math.min(
+        invocation.remainingMs - (performance.now() - started),
+        pending.deadlineUnixMs - Date.now(),
+        pending.deadlineMonotonicMs - performance.now()
+      );
+      if (
+        remaining <= 0 ||
+        Date.now() < pending.admittedUnixMs ||
+        (session?.pendingHarnessOperation !== pending && closeOwner?.pending !== pending) ||
+        (session
+          ? this.sessions.get(session.environmentPackage.snapshotId) !== session
+          : typeof bindingId !== 'string' ||
+            this.agentSessionCloseOwners.get(bindingId) !== closeOwner)
+      ) {
+        throw new Error(
+          'NanoHost original native invocation allowance or current producer is unavailable.'
+        );
+      }
+    };
+    await this.afterWorkerControlAcknowledgement(() => {
+      requireCurrentInvocation();
+      if (session && (command.operation === 'turn.start' || command.operation === 'session.open')) {
+        // Native journal admission can yield after resolution; current Vault authority still owns contact.
+        assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+        const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
+        if (
+          session.turnStopSettlement !== null ||
+          attempt.phase !== 'open' ||
+          (attempt.deadline !== null && Date.parse(attempt.deadline) <= Date.now())
         )
-    ) as
-      | {
-          schemaVersion: unknown;
-          bindingSchemaVersion: unknown;
-          harnessState: string;
-          harnessDrain: string;
-          sandboxState: string;
-          sandboxHealth: string;
-          sandboxDrain: string;
-          sandboxCleanup: string;
+          throw new Error('NanoHost dispatched execution no longer has its live attempt.');
+        if (command.operation === 'turn.start') {
+          const native = this.readSubmittedAttempt(session.attemptId);
+          if (
+            native.workerControlTokenHash !== prepared.command.body.workerControlTokenHash ||
+            native.workerInferenceTokenHash !== prepared.command.body.inferenceTokenHash ||
+            native.workerCapabilityTokenHash !== prepared.command.body.capabilityTokenHash ||
+            native.recoveryState !== null ||
+            native.heartbeatDeadline <= new Date().toISOString()
+          )
+            throw new Error(
+              'NanoHost dispatched Turn credential binding changed during native proof.'
+            );
         }
-      | undefined;
-    if (!currentBinding) throw new Error('NanoHost command binding changed during native proof.');
-    readRetainedV1(currentBinding, () => currentBinding);
-    readRetainedV1({ schemaVersion: currentBinding.bindingSchemaVersion }, () => currentBinding);
-    if (
-      (command.operation === 'session.open' || command.operation === 'turn.start') &&
-      (currentBinding.harnessState !== 'open' ||
-        currentBinding.harnessDrain !== 'accepting' ||
-        currentBinding.sandboxState !== 'open' ||
-        currentBinding.sandboxHealth !== 'ready' ||
-        currentBinding.sandboxDrain !== 'accepting' ||
-        currentBinding.sandboxCleanup !== 'clean')
-    )
-      throw new Error('NanoHost dispatched execution no longer has current resident admission.');
+      }
+      const currentBinding = this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT h.schema_version AS schemaVersion, b.schema_version AS bindingSchemaVersion,
+          h.lifecycle_state AS harnessState,
+          h.drain_state AS harnessDrain, s.lifecycle_state AS sandboxState,
+          s.health_state AS sandboxHealth, s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
+          FROM harness_instance_records h JOIN agent_session_runtime_bindings b
+            ON b.harness_instance_id = h.harness_instance_id
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+          WHERE h.harness_instance_id = ? AND h.harness_binding_ref = ? AND h.operation_id = ? AND h.operation_sequence = ?
+            AND h.operation_state = 'dispatched' AND b.agent_session_runtime_binding_id = ?
+            AND b.agent_session_id = ?`)
+          .get(
+            command.harnessInstanceId,
+            child.carriage.bindingRef,
+            command.operationId,
+            command.sequence,
+            prepared.command.body.agentSessionRuntimeBindingId,
+            prepared.command.body.agentSessionId
+          )
+      ) as
+        | {
+            schemaVersion: unknown;
+            bindingSchemaVersion: unknown;
+            harnessState: string;
+            harnessDrain: string;
+            sandboxState: string;
+            sandboxHealth: string;
+            sandboxDrain: string;
+            sandboxCleanup: string;
+          }
+        | undefined;
+      if (!currentBinding) throw new Error('NanoHost command binding changed during native proof.');
+      readRetainedV1(currentBinding, () => currentBinding);
+      readRetainedV1({ schemaVersion: currentBinding.bindingSchemaVersion }, () => currentBinding);
+      if (
+        (command.operation === 'session.open' || command.operation === 'turn.start') &&
+        (currentBinding.harnessState !== 'open' ||
+          currentBinding.harnessDrain !== 'accepting' ||
+          currentBinding.sandboxState !== 'open' ||
+          currentBinding.sandboxHealth !== 'ready' ||
+          currentBinding.sandboxDrain !== 'accepting' ||
+          currentBinding.sandboxCleanup !== 'clean')
+      )
+        throw new Error('NanoHost dispatched execution no longer has current resident admission.');
+    }, signal);
     command = { ...command, body: journal.prepared.wireBody };
     if (command.operation === 'session.open' && session?.runtimeCredentialValues === null) {
       throw new Error('NanoHost AgentSession credential material is unavailable.');
@@ -1655,18 +1691,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('Steer dispatch has no exact live public producer.');
       try {
         await pending.steer.control.recheck();
-        const attempt = this.readSubmittedAttempt(session.attemptId);
-        if (
-          session.turnStopSettlement ||
-          attempt.phase !== 'open' ||
-          attempt.recoveryState !== null
-        )
-          throw new OperationError(
-            'steer_target_stale',
-            'The original Task stopped before steer dispatch.',
-            409
-          );
-        assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+        await this.afterWorkerControlAcknowledgement(() => {
+          requireCurrentInvocation();
+          const attempt = this.readSubmittedAttempt(session.attemptId);
+          if (
+            session.turnStopSettlement ||
+            attempt.phase !== 'open' ||
+            attempt.recoveryState !== null
+          )
+            throw new OperationError(
+              'steer_target_stale',
+              'The original Task stopped before steer dispatch.',
+              409
+            );
+          assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+        }, signal);
         const target = pending.steer.target;
         const item = journal.store.readThreadTimelineSnapshot(
           target.workspaceId,
@@ -1690,6 +1729,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           );
         return { ...command, body: { ...command.body, input: item.text } };
       } catch (error) {
+        if (isWorkerAcknowledgementUnavailable(error)) throw error;
         return await this.refuseUnsentSteer(
           command,
           session,
@@ -7144,11 +7184,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Records complete private reply fields before release, never as a credential serving cache. */
-  public registerCredentialHelperComparisonValues(
+  public async registerCredentialHelperComparisonValues(
     lineage: WorkerLineage,
     receiptId: string,
-    values: readonly string[]
-  ): void {
+    values: readonly string[],
+    signal?: AbortSignal
+  ): Promise<void> {
+    const final = await this.afterWorkerControlAcknowledgement(
+      () => this.readAcceptedFinal(lineage),
+      signal
+    );
     const session = this.requireSession(lineage.packageSnapshotId);
     const scope = session.environmentPackage.scope;
     const resident = session.sharedHarness.bindings.get(scope.agentSessionId);
@@ -7163,7 +7208,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       scope.threadId !== lineage.threadId ||
       scope.workspaceId !== lineage.workspaceId ||
       scope.turnId !== lineage.turnId ||
-      this.readAcceptedFinal(lineage) ||
+      final ||
       !receipt ||
       receipt.agentSessionId !== scope.agentSessionId ||
       !receipt.backendSummary.startsWith('credential-helper:') ||
@@ -7196,31 +7241,37 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     validateWorkerArtifactPath(session.environmentPackage, input.path);
     const scope = session.environmentPackage.scope;
     const lineage = { ...scope, packageSnapshotId: input.packageSnapshotId };
-    const requireLive = () => {
-      input.signal?.throwIfAborted();
-      const resolution = this.resolveLiveWorkerBinding({
-        lineage,
-        sandboxBindingRef:
-          listSchedulerExecutionAttemptsForTurn(this.coreDb, scope).find(
-            (lease) => lease.attemptId === session.attemptId
-          )?.bindingRef ?? '',
-      });
-      if (
-        resolution.status !== 'accepted' ||
-        resolution.attempt.attemptId !== session.attemptId ||
-        this.readAcceptedFinal(lineage)
-      )
-        throw new OperationError(
-          'turn_not_active',
-          'The original capture lease no longer admits this Turn.',
-          409
-        );
-    };
+    const requireLive = () =>
+      this.afterWorkerControlAcknowledgement(() => {
+        input.signal?.throwIfAborted();
+        const resolution = this.resolveLiveWorkerBinding({
+          lineage,
+          sandboxBindingRef:
+            listSchedulerExecutionAttemptsForTurn(this.coreDb, scope).find(
+              (lease) => lease.attemptId === session.attemptId
+            )?.bindingRef ?? '',
+        });
+        if (
+          resolution.status !== 'accepted' ||
+          resolution.attempt.attemptId !== session.attemptId ||
+          this.readAcceptedFinal(lineage)
+        )
+          throw new OperationError(
+            'turn_not_active',
+            'The original capture lease no longer admits this Turn.',
+            409
+          );
+      }, input.signal);
     input.signal?.throwIfAborted();
     const readCredentialCheckValues = async (): Promise<WorkerCredentialCheckValues> => {
       try {
-        return await this.transcriptCredentialCheckValues(session, input.workspaceDb);
+        return await this.transcriptCredentialCheckValues(session, input.workspaceDb, input.signal);
       } catch (error) {
+        if (
+          isWorkerAcknowledgementUnavailable(error) ||
+          (input.signal?.aborted && error === input.signal.reason)
+        )
+          throw error;
         try {
           await this.cleanupSession(session.identity, { failedCloseout: true });
         } catch (cleanupError) {
@@ -7235,7 +7286,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     };
     await readCredentialCheckValues();
-    requireLive();
+    await requireLive();
     const { slot, relativePath } = resolveNanoHostExportPath(
       session.environmentPackage,
       input.path
@@ -7273,10 +7324,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
     const captured = await openNanoHostStagedExport(result, input.signal);
     try {
-      requireLive();
+      await requireLive();
       // Bytes are fixed now. Include every generation registered while export was awaited.
       const credentialCheckValues = await readCredentialCheckValues();
-      requireLive();
+      await requireLive();
       return { ...captured, credentialCheckValues };
     } catch (error) {
       await captured.remove();
@@ -7443,7 +7494,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Reconstructs complete private admission evidence without requiring the old serving lease to remain live. */
   private async transcriptCredentialCheckValues(
     session: NanoHostBackendTurnSession,
-    workspaceDb: WorkspaceDb
+    workspaceDb: WorkspaceDb,
+    signal?: AbortSignal
   ): Promise<WorkerCredentialCheckValues> {
     try {
       const scope = session.environmentPackage.scope;
@@ -7455,10 +7507,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             lease.inputRef === session.environmentPackage.snapshotId
         )
         .filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
-      const lease = leases.length === 1 ? this.readSubmittedAttempt(leases[0]!.attemptId) : null;
+      const lease =
+        leases.length === 1
+          ? await this.afterWorkerControlAcknowledgement(
+              () => this.readSubmittedAttempt(leases[0]!.attemptId),
+              signal
+            )
+          : null;
       if (!lease || !lease.bindingRef)
         throw new Error('Original lease association is unavailable.');
-      const runtime = await this.collectionRuntimeCheckValues(session, workspaceDb);
+      const runtime = await this.collectionRuntimeCheckValues(session, workspaceDb, signal);
       const evidence = requireWorkerCredentialCheckValues({
         sensitiveValues: [
           ...runtime.runtimeEnv,
@@ -7482,7 +7540,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('Original route-token evidence is contradictory.');
       return evidence;
-    } catch {
+    } catch (error) {
+      if (isWorkerAcknowledgementUnavailable(error) || (signal?.aborted && error === signal.reason))
+        throw error;
       throw new ArtifactAuthorityError(
         'recovery_required',
         'Original worker credential comparison evidence is unavailable or contradictory.'
@@ -7503,21 +7563,26 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Validates original injection authority even for cached values; each reread audits its exact retained version. */
   private async restoreCollectionRuntimeCredentials(
     session: NanoHostBackendTurnSession,
-    workspaceDb: WorkspaceDb
+    workspaceDb: WorkspaceDb,
+    signal?: AbortSignal
   ): Promise<Record<string, string>> {
-    const row = this.readNanoHost(({ sqlite }) =>
-      sqlite
-        .prepare(
-          'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?'
-        )
-        .get(
-          session.agentSessionRuntimeBindingId,
-          session.harnessInstanceId,
-          session.environmentPackage.scope.agentSessionId,
-          session.environmentPackage.scope.workspaceId,
-          session.environmentPackage.scope.threadId
-        )
-    ) as { schemaVersion: unknown; versions: string | null } | undefined;
+    const row = (await this.afterWorkerControlAcknowledgement(
+      () =>
+        this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(
+              'SELECT schema_version AS schemaVersion, runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?'
+            )
+            .get(
+              session.agentSessionRuntimeBindingId,
+              session.harnessInstanceId,
+              session.environmentPackage.scope.agentSessionId,
+              session.environmentPackage.scope.workspaceId,
+              session.environmentPackage.scope.threadId
+            )
+        ),
+      signal
+    )) as { schemaVersion: unknown; versions: string | null } | undefined;
     if (row) readRetainedV1(row, () => row);
     try {
       const consumer = session.environmentPackage;
@@ -7801,28 +7866,33 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Loads the original session environment and loopback evidence for both collection consumers. */
   private async collectionRuntimeCheckValues(
     session: NanoHostBackendTurnSession,
-    workspaceDb: WorkspaceDb
+    workspaceDb: WorkspaceDb,
+    signal?: AbortSignal
   ) {
-    const digests = this.readNanoHost(({ sqlite }) =>
-      sqlite
-        .prepare(
-          `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
+    const digests = (await this.afterWorkerControlAcknowledgement(
+      () =>
+        this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(
+              `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
          FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?
            AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?`
-        )
-        .get(
-          session.agentSessionRuntimeBindingId,
-          session.harnessInstanceId,
-          session.environmentPackage.scope.agentSessionId,
-          session.environmentPackage.scope.workspaceId,
-          session.environmentPackage.scope.threadId
-        )
-    ) as { inference: string | null; capability: string | null } | undefined;
+            )
+            .get(
+              session.agentSessionRuntimeBindingId,
+              session.harnessInstanceId,
+              session.environmentPackage.scope.agentSessionId,
+              session.environmentPackage.scope.workspaceId,
+              session.environmentPackage.scope.threadId
+            )
+        ),
+      signal
+    )) as { inference: string | null; capability: string | null } | undefined;
     // Already-exposed values remain a confidentiality deny-list during revocation cleanup.
     // Reuse admission and uncached resolution still validate current original authority.
     const values =
       session.runtimeCredentialValues ??
-      (await this.restoreCollectionRuntimeCredentials(session, workspaceDb));
+      (await this.restoreCollectionRuntimeCredentials(session, workspaceDb, signal));
     const providerValues = session.sharedHarness.sandbox.providerComparisonValues;
     if (
       session.environmentPackage.credentials.declarations.some(
@@ -8352,8 +8422,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!this.sessionDispatch) {
       throw new Error('NanoHost fixed-effect dispatcher is not configured.');
     }
+    const servingArtifact = operation === 'file.export' && input.purpose === 'artifact-submission';
     const originPhysicalEpoch =
-      retiringSandboxOrigin ?? this.requireCurrentBackendPhysicalEpoch(identity);
+      retiringSandboxOrigin ??
+      (servingArtifact
+        ? await this.afterWorkerControlAcknowledgement(
+            () => this.requireCurrentBackendPhysicalEpoch(identity),
+            signal
+          )
+        : this.requireCurrentBackendPhysicalEpoch(identity));
     if (
       retiringSandboxOrigin !== undefined &&
       this.requireCurrentPhysicalEpoch(identity.runtimeTargetId) !== retiringSandboxOrigin
@@ -8446,7 +8523,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         ? await store.writeWorkspaceExecutionJournalIntent(workspaceScope.workspaceId, journal)
         : await reader.readInvocation(ref);
       effectSignal.throwIfAborted();
-      this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
+      if (servingArtifact)
+        await this.afterWorkerControlAcknowledgement(
+          () => this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch),
+          effectSignal
+        );
+      else this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
       // Closing retains exclusion, but completed collection and terminal handoff permit the
       // existing shared cleanup owner to fence the host. Never infer collection from phase.
       if (cleanupTarget) {
@@ -8537,7 +8619,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // The same accepted decision is read back after journal work; no second decision or use.
       if (recheckAuthority) await recheckAuthority();
       effectSignal.throwIfAborted();
-      this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
+      if (servingArtifact)
+        await this.afterWorkerControlAcknowledgement(
+          () => this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch),
+          effectSignal
+        );
+      else this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
       if (recheckAuthority) {
         const live = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
         if (
