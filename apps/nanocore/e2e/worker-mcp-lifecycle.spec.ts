@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import {
   type ClientHttp2Session,
   connect as connectHttp2,
@@ -126,6 +127,7 @@ async function runPublicWorkerMcpLifecycle() {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'openkit-public-worker-mcp-fixture-'));
   const callFile = join(fixtureRoot, 'mcp-calls.txt');
   let harness: NanoCoreHarness | undefined;
+  let provider: Awaited<ReturnType<typeof startInferenceProvider>> | undefined;
   let h2: ClientHttp2Session | undefined;
   const mcpServerPids = new Set<number>();
   try {
@@ -152,7 +154,8 @@ async function runPublicWorkerMcpLifecycle() {
       'Administration Thread'
     );
     await harness.stop();
-    await writeFixtureConfiguration(dataRoot, fixtureRoot, nanoHostPort);
+    provider = await startInferenceProvider();
+    await writeFixtureConfiguration(dataRoot, fixtureRoot, nanoHostPort, provider.origin);
     let appPort = await findOpenPort();
     while (appPort === nanoHostPort) appPort = await findOpenPort();
     harness = await startNanoCoreHarness({
@@ -265,6 +268,7 @@ async function runPublicWorkerMcpLifecycle() {
       setMcpServerPid,
     });
     assert.notEqual(firstTurn.turnId, secondTurn.turnId);
+    assert.deepEqual(provider.calls, ['tool', 'answer', 'tool', 'answer', 'tool', 'answer']);
     await stopWorkerPeer(harness, secondPeer.closed);
     assert.ok(mcpServerPids.size > 0);
     await Promise.all([...mcpServerPids].map(waitForProcessExit));
@@ -273,6 +277,7 @@ async function runPublicWorkerMcpLifecycle() {
   } finally {
     h2?.destroy();
     await harness?.stop();
+    await provider?.close();
     for (const pid of mcpServerPids) {
       try {
         process.kill(pid, 'SIGKILL');
@@ -725,10 +730,14 @@ async function runPublicWorkerMcpTurn(input: {
     responseFailure('Live Worker observation', metadata.value)
   );
   const artifactId = await artifact;
-  const body = await append(chunk);
+  const [body, toolCall] = await Promise.all([
+    append(chunk),
+    inferWorkerTool(h2, inferenceToken, environmentPackage),
+  ]);
   assert.equal(body.status, 200, responseFailure('Worker observation body', body));
 
   const mcpClient = new Client({ name: 'openkit-public-worker-mcp-l3', version: '1.0.0' });
+  let toolResult: string;
   try {
     await mcpClient.connect(
       new StreamableHTTPClientTransport(new URL('http://nanocore.test/capabilities/mcp/echo'), {
@@ -740,10 +749,11 @@ async function runPublicWorkerMcpTurn(input: {
     const toolNames = tools.tools.map((tool) => tool.name);
     assert.deepEqual(toolNames, ['echo']);
     const result = await mcpClient.callTool({
-      arguments: { message: 'l3-public' },
-      name: 'echo',
+      arguments: JSON.parse(toolCall.function.arguments),
+      name: toolCall.function.name,
     });
     assert.deepEqual(result.content, [{ text: 'l3-public', type: 'text' }]);
+    toolResult = JSON.stringify(result.content);
     const structured = result.structuredContent;
     assert.ok(
       structured !== null && typeof structured === 'object' && !Array.isArray(structured),
@@ -757,6 +767,7 @@ async function runPublicWorkerMcpTurn(input: {
   } finally {
     await mcpClient.close();
   }
+  await assertWorkerInferenceAnswer(h2, inferenceToken, environmentPackage, toolCall, toolResult);
   const callLog = (await readFile(callFile, 'utf8')).trim().split('\n');
   assert.deepEqual(
     callLog,
@@ -926,6 +937,205 @@ async function runPublicWorkerMcpTurn(input: {
   assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
   assert.ok(importCount >= 1);
   return { turnId: task.turn.id, sandboxId, artifactId };
+}
+
+const inferencePrompt = { role: 'user', content: 'Call echo, then answer with its result.' };
+const inferenceTool = {
+  type: 'function',
+  function: {
+    name: 'echo',
+    description: 'Echo the supplied message.',
+    parameters: {
+      type: 'object',
+      properties: { message: { type: 'string' } },
+      required: ['message'],
+    },
+  },
+};
+
+interface InferenceToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+/** Drives the real gateway and raw-output accounting from the authenticated Native listener. */
+async function postWorkerInference(
+  h2: ClientHttp2Session,
+  token: string,
+  environmentPackage: AgentEnvironmentPackage,
+  messages: readonly object[],
+  label: string
+) {
+  assert.equal(environmentPackage.llm.mode, 'gateway');
+  const model = requireString(environmentPackage.llm.routes[0]?.model, 'Worker model');
+  const response = await requestHttp2(
+    h2,
+    'POST',
+    '/inference/v1/chat/completions',
+    JSON.stringify({
+      model,
+      messages,
+      stream: true,
+      tools: [inferenceTool],
+      openkit_runtime_hint: {
+        runtimeFamily: 'codex',
+        requestKind: 'turn',
+        nativeSessionId: environmentPackage.scope.agentSessionId,
+        nativeThreadId: environmentPackage.scope.threadId,
+      },
+    }),
+    { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+  );
+  if (response.status !== 200) {
+    const { error } = JSON.parse(response.body) as { error?: { code?: string } };
+    throw new Error(`${label} returned ${response.status} (${error?.code ?? 'unknown'}).`);
+  }
+  const frames = response.body
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice(6));
+  assert.equal(frames.pop(), '[DONE]', `${label} must finish its SSE stream.`);
+  return frames.map((frame) => {
+    const value = JSON.parse(frame) as {
+      error?: { code?: string };
+      choices?: Array<{
+        delta: {
+          content?: string;
+          tool_calls?: Array<{
+            index: number;
+            id?: string;
+            function: { name?: string; arguments: string };
+          }>;
+        };
+      }>;
+    };
+    assert.equal(value.error, undefined, `${label} returned an SSE error.`);
+    return value.choices?.[0]?.delta;
+  });
+}
+
+async function inferWorkerTool(
+  h2: ClientHttp2Session,
+  token: string,
+  environmentPackage: AgentEnvironmentPackage
+): Promise<InferenceToolCall> {
+  const frames = await postWorkerInference(
+    h2,
+    token,
+    environmentPackage,
+    [inferencePrompt],
+    'Worker tool inference'
+  );
+  const tools = frames.flatMap((delta) => delta?.tool_calls ?? []);
+  const start = tools[0];
+  assert.ok(start);
+  assert.ok(tools.every((part) => part.index === start.index));
+  const name = requireString(start.function.name, 'Tool name');
+  assert.equal(name, 'echo');
+  const argumentsJson = tools.map((part) => part.function.arguments).join('');
+  assert.deepEqual(JSON.parse(argumentsJson), { message: 'l3-public' });
+  return {
+    id: requireString(start.id, 'Tool call id'),
+    type: 'function',
+    function: { name, arguments: argumentsJson },
+  };
+}
+
+async function assertWorkerInferenceAnswer(
+  h2: ClientHttp2Session,
+  token: string,
+  environmentPackage: AgentEnvironmentPackage,
+  tool: InferenceToolCall,
+  result: string
+) {
+  const frames = await postWorkerInference(
+    h2,
+    token,
+    environmentPackage,
+    [
+      inferencePrompt,
+      { role: 'assistant', content: null, tool_calls: [tool] },
+      { role: 'tool', tool_call_id: tool.id, content: result },
+    ],
+    'Worker answer inference'
+  );
+  assert.equal(frames.map((delta) => delta?.content ?? '').join(''), 'L3 inference complete');
+}
+
+/** Local model stub emits a tool call, then requires its real MCP result before answering. */
+async function startInferenceProvider() {
+  const calls: string[] = [];
+  const server = createHttpServer(async (request, response) => {
+    try {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/chat/completions');
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+        model: string;
+        messages: Array<{ role: string; content: unknown }>;
+        stream: boolean;
+      };
+      assert.equal(body.stream, true);
+      const result = body.messages.find((message) => message.role === 'tool');
+      if (result) assert.match(JSON.stringify(result.content), /l3-public/);
+      calls.push(result ? 'answer' : 'tool');
+      const base = {
+        id: `l3-${randomUUID()}`,
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: body.model,
+      };
+      const send = (delta: object, finish_reason: string | null = null) => {
+        response.write(
+          `data: ${JSON.stringify({
+            ...base,
+            choices: [{ index: 0, delta, finish_reason }],
+            ...(finish_reason
+              ? { usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 } }
+              : {}),
+          })}\n\n`
+        );
+      };
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      send(
+        result
+          ? { role: 'assistant', content: 'L3 inference complete' }
+          : {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_l3_echo',
+                  type: 'function',
+                  function: { name: 'echo', arguments: JSON.stringify({ message: 'l3-public' }) },
+                },
+              ],
+            }
+      );
+      send({}, result ? 'stop' : 'tool_calls');
+      response.end('data: [DONE]\n\n');
+    } catch {
+      response.statusCode = 500;
+      response.end();
+    }
+  });
+  await new Promise<void>((ready, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', ready);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    calls,
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  };
 }
 
 /** Exercises the same built-in Work MCP and native file export used by hosted golden. */
@@ -1217,7 +1427,8 @@ async function assertPublicDurableOutcome(
 async function writeFixtureConfiguration(
   dataRoot: string,
   fixtureRoot: string,
-  nanoHostPort: number
+  nanoHostPort: number,
+  providerOrigin: string
 ) {
   const layout = JSON.parse(await readFile(join(dataRoot, 'server', 'layout.json'), 'utf8'));
   const deploymentId = DeploymentIdSchema.parse(layout.deploymentId);
@@ -1271,8 +1482,15 @@ async function writeFixtureConfiguration(
     displayName: 'Agent OpenRouter',
     id: 'agent-openrouter',
     kind: 'local',
+    baseUrl: `${providerOrigin}/v1`,
     models: ['openai/gpt-5.2'],
-    vendor: 'openrouter',
+    modelMetadata: {
+      'openai/gpt-5.2': {
+        limit: { context: 32_000, output: 4096 },
+        modalities: { input: ['text'], output: ['text'] },
+        tool_call: true,
+      },
+    },
   });
   await writeJson(join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'), {
     defaultProfileId: 'default',
