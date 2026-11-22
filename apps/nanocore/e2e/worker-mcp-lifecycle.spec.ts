@@ -51,6 +51,7 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const smokeRequestId = '0190f4c8-0000-7000-8000-000000000601';
 const integrationHeader = 'x-openkit-integration-binding';
+const artifactBytes = Buffer.from('L3 native artifact bytes');
 const smokeImageDigest = `sha256:${'a'.repeat(64)}`;
 const smokeImageDefaults = {
   defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
@@ -219,6 +220,7 @@ async function runPublicWorkerMcpLifecycle() {
       expectedMcpCalls: 1,
       setMcpServerPid,
     });
+    assert.ok(firstTurn.artifactId, 'The first Turn must submit a Work Artifact.');
     const sibling = await createPublicWorkerThread(app, callFile, 'Public Worker MCP sibling');
     const siblingTurn = await runPublicWorkerMcpTurn({
       app,
@@ -259,6 +261,7 @@ async function runPublicWorkerMcpLifecycle() {
       requestId: randomUUID(),
       callFile,
       expectedMcpCalls: 3,
+      priorArtifact: { artifactId: firstTurn.artifactId, turnId: firstTurn.turnId },
       setMcpServerPid,
     });
     assert.notEqual(firstTurn.turnId, secondTurn.turnId);
@@ -402,9 +405,10 @@ async function runPublicWorkerMcpTurn(input: {
   requestId: string;
   callFile: string;
   expectedMcpCalls: number;
+  priorArtifact?: { artifactId: string; turnId: string };
   retiringSandboxId?: string;
   setMcpServerPid: (pid: number) => void;
-}): Promise<{ turnId: string; sandboxId: string }> {
+}) {
   const { app, h2, workspaceId, threadId, requestId, callFile, expectedMcpCalls, setMcpServerPid } =
     input;
   let taskFailure: unknown = null;
@@ -890,23 +894,38 @@ async function runPublicWorkerMcpTurn(input: {
   const attention = ListHumanAttentionResponseSchema.parse(
     await publicOperation(app, 'attention.list', { workspaceId })
   );
-  assert.deepEqual(attention.items, [], 'Worker left a human-attention request.');
+  const expectedArtifact = artifactId ? { artifactId, turnId: task.turn.id } : input.priorArtifact;
+  assert.deepEqual(
+    attention.items.map(({ kind, artifactId, artifactVersion, turnId }) => ({
+      kind,
+      artifactId,
+      artifactVersion,
+      turnId,
+    })),
+    expectedArtifact ? [{ kind: 'artifact_review', artifactVersion: 1, ...expectedArtifact }] : [],
+    'Only the submitted Artifact should require attention.'
+  );
   assert.equal(task.turn?.id, environmentPackage.scope.turnId);
 
   if (artifactId) {
     const artifact = await publicOperation<{
       title: string;
       content: { byteLength: number };
+      contentDigest: string;
       origin: { turnId: string };
     }>(app, 'artifact.read', { artifactId, workspaceId });
     assert.equal(artifact.title, 'L3 artifact');
-    assert.equal(artifact.content.byteLength, Buffer.byteLength('L3 native artifact bytes'));
+    assert.equal(artifact.content.byteLength, artifactBytes.length);
+    assert.equal(
+      artifact.contentDigest,
+      `sha256:${createHash('sha256').update(artifactBytes).digest('hex')}`
+    );
     assert.equal(artifact.origin.turnId, task.turn.id);
   }
   await assertPublicDurableOutcome(app, workspaceId, threadId, task.turn.id);
   assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
   assert.ok(importCount >= 1);
-  return { turnId: task.turn.id, sandboxId };
+  return { turnId: task.turn.id, sandboxId, artifactId };
 }
 
 /** Exercises the same built-in Work MCP and native file export used by hosted golden. */
@@ -948,7 +967,7 @@ async function submitWorkerArtifact(
     const exported = await waitForEffect(h2, 'file.export', () => failure);
     assert.equal(exported.command.slot, 'turn-output');
     assert.equal(exported.command.relativePath, `${agentSessionId}/outputs/golden-l3.txt`);
-    await settleFileExport(h2, exported.command, Buffer.from('L3 native artifact bytes'));
+    await settleFileExport(h2, exported.command, artifactBytes);
     const submitted = await result;
     assert.notEqual(submitted.isError, true);
     const payload = submitted.structuredContent as { artifactId?: string } | undefined;
