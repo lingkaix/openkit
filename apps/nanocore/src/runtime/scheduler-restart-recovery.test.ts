@@ -73,8 +73,11 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import {
+  postTestNativeWorkerHeartbeat,
   readTestNativeAttemptEvidence,
+  removeTestNativeWorkerAnchor,
   seedTestNanoHostHeartbeat,
+  submitTestNanoHostWorkerLease,
 } from '../test-support/nanohost-worker-lease.js';
 import {
   admitTestNativeEnvironmentForRoot,
@@ -117,6 +120,7 @@ import {
 } from './nanohost-attempt-records.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
+  hasNanoHostAttemptPreEffectProof,
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
@@ -2812,7 +2816,8 @@ function dispatchLease(
   submitted = true,
   nativePrepared = true,
   threadId = testEntityId('th', `th_${suffix}`),
-  admittedAt = '2026-07-05T00:00:01.000Z'
+  admittedAt = '2026-07-05T00:00:01.000Z',
+  admittedSubmission = false
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2848,6 +2853,26 @@ function dispatchLease(
     workspaceId,
     now: () => admittedAt,
   });
+  if (admittedSubmission) {
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    submitTestNanoHostWorkerLease(
+      coreDb,
+      entry,
+      `lease-binding:lease_${suffix}`,
+      {
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${turnId}_${agentSessionId}`,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      {
+        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        observedAt: new Date(Date.parse(admittedAt) + 1_000).toISOString(),
+      }
+    );
+    return;
+  }
   if (!nativePrepared) {
     const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
       entry,
@@ -5724,6 +5749,74 @@ describe('scheduler restart recovery', () => {
     }
   });
 
+  it('R22 preserves exclusion for a stale post-launch attempt without a durable backend anchor', async () => {
+    const coreDb = await createMigratedCoreDb();
+    const suffix = 'restart_missing_anchor_stale_launched';
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    try {
+      const { value: storage } = await openAdmittedTestNanoHost(coreDb);
+      dispatchLease(coreDb, suffix, undefined, true, true, undefined, undefined, true);
+      const original = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      await postTestNativeWorkerHeartbeat(storage.owner, {
+        sandboxBindingRef: original.bindingRef!,
+        tokenHash: 'a'.repeat(64),
+        sequence: 1,
+        observedAt: '2026-07-05T00:00:10.000Z',
+        lineage: {
+          workspaceId: original.workspaceId,
+          threadId: original.threadId,
+          turnId: original.turnId,
+          agentSessionId: original.agentSessionId!,
+          packageSnapshotId: original.inputRef!,
+          requestId: fixtureRequestId(`request_${suffix}`),
+        },
+      });
+      removeTestNativeWorkerAnchor(coreDb, attemptId);
+      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId,
+        cause: 'heartbeat-timeout',
+        now: () => '2026-07-05T00:01:00.000Z',
+      });
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          hasNanoHostAttemptPreEffectProof(coreDb, attemptId, { sqlite })
+        )
+      ).toBe(false);
+      const neverMutate = vi.fn(async () => {
+        throw new Error('Recovery cannot act without the original Native anchor.');
+      });
+      const input = testRecoveryInput(coreDb, {
+        now: () => '2026-07-05T00:01:00.000Z',
+        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        admittedNanoHostRecovery: {
+          state: 'ready',
+          value: {
+            owner: storage.owner,
+            close: neverMutate,
+            commit: neverMutate,
+            cleanup: neverMutate,
+            reconcileFinal: neverMutate,
+          },
+        },
+      });
+      const recovery = await runSchedulerRestartRecovery(coreDb, input);
+      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
+      await expect(classifyNanoHostAttemptsAfterRestart(coreDb, input)).resolves.toEqual({
+        failedAttemptIds: [attemptId],
+      });
+      expect(neverMutate).not.toHaveBeenCalled();
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        operationId: original.operationId,
+        fenceRef: null,
+      });
+      expect(['open', 'closing']).toContain(
+        observeExecutionAttempts(coreDb).find((row) => row.attempt_id === attemptId)?.phase
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('does not treat a stale starting lease without a heartbeat as proven pre-anchor', async () => {
     const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_stale_starting';
@@ -8237,7 +8330,7 @@ async function createFinalReviewRecoveryFixture(
   if (boundary === 'running')
     await prepareReconnectLease(coreDb, suffix, true, reconnectKeyFor(suffix), threadId);
   else {
-    dispatchLease(coreDb, suffix, undefined, boundary !== 'failed-preparation');
+    dispatchLease(coreDb, suffix, undefined, false);
     if (boundary === 'failed-preparation') {
       const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
@@ -8278,7 +8371,11 @@ async function createFinalReviewRecoveryFixture(
     await recordBackendSession(
       coreDb,
       suffix,
-      boundary === 'failed-preparation' || boundary === 'completed' ? 'cleaned' : 'physical-cleaned'
+      boundary === 'failed-preparation' || boundary === 'completed'
+        ? 'cleaned'
+        : 'physical-cleaned',
+      threadId,
+      boundary !== 'failed-preparation'
     );
   }
   await admitFixtureJournal(coreDb, store, suffix);

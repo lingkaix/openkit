@@ -27,12 +27,24 @@ import {
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
-import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
+import { resolveAdmittedNanoHostWorkerBinding } from './storage/nanohost-worker-binding.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import {
+  postTestNativeWorkerHeartbeat,
+  readTestNanoHostWorkerLease,
+  removeTestNativeWorkerAnchor,
+  seedTestNanoHostHeartbeat,
+  submitTestNanoHostWorkerLease,
+} from './test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
 import { schedulerFixtureInput as fixtureSchedulerInput } from './test-support/scheduler-admissions.js';
@@ -80,7 +92,25 @@ function createPreparedAttempt(
 ) {
   const attemptId = testEntityId('attempt', fixtureKey);
   const suffix = fixtureKey.replace('lease_', '');
-  const entry = createSchedulerAdmissionEntry(coreDb, {
+  const entry = createSchedulerRecordAdmission(coreDb, suffix);
+  return recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId,
+    agentSessionId: testEntityId('as', `session_${suffix}`),
+    inputRef: 'pkg_demo',
+    bindingRef: `lease-binding:${attemptId}`,
+    sessionCompatibilityKey: `sha256:${suffix}`,
+    now: () => '2026-07-05T00:00:02.000Z',
+    ...(submitted ? { operationId: `fixture-submit:${attemptId}` } : {}),
+  });
+}
+
+/** Retains the same scheduler request for either fixture contract. */
+function createSchedulerRecordAdmission(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  suffix: string
+) {
+  return createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     queueEntryId: `queue_${suffix}`,
@@ -94,16 +124,6 @@ function createPreparedAttempt(
     ),
     requestedAgentId: 'agent_worker',
     now: () => '2026-07-05T00:00:00.000Z',
-  });
-  return recordTestExecutionAttempt(coreDb, {
-    entry,
-    attemptId,
-    agentSessionId: testEntityId('as', `session_${suffix}`),
-    inputRef: 'pkg_demo',
-    bindingRef: `lease-binding:${attemptId}`,
-    sessionCompatibilityKey: `sha256:${suffix}`,
-    now: () => '2026-07-05T00:00:02.000Z',
-    ...(submitted ? { operationId: `fixture-submit:${attemptId}` } : {}),
   });
 }
 
@@ -944,7 +964,8 @@ describe('scheduler records', () => {
       const suffix = `terminal_corrupt_${name.replaceAll(' ', '_')}`;
 
       try {
-        createPreparedAttempt(coreDb, `lease_${suffix}`);
+        const original = createPreparedAttempt(coreDb, `lease_${suffix}`);
+        const correlation = attemptActionOwners.schedulerExecutionCorrelation(original);
         apply(coreDb, suffix);
         const before = terminalAccountingSnapshot(coreDb, suffix);
 
@@ -953,16 +974,7 @@ describe('scheduler records', () => {
           coreDb,
           env: {},
         }).turnExecutor.executionBackend!;
-        await expect(
-          backend.inspect(
-            attemptActionOwners.schedulerExecutionCorrelation(
-              attemptActionOwners.requireSchedulerExecutionAttempt(
-                coreDb,
-                testEntityId('attempt', `lease_${suffix}`)
-              )
-            )
-          )
-        ).rejects.toThrow(expectedError);
+        await expect(backend.inspect(correlation)).rejects.toThrow(expectedError);
         expect(terminalAccountingSnapshot(coreDb, suffix)).toEqual(before);
       } finally {
         coreDb.sqlite.close();
@@ -2079,5 +2091,358 @@ describe('bounded original scheduler authority readers', () => {
         .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id=?')
         .get(last.queueEntryId)
     ).toEqual(corrupt);
+  });
+});
+
+const schedulerStart = '2026-07-05T00:00:02.000Z';
+const schedulerHeartbeatOne = '2026-07-05T00:00:10.000Z';
+const schedulerHeartbeatTwo = '2026-07-05T00:00:20.000Z';
+const schedulerPastStartup = '2026-07-05T00:26:00.000Z';
+const staleAdmittedHeartbeat = {
+  domain: { code: 'worker_control_sequence_stale' },
+};
+
+async function admittedSchedulerCase() {
+  const coreDb = createMigratedCoreDb();
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  });
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const { owner } = storage.value;
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    coreDb,
+    env: {},
+    nanoHostRecovery: { owner: { state: 'ready', value: owner } },
+  });
+  const submit = (fixtureKey: string, packageSnapshotId = 'pkg_demo') => {
+    const suffix = fixtureKey.replace('lease_', '');
+    const admission = createSchedulerRecordAdmission(coreDb, suffix);
+    const attemptId = testEntityId('attempt', fixtureKey);
+    const sandboxBindingRef = `lease-binding:${attemptId}`;
+    const agentSessionId = testEntityId('as', `session_${suffix}`);
+    const tokenHash = 'a'.repeat(64);
+    const original = submitTestNanoHostWorkerLease(
+      coreDb,
+      admission,
+      sandboxBindingRef,
+      {
+        agentSessionId,
+        packageSnapshotId,
+        workerControlTokenHash: tokenHash,
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      {
+        attemptId,
+        observedAt: schedulerStart,
+        exclusionRefs: [`thread:${admission.threadId}`, `turn:${admission.turnId}`],
+      }
+    );
+    const lineage = {
+      workspaceId: admission.workspaceId,
+      threadId: admission.threadId,
+      turnId: admission.turnId,
+      agentSessionId,
+      packageSnapshotId,
+    };
+    const read = () => readTestNanoHostWorkerLease(coreDb, attemptId);
+    const postHeartbeat = (sequence: number, observedAt: string) =>
+      postTestNativeWorkerHeartbeat(owner, {
+        sandboxBindingRef,
+        lineage,
+        tokenHash,
+        sequence,
+        observedAt,
+      });
+    return {
+      attemptId,
+      original,
+      read,
+      postHeartbeat,
+      async heartbeat(sequence: number, observedAt: string) {
+        const ack = await postHeartbeat(sequence, observedAt);
+        return { ack, attempt: read() };
+      },
+      resolve(now: string, altered: { sandboxBindingRef?: string; threadId?: string } = {}) {
+        const input = {
+          sandboxBindingRef: altered.sandboxBindingRef ?? sandboxBindingRef,
+          lineage: { ...lineage, threadId: altered.threadId ?? lineage.threadId },
+        };
+        return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(coreDb, sqlite, input, now)
+        );
+      },
+      close(cause: string) {
+        return beginOwnedAttemptCloseout(coreDb, {
+          attemptId,
+          firstTerminalCause: cause,
+          now: () => schedulerHeartbeatOne,
+        });
+      },
+      core: () => attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, attemptId),
+    };
+  };
+  const executionBackend = runtime.turnExecutor.executionBackend!;
+  return {
+    coreDb,
+    submit,
+    executionBackend,
+    release(attempt: ReturnType<typeof beginOwnedAttemptCloseout>) {
+      return executionBackend.release({
+        ...attemptActionOwners.schedulerExecutionCorrelation(attempt),
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+    },
+  };
+}
+
+describe('admitted NanoHost scheduler replacements', () => {
+  it('R01 accepts lease heartbeats and advances heartbeat deadlines', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat');
+    const { attempt } = await f.heartbeat(4, schedulerHeartbeatOne);
+    expect(attempt).toMatchObject({
+      attemptId: testEntityId('attempt', 'lease_heartbeat'),
+      lastAcceptedHeartbeatAt: schedulerHeartbeatOne,
+      lastWorkerSequence: 4,
+      heartbeatDeadline: '2026-07-05T00:00:40.000Z',
+    });
+  });
+
+  it('R02 treats a repeated heartbeat sequence as an idempotent retry', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_retry');
+    const first = await f.heartbeat(4, schedulerHeartbeatOne);
+    const retry = await f.heartbeat(4, schedulerHeartbeatTwo);
+    expect(retry.ack.duplicate).toBe(true);
+    expect(retry.attempt).toEqual(first.attempt);
+  });
+
+  it('R03 treats a concurrent same-sequence heartbeat winner as an idempotent retry', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_concurrent_retry');
+    // The contender is pending while the competing observation is acknowledged.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const retry = promise.then(() => f.postHeartbeat(4, '2026-07-05T00:00:11.000Z'));
+    const winner = await f.postHeartbeat(4, schedulerHeartbeatOne);
+    expect(winner.duplicate).toBe(false);
+    resolve();
+    await expect(retry).resolves.toMatchObject({ duplicate: true });
+    expect(f.read()).toMatchObject({
+      lastAcceptedHeartbeatAt: schedulerHeartbeatOne,
+      heartbeatDeadline: '2026-07-05T00:00:40.000Z',
+      lastWorkerSequence: 4,
+    });
+  });
+
+  it('R04 classifies a concurrent newer heartbeat winner as a stale sequence', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_concurrent_newer');
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const stale = promise.then(() => f.postHeartbeat(4, '2026-07-05T00:00:11.000Z'));
+    await expect(f.postHeartbeat(5, schedulerHeartbeatOne)).resolves.toMatchObject({
+      duplicate: false,
+    });
+    resolve();
+    await expect(stale).rejects.toMatchObject(staleAdmittedHeartbeat);
+    expect(f.read().lastWorkerSequence).toBe(5);
+  });
+
+  it('R05 rejects heartbeat sequences older than the last accepted sequence', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_stale_sequence');
+    const { attempt: accepted } = await f.heartbeat(4, schedulerHeartbeatOne);
+    await expect(f.heartbeat(3, schedulerHeartbeatTwo)).rejects.toMatchObject(
+      staleAdmittedHeartbeat
+    );
+    expect(f.read()).toMatchObject({
+      heartbeatDeadline: accepted.heartbeatDeadline,
+      lastAcceptedHeartbeatAt: accepted.lastAcceptedHeartbeatAt,
+      lastWorkerSequence: accepted.lastWorkerSequence,
+    });
+  });
+
+  it('R06 advances a lease only for a newer heartbeat sequence', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_newer_sequence');
+    await f.heartbeat(4, schedulerHeartbeatOne);
+    expect((await f.heartbeat(5, schedulerHeartbeatTwo)).attempt).toMatchObject({
+      heartbeatDeadline: '2026-07-05T00:00:50.000Z',
+      lastAcceptedHeartbeatAt: schedulerHeartbeatTwo,
+      lastWorkerSequence: 5,
+    });
+  });
+
+  it('R07 does not revive a lease that starts releasing before the heartbeat update', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_heartbeat_race');
+    f.close('worker-final-status');
+    await expect(f.heartbeat(4, schedulerHeartbeatOne)).rejects.toMatchObject({
+      domain: { code: 'worker_control_lease_not_live' },
+    });
+    expect(f.core().phase).toBe('closing');
+  });
+
+  it('R08 refuses expired Native heartbeats without reviving closed attempts or releasing unknown execution', async () => {
+    const { coreDb, submit } = await admittedSchedulerCase();
+    const expired = submit('lease_expired');
+    const terminal = submit('lease_terminal', 'pkg_terminal');
+    await expired.heartbeat(1, schedulerHeartbeatOne);
+    terminal.close('turn-completed');
+    await releaseModeledAttempt(coreDb, terminal.attemptId);
+    expect(expired.resolve('2026-07-05T00:01:00.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+    expect(expired.core()).toMatchObject({
+      phase: 'open',
+      disposition: 'unknown',
+      fenceRef: null,
+      operationId: expired.original.operationId,
+    });
+    expect(terminal.core().phase).toBe('closed');
+  });
+
+  it('R09 holds exclusion for active NanoHost observations that are missing their durable backend anchor', async () => {
+    const fixture = await admittedSchedulerCase();
+    const f = fixture.submit('lease_missing_anchor_active');
+    await f.heartbeat(1, schedulerHeartbeatOne);
+    removeTestNativeWorkerAnchor(fixture.coreDb, f.attemptId);
+    await expect(fixture.release(f.close('turn-failed'))).resolves.toMatchObject({
+      state: 'pending',
+      fenceRef: null,
+    });
+    expect(['open', 'closing']).toContain(f.core().phase);
+  });
+
+  it('R10 classifies NanoHost startup timeout before any accepted process', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_startup_timeout');
+    expect(f.resolve(schedulerPastStartup)).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+    expect(f.core()).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
+  });
+
+  it('R11 retains the native fence when an anchored startup times out', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_anchored_startup_timeout');
+    expect(f.resolve(schedulerPastStartup)).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+    expect(f.core()).toMatchObject({ phase: 'open', disposition: 'unknown', fenceRef: null });
+  });
+
+  it('R12 does not fail startup deadlines after the first heartbeat is accepted', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_started');
+    await f.heartbeat(1, schedulerHeartbeatOne);
+    for (let sequence = 2; sequence <= 78; sequence += 1) {
+      await f.heartbeat(
+        sequence,
+        new Date(Date.parse(schedulerHeartbeatOne) + (sequence - 1) * 20_000).toISOString()
+      );
+    }
+    expect(f.resolve(schedulerPastStartup)).toMatchObject({ status: 'accepted' });
+    expect(['open', 'closing']).toContain(f.core().phase);
+  });
+
+  it('R13 revokes a closing attempt without dropping exclusion', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_releasing');
+    f.close('worker-final-status');
+    expect(f.core().phase).toBe('closing');
+    expect(f.resolve('2026-07-05T00:00:11.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+  });
+
+  it('R14 preserves exclusion for an unanchored closing attempt after Native timeout', async () => {
+    const fixture = await admittedSchedulerCase();
+    const { coreDb, submit, executionBackend } = fixture;
+    const stale = submit('lease_recovery_stale');
+    const release = submit('lease_recovery_release', 'pkg_release');
+    const startup = submit('lease_recovery_startup', 'pkg_startup');
+    await stale.heartbeat(1, schedulerHeartbeatOne);
+    expect(stale.resolve(schedulerPastStartup)).toMatchObject({ status: 'rejected' });
+    removeTestNativeWorkerAnchor(coreDb, release.attemptId);
+    const closing = release.close('worker-final-status');
+    await runSchedulerRecoveryMaintenance(coreDb, {
+      executionBackend,
+      projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+      now: () => schedulerPastStartup,
+    });
+    expect(startup.resolve(schedulerPastStartup)).toMatchObject({ status: 'rejected' });
+    expect(release.core().phase).toBe('closing');
+    await expect(fixture.release(closing)).resolves.toMatchObject({
+      state: 'pending',
+      fenceRef: null,
+    });
+  });
+
+  it('R15 resolves live route credentials through the exact durable attempt', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_binding');
+    expect(f.resolve(schedulerHeartbeatOne)).toMatchObject({ status: 'accepted' });
+    expect(f.core()).toMatchObject({
+      phase: 'open',
+      turnId: testEntityId('tu', 'turn_binding'),
+      agentSessionId: testEntityId('as', 'session_binding'),
+      bindingRef: `lease-binding:${testEntityId('attempt', 'lease_binding')}`,
+    });
+  });
+
+  it('R16 rejects an expired lease token binding at request time', async () => {
+    const { coreDb, submit } = await admittedSchedulerCase();
+    const f = submit('lease_binding_expired');
+    expect(f.resolve('2026-07-05T02:01:00.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+    // The retained heartbeat is still live across this boundary. The original grant cannot renew.
+    seedTestNanoHostHeartbeat(coreDb, {
+      attemptId: f.attemptId,
+      heartbeatTimeoutMs: 30_000,
+      workerSequence: 1,
+      now: () => '2026-07-05T01:59:59.000Z',
+    });
+    expect(f.resolve('2026-07-05T02:00:01.000Z')).toMatchObject({ status: 'accepted' });
+    expect(f.resolve('2026-07-05T02:00:02.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+  });
+
+  it('R17 rejects a lease token binding after its startup deadline', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_binding_startup_timeout');
+    expect(f.resolve(schedulerPastStartup)).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+  });
+
+  it('R18 rejects a started lease token binding after its heartbeat deadline', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_binding_heartbeat_timeout');
+    await f.heartbeat(1, schedulerHeartbeatOne);
+    expect(f.resolve('2026-07-05T00:00:41.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
+  });
+
+  it('R19 rejects missing, mismatched, and non-live lease token bindings', async () => {
+    const f = (await admittedSchedulerCase()).submit('lease_binding_rejected');
+    expect(
+      f.resolve(schedulerHeartbeatOne, { sandboxBindingRef: 'lease-binding:missing' })
+    ).toEqual({ status: 'rejected', reason: 'binding-not-found' });
+    expect(
+      f.resolve(schedulerHeartbeatOne, { threadId: testEntityId('th', 'thread_other') })
+    ).toEqual({ status: 'rejected', reason: 'lineage-mismatch' });
+    f.close('completed');
+    expect(f.resolve('2026-07-05T00:00:11.000Z')).toEqual({
+      status: 'rejected',
+      reason: 'attempt-not-live',
+    });
   });
 });

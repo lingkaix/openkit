@@ -159,7 +159,10 @@ import {
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
@@ -184,6 +187,7 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { readRetrievalTrace, retrievalTraceRelativePath } from '../storage/retrieval-traces.js';
 import { runtimePolicyIdentityForSnapshot } from '../storage/runtime-policy-publication.js';
 import { ControlVaultInputSchema } from '../storage/vault-native-codecs.js';
@@ -223,6 +227,7 @@ import {
 } from '../test-support/local-user.js';
 import {
   readTestNanoHostWorkerLease,
+  retainPreparedTestNanoHostSubmission,
   seedTestNanoHostWorkerLaunch,
   seedTestPreSubmitNativeWorkerEvidence,
   seedTestWorkerControlReceipt,
@@ -324,9 +329,9 @@ import {
 } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
+  createWorkerControlAcceptedRecordRecorder,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
-  recordWorkerControlAcceptedRecord,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
 import { assertCurrentWorkerCredentialAuthority } from './worker-credential-authority.js';
@@ -346,6 +351,7 @@ import {
 import {
   prepareWorkerTurnContextPackage,
   WorkerGovernanceTurnExecutor,
+  type WorkerGovernanceTurnExecutorOptions,
 } from './worker-governance-turn-executor.js';
 import { enterMcpCaptureCall } from './worker-mcp-capture.js';
 import { createDefaultWorkerMcpGateway, WorkerMcpGatewayCallError } from './worker-mcp-gateway.js';
@@ -450,6 +456,57 @@ async function recordExecutorAttempt(
     bindingRef: input.sandboxBindingRef,
     sessionCompatibilityKey: 'fixture-compatibility',
     now: () => input.admittedAt ?? '2026-07-15T00:00:02.000Z',
+  });
+}
+
+/** Supplies the precise owner handoff for tests whose external Worker is a model. */
+async function createAdmittedModeledWorkerExecutor(
+  options: WorkerGovernanceTurnExecutorOptions & { coreDb: CoreDb }
+) {
+  const { coreDb } = options;
+  const {
+    value: { owner },
+  } = await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest);
+  return new WorkerGovernanceTurnExecutor({
+    ...options,
+    readNanoHostEnvironment: owner.read,
+    commitNanoHostCloseout: owner.classifyRecovery,
+    async admitNanoHostSubmission({ attemptId, observedAt = new Date().toISOString() }) {
+      const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      if (readRetainedNanoHostSubmission(coreDb, attemptId))
+        return { state: 'inspect-original', attempt };
+      const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, attemptId)
+      );
+      if (!anchor || anchor.workspaceHandoffState !== 'complete')
+        throw new Error('The modeled Worker has no exact admitted materialization.');
+      const target = owner.readRuntimeTarget(anchor.runtimeTargetId);
+      if (target.state !== 'ready' || !target.value)
+        throw new Error('The modeled Worker has no admitted RuntimeTarget.');
+      retainPreparedTestNanoHostSubmission(coreDb, {
+        admission: requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId),
+        attemptId,
+        targetId: target.value.targetId,
+        generation: String(target.value.connectionGeneration),
+        observedAt,
+      });
+      seedTestNanoHostWorkerLaunch(
+        coreDb,
+        attemptId,
+        {
+          agentSessionId: anchor.agentSessionId,
+          packageSnapshotId: anchor.packageSnapshotId,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        observedAt
+      );
+      return {
+        state: 'admitted-now',
+        attempt: attempts.requireSchedulerExecutionAttempt(coreDb, attemptId),
+      };
+    },
   });
 }
 
@@ -705,6 +762,7 @@ async function createWorkerContextExecutorFixture(
     /** Publishes the preceding question through its native owner before this receiving Turn exists. */
     readonly prepareThread?: (store: FsStore, threadId: string) => Promise<void>;
     readonly captureValue?: 'on' | 'off';
+    readonly attemptAdmittedAt?: string;
     /** Exact owner-produced Artifact selected before admission and package preparation. */
     readonly selectedArtifact?: { readonly id: string; readonly artifactVersion: number };
     /** Native outcome and turn.start delivery have no Task checkpoint to prepare. */
@@ -850,8 +908,7 @@ async function createWorkerContextExecutorFixture(
   const agentSessionId = testEntityId('as', `as_context_${name}`);
   const sandboxBindingRef = `lease-binding:context-${name}`;
   await recordExecutorAttempt(coreDb, {
-    // This real Native backend uses the current physical clock, not the historical fixture default.
-    admittedAt: new Date().toISOString(),
+    admittedAt: options.attemptAdmittedAt ?? new Date().toISOString(),
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
     requestId,
@@ -2264,7 +2321,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
           .run('a'.repeat(64), entry.queueEntryId);
       }
       const beforeRecovery = store.getTurnById(turn.id);
-      const beforeAttempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      const readAttempt = () =>
+        proof === 'lineage-conflict'
+          ? observeExecutionAttempts(coreDb).find((row) => row.attempt_id === attemptId)
+          : attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      const beforeAttempt = readAttempt();
       const publish = vi.spyOn(store, 'emitTurnEvent');
       const createSession = vi.spyOn(store, 'createAgentSession');
       for (let pass = 0; pass < 2; pass += 1) {
@@ -2286,7 +2347,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }
         expect(store.getTurnById(turn.id)).toEqual(beforeRecovery);
         expect(store.getTurnEvents(turn.id)).toEqual(originalEvents);
-        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(beforeAttempt);
+        expect(readAttempt()).toEqual(beforeAttempt);
       }
       expect(publish).not.toHaveBeenCalled();
       expect(createSession).not.toHaveBeenCalled();
@@ -4129,7 +4190,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ).join('\n')
           : `${JSON.stringify(transcriptRecord)}\n`;
       };
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
@@ -4366,6 +4427,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('rechecks current artifact authority after collecting an accepted observation source', async () => {
     const f = await createWorkerContextExecutorFixture('observation-source-authority', {
+      attemptAdmittedAt: '2026-07-15T00:00:01.000Z',
       captureValue: 'on',
     });
     const backend = new FakeWorkerGovernanceBackend();
@@ -4431,7 +4493,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           },
         },
       });
-      await recordWorkerControlAcceptedRecord(f.coreDb, {
+      await createWorkerControlAcceptedRecordRecorder(f.coreDb).prepareObservation!(metadata);
+      seedTestWorkerControlReceipt(f.coreDb, {
         acceptedAt: pkg.createdAt,
         lineage: metadata.lineage,
         operation: 'event_append',
@@ -4459,7 +4522,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         observationSources: [{ metadata, sourcePath }],
       };
     });
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: f.coreDb,
@@ -4529,7 +4592,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return transcript;
     });
     const runtimeProvenanceImporter = vi.fn(importWorkerRuntimeProvenance);
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -4880,7 +4943,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       );
       return transcript;
     });
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5915,6 +5978,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
+        readNanoHostEnvironment: await readCommitFixtureEnvironment(coreDb),
       });
       const input = {
         agentSetup: createTestAgentSetup(),
@@ -6259,7 +6323,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           return await update(id, input);
         });
       }
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         // Keep the existing deterministic fixture clock across the native owner boundary.
         now: () => new Date().toISOString(),
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
@@ -7810,7 +7874,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         backend.calls.push('importRuntimeProvenance');
         return importWorkerRuntimeProvenance(input);
       });
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
@@ -8285,7 +8349,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           },
         ];
       });
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -8785,7 +8849,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     vi.spyOn(backend, 'collectWorkspaceChanges').mockResolvedValue([fixture.record]);
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => ({
         acceptedAt: '2026-07-15T00:00:03.000Z',
@@ -8999,7 +9063,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       );
       vi.spyOn(backend, 'submit').mockRejectedValue(primaryError);
       backend.failTeardown = cleanupFails;
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
@@ -9623,7 +9687,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }
         return await terminal(database, input);
       });
-    const executor = new WorkerGovernanceTurnExecutor({
+    const executor = await createAdmittedModeledWorkerExecutor({
       // Keep the existing deterministic fixture clock across the native owner boundary.
       now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
@@ -14349,7 +14413,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         timestamp = '2026-07-05T00:00:10.000Z';
         return nativeLaunch(...args);
       });
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
@@ -15155,7 +15219,9 @@ describe('credential carrier neutral placement acceptance', () => {
   ] as const)(
     'accepts a static file only with exact actual-protection evidence (%s)',
     async (fault) => {
-      const fixture = await createWorkerContextExecutorFixture(`carrier-neutral-${fault}`);
+      const fixture = await createWorkerContextExecutorFixture(`carrier-neutral-${fault}`, {
+        attemptAdmittedAt: '2026-07-15T00:00:01.000Z',
+      });
       const timestamp = '2026-07-15T00:00:03.000Z';
       let deliveryGateCalls = 0;
       let deliveryGateSettled = false;
@@ -15444,7 +15510,7 @@ describe('credential carrier neutral placement acceptance', () => {
             | undefined,
         };
       });
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
         backend,
         coreDb: fixture.coreDb,
@@ -15848,7 +15914,9 @@ describe('credential carrier unified Vault operation acceptance', () => {
   ] as const)(
     'uses current authority, generations, Policy, Audit and the shared mutation fence (%s)',
     async (ending) => {
-      const fixture = await createWorkerContextExecutorFixture(`carrier-operations-${ending}`);
+      const fixture = await createWorkerContextExecutorFixture(`carrier-operations-${ending}`, {
+        attemptAdmittedAt: '2026-07-15T00:00:01.000Z',
+      });
       const timestamp = '2026-07-15T00:00:03.000Z';
       const removalUnknown = ending === 'unknown' || ending === 'external-unknown';
       const workspaceId = workspaceIdForOwner(fixture.turn.owner);
@@ -16054,7 +16122,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
         ...(await originalSubmit(input)),
         credentialReceipts: input.credentialBindings?.map(proof),
       }));
-      const executor = new WorkerGovernanceTurnExecutor({
+      const executor = await createAdmittedModeledWorkerExecutor({
         backend,
         coreDb: fixture.coreDb,
         fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
