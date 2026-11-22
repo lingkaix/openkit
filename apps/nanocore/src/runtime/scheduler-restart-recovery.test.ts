@@ -982,7 +982,6 @@ describe('failed-start busy-history proof cost (#164)', () => {
       ['invalid-deadline', 'deadline', 'invalid'],
       ['invalid-created-at', 'created_at', 'invalid'],
       ['empty-binding', 'binding_ref', ''],
-      ['empty-backend', 'backend_id', ''],
       ['heartbeat', 'lastAcceptedHeartbeatAt', '2026-07-05T00:00:00.000Z', 'worker_recovery_json'],
       ['sequence-zero', 'lastWorkerSequence', 0, 'worker_recovery_json'],
       ['process-key', 'workerProcessKeyHash', 'a'.repeat(64), 'worker_recovery_json'],

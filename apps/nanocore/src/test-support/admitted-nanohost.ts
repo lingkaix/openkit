@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { prepareNanoHostOwner } from '../app.js';
 import type { CreateConfiguredTurnExecutorOptions } from '../runtime/turn-executor-factory.js';
@@ -57,6 +58,22 @@ export function readAdmittedTestNanoHost<Value>(
   return result.value;
 }
 
+/**
+ * Reads fixture evidence after any production NanoHost write in flight has been acknowledged.
+ * A fixture Harness polls like the real Harness; the admitted reader refuses reads during a pending write.
+ */
+export async function readAdmittedTestNanoHostSettled<Value>(
+  coreDb: CoreDb,
+  query: (sqlite: Database.Database) => Value
+): Promise<Value> {
+  for (let attempt = 0; ; attempt += 1) {
+    const result = getControlStoreWorkerClient().readAdmittedNanoHost(coreDb.dataRoot, query);
+    if (result.state === 'ready') return result.value;
+    if (attempt >= 1000) throw new Error(`NanoHost fixture read: ${result.reason}`);
+    await delay(5);
+  }
+}
+
 /** Changes fixture bytes while the test owns an admitted NanoHost opening and has paused its writers. */
 export function mutateAdmittedTestNanoHost<Value>(
   coreDb: CoreDb,
@@ -88,9 +105,9 @@ export async function seedAdmittedTestNanoHost(
  * fixtures that build the runtime by hand pass the same admitted owner entries production passes.
  * @param storage Ready admitted NanoHost storage of the fixture root.
  */
-export function testNanoHostRecoveryJoins(
-  storage: Extract<Awaited<ReturnType<typeof prepareNanoHostOwner>>, { state: 'ready' }>
-) {
+export function testNanoHostRecoveryJoins(storage: {
+  value: { owner: AdmittedTestNanoHostOwner };
+}) {
   const { owner } = storage.value;
   return {
     owner: { state: 'ready', value: owner },
@@ -112,9 +129,9 @@ export function testNanoHostRecoveryJoins(
  * identical): fixtures that construct `WorkerGovernanceTurnExecutor` by hand pass what the factory passes.
  * @param storage Ready admitted NanoHost storage of the fixture root.
  */
-export function testWorkerExecutorNanoHostJoins(
-  storage: Extract<Awaited<ReturnType<typeof prepareNanoHostOwner>>, { state: 'ready' }>
-) {
+export function testWorkerExecutorNanoHostJoins(storage: {
+  value: { owner: AdmittedTestNanoHostOwner };
+}) {
   const joins = testNanoHostRecoveryJoins(storage);
   return {
     readNanoHostEnvironment: (read) => storage.value.owner.read(read),

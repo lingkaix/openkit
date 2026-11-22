@@ -121,6 +121,9 @@ import {
   NATIVE_THREAD_LOGIN_FEATURE,
   NativeThreadLoginSchema,
 } from '../storage/native-thread-login.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import { nanoHostWorkerLineage } from '../storage/nanohost-worker-binding.js';
 import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
 import type { CoreSchedulerInput } from '../storage/control-store-admission-codecs.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
@@ -151,8 +154,11 @@ import {
   currentAdmittedTestNanoHostOwner,
   mutateAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
+  readAdmittedTestNanoHostSettled,
   reopenAdmittedTestNanoHost,
+  testNanoHostRecoveryJoins,
 } from '../test-support/admitted-nanohost.js';
+import { retainPreparedTestNanoHostSubmission } from '../test-support/nanohost-worker-lease.js';
 import {
   queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
   recordTestExecutionAttempt,
@@ -223,13 +229,8 @@ import {
 } from './nanohost-effect-identity.js';
 import * as harnessRecords from './nanohost-harness.js';
 import {
-  createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
-  dispatchNanoHostHarnessOperation,
-  markNanoHostHarnessOperationUnknown,
-  openNanoHostAgentSessionBinding,
   readNanoHostMeasuredHarnessIdentity,
-  settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import {
   getNanoHostRuntimeTarget,
@@ -265,8 +266,8 @@ import {
   getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
+import * as backendSessionWriters from './worker-backend-sessions.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
@@ -613,6 +614,35 @@ function bindNanoHostWorkerLineage(
   }
 }
 
+/** Publishes the Worker's final status through the admitted Native owner, as the Worker Control route does. */
+async function publishTestNanoHostWorkerFinal(
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
+  packageSnapshotId: string,
+  terminalData: Parameters<
+    NonNullable<ReturnType<typeof currentAdmittedTestNanoHostOwner>>['workerControlFinalStatus']
+  >[0]['payload']['terminalData'] = { status: 'completed', stopReason: 'completed' },
+  acceptedAt = '2026-09-06T00:00:01.000Z'
+) {
+  const { attemptId } = coreDb.sqlite
+    .prepare('SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE input_ref = ?')
+    .get(packageSnapshotId) as { readonly attemptId: string };
+  const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  if (!original || !owner) throw new Error('Fixture final has no original Core grant or admitted owner.');
+  // The Worker presents the control token issued to its Sandbox; the route admits only its hash.
+  const tokenHash = await readAdmittedTestNanoHostSettled(
+    coreDb,
+    (sqlite) => readNanoHostRecoveryLease(sqlite, original.lease).attempt.workerControlTokenHash
+  );
+  if (!tokenHash) throw new Error('Fixture final has no issued Worker control token.');
+  await owner.workerControlFinalStatus({
+    lineage: nanoHostWorkerLineage(original),
+    sandboxBindingRef: original.lease.grant.bindingRef!,
+    tokenHash,
+    payload: { terminalData, acceptedAt, eventAcceptedAt: acceptedAt, sequence: 1 },
+  });
+}
+
 /** Drives the actual preparation and submission crossings of a directly-authored Native fixture. */
 async function submitTestNanoHostTurn(
   coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
@@ -626,21 +656,47 @@ async function submitTestNanoHostTurn(
     )
     .get(materialization.packageSnapshotId) as { attemptId: string; workspaceId: string };
   expect(attempt, 'Native submission must name the prepared package owner.').toBeDefined();
+  // The configured executor moves the materialized session through its Workspace handoff before launch.
+  const session = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    sqlite
+      .prepare(
+        `SELECT state, workspace_handoff_state AS handoff FROM worker_backend_sessions WHERE attempt_id = ?`
+      )
+      .get(attempt.attemptId)) as { readonly state: string; readonly handoff: string } | undefined;
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  if (owner && session?.state === 'materializing')
+    await transitionWorkerBackendSessionState(coreDb, {
+      attemptId: attempt.attemptId,
+      fromState: 'materializing',
+      toState: 'materialized',
+    });
+  if (owner && session && session.handoff !== 'complete')
+    await owner.backendSession({ kind: 'handoff', attemptId: attempt.attemptId });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, attempt.workspaceId);
   try {
     await backend.prepareLaunch(materialization, workspaceDb);
   } finally {
     workspaceDb.sqlite.close();
   }
-  const submission = recordSchedulerExecutionOperation(coreDb, {
+  // Production retains the original submission decision as a Core journal grant
+  // (`owner.firstSubmission`); the admitted Harness `turn.start` requires it.
+  const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    sqlite
+      .prepare(
+        `SELECT target_id AS targetId, connection_generation AS generation
+         FROM nanohost_runtime_targets ORDER BY observed_at DESC LIMIT 1`
+      )
+      .get()) as { readonly targetId: string; readonly generation: number } | undefined;
+  const { queueEntryId } = attempts.requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+  const admission = attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+  retainPreparedTestNanoHostSubmission(coreDb, {
+    admission,
     attemptId: attempt.attemptId,
-    operationId: commandInputHash({
-      attemptId: attempt.attemptId,
-      inputRef: materialization.packageSnapshotId,
-      operation: 'submit',
-    }),
-    submission: true,
+    targetId: target?.targetId ?? `test-target-${admission.turnId}`,
+    generation: String(target?.generation ?? 1),
+    observedAt: new Date().toISOString(),
   });
+  const submission = attempts.requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
   const observation = await backend.submit({
     ...(credentialBindings ? { credentialBindings } : {}),
     ...schedulerExecutionCorrelation(submission),
@@ -663,7 +719,7 @@ async function waitForFactoryHarnessCommand(coreDb: Awaited<ReturnType<typeof cr
     });
   onTestFinished(() => observation.mockRestore());
   const dispatch = async () => {
-    const integration = readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+    const integration = await readAdmittedTestNanoHostSettled(coreDb, (sqlite) => sqlite
       .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
         FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`)
       .get()) as { readonly integrationRef: string } | undefined;
@@ -1383,12 +1439,68 @@ function observeExecutionAttempts(
     : [];
 }
 
+// Production writes Harness and backend-session rows through the admitted NanoHost owner (`turn-executor-factory.ts`
+// `harnessWriter`, the configured `nanoHostRecovery` joins). Fixture seeds of the same rows use that owner when the
+// root has one; a root without an admitted opening keeps the Core frame and its refusal.
+function fixtureHarnessWriter(coreDb: ReturnType<typeof openCoreDb>) {
+  return currentAdmittedTestNanoHostOwner(coreDb) ?? coreDb;
+}
+const createNanoHostHarnessRuntime = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.createNanoHostHarnessRuntime>[1]
+) => harnessRecords.createNanoHostHarnessRuntime(fixtureHarnessWriter(coreDb), input);
+const openNanoHostAgentSessionBinding = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.openNanoHostAgentSessionBinding>[1]
+) => harnessRecords.openNanoHostAgentSessionBinding(fixtureHarnessWriter(coreDb), input);
+const markNanoHostHarnessOperationUnknown = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.markNanoHostHarnessOperationUnknown>[1]
+) => harnessRecords.markNanoHostHarnessOperationUnknown(fixtureHarnessWriter(coreDb), input);
+const dispatchNanoHostHarnessOperation = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.dispatchNanoHostHarnessOperation>[1]
+) => {
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  return owner
+    ? owner.harnessTurnLifecycle.dispatch(input)
+    : harnessRecords.dispatchNanoHostHarnessOperation(coreDb, input);
+};
+const settleNanoHostHarnessOperation = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.settleNanoHostHarnessOperation>[1]
+) =>
+  harnessRecords.settleNanoHostHarnessOperation(
+    coreDb,
+    input,
+    currentAdmittedTestNanoHostOwner(coreDb)?.harnessTurnLifecycle
+  );
+const transitionWorkerBackendSessionState = async (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof backendSessionWriters.transitionWorkerBackendSessionState>[1]
+) => {
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  if (!owner) return backendSessionWriters.transitionWorkerBackendSessionState(coreDb, input);
+  const { now, ...facts } = input;
+  return owner.backendSession({
+    kind: 'transition',
+    ...facts,
+    ...(now ? { observedAt: now() } : {}),
+  }) as ReturnType<typeof backendSessionWriters.transitionWorkerBackendSessionState>;
+};
+
 /** Reads current authored Policy after each fixture creates its owned Workspace. */
 function createConfiguredWorkerLifecycleRuntime(
   options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
 ) {
+  // Production always joins the admitted NanoHost owner (`app.ts`, `index.ts`); the fixture runs that configuration.
+  const owner =
+    options.coreDb && !options.nanoHostRecovery
+      ? currentAdmittedTestNanoHostOwner(options.coreDb)
+      : undefined;
   return createWorkerLifecycleOwner({
     ...options,
+    ...(owner ? { nanoHostRecovery: testNanoHostRecoveryJoins({ value: { owner } }) } : {}),
     readRuntimeConfig:
       options.readRuntimeConfig ??
       (() =>
@@ -2744,9 +2856,9 @@ describe('createConfiguredTurnExecutor', () => {
     await backend.bindNativeHandleRecorder(environmentPackage.snapshotId, (digest) => {
       recordedDigests.push(digest);
     });
-    const integrationRef = () =>
+    const integrationRef = async () =>
       (
-        readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+        await readAdmittedTestNanoHostSettled(coreDb, (sqlite) => sqlite
           .prepare(
             `SELECT sandbox_integration_binding_ref AS integrationRef
              FROM sandbox_runtime_records ORDER BY created_at LIMIT 1`
@@ -2776,12 +2888,12 @@ describe('createConfiguredTurnExecutor', () => {
       let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>> = null;
       try {
         command = await dispatchNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: integrationRef(),
+          sandboxIntegrationBindingRef: await integrationRef(),
         });
         if (!command) {
           await queued.promise;
           command = await dispatchNanoHostHarnessOperation(coreDb, {
-            sandboxIntegrationBindingRef: integrationRef(),
+            sandboxIntegrationBindingRef: await integrationRef(),
           });
         }
       } finally {
@@ -2803,7 +2915,7 @@ describe('createConfiguredTurnExecutor', () => {
       };
       await settleNanoHostHarnessOperation(coreDb, {
         result,
-        sandboxIntegrationBindingRef: integrationRef(),
+        sandboxIntegrationBindingRef: await integrationRef(),
         timestamp: '2026-09-06T00:00:01.000Z',
       });
       await runtime.acceptNanoHostHarnessResult(result);
@@ -2834,7 +2946,7 @@ describe('createConfiguredTurnExecutor', () => {
     await options.beforeFirstTurn?.({
       coreDb,
       environmentPackage,
-      integrationRef: integrationRef(),
+      integrationRef: await integrationRef(),
       effects,
     });
     await Promise.race([
@@ -2864,17 +2976,7 @@ describe('createConfiguredTurnExecutor', () => {
         effects,
       };
     }
-    recordWorkerControlAcceptedRecord(coreDb, {
-      acceptedAt: '2026-09-06T00:00:01.000Z',
-      lineage: {
-        ...environmentPackage.scope,
-        packageSnapshotId: environmentPackage.snapshotId,
-      },
-      operation: 'final_status',
-      record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-      recordKey: '1',
-      sequence: 1,
-    });
+    await publishTestNanoHostWorkerFinal(coreDb, environmentPackage.snapshotId);
     const inspection = backend.inspectTerminalHarnessSession(
       backend.sessions.get(environmentPackage.snapshotId)
     );
@@ -9496,21 +9598,7 @@ describe('createConfiguredTurnExecutor', () => {
         state: 'started',
       });
       await launch;
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-09-06T00:00:01.000Z',
-        lineage: {
-          agentSessionId: environmentPackage.scope.agentSessionId,
-          packageSnapshotId: environmentPackage.snapshotId,
-          requestId: environmentPackage.scope.requestId,
-          threadId: environmentPackage.scope.threadId,
-          turnId: environmentPackage.scope.turnId,
-          workspaceId: environmentPackage.scope.workspaceId,
-        },
-        operation: 'final_status',
-        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-        recordKey: '1',
-        sequence: 1,
-      });
+      await publishTestNanoHostWorkerFinal(coreDb, environmentPackage.snapshotId);
       const terminalInspection = firstBackend.inspectTerminalHarnessSession(
         firstBackend.sessions.get(environmentPackage.snapshotId)
       );
@@ -12927,19 +13015,14 @@ describe('createConfiguredTurnExecutor', () => {
       interruptResult = completed ? null : settleNext('turn.interrupt', { state: 'interrupted' });
       // Native intent acknowledgement and actual Harness dispatch must precede final-status admission.
       if (interruptResult) await Promise.race([interruptDispatched.promise, interruptResult]);
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-09-06T00:00:01.000Z',
-        lineage: {
-          ...environmentPackage.scope,
-          packageSnapshotId: environmentPackage.snapshotId,
-        },
-        operation: 'final_status',
-        record: completed
-          ? { sequence: 1, status: 'completed', stopReason: 'completed' }
-          : { sequence: 1, status: 'interrupted', stopReason: 'aborted' },
-        recordKey: '1',
-        sequence: 1,
-      });
+      // The Worker's final status enters through the admitted Native owner, as production does.
+      await publishTestNanoHostWorkerFinal(
+        coreDb,
+        environmentPackage.snapshotId,
+        completed
+          ? { status: 'completed', stopReason: 'completed' }
+          : { status: 'interrupted', stopReason: 'aborted' }
+      );
       let inspectionState = 'pending';
       const inspection = backend
         .inspectTerminalHarnessSession(backend.sessions.get(environmentPackage.snapshotId))
@@ -16753,17 +16836,7 @@ describe('createConfiguredTurnExecutor', () => {
           nativeHandleDigest: null,
         });
         await launch;
-        recordWorkerControlAcceptedRecord(coreDb, {
-          acceptedAt: '2026-09-06T00:00:01.000Z',
-          lineage: {
-            ...environmentPackage.scope,
-            packageSnapshotId: environmentPackage.snapshotId,
-          },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-          recordKey: '1',
-          sequence: 1,
-        });
+        await publishTestNanoHostWorkerFinal(coreDb, environmentPackage.snapshotId);
         const inspection = backend.inspectTerminalHarnessSession(
           backend.sessions.get(environmentPackage.snapshotId)
         );
@@ -23529,7 +23602,13 @@ async function closeFactoryAttempt(
   }),
   nativeCoreOwner = false
 ) {
-  const native = getWorkerBackendSession(db, attemptId);
+  // An admitted fixture root keeps the backend session in NanoHost; read and hand off through its owner.
+  const owner = currentAdmittedTestNanoHostOwner(db);
+  const readSession = async () =>
+    owner
+      ? await readAdmittedTestNanoHostSettled(db, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+      : getWorkerBackendSession(db, attemptId);
+  const native = await readSession();
   if (native && native.state !== 'cleaned') {
     if (!['cleanup-pending', 'cleanup-failed', 'physical-cleaned'].includes(native.state))
       await transitionWorkerBackendSessionState(db, {
@@ -23537,15 +23616,17 @@ async function closeFactoryAttempt(
         fromState: native.state,
         toState: 'cleanup-pending',
       });
-    const stage = getWorkerBackendSession(db, attemptId)!;
+    const stage = (await readSession())!;
     if (stage.state !== 'physical-cleaned')
       await transitionWorkerBackendSessionState(db, {
         attemptId,
         fromState: stage.state,
         toState: 'physical-cleaned',
       });
-    if (getWorkerBackendSession(db, attemptId)!.workspaceHandoffState !== 'complete')
-      await markWorkerBackendWorkspaceHandoffComplete(db, { attemptId });
+    if ((await readSession())!.workspaceHandoffState !== 'complete')
+      await (owner
+        ? owner.backendSession({ kind: 'handoff', attemptId })
+        : markWorkerBackendWorkspaceHandoffComplete(db, { attemptId }));
     await transitionWorkerBackendSessionState(db, {
       attemptId,
       fromState: 'physical-cleaned',

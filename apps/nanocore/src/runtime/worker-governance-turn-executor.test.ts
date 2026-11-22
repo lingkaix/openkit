@@ -478,7 +478,15 @@ async function createAdmittedModeledWorkerExecutor(
   } = await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest);
   const finals = new Map<string, string>();
   if (completeModeledTurn) {
-    const collect = options.backend.collectTranscript.bind(options.backend);
+    // A case may already spy on the transcript; extend its implementation instead of re-entering the spy.
+    const current = options.backend.collectTranscript;
+    const implementation =
+      (vi.isMockFunction(current) ? current.getMockImplementation() : undefined) ??
+      (vi.isMockFunction(current)
+        ? (Object.getPrototypeOf(options.backend) as typeof options.backend).collectTranscript
+        : current);
+    const collect = (...args: Parameters<typeof current>) =>
+      implementation.apply(options.backend, args);
     vi.spyOn(options.backend, 'collectTranscript').mockImplementation(async (...args) => {
       const transcript = await collect(...args);
       const final = finals.get(args[0]);
@@ -4902,17 +4910,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const posts = vi.spyOn(NativeWorker.prototype, 'postMessage');
     const replies = vi.spyOn(NativeWorker.prototype, 'emit');
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      environmentBackend: { kind: 'openshell' },
-      now: () => '2026-07-15T00:00:03.000Z',
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => agentSessionId,
+        environmentBackend: { kind: 'openshell' },
+        now: () => '2026-07-15T00:00:03.000Z',
+      },
+      true
+    );
     try {
       await executor.startTurn(store, turn.id, 'Finish already admitted work', {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
@@ -5455,19 +5463,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
     ).toISOString();
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_governance_1' });
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_governance_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', 'as_governance_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => completedAt,
       },
-      now: () => completedAt,
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     await startWithExecutorAttempt(
       coreDb,
@@ -5676,20 +5684,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       };
       const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        awaitWorkerCompletion: async () => ({
-          acceptedAt: '2026-07-15T00:00:03.000Z',
-          status: kind === 'completed' ? 'completed' : 'failed',
-          stopReason: kind === 'completed' ? 'completed' : 'error',
-          diagnostics,
-        }),
-        backend: new FakeWorkerGovernanceBackend(),
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_failure_log'),
-        environmentBackend: { kind: 'openshell' },
-        now: () => '2026-07-15T00:00:03.000Z',
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          awaitWorkerCompletion: async () => ({
+            acceptedAt: '2026-07-15T00:00:03.000Z',
+            status: kind === 'completed' ? 'completed' : 'failed',
+            stopReason: kind === 'completed' ? 'completed' : 'error',
+            diagnostics,
+          }),
+          backend: new FakeWorkerGovernanceBackend(),
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_failure_log'),
+          environmentBackend: { kind: 'openshell' },
+          now: () => '2026-07-15T00:00:03.000Z',
+        },
+        'publish'
+      );
       try {
         await startWithExecutorAttempt(
           coreDb,
@@ -5944,23 +5955,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const agentSessionId = testEntityId('as', `as_command_id_${outcome}`);
       const requestId = 'human-approved-readonly-goal-step-20260917-th7';
       const backend = new FakeWorkerGovernanceBackend();
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        ...(outcome === 'failed'
-          ? {
-              awaitWorkerCompletion: async () => ({
-                acceptedAt: '2026-07-15T00:00:03.000Z',
-                status: 'failed' as const,
-                stopReason: 'error',
-              }),
-            }
-          : {}),
-        backend,
-        coreDb,
-        createAgentSessionId: () => agentSessionId,
-        environmentBackend: { kind: 'openshell' },
-        now: () => '2026-07-15T00:00:03.000Z',
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          ...(outcome === 'failed'
+            ? {
+                awaitWorkerCompletion: async () => ({
+                  acceptedAt: '2026-07-15T00:00:03.000Z',
+                  status: 'failed' as const,
+                  stopReason: 'error',
+                }),
+              }
+            : {}),
+          backend,
+          coreDb,
+          createAgentSessionId: () => agentSessionId,
+          environmentBackend: { kind: 'openshell' },
+          now: () => '2026-07-15T00:00:03.000Z',
+        },
+        outcome === 'failed' ? 'publish' : true
+      );
       try {
         await startWithExecutorAttempt(
           coreDb,
@@ -6019,6 +6033,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const agentSessionId = testEntityId('as', 'as_retained_1');
       const sandboxBindingRef = 'lease-binding:retained';
       await recordExecutorAttempt(coreDb, {
+        requestId: '00000000-0000-4000-8000-000000000256',
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
         sandboxBindingRef,
@@ -6029,18 +6044,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
         readThreadAgentSessionBinding: () => (retained ? { agentSessionId } : null),
       });
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        awaitWorkerCompletion: async () => ({
-          acceptedAt: '2026-07-15T00:00:03.000Z',
-          status: 'interrupted' as const,
-          stopReason: 'aborted',
-        }),
-        backend,
-        coreDb,
-        createAgentSessionId: () => agentSessionId,
-        now: () => '2026-07-15T00:00:03.000Z',
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          awaitWorkerCompletion: async () => ({
+            acceptedAt: '2026-07-15T00:00:03.000Z',
+            status: 'interrupted' as const,
+            stopReason: 'aborted',
+          }),
+          backend,
+          coreDb,
+          createAgentSessionId: () => agentSessionId,
+          now: () => '2026-07-15T00:00:03.000Z',
+        },
+        'publish'
+      );
 
       try {
         await executor.startTurn(store, turn.id, 'Interrupt a resident worker', {
@@ -6880,31 +6898,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
       testEntityId('as', 'as_resume_first'),
       testEntityId('as', 'as_resume_successor'),
     ];
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      awaitWorkerCompletion: async () => {
-        // The backend accepts the ready proof during the Turn, after materialization.
-        await record?.(digest, {
-          attachmentGeneration: 1,
-          storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
-          workSlotRef: workerStorageDefaultWorkSlotRef(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          ),
-        });
-        return {
-          acceptedAt: '2026-07-15T00:00:03.000Z',
-          status: 'completed' as const,
-          stopReason: 'completed',
-        };
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        awaitWorkerCompletion: async () => {
+          // The backend accepts the ready proof during the Turn, after materialization.
+          await record?.(digest, {
+            attachmentGeneration: 1,
+            storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
+            workSlotRef: workerStorageDefaultWorkSlotRef(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            ),
+          });
+          return {
+            acceptedAt: '2026-07-15T00:00:03.000Z',
+            status: 'completed' as const,
+            stopReason: 'completed',
+          };
+        },
+        backend,
+        coreDb,
+        now: () => '2026-07-15T00:00:03.000Z',
       },
-      backend,
-      coreDb,
-      now: () => '2026-07-15T00:00:03.000Z',
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      'publish'
+    );
     const run = async (agentSessionId: string, index: number) => {
       const turn = await createAssignedTurn(
         store,
@@ -6916,6 +6934,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await recordExecutorAttempt(coreDb, {
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+        requestId: `00000000-0000-4000-8000-00000000026${index}`,
         sandboxBindingRef,
         threadId: turn.threadId,
         turnId: turn.id,
@@ -7145,13 +7164,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await recordNativeResumeFixturePackage(coreDb, store, session.id);
     }
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
-      // Keep the existing deterministic fixture clock across the native owner boundary.
-      now: () => new Date().toISOString(),
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-    });
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        // Keep the existing deterministic fixture clock across the native owner boundary.
+        now: () => new Date().toISOString(),
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+      },
+      true
+    );
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7751,20 +7773,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
       importedCapture = input.capture;
       return importWorkerRuntimeProvenance(input);
     });
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_governance_provenance_success_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', 'as_governance_provenance_success_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => '2026-07-13T00:00:01.000Z',
+        runtimeProvenanceImporter,
       },
-      now: () => '2026-07-13T00:00:01.000Z',
-      runtimeProvenanceImporter,
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     try {
       await startWithExecutorAttempt(
@@ -8191,20 +8213,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Run trusted worker inference'
     );
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
-      // Keep the existing deterministic fixture clock across the native owner boundary.
-      now: () => new Date().toISOString(),
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      coreDb,
-      backend,
-      createAgentSessionId: () => testEntityId('as', 'as_governance_relay_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        // Keep the existing deterministic fixture clock across the native owner boundary.
+        now: () => new Date().toISOString(),
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        coreDb,
+        backend,
+        createAgentSessionId: () => testEntityId('as', 'as_governance_relay_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
       },
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     await startWithExecutorAttempt(
       coreDb,
@@ -9096,19 +9118,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Run with sandbox access'
     );
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_sandbox_access_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', 'as_sandbox_access_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => '2026-06-16T00:00:00.000Z',
       },
-      now: () => '2026-06-16T00:00:00.000Z',
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     await startWithExecutorAttempt(
       coreDb,
@@ -10306,17 +10328,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
           ...(overrideBase ? { workspaceBaseCommits: { repo_default: acceptedCommit } } : {}),
         };
       });
-      const executor = new WorkerGovernanceTurnExecutor({
-        // Keep the existing deterministic fixture clock across the native owner boundary.
-        now: () => new Date().toISOString(),
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_source_ref_1'),
-        environmentBackend: {
-          kind: 'openshell',
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          // Keep the existing deterministic fixture clock across the native owner boundary.
+          now: () => new Date().toISOString(),
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_source_ref_1'),
+          environmentBackend: {
+            kind: 'openshell',
+          },
         },
-      });
+        true
+      );
 
       // Observe the real finalized-package and Workspace-handoff consumers at the native effect.
       const launch = backend.submit.bind(backend);
@@ -10996,13 +11021,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
         });
         return nativeLaunch(...args);
       });
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb: fixture.coreDb,
-        createAgentSessionId: () => fixture.agentSessionId,
-        now: () => now,
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb: fixture.coreDb,
+          createAgentSessionId: () => fixture.agentSessionId,
+          now: () => now,
+        },
+        true
+      );
       const start = () =>
         executor.startTurn(fixture.store, fixture.turn.id, triggerInput, {
           attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
@@ -13498,6 +13526,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_governance_binding_1');
     const sandboxBindingRef = 'lease-binding:executor_1';
     await recordExecutorAttempt(coreDb, {
+      requestId: '00000000-0000-4000-8000-000000000214',
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -13505,19 +13534,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_unexpected_random_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', 'as_unexpected_random_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => '2026-07-15T00:00:03.000Z',
       },
-      now: () => '2026-07-15T00:00:03.000Z',
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     await executor.startTurn(store, turn.id, 'Run with scheduler binding', {
       attemptId: testEntityId('attempt', `lease_${turn.id}`),
@@ -13723,6 +13752,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:anchor-order';
     await recordExecutorAttempt(coreDb, {
+      requestId: '00000000-0000-4000-8000-000000000250',
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -13744,19 +13774,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       return materialize(args[0], { ...args[1], beforeMaterialization: undefined });
     });
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => agentSessionId,
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => '2026-07-15T00:00:03.000Z',
       },
-      now: () => '2026-07-15T00:00:03.000Z',
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+      true
+    );
 
     try {
       await executor.startTurn(store, turn.id, 'Anchor before effect', {
@@ -14031,19 +14061,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ...planSession(environmentPackage),
       backendSessionId: `openkit-${environmentPackage.snapshotId}`,
     });
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      policyInterception: () => interception,
-      readRuntimeConfig: () => configuration,
-      now: () => timestamp,
-      vaultBackend: () => vaultUnlockState.backend(),
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => agentSessionId,
+        policyInterception: () => interception,
+        readRuntimeConfig: () => configuration,
+        now: () => timestamp,
+        vaultBackend: () => vaultUnlockState.backend(),
+      },
+      true
+    );
     const agentSetup = createTestAgentSetup({
       credentialDeclarations: [
         {
@@ -14207,22 +14237,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
       const supply = vi.spyOn(backend, 'deliverProviderCredentialBinding');
       const submit = vi.spyOn(backend, 'submit');
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        policyInterception: () => interception,
-        createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
-        readRuntimeConfig: () => configuration,
-        environmentBackend: {
-          kind: 'openshell',
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb,
+          policyInterception: () => interception,
+          createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
+          readRuntimeConfig: () => configuration,
+          environmentBackend: {
+            kind: 'openshell',
+          },
+          now: () => timestamp,
+          vaultBackend: () => vaultUnlockState.backend(),
         },
-        now: () => timestamp,
-        vaultBackend: () => vaultUnlockState.backend(),
-        ...testWorkerExecutorNanoHostJoins(
-          await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-        ),
-      });
+        true
+      );
 
       try {
         const run = startWithExecutorAttempt(
@@ -14411,19 +14441,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const backend = new FakeWorkerGovernanceBackend();
       const interception = new PolicyInterception();
       const supply = vi.spyOn(backend, 'deliverCredentialBinding');
-      const fixtureExecutor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        policyInterception: () => interception,
-        readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
-        createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_file_1'),
-        environmentBackend: {
-          kind: 'openshell',
+      const fixtureExecutor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb,
+          policyInterception: () => interception,
+          readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
+          createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_file_1'),
+          environmentBackend: {
+            kind: 'openshell',
+          },
+          now: () => timestamp,
+          vaultBackend: () => vaultUnlockState.backend(),
         },
-        now: () => timestamp,
-        vaultBackend: () => vaultUnlockState.backend(),
-      });
+        true
+      );
 
       const effects: NanoHostSessionEffectRequest[] = [];
       const production =
@@ -16060,17 +16093,20 @@ it.each(['unchanged', 'other-grant-revoked'] as const)(
         })),
       });
       await admitTestNativeEnvironmentForRoot(fixture.coreDb, agentSetup.manifest);
-      const executor = new WorkerGovernanceTurnExecutor({
-        backend,
-        coreDb: fixture.coreDb,
-        policyInterception: () => interception,
-        readRuntimeConfig: () => loadRuntimeConfig(fixture.coreDb.dataRoot),
-        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-        createAgentSessionId: () => fixture.agentSessionId,
-        environmentBackend: { kind: 'openshell' },
-        now: () => timestamp,
-        vaultBackend: () => vault.backend(),
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          backend,
+          coreDb: fixture.coreDb,
+          policyInterception: () => interception,
+          readRuntimeConfig: () => loadRuntimeConfig(fixture.coreDb.dataRoot),
+          fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+          createAgentSessionId: () => fixture.agentSessionId,
+          environmentBackend: { kind: 'openshell' },
+          now: () => timestamp,
+          vaultBackend: () => vault.backend(),
+        },
+        true
+      );
       let refused = false;
       let launchFailure: unknown;
       await executor
