@@ -20,12 +20,25 @@ import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js'
 
 let stack: IsolatedWebStack | null = null;
 let fixtureRoot: string | null = null;
+let previousSimulatorFlag: string | undefined;
+
+test.beforeEach(() => {
+  previousSimulatorFlag = process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+  process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+});
+
 test.afterEach(async () => {
-  await stack?.stop();
-  stack = null;
-  await shutdownControlStoreWorkerClient();
-  if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
-  fixtureRoot = null;
+  try {
+    await stack?.stop();
+    stack = null;
+    await shutdownControlStoreWorkerClient();
+    if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+    fixtureRoot = null;
+  } finally {
+    if (previousSimulatorFlag === undefined)
+      delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    else process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = previousSimulatorFlag;
+  }
 });
 
 /** Native browser actions must use the retained exact source and preserve drafts on local failure. */
@@ -129,7 +142,6 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     const requireCore = createRequire(new URL('../../nanocore/package.json', import.meta.url));
     const [
       { Hono },
-      { Client, StreamableHTTPClientTransport },
       { loadRuntimeConfig },
       { resolveAgentSetup },
       { resolveAgentEnvironmentPackageMetadata, resolveAgentSessionCompatibilityKey },
@@ -137,13 +149,12 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       { SimulatedTurnExecutor },
       { createTestQueueEntry },
       attempts,
-      nativeAttempts,
+      { dispatchOpenkitGenerativeTool },
       { createDefaultWorkerControlGateway },
       { createDefaultWorkerMcpGateway },
       { registerWorkerMcpRoutes },
     ] = await Promise.all([
       import(requireCore.resolve('hono')),
-      import(requireCore.resolve('@modelcontextprotocol/client')),
       import('../../nanocore/dist/config/runtime-config.js'),
       import('../../nanocore/dist/agents/setup-resolver.js'),
       import('../../nanocore/dist/runtime/agent-environment.js'),
@@ -151,7 +162,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       import('../../nanocore/dist/lib/simulator.js'),
       import('../../nanocore/dist/test-support/scheduler-admissions.js'),
       import('../../nanocore/dist/runtime/execution-attempt-records.js'),
-      import('../../nanocore/dist/runtime/nanohost-attempt-records.js'),
+      import('../../nanocore/dist/runtime/openkit-generative-mcp.js'),
       import('../../nanocore/dist/app.js'),
       import('../../nanocore/dist/runtime/worker-mcp-gateway.js'),
       import('../../nanocore/dist/worker-mcp-routes.js'),
@@ -226,7 +237,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     const { reopenAdmittedTestNanoHost } = await import(
       '../../nanocore/dist/test-support/admitted-nanohost.js'
     );
-    await reopenAdmittedTestNanoHost(coreDb);
+    const nanoHostStorage = await reopenAdmittedTestNanoHost(coreDb);
     const entered = Promise.withResolvers<void>();
     const simulator = new SimulatedTurnExecutor({ coreDb });
     const submit = simulator.submit.bind(simulator);
@@ -262,78 +273,67 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       scope: 'server',
       value: 'on',
     });
-    const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+    const workerControlGateway = createDefaultWorkerControlGateway(
+      coreDb,
+      undefined,
+      nanoHostStorage
+    );
+    // The simulator supplies a package but no physical route lease.
+    // Check bearer rejection at the relay, then exercise the actual Tool projection at its trusted entry.
     const registration = workerControlGateway.registerSession(environmentPackage, {
       sandboxBindingRef,
     });
-    nativeAttempts.bindNanoHostAttemptRouteTokenHashes(coreDb, {
-      attemptId: attempt.attemptId,
-      sandboxBindingRef,
-      workerControlTokenHash: registration.workerControlTokenHash,
-      workerInferenceTokenHash: registration.workerInferenceTokenHash,
-      workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
-    });
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const route = new Hono();
-    registerWorkerMcpRoutes({
-      app: route,
-      coreDb,
-      store,
-      runtimeConfig: () => runtime,
-      workerControlGateway,
-      workerMcpGateway,
-    });
-    const deniedWorker = await route.request('/api/worker-capabilities/mcp/openkit-generative', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer invalid-local-fixture-token',
-        'content-type': 'application/json',
-      },
-      body: '{}',
-    });
-    expect(deniedWorker.status).toBe(401);
-    const worker = new Client({ name: 'generative-browser-local-worker', version: '1.0.0' });
     try {
-      await worker.connect(
-        new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-generative'),
+      const route = new Hono();
+      registerWorkerMcpRoutes({
+        app: route,
+        coreDb,
+        store,
+        runtimeConfig: () => runtime,
+        workerControlGateway,
+        workerMcpGateway,
+      });
+      const deniedWorker = await route.request('/api/worker-capabilities/mcp/openkit-generative', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${registration.workerCapabilityToken}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      });
+      expect(deniedWorker.status).toBe(401);
+      const invokeTool = (name: string, args: Record<string, unknown>) =>
+        dispatchOpenkitGenerativeTool(
           {
-            fetch: (input: RequestInfo | URL, init?: RequestInit) =>
-              route.fetch(new Request(input, init)),
-            requestInit: {
-              headers: { authorization: `Bearer ${registration.workerCapabilityToken}` },
-            },
-          }
-        )
-      );
-      expect((await worker.listTools()).tools.map((tool: { name: string }) => tool.name)).toContain(
-        'kernel_records_update'
-      );
-      const createdApp = await worker.callTool({ name: 'kernel_apps_create', arguments: schema });
+            ...context,
+            coreDb,
+            packageSnapshotId: environmentPackage.snapshotId,
+            scope: environmentPackage.scope,
+            protocolRequestId: randomUUID(),
+          },
+          name,
+          args
+        );
+      const createdApp = await invokeTool('kernel_apps_create', { ...schema });
       app = createdApp.structuredContent as CreateLightAppResponse;
       appId = app.appId;
-      const createdRecord = await worker.callTool({
-        name: 'kernel_records_create',
-        arguments: {
-          appId,
-          collection: 'notes',
-          schemaRevision: app.schemaRevision,
-          data: { note: 'Before Worker update' },
-        },
+      const createdRecord = await invokeTool('kernel_records_create', {
+        appId,
+        collection: 'notes',
+        schemaRevision: app.schemaRevision,
+        data: { note: 'Before Worker update' },
       });
       record = createdRecord.structuredContent as LightAppRecord;
       recordId = record.id;
       expect(record).toMatchObject({ revision: 1, schemaRevision: app.schemaRevision });
-      const updated = await worker.callTool({
-        name: 'kernel_records_update',
-        arguments: {
-          appId,
-          collection: 'notes',
-          recordId,
-          schemaRevision: app.schemaRevision,
-          expectedRecordRevision: record.revision,
-          data: { note: 'Original local note' },
-        },
+      const updated = await invokeTool('kernel_records_update', {
+        appId,
+        collection: 'notes',
+        recordId,
+        schemaRevision: app.schemaRevision,
+        expectedRecordRevision: record.revision,
+        data: { note: 'Original local note' },
       });
       expect(updated.structuredContent).toMatchObject({
         id: recordId,
@@ -342,7 +342,6 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
         data: { note: 'Original local note' },
       });
     } finally {
-      await worker.close().catch(() => undefined);
       workerControlGateway.unregisterSession(environmentPackage.snapshotId);
       await workerMcpGateway.close();
     }

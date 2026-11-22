@@ -875,7 +875,7 @@ setTimeout(() => process.exit(23), 2000);
     }
     const failure = await failurePromise;
     expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain('Process exited before');
+    expect((failure as Error).message).toMatch(/Process exited before.*web\.reason-unavailable/);
 
     let nanoCoreAlive = true;
     try {
