@@ -16,10 +16,14 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import {
   parseWorkspaceBackupManifest,
   parseWorkspaceBackupSeal,
@@ -76,6 +80,9 @@ async function fixture(history = false, withPending = true, pendingCount = 1) {
   roots.push(root);
   const dataRoot = join(root, 'source');
   const store = await createDemoStore({ dataRoot });
+  await expect(
+    getControlStoreWorkerClient().provisionServerOwner(dataRoot, nanoHostStoreDescriptor)
+  ).resolves.toEqual({ state: 'ready', owner: 'nanohost' });
   const core = openCoreDb(dataRoot);
   const ownerId = ensureLocalUser(core);
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: ownerId });

@@ -6,9 +6,13 @@ import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
+import { nanoHostStoreDescriptor } from './nanohost-store-descriptor.js';
 import {
   parseWorkspaceBackupManifest,
   parseWorkspaceBackupSeal,
@@ -404,6 +408,9 @@ describe('D0-4: real offline capture and verification', () => {
     const parent = root();
     const dataRoot = join(parent, 'source');
     await createDemoStore({ dataRoot });
+    await expect(
+      getControlStoreWorkerClient().provisionServerOwner(dataRoot, nanoHostStoreDescriptor)
+    ).resolves.toEqual({ state: 'ready', owner: 'nanohost' });
     const db = openCoreDb(dataRoot);
     try {
       const ownerUserId = ensureLocalUser(db);
