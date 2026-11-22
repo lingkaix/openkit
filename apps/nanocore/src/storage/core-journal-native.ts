@@ -14,7 +14,10 @@ import {
   readRetainedV1,
 } from '@openkit/protocol';
 import { policyDigest, sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
-import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
+import {
+  buildWorkerCanonicalTerminalEventRecord,
+  WorkerCanonicalTerminalEventDataSchema,
+} from '@openkit/worker-protocol';
 import {
   auditEventFromRow,
   prepareServerAuditEvent,
@@ -94,6 +97,7 @@ import type {
   ExecutionGrant,
   ExecutionHandoff,
   ExecutionProofIntent,
+  ExecutionProofReceipt,
   NanoHostCoreReads,
 } from './control-kernel-port.js';
 import type { KernelExecutionEvidence } from './control-kernel-proof-codecs.js';
@@ -129,8 +133,10 @@ import {
 } from './nanohost-submitted-lease.js';
 import {
   inspectNanoHostWorkerBinding,
+  matchesNanoHostWorkerLineage,
   nanoHostWorkerBindingLiveness,
   nanoHostWorkerCancellationFinalEligible,
+  nanoHostWorkerLineage,
 } from './nanohost-worker-binding.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
@@ -1082,6 +1088,42 @@ export function admitNanoHostWorkerFinalInDb(
   })();
 }
 
+/** The deterministic `worker-final-accepted` receipt identity for one original Core intake. */
+function acceptedNanoHostFinalReceiptIntent(
+  deploymentId: string,
+  intake: NanoHostWorkerFinalDecision,
+  sequence: number
+) {
+  const { grant } = intake;
+  const proof = {
+    kind: 'submission',
+    disposition: 'accepted',
+    evidence: {
+      backendId: 'nanohost',
+      ref: `native-final/v1:${grant.attemptId}:${sequence}`,
+      digest: commandInputHash({
+        fingerprint: intake.fingerprint,
+        acceptedAt: intake.acceptedAt,
+        eventAcceptedAt: intake.eventAcceptedAt,
+      }),
+    },
+  } as const;
+  const occurrence = {
+    deploymentId,
+    sourceOwner: 'nanohost',
+    verb: 'apply-execution-proof',
+    occurrenceKey: `worker-final-accepted:${grant.operationId}`,
+  } as const;
+  const intent: ExecutionProofIntent = {
+    ...occurrence,
+    requestId: storageRequestId(occurrence),
+    target: grant,
+    expectedGeneration: grant.generation,
+    inputDigest: sha256CanonicalJson(proof),
+  };
+  return { proof, intent };
+}
+
 /** Observes the exact accepted Native final after FULL independently of intake, handoff and release. */
 export function observeAcceptedNanoHostFinalInDb(
   db: CoreDb,
@@ -1095,32 +1137,11 @@ export function observeAcceptedNanoHostFinalInDb(
     const intake = readCoreWorkerFinalIntake(db, grant, input);
     if (!intake) return { state: 'unknown' };
     const verifyNative = () => hasExactNativeWorkerFinal(sqlite, input, intake);
-    const proof = {
-      kind: 'submission',
-      disposition: 'accepted',
-      evidence: {
-        backendId: 'nanohost',
-        ref: `native-final/v1:${grant.attemptId}:${input.payload.sequence}`,
-        digest: commandInputHash({
-          fingerprint: intake.fingerprint,
-          acceptedAt: intake.acceptedAt,
-          eventAcceptedAt: intake.eventAcceptedAt,
-        }),
-      },
-    } as const;
-    const occurrence = {
-      deploymentId: native.session.deploymentId,
-      sourceOwner: 'nanohost',
-      verb: 'apply-execution-proof',
-      occurrenceKey: `worker-final-accepted:${grant.operationId}`,
-    } as const;
-    const intent: ExecutionProofIntent = {
-      ...occurrence,
-      requestId: storageRequestId(occurrence),
-      target: grant,
-      expectedGeneration: grant.generation,
-      inputDigest: sha256CanonicalJson(proof),
-    };
+    const { proof, intent } = acceptedNanoHostFinalReceiptIntent(
+      native.session.deploymentId,
+      intake,
+      input.payload.sequence
+    );
     const original = inspectKernelProofReceipt(db, intent, true);
     if (original.state === 'settled')
       return verifyNative()
@@ -1155,6 +1176,278 @@ export function observeAcceptedNanoHostFinalInDb(
         })
       : { state: result.state };
   })();
+}
+
+/** Why K8b recovery holds an accepted Native final instead of handing it to closeout. */
+export type NanoHostAcceptedFinalHold = 'missing' | 'duplicate' | 'conflict' | 'unknown';
+
+/** The original proof that one accepted Native final carries across restart. */
+interface NanoHostAcceptedFinalProof {
+  readonly grant: NanoHostWorkerFinalDecision['grant'];
+  /** Lineage as carried by the accepted canonical terminal event. */
+  readonly lineage: ControlWorkerFinalStatusCommand['lineage'];
+  readonly sandboxBindingRef: string;
+  readonly sequence: number;
+  /** Original Core intake fingerprint, which binds the historical route hash and terminal data. */
+  readonly fingerprint: string;
+  /** Fingerprints held by the two Native sequence receipts. */
+  readonly finalFingerprint: string;
+  readonly eventFingerprint: string;
+  readonly acceptedAt: string;
+  readonly eventAcceptedAt: string;
+  /** Original physical session placement. The guarded re-read compares it in its own snapshot. */
+  readonly session: {
+    readonly runtimeTargetId: string;
+    readonly deploymentId: string;
+    readonly originPhysicalEpoch: string;
+    readonly backendSessionId: string;
+  };
+}
+
+/** Lineage columns of one Native record or sequence receipt. */
+interface NativeLineageColumns {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string | null;
+}
+
+function hasNativeLineageColumns(
+  row: NativeLineageColumns,
+  lineage: ControlWorkerFinalStatusCommand['lineage']
+): boolean {
+  return (
+    row.workspaceId === lineage.workspaceId &&
+    row.threadId === lineage.threadId &&
+    row.turnId === lineage.turnId &&
+    row.requestId === (lineage.requestId ?? null)
+  );
+}
+
+/** Opening sets revision 1, and each step insert and each settlement add one. A gap is unknown history. */
+function hasCompleteExecutionHistory(
+  db: CoreDb,
+  execution: NanoHostWorkerFinalDecision['grant']['execution']
+): boolean {
+  const { revision } = readExecutionJournalRoot(db, execution);
+  const { steps, ended } = db.sqlite
+    .prepare(`SELECT COUNT(*) AS steps, COALESCE(SUM(state <> 'intent'), 0) AS ended
+    FROM control_execution_steps WHERE execution_id=?`)
+    .get(execution.executionId) as { steps: number; ended: number };
+  return revision === 1 + steps + ended;
+}
+
+/** The Core submission retains its runtime target. A target never changes its deployment. */
+function hasOriginalSubmissionPlacement(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  grant: NanoHostWorkerFinalDecision['grant'],
+  session: NanoHostAcceptedFinalProof['session']
+): boolean {
+  const step = db.sqlite
+    .prepare(
+      'SELECT step_id AS stepId FROM control_execution_steps WHERE execution_id=? AND invocation_id=?'
+    )
+    .get(grant.execution.executionId, grant.operationId) as { stepId: string } | undefined;
+  if (!step) return false;
+  const submit = readExecutionJournalInvocation(db, {
+    execution: grant.execution,
+    stepId: step.stepId,
+  });
+  const target = getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+  return (
+    submit.control.target?.targetId === session.runtimeTargetId &&
+    target?.deploymentId === session.deploymentId
+  );
+}
+
+/** The verified commitment that K8b hands to the guarded closeout read. */
+export type NanoHostAcceptedFinalCommitment = NanoHostAcceptedFinalProof & {
+  readonly state: 'settled';
+  readonly receipt: Extract<
+    StorageReceiptLookup<ExecutionProofReceipt>,
+    { state: 'settled' }
+  >['receipt'];
+};
+
+/**
+ * One inspect-only K8b readback of an accepted Native final.
+ * `settled` is the only result that permits closeout. `native-only` means that the Native pair matches the
+ * original Core intake and that complete Core history proves the `worker-final-accepted` receipt absent.
+ */
+export type NanoHostAcceptedFinalReadback =
+  | NanoHostAcceptedFinalCommitment
+  | (NanoHostAcceptedFinalProof & { readonly state: 'native-only'; readonly receipt: null })
+  | { readonly state: 'held'; readonly reason: NanoHostAcceptedFinalHold };
+
+/**
+ * Joins the original accepted Native final to its original Core intake and receipt without writing.
+ * Recovery never calls the deciding observer, which commits a receipt on absence. Missing, duplicate,
+ * unreadable or contradictory proof holds.
+ *
+ * @param db Core snapshot that holds the original submitted grant, intake and receipt.
+ * @param sqlite Admitted read-only NanoHost snapshot.
+ * @param attemptId Original submitted attempt.
+ */
+export function inspectAcceptedNanoHostFinalInDb(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string
+): NanoHostAcceptedFinalReadback {
+  const held = (reason: NanoHostAcceptedFinalHold) => ({ state: 'held', reason }) as const;
+  if (!sqlite.readonly) return held('unknown');
+  try {
+    const inspect = () =>
+      db.sqlite
+        .transaction((): NanoHostAcceptedFinalReadback => {
+          const original = readRetainedNanoHostSubmission(db, attemptId);
+          const route =
+            original && readNanoHostWorkerRouteBinding({ sqlite }, original.lease.grant);
+          if (!original || !route) return held('missing');
+          const { grant } = original.lease;
+          const expected = nanoHostWorkerLineage(original);
+          const records = sqlite
+            .prepare(`SELECT record_key AS recordKey, sequence, schema_version AS schemaVersion,
+          record_json AS recordJson, accepted_at AS acceptedAt
+          FROM worker_control_records
+          WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+            AND package_snapshot_id=? AND request_id IS ? AND operation='final_status'`)
+            .all(
+              expected.workspaceId,
+              expected.threadId,
+              expected.turnId,
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              expected.requestId ?? null
+            ) as {
+            recordKey: string;
+            sequence: number;
+            schemaVersion: unknown;
+            recordJson: string;
+            acceptedAt: string;
+          }[];
+          if (records.length === 0) return held('missing');
+          if (records.length !== 1) return held('duplicate');
+          const [final] = records as [(typeof records)[number]];
+          const { sequence } = final;
+          // Uniqueness is checked at the original terminal sequence, then its lineage and canonical key.
+          const events = sqlite
+            .prepare(`SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+          request_id AS requestId, record_key AS recordKey, schema_version AS schemaVersion,
+          record_json AS recordJson, accepted_at AS acceptedAt FROM worker_control_records
+          WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+            AND sequence=?`)
+            .all(
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              sequence
+            ) as (NativeLineageColumns & {
+            recordKey: string;
+            schemaVersion: unknown;
+            recordJson: string;
+            acceptedAt: string;
+          })[];
+          if (events.length === 0) return held('missing');
+          if (events.length !== 1) return held('duplicate');
+          const [terminal] = events as [(typeof events)[number]];
+          if (
+            !hasNativeLineageColumns(terminal, expected) ||
+            terminal.recordKey !== String(sequence)
+          )
+            return held('conflict');
+          // The Native pair verifier below rechecks both records, both receipts and both clocks.
+          const {
+            acceptedAt: _acceptedAt,
+            sequence: _sequence,
+            ...terminalData
+          } = readRetainedV1(final, () => JSON.parse(final.recordJson)) as Record<string, unknown>;
+          const event = readRetainedV1(terminal, () => JSON.parse(terminal.recordJson)) as {
+            readonly lineage?: ControlWorkerFinalStatusCommand['lineage'];
+          };
+          if (
+            final.recordKey !== String(sequence) ||
+            !event.lineage ||
+            !matchesNanoHostWorkerLineage(original, event.lineage)
+          )
+            return held('conflict');
+          // The carried lineage and the historical control route hash rebuild the original intake fingerprint.
+          const command: FinalCommand = {
+            lineage: event.lineage,
+            sandboxBindingRef: original.lease.attempt.bindingRef,
+            tokenHash: route.control,
+            payload: {
+              terminalData: WorkerCanonicalTerminalEventDataSchema.parse(terminalData),
+              sequence,
+              acceptedAt: final.acceptedAt,
+              eventAcceptedAt: terminal.acceptedAt,
+            },
+          };
+          const { native } = readOriginalWorkerFinalBinding(db, sqlite, command);
+          const session = {
+            runtimeTargetId: native.session.runtimeTargetId,
+            deploymentId: native.session.deploymentId,
+            originPhysicalEpoch: native.session.originPhysicalEpoch,
+            backendSessionId: native.session.backendSessionId,
+          };
+          // The receipt key uses the session deployment, so the original submission placement comes first.
+          if (!hasOriginalSubmissionPlacement(db, sqlite, grant, session)) return held('conflict');
+          const intake = readCoreWorkerFinalIntake(db, grant, command);
+          if (!intake) return held('missing');
+          if (!hasExactNativeWorkerFinal(sqlite, command, intake)) return held('conflict');
+          // Both Native sequence receipts must carry the original lineage, not only its fingerprints.
+          const receipts = sqlite
+            .prepare(`SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+          request_id AS requestId FROM worker_control_sequence_fingerprints
+          WHERE agent_session_id=? AND package_snapshot_id=? AND sequence=?
+            AND operation IN ('final_status', 'event_append')`)
+            .all(
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              sequence
+            ) as NativeLineageColumns[];
+          if (
+            receipts.length !== 2 ||
+            !receipts.every((row) => hasNativeLineageColumns(row, expected))
+          )
+            return held('conflict');
+          const { intent } = acceptedNanoHostFinalReceiptIntent(
+            session.deploymentId,
+            intake,
+            sequence
+          );
+          // Absence counts only when the retained steps account for every revision of the execution.
+          const receipt = inspectKernelProofReceipt(
+            db,
+            intent,
+            hasCompleteExecutionHistory(db, grant.execution)
+          );
+          if (receipt.state !== 'settled' && receipt.state !== 'absent') return held(receipt.state);
+          const { terminalData: data } = command.payload;
+          const proof: NanoHostAcceptedFinalProof = {
+            grant,
+            lineage: command.lineage,
+            sandboxBindingRef: command.sandboxBindingRef,
+            sequence,
+            fingerprint: intake.fingerprint,
+            finalFingerprint: canonicalJsonText({ ...data, lineage: command.lineage, sequence }),
+            eventFingerprint: canonicalJsonText(
+              buildWorkerCanonicalTerminalEventRecord({ data, lineage: command.lineage, sequence })
+            ),
+            acceptedAt: intake.acceptedAt,
+            eventAcceptedAt: intake.eventAcceptedAt,
+            session,
+          };
+          return receipt.state === 'settled'
+            ? { ...proof, state: 'settled', receipt: receipt.receipt }
+            : { ...proof, state: 'native-only', receipt: null };
+        })
+        .deferred();
+    // One deferred Native read transaction pins every Native record and receipt of this readback.
+    return sqlite.inTransaction ? inspect() : sqlite.transaction(inspect).deferred();
+  } catch (error) {
+    if (error instanceof WorkerFinalStatusRefusal) return held('conflict');
+    return held('unknown');
+  }
 }
 
 /** Reads the exact currently live route under the admitted Core and Native snapshots. */
