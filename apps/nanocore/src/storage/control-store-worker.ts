@@ -353,7 +353,12 @@ import {
   verifyNanoHostTerminalDrainAndRevocation,
 } from './nanohost-recovery-native.js';
 import { applyNanoHostSimulatorFinalStatus } from './nanohost-simulator-final.js';
-import { readOriginalNanoHostWorkerCoordinates } from './nanohost-worker-binding.js';
+import { readRetainedNanoHostSubmission } from './nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerBindingLiveness,
+  readOriginalNanoHostWorkerCoordinates,
+} from './nanohost-worker-binding.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import {
@@ -3657,7 +3662,33 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'access-token-verification') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = recordVerifiedOpenKitAccessTokenUse(owner.scopeDb, request.input);
+            const peer = request.nanoHostPeer;
+            const core = peer
+              ? requireCurrentKernelOpening(owner, peer.openingRequestId)
+              : owner.scopeDb;
+            const result = peer
+              ? withCurrentPeerRead(
+                  serverStoragePath(core.dataRoot, 'nanohost'),
+                  peer.ownerIdentity,
+                  (native) =>
+                    native
+                      .transaction(() =>
+                        recordVerifiedOpenKitAccessTokenUse(core, request.input, (subject, now) => {
+                          const original = readRetainedNanoHostSubmission(core, subject.attemptId);
+                          if (!original?.lease.grant.bindingRef) return false;
+                          const binding = inspectNanoHostWorkerBinding(native, original, {
+                            sandboxBindingRef: original.lease.grant.bindingRef,
+                            lineage: subject.lineage,
+                          });
+                          return (
+                            binding.status === 'accepted' &&
+                            nanoHostWorkerBindingLiveness(binding, now).status === 'accepted'
+                          );
+                        })
+                      )
+                      .deferred()
+                )
+              : recordVerifiedOpenKitAccessTokenUse(core, request.input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
