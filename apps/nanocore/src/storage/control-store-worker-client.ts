@@ -733,6 +733,7 @@ export interface NanoHostOwnerBinding
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
   waitForWorkerControlAcknowledgement(): Promise<void>;
+  afterWorkerControlAcknowledgement<Value>(read: () => Value): Promise<Value>;
   workerControlHeartbeat(
     input: ControlWorkerHeartbeatCommand
   ): Promise<ControlWorkerHeartbeatResult>;
@@ -4092,6 +4093,7 @@ class ControlStoreWorkerClient {
           releaseTerminalScopes,
           writeStorageAttachment,
           waitForWorkerControlAcknowledgement,
+          afterWorkerControlAcknowledgement,
           workerControlHeartbeat: (input) => {
             const original = structuredClone(input);
             return writeWorkerObservation((identity) =>

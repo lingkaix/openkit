@@ -1898,6 +1898,7 @@ export function registerWorkerInferenceRoutes({
   resolveGatewayProvider,
   runtimeConfig,
   workerControlGateway,
+  afterWorkerControlAcknowledgement,
   onRawOutputStop,
 }: {
   /** Hono application receiving the internal routes. */
@@ -1917,6 +1918,8 @@ export function registerWorkerInferenceRoutes({
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
   readonly exposureAvailable?: () => boolean;
+  /** Joins an in-flight serving write before rereading the original Worker authority. */
+  readonly afterWorkerControlAcknowledgement?: <Value>(read: () => Value) => Promise<Value>;
   /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
   readonly onRawOutputStop?: (
     scope: { workspaceId: string; threadId: string; turnId: string },
@@ -1931,6 +1934,8 @@ export function registerWorkerInferenceRoutes({
         403
       );
   };
+  const readWorkerAuthority = <Value>(read: () => Value) =>
+    afterWorkerControlAcknowledgement ? afterWorkerControlAcknowledgement(read) : read();
   const activeRawCalls = new Map<
     string,
     {
@@ -1962,13 +1967,10 @@ export function registerWorkerInferenceRoutes({
   ): Promise<Response> {
     const startedAt = performance.now();
     try {
-      const workerInferenceTokenHashAuthentication = {
-        tokenFamily: 'inference',
-      } as const;
-      const environmentPackage = workerControlGateway.authenticatePackageToken(
-        c.req.header('authorization') ?? null,
-        workerInferenceTokenHashAuthentication
-      );
+      const authorization = c.req.header('authorization') ?? null;
+      const authenticate = () =>
+        workerControlGateway.authenticatePackageToken(authorization, { tokenFamily: 'inference' });
+      const environmentPackage = await readWorkerAuthority(authenticate);
 
       assertExposureAvailable();
       rejectWorkerInferenceAuthorityHeaders(c.req.raw.headers);
@@ -1997,36 +1999,34 @@ export function registerWorkerInferenceRoutes({
       const runtimeOriginRef = runtimeHint
         ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
         : null;
-      const assertAuthority = () => {
-        workerControlGateway.authenticatePackageToken(
-          c.req.header('authorization') ?? null,
-          workerInferenceTokenHashAuthentication
-        );
-        if (
-          !coreDb ||
-          !currentWorkerLineageWorkspaceAuthority(
-            coreDb,
-            {
-              workspaceId: environmentPackage.scope.workspaceId,
-              threadId: environmentPackage.scope.threadId,
-              turnId: environmentPackage.scope.turnId,
-              agentSessionId: environmentPackage.scope.agentSessionId,
-              packageSnapshotId: environmentPackage.snapshotId,
-              triggerActor: environmentPackage.scope.triggerActor,
-            },
-            'llm.gateway.use',
-            true
-          )
-        ) {
-          throw new WorkerInferenceRouteError(
-            'worker_inference_unavailable',
-            'Worker inference durable attribution is unavailable.',
-            503
-          );
-        }
-        assertExposureAvailable();
-      };
-      assertAuthority();
+      const assertAuthority = () =>
+        readWorkerAuthority(() => {
+          authenticate();
+          if (
+            !coreDb ||
+            !currentWorkerLineageWorkspaceAuthority(
+              coreDb,
+              {
+                workspaceId: environmentPackage.scope.workspaceId,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                packageSnapshotId: environmentPackage.snapshotId,
+                triggerActor: environmentPackage.scope.triggerActor,
+              },
+              'llm.gateway.use',
+              true
+            )
+          ) {
+            throw new WorkerInferenceRouteError(
+              'worker_inference_unavailable',
+              'Worker inference durable attribution is unavailable.',
+              503
+            );
+          }
+          assertExposureAvailable();
+        });
+      await assertAuthority();
       let admittedRoute: LogicalModelSupply | null = null;
       try {
         admittedRoute = resolveLogicalModelSupply(
@@ -2410,7 +2410,7 @@ export function registerWorkerInferenceRoutes({
               rawObservers.push(rawObserver);
               durableCall.assertAuthority = async () => {
                 await execution.assertAuthority?.();
-                assertAuthority();
+                await assertAuthority();
               };
               const dispatchContext: LLMGatewayDispatchContext = {
                 openkitGatewayDispatch: 'worker_inference',
@@ -2440,7 +2440,7 @@ export function registerWorkerInferenceRoutes({
                         outputReserveTokens: final.outputReserveTokens,
                       });
                       await execution.assertAuthority?.();
-                      assertAuthority();
+                      await assertAuthority();
                     } catch (error) {
                       if (error instanceof ModelRequestAdmissionError) {
                         admissionFailure = error;

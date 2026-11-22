@@ -2489,6 +2489,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerWorkerInferenceRoutes({
     exposureAvailable: () =>
       operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
+    ...(nanoHostStorage.state === 'ready'
+      ? {
+          afterWorkerControlAcknowledgement:
+            nanoHostStorage.value.owner.afterWorkerControlAcknowledgement,
+        }
+      : {}),
     onRawOutputStop: (scope, reason) =>
       turnExecutor.interruptTurn(sharedStore, scope.turnId, {
         requestId: null,
