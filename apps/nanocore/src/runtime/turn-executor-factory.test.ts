@@ -11675,6 +11675,14 @@ describe('createConfiguredTurnExecutor', () => {
         readRuntimeConfig: () => configuration,
         vaultBackend: () => vaultUnlockState.backend(),
       });
+      // Revocation must commit its Sandbox admission drain through the admitted Native owner.
+      const nativeOwner = currentAdmittedTestNanoHostOwner(coreDb)!;
+      const harnessLifecycle = nativeOwner.harnessLifecycle.bind(nativeOwner);
+      const committedDrains: string[] = [];
+      const drains = vi.spyOn(nativeOwner, 'harnessLifecycle').mockImplementation(async (input) => {
+        await harnessLifecycle(input);
+        if (input.kind === 'sandbox.drain') committedDrains.push(input.sandboxBindingRef);
+      });
       const acceptCommand = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
       const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
       const app = createAppWithWorkspaceAuthority({
@@ -11788,6 +11796,7 @@ describe('createConfiguredTurnExecutor', () => {
                 expect.arrayContaining([expect.objectContaining(original)])
               );
             if (response.ok) {
+              expect(committedDrains).not.toEqual([]);
               expect(
                 [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
               ).toEqual([expect.objectContaining({ state: 'closed' })]);
@@ -12207,6 +12216,7 @@ describe('createConfiguredTurnExecutor', () => {
         );
         if (cleanupUnknown) {
           expect(response.ok).toBe(false);
+          expect(committedDrains).toContain(storageBefore.currentSandboxBindingRef);
           await admitted.execution.catch(() => undefined);
           for (const result of native.executor.releaseResults.filter(
             (release) => release.state === 'released'
@@ -12258,6 +12268,8 @@ describe('createConfiguredTurnExecutor', () => {
         } else if (binding === 'idle-contradiction') {
           // Vault lifecycle 9 and exact cleanup lineage forbid contacting a different physical Sandbox.
           expect(response.status).toBe(409);
+          // The admission drain is fail-closed; only the physical effects below need exact lineage.
+          expect(committedDrains).not.toEqual([]);
           await expect(response.clone().json()).resolves.toMatchObject({
             code: 'recovery_required',
           });
@@ -12279,6 +12291,7 @@ describe('createConfiguredTurnExecutor', () => {
           });
         } else {
           expect(response.status, await response.clone().text()).toBe(200);
+          expect(committedDrains).toContain(storageBefore.currentSandboxBindingRef);
           // Declaration Runtime Environment Visibility and Vault revocation acceptance require physical closure.
           expect(
             [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
@@ -12313,6 +12326,7 @@ describe('createConfiguredTurnExecutor', () => {
         native.peerFaults.failSandboxDelete = false;
         await admitted?.cleanup();
         commands.mockRestore();
+        drains.mockRestore();
         await native.restore();
         await shutdownControlStoreWorkerClient();
         coreDb.sqlite.close();

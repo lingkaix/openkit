@@ -730,6 +730,10 @@ export interface NanoHostOwnerBinding
   > {
   transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
   enrollTransport: NanoHostAdministratorEnroll;
+  /** Rechecks the current Core administrator, then commits the actor-free Native Token stage. */
+  administerTransport(
+    input: ControlNanoHostTransportInput
+  ): Promise<ControlNanoHostTransportResult>;
   readRuntimeTarget(
     targetId: string
   ): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
@@ -3616,24 +3620,21 @@ class ControlStoreWorkerClient {
           }
         });
 
-      const enrollTransport: NanoHostAdministratorEnroll = async (input) => {
-        const enrolled = ControlNanoHostTransportInputSchema.parse(input);
+      /** Rechecks the current Core administrator under the Core hold before the Native Token tuple. */
+      const asTransportAdministrator = <Value>(
+        actorFacts: Parameters<typeof nanoHostTransportAdminFacts>[0],
+        now: Date | undefined,
+        commit: () => Promise<Value>
+      ): Promise<Value> => {
         const isAdministrator = readers.isEnrollmentAdministrator;
-        if (
-          enrolled.kind !== 'enroll' ||
-          !enrolled.actor ||
-          enrolled.actor.userId !== enrolled.record.responsibleServerAdminActorId ||
-          enrolled.record.predecessorTokenId != null ||
-          !isAdministrator
-        )
-          throw new ControlStoreWorkerError('precondition', 'not-committed');
-        const actor = nanoHostTransportAdminFacts(enrolled.actor);
+        if (!isAdministrator) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const actor = nanoHostTransportAdminFacts(actorFacts);
         return withCoreHold(async () => {
           let authorized: boolean;
           try {
             const reader = openCoreReadDb(root);
             try {
-              authorized = isAdministrator(reader, actor, enrolled.record.now);
+              authorized = isAdministrator(reader, actor, now);
             } finally {
               reader.sqlite.close();
             }
@@ -3646,12 +3647,47 @@ class ControlStoreWorkerClient {
               cause: new ControlStoreWorkerError('precondition', 'not-committed'),
             });
           }
+          return commit();
+        });
+      };
+
+      const enrollTransport: NanoHostAdministratorEnroll = async (input) => {
+        const enrolled = ControlNanoHostTransportInputSchema.parse(input);
+        if (
+          enrolled.kind !== 'enroll' ||
+          !enrolled.actor ||
+          enrolled.actor.userId !== enrolled.record.responsibleServerAdminActorId ||
+          enrolled.record.predecessorTokenId != null
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        return asTransportAdministrator(enrolled.actor, enrolled.record.now, async () => {
           const result = (
             await write({ kind: 'transport', input: { kind: 'enroll', record: enrolled.record } })
           ).value;
           if (result.kind !== 'record') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         });
+      };
+
+      /** Commits one administrator Token stage after the same Core recheck as enrollment. */
+      const administerTransport: NanoHostOwnerBinding['administerTransport'] = async (input) => {
+        const local = ControlNanoHostTransportInputSchema.parse(input);
+        if (
+          (local.kind !== 'issue' &&
+            local.kind !== 'rotate' &&
+            local.kind !== 'revoke' &&
+            local.kind !== 'abort' &&
+            local.kind !== 'cutover' &&
+            local.kind !== 'decommission') ||
+          !local.actor
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const { actor, ...stage } = local;
+        return asTransportAdministrator(
+          actor,
+          'record' in stage ? stage.record.now : stage.now,
+          async () => (await write({ kind: 'transport', input: stage })).value
+        );
       };
 
       const withNativeReadForCore = <Value>(
@@ -4168,6 +4204,7 @@ class ControlStoreWorkerClient {
         value: {
           transport: async (input) => (await write({ kind: 'transport', input })).value,
           enrollTransport,
+          administerTransport,
           readWorkerCompletion,
           readRuntimeTarget,
           firstSubmission,
