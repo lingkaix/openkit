@@ -385,6 +385,7 @@ export interface CreateConfiguredTurnExecutorOptions {
         readonly owner: StorageResult<'nanohost', NanoHostLifecycleOwner>;
         readonly admitSubmission?: AdmitNanoHostSubmission;
         readonly commitCloseout?: WorkerGovernanceTurnExecutorOptions['commitNanoHostCloseout'];
+        readonly releaseTerminalScopes?: WorkerGovernanceTurnExecutorOptions['releaseTerminalScopes'];
         readonly readWorkerCompletion?: NonNullable<
           Parameters<typeof waitForWorkerControlFinalStatus>[2]
         >;
@@ -651,6 +652,8 @@ function createNanoHostWorkerLifecycleRuntime(
           readNanoHostEnvironment,
           admitNanoHostSubmission: nanoHostRecovery?.admitSubmission,
           commitNanoHostCloseout: nanoHostRecovery?.commitCloseout,
+          releaseTerminalScopes:
+            nanoHostOwner?.state === 'ready' ? nanoHostRecovery?.releaseTerminalScopes : undefined,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           ...(policyInterception ? { policyInterception } : {}),
           ...(goalTaskPolicy ? { goalTaskPolicy } : {}),

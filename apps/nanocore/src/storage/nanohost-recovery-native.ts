@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { canonicalJsonText } from '@openkit/protocol';
+import { canonicalJsonText, readRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import {
@@ -195,6 +195,77 @@ export function readNanoHostPhysicalCleanupReceipt(
   )
     return null;
   return { grant: lease.grant, session, target, observedAt: receipt.observedAt };
+}
+
+/** Proves the original Integration is drained and the exact historical route grant is revoked. */
+export function verifyNanoHostTerminalDrainAndRevocation(
+  sqlite: Database.Database,
+  lease: NanoHostRecoveryLease
+): boolean {
+  const { attempt, grant } = lease;
+  if (
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'accepted' ||
+    !attempt.fenceRef ||
+    attempt.attemptId !== grant.attemptId ||
+    attempt.turnId !== grant.turnId ||
+    attempt.backendId !== grant.backendId ||
+    attempt.operationId !== grant.operationId ||
+    attempt.inputRef !== grant.inputRef ||
+    attempt.bindingRef !== grant.bindingRef ||
+    attempt.deadline !== grant.deadline
+  )
+    return false;
+  const native = readNanoHostWorkerLease({ sqlite }, grant, attempt);
+  if (
+    !native ||
+    native.session.state !== 'cleaned' ||
+    native.session.workspaceHandoffState !== 'complete' ||
+    !native.session.physicalCleanedAt ||
+    attempt.fenceRef !== `worker-backend:${attempt.attemptId}:${native.session.physicalCleanedAt}`
+  )
+    return false;
+
+  // Historical route hashes remain evidence. Live route authorization requires the current open
+  // Core phase and launching Native placement, both revoked for this exact retained tuple.
+  if (
+    sqlite
+      .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+        WHERE current_attempt_id = ? OR current_turn_id = ? LIMIT 1`)
+      .get(attempt.attemptId, attempt.turnId) ||
+    sqlite
+      .prepare(`SELECT 1 FROM harness_instance_records WHERE harness_instance_id = ?
+        AND operation_id = ? AND operation_state IN ('queued', 'dispatched', 'unknown')`)
+      .get(native.binding.harnessInstanceId, native.binding.harnessOperationId)
+  )
+    return false;
+  const resident = sqlite
+    .prepare(`SELECT b.schema_version AS bindingVersion, h.schema_version AS harnessVersion,
+      (b.workspace_id = @workspaceId AND b.thread_id = @threadId AND
+       b.harness_instance_id = @harnessInstanceId AND
+       b.current_turn_id IS NULL AND b.current_attempt_id IS NULL AND
+       b.lifecycle_state IN ('open', 'closed') AND b.cleanup_state = 'clean' AND
+       h.lifecycle_state = 'open' AND h.drain_state = 'accepting' AND
+       s.runtime_target_id = @targetId AND s.origin_physical_epoch = @physicalEpoch AND
+       s.lifecycle_state = 'open' AND s.health_state = 'ready' AND
+       s.drain_state = 'accepting' AND s.cleanup_state = 'clean') AS clean
+      FROM agent_session_runtime_bindings b
+      LEFT JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+      LEFT JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+      WHERE b.agent_session_id = @agentSessionId`)
+    .get({
+      workspaceId: attempt.workspaceId,
+      threadId: attempt.threadId,
+      agentSessionId: attempt.agentSessionId,
+      harnessInstanceId: native.binding.harnessInstanceId,
+      targetId: native.session.runtimeTargetId,
+      physicalEpoch: native.session.originPhysicalEpoch,
+    }) as { bindingVersion: unknown; harnessVersion: unknown; clean: number | null } | undefined;
+  if (!resident) return true;
+  if (resident.clean !== 1) return false;
+  return readRetainedV1({ schemaVersion: resident.bindingVersion }, () =>
+    readRetainedV1({ schemaVersion: resident.harnessVersion }, () => true)
+  );
 }
 
 /** The lifecycle writer supplies the first liveness tuple with the original granted route binding.
