@@ -5,7 +5,6 @@ import { markSchedulerExecutionAttemptClosing } from '../runtime/execution-attem
 import { resolveNanoHostAttemptTokenBinding } from '../runtime/nanohost-attempt-records.js';
 import {
   getWorkerControlAcceptedFinalStatus,
-  hasPendingWorkerCancellationFinal,
   resolveWorkerControlFinalStatusTokenBinding,
   writeWorkerControlAcceptedRecord,
 } from '../runtime/worker-control-records.js';
@@ -23,7 +22,10 @@ import {
   type NanoHostWorkerFinalDecision,
   nanoHostWorkerFinalDecisionFingerprint,
 } from './nanohost-submitted-lease.js';
-import { inspectNanoHostWorkerBinding } from './nanohost-worker-binding.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerCancellationFinalEligible,
+} from './nanohost-worker-binding.js';
 import {
   type ControlWorkerFinalStatusCommand,
   type ControlWorkerFinalStatusInput,
@@ -68,15 +70,14 @@ function applyAdmittedNanoHostWorkerFinalStatus(
   const replayOnly = decision.kind === 'replay' || settled !== null;
   if (
     !replayOnly &&
-    (!native.currentPlacement ||
-      native.attempt.phase !== 'closing' ||
+    (native.attempt.phase !== 'closing' ||
       native.attempt.fenceRef !== null ||
       native.proof.recoveryState !== null ||
       native.proof.heartbeatDeadline <= payload.acceptedAt ||
       original.lease.grant.deadline <= payload.acceptedAt ||
       (decision.kind === 'decided'
-        ? native.attempt.terminalCause !== 'worker-final-status'
-        : !hasPendingWorkerCancellationFinal(native.attempt, payload.acceptedAt)))
+        ? !native.currentPlacement || native.attempt.terminalCause !== 'worker-final-status'
+        : !nanoHostWorkerCancellationFinalEligible(sqlite, native, payload.acceptedAt)))
   )
     refuseBinding('attempt-not-live');
   if (replayOnly) {

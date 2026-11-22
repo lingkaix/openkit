@@ -16,6 +16,7 @@ import {
   hasPendingWorkerCancellationFinal,
 } from '../runtime/worker-control-records.js';
 import type { CoreDb } from './db.js';
+import { hasAcknowledgedNanoHostClosedPlacement } from './nanohost-epoch-invalidation-native.js';
 import { readNanoHostRecoveryLease } from './nanohost-recovery-native.js';
 import {
   type NanoHostWorkerCoordinates,
@@ -91,7 +92,13 @@ export function inspectNanoHostWorkerBinding(
     target.predecessorFenced &&
     target.deploymentId === session.deploymentId &&
     target.physicalEpoch === session.originPhysicalEpoch;
-  return { status: 'accepted', ...native, currentPlacement } as const;
+  return {
+    status: 'accepted',
+    ...native,
+    currentPlacement,
+    target,
+    submissionGeneration: original.lease.grant.generation,
+  } as const;
 }
 
 export function nanoHostWorkerBindingLiveness(
@@ -117,6 +124,28 @@ export function nanoHostWorkerBindingLiveness(
   return { status: 'accepted', attempt: native.attempt } as const;
 }
 
+/** Checks first-final record authority without re-admitting the closed placement for effects. */
+export function nanoHostWorkerCancellationFinalEligible(
+  sqlite: Database.Database,
+  native: Extract<ReturnType<typeof inspectNanoHostWorkerBinding>, { status: 'accepted' }>,
+  now: string
+): boolean {
+  if (!hasPendingWorkerCancellationFinal(native.attempt, now)) return false;
+  if (native.currentPlacement) return true;
+  const { session, target, submissionGeneration } = native;
+  return (
+    session.state === 'launching' &&
+    session.physicalCleanedAt === null &&
+    session.workspaceHandoffState === 'complete' &&
+    hasAcknowledgedNanoHostClosedPlacement(sqlite, target, {
+      deploymentId: session.deploymentId,
+      runtimeTargetId: session.runtimeTargetId,
+      physicalEpoch: session.originPhysicalEpoch,
+      generation: submissionGeneration,
+    })
+  );
+}
+
 export function resolveAdmittedNanoHostWorkerBinding(
   coreDb: CoreDb,
   sqlite: Database.Database,
@@ -133,28 +162,32 @@ export function resolveAdmittedNanoHostFinalBinding(
   input: WorkerControlTokenBindingInput,
   now = new Date().toISOString()
 ): WorkerControlFinalStatusTokenBindingResolution {
-  const native = readBinding(coreDb, sqlite, input);
-  if (native.status === 'rejected') return native;
-  const live = nanoHostWorkerBindingLiveness(native, now);
-  if (!native.attempt.deadline || native.attempt.deadline <= now)
-    return { status: 'rejected', reason: 'attempt-not-live' };
-  if (getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage))
-    return { status: 'accepted', replayOnly: true };
-  if (live.status === 'accepted') return { status: 'accepted', replayOnly: false };
-  // A Core decision can precede Native final acceptance across a lost acknowledgement.
-  // Only the deciding writer may supply that exact semantic receipt.
-  if (
-    native.currentPlacement &&
-    native.attempt.phase === 'closing' &&
-    native.attempt.terminalCause === 'worker-final-status' &&
-    native.attempt.fenceRef === null &&
-    native.proof.recoveryState === null &&
-    native.proof.heartbeatDeadline > now
-  )
-    return { status: 'accepted', replayOnly: false };
-  if (native.currentPlacement && hasPendingWorkerCancellationFinal(native.attempt, now))
-    return { status: 'accepted', replayOnly: false, cancellationOnly: true };
-  return live;
+  return sqlite
+    .transaction((): WorkerControlFinalStatusTokenBindingResolution => {
+      const native = readBinding(coreDb, sqlite, input);
+      if (native.status === 'rejected') return native;
+      const live = nanoHostWorkerBindingLiveness(native, now);
+      if (!native.attempt.deadline || native.attempt.deadline <= now)
+        return { status: 'rejected', reason: 'attempt-not-live' };
+      if (getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage))
+        return { status: 'accepted', replayOnly: true };
+      if (live.status === 'accepted') return { status: 'accepted', replayOnly: false };
+      // A Core decision can precede Native final acceptance across a lost acknowledgement.
+      // Only the deciding writer may supply that exact semantic receipt.
+      if (
+        native.currentPlacement &&
+        native.attempt.phase === 'closing' &&
+        native.attempt.terminalCause === 'worker-final-status' &&
+        native.attempt.fenceRef === null &&
+        native.proof.recoveryState === null &&
+        native.proof.heartbeatDeadline > now
+      )
+        return { status: 'accepted', replayOnly: false };
+      if (nanoHostWorkerCancellationFinalEligible(sqlite, native, now))
+        return { status: 'accepted', replayOnly: false, cancellationOnly: true };
+      return live;
+    })
+    .deferred();
 }
 
 /** Resolves the only Native session named by the requested package and its pinned Core grant. */

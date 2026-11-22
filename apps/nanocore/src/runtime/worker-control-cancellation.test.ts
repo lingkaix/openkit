@@ -851,10 +851,26 @@ describe('Core cancellation-only final admission', () => {
         if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
         expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, async () =>
+          fixture.gateway.recordHeartbeat({
+            authorization: `Bearer ${CONTROL_TOKEN}`,
+            lineage: fixture.lineage,
+            operation: 'heartbeat',
+            schemaVersion: 2,
+            sequence: 2,
+            body: { status: 'running' },
+          })
+        );
         expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
           accepted: true,
         });
         expectOneFinal(fixture, 'cancelled');
+        const accepted = fixture.durableState();
+        fixture.restart();
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+          accepted: true,
+        });
+        expect(fixture.durableState()).toEqual(accepted);
         expect(fixture.productState().canonical).toEqual(canonical);
         expect(
           readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
@@ -875,6 +891,78 @@ describe('Core cancellation-only final admission', () => {
       }
     }
   );
+
+  it('requires the exact acknowledged closed target for a record-only cancellation final', async () => {
+    const fixture = await createFixture();
+    try {
+      const backend = launchedBackend(fixture);
+      fixture.close();
+      await fixture.restartThroughStartup(recoveryPorts().input);
+      const resolve = (now = fixture.now) =>
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          resolveAdmittedNanoHostFinalBinding(
+            fixture.coreDb,
+            sqlite,
+            {
+              lineage: fixture.lineage,
+              sandboxBindingRef: BINDING,
+              token: CONTROL_TOKEN,
+              tokenFamily: 'worker-control',
+            },
+            now
+          )
+        );
+      const accepted = { status: 'accepted', replayOnly: false, cancellationOnly: true };
+      const rejected = { status: 'rejected', reason: 'attempt-not-live' };
+      expect(resolve()).toEqual(accepted);
+      const state = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        sqlite
+          .prepare('SELECT vault_epoch_fence_json FROM nanohost_runtime_targets WHERE target_id=?')
+          .pluck()
+          .get(backend.runtimeTargetId)
+      );
+      expect(typeof state).toBe('string');
+      const setFence = (value: unknown) =>
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE nanohost_runtime_targets SET vault_epoch_fence_json=? WHERE target_id=?'
+            )
+            .run(value, backend.runtimeTargetId)
+        );
+      setFence(null);
+      expect(resolve()).toEqual(rejected);
+      const unacknowledged = JSON.parse(state as string);
+      delete unacknowledged.lastTransition;
+      setFence(JSON.stringify(unacknowledged));
+      expect(resolve()).toEqual(rejected);
+      setFence(state);
+
+      const setOriginEpoch = (value: string) =>
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET origin_physical_epoch=? WHERE attempt_id=?'
+            )
+            .run(value, backend.attemptId)
+        );
+      setOriginEpoch('b'.repeat(64));
+      expect(resolve()).toEqual(rejected);
+      setOriginEpoch(backend.originPhysicalEpoch);
+      expect(resolve()).toEqual(accepted);
+      expect(resolve(nativeDeadlines(fixture).startupDeadline)).toEqual(rejected);
+      await expectAsyncRefusal(fixture, () =>
+        fixture.gateway.recordFinalStatus({
+          ...finalInput(fixture),
+          status: 'completed',
+          stopReason: 'completed',
+        })
+      );
+      expect(fixture.durableState().records).toEqual([]);
+    } finally {
+      fixture.dispose();
+    }
+  });
 
   it.each(['startup', 'heartbeat', 'absolute'] as const)(
     'refuses the real-backend first final and retains cleanup at the original %s deadline',
