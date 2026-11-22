@@ -1941,6 +1941,18 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlHarnessLifecycle({ sqlite }, mutation.input, { coreDb }),
       }));
+    case 'harness-idle-sandbox':
+      return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => {
+        const value = applyControlHarnessLifecycle({ sqlite }, mutation.input, {
+          coreDb,
+          idleSandbox: {
+            target: mutation.authority.target,
+            ...(mutation.authority.rollback ? { rollback: mutation.authority.rollback } : {}),
+          },
+        });
+        if (value !== null) throw new ControlProductPreconditionError();
+        return { kind: mutation.kind, value };
+      });
     case 'worker-image':
       return {
         kind: mutation.kind,

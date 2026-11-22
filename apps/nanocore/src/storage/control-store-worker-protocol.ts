@@ -897,21 +897,30 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
     input
   ): input is Extract<
     ControlHarnessLifecycleInput,
-    {
-      kind:
-        | 'operation.queue'
-        | 'operation.dispatch'
-        | 'operation.settle'
-        | 'sandbox.claim-idle-drain'
-        | 'sandbox.restore-admission';
-    }
+    { kind: 'operation.queue' | 'operation.dispatch' | 'operation.settle' }
   > =>
     input.kind === 'operation.queue' ||
     input.kind === 'operation.dispatch' ||
-    input.kind === 'operation.settle' ||
-    input.kind === 'sandbox.claim-idle-drain' ||
-    input.kind === 'sandbox.restore-admission'
+    input.kind === 'operation.settle'
 );
+
+const nanoHostIdleSandboxInput = ControlHarnessLifecycleInputSchema.refine(
+  (
+    input
+  ): input is Extract<
+    ControlHarnessLifecycleInput,
+    { kind: 'sandbox.claim-idle-drain' | 'sandbox.restore-admission' }
+  > => input.kind === 'sandbox.claim-idle-drain' || input.kind === 'sandbox.restore-admission'
+);
+const nanoHostIdleSandboxAuthority = z.strictObject({
+  target: ControlCoreImageResultSchema.shape.target,
+  rollback: z
+    .strictObject({
+      sandboxBindingRef: z.string().min(1),
+      claimedAt: z.iso.datetime(),
+    })
+    .optional(),
+});
 
 const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('transport'), input: ControlNanoHostTransportInputSchema }),
@@ -930,6 +939,12 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     kind: z.literal('harness-turn-lifecycle'),
     input: nanoHostHarnessTurnInput,
     coreIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+  z.strictObject({
+    kind: z.literal('harness-idle-sandbox'),
+    input: nanoHostIdleSandboxInput,
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    authority: nanoHostIdleSandboxAuthority,
   }),
   z.strictObject({
     kind: z.literal('worker-image'),
@@ -979,6 +994,12 @@ export type NanoHostOwnerMutation =
       readonly input: z.output<typeof nanoHostHarnessTurnInput>;
       readonly coreIdentity: string;
     }
+  | {
+      readonly kind: 'harness-idle-sandbox';
+      readonly input: z.output<typeof nanoHostIdleSandboxInput>;
+      readonly coreIdentity: string;
+      readonly authority: z.output<typeof nanoHostIdleSandboxAuthority>;
+    }
   | { readonly kind: 'worker-image'; readonly input: NanoHostLocalWorkerImageInput }
   | {
       readonly kind: 'prepared-image-result';
@@ -1024,6 +1045,7 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('harness-turn-lifecycle'),
     value: ControlHarnessLifecycleResultSchema,
   }),
+  z.strictObject({ kind: z.literal('harness-idle-sandbox'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('prepared-image-result'), value: z.null() }),
   z.strictObject({ kind: z.literal('backend-session'), value: ControlBackendSessionResultSchema }),
