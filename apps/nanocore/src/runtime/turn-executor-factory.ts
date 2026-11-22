@@ -2297,10 +2297,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
-      workerStorageBinding: requireAttachedWorkerStorageBinding(
-        this.coreDb,
-        row.sandboxBindingRef,
-        runtimeTargetId
+      workerStorageBinding: this.readNanoHost((owner) =>
+        requireAttachedWorkerStorageBinding(owner, row.sandboxBindingRef, runtimeTargetId)
       ),
     };
     this.sharedSandboxes.set(sandboxCompatibilityKey, sandbox);
@@ -2413,10 +2411,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandboxCompatibilityKey,
       sandboxIntegrationBindingRef: row.sandboxIntegrationBindingRef,
       sandboxRuntimeId: row.sandboxRuntimeId,
-      workerStorageBinding: requireAttachedWorkerStorageBinding(
-        this.coreDb,
-        row.sandboxBindingRef,
-        runtimeTargetId
+      workerStorageBinding: this.readNanoHost((owner) =>
+        requireAttachedWorkerStorageBinding(owner, row.sandboxBindingRef, runtimeTargetId)
       ),
     };
     this.sharedSandboxes.set(sandboxCompatibilityKey, sandbox);
@@ -9944,11 +9940,11 @@ function requireNanoHostResultString(result: Record<string, unknown>, name: stri
 
 /** Requires one attached storage association for a restored durable Sandbox. */
 function requireAttachedWorkerStorageBinding(
-  coreDb: CoreDb,
+  owner: Pick<CoreDb, 'sqlite'>,
   sandboxBindingRef: string,
   runtimeTargetId: string
 ): WorkerStorageBinding {
-  const binding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
+  const binding = getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef });
   if (!binding || binding.state !== 'attached' || binding.runtimeTargetId !== runtimeTargetId) {
     throw new Error('NanoHost persisted Sandbox storage binding is missing or fenced.');
   }
