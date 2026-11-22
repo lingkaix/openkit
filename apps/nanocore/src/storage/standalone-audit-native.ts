@@ -1,6 +1,7 @@
 import { prepareAuditEventStatement } from '../audit-events.js';
 import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
+import { captureSecurityCanaryAuditObservation } from './core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { prepareSecurityCanaryAuditInDb } from './security-canary-audit-native.js';
 import { enqueueE12NoticeInDb } from './security-trigger-native.js';
@@ -12,7 +13,8 @@ import {
 /** Applies only an originally standalone admitted stage inside the supplied native savepoint. */
 export function applyStandaloneAuditInDb(
   db: CoreDb | WorkspaceDb,
-  input: ControlStandaloneAuditInput
+  input: ControlStandaloneAuditInput,
+  canaryNative?: CoreDb['sqlite']
 ): void {
   assertControlProductWriter(db.sqlite);
   if (
@@ -21,8 +23,13 @@ export function applyStandaloneAuditInDb(
   )
     throw new ControlProductPreconditionError();
   if (input.stage === 'security.canary') {
-    if (db.scope !== 'core') throw new ControlProductPreconditionError();
-    if (prepareSecurityCanaryAuditInDb(db, input) !== 'new') return;
+    if (db.scope !== 'core' || !canaryNative) throw new ControlProductPreconditionError();
+    if (
+      prepareSecurityCanaryAuditInDb(db, input, (lineage) =>
+        captureSecurityCanaryAuditObservation(db, canaryNative, lineage)
+      ) !== 'new'
+    )
+      return;
   }
   const statement = prepareAuditEventStatement(input.event);
   db.sqlite.prepare(statement.sql).run(...statement.parameters);
