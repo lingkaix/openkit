@@ -10231,6 +10231,7 @@ function currentWorkerStorageAudienceAuthorizer(
     turnId: scope.turnId,
     agentSessionId: scope.agentSessionId,
     packageSnapshotId: environmentPackage.snapshotId,
+    requestId: scope.requestId,
     triggerActor: scope.triggerActor,
   };
   return (contributor) => {

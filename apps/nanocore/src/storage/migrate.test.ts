@@ -617,6 +617,7 @@ describe('database setup', () => {
         'backend_lineage_json',
         'sandbox_binding_ref',
         'worker_route_binding_json',
+        'worker_recovery_json',
         'schema_version',
       ]);
       const backendProjectionColumns = sqlite

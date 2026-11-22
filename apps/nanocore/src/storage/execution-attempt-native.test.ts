@@ -16,7 +16,6 @@ import {
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
-  markNanoHostAttemptNeedsEvidence,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
 } from '../runtime/execution-attempts.js';
@@ -25,7 +24,9 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -35,6 +36,8 @@ import {
 } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
+import { readNanoHostRecoveryLease } from './nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from './nanohost-submitted-lease.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const roots: string[] = [];
@@ -511,7 +514,11 @@ it('commits exact NanoHost preparation without moving the first startup deadline
   const first = requireNanoHostExecutionAttempt(db, attempt.attemptId);
   // Worker Runtime Communication Model: startup is 25 minutes from acquisition.
   expect(first).toMatchObject({
-    ...preparation,
+    attemptId: preparation.attemptId,
+    agentSessionId: preparation.agentSessionId,
+    inputRef: preparation.inputRef,
+    bindingRef: preparation.bindingRef,
+    sessionCompatibilityKey: null,
     startupDeadline: '2026-11-01T00:25:00.000Z',
     deadline: null,
     phase: 'open',
@@ -557,35 +564,62 @@ it('refuses conflicting NanoHost preparation without changing any retained attem
   }
 });
 
-it('projects NanoHost needs-evidence only after the separate closing acknowledgement', async () => {
-  const { db, entry } = fixture('8');
-  const attempt = await createSchedulerExecutionAttempt(db, {
-    entry,
-    attemptId: 'attempt_00000000-0000-7000-8000-000000000008',
-    preparationInput: { admission: entry },
-  });
-  await bindNanoHostAttemptPreparation(db, {
-    attemptId: attempt.attemptId,
+it('projects admitted NanoHost needs-evidence only after the separate closing acknowledgement', async () => {
+  const { db, entry, root } = fixture('8');
+  const storage = await openAdmittedTestNanoHost(db);
+  const originalCore = openCoreDb(root);
+  const registration = {
     agentSessionId: 'as_00000000-0000-7000-8000-000000000008',
-    inputRef: 'input-native-8',
-    bindingRef: 'binding-native-8',
-    sessionCompatibilityKey: 'compatibility-native-8',
+    packageSnapshotId: 'input-native-8',
+    workerControlTokenHash: 'a'.repeat(64),
+    workerInferenceTokenHash: 'b'.repeat(64),
+    workerCapabilityTokenHash: 'c'.repeat(64),
+  };
+  let attemptId: string;
+  try {
+    attemptId = submitTestNanoHostWorkerLease(
+      originalCore,
+      entry,
+      'binding-native-8',
+      registration
+    ).attemptId;
+  } finally {
+    originalCore.sqlite.close();
+  }
+  const owner = storage.value.owner;
+  const markNeedsEvidence = () => {
+    const original = readRetainedNanoHostSubmission(db, attemptId)!;
+    const observed = owner.read((sqlite) => readNanoHostRecoveryLease(sqlite, original.lease));
+    if (observed.state !== 'ready') throw new Error('Expected the admitted NanoHost observation.');
+    return owner.classifyRecovery({
+      kind: 'needs-evidence',
+      lease: original.lease,
+      expectedSession: observed.value.session,
+      expectedRecovery: observed.value.proof,
+      observedAt: new Date().toISOString(),
+    });
+  };
+  const open = requireNanoHostExecutionAttempt(db, attemptId);
+  expect(open).toMatchObject({
+    phase: 'open',
+    sessionCompatibilityKey: 'shared-mcp-fixture',
+    workerControlTokenHash: registration.workerControlTokenHash,
+    workerInferenceTokenHash: registration.workerInferenceTokenHash,
+    workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
+    recoveryState: null,
   });
-  const open = requireNanoHostExecutionAttempt(db, attempt.attemptId);
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual(open);
-  await markSchedulerExecutionAttemptClosing(db, {
-    attemptId: attempt.attemptId,
-    cause: 'restart-native-recovery',
-  });
-  const closing = requireNanoHostExecutionAttempt(db, attempt.attemptId);
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual({
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'unavailable' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual(open);
+  await markSchedulerExecutionAttemptClosing(db, { attemptId, cause: 'restart-native-recovery' });
+  const closing = requireNanoHostExecutionAttempt(db, attemptId);
+  expect(closing).toMatchObject({ phase: 'closing', recoveryState: null });
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'ready' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual({
     ...closing,
     recoveryState: 'needs-evidence',
   });
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual({
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'ready' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual({
     ...closing,
     recoveryState: 'needs-evidence',
   });
