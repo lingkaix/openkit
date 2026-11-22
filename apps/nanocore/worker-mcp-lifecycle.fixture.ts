@@ -63,7 +63,7 @@ import { createDemoStore } from './src/test-support/demo-store.js';
 import { testEntityId } from './src/test-support/entity-ids.js';
 import { ensureLocalUser } from './src/test-support/local-user.js';
 import { admitTestMcpApproval } from './src/test-support/mcp-tool-policy.js';
-import { admitTestNativeEnvironment } from './src/test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './src/test-support/native-environment.js';
 import { observeNativeTaskStartup } from './src/test-support/native-task-admission.js';
 import { operationRequest } from './src/test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './src/test-support/release-identity.js';
@@ -134,7 +134,7 @@ export async function assertCapturedOutcome(
     requiredCapabilities: ['trusted-worker-inference-relay'],
     mcpIds: ['echo'],
   });
-  admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
   let repositoryApprovalId: string | null = null;
   const catalog = parseWorkspaceMcpServerCatalog({
     schemaVersion: 1,
@@ -378,6 +378,7 @@ export async function assertCapturedOutcome(
     fileAdmission,
     coreDb,
     dataRoot,
+    nanoHostStorage,
     nanoHostSessionDispatch,
     runtimeConfigManager,
     store,

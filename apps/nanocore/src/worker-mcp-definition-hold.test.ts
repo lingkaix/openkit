@@ -35,7 +35,7 @@ import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from './test-support/store.js';
@@ -148,9 +148,10 @@ describe('MCP changed-definition exposure through real Core and native capture',
         readRuntimeConfig: () => snapshot,
       });
       // Existing metadata-only image fixture; this is not image publication or execution evidence.
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const taskApp = createApp({
+        nanoHostStorage,
         coreDb,
         store,
         fileAdmission: native.fileAdmission,

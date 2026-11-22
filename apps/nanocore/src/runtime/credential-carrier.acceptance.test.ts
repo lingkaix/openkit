@@ -65,7 +65,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -295,7 +295,7 @@ async function fixture(
           },
         ],
   });
-  admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
   cleanup.push(async () => {
     vault.lock();
     await shutdownControlStoreWorkerClient();
@@ -1718,7 +1718,7 @@ it.each(['other', 'empty', 'vault'] as const)(
         policyInterception: () => interception,
         vaultBackend: () => vault.backend(),
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const run = dispatch.runSchedulerDispatchLoop;
       vi.spyOn(dispatch, 'runSchedulerDispatchLoop').mockImplementation((input) =>
         run({ ...input, createAgentSessionId: () => agentSessionId })
@@ -1728,6 +1728,7 @@ it.each(['other', 'empty', 'vault'] as const)(
         initialSnapshot: readRuntimeConfig(),
       });
       const app = createApp({
+        nanoHostStorage,
         coreDb,
         store,
         fileAdmission: native.fileAdmission,

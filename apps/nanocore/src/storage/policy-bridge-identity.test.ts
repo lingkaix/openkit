@@ -37,7 +37,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, createTestStore, createTestWorkspaceDb } from '../test-support/store.js';
 import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
@@ -520,7 +520,7 @@ async function fixture() {
     ]),
     setup.logicalModels.allowed.map((model) => model.id)
   );
-  admitTestNativeEnvironment(core, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(core, setup.manifest);
   const pkg = await resolveAgentEnvironmentPackage({
     coreDb: core,
     agentSetup: setup,
