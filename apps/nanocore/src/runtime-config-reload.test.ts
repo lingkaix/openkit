@@ -247,7 +247,9 @@ describe('NanoHost restart-required reload fencing', () => {
               return prepare(sql);
             });
           try {
-            await expect(manager.reload({ mode: 'safe' })).rejects.toThrow(failure);
+            await expect(manager.reload({ mode: 'safe' })).rejects.toThrow(
+              'NanoHost transport storage is unavailable.'
+            );
             expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
             expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
             expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
