@@ -238,510 +238,64 @@ async function runPublicWorkerMcpLifecycle() {
     );
     // Read only this fixture's authorized safe-sink delivery, never a user's credential store.
     const nanoHostSecret = (await readFile(join(fixtureRoot, 'transport-a.token'), 'utf8')).trim();
-    h2 = connectHttp2(`http://127.0.0.1:${nanoHostPort}`);
-    const h2Closed = new Promise<void>((resolveClose) => h2!.once('close', resolveClose));
-    await waitForH2Connect(h2);
-    const admission = await requestHttp2(
-      h2,
-      'POST',
-      '/api/nanohost/transport/session/admit',
-      '{}',
-      {
-        authorization: `Bearer ${nanoHostSecret}`,
-        'content-type': 'application/json',
-        'x-openkit-nanohost-transport-revision': String(transportRevision),
-      }
-    );
-    assert.equal(admission.status, 200, responseFailure('NanoHost admission', admission));
-    assert.equal(
-      admission.headers['x-openkit-nanohost-transport-revision'],
-      String(transportRevision)
-    );
-    assert.deepEqual(pickJson(admission, ['mayCarryWork', 'role']), {
-      mayCarryWork: true,
-      role: 'authoritative',
+    const firstPeer = await connectWorkerPeer({
+      port: nanoHostPort,
+      secret: nanoHostSecret,
+      physicalEpoch: 'a'.repeat(64),
     });
-    const readiness = await requestHttp2(
-      h2,
-      'POST',
-      '/api/nanohost/transport/session/readiness',
-      JSON.stringify({ physicalEpoch: 'a'.repeat(64) }),
-      { 'content-type': 'application/json' }
-    );
-    assert.equal(readiness.status, 204, responseFailure('NanoHost readiness', readiness));
+    h2 = firstPeer.h2;
     ({ build: workerReleaseIdentity } = await publicOperation<{ build: unknown }>(
       app,
       'diagnostics.app',
       {}
     ));
     await prepareAndActivateEnvironment(app, h2, administrationThreadId);
-    let taskFailure: unknown = null;
-    const taskInput = {
+    const setMcpServerPid = (pid: number) => {
+      mcpServerPid = pid;
+    };
+    const firstTurn = await runPublicWorkerMcpTurn({
+      app,
+      h2,
       workspaceId,
       threadId,
-      input: 'Implement the MCP verification by calling the echo tool.',
       requestId: smokeRequestId,
-    };
-    const taskPromise = fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
-      body: JSON.stringify(taskInput),
-      headers: {
-        authorization: `Bearer ${app.administratorToken}`,
-        'content-type': 'application/json',
-        'x-openkit-request-id': smokeRequestId,
-      },
-      method: 'POST',
+      callFile,
+      expectedMcpCalls: 1,
+      setMcpServerPid,
     });
-    void taskPromise.then(
-      async (response) => {
-        if (response.status !== 202) {
-          taskFailure = await publicOperationFailure('task.start', response.clone());
-        }
-      },
-      (error) => {
-        taskFailure = error;
-      }
-    );
-
-    const image = await waitForEffect(h2, 'image.acquire', () => taskFailure);
-    assert.equal(image.command.imageReference, smokeImageDigest);
-    await settleJsonEffect(h2, 'image.acquire', {
-      digest: smokeImageDigest,
-      requestId: image.command.requestId,
-    });
-    const inspection = await waitForEffect(h2, 'image.inspect', () => taskFailure);
-    await settleJsonEffect(h2, 'image.inspect', {
-      requestId: inspection.command.requestId,
-      digest: inspection.command.imageDigest,
-      environmentDefaults: smokeImageDefaults,
-      platform: { architecture: 'arm64', os: 'linux' },
-      releaseIdentity: workerReleaseIdentity,
-      storageLayout: {
-        family: 'openkit-worker',
-        gid: 1000,
-        uid: 1000,
-        version: '1',
-        targets: [{ target: '/workspace' }, { target: '/openkit/threads' }],
-        workingDirectory: '/workspace',
-      },
-    });
-    const sandbox = await waitForEffect(h2, 'sandbox.create', () => taskFailure);
-    const sandboxId = requireString(sandbox.command.sandboxId, 'Sandbox id');
-    await settleJsonEffect(h2, 'sandbox.create', {
-      requestId: sandbox.command.requestId,
-      sandboxId,
-      state: 'created',
-      storage: {
-        ...sandbox.command.storage,
-        targets: sandbox.command.storage.targets.map((target) => ({
-          ...target,
-          initialized: true,
-        })),
-      },
-    });
-
-    const bridge = await waitForEffect(h2, 'bridge.open', () => taskFailure);
-    const integrationBindingRef = requireString(
-      bridge.command.sandboxIntegrationBindingRef,
-      'Sandbox Integration binding'
-    );
-    await settleJsonEffect(h2, 'bridge.open', {
-      accepted: true,
-      integrationReady: true,
-      requestId: bridge.command.requestId,
-      state: 'open',
-    });
-
-    const harnessOperations: string[] = [];
-    const collections: string[] = [];
-    let opened: EffectCommand | null = null;
-    let environmentPackage: AgentEnvironmentPackage | null = null;
-    const contextFiles = new Map<string, Buffer>();
-    let importCount = 0;
-    let started: EffectCommand | null = null;
-    const startupDeadline = Date.now() + 30_000;
-    while (!started && Date.now() < startupDeadline) {
-      throwIfFailed(taskFailure);
-      const imported = await pollEffect(h2, 'reference.import');
-      if (imported.status === 200) {
-        importCount += 1;
-        const metadata = verifyImportedFile(imported);
-        if (metadata.slot === 'package-config') {
-          assert.equal(importCount, 1, 'The canonical AEP must be the first Turn import.');
-          assert.equal(environmentPackage, null, 'NanoHost imported more than one canonical AEP.');
-          environmentPackage = AgentEnvironmentPackageSchema.parse(
-            JSON.parse(imported.bodyBytes.toString('utf8'))
-          );
-          assert.equal(
-            metadata.relativePath,
-            `${environmentPackage.scope.agentSessionId}/config/package.json`
-          );
-          assert.deepEqual(environmentPackage.runtime.environment, {
-            imageDigest: smokeImageDigest,
-            ...smokeImageDefaults,
-          });
-        } else if (metadata.slot === 'context') {
-          assert.ok(environmentPackage, 'NanoHost imported Context before the canonical AEP.');
-          const contextPrefix = `${environmentPackage.scope.agentSessionId}/context/`;
-          assert.ok(metadata.relativePath.startsWith(contextPrefix));
-          contextFiles.set(metadata.relativePath.slice(contextPrefix.length), imported.bodyBytes);
-        } else {
-          assert.fail(`Unexpected Worker MCP smoke import slot: ${metadata.slot}`);
-        }
-        const settled = await requestHttp2(
-          h2,
-          'POST',
-          '/api/nanohost/transport/effects/reference.import/result',
-          JSON.stringify({
-            byteLength: imported.bodyBytes.byteLength,
-            reference: `sandbox://${sandboxId}/${metadata.slot}/${metadata.relativePath}`,
-            requestId: metadata.requestId,
-          }),
-          { 'content-type': 'application/json' }
-        );
-        assert.equal(settled.status, 204, responseFailure('reference.import result', settled));
-        continue;
-      }
-      assert.equal(imported.status, 204, responseFailure('reference.import poll', imported));
-      const collection = await pollEffect(h2, 'workspace.collect');
-      if (collection.status === 200) {
-        collections.push(await settleEmptyWorkspaceCollection(h2, collection));
-        continue;
-      }
-      assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
-      const nextHarness = await pollHarness(h2, integrationBindingRef);
-      if (nextHarness.status === 200) {
-        const command = parseJson(nextHarness, 'Harness startup command');
-        if (command.operation === 'session.open') {
-          assert.equal(opened, null, 'NanoHost opened more than one AgentSession.');
-          assert.ok(environmentPackage, 'NanoHost opened the AgentSession before its AEP import.');
-          opened = command;
-          assert.equal(environmentPackage.scope.agentSessionId, opened.body.agentSessionId);
-          assert.equal(environmentPackage.scope.workspaceId, opened.body.workspaceId);
-          assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
-          harnessOperations.push(opened.operation);
-          await settleHarness(h2, integrationBindingRef, opened, {
-            maxActiveTurns: opened.body.maxActiveTurns,
-            nativeHandleDigest: null,
-            nativeHandleState: 'pending',
-            state: 'open',
-          });
-        } else {
-          assert.ok(opened, 'NanoHost started a Turn before opening its AgentSession.');
-          started = command;
-          assert.equal(started.operation, 'turn.start');
-        }
-      } else {
-        assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
-        await sleep(10);
-      }
-    }
-    assert.ok(started, 'NanoHost Harness turn.start was not dispatched after Turn imports.');
-    assert.ok(environmentPackage, 'NanoHost did not import the canonical AgentSession AEP.');
-    const contextManifestBytes = contextFiles.get('package.json');
-    assert.ok(contextManifestBytes, 'NanoHost did not import the Context Package manifest.');
-    const contextManifest = JSON.parse(contextManifestBytes.toString('utf8')) as ContextManifest;
-    const contextInputId = `context_${environmentPackage.scope.turnId}`;
-    const contextInputs = environmentPackage.workspace.inputs.filter(
-      (input) => input.id === contextInputId
-    );
-    assert.equal(contextInputs.length, 1);
-    assert.ok(contextInputs[0]);
-    assert.equal(
-      contextInputs[0].target,
-      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
-    );
-    assert.equal(contextManifest.contextPackageId, `ctxpkg_${environmentPackage.scope.turnId}`);
-    assert.equal(started.body.contextPackageId, contextManifest.contextPackageId);
-    assert.equal(contextManifest.workspaceId, environmentPackage.scope.workspaceId);
-    assert.equal(contextManifest.threadId, environmentPackage.scope.threadId);
-    assert.equal(contextManifest.turnId, environmentPackage.scope.turnId);
-    assert.deepEqual(
-      [...contextFiles.keys()].sort(),
-      [...contextManifest.fileInventory.map((file) => file.path), 'package.json'].sort()
-    );
-    harnessOperations.push(started.operation);
-    const capabilityToken = requireString(started.body.capabilityToken, 'Capability token');
-    const workerControlToken = requireString(
-      started.body.workerControlToken,
-      'Worker-control token'
-    );
-    const inferenceToken = requireString(started.body.inferenceToken, 'Inference token');
-    const distinctTokenCount = new Set([capabilityToken, workerControlToken, inferenceToken]).size;
-    assert.equal(distinctTokenCount, 3);
-    assert.equal(started.body.agentSessionId, environmentPackage.scope.agentSessionId);
-    assert.equal(started.body.packageSnapshotId, environmentPackage.snapshotId);
-    assert.equal(
-      started.body.aepRef,
-      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/config/package.json`
-    );
-    assert.equal(
-      started.body.contextRef,
-      `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
-    );
-    assert.equal(started.body.turnId, environmentPackage.scope.turnId);
-    const lineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: requireString(environmentPackage.scope.requestId, 'AEP request identity'),
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
-    const heartbeat = await requestHttp2(
-      h2,
-      'POST',
-      '/worker-control/heartbeat',
-      JSON.stringify({
-        body: {
-          message: null,
-          processKeyHash: createHash('sha256').update('worker-mcp-smoke').digest('base64url'),
-          status: 'starting',
-        },
-        lineage,
-        operation: 'heartbeat',
-        schemaVersion: 2,
-        sequence: 0,
-      }),
-      { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
-    );
-    assert.equal(heartbeat.status, 200, responseFailure('Worker heartbeat', heartbeat));
-
-    const event = (sequence: number, type: string, data: object) => ({
-      kind: 'event',
-      lineage,
-      schemaVersion: 1,
-      sequence,
-      event: { type, data },
-    });
-    const append = (record: ReturnType<typeof event>) =>
-      requestHttp2(
-        h2,
-        'POST',
-        '/worker-control/events/append',
-        JSON.stringify({ lineage, record }),
-        { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
-      );
-    assert.equal(environmentPackage.observability.captureCoverage.value, 'on');
-    const observationBody = Buffer.from('L3 restricted observation body');
-    const observation = event(5, 'observation.recorded', {
-      observationId: 'l3-live-observation',
-      sourceRef: 'l3-worker-capture',
-      sourceSequence: 0,
-      observedAt: new Date().toISOString(),
-      fact: {
-        kind: 'assistant',
-        phase: 'updated',
-        runtimeOriginRef: null,
-        messageRef: 'l3-observation',
-        representation: 'delta',
-      },
-      content: {
-        state: 'expected',
-        boundary: 'assistant.text',
-        mediaType: 'text/plain',
-        bytes: observationBody.length,
-        sha256: `sha256:${createHash('sha256').update(observationBody).digest('hex')}`,
-        chunkCount: 1,
-      },
-    });
-    const chunk = event(6, 'observation.content.chunk', {
-      observationId: 'l3-live-observation',
-      chunkIndex: 0,
-      byteOffset: 0,
-      encoding: 'base64',
-      data: observationBody.toString('base64'),
-    });
-    // A real Worker sends observations before the host's turn.start result is acknowledged.
-    const result = settleHarness(h2, integrationBindingRef, started, {
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'started',
-    });
-    const [metadata] = await Promise.all([sleep(10).then(() => append(observation)), result]);
-    assert.equal(
-      metadata.status,
-      200,
-      responseFailure('Worker observation during turn.start settlement', metadata)
-    );
-    const body = await append(chunk);
-    assert.equal(body.status, 200, responseFailure('Worker observation body', body));
-
-    const mcpClient = new Client({ name: 'openkit-public-worker-mcp-l3', version: '1.0.0' });
-    try {
-      await mcpClient.connect(
-        new StreamableHTTPClientTransport(new URL('http://nanocore.test/capabilities/mcp/echo'), {
-          fetch: h2Fetch(h2),
-          requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
-        })
-      );
-      const tools = await mcpClient.listTools();
-      const toolNames = tools.tools.map((tool) => tool.name);
-      assert.deepEqual(toolNames, ['echo']);
-      const result = await mcpClient.callTool({
-        arguments: { message: 'l3-public' },
-        name: 'echo',
-      });
-      assert.deepEqual(result.content, [{ text: 'l3-public', type: 'text' }]);
-      const structured = result.structuredContent;
-      assert.ok(
-        structured !== null && typeof structured === 'object' && !Array.isArray(structured),
-        'MCP echo result must carry structured content.'
-      );
-      const details = structured as Record<string, unknown>;
-      assert.equal(details.message, 'l3-public');
-      mcpServerPid = Number(details.pid);
-      assert.ok(Number.isSafeInteger(mcpServerPid) && mcpServerPid > 0, 'MCP stub pid is invalid.');
-    } finally {
-      await mcpClient.close();
-    }
-    const callLog = (await readFile(callFile, 'utf8')).trim().split('\n');
-    assert.deepEqual(callLog, ['l3-public']);
-
-    const terminalBody = {
-      evidenceManifestDigests: {},
-      status: 'completed',
-      stopReason: 'completed',
-    };
-    const jsonLines = (records: ReturnType<typeof event>[]) =>
-      Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
-    const terminalBytes = jsonLines([observation, event(7, 'turn.completed', terminalBody)]);
-    const observationSource = jsonLines([observation, chunk]);
-    const finalStatus = await requestHttp2(
-      h2,
-      'POST',
-      '/worker-control/final-status',
-      JSON.stringify({
-        body: terminalBody,
-        lineage,
-        operation: 'final_status',
-        schemaVersion: 2,
-        sequence: 7,
-      }),
-      { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
-    );
-    assert.equal(finalStatus.status, 200, responseFailure('Worker final status', finalStatus));
-
-    const inspected = await waitForHarnessOperation(
-      h2,
-      integrationBindingRef,
-      'session.inspect',
-      () => taskFailure
-    );
-    harnessOperations.push(inspected.operation);
-    await settleHarness(h2, integrationBindingRef, inspected, {
-      childState: 'absent',
-      cleanupState: 'clean',
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'open',
-    });
-
-    const exports: Array<{ presence: string; relativePath: string }> = [];
-    let closed = false;
-    const closeDeadline = Date.now() + 30_000;
-    while (!closed && Date.now() < closeDeadline) {
-      throwIfFailed(taskFailure);
-      const exported = await pollEffect(h2, 'file.export');
-      if (exported.status === 200) {
-        const command = parseJson(exported, 'file.export command');
-        exports.push({ presence: command.presence, relativePath: command.relativePath });
-        if (command.relativePath.endsWith('/runtime/observations/5.jsonl')) {
-          await settleFileExport(h2, command, observationSource);
-        } else if (command.presence === 'optional') {
-          await settleJsonEffect(h2, 'file.export', {
-            requestId: command.requestId,
-            state: 'absent',
-          });
-        } else {
-          assert.equal(command.presence, 'required');
-          const bytes = String(command.relativePath).endsWith('events.jsonl')
-            ? terminalBytes
-            : Buffer.alloc(0);
-          await settleFileExport(h2, command, bytes);
-        }
-        continue;
-      }
-      assert.equal(exported.status, 204, responseFailure('file.export poll', exported));
-      const collection = await pollEffect(h2, 'workspace.collect');
-      if (collection.status === 200) {
-        collections.push(await settleEmptyWorkspaceCollection(h2, collection));
-        continue;
-      }
-      assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
-      const nextHarness = await pollHarness(h2, integrationBindingRef);
-      if (nextHarness.status === 200) {
-        const command = parseJson(nextHarness, 'session.close command');
-        assert.equal(command.operation, 'session.close');
-        harnessOperations.push(command.operation);
-        await settleHarness(h2, integrationBindingRef, command, {
-          childState: 'absent',
-          privateState: 'absent',
-          state: 'closed',
-        });
-        closed = true;
-      } else {
-        assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
-        await sleep(10);
-      }
-    }
-    assert.ok(closed, 'NanoHost Harness session.close was not dispatched.');
-    assert.deepEqual(harnessOperations, [
-      'session.open',
-      'turn.start',
-      'session.inspect',
-      'session.close',
-    ]);
-    const captureRelativeRoot = `${environmentPackage.scope.threadId}/codex/capture/${environmentPackage.scope.turnId}/`;
-    assert.deepEqual(exports, [
-      { presence: 'required', relativePath: `${captureRelativeRoot}events.jsonl` },
-      { presence: 'required', relativePath: `${captureRelativeRoot}items.jsonl` },
-    ]);
-
-    const taskResponse = await taskPromise;
-    assert.equal(taskResponse.status, 202, `Task start returned ${taskResponse.status}.`);
-    const admitted = StartTaskModeResponseSchema.parse(await taskResponse.json());
-    assert.equal(admitted.turn?.id, environmentPackage.scope.turnId);
-    // Task start returns at durable admission; exact replay observes the same owner's closeout.
-    let task = admitted;
-    const taskDeadline = Date.now() + 30_000;
-    while (task.state !== 'completed' && Date.now() < taskDeadline) {
-      throwIfFailed(taskFailure);
-      assert.notEqual(task.turn?.status, 'failed', 'The admitted Task failed before closeout.');
-      const replay = await fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
-        body: JSON.stringify(taskInput),
-        headers: {
-          authorization: `Bearer ${app.administratorToken}`,
-          'content-type': 'application/json',
-          'x-openkit-request-id': smokeRequestId,
-        },
-        method: 'POST',
-      });
-      assert.equal(replay.status, 202, `Task replay returned ${replay.status}.`);
-      const replayBody = StartTaskModeResponseSchema.parse(await replay.json());
-      assert.equal(replayBody.turn?.id, admitted.turn.id);
-      task = replayBody;
-      if (task.state !== 'completed') await sleep(10);
-    }
-    assert.equal(task.state, 'completed');
-    assert.equal(task.turn?.status, 'completed');
-    assert.equal(Object.hasOwn(task.turn, 'humanGate'), false);
-    const attention = ListHumanAttentionResponseSchema.parse(
-      await publicOperation(app, 'attention.list', { workspaceId })
-    );
-    assert.deepEqual(attention.items, [], 'Worker left a human-attention request.');
-    assert.equal(task.turn?.id, environmentPackage.scope.turnId);
-
-    await assertPublicDurableOutcome(app, workspaceId, threadId, task.turn.id);
-    assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
-    assert.ok(importCount >= 1);
     assert.equal(existsSync(dataRoot), true);
-    await harness.stop();
-    await Promise.race([
-      h2Closed,
-      sleep(5_000).then(() => {
-        throw new Error('NanoHost HTTP/2 connection did not close with NanoCore.');
-      }),
-    ]);
+    await stopWorkerPeer(harness, firstPeer.closed);
+    assert.ok(mcpServerPid !== null);
+    await waitForProcessExit(mcpServerPid);
+    mcpServerPid = null;
+    await assertPortClosed(nanoHostPort);
+
+    harness = await startNanoCoreHarness({
+      coreMode: 'server',
+      dataRoot,
+      port: appPort,
+      seedDemoWorkspace: false,
+      useSimulator: false,
+    });
+    const secondPeer = await connectWorkerPeer({
+      port: nanoHostPort,
+      secret: nanoHostSecret,
+      physicalEpoch: 'b'.repeat(64),
+    });
+    h2 = secondPeer.h2;
+    const secondTurn = await runPublicWorkerMcpTurn({
+      app: { baseUrl: harness.baseUrl, administratorToken },
+      h2,
+      workspaceId,
+      threadId,
+      requestId: randomUUID(),
+      callFile,
+      expectedMcpCalls: 2,
+      setMcpServerPid,
+    });
+    assert.notEqual(firstTurn, secondTurn);
+    await stopWorkerPeer(harness, secondPeer.closed);
+    assert.ok(mcpServerPid !== null);
     await waitForProcessExit(mcpServerPid);
     await assertPortClosed(nanoHostPort);
   } finally {
@@ -759,9 +313,534 @@ async function runPublicWorkerMcpLifecycle() {
   }
 }
 
+/** Authenticates the fixture peer against the currently serving Core and reports its own Epoch. */
+async function connectWorkerPeer(input: { port: number; secret: string; physicalEpoch: string }) {
+  const h2 = connectHttp2(`http://127.0.0.1:${input.port}`);
+  const h2Closed = new Promise<void>((resolveClose) => h2.once('close', resolveClose));
+  try {
+    await waitForH2Connect(h2);
+    const admission = await requestHttp2(
+      h2,
+      'POST',
+      '/api/nanohost/transport/session/admit',
+      '{}',
+      {
+        authorization: `Bearer ${input.secret}`,
+        'content-type': 'application/json',
+        'x-openkit-nanohost-transport-revision': String(transportRevision),
+      }
+    );
+    assert.equal(admission.status, 200, responseFailure('NanoHost admission', admission));
+    assert.equal(
+      admission.headers['x-openkit-nanohost-transport-revision'],
+      String(transportRevision)
+    );
+    assert.deepEqual(pickJson(admission, ['mayCarryWork', 'role']), {
+      mayCarryWork: true,
+      role: 'authoritative',
+    });
+    const readiness = await requestHttp2(
+      h2,
+      'POST',
+      '/api/nanohost/transport/session/readiness',
+      JSON.stringify({ physicalEpoch: input.physicalEpoch }),
+      { 'content-type': 'application/json' }
+    );
+    assert.equal(readiness.status, 204, responseFailure('NanoHost readiness', readiness));
+    return { h2, closed: h2Closed };
+  } catch (error) {
+    h2.destroy();
+    throw error;
+  }
+}
+
+/** Joins the actual Core shutdown and transport close before a new process opens the same root. */
+async function stopWorkerPeer(harness: NanoCoreHarness, closed: Promise<void>): Promise<void> {
+  await harness.stop();
+  await Promise.race([
+    closed,
+    sleep(5_000).then(() => {
+      throw new Error('NanoHost HTTP/2 connection did not close with NanoCore.');
+    }),
+  ]);
+}
+
+/** Drives one real Turn to release using the already-authenticated fixture peer. */
+async function runPublicWorkerMcpTurn(input: {
+  app: PublicApp;
+  h2: ClientHttp2Session;
+  workspaceId: string;
+  threadId: string;
+  requestId: string;
+  callFile: string;
+  expectedMcpCalls: number;
+  setMcpServerPid: (pid: number) => void;
+}): Promise<string> {
+  const { app, h2, workspaceId, threadId, requestId, callFile, expectedMcpCalls, setMcpServerPid } =
+    input;
+  let taskFailure: unknown = null;
+  const taskInput = {
+    workspaceId,
+    threadId,
+    input: 'Implement the MCP verification by calling the echo tool.',
+    requestId: requestId,
+  };
+  const taskPromise = fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
+    body: JSON.stringify(taskInput),
+    headers: {
+      authorization: `Bearer ${app.administratorToken}`,
+      'content-type': 'application/json',
+      'x-openkit-request-id': requestId,
+    },
+    method: 'POST',
+  });
+  void taskPromise.then(
+    async (response) => {
+      if (response.status !== 202) {
+        taskFailure = await publicOperationFailure('task.start', response.clone());
+      }
+    },
+    (error) => {
+      taskFailure = error;
+    }
+  );
+
+  const image = await waitForEffect(h2, 'image.acquire', () => taskFailure);
+  assert.equal(image.command.imageReference, smokeImageDigest);
+  await settleJsonEffect(h2, 'image.acquire', {
+    digest: smokeImageDigest,
+    requestId: image.command.requestId,
+  });
+  const inspection = await waitForEffect(h2, 'image.inspect', () => taskFailure);
+  await settleJsonEffect(h2, 'image.inspect', {
+    requestId: inspection.command.requestId,
+    digest: inspection.command.imageDigest,
+    environmentDefaults: smokeImageDefaults,
+    platform: { architecture: 'arm64', os: 'linux' },
+    releaseIdentity: workerReleaseIdentity,
+    storageLayout: {
+      family: 'openkit-worker',
+      gid: 1000,
+      uid: 1000,
+      version: '1',
+      targets: [{ target: '/workspace' }, { target: '/openkit/threads' }],
+      workingDirectory: '/workspace',
+    },
+  });
+  const sandbox = await waitForEffect(h2, 'sandbox.create', () => taskFailure);
+  const sandboxId = requireString(sandbox.command.sandboxId, 'Sandbox id');
+  await settleJsonEffect(h2, 'sandbox.create', {
+    requestId: sandbox.command.requestId,
+    sandboxId,
+    state: 'created',
+    storage: {
+      ...sandbox.command.storage,
+      targets: sandbox.command.storage.targets.map((target) => ({
+        ...target,
+        initialized: true,
+      })),
+    },
+  });
+
+  const bridge = await waitForEffect(h2, 'bridge.open', () => taskFailure);
+  const integrationBindingRef = requireString(
+    bridge.command.sandboxIntegrationBindingRef,
+    'Sandbox Integration binding'
+  );
+  await settleJsonEffect(h2, 'bridge.open', {
+    accepted: true,
+    integrationReady: true,
+    requestId: bridge.command.requestId,
+    state: 'open',
+  });
+
+  const harnessOperations: string[] = [];
+  const collections: string[] = [];
+  let opened: EffectCommand | null = null;
+  let environmentPackage: AgentEnvironmentPackage | null = null;
+  const contextFiles = new Map<string, Buffer>();
+  let importCount = 0;
+  let started: EffectCommand | null = null;
+  const startupDeadline = Date.now() + 30_000;
+  while (!started && Date.now() < startupDeadline) {
+    throwIfFailed(taskFailure);
+    const imported = await pollEffect(h2, 'reference.import');
+    if (imported.status === 200) {
+      importCount += 1;
+      const metadata = verifyImportedFile(imported);
+      if (metadata.slot === 'package-config') {
+        assert.equal(importCount, 1, 'The canonical AEP must be the first Turn import.');
+        assert.equal(environmentPackage, null, 'NanoHost imported more than one canonical AEP.');
+        environmentPackage = AgentEnvironmentPackageSchema.parse(
+          JSON.parse(imported.bodyBytes.toString('utf8'))
+        );
+        assert.equal(
+          metadata.relativePath,
+          `${environmentPackage.scope.agentSessionId}/config/package.json`
+        );
+        assert.deepEqual(environmentPackage.runtime.environment, {
+          imageDigest: smokeImageDigest,
+          ...smokeImageDefaults,
+        });
+      } else if (metadata.slot === 'context') {
+        assert.ok(environmentPackage, 'NanoHost imported Context before the canonical AEP.');
+        const contextPrefix = `${environmentPackage.scope.agentSessionId}/context/`;
+        assert.ok(metadata.relativePath.startsWith(contextPrefix));
+        contextFiles.set(metadata.relativePath.slice(contextPrefix.length), imported.bodyBytes);
+      } else {
+        assert.fail(`Unexpected Worker MCP smoke import slot: ${metadata.slot}`);
+      }
+      const settled = await requestHttp2(
+        h2,
+        'POST',
+        '/api/nanohost/transport/effects/reference.import/result',
+        JSON.stringify({
+          byteLength: imported.bodyBytes.byteLength,
+          reference: `sandbox://${sandboxId}/${metadata.slot}/${metadata.relativePath}`,
+          requestId: metadata.requestId,
+        }),
+        { 'content-type': 'application/json' }
+      );
+      assert.equal(settled.status, 204, responseFailure('reference.import result', settled));
+      continue;
+    }
+    assert.equal(imported.status, 204, responseFailure('reference.import poll', imported));
+    const collection = await pollEffect(h2, 'workspace.collect');
+    if (collection.status === 200) {
+      collections.push(await settleEmptyWorkspaceCollection(h2, collection));
+      continue;
+    }
+    assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
+    const nextHarness = await pollHarness(h2, integrationBindingRef);
+    if (nextHarness.status === 200) {
+      const command = parseJson(nextHarness, 'Harness startup command');
+      if (command.operation === 'session.open') {
+        assert.equal(opened, null, 'NanoHost opened more than one AgentSession.');
+        assert.ok(environmentPackage, 'NanoHost opened the AgentSession before its AEP import.');
+        opened = command;
+        assert.equal(environmentPackage.scope.agentSessionId, opened.body.agentSessionId);
+        assert.equal(environmentPackage.scope.workspaceId, opened.body.workspaceId);
+        assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
+        harnessOperations.push(opened.operation);
+        await settleHarness(h2, integrationBindingRef, opened, {
+          maxActiveTurns: opened.body.maxActiveTurns,
+          nativeHandleDigest: null,
+          nativeHandleState: 'pending',
+          state: 'open',
+        });
+      } else {
+        assert.ok(opened, 'NanoHost started a Turn before opening its AgentSession.');
+        started = command;
+        assert.equal(started.operation, 'turn.start');
+      }
+    } else {
+      assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
+      await sleep(10);
+    }
+  }
+  assert.ok(started, 'NanoHost Harness turn.start was not dispatched after Turn imports.');
+  assert.ok(environmentPackage, 'NanoHost did not import the canonical AgentSession AEP.');
+  const contextManifestBytes = contextFiles.get('package.json');
+  assert.ok(contextManifestBytes, 'NanoHost did not import the Context Package manifest.');
+  const contextManifest = JSON.parse(contextManifestBytes.toString('utf8')) as ContextManifest;
+  const contextInputId = `context_${environmentPackage.scope.turnId}`;
+  const contextInputs = environmentPackage.workspace.inputs.filter(
+    (input) => input.id === contextInputId
+  );
+  assert.equal(contextInputs.length, 1);
+  assert.ok(contextInputs[0]);
+  assert.equal(
+    contextInputs[0].target,
+    `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
+  );
+  assert.equal(contextManifest.contextPackageId, `ctxpkg_${environmentPackage.scope.turnId}`);
+  assert.equal(started.body.contextPackageId, contextManifest.contextPackageId);
+  assert.equal(contextManifest.workspaceId, environmentPackage.scope.workspaceId);
+  assert.equal(contextManifest.threadId, environmentPackage.scope.threadId);
+  assert.equal(contextManifest.turnId, environmentPackage.scope.turnId);
+  assert.deepEqual(
+    [...contextFiles.keys()].sort(),
+    [...contextManifest.fileInventory.map((file) => file.path), 'package.json'].sort()
+  );
+  harnessOperations.push(started.operation);
+  const capabilityToken = requireString(started.body.capabilityToken, 'Capability token');
+  const workerControlToken = requireString(started.body.workerControlToken, 'Worker-control token');
+  const inferenceToken = requireString(started.body.inferenceToken, 'Inference token');
+  const distinctTokenCount = new Set([capabilityToken, workerControlToken, inferenceToken]).size;
+  assert.equal(distinctTokenCount, 3);
+  assert.equal(started.body.agentSessionId, environmentPackage.scope.agentSessionId);
+  assert.equal(started.body.packageSnapshotId, environmentPackage.snapshotId);
+  assert.equal(
+    started.body.aepRef,
+    `/openkit/sessions/${environmentPackage.scope.agentSessionId}/config/package.json`
+  );
+  assert.equal(
+    started.body.contextRef,
+    `/openkit/sessions/${environmentPackage.scope.agentSessionId}/context`
+  );
+  assert.equal(started.body.turnId, environmentPackage.scope.turnId);
+  const lineage = {
+    agentSessionId: environmentPackage.scope.agentSessionId,
+    packageSnapshotId: environmentPackage.snapshotId,
+    requestId: requireString(environmentPackage.scope.requestId, 'AEP request identity'),
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
+    workspaceId: environmentPackage.scope.workspaceId,
+  };
+  const heartbeat = await requestHttp2(
+    h2,
+    'POST',
+    '/worker-control/heartbeat',
+    JSON.stringify({
+      body: {
+        message: null,
+        processKeyHash: createHash('sha256').update('worker-mcp-smoke').digest('base64url'),
+        status: 'starting',
+      },
+      lineage,
+      operation: 'heartbeat',
+      schemaVersion: 2,
+      sequence: 0,
+    }),
+    { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
+  );
+  assert.equal(heartbeat.status, 200, responseFailure('Worker heartbeat', heartbeat));
+
+  const event = (sequence: number, type: string, data: object) => ({
+    kind: 'event',
+    lineage,
+    schemaVersion: 1,
+    sequence,
+    event: { type, data },
+  });
+  const append = (record: ReturnType<typeof event>) =>
+    requestHttp2(h2, 'POST', '/worker-control/events/append', JSON.stringify({ lineage, record }), {
+      authorization: `Bearer ${workerControlToken}`,
+      'content-type': 'application/json',
+    });
+  assert.equal(environmentPackage.observability.captureCoverage.value, 'on');
+  const observationBody = Buffer.from('L3 restricted observation body');
+  const observation = event(5, 'observation.recorded', {
+    observationId: 'l3-live-observation',
+    sourceRef: 'l3-worker-capture',
+    sourceSequence: 0,
+    observedAt: new Date().toISOString(),
+    fact: {
+      kind: 'assistant',
+      phase: 'updated',
+      runtimeOriginRef: null,
+      messageRef: 'l3-observation',
+      representation: 'delta',
+    },
+    content: {
+      state: 'expected',
+      boundary: 'assistant.text',
+      mediaType: 'text/plain',
+      bytes: observationBody.length,
+      sha256: `sha256:${createHash('sha256').update(observationBody).digest('hex')}`,
+      chunkCount: 1,
+    },
+  });
+  const chunk = event(6, 'observation.content.chunk', {
+    observationId: 'l3-live-observation',
+    chunkIndex: 0,
+    byteOffset: 0,
+    encoding: 'base64',
+    data: observationBody.toString('base64'),
+  });
+  // A real Worker sends observations before the host's turn.start result is acknowledged.
+  const result = settleHarness(h2, integrationBindingRef, started, {
+    nativeHandleDigest: null,
+    nativeHandleState: 'pending',
+    state: 'started',
+  });
+  const [metadata] = await Promise.all([sleep(10).then(() => append(observation)), result]);
+  assert.equal(
+    metadata.status,
+    200,
+    responseFailure('Worker observation during turn.start settlement', metadata)
+  );
+  const body = await append(chunk);
+  assert.equal(body.status, 200, responseFailure('Worker observation body', body));
+
+  const mcpClient = new Client({ name: 'openkit-public-worker-mcp-l3', version: '1.0.0' });
+  try {
+    await mcpClient.connect(
+      new StreamableHTTPClientTransport(new URL('http://nanocore.test/capabilities/mcp/echo'), {
+        fetch: h2Fetch(h2),
+        requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+      })
+    );
+    const tools = await mcpClient.listTools();
+    const toolNames = tools.tools.map((tool) => tool.name);
+    assert.deepEqual(toolNames, ['echo']);
+    const result = await mcpClient.callTool({
+      arguments: { message: 'l3-public' },
+      name: 'echo',
+    });
+    assert.deepEqual(result.content, [{ text: 'l3-public', type: 'text' }]);
+    const structured = result.structuredContent;
+    assert.ok(
+      structured !== null && typeof structured === 'object' && !Array.isArray(structured),
+      'MCP echo result must carry structured content.'
+    );
+    const details = structured as Record<string, unknown>;
+    assert.equal(details.message, 'l3-public');
+    const mcpServerPid = Number(details.pid);
+    assert.ok(Number.isSafeInteger(mcpServerPid) && mcpServerPid > 0, 'MCP stub pid is invalid.');
+    setMcpServerPid(mcpServerPid);
+  } finally {
+    await mcpClient.close();
+  }
+  const callLog = (await readFile(callFile, 'utf8')).trim().split('\n');
+  assert.deepEqual(
+    callLog,
+    Array.from({ length: expectedMcpCalls }, () => 'l3-public')
+  );
+
+  const terminalBody = {
+    evidenceManifestDigests: {},
+    status: 'completed',
+    stopReason: 'completed',
+  };
+  const jsonLines = (records: ReturnType<typeof event>[]) =>
+    Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  const terminalBytes = jsonLines([observation, event(7, 'turn.completed', terminalBody)]);
+  const observationSource = jsonLines([observation, chunk]);
+  const finalStatus = await requestHttp2(
+    h2,
+    'POST',
+    '/worker-control/final-status',
+    JSON.stringify({
+      body: terminalBody,
+      lineage,
+      operation: 'final_status',
+      schemaVersion: 2,
+      sequence: 7,
+    }),
+    { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
+  );
+  assert.equal(finalStatus.status, 200, responseFailure('Worker final status', finalStatus));
+
+  const inspected = await waitForHarnessOperation(
+    h2,
+    integrationBindingRef,
+    'session.inspect',
+    () => taskFailure
+  );
+  harnessOperations.push(inspected.operation);
+  await settleHarness(h2, integrationBindingRef, inspected, {
+    childState: 'absent',
+    cleanupState: 'clean',
+    nativeHandleDigest: null,
+    nativeHandleState: 'pending',
+    state: 'open',
+  });
+
+  const exports: Array<{ presence: string; relativePath: string }> = [];
+  let closed = false;
+  const closeDeadline = Date.now() + 30_000;
+  while (!closed && Date.now() < closeDeadline) {
+    throwIfFailed(taskFailure);
+    const exported = await pollEffect(h2, 'file.export');
+    if (exported.status === 200) {
+      const command = parseJson(exported, 'file.export command');
+      exports.push({ presence: command.presence, relativePath: command.relativePath });
+      if (command.relativePath.endsWith('/runtime/observations/5.jsonl')) {
+        await settleFileExport(h2, command, observationSource);
+      } else if (command.presence === 'optional') {
+        await settleJsonEffect(h2, 'file.export', {
+          requestId: command.requestId,
+          state: 'absent',
+        });
+      } else {
+        assert.equal(command.presence, 'required');
+        const bytes = String(command.relativePath).endsWith('events.jsonl')
+          ? terminalBytes
+          : Buffer.alloc(0);
+        await settleFileExport(h2, command, bytes);
+      }
+      continue;
+    }
+    assert.equal(exported.status, 204, responseFailure('file.export poll', exported));
+    const collection = await pollEffect(h2, 'workspace.collect');
+    if (collection.status === 200) {
+      collections.push(await settleEmptyWorkspaceCollection(h2, collection));
+      continue;
+    }
+    assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
+    const nextHarness = await pollHarness(h2, integrationBindingRef);
+    if (nextHarness.status === 200) {
+      const command = parseJson(nextHarness, 'session.close command');
+      assert.equal(command.operation, 'session.close');
+      harnessOperations.push(command.operation);
+      await settleHarness(h2, integrationBindingRef, command, {
+        childState: 'absent',
+        privateState: 'absent',
+        state: 'closed',
+      });
+      closed = true;
+    } else {
+      assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
+      await sleep(10);
+    }
+  }
+  assert.ok(closed, 'NanoHost Harness session.close was not dispatched.');
+  assert.deepEqual(harnessOperations, [
+    'session.open',
+    'turn.start',
+    'session.inspect',
+    'session.close',
+  ]);
+  const captureRelativeRoot = `${environmentPackage.scope.threadId}/codex/capture/${environmentPackage.scope.turnId}/`;
+  assert.deepEqual(exports, [
+    { presence: 'required', relativePath: `${captureRelativeRoot}events.jsonl` },
+    { presence: 'required', relativePath: `${captureRelativeRoot}items.jsonl` },
+  ]);
+
+  const taskResponse = await taskPromise;
+  assert.equal(taskResponse.status, 202, `Task start returned ${taskResponse.status}.`);
+  const admitted = StartTaskModeResponseSchema.parse(await taskResponse.json());
+  assert.equal(admitted.turn?.id, environmentPackage.scope.turnId);
+  // Task start returns at durable admission; exact replay observes the same owner's closeout.
+  let task = admitted;
+  const taskDeadline = Date.now() + 30_000;
+  while (task.state !== 'completed' && Date.now() < taskDeadline) {
+    throwIfFailed(taskFailure);
+    assert.notEqual(task.turn?.status, 'failed', 'The admitted Task failed before closeout.');
+    const replay = await fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
+      body: JSON.stringify(taskInput),
+      headers: {
+        authorization: `Bearer ${app.administratorToken}`,
+        'content-type': 'application/json',
+        'x-openkit-request-id': requestId,
+      },
+      method: 'POST',
+    });
+    assert.equal(replay.status, 202, `Task replay returned ${replay.status}.`);
+    const replayBody = StartTaskModeResponseSchema.parse(await replay.json());
+    assert.equal(replayBody.turn?.id, admitted.turn.id);
+    task = replayBody;
+    if (task.state !== 'completed') await sleep(10);
+  }
+  assert.equal(task.state, 'completed');
+  assert.equal(task.turn?.status, 'completed');
+  assert.equal(Object.hasOwn(task.turn, 'humanGate'), false);
+  const attention = ListHumanAttentionResponseSchema.parse(
+    await publicOperation(app, 'attention.list', { workspaceId })
+  );
+  assert.deepEqual(attention.items, [], 'Worker left a human-attention request.');
+  assert.equal(task.turn?.id, environmentPackage.scope.turnId);
+
+  await assertPublicDurableOutcome(app, workspaceId, threadId, task.turn.id);
+  assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
+  assert.ok(importCount >= 1);
+  return task.turn.id;
+}
+
 describe('public Worker MCP lifecycle', () => {
   it(
-    'completes one public Task through authenticated host carriage, governed MCP and correlated release',
+    'completes public Worker Turns with governed MCP before and after restarting Core and the host peer',
     runPublicWorkerMcpLifecycle,
     120_000
   );
