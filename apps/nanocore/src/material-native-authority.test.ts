@@ -60,6 +60,7 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { agentSessionsRoot } from './storage/workspace-file-records.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -1081,6 +1082,7 @@ it('accepts a Material proposal with revision, pointer, every bound queue, Revie
     'receipt abort retains the pending Review and all original Material state'
   ).toEqual(before);
   await f.reopen();
+  await openAdmittedTestNanoHost(f.coreDb);
   expect(f.snapshot()).toEqual(before);
   f.allowReceipt();
   f.readersOnly();
@@ -1164,6 +1166,7 @@ it('clears the verified Material queue once in the native writer and replays aft
   const cleared = f.snapshot();
   expect(cleared.receipts, 'queue consumption does not invent a command receipt').toEqual(receipts);
   await f.reopen();
+  await openAdmittedTestNanoHost(f.coreDb);
   f.db.sqlite.pragma('query_only = ON');
   expect(await p.accept()).toEqual(accepted[0]!.value);
   expect(await p.accept()).toEqual(accepted[0]!.value);

@@ -2730,7 +2730,7 @@ describe('worker control routes', () => {
     }
   });
 
-  it('keeps worker-control database failures as internal server errors', async () => {
+  it('keeps worker-control database failures as typed storage-unavailable refusals', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-db-error-')));
 
     applyMigrations(coreDb);
@@ -2768,7 +2768,10 @@ describe('worker control routes', () => {
       method: 'POST',
     });
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'worker_observation_storage_unavailable',
+    });
   });
 
   it.each([
