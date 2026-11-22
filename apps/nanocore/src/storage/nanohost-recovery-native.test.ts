@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { canonicalJsonText } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
+import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -66,6 +67,7 @@ import {
   waitForWorkerControlFinalStatus,
   writeWorkerControlAcceptedRecord,
 } from '../runtime/worker-control-records.js';
+import { inspectNanoHostWorkerFinalSequences } from '../runtime/worker-control-sequences.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -127,7 +129,10 @@ import {
   resolveAdmittedNanoHostFinalBinding,
   resolveAdmittedNanoHostWorkerBinding,
 } from './nanohost-worker-binding.js';
-import type { ControlWorkerFinalStatusCommand } from './worker-control-final-status-codecs.js';
+import {
+  type ControlWorkerFinalStatusCommand,
+  WorkerFinalStatusRefusal,
+} from './worker-control-final-status-codecs.js';
 import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-codecs.js';
 import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.js';
 
@@ -940,6 +945,141 @@ async function admitOriginal(prepareWorkspace = false) {
   await expect(dispatch()).resolves.toBeNull();
   return { f, root, core, store, actor, input, now, retained };
 }
+
+it('refuses a stale Native final before Core intake and preserves the valid cancellation replay', async () => {
+  const { core, f, root, now, retained } = await admitOriginal();
+  const append: WorkerCanonicalEventRecord = {
+    schemaVersion: 1,
+    kind: 'event',
+    lineage,
+    sequence: 7,
+    event: {
+      type: 'item.delta',
+      data: { itemId: testEntityId('it', 'final-preflight-output'), delta: 'original output' },
+    },
+  };
+  const write = (payload: ControlWorkerRecordCommand['payload']) =>
+    f.send({
+      kind: 'pinned-record',
+      dataRoot: root,
+      observedAt: acceptedAt,
+      input: { ...binding, payload },
+    });
+  await expect(
+    write({
+      kind: 'sequence',
+      operation: 'event_append',
+      sequence: append.sequence,
+      fingerprint: canonicalJsonText(append),
+    })
+  ).resolves.toMatchObject({ duplicate: false, nextExpectedSequence: 8 });
+  await write({
+    kind: 'record',
+    operation: 'event_append',
+    recordKey: '7',
+    sequence: append.sequence,
+    record: append,
+    acceptedAt,
+  });
+  markSchedulerExecutionAttemptClosing(core, { attemptId, cause: 'turn-cancelled', now });
+  const valid: ControlWorkerFinalStatusCommand = {
+    ...binding,
+    payload: {
+      terminalData: { status: 'cancelled', stopReason: 'aborted', evidenceManifestDigests: {} },
+      sequence: 8,
+      acceptedAt,
+      eventAcceptedAt: acceptedAt,
+    },
+  };
+  const readNative = <T>(read: () => T) => f.owner.sqlite.transaction(read).deferred();
+  const inspect = (input: ControlWorkerFinalStatusCommand) =>
+    inspectNanoHostWorkerFinalSequences(f.owner, input.lineage, input.payload);
+  const intake = (input: ControlWorkerFinalStatusCommand) =>
+    core.sqlite
+      .transaction(() =>
+        readNative(() => {
+          // The Worker intake pins and authenticates this exact owner before this Native preflight.
+          const result = inspect(input);
+          if (result.status !== 'accepted')
+            throw new WorkerFinalStatusRefusal(result.code, result.message, 409);
+          return admitNanoHostWorkerFinalInDb(core, input, f.owner.sqlite);
+        })
+      )
+      .immediate();
+  const before = requireSchedulerExecutionAttempt(core, attemptId);
+  const steps = () =>
+    core.sqlite
+      .prepare(
+        "SELECT step_id FROM control_execution_steps WHERE execution_id=? AND step_id LIKE 'worker-final-%'"
+      )
+      .all(retained!.lease.grant.execution.executionId);
+  expect(() => intake({ ...valid, payload: { ...valid.payload, sequence: 6 } })).toThrow(
+    expect.objectContaining({ code: 'worker_control_sequence_stale', status: 409 })
+  );
+  expect(() => intake({ ...valid, payload: { ...valid.payload, sequence: 7 } })).toThrow(
+    expect.objectContaining({ code: 'worker_control_sequence_conflict', status: 409 })
+  );
+  expect(steps()).toEqual([]);
+  expect(requireSchedulerExecutionAttempt(core, attemptId)).toEqual(before);
+  expect(getWorkerControlAcceptedFinalStatus(f.owner, lineage)).toBeNull();
+
+  const decision = intake(valid);
+  expect(decision).toMatchObject({ kind: 'cancellation-decided', acceptedAt });
+  // A Core intake survives an unknown Native settlement, but the unproved final stays held.
+  expect(
+    core.sqlite
+      .transaction(() =>
+        readNative(() => observeAcceptedNanoHostFinalInDb(core, valid, f.owner.sqlite))
+      )
+      .immediate()
+  ).toEqual({ state: 'unknown' });
+  const retry = {
+    ...valid,
+    payload: { ...valid.payload, acceptedAt: classifiedAt, eventAcceptedAt: classifiedAt },
+  };
+  expect(intake(retry)).toEqual(decision);
+  expect(getWorkerControlAcceptedFinalStatus(f.owner, lineage)).toBeNull();
+
+  const final = (input: ControlWorkerFinalStatusCommand, decision: ReturnType<typeof intake>) =>
+    f.send({
+      kind: 'worker-final',
+      original: readRetainedNanoHostSubmission(core, attemptId),
+      input,
+      decision,
+    });
+  await expect(final(valid, decision)).resolves.toEqual({
+    finalStatusDuplicate: false,
+    eventDuplicate: false,
+    nextFinalStatusSequence: 9,
+    nextEventSequence: 9,
+  });
+  await f.owner.reopen();
+  expect(readNative(() => inspect(retry))).toEqual({
+    status: 'accepted',
+    finalStatusDuplicate: true,
+    eventDuplicate: true,
+  });
+  const replay = intake(retry);
+  expect(replay).toEqual({ ...decision, kind: 'replay' });
+  await expect(final(retry, replay)).resolves.toMatchObject({
+    finalStatusDuplicate: true,
+    eventDuplicate: true,
+  });
+  expect(getWorkerControlAcceptedFinalStatus(f.owner, lineage)).toMatchObject({
+    acceptedAt,
+    status: 'cancelled',
+  });
+  expect(
+    f.owner.sqlite
+      .prepare(
+        "SELECT sequence, accepted_at AS acceptedAt FROM worker_control_records WHERE operation='event_append' ORDER BY sequence"
+      )
+      .all()
+  ).toEqual([
+    { sequence: 7, acceptedAt },
+    { sequence: 8, acceptedAt },
+  ]);
+});
 
 it('claims and rolls back only the exact admitted Native Sandbox and original drain', async () => {
   const { f, core, root, now } = await admitOriginal(true);

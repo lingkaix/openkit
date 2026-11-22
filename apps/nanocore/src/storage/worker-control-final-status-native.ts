@@ -1,7 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { canonicalJsonText } from '@openkit/protocol';
-import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { markSchedulerExecutionAttemptClosing } from '../runtime/execution-attempt-records.js';
 import { resolveNanoHostAttemptTokenBinding } from '../runtime/nanohost-attempt-records.js';
@@ -11,7 +9,10 @@ import {
   resolveWorkerControlFinalStatusTokenBinding,
   writeWorkerControlAcceptedRecord,
 } from '../runtime/worker-control-records.js';
-import { acceptWorkerControlSequence } from '../runtime/worker-control-sequences.js';
+import {
+  acceptWorkerControlSequence,
+  workerFinalSequenceInputs,
+} from '../runtime/worker-control-sequences.js';
 import {
   assertControlProductWriter,
   ControlProductPreconditionError,
@@ -217,25 +218,11 @@ function settleNanoHostWorkerFinalRecords(
       'A closing cancelled Turn accepts only a cancellation or interruption final with aborted StopReason.',
       403
     );
-  const finalSequence = acceptWorkerControlSequence(owner, {
-    lineage: lineage,
-    operation: 'final_status',
-    sequence,
-    fingerprint: canonicalJsonText({ ...terminalData, lineage: lineage, sequence }),
-  });
+  const { event, final, append } = workerFinalSequenceInputs(lineage, payload);
+  const finalSequence = acceptWorkerControlSequence(owner, final);
   if (finalSequence.status !== 'accepted')
     throw new WorkerFinalStatusRefusal(finalSequence.code, finalSequence.message, 409);
-  const event = buildWorkerCanonicalTerminalEventRecord({
-    data: terminalData,
-    lineage: lineage,
-    sequence,
-  });
-  const eventSequence = acceptWorkerControlSequence(owner, {
-    lineage: lineage,
-    operation: 'event_append',
-    sequence,
-    fingerprint: canonicalJsonText(event),
-  });
+  const eventSequence = acceptWorkerControlSequence(owner, append);
   if (eventSequence.status !== 'accepted')
     throw new WorkerFinalStatusRefusal(eventSequence.code, eventSequence.message, 409);
   if (resolution.replayOnly && (!finalSequence.duplicate || !eventSequence.duplicate))
