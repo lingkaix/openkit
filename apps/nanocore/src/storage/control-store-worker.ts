@@ -3516,12 +3516,19 @@ function flush(owner: OwnedDatabase): void {
                 serverStoragePath(core.dataRoot, 'nanohost'),
                 stage.ownerIdentity,
                 (native) =>
-                  stage.kind === 'intake'
-                    ? { kind: 'intake', value: admitNanoHostWorkerFinalInDb(core, input, native) }
-                    : {
-                        kind: 'observe',
-                        value: observeAcceptedNanoHostFinalInDb(core, input, native),
-                      }
+                  native
+                    .transaction(() =>
+                      stage.kind === 'intake'
+                        ? {
+                            kind: 'intake' as const,
+                            value: admitNanoHostWorkerFinalInDb(core, input, native),
+                          }
+                        : {
+                            kind: 'observe' as const,
+                            value: observeAcceptedNanoHostFinalInDb(core, input, native),
+                          }
+                    )
+                    .deferred()
               );
             }
             outcome = {
