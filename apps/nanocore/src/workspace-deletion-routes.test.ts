@@ -1554,11 +1554,13 @@ it.each([
         cause: 'turn-failed',
       });
     }
+    const attemptId = testEntityId('attempt', `lease_${fixture.suffix}`);
+    // The recovery classification lives in the same NanoHost row this fault removes.
+    const recoveryBeforeRemovingBackend =
+      fixture.backend === 'missing' ? deletionFixtureRecoveryState(coreDb, attemptId) : undefined;
     if (fixture.backend === 'missing') {
       mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
-        sqlite
-          .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
-          .run(testEntityId('attempt', `lease_${fixture.suffix}`))
+        sqlite.prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?').run(attemptId)
       );
     } else if (fixture.backend === 'mismatched-thread') {
       mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
@@ -1633,14 +1635,14 @@ it.each([
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
         .get(workspace.id)
     ).toEqual({ revision: 1, status: 'active' });
+    const currentRecovery = deletionFixtureRecoveryState(coreDb, attemptId);
+    if (fixture.backend === 'missing') expect(currentRecovery).toBeUndefined();
     expect({
       ...coreDb.sqlite
         .prepare('SELECT phase FROM scheduler_execution_attempts WHERE attempt_id = ?')
-        .get(testEntityId('attempt', `lease_${fixture.suffix}`)),
-      recoveryState: deletionFixtureRecoveryState(
-        coreDb,
-        testEntityId('attempt', `lease_${fixture.suffix}`)
-      ),
+        .get(attemptId),
+      recoveryState:
+        fixture.backend === 'missing' ? recoveryBeforeRemovingBackend : currentRecovery,
     }).toEqual({
       recoveryState: 'needs-evidence',
       phase: fixture.leaseStatus === 'failed' ? 'closed' : 'closing',

@@ -8,6 +8,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import * as storage from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import {
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
@@ -17,6 +18,12 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  postTestNativeWorkerHeartbeat,
+  readTestNanoHostWorkerLease,
+  removeTestNativeWorkerAnchor,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -70,7 +77,12 @@ async function fixture() {
     restoreBackendSession: vi.fn(async () => {}),
     reconcileAcceptedFinalStatus: vi.fn(async () => {}),
   };
-  const seed = async (suffix: string, submitted = true, anchored = false) => {
+  const seed = async (
+    suffix: string,
+    submitted = true,
+    anchored = false,
+    useAdmittedContract = false
+  ) => {
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -91,6 +103,30 @@ async function fixture() {
     const agentSessionId = testEntityId('as', `as_${suffix}`);
     const inputRef = `aepsnap_${entry.turnId}_${agentSessionId}`;
     const bindingRef = `lease-binding:${attemptId}`;
+    const lineage = {
+      agentSessionId,
+      packageSnapshotId: inputRef,
+      workspaceId: entry.workspaceId,
+      threadId: entry.threadId,
+      turnId: entry.turnId,
+      requestId: entry.requestId,
+    };
+    if (useAdmittedContract) {
+      submitTestNanoHostWorkerLease(
+        coreDb,
+        entry,
+        bindingRef,
+        {
+          agentSessionId,
+          packageSnapshotId: inputRef,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        { attemptId, observedAt: '2026-07-05T00:00:02.000Z' }
+      );
+      return { attemptId, sandboxBindingRef: bindingRef, lineage };
+    }
     recordTestExecutionAttempt(coreDb, {
       entry,
       attemptId,
@@ -586,6 +622,101 @@ describe('Native attempt liveness and recovery', () => {
           now: () => '2026-07-05T00:01:00.000Z',
         })
       ).toEqual({ status: 'rejected', reason: 'reconnect-required' });
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+describe('admitted NanoHost watch replacements', () => {
+  it('R20 keeps a pre-heartbeat attempt live until its startup deadline', async () => {
+    const f = await fixture();
+    try {
+      const binding = await f.seed('materializing', true, true, true);
+      const observedAt = '2026-07-05T00:00:40.000Z';
+      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+        ...f.recovery,
+        now: () => observedAt,
+      });
+      expect(f.recovery.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(readTestNanoHostWorkerLease(f.coreDb, binding.attemptId)).toMatchObject({
+        phase: 'open',
+        startupDeadline: '2026-07-05T00:25:02.000Z',
+      });
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(f.coreDb, sqlite, binding, observedAt)
+        )
+      ).toMatchObject({ status: 'accepted' });
+      const heartbeat = { ...binding, tokenHash: 'a'.repeat(64), observedAt };
+      await postTestNativeWorkerHeartbeat(f.native.owner, {
+        ...heartbeat,
+        sequence: 0,
+        processKeyHash: 'a'.repeat(43),
+      });
+      await postTestNativeWorkerHeartbeat(f.native.owner, { ...heartbeat, sequence: 1 });
+      expect(readTestNanoHostWorkerLease(f.coreDb, binding.attemptId)).toMatchObject({
+        lastAcceptedHeartbeatAt: observedAt,
+        phase: 'open',
+        lastWorkerSequence: 1,
+      });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('R21 closes proven pre-effect startup work while expired submitted heartbeat authority retains exclusion', async () => {
+    const f = await fixture();
+    try {
+      const startup = await f.seed('startup', false);
+      const heartbeat = await f.seed('heartbeat', true, false, true);
+      const input = {
+        ...heartbeat,
+        tokenHash: 'a'.repeat(64),
+        observedAt: '2026-07-05T00:00:10.000Z',
+      };
+      const original = requireSchedulerExecutionAttempt(f.coreDb, heartbeat.attemptId);
+      await postTestNativeWorkerHeartbeat(f.native.owner, {
+        ...input,
+        sequence: 0,
+        processKeyHash: 'a'.repeat(43),
+      });
+      await postTestNativeWorkerHeartbeat(f.native.owner, { ...input, sequence: 1 });
+      const observedAt = '2026-07-05T00:26:00.000Z';
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(f.coreDb, sqlite, heartbeat, observedAt)
+        )
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
+      removeTestNativeWorkerAnchor(f.coreDb, heartbeat.attemptId);
+      const result = await runSchedulerRestartRecovery(f.coreDb, {
+        ...f.recovery,
+        now: () => observedAt,
+      });
+      expect(result.preparationFailedAttemptIds).toEqual([startup.attemptId]);
+      expect(result.failedAttemptIds).toEqual([]);
+      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+        ...f.recovery,
+        now: () => observedAt,
+      });
+      expect(requireSchedulerExecutionAttempt(f.coreDb, startup.attemptId)).toMatchObject({
+        phase: 'closed',
+        disposition: 'not_accepted',
+        operationId: null,
+        terminalCause: 'restart-before-effects',
+      });
+      expect(requireSchedulerExecutionAttempt(f.coreDb, heartbeat.attemptId)).toMatchObject({
+        phase: 'open',
+        disposition: 'unknown',
+        operationId: original.operationId,
+        fenceRef: null,
+      });
+      expect(f.recovery.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(f.coreDb, sqlite, heartbeat, observedAt)
+        )
+      ).toEqual({ status: 'rejected', reason: 'binding-not-found' });
     } finally {
       await f.close();
     }

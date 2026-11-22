@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -17,6 +17,7 @@ import {
   createSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
+  requireSchedulerAdmissionEntry,
 } from '../scheduler-records';
 import * as schedulerRecords from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -27,13 +28,17 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { insertExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import {
   isCurrentAgentSessionStatus,
   nativeProductScope,
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
 import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
-import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -43,6 +48,11 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import {
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+  seedTestNanoHostWorkerLaunch,
+} from '../test-support/nanohost-worker-lease.js';
 import {
   admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
@@ -3974,6 +3984,9 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('reuses the current compatible AgentSession across sequential product admissions', async () => {
+    // This fixture explicitly supplies the internal simulator as its backend.
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -4316,6 +4329,138 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
+  it('R23 closes or revokes the acquired attempt when turn startup fails', async () => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const turnExecutor = new FailingTurnExecutor(coreDb);
+
+    try {
+      const target = await recordTestNativeRuntimeTarget(coreDb);
+      const { value } = await openAdmittedTestNanoHost(coreDb);
+      turnExecutor.startTurn = async (_store, _turnId, _input, context) => {
+        if (!context?.attemptId)
+          throw new Error('The lost-submit fixture needs its original attempt.');
+        const attempt = attemptRecords.requireSchedulerExecutionAttempt(coreDb, context.attemptId);
+        const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
+        const observedAt = '2026-07-05T00:00:03.000Z';
+        const lineage = {
+          workspaceId: attempt.workspaceId,
+          threadId: attempt.threadId,
+          turnId: attempt.turnId,
+        };
+        const registration = {
+          agentSessionId: attempt.agentSessionId!,
+          packageSnapshotId: attempt.inputRef!,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        };
+        await recordWorkerBackendSessionMaterializing(coreDb, {
+          backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+          backendVersion: null,
+          identity: {
+            agentSessionId: registration.agentSessionId,
+            packageSnapshotId: registration.packageSnapshotId,
+            backendKind: 'openshell',
+            backendSessionId: 'fixture-lost-worker-submit',
+            stagingDirectoryRef: 'server/runtime/worker-backend-sessions/lost-submit',
+            runtimeTargetId: target.targetId,
+            deploymentId: target.deploymentId,
+            transientProviderInstanceId: null,
+          },
+          lineage,
+          sandboxBindingRef: attempt.bindingRef!,
+          now: () => observedAt,
+        });
+        await value.owner.backendSession({
+          kind: 'transition',
+          attemptId: attempt.attemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
+          observedAt,
+        });
+        seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attempt.attemptId);
+        retainPreparedTestNanoHostSubmission(coreDb, {
+          admission: entry,
+          attemptId: attempt.attemptId,
+          targetId: target.targetId,
+          generation: String(target.connectionGeneration),
+          observedAt,
+        });
+        seedTestNanoHostWorkerLaunch(coreDb, attempt.attemptId, registration, observedAt);
+        await turnExecutor.submit();
+      };
+      await publishTestAdmission(
+        store,
+        await createTestQueueEntry(coreDb, {
+          backendId: 'nanohost',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          queueEntryId: fixtureRequestId('queue_loop_failed'),
+          requestId: fixtureRequestId('queue_loop_failed'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_loop_failed'),
+          text: 'Fail the scheduled worker',
+          requestedAgentId: 'agent_codex_host',
+          profileRef: null,
+          now: () => '2026-07-05T00:00:01.000Z',
+        })
+      );
+
+      await expect(
+        runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_loop_failed'),
+          createAttemptId: () => 'attempt_00000000-0000-7183-99eb-6319956c61b9',
+
+          maxDispatches: 1,
+          now: () => '2026-07-05T00:00:02.000Z',
+          providerRegistry: localProviderRegistry(),
+
+          store,
+          turnExecutor,
+          executionBackend: turnExecutor.executionBackend,
+          agentManifests: [agentManifest()],
+        })
+      ).rejects.toThrow('worker launch failed');
+
+      const closedAttempt = attemptRecords.requireSchedulerExecutionAttempt(
+        coreDb,
+        'attempt_00000000-0000-7183-99eb-6319956c61b9'
+      );
+      expect(closedAttempt.bindingRef).not.toBeNull();
+      expect(closedAttempt.inputRef).not.toBeNull();
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(
+            coreDb,
+            sqlite,
+            {
+              sandboxBindingRef: closedAttempt.bindingRef!,
+              lineage: {
+                agentSessionId: testEntityId('as', 'as_loop_failed'),
+                packageSnapshotId: closedAttempt.inputRef!,
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: testEntityId('tu', 'turn_loop_failed'),
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                requestId: fixtureRequestId('queue_loop_failed'),
+              },
+            },
+            '2026-07-05T00:00:04.000Z'
+          )
+        )
+      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('preserves the worker failure while anchored backend cleanup remains pending', async () => {
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -4354,22 +4499,42 @@ describe('scheduler dispatch loop', () => {
         },
         sandboxBindingRef: lease.bindingRef!,
       });
-      attemptRecords.recordSchedulerExecutionOperation(coreDb, {
+      const { value } = await openAdmittedTestNanoHost(coreDb);
+      const observedAt = new Date().toISOString();
+      await value.owner.backendSession({
+        kind: 'transition',
+        fromState: 'materializing',
         attemptId: lease.attemptId,
-        operationId: 'cleanup-pending:original',
-        submission: true,
+        toState: 'materialized',
+        observedAt,
       });
-      for (const [fromState, toState] of [
-        ['materializing', 'materialized'],
-        ['materialized', 'launching'],
-        ['launching', 'cleanup-pending'],
-      ] as const) {
-        await transitionWorkerBackendSessionState(coreDb, {
-          fromState,
-          attemptId: lease.attemptId,
-          toState,
-        });
-      }
+      seedTestNanoHostCompletedWorkspaceHandoff(coreDb, lease.attemptId);
+      retainPreparedTestNanoHostSubmission(coreDb, {
+        admission: requireSchedulerAdmissionEntry(coreDb, lease.queueEntryId),
+        attemptId: lease.attemptId,
+        targetId: target.targetId,
+        generation: String(target.connectionGeneration),
+        observedAt,
+      });
+      seedTestNanoHostWorkerLaunch(
+        coreDb,
+        lease.attemptId,
+        {
+          agentSessionId: context.agentSessionId,
+          packageSnapshotId: lease.inputRef!,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        observedAt
+      );
+      await value.owner.backendSession({
+        kind: 'transition',
+        fromState: 'launching',
+        attemptId: lease.attemptId,
+        toState: 'cleanup-pending',
+        observedAt,
+      });
       await ownerStore.updateTurn(turnId, {
         completedAt: '2026-07-05T00:00:03.000Z',
         error: { code: 'worker_governance_turn_failed', message: 'accepted effect is unknown' },
