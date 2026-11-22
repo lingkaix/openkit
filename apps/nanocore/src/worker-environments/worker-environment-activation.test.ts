@@ -339,6 +339,66 @@ function reloadResult(status: 'applied' | 'failed') {
 }
 
 describe('Worker environment activation', () => {
+  it('keeps capture out between confirmed image publication and private Turn creation', async () => {
+    const fixture = await createBaseFixture();
+    const pair = await candidatePair(fixture, [], null);
+    const config = configurationService();
+    const storage = admittedActivationStorage(fixture.coreDb);
+    const freeze = () =>
+      getControlStoreWorkerClient().tryFreezeWorkspace(
+        fixture.coreDb.dataRoot,
+        fixture.administrationWorkspaceId,
+        () => []
+      );
+    let competingCapture: ReturnType<typeof freeze> | undefined;
+    const activation = createWorkerEnvironmentActivation({
+      ...storage,
+      admitImageEnvironment: async (candidate, measurement) => {
+        await storage.admitImageEnvironment(candidate, measurement);
+        competingCapture = freeze();
+      },
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig: () => reloadResult('applied'),
+      replaceResidentWork: vi.fn(),
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+
+    try {
+      await expect(
+        activation.activate({ actor: ACTOR }, activationRequest(pair))
+      ).resolves.toMatchObject({
+        configuration: { fileId: CONFIGURATION.fileId, revision: WRITTEN_REVISION },
+      });
+      expect(competingCapture?.status).toBe('busy');
+      expect(
+        fixture.store.listThreadTurns(
+          fixture.administrationWorkspaceId,
+          fixture.administrationThreadId
+        )
+      ).toMatchObject([{ status: 'completed' }]);
+      const afterActivation = freeze();
+      try {
+        expect(afterActivation.status).toBe('frozen');
+      } finally {
+        if (afterActivation.status === 'frozen') afterActivation.release();
+      }
+    } finally {
+      if (competingCapture?.status === 'frozen') competingCapture.release();
+    }
+  });
+
   it.each(['before-inspection', 'during-inspection'] as const)(
     'refuses a Thread that becomes busy %s without admitting defaults or changing configuration',
     async (phase) => {

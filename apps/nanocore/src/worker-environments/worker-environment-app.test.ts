@@ -30,7 +30,10 @@ import * as schedulerDispatch from '../runtime/scheduler-dispatch-loop.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceReadDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -535,17 +538,60 @@ describe('Worker environment App composition', () => {
           resolvedCandidate: prepared.resolvedCandidate,
           target: prepared.target,
         };
-        const activatedResponse = await app.request(
-          ...operationRequest(
-            'worker-environment.activate',
-            {},
-            {
-              method: 'POST',
-              headers: adminHeaders,
-              body: JSON.stringify(activationInput),
-            }
-          )
+        const activate = () =>
+          app.request(
+            ...operationRequest(
+              'worker-environment.activate',
+              {},
+              {
+                method: 'POST',
+                headers: adminHeaders,
+                body: JSON.stringify(activationInput),
+              }
+            )
+          );
+        const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+          dataRoot,
+          privateWorkspace.id,
+          () => []
         );
+        if (frozen.status !== 'frozen')
+          throw new Error('Expected the administration capture gate.');
+        const imagePublication = vi.spyOn(nanoHostStorage.value.owner, 'workerImage');
+        try {
+          const response = await activate();
+          const refusal = await response.json();
+          expect(response.status).toBe(409);
+          expect.soft(response.headers.get('retry-after')).toBe('1');
+          expect.soft(response.headers.get('x-openkit-retry-context')).toMatch(/^[a-f0-9]{64}$/);
+          expect(refusal).toMatchObject({
+            code: 'workspace_frozen',
+            details: {
+              workspaceId: privateWorkspace.id,
+              operation: 'capture',
+              retryable: true,
+              blockers: [
+                {
+                  kind: 'publication',
+                  reason: 'frozen',
+                  reference: { workspaceId: privateWorkspace.id },
+                  actions: [],
+                },
+              ],
+            },
+          });
+          expect.soft(nanoHostEffect).toHaveBeenCalledTimes(beforeEffects);
+          expect.soft(imagePublication).not.toHaveBeenCalled();
+          expect(reload).not.toHaveBeenCalled();
+          expect(store.listThreadTurns(privateWorkspace.id, administrationThread.id)).toEqual(
+            beforeTurns
+          );
+          expect(readFileSync(agentPath, 'utf8')).toBe(initialAgentContent);
+        } finally {
+          frozen.release();
+        }
+
+        const activatedResponse = await activate();
         const activated = (await activatedResponse.json()) as ActivateWorkerEnvironmentResponse;
         const activatedAgentContent = readFileSync(agentPath, 'utf8');
 
@@ -588,17 +634,7 @@ describe('Worker environment App composition', () => {
         // Reload can await native Policy publication before it reports the applied snapshot.
         expect(await reload.mock.results[0]?.value).toMatchObject({ status: 'applied' });
         const effectsBeforeReplay = nanoHostEffect.mock.calls.length;
-        const replay = await app.request(
-          ...operationRequest(
-            'worker-environment.activate',
-            {},
-            {
-              method: 'POST',
-              headers: adminHeaders,
-              body: JSON.stringify(activationInput),
-            }
-          )
-        );
+        const replay = await activate();
         expect(replay.status).toBe(200);
         expect(await replay.json()).toEqual(activated);
         expect(reload).toHaveBeenCalledTimes(1);

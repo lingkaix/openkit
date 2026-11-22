@@ -24,7 +24,11 @@ import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js'
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
-import { WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
+import {
+  OperationError,
+  WORKSPACE_ACCESS_DENIED,
+  WorkspaceCaptureAdmissionError,
+} from '../operation-error.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -39,6 +43,7 @@ import {
   getWorkerStorageBindingForSandbox,
   type WorkerStorageContributor,
 } from '../runtime/worker-storage-bindings.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
@@ -187,9 +192,24 @@ export function createWorkerEnvironmentActivation(
       const home = { threadId: candidate.threadId, workspaceId: candidate.workspaceId };
       requireCurrentCandidateAudiences(dependencies, context.actor, request);
 
+      let releaseHome: (() => void) | undefined;
       const response = await runIdempotentCommand({
         command: 'worker_environment.activate',
         execute: async (receipt) => {
+          // Capture must see the private Turn's producer before any awaited image work.
+          try {
+            releaseHome = dependencies.store.enterWorkspaceMutation(home.workspaceId);
+          } catch (error) {
+            const dataRoot = dependencies.store.getDataRoot();
+            if (
+              error instanceof OperationError &&
+              error.code === 'workspace_frozen' &&
+              dataRoot &&
+              getControlStoreWorkerClient().isWorkspaceCaptureActive(dataRoot, home.workspaceId)
+            )
+              throw new WorkspaceCaptureAdmissionError(home.workspaceId);
+            throw error;
+          }
           const turnIdentity = activationTurnIdentity(context.actor, home, request);
           requireNoPartialActivation(dependencies.store, home, turnIdentity, request);
           requireNoUnrelatedRunningTurn(dependencies.store, home, turnIdentity.turnId);
@@ -412,7 +432,7 @@ export function createWorkerEnvironmentActivation(
           workspaceId: home.workspaceId,
         },
         store: dependencies.store,
-      });
+      }).finally(() => releaseHome?.());
       dependencies.requireCurrentAdministrator(context.actor);
       requireExactResolvedCandidate(dependencies, context.actor, request);
       requireCurrentCandidateAudiences(dependencies, context.actor, request);
