@@ -38,6 +38,7 @@ import {
   KernelInputStepSchema,
   SelectedKernelInputSchema,
 } from '../storage/control-kernel-proof-codecs.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import {
@@ -189,6 +190,16 @@ const workspaceStepKinds = new Set([
   'consume-receipt',
   'inspect-cleanup',
   'release',
+]);
+
+/** Open Worker results whose sibling steps cannot change their original authority. */
+const observedWorkspaceChildKinds = new Set([
+  'open-session',
+  'inspect-session',
+  'deliver-start',
+  'deliver-steer',
+  'collect',
+  'consume-receipt',
 ]);
 
 /** Containment uses only accepted control kinds and original authority references. */
@@ -524,6 +535,14 @@ export function decodeExecutionJournalSettlement(inputJson: string): ExecutionJo
     .object({
       ref: stepRefSchema,
       expectedExecutionRevision: count.min(1),
+      observedChild: z
+        .strictObject({
+          control: controlSchema,
+          parent: invocationSchema.shape.parent,
+          carriage: invocationSchema.shape.carriage,
+          inspectedStep: stepRefSchema.nullable(),
+        })
+        .optional(),
       state: state.exclude(['intent']),
       outputRefs: z.array(text),
       span: spanSchema.refine((value) => value.endTimeUnixNano !== null),
@@ -599,7 +618,17 @@ export function applyControlExecutionJournal(
       writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
     );
   const settlement = input as ExecutionJournalSettlement;
-  const ended = settleExecutionJournalStep(db, settlement);
+  const ended = settleExecutionJournalStep(
+    db,
+    settlement.observedChild
+      ? observedWorkspaceChildSettlement(
+          db,
+          settlement,
+          settlement.observedChild,
+          record.agentSessionId
+        )
+      : settlement
+  );
   if (command.consumeIntentJson) {
     const consume = decodeExecutionJournalIntent(command.consumeIntentJson);
     if (
@@ -608,13 +637,73 @@ export function applyControlExecutionJournal(
       consume.control.kind !== 'consume-receipt' ||
       consume.control.operationId !== ended.control.operationId ||
       !isDeepStrictEqual(consume.inspectedStep, settlement.ref) ||
-      !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage)
+      !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage) ||
+      (settlement.observedChild &&
+        !matchesObservedChildConsumption(settlement, ended.control, consume))
     )
       throw new Error('Receipt consumption conflicts with its original outcome.');
     // The existing request savepoint makes the observed outcome and ACK obligation indivisible.
     writeExecutionJournalIntent(db, consume);
   }
   return encodeExecutionJournalValue(ended);
+}
+
+/** Chooses only the revision again while the admitted Workspace writer owns the transaction. */
+function observedWorkspaceChildSettlement(
+  db: WorkspaceDb,
+  settlement: ExecutionJournalSettlement,
+  original: NonNullable<ExecutionJournalSettlement['observedChild']>,
+  agentSessionId: string
+): ExecutionJournalSettlement {
+  const { root, row, control, invocation, span } = storedStep(db, settlement.ref);
+  if (
+    row.state !== 'intent' ||
+    root.phase !== 'open' ||
+    settlement.nextPhase !== root.phase ||
+    settlement.terminalCause !== root.terminalCause ||
+    !isDeepStrictEqual(settlement.exclusionRefs, root.exclusionRefs) ||
+    settlement.expectedExecutionRevision > root.revision ||
+    !observedWorkspaceChildKinds.has(control.kind) ||
+    control.operationId === null ||
+    control.attemptId === null ||
+    !isDeepStrictEqual(control.authorityRefs, [root.workId, agentSessionId, control.attemptId]) ||
+    !isDeepStrictEqual(control, original.control) ||
+    !isDeepStrictEqual(invocation.parent, original.parent) ||
+    !isDeepStrictEqual(invocation.carriage, original.carriage) ||
+    (original.inspectedStep !== null &&
+      !isDeepStrictEqual(original.inspectedStep.execution.owner, root.ref.owner)) ||
+    row.inspected_execution_id !== (original.inspectedStep?.execution.executionId ?? null) ||
+    row.inspected_step_id !== (original.inspectedStep?.stepId ?? null) ||
+    !isDeepStrictEqual({ ...settlement.span, endTimeUnixNano: null, status: span.status }, span) ||
+    (control.kind === 'consume-receipt' &&
+      !isDeepStrictEqual(settlement.outputRefs, control.inputRefs))
+  )
+    throw new Error('Observed Workspace child settlement conflicts with its original authority.');
+  return { ...settlement, expectedExecutionRevision: root.revision };
+}
+
+/** A consume obligation must carry the same original result and authority in the same savepoint. */
+function matchesObservedChildConsumption(
+  settlement: ExecutionJournalSettlement,
+  control: ExecutionStepControl,
+  consume: ExecutionJournalIntent
+): boolean {
+  const result = settlement.outputRefs[0];
+  return (
+    result !== undefined &&
+    consume.parent === null &&
+    consume.parentStepId === null &&
+    isDeepStrictEqual(consume.control, {
+      ...control,
+      kind: 'consume-receipt',
+      target: null,
+      invocationId: consume.control.invocationId,
+      inputRefs: [result],
+      outputRefs: [],
+      fingerprint: commandInputHash({ child: control.fingerprint, result }),
+      deadlineUnixNano: null,
+    })
+  );
 }
 
 /** Parses known fields while refusing unknown core versions, tags and malformed required content. */

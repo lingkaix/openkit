@@ -12,6 +12,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { FsStore } from '../lib/store.js';
 import { runKernelRepair } from '../llm/kernel-repair-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { validatePolicyDocument } from '../policy/statements.js';
@@ -120,6 +121,7 @@ import {
   readKernelSchedulerGrantInDb,
   releaseKernelExecutionScopesInDb,
   settleExecutionJournalStep,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
 import { ExecutionReconciler } from './execution-reconciler.js';
@@ -1512,6 +1514,223 @@ describe('persisted execution journal contracts', () => {
       terminalCause: 'late-observation',
     });
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
+  });
+
+  it('settles delayed Harness and Artifact siblings at the native Workspace writer', async () => {
+    const f = journalFixture();
+    onTestFinished(shutdownControlStoreWorkerClient);
+    const actor = { kind: 'user' as const, id: ensureLocalUser(f.db) };
+    const store = new FsStore({ dataRoot: f.root });
+    const workspace = await store.createWorkspace('Original child results');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: workspace.id,
+      ownerUserId: actor.id,
+    });
+    const thread = await store.createThread(workspace.id, 'Sibling observations');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Test both child results', actor);
+    const agentSessionId = allocateEntityId('as');
+    const attemptId = allocateEntityId('attempt');
+    const now = new Date().toISOString();
+    await store.createAgentSession({
+      id: agentSessionId,
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await store.updateTurn(turn.id, { agentSessionId });
+    const db = openWorkspaceDb(f.root, workspace.id);
+    onTestFinished(() => db.sqlite.close());
+
+    const execution: ExecutionJournalAdmission = {
+      ...f.execution,
+      ref: {
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        executionId: 'workspace-execution',
+      },
+      definitionVersion: WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+      workId: turn.id,
+      exclusionRefs: [attemptId, 'original-binding'],
+    };
+    const child = (
+      id: number,
+      kind: ExecutionJournalIntent['control']['kind'],
+      operation: string
+    ): ExecutionJournalIntent => {
+      const draft = f.intent(id);
+      return {
+        ...draft,
+        execution,
+        control: {
+          ...draft.control,
+          definitionVersion: execution.definitionVersion,
+          kind,
+          workId: turn.id,
+          operationId: draft.carriage.requestId,
+          attemptId,
+          actor,
+          authorityRefs: [turn.id, agentSessionId, attemptId],
+        },
+        carriage: { ...draft.carriage, operation, bindingRef: 'original-binding' },
+      };
+    };
+    const harness = child(1, 'deliver-start', 'turn.start');
+    const artifact = child(2, 'collect', 'file.export');
+    const inspected = (intent: ExecutionJournalIntent) => ({
+      execution: intent.execution.ref,
+      stepId: intent.stepId,
+    });
+    const consume = (
+      intent: ExecutionJournalIntent,
+      result: string,
+      id: number
+    ): ExecutionJournalIntent => {
+      const draft = child(id, 'consume-receipt', intent.carriage.operation);
+      return {
+        ...draft,
+        carriage: intent.carriage,
+        inspectedStep: inspected(intent),
+        control: {
+          ...intent.control,
+          kind: 'consume-receipt',
+          target: null,
+          invocationId: draft.control.invocationId,
+          inputRefs: [result],
+          fingerprint: commandInputHash({ child: intent.control.fingerprint, result }),
+          deadlineUnixNano: null,
+        },
+        span: {
+          ...draft.span,
+          links: [
+            {
+              traceId: intent.span.traceId,
+              spanId: intent.span.spanId,
+              flags: intent.span.flags,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ],
+        },
+      };
+    };
+    const harnessResult = commandInputHash({ disposition: 'succeeded' });
+    const artifactResult = commandInputHash({ export: 'completed' });
+    const harnessConsume = consume(harness, harnessResult, 3);
+    const artifactConsume = consume(artifact, artifactResult, 4);
+    const root = () => readExecutionJournalRoot(db, execution.ref);
+    const end = (
+      intent: ExecutionJournalIntent,
+      outcome: string[],
+      snapshot: ReturnType<typeof root>
+    ): ExecutionJournalSettlement => ({
+      ref: inspected(intent),
+      expectedExecutionRevision: snapshot.revision,
+      observedChild: {
+        control: intent.control,
+        parent: intent.parent,
+        carriage: intent.carriage,
+        inspectedStep: intent.inspectedStep,
+      },
+      state: 'completed',
+      outputRefs: outcome,
+      span: {
+        ...intent.span,
+        endTimeUnixNano: intent.span.startTimeUnixNano + 1_000_000n,
+        status: { code: 'OK' },
+      },
+      nextPhase: snapshot.phase,
+      terminalCause: snapshot.terminalCause,
+      exclusionRefs: snapshot.exclusionRefs,
+    });
+    const settle = (input: ExecutionJournalSettlement, companion?: ExecutionJournalIntent) =>
+      store.settleWorkspaceExecutionJournalStep(workspace.id, input, companion);
+
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, harness);
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, artifact);
+    const prepared = root();
+    const harnessEnd = end(harness, [harnessResult], prepared);
+    const artifactEnd = end(artifact, [artifactResult], prepared);
+    await expect(settle(harnessEnd, harnessConsume)).resolves.toMatchObject({
+      control: { outputRefs: [harnessResult] },
+      span: harnessEnd.span,
+    });
+    const afterHarness = root();
+
+    const { observedChild, ...strictArtifact } = artifactEnd;
+    await expect(settle(strictArtifact, artifactConsume)).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    await expect(
+      settle(
+        {
+          ...artifactEnd,
+          observedChild: {
+            ...observedChild!,
+            control: { ...artifact.control, fingerprint: commandInputHash('changed') },
+          },
+        },
+        artifactConsume
+      )
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle(artifactEnd, {
+        ...artifactConsume,
+        control: { ...artifactConsume.control, inputRefs: [harnessResult] },
+      })
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle({ ...artifactEnd, exclusionRefs: [] }, artifactConsume)
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(afterHarness);
+    expect(readExecutionJournalInvocation(db, artifactEnd.ref).state).toBe('intent');
+    expect(() => readExecutionJournalInvocation(db, inspected(artifactConsume))).toThrow();
+
+    await expect(settle(artifactEnd, artifactConsume)).resolves.toMatchObject({
+      control: { outputRefs: [artifactResult] },
+      span: artifactEnd.span,
+    });
+    const acknowledgements = root();
+    expect(acknowledgements.revision).toBe(prepared.revision + 4);
+    const harnessAck = end(harnessConsume, [harnessResult], acknowledgements);
+    const artifactAck = end(artifactConsume, [artifactResult], acknowledgements);
+    await settle(artifactAck);
+    // The Harness caller had already prepared this ACK before the Artifact ACK committed.
+    await expect(settle(harnessAck)).resolves.toMatchObject({
+      control: { outputRefs: [harnessResult] },
+      span: harnessAck.span,
+    });
+    const settled = root();
+    expect(settled).toMatchObject({
+      revision: prepared.revision + 6,
+      phase: 'open',
+      openSteps: [],
+    });
+    await expect(settle(harnessAck)).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(settle({ ...harnessAck, outputRefs: [artifactResult] })).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(settled);
+
+    const pending = child(5, 'collect', 'file.export');
+    const terminal = child(6, 'terminal-publication', 'worker.terminal-publication');
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, pending);
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, terminal);
+    const beforeClose = root();
+    const delayed = end(pending, [artifactResult], beforeClose);
+    const terminalEnd = end(terminal, [], beforeClose);
+    await expect(settle(terminalEnd)).rejects.toMatchObject({ commit: 'not-committed' });
+    const { observedChild: _, ...strictTerminal } = terminalEnd;
+    await settle({ ...strictTerminal, nextPhase: 'closing', terminalCause: 'authority-revoked' });
+    const closing = root();
+    await expect(settle(delayed)).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(closing);
+    expect(readExecutionJournalInvocation(db, delayed.ref).state).toBe('intent');
   });
 
   function idleCleanupFixture() {
