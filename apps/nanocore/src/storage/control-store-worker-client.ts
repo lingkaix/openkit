@@ -664,6 +664,8 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
+  /** Joins the current serving acknowledgement before ordinary Worker control admission. */
+  waitForWorkerControlAcknowledgement(): Promise<void>;
   workerControlHeartbeat(
     input: ControlWorkerHeartbeatCommand
   ): Promise<ControlWorkerHeartbeatResult>;
@@ -826,7 +828,7 @@ interface Opening {
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
-  nanoHostCoreHoldPending?: true;
+  nanoHostCoreHoldPending?: Promise<void>;
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
@@ -3399,6 +3401,11 @@ class ControlStoreWorkerClient {
         }
       };
 
+      const waitForWorkerControlAcknowledgement = async (): Promise<void> => {
+        const pending = opening.nanoHostCoreHoldPending;
+        if (pending && !this.backupHold && !opening.nanoHostTargetTransition) await pending;
+      };
+
       // Drain Core postings while the original authority is used by the Native writer.
       const withCoreHold = async <Value>(submit: (identity: string) => Promise<Value>) => {
         const corePath = serverStoragePath(root, 'control-kernel');
@@ -3417,7 +3424,8 @@ class ControlStoreWorkerClient {
           opening.nanoHostCoreHoldPending
         )
           throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        opening.nanoHostCoreHoldPending = true;
+        const acknowledged = Promise.withResolvers<void>();
+        opening.nanoHostCoreHoldPending = acknowledged.promise;
         try {
           return await this.runOperation(
             async () => {
@@ -3450,6 +3458,7 @@ class ControlStoreWorkerClient {
           );
         } finally {
           delete opening.nanoHostCoreHoldPending;
+          acknowledged.resolve();
         }
       };
 
@@ -3520,7 +3529,8 @@ class ControlStoreWorkerClient {
         if (this.databaseHolds.has(coreKey))
           throw new ControlStoreWorkerError('busy', 'not-committed');
         const releaseNative = reserveMainScopeReadAcquisition(opening.path);
-        opening.nanoHostCoreHoldPending = true;
+        const acknowledged = Promise.withResolvers<void>();
+        opening.nanoHostCoreHoldPending = acknowledged.promise;
         opening.nanoHostWritePending = 'core-owner-read';
         try {
           return await run(core, coreOpeningRequestId, nativeIdentity);
@@ -3528,6 +3538,7 @@ class ControlStoreWorkerClient {
           if (core.host.failed) await core.host.exited.promise;
           delete opening.nanoHostWritePending;
           delete opening.nanoHostCoreHoldPending;
+          acknowledged.resolve();
           releaseNative();
         }
       };
@@ -3659,8 +3670,11 @@ class ControlStoreWorkerClient {
           })
         );
       };
-      const writeWorkerObservation = <Value>(publish: (coreIdentity: string) => Promise<Value>) =>
-        withCoreHold(async (coreIdentity) => {
+      const writeWorkerObservation = async <Value>(
+        publish: (coreIdentity: string) => Promise<Value>
+      ) => {
+        await waitForWorkerControlAcknowledgement();
+        return withCoreHold(async (coreIdentity) => {
           assertCurrent();
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
@@ -3676,6 +3690,7 @@ class ControlStoreWorkerClient {
             delete opening.nanoHostWritePending;
           }
         });
+      };
       const workerControlFinalStatus: NanoHostOwnerBinding['workerControlFinalStatus'] = async (
         input
       ) => {
@@ -3846,6 +3861,7 @@ class ControlStoreWorkerClient {
           firstSubmission,
           harnessTurnLifecycle,
           writeStorageAttachment,
+          waitForWorkerControlAcknowledgement,
           workerControlHeartbeat: (input) => {
             const original = structuredClone(input);
             return writeWorkerObservation((identity) =>
