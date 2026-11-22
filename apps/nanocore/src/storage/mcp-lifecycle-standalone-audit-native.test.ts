@@ -1180,7 +1180,9 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
   const { createNativeTaskAdmissionFixture } = await import(
     '../test-support/native-task-admission.js'
   );
-  const { admitTestNativeEnvironment } = await import('../test-support/native-environment.js');
+  const { admitTestNativeEnvironmentForRoot } = await import(
+    '../test-support/native-environment.js'
+  );
   const { isCanonicalUserActive } = await import('../auth/user-lifecycle.js');
   const { TurnStartValidationError } = await import('../operation-error.js');
   const { listArtifactReviews } = await import('../artifact-reviews.js');
@@ -1333,8 +1335,9 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
   native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => snapshot,
   });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const app = createAppWithLocalIdentity({
+    nanoHostStorage,
     coreDb,
     dataRoot: root,
     store,

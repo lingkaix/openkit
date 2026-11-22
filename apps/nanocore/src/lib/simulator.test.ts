@@ -33,11 +33,6 @@ import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import * as pendingFlow from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
@@ -59,6 +54,7 @@ import {
   isCurrentAgentSessionStatus,
   nativeProductScope,
 } from '../storage/workspace-file-records.js';
+import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -66,6 +62,7 @@ import {
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
@@ -112,22 +109,13 @@ async function createCoreDb(registerDemoMembership = true): CoreDb {
  * @param coreDb Migrated Core database handles.
  */
 async function configureNativeRuntimeTarget(coreDb: CoreDb): Promise<void> {
-  if (!getNanoHostRuntimeTarget(coreDb, 'target_local')) {
-    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
-      identityId: 'identity_local',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'target_local',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...runtimeTarget,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
+  await recordTestNativeRuntimeTarget(coreDb, 'target_local', {
+    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    identityId: 'identity_local',
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
+    physicalEpoch: 'a'.repeat(64),
+  });
 }
 
 /**
@@ -1056,9 +1044,12 @@ describe('SimulatedTurnExecutor', () => {
         });
         expect.soft(successorSnapshot?.snapshotId).not.toBe(predecessorSnapshot?.snapshotId);
 
-        const predecessorBackends = coreDb.sqlite
-          .prepare(`SELECT state FROM worker_backend_sessions WHERE agent_session_id = ?`)
-          .all(predecessorId) as Array<{ state: string }>;
+        // Backend sessions are retained by the admitted NanoHost journal, not Core.
+        const predecessorBackends = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT state FROM worker_backend_sessions WHERE agent_session_id = ?`)
+            .all(predecessorId)
+        ) as Array<{ state: string }>;
         expect
           .soft(
             predecessorBackends.length > 0 &&
@@ -1066,15 +1057,17 @@ describe('SimulatedTurnExecutor', () => {
             JSON.stringify(predecessorBackends)
           )
           .toBe(true);
-        const liveCurrentBindings = coreDb.sqlite
-          .prepare(
-            `SELECT agent_session_id AS agentSessionId, state
-             FROM worker_backend_sessions
-             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'
-               AND thread_id = 'th_00000000-0000-7000-8000-000000000001'
-               AND state NOT IN ('cleaned', 'physical-cleaned')`
-          )
-          .all() as Array<{ agentSessionId: string; state: string }>;
+        const liveCurrentBindings = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT agent_session_id AS agentSessionId, state
+               FROM worker_backend_sessions
+               WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'
+                 AND thread_id = 'th_00000000-0000-7000-8000-000000000001'
+                 AND state NOT IN ('cleaned', 'physical-cleaned')`
+            )
+            .all()
+        ) as Array<{ agentSessionId: string; state: string }>;
         expect
           .soft(
             liveCurrentBindings.filter((row) => row.agentSessionId === predecessorId),

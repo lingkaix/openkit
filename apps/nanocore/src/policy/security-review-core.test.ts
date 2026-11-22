@@ -35,7 +35,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createPendingRequestFixture } from '../test-support/pending-request.js';
@@ -461,10 +461,11 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
       readRuntimeConfig: () => manager.current(),
     });
     // Existing image/placement/Harness metadata peers do NOT prove physical execution.
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     gateway = createDefaultWorkerMcpGateway(coreDb);
     pending = createPendingRequestFixture({ coreDb, store, workspaceId: WORKSPACE });
     taskApp = createApp({
+      nanoHostStorage,
       mode: 'server',
       auth,
       coreDb,

@@ -1646,14 +1646,15 @@ describe('action center app API', () => {
         )
         .run(queueEntryId);
       coreDb.sqlite
+        // K8 retired backend_id, preparation_input_json and updated_at from the Core attempt row.
         .prepare(`INSERT INTO scheduler_execution_attempts
-        (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
-         agent_session_id, input_ref, binding_ref, preparation_input_json, phase, disposition,
-         operation_id, terminal_cause, created_at, updated_at)
-        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', ?, 'nanohost', ?, ?, ?,
-          'as_00000000-0000-7f85-a231-397f40994baa', 'pkg_orphan', 'binding_action_center', '{}', 'closing', 'unknown',
-          'operation_action_center', 'native-liveness-expired', ?, ?)`)
-        .run(queueEntryId, DEMO_WORKSPACE_ID, thread.id, turn.id, timestamp, timestamp);
+        (attempt_id, queue_entry_id, workspace_id, thread_id, turn_id,
+         agent_session_id, input_ref, binding_ref, phase, disposition,
+         operation_id, terminal_cause, created_at)
+        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', ?, ?, ?, ?,
+          'as_00000000-0000-7f85-a231-397f40994baa', 'pkg_orphan', 'binding_action_center', 'closing', 'unknown',
+          'operation_action_center', 'native-liveness-expired', ?)`)
+        .run(queueEntryId, DEMO_WORKSPACE_ID, thread.id, turn.id, timestamp);
 
       const app = createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(

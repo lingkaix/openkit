@@ -154,6 +154,7 @@ import {
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   createTestNativeEnvironmentDb,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
@@ -389,23 +390,28 @@ function requireFixtureHarnessConsumption(
 }
 
 /** Creates the durable deployment identity required by real executor construction. */
-function createFactoryCoreDb() {
+async function createFactoryCoreDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-executor-factory-'));
   ensureLayout(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
+  // Image evidence is retained by the admitted NanoHost file; the retired Core table is absent.
   for (const adapter of ['codex', 'pi', 'opencode'])
-    admitTestNativeEnvironment(coreDb, createTestAgentSetup({ adapter }).manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup({ adapter }).manifest);
   for (const digit of ['1', '2', '3', '4', '5', '6', '7', 'a', 'f'])
-    admitTestNativeEnvironment(
+    await admitTestNativeEnvironmentForRoot(
       coreDb,
       createTestAgentSetup({ imageRef: `sha256:${digit.repeat(64)}` }).manifest
     );
   return coreDb;
 }
 
-const factoryCoreDb = createFactoryCoreDb();
+// Collection runs in worker threads without the control-store client; seed once before the cases.
+let factoryCoreDb: ReturnType<typeof openCoreDb>;
+beforeAll(async () => {
+  factoryCoreDb = await createFactoryCoreDb();
+});
 
 /** Returns the fixed persistent-image facts used by NanoHost materialization fixtures. */
 function nanoHostImageInspection(request: NanoHostSessionEffectRequest) {
@@ -450,7 +456,7 @@ function nanoHostSandboxCreated(request: NanoHostSessionEffectRequest) {
 }
 
 /** Inserts one active human user used by factory storage fixtures. */
-function insertFactoryUser(coreDb: ReturnType<typeof createFactoryCoreDb>, userId: string): void {
+function insertFactoryUser(coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>, userId: string): void {
   coreDb.sqlite
     .prepare(
       `INSERT OR IGNORE INTO users (
@@ -462,7 +468,7 @@ function insertFactoryUser(coreDb: ReturnType<typeof createFactoryCoreDb>, userI
 
 /** Creates the current user, Workspace registry, and Thread facts required by storage admission. */
 async function authorizeNanoHostPackage(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   environmentPackage: AgentEnvironmentPackage,
   options: {
     readonly membership?: boolean;
@@ -525,7 +531,7 @@ async function authorizeNanoHostPackage(
 
 /** Records the exact originating admission and prepared Core attempt for one Worker package. */
 function bindNanoHostWorkerLineage(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   environmentPackage: AgentEnvironmentPackage,
   input: {
     readonly attemptId: string;
@@ -585,7 +591,7 @@ function bindNanoHostWorkerLineage(
 
 /** Drives the actual preparation and submission crossings of a directly-authored Native fixture. */
 async function submitTestNanoHostTurn(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   backend: WorkerGovernanceBackend,
   materialization: Parameters<WorkerGovernanceBackend['prepareLaunch']>[0],
   credentialBindings?: Parameters<WorkerGovernanceBackend['submit']>[0]['credentialBindings']
@@ -621,7 +627,7 @@ async function submitTestNanoHostTurn(
 }
 
 /** Observes the actual queue commit before dispatch, within the caller's original case bound. */
-async function waitForFactoryHarnessCommand(coreDb: ReturnType<typeof createFactoryCoreDb>) {
+async function waitForFactoryHarnessCommand(coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>) {
   const queued = Promise.withResolvers<void>();
   const queue = harnessRecords.queueNanoHostHarnessOperation;
   const observation = vi
@@ -658,7 +664,7 @@ async function waitForFactoryHarnessCommand(coreDb: ReturnType<typeof createFact
 
 /** Admits the real Turn binding and original execution obligations before a backend fixture effect. */
 async function admitFactoryTurnJournal(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   environmentPackage: AgentEnvironmentPackage,
   attemptId: string,
   identity: WorkerGovernanceBackendSessionIdentity
@@ -715,7 +721,7 @@ async function admitFactoryTurnJournal(
 
 /** Adds the already-owned pre-effect backend anchor for direct backend-unit materialization. */
 async function anchorNanoHostMaterialization(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   backend: WorkerGovernanceBackend,
   environmentPackage: AgentEnvironmentPackage,
   nativeCoreOwner = false
@@ -855,7 +861,7 @@ async function anchorNanoHostMaterialization(
 
 /** Adds the attached retained-storage owner required by one directly-authored Sandbox fixture. */
 async function attachNanoHostStorageFixture(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   input: {
     readonly agentSessionId: string;
     readonly deploymentId: string;
@@ -973,7 +979,7 @@ async function completeNanoHostPackage(input: {
 
 /** Seeds an already accepted retained slot as an explicit starting fact of continuity fixtures. */
 function seedAcceptedRetainedSlot(
-  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
   environmentPackage: AgentEnvironmentPackage,
   storage: Awaited<ReturnType<typeof createAndReserveWorkerStorageAttachment>>,
   workSlot: string
@@ -1079,12 +1085,12 @@ async function failLivePartialSandboxActivation(
   hooks: {
     readonly deleteError?: Error;
     readonly duringDelete?: (
-      coreDb: ReturnType<typeof createFactoryCoreDb>,
+      coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
       storageRef: string
     ) => void;
   } = {}
 ) {
-  const coreDb = createFactoryCoreDb();
+  const coreDb = await createFactoryCoreDb();
   const effects: NanoHostSessionEffectRequest[] = [];
   const expectResultOnly = vi.fn(async () => {
     throw new Error('unexpected result-only recovery');
@@ -1226,7 +1232,7 @@ function retainsLivePartialMaterialization(backend: object, packageSnapshotId: s
 
 /** Builds one nonmember server-admin AEP with live admission, plan, and lease records. */
 async function prepareNonmemberAdminWorkerStorage(label: string) {
-  const coreDb = createFactoryCoreDb();
+  const coreDb = await createFactoryCoreDb();
   const effects: NanoHostSessionEffectRequest[] = [];
   const hooks: { onInspect?: () => void } = {};
   const adminUserId = 'usr_00000000-0000-7608-82c1-24d471dc8ebe';
@@ -1374,7 +1380,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('keeps strict image inspection carriage closed while retaining lifecycle effect identity', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
     const runtimeTarget = {
@@ -1504,7 +1510,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('retires one pre-witness cleanup through the first different fresh Epoch without dispatch', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({
       coreDb,
@@ -1654,7 +1660,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('rechecks the anchored physical Epoch immediately before effect dispatch', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effect = vi.fn(async () => ({}));
     const sessionDispatch = {
       effect,
@@ -1792,7 +1798,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('denies a fresh AgentSession before lease acquisition when RuntimeTarget is missing', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = await store.updateTurn(
       (
@@ -1829,7 +1835,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('does not close a predecessor or acquire a lease while RuntimeTarget is unready', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const firstGeneration = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment-unready-admission',
       identityId: 'identity-unready-admission',
@@ -1991,7 +1997,7 @@ describe('createConfiguredTurnExecutor', () => {
     async ({ cleanupFailed, dispatched, expected }) => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-08-21T00:00:00.000Z'));
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       try {
         coreDb.sqlite
           .prepare(
@@ -2125,7 +2131,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('prepares a fresh AgentSession when the sole RuntimeTarget is ready and unbound', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment-ready-admission',
       identityId: 'identity-ready-admission',
@@ -2181,7 +2187,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('restores every sibling AgentSession binding after a NanoCore restart', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const sandboxCompatibilityKey = 'a'.repeat(64);
     try {
       coreDb.sqlite
@@ -2462,11 +2468,11 @@ describe('createConfiguredTurnExecutor', () => {
       policyInterception?: PolicyInterception;
       onImport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       materializationContext?: (input: {
-        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>;
         environmentPackage: AgentEnvironmentPackage;
       }) => Promise<Parameters<WorkerGovernanceBackend['materialize']>[1]>;
       beforeSubmit?: (input: {
-        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>;
         environmentPackage: AgentEnvironmentPackage;
         backend: WorkerGovernanceBackend;
         runtime: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
@@ -2474,7 +2480,7 @@ describe('createConfiguredTurnExecutor', () => {
       }) => Promise<void>;
       configurePackage?: (
         environmentPackage: AgentEnvironmentPackage,
-        coreDb: ReturnType<typeof createFactoryCoreDb>
+        coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>
       ) => void | Promise<void>;
       onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       onExport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
@@ -2486,18 +2492,18 @@ describe('createConfiguredTurnExecutor', () => {
       beforeFinalStatus?: (input: {
         backend: WorkerGovernanceBackend;
         turnExecutor: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>['turnExecutor'];
-        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>;
         environmentPackage: AgentEnvironmentPackage;
       }) => Promise<void>;
       beforeFirstTurn?: (input: {
-        coreDb: ReturnType<typeof createFactoryCoreDb>;
+        coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>;
         environmentPackage: AgentEnvironmentPackage;
         integrationRef: string;
         effects: NanoHostSessionEffectRequest[];
       }) => Promise<void>;
     } = {}
   ) {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const localUserId = options.localIdentity ? ensureLocalUser(coreDb) : undefined;
     const effects: NanoHostSessionEffectRequest[] = options.effects ?? [];
     const sessionDispatch = createFactoryNanoHostDispatch(effects, {
@@ -2876,7 +2882,7 @@ describe('createConfiguredTurnExecutor', () => {
         ],
       };
       let vault: ReturnType<typeof createVaultUnlockState> | undefined;
-      let core: ReturnType<typeof createFactoryCoreDb> | undefined;
+      let core: Awaited<ReturnType<typeof createFactoryCoreDb>> | undefined;
       let ownerStage = 'factory-setup';
       const planId = `plan_static_${randomUUID()}`;
       const receiptId = `receipt_static_${randomUUID()}`;
@@ -3214,7 +3220,7 @@ describe('createConfiguredTurnExecutor', () => {
   it('withdraws a live Provider grant and joins whole-Sandbox removal before revocation succeeds', async ({
     signal,
   }) => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
@@ -3644,7 +3650,7 @@ describe('createConfiguredTurnExecutor', () => {
       >;
       let artifactExports = 0;
       let partialImportReached = false;
-      let core: ReturnType<typeof createFactoryCoreDb>;
+      let core: Awaited<ReturnType<typeof createFactoryCoreDb>>;
       const protection = {
         ephemeral: true,
         outsideRetainedStorage: true,
@@ -4062,7 +4068,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('refuses a Worker image without the declared retained Thread root before Sandbox creation', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const fixed = createFactoryNanoHostDispatch(effects);
     const dispatch: NanoHostSessionDispatch = {
@@ -4339,7 +4345,7 @@ describe('createConfiguredTurnExecutor', () => {
   ])(
     'refuses $label before sandbox or storage effects',
     async ({ observed, core, expectedEffects }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       const fixed = createFactoryNanoHostDispatch(effects);
       const dispatch: NanoHostSessionDispatch = {
@@ -4396,7 +4402,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('rechecks an old resident immutable image after a Core release change before storage or material delivery', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const ownerUserId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
@@ -4497,7 +4503,7 @@ describe('createConfiguredTurnExecutor', () => {
   ])(
     'refuses unproved co-residency before effects despite configured capacity $bound',
     async ({ authored, bound }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const store = await createDemoStore({ dataRoot });
       const ownerUserId = ensureLocalUser(coreDb);
@@ -4646,7 +4652,7 @@ describe('createConfiguredTurnExecutor', () => {
   )(
     'propagates authored/default capacity $bound through sequential Thread Turns and preserves command and release owners ($fault)',
     async ({ authored, bound, fault }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot });
@@ -5175,7 +5181,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('rejects a selected Skill corrupted after preview before materialization eviction or effects', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -6711,7 +6717,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const;
   it.each(capturePublicationFaults)('capture publication: %s', async (fault) => {
     const idleCapture = fault === 'idle' || fault === 'idle-epoch' || fault === 'idle-concurrent';
-    let coreDb = createFactoryCoreDb();
+    let coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -7953,7 +7959,7 @@ describe('createConfiguredTurnExecutor', () => {
       },
       resolve,
     } as unknown as VaultBackend;
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     workspaceId = DEMO_WORKSPACE_ID;
@@ -8728,7 +8734,7 @@ describe('createConfiguredTurnExecutor', () => {
       'adapters',
     ],
   ] as const)('%s', async (_title, change) => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const environment = { NATIVE_SETTING: 'changed', EMPTY: '' };
@@ -9202,7 +9208,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('reuses current same-epoch continuity but refuses an unproved previous compatibility descriptor', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -9646,7 +9652,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('returns null from a cold resident work-slot lookup without a durable Sandbox', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       const environmentPackage = await completeNanoHostPackage({
         scope: {
@@ -9678,7 +9684,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('carries a resident predecessor handoff slot into a no-choice successor AEP without a storage-bearing session.open', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -10000,7 +10006,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)(
     '%s updates the durable Sandbox even without a process-local session',
     async (_, uncertain, storagePresent) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const operations: string[] = [];
       const sessionDispatch: NanoHostSessionDispatch = {
         async effect(
@@ -10156,7 +10162,7 @@ describe('createConfiguredTurnExecutor', () => {
   ])(
     'releases no-Sandbox cleanup-pending $state storage only with current exact proof: $outcome ($bindingRef)',
     async ({ bindingRef, state, outcome }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       let beforeCleanupResult = async () => {};
       const expectResultOnly = vi.fn(async () => {
@@ -10361,7 +10367,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('releases a no-Sandbox storage reservation only after later fresh-ready cleanup proof', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(
@@ -10565,7 +10571,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('settles one poll-first unknown fence only after strictly later fresh-ready proof', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const resultOnlyRejectors: Array<(error: Error) => void> = [];
     let resultOnlyRegistrations = 0;
@@ -10901,7 +10907,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('findDurableSandboxBinding keeps exact projection, uniqueness, worker binding, and AgentSession lineage', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       coreDb.sqlite
         .prepare(
@@ -11076,7 +11082,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('widens a Harness-unknown operation to the owning Sandbox reuse fence', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       coreDb.sqlite
         .prepare(
@@ -11141,7 +11147,7 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('isolates unproved co-residency while retaining static inputs and private Context namespaces', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       coreDb.sqlite
         .prepare(
@@ -11330,7 +11336,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)(
     'closes runtime-env exposure through public $route revocation ($binding, unknown cleanup: $cleanupUnknown)',
     async ({ route, binding, cleanupUnknown }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       const workspaceId = DEMO_WORKSPACE_ID;
@@ -12094,7 +12100,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('interrupts a NanoHost Turn only through its materialized Harness session', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       const workerControlGateway = new WorkerControlGateway({
         now: () => '2026-08-12T00:00:00.000Z',
@@ -12181,7 +12187,7 @@ describe('createConfiguredTurnExecutor', () => {
       purpose === 'failed-closeout' ||
       purpose === 'failed-closeout-refused' ||
       purpose === 'completed';
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(coreDb.dataRoot, 'server', 'vault'),
@@ -13081,7 +13087,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)(
     'terminal inspection $name',
     async ({ expected, inspection, proved, recorded, resume }) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       try {
         const runtime = createConfiguredWorkerLifecycleRuntime({
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -13185,7 +13191,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('refuses terminal inspection before dispatch when the AgentSession recorder is absent', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     try {
       const runtime = createConfiguredWorkerLifecycleRuntime({
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -13653,7 +13659,7 @@ describe('createConfiguredTurnExecutor', () => {
   it.each(['image.acquire', 'image.build', 'image.inspect', 'image.acquire.pending'] as const)(
     'keeps the ready connection usable after rejected %s and live cleanup',
     async (operation) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const authority = createNanoHostTransportSessionAuthority();
       const dispatch = createNanoHostSessionDispatch({
         coreDb,
@@ -13841,7 +13847,7 @@ describe('createConfiguredTurnExecutor', () => {
   it.each(['failure', 'mismatch', 'match'] as const)(
     'acquires an exact local digest before inspection and stops when acquisition fails (%s)',
     async (acquisitionResult) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       const localDigest = `sha256:${'d'.repeat(64)}`;
       const suffix =
@@ -14042,7 +14048,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('copies measured identity onto a restored binding launched through session.inspect', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -14177,7 +14183,7 @@ describe('createConfiguredTurnExecutor', () => {
     { name: 'records the predecessor proof at open and again at restart', opened: 'a' },
     { name: 'refuses a resumed open that proves a different conversation', opened: 'b' },
   ])('resumed session.open $name', async ({ opened }) => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
@@ -14358,7 +14364,7 @@ describe('createConfiguredTurnExecutor', () => {
   it.each(['codex'] as const)(
     'keeps a ready %s session.open proof when recording fails, then hands it off before cleanup',
     async (adapterId) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       const sessionDispatch: NanoHostSessionDispatch = {
         async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -14535,7 +14541,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   it('keeps a restored ready proof when recording fails, then hands it off before cleanup', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: string[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -14733,7 +14739,7 @@ describe('createConfiguredTurnExecutor', () => {
   ] as const)(
     'keeps an independent Task queued until one-Sandbox release: %s',
     async (scenario) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       const workspaceId = DEMO_WORKSPACE_ID;
@@ -15281,7 +15287,7 @@ describe('createConfiguredTurnExecutor', () => {
       ].includes(scenario);
       let coreDb = reuseOrdinaryProof
         ? openClonedFactoryCoreDb(requireOrdinaryProof().root)
-        : createFactoryCoreDb();
+        : await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       let store = reuseOrdinaryProof
@@ -16491,7 +16497,7 @@ describe('createConfiguredTurnExecutor', () => {
 
   // Four durable admissions need the same runner budget as adjacent lifecycle fixtures.
   it('dispatches distinct Thread Sandboxes when OpenCode returns after DeepSeek eviction', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -16830,7 +16836,7 @@ describe('createConfiguredTurnExecutor', () => {
       const eviction = scenario?.startsWith('eviction-') ?? false;
       const fresh = scenario?.startsWith('predecessor-fresh-') ?? false;
       const deleteFails = scenario?.endsWith('delete-failed') ?? false;
-      let coreDb = createFactoryCoreDb();
+      let coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       let store = await createDemoStore({ dataRoot });
@@ -17661,7 +17667,7 @@ describe('createConfiguredTurnExecutor', () => {
   ])(
     'reattaches selected storage or surfaces startup failure: %s',
     async (startupRefused) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       const expectResultOnly = vi.fn(async () => {
         throw new Error('Unexpected live result-only cleanup registration.');
@@ -17907,7 +17913,7 @@ describe('createConfiguredTurnExecutor', () => {
   it('honors explicit selected and fresh storage on a shared resident contributor', async ({
     signal,
   }) => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
@@ -18272,7 +18278,7 @@ describe('createConfiguredTurnExecutor', () => {
   it('retains a committed native wake across a cold final-null drain and old restore', async () => {
     type Native = Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
     type Command = harnessRecords.NanoHostHarnessCommand;
-    let coreDb = createFactoryCoreDb();
+    let coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const workspaceId = DEMO_WORKSPACE_ID;
     const ownerUserId = ensureLocalUser(coreDb);
@@ -18586,7 +18592,7 @@ describe('createConfiguredTurnExecutor', () => {
     dirty,
     operation,
   }, { signal }) => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     try {
       coreDb.sqlite.exec(`INSERT INTO nanohost_runtime_targets (
@@ -19347,7 +19353,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   ] as const)(
     'retires a failed resident from %s (Harness: %s, storage: %s, operation: %s) before fresh materialization',
     async (originPhysicalEpoch, withHarness, withStorage, operationState) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       try {
         coreDb.sqlite
@@ -19565,7 +19571,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   it.each(['busy', 'uncertain'] as const)(
     'reports one incompatible %s resident as saturated without a second Sandbox effect',
     async (residentState) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const effects: NanoHostSessionEffectRequest[] = [];
       try {
         coreDb.sqlite
@@ -19677,7 +19683,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   );
 
   it('retires an unproved multi-Thread descriptor before a distinct Thread obtains physical placement', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
@@ -20091,7 +20097,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   ])(
     'preserves exact storage authority through native restart: failedTurn=$failedTurn concurrent=$concurrentRevisionAdvance missingStorage=$missingStorage',
     async ({ concurrentRevisionAdvance, missingStorage, failedTurn }) => {
-      let coreDb = createFactoryCoreDb();
+      let coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
       const joins: Array<() => Promise<void>> = [];
@@ -20399,7 +20405,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   );
 
   it('refuses contradictory runtime-file lineage and unsupported Providers before effects', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch = {
       async effect(request: NanoHostSessionEffectRequest) {
@@ -20542,7 +20548,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   });
 
   it('derives deterministic distinct DNS-1123 sandbox identities before sandbox creation', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const sandboxCreates: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(
@@ -20749,7 +20755,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   it.each(['owner', 'new member', 'removed member', 'deleting'] as const)(
     'checks the first Worker Turn against post-load Workspace mutations: %s',
     async (member) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const ownerUserId = ensureLocalUser(coreDb);
       const inviteeId = testEntityId('usr', 'fresh_workspace_member');
       if (member === 'new member' || member === 'removed member')
@@ -20948,7 +20954,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   );
 
   it('admits canonical shared Thread storage without opening unrelated Knowledge', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
@@ -21273,7 +21279,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     'preserves the shared resident after a pre-dispatch %s failure',
     async (path) => {
       const label = `no_effect_${path}`;
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot });
@@ -21429,7 +21435,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         : 'bridge_closed_delete_refused_live';
     const attemptId = testEntityId('attempt', `lease_${label}`);
     // This case needs an actually closed Worker Turn root, beyond the backend-only idle fixture.
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -22744,7 +22750,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   });
 
   it('joins the addressed idle resident while a distinct anchor has failed storage release', async () => {
-    const coreDb = createFactoryCoreDb();
+    const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
@@ -22931,7 +22937,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   it.each([true, false])(
     'releases a genuinely unknown close only after complete closeout and a fresh physical fence (failed final=%s)',
     async (failedFinal) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot });
@@ -23184,7 +23190,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     'continues fenced accepted-final closeout through factory maintenance (cold=%s)',
     async (cold) => {
       const label = `accepted_closeout_${cold}`;
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot });
@@ -24219,7 +24225,7 @@ function seedFactoryOutside(effects: NanoHostSessionEffectRequest[]): FactoryOut
 
 /** Runs the shared successful ordinary proof once, after stop and before any scenario fault. */
 async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
-  const coreDb = createFactoryCoreDb();
+  const coreDb = await createFactoryCoreDb();
   const dataRoot = coreDb.dataRoot;
   const ownerUserId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -24291,7 +24297,7 @@ async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
 
 /** Runs the shared retirement proof once. Tables stay present so each proof can apply its own fault. */
 async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
-  const coreDb = createFactoryCoreDb();
+  const coreDb = await createFactoryCoreDb();
   const dataRoot = coreDb.dataRoot;
   const ownerUserId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -24427,7 +24433,7 @@ describe('inert initial private Login exchange through the concrete backend sess
   ] as const)(
     'joins authenticated acquire and complete without completing startup (%s)',
     async (ending) => {
-      const coreDb = createFactoryCoreDb();
+      const coreDb = await createFactoryCoreDb();
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
@@ -27823,7 +27829,7 @@ describe('inert initial private Login exchange through the concrete backend sess
 it('fences same-account Login replacement until the actual shared survivor settles', async ({
   signal,
 }) => {
-  const coreDb = createFactoryCoreDb();
+  const coreDb = await createFactoryCoreDb();
   const ownerUserId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const workspaceId = DEMO_WORKSPACE_ID;
