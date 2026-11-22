@@ -6986,10 +6986,17 @@ export async function endWorkerTurnJournalStep(
   try {
     const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
     const { control, parent, carriage, inspectedStep } = intent;
-    const observedChild =
-      root.phase === 'open' &&
+    const acknowledgedHarnessWait =
+      control.operationId === null &&
+      parent === null &&
+      inspectedStep === null &&
+      state === 'completed' &&
+      outputRefs.length === 1 &&
+      /^worker\.(?:session\.(?:open|inspect|close)|turn\.(?:start|steer|interrupt))\.wait$/.test(
+        carriage.operation
+      );
+    const observedCommand =
       control.operationId !== null &&
-      control.attemptId !== null &&
       [
         'open-session',
         'inspect-session',
@@ -6997,7 +7004,11 @@ export async function endWorkerTurnJournalStep(
         'deliver-steer',
         'collect',
         'consume-receipt',
-      ].includes(control.kind)
+      ].includes(control.kind);
+    const observedChild =
+      root.phase === 'open' &&
+      control.attemptId !== null &&
+      (observedCommand || acknowledgedHarnessWait)
         ? { control, parent, carriage, inspectedStep }
         : undefined;
     settlement = {
