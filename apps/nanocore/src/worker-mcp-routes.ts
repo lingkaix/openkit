@@ -225,15 +225,6 @@ function readTurnMcpToolSchemaSnapshot(
   )();
 }
 
-/** Materializes the native-owned finite-use count without a Main writable ledger read. */
-function readPolicyStatementUseCount(
-  workspaceDb: WorkspaceDb,
-  statement: Parameters<typeof readPolicyStatementUseCountInDb>[1]
-): number {
-  const reader = borrowWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
-  return reader.sqlite.transaction(() => readPolicyStatementUseCountInDb(reader, statement))();
-}
-
 const toolArgumentValidator = new Ajv2020({ allErrors: false, strict: false });
 interface McpApprovalEffect {
   readonly agentId: string;
@@ -2877,6 +2868,7 @@ function currentMcpPolicyAuthority(
   }
   if (context && !task) throw mcpDeniedError();
   return {
+    document,
     subject,
     restrictingPrincipals,
     toolConditions,
@@ -2961,11 +2953,8 @@ function mcpInterceptionInput(
   if (!workerMcpExposureAvailable(input.input)) throw mcpDeniedError();
   const scope = input.environmentPackage.scope;
   const authority = currentMcpPolicyAuthority(input);
+  const { document } = authority;
   let ownDecision: PolicyUseDecision | undefined;
-  const document = readAdmittedPolicyDocument(
-    input.input.coreDb!,
-    input.input.runtimeConfig().openKitConfig.policy?.mediation
-  );
   const policyRevision = policyDigest(document);
   const proposal = {
     operation: 'mcp.call-tool' as const,
@@ -3009,18 +2998,19 @@ function mcpInterceptionInput(
     });
     return resolveWorkspaceMcpServer({ catalog, serverId: input.serverId }).catalogDigest;
   };
-  const currentPermissions = () => currentMcpPolicyAuthority(input).toolConditions;
-  const currentBindingRefs = () =>
-    [
-      ...selectPolicyBindings({
-        document,
-        proposal,
-        authorCurrent,
-        anchorCurrent,
-        now: Date.now(),
-      }),
-      ...currentPermissions(),
-    ].map((statement) => ({ id: statement.id, digest: policyDigest(statement) }));
+  const selectBindings = () =>
+    selectPolicyBindings({ document, proposal, authorCurrent, anchorCurrent, now: Date.now() });
+  const authorizationRevisionFor = (
+    current: ReturnType<typeof currentMcpPolicyAuthority>,
+    bindings: Iterable<PolicyBindingV1>
+  ) =>
+    policyDigest({
+      caller: current.revision,
+      bindings: [...bindings, ...current.toolConditions].map((statement) => ({
+        id: statement.id,
+        digest: policyDigest(statement),
+      })),
+    });
   const participantAuthorized: InterceptionInput['participantAuthorized'] = (binding) => {
     if (binding.author.kind !== 'human' || !currentMcpBindingAuthor(input, binding.author.id, true))
       return false;
@@ -3034,31 +3024,26 @@ function mcpInterceptionInput(
       currentMcpBindingAuthor(input, principal.responsibleHumanId, true)
     );
   };
-  // Freeze eligibility before this call consumes its final use. The same effect
-  // still rechecks authority before dispatch; later calls omit ended gates.
-  const eligibleAgentBindings = document.statements.some(
-    (statement) =>
-      statement.kind === 'binding' &&
-      statement.participant.kind === 'agent' &&
-      statement.state === 'active'
-  )
-    ? selectPolicyBindings({
-        document,
-        proposal,
-        authorCurrent,
-        anchorCurrent,
-        now: Date.now(),
-      }).filter(
+  // Freeze eligibility before this call consumes its final use.
+  const bindings = selectBindings();
+  const activeAgentBindings = bindings.filter(
+    (binding) => binding.participant.kind === 'agent' && binding.state === 'active'
+  );
+  let eligibleAgentBindings = activeAgentBindings;
+  if (activeAgentBindings.some((binding) => binding.lifetime.uses !== undefined)) {
+    const { dataRoot, workspaceId } = input.workspaceDb;
+    const reader = borrowWorkspaceReadDb(dataRoot, workspaceId);
+    eligibleAgentBindings = reader.sqlite.transaction(() =>
+      activeAgentBindings.filter(
         (binding) =>
-          binding.participant.kind === 'agent' &&
-          binding.state === 'active' &&
-          (binding.lifetime.uses === undefined ||
-            readPolicyStatementUseCount(input.workspaceDb, {
-              id: binding.id,
-              digest: policyDigest(binding),
-            }) < binding.lifetime.uses)
+          binding.lifetime.uses === undefined ||
+          readPolicyStatementUseCountInDb(reader, {
+            id: binding.id,
+            digest: policyDigest(binding),
+          }) < binding.lifetime.uses
       )
-    : [];
+    )();
+  }
   const agentBindingsCurrent = () => {
     for (const binding of eligibleAgentBindings) {
       try {
@@ -3083,10 +3068,7 @@ function mcpInterceptionInput(
     }
     return true;
   };
-  const authorizationRevision = policyDigest({
-    caller: authority.revision,
-    bindings: currentBindingRefs(),
-  });
+  const authorizationRevision = authorizationRevisionFor(authority, bindings);
   return {
     workspaceDb: input.workspaceDb,
     document,
@@ -3100,7 +3082,7 @@ function mcpInterceptionInput(
       ownDecision = decision;
     },
     authorCurrent,
-    permissions: currentPermissions(),
+    permissions: authority.toolConditions,
     resourceSummary: { serverId: input.serverId, toolName: input.toolName },
     contextSummary: {
       packageSnapshotId: input.environmentPackage.snapshotId,
@@ -3112,23 +3094,25 @@ function mcpInterceptionInput(
       const current = currentMcpPolicyAuthority(input);
       return current.goalTask ?? current.kernel;
     },
-    stillCurrent: () =>
-      workerMcpExposureAvailable(input.input) &&
-      !input.signal.aborted &&
-      lifecycleCurrent() &&
-      agentBindingsCurrent() &&
-      currentCatalogRevision() === proposal.inputReferences.catalogRevision &&
-      policyDigest({
-        caller: currentMcpPolicyAuthority(input, ownDecision).revision,
-        bindings: currentBindingRefs(),
-      }) === authorizationRevision &&
-      policyDigest(
-        readAdmittedPolicyDocument(
-          input.input.coreDb!,
-          input.input.runtimeConfig().openKitConfig.policy?.mediation
-        )
-      ) === policyRevision &&
-      policyDigest(input.arguments) === proposal.inputReferences.argumentsDigest,
+    stillCurrent: () => {
+      if (
+        !workerMcpExposureAvailable(input.input) ||
+        input.signal.aborted ||
+        !lifecycleCurrent() ||
+        !agentBindingsCurrent() ||
+        currentCatalogRevision() !== proposal.inputReferences.catalogRevision
+      )
+        return false;
+
+      // Own-use exclusion affects the Task revision. Human Tool conditions use
+      // the ordinary permissions selected from this same current owner sample.
+      const current = currentMcpPolicyAuthority(input, ownDecision);
+      return (
+        authorizationRevisionFor(current, selectBindings()) === authorizationRevision &&
+        policyDigest(current.document) === policyRevision &&
+        policyDigest(input.arguments) === proposal.inputReferences.argumentsDigest
+      );
+    },
   };
 }
 
@@ -3414,26 +3398,26 @@ async function observeWorkerMcpTools(input: {
     );
   }
   const snapshotDigest = mcpToolSchemaContentDigest(snapshotTools);
-  const bound = readTurnMcpToolSchemaSnapshot(input);
   const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
-  // The fresh observation snapshot is the reuse decision; no await carries its metadata forward.
-  const reuse =
-    bound && input.call.context.schemaSnapshotId === bound.schemaSnapshotId
-      ? reader.sqlite.transaction(
-          () =>
-            prepareMcpToolSchemaSnapshot({
-              workspaceDb: reader,
-              workspaceId: input.environmentPackage.scope.workspaceId,
-              environmentPackage: mcpCapabilityFrame(input),
-              capabilityCallId: input.call.id,
-              serverId: input.serverId,
-              schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
-              serverVersion: live.serverVersion,
-              tools: snapshotTools,
-              source: 'live',
-            }).reusedSnapshotId
-        )()
-      : null;
+  // Read the bound schema and test reuse in the same committed owner snapshot.
+  const { bound, reuse } = reader.sqlite.transaction(() => {
+    const bound = readTurnMcpToolSchemaSnapshotInDb({ ...input, workspaceDb: reader });
+    const reuse =
+      bound && input.call.context.schemaSnapshotId === bound.schemaSnapshotId
+        ? prepareMcpToolSchemaSnapshot({
+            workspaceDb: reader,
+            workspaceId: input.environmentPackage.scope.workspaceId,
+            environmentPackage: mcpCapabilityFrame(input),
+            capabilityCallId: input.call.id,
+            serverId: input.serverId,
+            schemaSnapshotId: `mcpsnap_${input.serverId}_${snapshotDigest}`,
+            serverVersion: live.serverVersion,
+            tools: snapshotTools,
+            source: 'live',
+          }).reusedSnapshotId
+        : null;
+    return { bound, reuse };
+  })();
   const captured =
     reuse === bound?.schemaSnapshotId
       ? { schemaSnapshotId: reuse, liveSnapshotId: reuse }
