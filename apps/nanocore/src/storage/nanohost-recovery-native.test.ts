@@ -1686,9 +1686,21 @@ it('reads the exact pending private Login consumer on the admitted Native grant'
     physicalEpoch,
     connectionGeneration: 1,
   };
-  expect(requireHarnessLoginBinding(core, context, acceptedAt, f.owner)).toBe(
-    'sandbox-integration'
-  );
+  const publish = vi.fn();
+  const decide = () =>
+    core.sqlite
+      .transaction(() =>
+        f.owner.sqlite
+          .transaction(() => {
+            const integration = requireHarnessLoginBinding(core, context, acceptedAt, f.owner);
+            publish(integration);
+            return integration;
+          })
+          .deferred()
+      )
+      .immediate();
+  expect(decide()).toBe('sandbox-integration');
+  expect(publish).toHaveBeenCalledExactlyOnceWith('sandbox-integration');
   expect(() =>
     requireHarnessLoginBinding(core, { ...context, connectionGeneration: 2 }, acceptedAt, f.owner)
   ).toThrow('Native Login consumer binding is unavailable.');
@@ -1696,6 +1708,11 @@ it('reads the exact pending private Login consumer on the admitted Native grant'
   expect(() => requireHarnessLoginBinding(core, context, heartbeatDeadline, f.owner)).toThrow(
     'Native Login consumer binding is unavailable.'
   );
+
+  markSchedulerExecutionAttemptClosing(core, { attemptId, cause: 'turn-cancelled' });
+  publish.mockClear();
+  expect(() => decide()).toThrow('Native Login consumer binding is unavailable.');
+  expect(publish).not.toHaveBeenCalled();
 });
 
 it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
