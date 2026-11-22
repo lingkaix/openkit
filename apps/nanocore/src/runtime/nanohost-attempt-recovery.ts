@@ -556,6 +556,10 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
       if (owner.backendId !== input.executionBackend.id || owner.phase !== 'closed') continue;
       if (session.state === 'cleaned') continue;
+      // As in the open pass, only a submitted attempt is in this census. An unsubmitted failed start
+      // has no grant for this retirement entry, and the failed-start pass below owns its hold.
+      if (input.store && !owner.operationId && owner.terminalCause === 'turn-start-failed')
+        continue;
       const original = observeAdmittedAttempt(coreDb, recovery, session.attemptId);
       if (!isDeepStrictEqual(original.session, session))
         throw new Error('Orphan recovery backend changed.');
@@ -604,13 +608,14 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       >
     >;
     for (const attempt of failedStarts) {
-      if (
-        requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).terminalCause !==
-        'turn-start-failed'
-      )
-        continue;
       if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
       try {
+        // The exact-claim decode refuses inside this guard, so one unproved claim stays its own hold.
+        if (
+          requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).terminalCause !==
+          'turn-start-failed'
+        )
+          continue;
         await settleTerminalFailedStart(
           coreDb,
           attempt.attemptId,
