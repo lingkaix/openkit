@@ -91,7 +91,9 @@ interface MaterialProposalPublisher {
  * @param registerDemoMembership False when native Demo publication must precede membership.
  * @returns Migrated Core database handles.
  */
-async function createCoreDb(registerDemoMembership = true): CoreDb {
+async function createCoreDb(registerDemoMembership = true): Promise<CoreDb> {
+  // The packaged self-check selects the Native simulator writer before the worker starts.
+  process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-simulator-route-')));
 
   applyMigrations(coreDb);

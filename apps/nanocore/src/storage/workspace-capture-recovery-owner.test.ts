@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
 import { recordWorkerBackendSessionMaterializing } from '../runtime/worker-backend-sessions.js';
 import { createAndReserveWorkerStorageAttachment } from '../runtime/worker-storage-bindings.js';
@@ -24,6 +25,7 @@ import {
   readWorkspaceSnapshotCursor,
   type WorkspaceCollectionIdentity,
 } from '../runtime/workspace-snapshot-chain.js';
+import { currentAdmittedTestNanoHostOwner } from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -124,7 +126,7 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
     targetId: 'capture-owner',
     observedAt: timestamp,
   });
-  await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
+  const readyTarget = await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
     ...target,
     ready: true,
     freshEmpty: true,
@@ -132,43 +134,6 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
     physicalEpoch: 'a'.repeat(64),
     observedAt: timestamp,
   });
-  const binding = await createAndReserveWorkerStorageAttachment(coreDb, {
-    deploymentId: target.deploymentId,
-    runtimeTargetId: target.targetId,
-    agentSessionId: pkg.scope.agentSessionId,
-    workspaceId: db.workspaceId,
-    threadId: pkg.scope.threadId,
-    responsibleUserId: userId,
-    purpose: 'work',
-    now: timestamp,
-    layout: {
-      family: null,
-      version: null,
-      uid: 1000,
-      gid: 1000,
-      workingDirectory: '/workspace',
-      platform: { architecture: 'arm64', os: 'linux' },
-      targets: [{ target: '/workspace' }],
-    },
-    authorizeContributor: (contributor) =>
-      resolveWorkspaceMembershipRelation(
-        coreDb,
-        contributor.workspaceId,
-        contributor.responsibleUserId
-      ) !== null,
-  });
-  const workSlot = (pkg.extensions.openkit as { workerStorage: { workSlotRef: string } })
-    .workerStorage.workSlotRef;
-  expect(binding.currentWorkSlotRef).toBe(workSlot);
-  await store.updateAgentSession(pkg.scope.agentSessionId, {
-    retainedStorage: {
-      storageRef: binding.storageRef,
-      workSlotRef: workSlot,
-      attachmentGeneration: binding.attachmentGeneration,
-    },
-  });
-  // Original scalar admission and baseline setup must not compete with either native owner.
-  await shutdownControlStoreWorkerClient();
   const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: pkg.scope.triggerActor,
@@ -189,6 +154,58 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
     bindingRef: 'capture-owner-binding',
     sessionCompatibilityKey: 'fixture',
     now: () => timestamp,
+  });
+  await openNativeWorkspace(db);
+  const owner = currentAdmittedTestNanoHostOwner(coreDb)!;
+  const authorizeContributor: NonNullable<
+    Parameters<typeof createAndReserveWorkerStorageAttachment>[2]
+  >['authorizeContributor'] = (contributor) =>
+    resolveWorkspaceMembershipRelation(
+      coreDb,
+      contributor.workspaceId,
+      contributor.responsibleUserId
+    ) !== null;
+  const binding = await createAndReserveWorkerStorageAttachment(
+    coreDb,
+    {
+      deploymentId: target.deploymentId,
+      runtimeTargetId: target.targetId,
+      agentSessionId: pkg.scope.agentSessionId,
+      workspaceId: db.workspaceId,
+      threadId: pkg.scope.threadId,
+      responsibleUserId: userId,
+      purpose: 'work',
+      now: timestamp,
+      layout: {
+        family: null,
+        version: null,
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/workspace',
+        platform: { architecture: 'arm64', os: 'linux' },
+        targets: [{ target: '/workspace' }],
+      },
+      authorizeContributor,
+    },
+    {
+      attemptId: attempt.attemptId,
+      target: readyTarget,
+      read: owner.read,
+      write: owner.writeStorageAttachment,
+      authorizeContributor,
+      isCurrentAttempt: () =>
+        requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).phase === 'open',
+    }
+  );
+  const workSlot = (pkg.extensions.openkit as { workerStorage: { workSlotRef: string } })
+    .workerStorage.workSlotRef;
+  expect(binding.currentWorkSlotRef).toBe(workSlot);
+  await store.updateAgentSession(pkg.scope.agentSessionId, {
+    retainedStorage: {
+      storageRef: binding.storageRef,
+      workSlotRef: workSlot,
+      attachmentGeneration: binding.attachmentGeneration,
+    },
   });
   const packageHash = createHash('sha256').update(pkg.snapshotId).digest('hex');
   const backendSessionId = `nh-${'1'.repeat(16)}-${packageHash.slice(0, 16)}`;
@@ -253,18 +270,23 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-/** Opens the exact native physical owner before making Main query-only. */
-async function openNative(f: Fixture) {
-  const scope = nativeProductScope(f.root, { kind: 'workspace', workspaceId: f.db.workspaceId });
+/** Joins the acknowledged Workspace writer used by attachment and capture publication. */
+async function openNativeWorkspace(db: WorkspaceDb) {
+  const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
   await getControlStoreWorkerClient().open({
     database: `workspace:${scope.path}`,
     path: scope.path,
-    dataRoot: f.root,
+    dataRoot: db.dataRoot,
     create: false,
     initialize: 'workspace',
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
+}
+
+/** Opens the exact native physical owner before making Main query-only. */
+async function openNative(f: Fixture) {
+  await openNativeWorkspace(f.db);
   f.db.sqlite.pragma('query_only = ON');
   expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
 }

@@ -2246,9 +2246,8 @@ describe('worker control routes', () => {
       }
       const response = await responsePromise;
       const body = (await response.json()) as { code: string; message: string };
-      const rejectedEvidence = listWorkerControlRejectedEvidenceForWorkspace(
-        coreDb,
-        lineage.workspaceId
+      const rejectedEvidence = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, lineage.workspaceId)
       );
       const rejectedRow = readAdmittedTestNanoHost(coreDb, (sqlite) =>
         sqlite
