@@ -701,6 +701,63 @@ it.each(['provider admission', 'stream delivery'] as const)(
   }
 );
 
+it('preserves a pre-provider storage refusal after stream preparation normalizes it', async () => {
+  let providerAdmission = false;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const f = await fixture(true, undefined, true, 'complete', {
+    resolveTokenBinding() {
+      if (providerAdmission)
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'private fixture text',
+          503
+        );
+      return { status: 'accepted' };
+    },
+    async afterWorkerControlAcknowledgement(read) {
+      return read();
+    },
+  });
+  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+    providerAdmission = true;
+    try {
+      await context.transport!.finalRequestAdmission!({
+        payload: { messages: [{ role: 'user', content: 'hello' }] },
+        contextWindowTokens: 400_000,
+        outputReserveTokens: 4_096,
+      });
+    } catch {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode('data: {"error":{"type":"provider_error"}}\n\n')
+          );
+          controller.close();
+        },
+      });
+    }
+    throw new Error('Expected the final authority check to refuse before provider access.');
+  });
+
+  const response = await f.post(true, 'chat/completions');
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'worker_observation_storage_unavailable',
+      message: 'NanoHost Worker control storage is unavailable.',
+      type: 'service_unavailable',
+    },
+  });
+  expect(f.ledgerCalls()[0]).toMatchObject({
+    status: 'failed',
+    errorCode: 'worker_observation_storage_unavailable',
+  });
+  expect(warning).toHaveBeenCalledWith(
+    expect.stringContaining('"storageCode":"worker_observation_storage_unavailable"')
+  );
+  expect(f.onRawOutputStop).not.toHaveBeenCalled();
+});
+
 it('coalesces a pending same-call burst and releases only each immutable covered prefix', async () => {
   streamWriter.commits = new SharedArrayBuffer(8);
   const commits = new Int32Array(streamWriter.commits);

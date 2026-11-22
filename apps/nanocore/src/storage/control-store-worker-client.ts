@@ -732,7 +732,10 @@ export interface NanoHostOwnerBinding
   readonly releaseIdleSandboxStorage: WriteNanoHostStorageRelease;
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
-  afterWorkerControlAcknowledgement<Value>(read: () => Value, signal?: AbortSignal): Promise<Value>;
+  afterWorkerControlAcknowledgement<Value>(
+    read: () => Value | Promise<Value>,
+    signal?: AbortSignal
+  ): Promise<Value>;
   workerControlHeartbeat(
     input: ControlWorkerHeartbeatCommand
   ): Promise<ControlWorkerHeartbeatResult>;
@@ -3493,7 +3496,7 @@ class ControlStoreWorkerClient {
         let pending = pendingWorkerControlAcknowledgement();
         if (pending) {
           // Retain a single budget even if another acknowledged write wins the next slot.
-          const deadline = performance.now() + 5000;
+          const deadline = performance.now() + 5_000;
           const expired = Promise.withResolvers<never>();
           const timer = setTimeout(
             () => expired.reject(new ControlStoreWorkerError('busy', 'not-committed')),
