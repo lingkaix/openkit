@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 // openkit-test-platform: posix
 import { once } from 'node:events';
 import { mkdtempSync } from 'node:fs';
@@ -11,7 +11,12 @@ import { canonicalJsonText } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { recordCoreHarnessConsumption } from '../runtime/core-journal-records.js';
+import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import {
+  inspectCoreHarnessConsumption,
+  recordCoreHarnessConsumption,
+  recordCoreIdleHarnessConsumptionInDb,
+} from '../runtime/core-journal-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithFence,
@@ -30,12 +35,27 @@ import {
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import {
+  nanoHostHarnessCompatibilityKey,
+  nanoHostSandboxCompatibilityKey,
+} from '../runtime/nanohost-compatibility.js';
+import {
+  type AdmittedNanoHostHarnessTurnLifecycle,
   claimNanoHostIdleSandboxDrain,
   restoreNanoHostSandboxAdmissionIfSafe,
   type WriteNanoHostIdleSandboxLifecycle,
 } from '../runtime/nanohost-harness.js';
-import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
+import {
+  acknowledgeNanoHostHarnessResult,
+  deriveNanoHostAgentSessionCompatibilityKey,
+  inspectNanoHostAgentSessionContinuity,
+  inspectNanoHostIdleCloseConsumption,
+} from '../runtime/nanohost-harness-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  NanoHostCleanupFencePendingError,
+} from '../runtime/nanohost-runtime-target-records.js';
 import { listWorkspaceRuntimeEvidence } from '../runtime/runtime-evidence.js';
+import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import {
   getWorkerBackendSession,
   readNanoHostWorkerRouteBinding,
@@ -47,6 +67,7 @@ import {
 } from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import {
+  agentSessionCompatibilityKeyFromPackage,
   beginWorkerTurnJournalStep,
   endWorkerTurnJournalStep,
   prepareWorkerTurnJournalIntents,
@@ -63,6 +84,12 @@ import {
   releaseWorkerStorageAttachment,
   type WriteNanoHostStorageRelease,
 } from '../runtime/worker-storage-bindings.js';
+import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-read.js';
+import {
+  acceptWorkspaceBaseline,
+  authorizeWorkspaceBaselineInitialization,
+  readWorkspaceCollection,
+} from '../runtime/workspace-snapshot-chain.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -234,7 +261,7 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
             return native.applyNanoHostWorkerSubmission(sqlite, command.input);
           if (command.kind === 'storage-release')
             return storage.applyControlWorkerStorageBinding({ sqlite }, command.input);
-          if (['dispatch', 'idle-sandbox', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
+          if (['dispatch', 'mixed-harness', 'idle-sandbox', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
             const coreDb = db.openCoreReadDb(command.dataRoot);
             try {
               return coreDb.sqlite.transaction(() => {
@@ -944,24 +971,7 @@ it('claims and rolls back only the exact admitted Native Sandbox and original dr
     claimNanoHostIdleSandboxDrain(core, input, { write, authority: { target: snapshot } });
   await expect(submit()).rejects.toThrow('changed before drain claim');
   expect(drain()).toEqual(['accepting', 'accepting']);
-  const closing = markSchedulerExecutionAttemptClosing(core, {
-    attemptId,
-    cause: 'completed',
-    now,
-  });
-  closeSchedulerExecutionAttemptWithFence(core, {
-    correlation: schedulerExecutionCorrelation(closing),
-    proof: {
-      terminalHandoff: true,
-      output: true,
-      evidence: true,
-      outsideWorkspaceCollection: true,
-      integrationDrain: true,
-      routesRevoked: true,
-    },
-    fenceRef: 'fixture-idle-release',
-    now,
-  });
+  closeOriginalAttempt(core, now);
   await expect(
     submit({ ...target, connectionGeneration: target.connectionGeneration + 1 })
   ).rejects.toThrow('changed before drain claim');
@@ -1016,8 +1026,32 @@ it('claims and rolls back only the exact admitted Native Sandbox and original dr
   expect(drain()).toEqual(['draining', 'draining']);
 });
 
-it('releases only the cleaned Sandbox attachment and exact revision on the admitted Native owner', async () => {
-  const { f, core, actor } = await admitOriginal();
+function closeOriginalAttempt(core: ReturnType<typeof openCoreDb>, now: () => string) {
+  const closing = markSchedulerExecutionAttemptClosing(core, {
+    attemptId,
+    cause: 'completed',
+    now,
+  });
+  closeSchedulerExecutionAttemptWithFence(core, {
+    correlation: schedulerExecutionCorrelation(closing),
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+    fenceRef: 'fixture-idle-release',
+    now,
+  });
+}
+
+function attachOriginalStorage(
+  f: Awaited<ReturnType<typeof admitOriginal>>['f'],
+  responsibleUserId: string,
+  sandboxBindingRef: string
+) {
   let attached!: ReturnType<typeof activateWorkerStorageAttachment>;
   f.owner.setup((sqlite) => {
     const owner = { sqlite };
@@ -1047,7 +1081,7 @@ it('releases only the cleaned Sandbox attachment and exact revision on the admit
       taskId: null,
       threadId,
       agentSessionId,
-      responsibleUserId: actor.id,
+      responsibleUserId,
       runtimeTargetId: targetId,
       authorizeContributor: () => true,
       now: created,
@@ -1056,11 +1090,17 @@ it('releases only the cleaned Sandbox attachment and exact revision on the admit
       storageRef: reserved.storageRef,
       expectedRevision: reserved.revision,
       attachmentGeneration: reserved.attachmentGeneration,
-      sandboxBindingRef: 'sandbox-binding',
+      sandboxBindingRef,
       targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
       now: created,
     });
   });
+  return attached;
+}
+
+it('releases only the cleaned Sandbox attachment and exact revision on the admitted Native owner', async () => {
+  const { f, core, actor } = await admitOriginal();
+  const attached = attachOriginalStorage(f, actor.id, 'sandbox-binding');
   const original = {
     attachmentGeneration: attached.attachmentGeneration,
     cleanupProved: true,
@@ -1086,6 +1126,318 @@ it('releases only the cleaned Sandbox attachment and exact revision on the admit
     currentSandboxBindingRef: null,
   });
 });
+
+it.each(['reusable', 'live sibling'] as const)(
+  'uses the admitted same-Epoch idle close only on a drained resident (%s)',
+  async (scenario) => {
+    const { f, core, root, store: fixtureStore, actor, now } = await admitOriginal(true);
+    const store = fixtureStore!;
+    const workspace = createTestWorkspaceDb(root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    await store.createThread(workspaceId, 'Retained resident', threadId);
+    await store.createTurn(workspaceId, threadId, 'Original Turn', actor, null, { turnId });
+    const attached = attachOriginalStorage(f, actor.id, bindingRef);
+    const workSlotRef = attached.currentWorkSlotRef!;
+    const retainedStorage = {
+      storageRef: attached.storageRef,
+      attachmentGeneration: attached.attachmentGeneration,
+      workSlotRef,
+    };
+    const original = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'idle-harness-close',
+      triggerActor: actor,
+      threadId,
+      workspaceInputIds: [],
+    });
+    const extensions = original.extensions!.openkit as {
+      workerStorage: Record<string, unknown>;
+    };
+    const pkg = AgentEnvironmentPackageSchema.parse({
+      ...original,
+      snapshotId: inputRef,
+      scope: { ...original.scope, workspaceId, threadId, turnId, agentSessionId, requestId: null },
+      extensions: {
+        ...original.extensions,
+        openkit: { ...extensions, workerStorage: { ...extensions.workerStorage, workSlotRef } },
+      },
+    });
+    const nativeHandleDigest = 'd'.repeat(64);
+    await store.createAgentSession({
+      id: agentSessionId,
+      workspaceId,
+      threadId,
+      agentId: pkg.agent.agentId,
+      environmentPackageSnapshotId: inputRef,
+      nativeHandleDigest,
+      retainedStorage,
+      status: 'idle',
+      message: null,
+      createdAt: created,
+      updatedAt: created,
+    });
+    recordAgentEnvironmentPackageSnapshot(workspace, {
+      environmentPackage: pkg,
+      createdAt: created,
+    });
+    closeOriginalAttempt(core, now);
+
+    const sandboxKey = nanoHostSandboxCompatibilityKey(pkg);
+    const harnessKey = nanoHostHarnessCompatibilityKey(pkg);
+    const sessionKey = agentSessionCompatibilityKeyFromPackage(pkg);
+    const sandboxId = `nh-${sandboxKey.slice(0, 16)}`;
+    expect(pkg.runtime.image.kind).toBe('reference');
+    if (pkg.runtime.image.kind !== 'reference')
+      throw new Error('Expected original reference image.');
+    const imageRef = pkg.runtime.image.ref;
+    f.owner.setup((sqlite) => {
+      sqlite
+        .prepare(
+          'UPDATE sandbox_runtime_records SET sandbox_binding_ref=?, sandbox_compatibility_key=?'
+        )
+        .run(bindingRef, sandboxKey);
+      sqlite
+        .prepare(`UPDATE harness_instance_records SET harness_compatibility_key=?, adapter_id=?,
+        adapter_version=?, max_open_sessions=8, operation_state='idle', operation_id=NULL,
+        operation_sequence=NULL, operation=NULL, command_body_json=NULL, command_fingerprint=NULL,
+        result_json=NULL, result_fingerprint=NULL`)
+        .run(harnessKey, pkg.control.adapter.targetRuntime, pkg.agent.runtimeVersion);
+      sqlite
+        .prepare(
+          `UPDATE agent_session_runtime_bindings SET agent_session_compatibility_key=?, native_handle_digest=?,
+           runtime_env_check_versions_json='[]', inference_loopback_credential_digest=?,
+           capability_loopback_credential_digest=?`
+        )
+        .run(
+          deriveNanoHostAgentSessionCompatibilityKey({
+            adapterId: pkg.control.adapter.targetRuntime,
+            adapterVersion: pkg.agent.runtimeVersion,
+            harnessCompatibilityKey: harnessKey,
+            sessionCompatibilityKey: sessionKey,
+            threadId,
+          }),
+          nativeHandleDigest,
+          '2'.repeat(64),
+          '3'.repeat(64)
+        );
+      sqlite
+        .prepare(`UPDATE worker_backend_sessions SET backend_session_id=?, staging_directory_ref=?,
+        backend_lineage_json=?`)
+        .run(
+          `${sandboxId}-${sha256Hex(inputRef).slice(0, 16)}`,
+          `server/runtime/worker-backend-sessions/${inputRef}`,
+          JSON.stringify({ imageRef })
+        );
+    });
+    expect(
+      inspectNanoHostAgentSessionContinuity(
+        core,
+        {
+          workspaceId,
+          threadId,
+          agentSessionId,
+          agentSessionCompatibilityKey: sessionKey,
+        },
+        f.owner
+      )
+    ).toMatchObject({ reusable: true, nativeHandleDigest });
+
+    const collection = {
+      storageRef: attached.storageRef,
+      attachmentGeneration: attached.attachmentGeneration,
+      workspaceId,
+      threadId,
+      agentSessionId,
+      turnId,
+      scopeDigest: attached.scopeDigest,
+      workSlot: workSlotRef,
+      sandboxId,
+      packageSnapshotId: inputRef,
+      collectionId: `successor-${createHash('sha256').update(inputRef).digest('hex')}`,
+    };
+    const head = { tree: 'a'.repeat(40), manifest: 'b'.repeat(40) };
+    const baseline = { ...collection, collectionId: 'baseline' };
+    authorizeWorkspaceBaselineInitialization(workspace, baseline);
+    acceptWorkspaceBaseline(workspace, baseline, head, head.tree);
+
+    const queued = Promise.withResolvers<void>();
+    const writeMixed = (input: object) => f.send({ kind: 'mixed-harness', dataRoot: root, input });
+    const lifecycle: AdmittedNanoHostHarnessTurnLifecycle = {
+      queue: async (input) => {
+        const sequence = await writeMixed({ ...input, kind: 'operation.queue' });
+        queued.resolve();
+        return sequence;
+      },
+      dispatch: ({ sandboxIntegrationBindingRef, now }) =>
+        writeMixed({
+          kind: 'operation.dispatch',
+          sandboxIntegrationBindingRef,
+          observedAt: now?.(),
+        }),
+      settle: async (input) => {
+        const readOriginal = () => {
+          const inspected = inspectNanoHostIdleCloseConsumption(core, input, f.owner);
+          return inspected && { key: inspected.key, consumer: JSON.parse(inspected.consumer) };
+        };
+        const original = readOriginal();
+        if (original) {
+          core.sqlite
+            .transaction(() =>
+              recordCoreIdleHarnessConsumptionInDb(
+                core,
+                { ...original, observedAt: acceptedAt },
+                readOriginal
+              )
+            )
+            .immediate();
+        }
+        return writeMixed({ ...input, kind: 'operation.settle' });
+      },
+      acknowledge: vi.fn(async (input) => {
+        core.sqlite
+          .transaction(() => acknowledgeNanoHostHarnessResult(core, input, f.owner))
+          .immediate();
+      }),
+    };
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb: core,
+      env: {},
+      store,
+      nanoHostRecovery: {
+        owner: { state: 'ready', value: f.owner.storage.owner },
+        harnessTurnLifecycle: lifecycle,
+        idleSandbox: {
+          writeIdleHarnessDrain: async (input, authority) => {
+            await f.send({ kind: 'idle-sandbox', dataRoot: root, input, authority });
+            if (scenario !== 'live sibling' || input.kind !== 'sandbox.claim-idle-drain') return;
+            // An occupied sibling appears after the initial census, while the caller awaits ACK.
+            f.owner.setup((sqlite) => {
+              sqlite
+                .prepare(`INSERT INTO agent_session_runtime_bindings
+                (agent_session_runtime_binding_id,harness_instance_id,agent_session_id,workspace_id,thread_id,
+                 agent_session_compatibility_key,effective_setup_generation,native_handle_state,
+                 lifecycle_state,next_turn_sequence,cleanup_state,current_attempt_id,current_turn_id,created_at,updated_at,image_digest)
+                VALUES ('live-sibling','harness',?,?,?,'compat',1,'ready','active',1,'clean',
+                  'live-sibling-attempt',?,?,?,'image')`)
+                .run(
+                  testEntityId('as', 'idle-close-sibling'),
+                  workspaceId,
+                  testEntityId('th', 'idle-close-sibling'),
+                  testEntityId('tu', 'idle-close-sibling'),
+                  created,
+                  created
+                );
+              sqlite
+                .prepare(
+                  'UPDATE harness_instance_records SET active_turn_count=1, open_session_count=2'
+                )
+                .run();
+            });
+          },
+          releaseStorage: (input) => f.send({ kind: 'storage-release', input }),
+        },
+      },
+    });
+    const backend = (runtime.turnExecutor as WorkerGovernanceTurnExecutor)
+      .executionBackend as WorkerGovernanceBackend & {
+      restoreSession(pkg: typeof original, attemptId: string): void;
+      sessions: Map<string, unknown>;
+      evictIncompatibleIdleSandbox(pkg: typeof original): Promise<unknown>;
+      effect(
+        identity: unknown,
+        attemptId: string,
+        operation: string
+      ): Promise<Record<string, unknown>>;
+      deleteSandbox(): Promise<void>;
+    };
+    backend.restoreSession(pkg, attemptId);
+    backend.sessions.delete(inputRef);
+    const effect = vi
+      .spyOn(backend, 'effect')
+      .mockImplementation(async (_identity, id, operation) => {
+        expect([id, operation]).toEqual([attemptId, 'workspace.collect']);
+        expect(listWorkspaceReconciliationRecords(workspace, workspaceId)).toContainEqual(
+          expect.objectContaining({
+            id: `wrr_capture_${collection.collectionId}`,
+            stateAfter: 'requires-human',
+          })
+        );
+        return { outcome: 'no_new_head', unstable: false };
+      });
+    let replay: Parameters<typeof runtime.acceptNanoHostHarnessResult>[0];
+    const deleteSandbox = vi.spyOn(backend, 'deleteSandbox').mockImplementation(async () => {
+      // Physical retirement follows the live consumer. Replay the Native result with no waiter.
+      await runtime.acceptNanoHostHarnessResult(replay);
+    });
+    const successor = AgentEnvironmentPackageSchema.parse({
+      ...pkg,
+      snapshotId: 'successor-idle-harness',
+      scope: { ...pkg.scope, threadId: testEntityId('th', 'idle-close-successor') },
+    });
+    const eviction = backend.evictIncompatibleIdleSandbox(successor);
+    const reached = await Promise.race([
+      queued.promise.then(() => 'queued' as const),
+      eviction.then(
+        () => 'complete' as const,
+        (error: unknown) => error
+      ),
+    ]);
+    if (reached !== 'queued') {
+      if (scenario === 'reusable') throw reached;
+      expect(reached).toBeInstanceOf(NanoHostCleanupFencePendingError);
+      expect(effect).not.toHaveBeenCalled();
+      expect(lifecycle.acknowledge).not.toHaveBeenCalled();
+      expect(deleteSandbox).not.toHaveBeenCalled();
+      expect(
+        f.owner.sqlite
+          .prepare(
+            "SELECT lifecycle_state FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id='live-sibling'"
+          )
+          .pluck()
+          .get()
+      ).toBe('active');
+      return;
+    }
+    const sandboxIntegrationBindingRef = 'sandbox-integration';
+    const command = await lifecycle.dispatch({ sandboxIntegrationBindingRef });
+    expect(command).toMatchObject({
+      operation: 'session.close',
+      body: { agentSessionId, agentSessionRuntimeBindingId: 'session-binding' },
+    });
+    const carried = await runtime.acceptNanoHostHarnessCommand(command!);
+    expect(carried).toEqual(command);
+    expect(readWorkspaceCollection(workspace, collection)).toMatchObject({
+      result: { outcome: 'no_new_head', credentialCheck: 'passed' },
+    });
+    const result = {
+      schemaVersion: 2 as const,
+      operationId: command!.operationId,
+      sequence: command!.sequence,
+      harnessInstanceId: command!.harnessInstanceId,
+      disposition: 'succeeded' as const,
+      body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+    };
+    replay = result;
+    const input = { result, sandboxIntegrationBindingRef, timestamp: new Date().toISOString() };
+    const inspected = inspectNanoHostIdleCloseConsumption(core, input, f.owner)!;
+    expect(await lifecycle.settle(input)).toBe('settled');
+    expect(await lifecycle.settle(input)).toBe('replayed');
+    await runtime.acceptNanoHostHarnessResult(result);
+    expect(inspectCoreHarnessConsumption(core, inspected.key)).toEqual({
+      consumer: inspected.consumer,
+      acknowledgedAt: acceptedAt,
+    });
+    await eviction;
+    expect(reached, 'A live sibling must refuse before any Harness command is queued.').toBe(
+      scenario === 'reusable' ? 'queued' : 'refused'
+    );
+    expect(effect).toHaveBeenCalledTimes(1);
+    expect(lifecycle.acknowledge).toHaveBeenCalledTimes(1);
+    expect(deleteSandbox).toHaveBeenCalledTimes(1);
+    expect(getWorkerStorageBinding(f.owner, { storageRef: attached.storageRef })?.state).toBe(
+      'idle'
+    );
+  }
+);
 
 it.each(['accepted', 'expired', 'unavailable'] as const)(
   'handles the exact Native completion observation within the original deadline (%s)',

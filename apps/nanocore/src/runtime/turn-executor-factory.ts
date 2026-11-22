@@ -930,6 +930,7 @@ interface PendingNanoHostHarnessOperation {
   /** Positive Core idle binding owner; it does not authorize active or closing Turn cleanup. */
   coreIdleClose?: {
     readonly authority: NonNullable<ReturnType<typeof readNanoHostIdleCloseAuthority>>;
+    readonly drain?: IdleSandboxCloseDrain;
     prepared?: PreparedNanoHostHarnessOperation;
   };
   /** Original native descriptors and raw carriage stay with this existing live waiter. */
@@ -999,9 +1000,17 @@ class NanoHostLoginDepartureIncompleteError extends Error {
   }
 }
 
+/** The exact same-Epoch whole-Sandbox drain acknowledged before retiring its idle bindings. */
+interface IdleSandboxCloseDrain {
+  readonly target: NanoHostIdleSandboxAuthority['target'];
+  readonly sandboxBindingRef: string;
+  readonly claimedAt: string;
+}
+
 /** Pre-lease close owner reconstructed from one exact durable AgentSession binding. */
 interface NanoHostAgentSessionCloseOwner {
   readonly inspection: NanoHostAgentSessionContinuityInspection;
+  readonly drain?: IdleSandboxCloseDrain;
   pending: PendingNanoHostHarnessOperation | null;
 }
 
@@ -1237,6 +1246,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return requireNanoHostObservation(this.coreDb, (sqlite) => read({ sqlite }), owner?.value.read);
   }
 
+  private readIdleCloseAuthority(input: Parameters<typeof readNanoHostIdleCloseAuthority>[1]) {
+    if (!this.nanoHostOwner) return readNanoHostIdleCloseAuthority(this.coreDb, input);
+    return this.readNanoHost((owner) => readNanoHostIdleCloseAuthority(this.coreDb, input, owner));
+  }
+
   private readAcceptedFinal(lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1]) {
     return this.readNanoHost((owner) => getWorkerControlAcceptedFinalStatus(owner, lineage));
   }
@@ -1377,7 +1391,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('NanoHost idle close command conflicts with its exact Core producer.');
       pending.operationId = command.operationId;
-      const currentReceipt = readNanoHostIdleCloseAuthority(this.coreDb, {
+      if (pending.coreIdleClose.drain)
+        this.requireIdleSandboxCloseDrain(session, pending.coreIdleClose.drain);
+      const currentReceipt = this.readIdleCloseAuthority({
         harnessInstanceId: command.harnessInstanceId,
         harnessBindingRef: session.harnessBindingRef,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -1792,7 +1808,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         (harness) => harness.harnessInstanceId === result.harnessInstanceId
       );
     if (!pending) {
-      const consumed = readConsumedNanoHostHarnessResult(this.coreDb, result);
+      const consumed = this.readNanoHost((owner) =>
+        readConsumedNanoHostHarnessResult(this.coreDb, result, owner)
+      );
       const known = sharedHarness?.knownLoginClose;
       if (
         !consumed &&
@@ -1988,12 +2006,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       body.agentSessionRuntimeBindingId !== session.agentSessionRuntimeBindingId
     )
       throw new Error('NanoHost Login close receiver conflicts with its session.');
-    const receiver = readNanoHostHarnessCloseReceiver(this.coreDb, {
-      harnessInstanceId: session.harnessInstanceId,
-      harnessBindingRef: session.harnessBindingRef,
-      agentSessionId: session.environmentPackage.scope.agentSessionId,
-      agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-    });
+    const receiver = this.readNanoHost((owner) =>
+      readNanoHostHarnessCloseReceiver(
+        this.coreDb,
+        {
+          harnessInstanceId: session.harnessInstanceId,
+          harnessBindingRef: session.harnessBindingRef,
+          agentSessionId: session.environmentPackage.scope.agentSessionId,
+          agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        },
+        owner
+      )
+    );
     if (
       receiver.workspaceId !== session.environmentPackage.scope.workspaceId ||
       receiver.threadId !== session.environmentPackage.scope.threadId
@@ -4413,14 +4437,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!eviction) return null;
     const admitted = this.idleSandboxLifecycle();
     let authorizedReplacementBinding: WorkerStorageBinding | null = null;
-    if (
-      this.nanoHostOwner &&
-      eviction.closeAgentSessions &&
-      eviction.retirementOwner &&
-      isScopeAdmitted(this.coreDb.dataRoot, 'workspace', eviction.retirementOwner.workspaceId) &&
-      eviction.bindings.some((binding) => binding.lifecycleState !== 'closed')
-    )
-      this.unavailableNanoHostRuntime();
     if (replacementSelection) {
       const selectedBinding = this.validateWorkerStorageSelection(
         environmentPackage,
@@ -4526,7 +4542,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         for (const binding of eviction.bindings) {
           if (binding.lifecycleState === 'closed') continue;
           try {
-            await this.closeDurableAgentSession(binding);
+            await this.closeDurableAgentSession(
+              binding,
+              admitted
+                ? {
+                    target: eviction.target,
+                    sandboxBindingRef: eviction.sandboxBindingRef,
+                    claimedAt,
+                  }
+                : undefined
+            );
           } catch (error) {
             const unknownClose = this.readNanoHost(({ sqlite }) =>
               sqlite
@@ -7957,7 +7982,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Captures once per lifecycle boundary; committed receipts replay without another native scan. */
   private async collectWorkspaceSnapshot(
     session: NanoHostBackendTurnSession,
-    boundary: 'turn-end' | 'release' | 'successor'
+    boundary: 'turn-end' | 'release' | 'successor',
+    idleCloseDrain?: IdleSandboxCloseDrain
   ): Promise<WorkerGovernanceWorkspaceChangeRecord[]> {
     const disposedCaptures = await this.assertWorkspaceCaptureSettled(
       session.sharedHarness.sandbox.sandboxBindingRef
@@ -8003,17 +8029,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               'Idle capture lacks its original attachment generation.'
             );
           await claimIdleWorkspaceCapture(db, idleAnchor, identity);
-          // Workspace acknowledgement precedes Core drain; neither permits dispatch on partial failure.
           try {
-            await claimNanoHostIdleCaptureDrain(this.coreDb, {
-              harnessBindingRef: session.harnessBindingRef,
-              harnessInstanceId: session.harnessInstanceId,
-              agentSessionId: session.environmentPackage.scope.agentSessionId,
-              agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-              attemptId: session.attemptId,
-              sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
-              originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
-            });
+            // After Workspace ACK, join the exact Harness drain already committed by retirement.
+            if (idleCloseDrain) this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
+            else
+              await claimNanoHostIdleCaptureDrain(this.coreDb, {
+                harnessBindingRef: session.harnessBindingRef,
+                harnessInstanceId: session.harnessInstanceId,
+                agentSessionId: session.environmentPackage.scope.agentSessionId,
+                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+                attemptId: session.attemptId,
+                sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
+                originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+              });
           } catch (error) {
             if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
               throw new WorkspaceCaptureRecoveryRequired(error.message);
@@ -9452,16 +9480,58 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
+  /** Checks that collection and close still belong to the original drained same-Epoch resident. */
+  private requireIdleSandboxCloseDrain(
+    session: NanoHostBackendTurnSession,
+    drain: IdleSandboxCloseDrain
+  ): void {
+    const sandbox = session.sharedHarness.sandbox;
+    if (
+      sandbox.sandboxBindingRef !== drain.sandboxBindingRef ||
+      sandbox.originPhysicalEpoch !== drain.target.physicalEpoch ||
+      sandbox.runtimeTargetId !== drain.target.targetId ||
+      !isDeepStrictEqual(this.readIdleSandboxTarget(sandbox.runtimeTargetId), drain.target) ||
+      !this.readNanoHost(({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT 1 FROM sandbox_runtime_records s
+          JOIN harness_instance_records h ON h.sandbox_runtime_id=s.sandbox_runtime_id
+          WHERE s.sandbox_runtime_id=? AND s.sandbox_binding_ref=? AND s.runtime_target_id=?
+          AND s.origin_physical_epoch=? AND s.updated_at=? AND s.drain_state='draining'
+          AND s.lifecycle_state='open' AND s.health_state='ready' AND s.cleanup_state='clean'
+          AND h.harness_instance_id=? AND h.harness_binding_ref=? AND h.lifecycle_state='open'
+          AND h.drain_state='draining' AND h.active_turn_count=0`)
+          .get(
+            sandbox.sandboxRuntimeId,
+            drain.sandboxBindingRef,
+            sandbox.runtimeTargetId,
+            sandbox.originPhysicalEpoch,
+            drain.claimedAt,
+            session.harnessInstanceId,
+            session.harnessBindingRef
+          )
+      )
+    )
+      throw new NanoHostCleanupFencePendingError();
+  }
+
   /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
   private async closeDurableAgentSession(
-    inspection: NanoHostAgentSessionContinuityInspection
+    inspection: NanoHostAgentSessionContinuityInspection,
+    idleCloseDrain?: IdleSandboxCloseDrain
   ): Promise<void> {
-    if (this.nanoHostOwner) this.unavailableNanoHostRuntime();
+    if (this.nanoHostOwner) {
+      if (!idleCloseDrain) this.unavailableNanoHostRuntime();
+      this.harnessTurnLifecycle();
+    }
     if (this.agentSessionCloseOwners.has(inspection.agentSessionRuntimeBindingId)) {
       throw new Error('NanoHost AgentSession close already has a live producer.');
     }
     const session = this.restoreDurableAgentSession(inspection);
-    const closeOwner: NanoHostAgentSessionCloseOwner = { inspection, pending: null };
+    const closeOwner: NanoHostAgentSessionCloseOwner = {
+      inspection,
+      pending: null,
+      ...(idleCloseDrain ? { drain: idleCloseDrain } : {}),
+    };
     const packageSnapshotId = session.environmentPackage.snapshotId;
     const sandbox = this.readNanoHost(({ sqlite }) =>
       sqlite
@@ -9471,7 +9541,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) as { id: string; drainState: string } | undefined;
     this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, closeOwner);
     try {
-      await this.collectWorkspaceSnapshot(session, 'successor');
+      if (idleCloseDrain) {
+        if (
+          !this.readIdleCloseAuthority({
+            harnessInstanceId: inspection.harnessInstanceId,
+            harnessBindingRef: inspection.harnessBindingRef,
+            agentSessionId: inspection.agentSessionId,
+            agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
+          })
+        )
+          throw new Error(
+            'NanoHost durable idle close has no positive idle Core binding authority.'
+          );
+        this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
+      }
+      await this.collectWorkspaceSnapshot(session, 'successor', idleCloseDrain);
       const closed = await this.queueAndWaitForHarnessOperation(session, 'session.close', {
         agentSessionId: inspection.agentSessionId,
         agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
@@ -9542,7 +9626,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           })
         : null;
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
-    if (operation === 'session.close' && attempt.phase === 'closed' && this.nanoHostOwner)
+    const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
+    if (
+      operation === 'session.close' &&
+      attempt.phase === 'closed' &&
+      this.nanoHostOwner &&
+      !closeOwner?.drain
+    )
       this.unavailableNanoHostRuntime();
     const deadlineUnixMs = Math.min(
       admittedUnixMs + NANO_HOST_HARNESS_RESULT_BUDGET_MS,
@@ -9593,18 +9683,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
     if (operation === 'session.close')
       pending.closeDeparture = this.captureHarnessLoginDeparture(session, body);
-    const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
     if (operation === 'session.close' && attempt.phase === 'closed') {
+      const drain = closeOwner?.drain;
+      if (drain) this.requireIdleSandboxCloseDrain(session, drain);
       const identity = {
         harnessInstanceId: session.harnessInstanceId,
         harnessBindingRef: session.harnessBindingRef,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       };
-      const consumerReceipt = readNanoHostIdleCloseAuthority(this.coreDb, identity);
+      const consumerReceipt = this.readIdleCloseAuthority(identity);
       if (consumerReceipt === null)
         throw new Error('NanoHost durable idle close has no positive idle Core binding authority.');
-      pending.coreIdleClose = { authority: consumerReceipt };
+      pending.coreIdleClose = { authority: consumerReceipt, ...(drain ? { drain } : {}) };
       session.pendingHarnessOperation = pending;
       if (closeOwner) closeOwner.pending = pending;
       try {
@@ -9618,15 +9709,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           }
         );
         return await this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
+          if (drain) this.requireIdleSandboxCloseDrain(session, drain);
           if (
             session.pendingHarnessOperation !== pending ||
             Date.now() < admittedUnixMs ||
             Date.now() >= deadlineUnixMs ||
             performance.now() >= pending.deadlineMonotonicMs ||
-            !isDeepStrictEqual(
-              readNanoHostIdleCloseAuthority(this.coreDb, identity),
-              consumerReceipt
-            )
+            !isDeepStrictEqual(this.readIdleCloseAuthority(identity), consumerReceipt)
           )
             throw new Error(
               'NanoHost idle Core binding or cleanup allowance changed before queue.'

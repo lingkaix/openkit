@@ -2394,19 +2394,20 @@ export function readNanoHostHarnessCloseReceiver(
     readonly harnessBindingRef: string;
     readonly agentSessionId: string;
     readonly agentSessionRuntimeBindingId: string;
-  }
+  },
+  owner?: NanoHostHarnessDb
 ): { readonly workspaceId: string; readonly threadId: string } {
   const command = requireDurableHarnessBody('session.close', {
     agentSessionId: input.agentSessionId,
     agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
   });
-  return requireNanoHostObservation(coreDb, (sqlite) => {
-    const owner = { sqlite };
+  const read = (owner: NanoHostHarnessDb) => {
     const harness = requireHarnessByBinding(owner, input.harnessBindingRef);
     if (harness.harness_instance_id !== input.harnessInstanceId)
       throw new Error('NanoHost close receiver Harness binding conflicts.');
     return readHarnessConsumerContext(owner, harness, command);
-  });
+  };
+  return owner ? read(owner) : requireNanoHostObservation(coreDb, (sqlite) => read({ sqlite }));
 }
 
 /** Reads exact Workspace/Thread context before session.close removes the binding. */
@@ -2547,7 +2548,8 @@ export function requireNanoHostLoginRemoval(
 /** Reads validated consumed replay provenance without reconstructing its original settlement clock. */
 export function readConsumedNanoHostHarnessResult(
   coreDb: CoreDb,
-  result: NanoHostHarnessResult
+  result: NanoHostHarnessResult,
+  owner?: NanoHostHarnessDb
 ): {
   readonly operations: readonly NanoHostHarnessOperation[];
   readonly receiver: { readonly workspaceId: string; readonly threadId: string } | null;
@@ -2557,9 +2559,11 @@ export function readConsumedNanoHostHarnessResult(
   } | null;
 } | null {
   const incoming = HarnessResultEnvelopeReaderSchema.parse(result);
-  const harness = requireNanoHostObservation(coreDb, (sqlite) =>
-    requireHarness({ sqlite }, incoming.harnessInstanceId)
-  );
+  const harness = owner
+    ? requireHarness(owner, incoming.harnessInstanceId)
+    : requireNanoHostObservation(coreDb, (sqlite) =>
+        requireHarness({ sqlite }, incoming.harnessInstanceId)
+      );
   const receipt = readRetainedHarnessResult(harness);
   if (
     !receipt ||
