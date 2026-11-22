@@ -17,6 +17,8 @@ import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { closeSchedulerExecutionAttemptWithoutEffects } from '../runtime/execution-attempts.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
 import {
@@ -24,18 +26,29 @@ import {
   createAndReserveWorkerStorageAttachment,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { seedTestNativeImageSettlement } from '../test-support/native-environment.js';
+import {
+  recordTestNativeRuntimeTarget,
+  seedTestNativeImageSettlement,
+} from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   type CreateWorkerEnvironmentActivationInput,
@@ -623,7 +636,11 @@ describe('Worker environment activation', () => {
     expect(config.updateFile).toHaveBeenCalledTimes(1);
     expect(config.readContent()).toBe(initialContent);
     expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
-    expect(readAdmittedWorkerImageEnvironment(fixture.coreDb, IMAGE_DIGEST)).toEqual({
+    expect(
+      readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        readAdmittedWorkerImageEnvironment({ sqlite }, IMAGE_DIGEST)
+      )
+    ).toEqual({
       imageDigest: IMAGE_DIGEST,
       defaultsDigest: DEFAULTS_DIGEST,
       values: {},
@@ -744,13 +761,15 @@ describe('Worker environment activation', () => {
     expect(deriveAffectedStorage(input)).toEqual([
       { expectedRevision: fixture.bindingRevision, storageRef: fixture.storageRef },
     ]);
-    fixture.coreDb.sqlite
-      .prepare(
-        `UPDATE worker_storage_contributors
+    mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          `UPDATE worker_storage_contributors
          SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
          WHERE storage_ref = ?`
-      )
-      .run(fixture.storageRef);
+        )
+        .run(fixture.storageRef)
+    );
     expect(() => deriveAffectedStorage(input)).toThrow(
       'resident Worker environment source audience is unavailable'
     );
@@ -843,77 +862,135 @@ async function createResidentFixture(): Promise<ResidentFixture> {
     ownerUserId: ACTOR.userId,
     workspaceId: workspace.id,
   });
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_runtime_targets (
-         target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-       ) VALUES ('target_activation', 'identity_activation', 'deployment_activation',
-         1, 1, 1, 1, ?, ?, 1)`
-    )
-    .run('a'.repeat(64), NOW);
-  const reserved = await createAndReserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: testEntityId('as', 'agent_session_activation'),
-    authorizeContributor: () => true,
-    deploymentId: 'deployment_activation',
-    layout: LAYOUT,
-    now: NOW,
-    purpose: 'work',
-    responsibleUserId: ACTOR.userId,
-    runtimeTargetId: 'target_activation',
+  const { coreDb } = fixture;
+  const target = await recordTestNativeRuntimeTarget(coreDb, 'target_activation', {
+    identityId: 'identity_activation',
+    allocationAt: NOW,
+    readyAt: NOW,
+  });
+  const owner = currentAdmittedTestNanoHostOwner(coreDb)!;
+  const workspaceId = workspace.id;
+  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId });
+  await getControlStoreWorkerClient().open({
+    database: `workspace:${scope.path}`,
+    path: scope.path,
+    dataRoot: coreDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  const agentSessionId = testEntityId('as', 'agent_session_activation');
+  const turnId = testEntityId('tu', 'resident-activation-setup');
+  const attemptId = testEntityId('attempt', 'resident-activation-setup');
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'resident-activation-setup',
+    requestedAgentId: TARGET.agentId,
+    workspaceId,
     threadId: thread.id,
-    workspaceId: workspace.id,
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Prepare a retained Worker environment.'),
+    triggerActor: { kind: 'user', id: ACTOR.userId },
+    now: () => NOW,
   });
-  const attached = await activateWorkerStorageAttachment(fixture.coreDb, {
-    attachmentGeneration: reserved.attachmentGeneration,
-    expectedRevision: reserved.revision,
-    sandboxBindingRef: 'sandbox_binding_activation',
-    storageRef: reserved.storageRef,
-    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId,
+    agentSessionId,
+    inputRef: 'resident-activation-package',
+    bindingRef: 'sandbox_binding_activation',
+    now: () => NOW,
   });
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO sandbox_runtime_records (
-         sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
-         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
-         environment_class, max_open_sessions, max_harnesses, max_active_turns,
-         lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
-       ) VALUES (
-         'sandbox_runtime_activation', 'target_activation', 'sandbox_binding_activation',
-         'sandbox_integration_activation', 'compatibility_activation', ?, ?,
-         'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
-       )`
-    )
-    .run(`sha256:${'f'.repeat(64)}`, 'a'.repeat(64), NOW, NOW);
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO harness_instance_records (
-         harness_instance_id, sandbox_runtime_id, harness_binding_ref,
-         harness_compatibility_key, runtime_family, adapter_id, adapter_version,
-         protocol_version, capabilities_json, max_open_sessions, max_active_turns,
-         open_session_count, active_turn_count, lifecycle_state, drain_state,
-         next_sequence, operation_state, created_at, updated_at
-       ) VALUES (
-         'harness_activation', 'sandbox_runtime_activation', 'harness_binding_activation',
-         'harness_compatibility_activation', 'future-runtime', 'future-adapter', '1',
-         1, '[]', 8, 1, 1, 0, 'open', 'accepting', 0, 'idle', ?, ?
-       )`
-    )
-    .run(NOW, NOW);
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO agent_session_runtime_bindings (
-         agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
-         workspace_id, thread_id, agent_session_compatibility_key,
-         effective_setup_generation, native_handle_state, lifecycle_state,
-         next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
-       ) VALUES (
-         'binding_activation', 'harness_activation', ?,
-         ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
-         'sha256:${'a'.repeat(64)}'
-       )`
-    )
-    .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
+  const authorizeContributor = () => true;
+  const attachmentOwner = {
+    attemptId,
+    target,
+    read: owner.read,
+    write: owner.writeStorageAttachment,
+    authorizeContributor,
+    isCurrentAttempt: () => requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
+  };
+  const reserved = await createAndReserveWorkerStorageAttachment(
+    coreDb,
+    {
+      agentSessionId,
+      authorizeContributor,
+      deploymentId: target.deploymentId,
+      layout: LAYOUT,
+      now: NOW,
+      purpose: 'work',
+      responsibleUserId: ACTOR.userId,
+      runtimeTargetId: target.targetId,
+      threadId: thread.id,
+      workspaceId,
+    },
+    attachmentOwner
+  );
+  const attached = await activateWorkerStorageAttachment(
+    coreDb,
+    {
+      attachmentGeneration: reserved.attachmentGeneration,
+      expectedRevision: reserved.revision,
+      sandboxBindingRef: 'sandbox_binding_activation',
+      storageRef: reserved.storageRef,
+      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+    },
+    attachmentOwner
+  );
+  await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+    attemptId,
+    cause: 'fixture-no-worker-submitted',
+    noOutstandingEffects: true,
+    now: () => NOW,
+  });
+
+  // Model a persisted resident from an unrecognized adapter; no live writer owns these rows.
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    sqlite
+      .prepare(
+        `INSERT INTO sandbox_runtime_records (
+           sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
+           sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
+           environment_class, max_open_sessions, max_harnesses, max_active_turns,
+           lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
+         ) VALUES (
+           'sandbox_runtime_activation', 'target_activation', 'sandbox_binding_activation',
+           'sandbox_integration_activation', 'compatibility_activation', ?, ?,
+           'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
+         )`
+      )
+      .run(`sha256:${'f'.repeat(64)}`, 'a'.repeat(64), NOW, NOW);
+    sqlite
+      .prepare(
+        `INSERT INTO harness_instance_records (
+           harness_instance_id, sandbox_runtime_id, harness_binding_ref,
+           harness_compatibility_key, runtime_family, adapter_id, adapter_version,
+           protocol_version, capabilities_json, max_open_sessions, max_active_turns,
+           open_session_count, active_turn_count, lifecycle_state, drain_state,
+           next_sequence, operation_state, created_at, updated_at
+         ) VALUES (
+           'harness_activation', 'sandbox_runtime_activation', 'harness_binding_activation',
+           'harness_compatibility_activation', 'future-runtime', 'future-adapter', '1',
+           1, '[]', 8, 1, 1, 0, 'open', 'accepting', 0, 'idle', ?, ?
+         )`
+      )
+      .run(NOW, NOW);
+    sqlite
+      .prepare(
+        `INSERT INTO agent_session_runtime_bindings (
+           agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
+           workspace_id, thread_id, agent_session_compatibility_key,
+           effective_setup_generation, native_handle_state, lifecycle_state,
+           next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
+         ) VALUES (
+           'binding_activation', 'harness_activation', ?,
+           ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
+           'sha256:${'a'.repeat(64)}'
+         )`
+      )
+      .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
+  });
   return {
     ...fixture,
     bindingRevision: attached.revision,

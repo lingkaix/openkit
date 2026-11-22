@@ -125,6 +125,7 @@ import {
   canonicalMcpToolSchemas,
   mcpToolSchemaContentDigest,
 } from './runtime/mcp-tool-schema-snapshots.js';
+import { NANO_HOST_HEARTBEAT_BUDGET_MS } from './runtime/nanohost-attempt-clocks.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
@@ -203,10 +204,13 @@ import {
 } from './storage/db.js';
 import { coreDbPath, readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readNanoHostRecoveryLease } from './storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from './storage/nanohost-submitted-lease.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
   currentAdmittedTestNanoHostOwner,
+  openAdmittedTestNanoHost,
   readAdmittedTestNanoHostSettled,
   seedAdmittedTestNanoHost,
 } from './test-support/admitted-nanohost.js';
@@ -226,6 +230,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import {
+  seedTestNanoHostHeartbeat,
+  submitTestNanoHostWorkerLease,
+} from './test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -402,21 +410,70 @@ async function recordWorkerRetryLease(
       noOutstandingEffects: true,
     });
   } else {
-    recordTestExecutionAttempt(coreDb, {
-      entry,
-      attemptId,
-      agentSessionId: input.agentSessionId,
-      inputRef: `aepsnap_${input.turnId}`,
-      bindingRef: `lease-binding:${attemptId}`,
-      sessionCompatibilityKey: `compat:${input.turnId}`,
-      now: () => new Date().toISOString(),
-      operationId: `original:${input.turnId}`,
-    });
+    const bindingRef = `lease-binding:${attemptId}`;
+    const packageSnapshotId = `aepsnap_${input.turnId}`;
+    const storage = input.recoveryState ? await openAdmittedTestNanoHost(coreDb) : undefined;
+    const classify = async (kind: NonNullable<typeof input.recoveryState>) => {
+      const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+      if (!storage || !original) throw new Error('Retry fixture lacks submitted Native authority.');
+      const { owner } = storage.value;
+      const { session, proof } = await readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+        readNanoHostRecoveryLease(sqlite, original.lease)
+      );
+      const observedAt = new Date().toISOString();
+      const result = await owner.classifyRecovery({
+        lease: original.lease,
+        expectedSession: session,
+        expectedRecovery: proof,
+        observedAt,
+        ...(kind === 'awaiting-reconnect'
+          ? { kind: 'arm-reconnect', classifiedAt: observedAt }
+          : { kind }),
+      });
+      if (result.state !== 'ready')
+        throw new Error(`Retry fixture classification: ${result.reason}`);
+    };
+    if (storage) {
+      submitTestNanoHostWorkerLease(
+        coreDb,
+        entry,
+        bindingRef,
+        {
+          agentSessionId: input.agentSessionId,
+          packageSnapshotId,
+          workerCapabilityTokenHash: 'a'.repeat(64),
+          workerControlTokenHash: 'b'.repeat(64),
+          workerInferenceTokenHash: 'c'.repeat(64),
+        },
+        { attemptId }
+      );
+      if (input.recoveryState === 'awaiting-reconnect') {
+        seedTestNanoHostHeartbeat(coreDb, {
+          attemptId,
+          heartbeatTimeoutMs: NANO_HOST_HEARTBEAT_BUDGET_MS,
+          workerSequence: 1,
+          workerProcessKeyHash: createHash('sha256').update(attemptId).digest('base64url'),
+        });
+        await classify(input.recoveryState);
+      }
+    } else {
+      recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId,
+        agentSessionId: input.agentSessionId,
+        inputRef: packageSnapshotId,
+        bindingRef,
+        sessionCompatibilityKey: `compat:${input.turnId}`,
+        now: () => new Date().toISOString(),
+        operationId: `original:${input.turnId}`,
+      });
+    }
     if (input.status !== 'active') {
       const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId,
         cause: input.releaseReason ?? 'turn-failed',
       });
+      if (input.recoveryState === 'needs-evidence') await classify(input.recoveryState);
       // A modeled submission owns no physical process; retain unknown disposition while settling all model barriers.
       const proof = {
         terminalHandoff: true,
@@ -434,16 +491,6 @@ async function recordWorkerRetryLease(
         fenceRef: result.fenceRef!,
       });
     }
-    if (input.recoveryState === null) return;
-    coreDb.sqlite
-      .prepare(
-        'UPDATE scheduler_execution_attempts SET recovery_state = ?, recovery_deadline = ? WHERE attempt_id = ?'
-      )
-      .run(
-        input.recoveryState,
-        input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
-        attemptId
-      );
   }
 }
 

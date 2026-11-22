@@ -54,6 +54,7 @@ import { createApp, prepareTestAppOptions } from '../test-support/app.js';
 import { confirmContextDefaults } from '../test-support/context-defaults.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
@@ -901,6 +902,10 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
       });
       const runtimeConfigManager = f.manager;
       vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
+        f.coreDb,
+        snapshot.agentManifests[0]!
+      );
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => snapshot,
       });
@@ -908,6 +913,7 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
       const results = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult');
       const app = createApp({
         coreDb: f.coreDb,
+        nanoHostStorage,
         store: f.store,
         vaultUnlockState: f.vaultUnlockState,
         fileAdmission: native.fileAdmission,
@@ -1606,12 +1612,17 @@ it.each(['workspace', 'server'] as const)(
           },
         ],
       });
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
+        f.coreDb,
+        snapshot.agentManifests[0]!
+      );
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => snapshot,
       });
       vi.spyOn(f.manager, 'current').mockReturnValue(snapshot);
       const app = createApp({
         coreDb: f.coreDb,
+        nanoHostStorage,
         store: f.store,
         vaultUnlockState: f.vaultUnlockState,
         workerMcpGateway: gateway,
@@ -2671,11 +2682,16 @@ it.each(['live', 'revoked-agent'] as const)(
         );
       const runtimeConfigManager = f.manager;
       await confirmContextDefaults(f.coreDb, f.store, runtimeConfigManager);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
+        f.coreDb,
+        snapshot.agentManifests[0]!
+      );
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => runtimeConfigManager.current(),
       });
       const app = createApp({
         coreDb: f.coreDb,
+        nanoHostStorage,
         store: f.store,
         vaultUnlockState: f.vaultUnlockState,
         fileAdmission: native.fileAdmission,

@@ -590,6 +590,7 @@ describe('SimulatedTurnExecutor', () => {
       outputLimitBytes: 1024 * 1024,
       layerLimit: 1,
     };
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
@@ -902,9 +903,13 @@ describe('SimulatedTurnExecutor', () => {
         models: ['openai/gpt-5.2'],
       },
     ]);
+    const firstManifest = createTestAgentSetup({ imageRef: imageRefA }).manifest;
+    const secondManifest = createTestAgentSetup({ imageRef: imageRefB }).manifest;
+    await admitTestNativeEnvironmentForRoot(coreDb, firstManifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, secondManifest);
     const firstApp = createApp({
       fileAdmission,
-      agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
+      agentManifests: [firstManifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
       openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
@@ -914,7 +919,7 @@ describe('SimulatedTurnExecutor', () => {
     });
     const secondApp = createApp({
       fileAdmission,
-      agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
+      agentManifests: [secondManifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
       openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },

@@ -1,22 +1,27 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
+import { createDefaultWorkerControlGateway } from '../app.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { recordWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
+import {
+  acceptSchedulerExecutionObservation,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
+import { hashWorkerRouteToken } from '../runtime/worker-control-gateway.js';
 import { prepareWorkerTurnJournalIntents } from '../runtime/worker-governance-turn-executor.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -187,7 +192,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     environmentPackage,
     createdAt: f.turn.startedAt!,
   });
-  const target = await recordTestNativeRuntimeTarget(f.coreDb);
+  const nanoHostStorage = await openAdmittedTestNanoHost(f.coreDb);
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'observer-names',
@@ -200,18 +205,35 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     turnId: f.turn.id,
     inputRef: schedulerFixtureInput(f.db.workspaceId, f.turn.id, 'Retain observations'),
   });
-  const attempt = recordTestExecutionAttempt(f.coreDb, {
+  const bindingRef = `fixture-native-binding:${session.id}`;
+  const raw = {
+    cap: randomBytes(32).toString('base64url'),
+    ctl: randomBytes(32).toString('base64url'),
+    inf: randomBytes(32).toString('base64url'),
+  };
+  const attempt = submitTestNanoHostWorkerLease(
+    f.coreDb,
     entry,
-    attemptId: testEntityId('attempt', 'observer-names'),
-    agentSessionId: session.id,
-    inputRef: environmentPackage.snapshotId,
-    bindingRef: `fixture-native-binding:${session.id}`,
-    sessionCompatibilityKey: 'fixture-observer-names',
-    now: () => f.turn.startedAt!,
+    bindingRef,
+    {
+      agentSessionId: session.id,
+      packageSnapshotId: environmentPackage.snapshotId,
+      workerCapabilityTokenHash: hashWorkerRouteToken(raw.cap),
+      workerControlTokenHash: hashWorkerRouteToken(raw.ctl),
+      workerInferenceTokenHash: hashWorkerRouteToken(raw.inf),
+    },
+    { attemptId: testEntityId('attempt', 'observer-names') }
+  );
+  acceptSchedulerExecutionObservation(f.coreDb, {
+    ...schedulerExecutionCorrelation(attempt),
+    disposition: 'accepted',
+    execution: 'running',
+    fenceRef: null,
+    outcomeRef: null,
   });
   const journalIntents = prepareWorkerTurnJournalIntents(f.db, environmentPackage, attempt, {
     backendKind: 'openshell',
-    targetId: target.targetId,
+    targetId: `test-target-${f.turn.id}`,
     allocationRef: attempt.bindingRef,
   });
   await f.store.updateTurn(f.turn.id, { agentSessionId: session.id }, { journalIntents });
@@ -222,12 +244,16 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     packageSnapshotId: environmentPackage.snapshotId,
     requestId: 'observer-names',
   };
-  await recordWorkerControlAcceptedRecord(f.coreDb, {
+  const gateway = createDefaultWorkerControlGateway(f.coreDb, undefined, nanoHostStorage);
+  const registration = gateway.registerSession(environmentPackage, {
+    sandboxBindingRef: bindingRef,
+    workerCapabilityToken: raw.cap,
+    workerControlToken: raw.ctl,
+    workerInferenceToken: raw.inf,
+  });
+  await gateway.appendEvent({
+    authorization: `Bearer ${registration.token}`,
     lineage,
-    operation: 'event_append',
-    recordKey: '1',
-    sequence: 1,
-    acceptedAt: f.turn.startedAt!,
     record: {
       kind: 'event',
       schemaVersion: 1,

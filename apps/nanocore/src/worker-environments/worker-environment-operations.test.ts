@@ -17,8 +17,10 @@ import {
   admitWorkerStorageContributor,
   createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
+  markWorkerStoragePurgePending,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
+  settleWorkerStoragePurge,
   type WorkerStorageBinding,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
@@ -214,7 +216,15 @@ async function createFixture(
     actor: createTestSessionActor(coreDb, 'usr_00000000-0000-7000-8000-000000000001'),
     binding,
     coreDb,
-    operations: createWorkerEnvironmentOperations({ coreDb, runtimeEffects, store }),
+    operations: createWorkerEnvironmentOperations({
+      coreDb,
+      runtimeEffects,
+      store,
+      purgeDecisions: {
+        markPending: (input) => markWorkerStoragePurgePending(coreDb, input),
+        settle: (input) => settleWorkerStoragePurge(coreDb, input),
+      },
+    }),
     store,
     threadId: thread.id,
     workspaceId: workspace.id,
