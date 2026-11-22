@@ -34,6 +34,7 @@ import {
   readExecutionJournalRoot,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
+import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
 import {
   nanoHostHarnessCompatibilityKey,
   nanoHostSandboxCompatibilityKey,
@@ -349,6 +350,16 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
 
 it('reopens the original recovery window, refuses changed process authority and adopts the exact next heartbeat', async () => {
   const f = await fixture();
+  const setTargetEpoch = (epoch: string | null) => {
+    const ready = Number(epoch !== null);
+    f.owner.setup((sqlite) =>
+      sqlite
+        .prepare(`UPDATE nanohost_runtime_targets
+          SET connection_generation = 2, ready = ?, fresh_empty = ?, physical_epoch = ?`)
+        .run(ready, ready, epoch)
+    );
+  };
+  setTargetEpoch(null);
   const original = f.read();
   const arm = {
     lease,
@@ -383,12 +394,23 @@ it('reopens the original recovery window, refuses changed process authority and 
       reconnectProcessKeyHash: 'c'.repeat(43),
     },
   };
-  await expect(f.send(reconnect)).rejects.toThrow('exact reconnect authority');
-  expect(f.read().proof).toEqual(after.proof);
-  await f.send({
+  const exact = {
     ...reconnect,
     input: { ...reconnect.input, reconnectProcessKeyHash: processKeyHash },
-  });
+  };
+  await expect(f.send(exact)).rejects.toThrow('exact reconnect authority');
+  setTargetEpoch('f'.repeat(64));
+  await expect(f.send(exact)).rejects.toThrow('exact reconnect authority');
+  setTargetEpoch(physicalEpoch);
+  await expect(f.send(reconnect)).rejects.toThrow('exact reconnect authority');
+  await expect(f.send({ ...exact, input: { ...exact.input, sequence: 3 } })).rejects.toThrow(
+    'exact reconnect authority'
+  );
+  await expect(
+    f.send({ ...exact, input: { ...exact.input, acceptedAt: expectedRecoveryDeadline } })
+  ).rejects.toThrow('exact reconnect authority');
+  expect(f.read().proof).toEqual(after.proof);
+  await f.send(exact);
   expect(f.read().proof).toMatchObject({
     recoveryState: null,
     recoveryDeadline: null,
@@ -1495,6 +1517,29 @@ it.each(['accepted', 'expired', 'unavailable'] as const)(
     }
   }
 );
+
+it('reads the exact pending private Login consumer on the admitted Native grant', async () => {
+  const { core, f } = await admitOriginal();
+  const context = {
+    ...lineage,
+    agentSessionRuntimeBindingId: 'session-binding',
+    leaseId: attemptId,
+    turnSequence: 0,
+    runtimeTargetId: targetId,
+    physicalEpoch,
+    connectionGeneration: 1,
+  };
+  expect(requireHarnessLoginBinding(core, context, acceptedAt, f.owner)).toBe(
+    'sandbox-integration'
+  );
+  expect(() =>
+    requireHarnessLoginBinding(core, { ...context, connectionGeneration: 2 }, acceptedAt, f.owner)
+  ).toThrow('Native Login consumer binding is unavailable.');
+  const { heartbeatDeadline } = f.read().proof;
+  expect(() => requireHarnessLoginBinding(core, context, heartbeatDeadline, f.owner)).toThrow(
+    'Native Login consumer binding is unavailable.'
+  );
+});
 
 it('resolves App and Gateway bindings from the retained Core grant and the admitted Native proof', async () => {
   const { core, f, input, now, root, retained } = await admitOriginal();
