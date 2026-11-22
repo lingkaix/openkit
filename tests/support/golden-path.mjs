@@ -414,11 +414,12 @@ async function install(providerPort) {
       credentialRef: 'nanohost-transport:golden-path',
       credentialSlots: { A: slot('A'), B: slot('B') },
       identityId: 'golden-path',
-      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
       rendezvousUrl: hostOrigin,
     },
   };
-  await fs.writeFile(path.join(data, 'config/server.jsonc'), JSON.stringify(config));
+  const { nanohost, ...initialConfig } = config;
+  const serverConfig = path.join(data, 'config/server.jsonc');
+  await fs.writeFile(serverConfig, JSON.stringify(initialConfig));
   await fs.writeFile(
     path.join(data, 'config/providers/golden.provider.jsonc'),
     JSON.stringify({
@@ -454,28 +455,6 @@ async function install(providerPort) {
       ],
     })
   );
-  await fs.mkdir('/etc/openkit', { recursive: true });
-  await fs.writeFile(
-    '/etc/openkit/nanohost.env',
-    [
-      'OPENKIT_NANOHOST_IDENTITY_ID=golden-path',
-      `OPENKIT_NANOHOST_DEPLOYMENT_ID=${config.nanohost.deploymentId}`,
-      `OPENKIT_NANOHOST_NANOCORE_RENDEZVOUS_URL=${hostOrigin}`,
-      ...['A', 'B'].flatMap((name) => [
-        `OPENKIT_NANOHOST_TOKEN_SLOT_${name}_SECRET_FILE=${slot(name).secretPath}`,
-        `OPENKIT_NANOHOST_TOKEN_SLOT_${name}_COMPANION_FILE=${slot(name).companionPath}`,
-      ]),
-      '',
-    ].join('\n'),
-    { mode: 0o600 }
-  );
-  // One failure must stay observable; a manager retry cannot conceal a seed failure.
-  await fs.mkdir('/etc/systemd/system/openkit-nanohost.service.d', { recursive: true });
-  await fs.writeFile(
-    '/etc/systemd/system/openkit-nanohost.service.d/golden-path.conf',
-    '[Service]\nRestart=no\n'
-  );
-  await command('daemon-reload', 'systemctl', ['daemon-reload']);
   const authSecret = randomBytes(32).toString('hex');
   secrets.push(authSecret);
   await command(
@@ -505,6 +484,39 @@ async function install(providerPort) {
     { env: { ...process.env, BETTER_AUTH_SECRET: authSecret } }
   );
   await health();
+  // The first boot mints the authority shared by the RuntimeTarget and Core's epoch journal.
+  const { deploymentId } = JSON.parse(
+    await fs.readFile(path.join(data, 'server/layout.json'), 'utf8')
+  );
+  assert.match(deploymentId ?? '', /^dep_[0-9a-f-]{36}$/, 'Core must mint its deployment identity');
+  await fs.writeFile(
+    serverConfig,
+    JSON.stringify({ ...initialConfig, nanohost: { ...nanohost, deploymentId } })
+  );
+  await command('app-configure-nanohost', 'docker', ['restart', 'golden-path-app']);
+  await health();
+  await fs.mkdir('/etc/openkit', { recursive: true });
+  await fs.writeFile(
+    '/etc/openkit/nanohost.env',
+    [
+      'OPENKIT_NANOHOST_IDENTITY_ID=golden-path',
+      `OPENKIT_NANOHOST_DEPLOYMENT_ID=${deploymentId}`,
+      `OPENKIT_NANOHOST_NANOCORE_RENDEZVOUS_URL=${hostOrigin}`,
+      ...['A', 'B'].flatMap((name) => [
+        `OPENKIT_NANOHOST_TOKEN_SLOT_${name}_SECRET_FILE=${slot(name).secretPath}`,
+        `OPENKIT_NANOHOST_TOKEN_SLOT_${name}_COMPANION_FILE=${slot(name).companionPath}`,
+      ]),
+      '',
+    ].join('\n'),
+    { mode: 0o600 }
+  );
+  // One failure must stay observable; a manager retry cannot conceal a seed failure.
+  await fs.mkdir('/etc/systemd/system/openkit-nanohost.service.d', { recursive: true });
+  await fs.writeFile(
+    '/etc/systemd/system/openkit-nanohost.service.d/golden-path.conf',
+    '[Service]\nRestart=no\n'
+  );
+  await command('daemon-reload', 'systemctl', ['daemon-reload']);
   const bootstrap = await fs.readFile(
     path.join(data, 'server/files/auth/bootstrap-token.txt'),
     'utf8'
