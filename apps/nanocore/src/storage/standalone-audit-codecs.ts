@@ -1,6 +1,7 @@
 import {
   AccessTokenIdSchema,
   AuditEventSchema,
+  ExecutionAttemptIdSchema,
   PROTOCOL_VERSION,
   RequestIdSchema,
   WorkspaceIdSchema,
@@ -75,6 +76,15 @@ export const STANDALONE_AUDIT_STAGES = [
   'security.canary',
   'core.protocol.invalid_delta',
 ] as const;
+/** Read-back key for the exact posted Native lease; its digest stays in private carriage. */
+export const SecurityCanaryAuditObservationSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  sandboxBindingRef: z.string().min(1).max(512),
+  observationHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+});
+
+export type SecurityCanaryAuditObservation = z.infer<typeof SecurityCanaryAuditObservationSchema>;
+
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
   .strictObject({
@@ -82,14 +92,19 @@ export const ControlStandaloneAuditInputSchema = z
     stage: z.enum(STANDALONE_AUDIT_STAGES),
     /** Original non-secret worker lineage; native resolves its retained owners, never a permission. */
     canaryLineage: WorkerLineageSchema.optional(),
+    canaryObservation: SecurityCanaryAuditObservationSchema.optional(),
     event: AuditEventSchema.strict().extend({
       createdAt: z.string().datetime(),
       occurredAt: z.string().datetime(),
     }),
   })
-  .refine(({ workspaceId, stage, event, canaryLineage }) => {
+  .refine(({ workspaceId, stage, event, canaryLineage, canaryObservation }) => {
     if (event.action !== stage || event.notebookAdmission !== undefined) return false;
-    if (stage !== 'security.canary' && canaryLineage !== undefined) return false;
+    if (
+      stage !== 'security.canary' &&
+      (canaryLineage !== undefined || canaryObservation !== undefined)
+    )
+      return false;
     if (stage === 'core.protocol.invalid_delta')
       return (
         workspaceId === undefined &&
