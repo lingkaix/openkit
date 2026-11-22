@@ -81,10 +81,7 @@ import {
   readNanoHostWorkerLease,
   readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
-import {
-  getWorkerControlAcceptedFinalStatus,
-  hasPendingWorkerCancellationFinal,
-} from '../runtime/worker-control-records.js';
+import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import {
   inspectNanoHostWorkerFinalSequences,
   matchesAcceptedWorkerControlSequence,
@@ -133,6 +130,7 @@ import {
 import {
   inspectNanoHostWorkerBinding,
   nanoHostWorkerBindingLiveness,
+  nanoHostWorkerCancellationFinalEligible,
 } from './nanohost-worker-binding.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
@@ -1010,8 +1008,7 @@ export function admitNanoHostWorkerFinalInDb(
       return { ...prior, kind: 'replay' };
     }
     const live = nanoHostWorkerBindingLiveness(native, observedAt);
-    const cancellation =
-      native.currentPlacement && hasPendingWorkerCancellationFinal(native.attempt, observedAt);
+    const cancellation = nanoHostWorkerCancellationFinalEligible(sqlite, native, observedAt);
     if (prior) {
       const pendingOrdinary =
         prior.kind === 'decided' &&
