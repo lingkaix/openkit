@@ -7,10 +7,7 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import { runSchedulerRecoveryMaintenance } from './runtime/scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
-import {
-  recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
-} from './runtime/worker-backend-sessions.js';
+import { recordWorkerBackendSessionMaterializing } from './runtime/worker-backend-sessions.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
@@ -25,10 +22,14 @@ import {
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db';
 import { applyMigrations } from './storage/migrate';
+import { readNanoHostRecoveryLease } from './storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from './storage/nanohost-submitted-lease.js';
 import { resolveAdmittedNanoHostWorkerBinding } from './storage/nanohost-worker-binding.js';
 import {
+  currentAdmittedTestNanoHostOwner,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
+  testNanoHostRecoveryJoins,
 } from './test-support/admitted-nanohost.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -737,35 +738,28 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      const prepared = createPreparedAttempt(coreDb, 'lease_cleanup_barrier', false);
-      await seedBackendRuntimeTarget(coreDb);
-      await recordWorkerBackendSessionMaterializing(coreDb, {
-        backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
-        backendVersion: '0.0.99',
-        identity: {
+      const {
+        value: { owner },
+      } = await openAdmittedTestNanoHost(coreDb);
+      const entry = createSchedulerRecordAdmission(coreDb, 'cleanup_barrier');
+      const attemptId = testEntityId('attempt', 'lease_cleanup_barrier');
+      const prepared = submitTestNanoHostWorkerLease(
+        coreDb,
+        entry,
+        `lease-binding:${attemptId}`,
+        {
           agentSessionId: testEntityId('as', 'session_cleanup_barrier'),
-          backendKind: 'openshell',
-          backendSessionId: 'openkit-session_cleanup_barrier',
-          deploymentId: 'deployment-test',
           packageSnapshotId: 'pkg_demo',
-          runtimeTargetId: 'runtime-target-test',
-          stagingDirectoryRef: 'server/runtime/worker-backend-sessions/pkg_demo',
-          transientProviderInstanceId: null,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
         },
-        lineage: {
-          threadId: testEntityId('th', 'thread_cleanup_barrier'),
-          turnId: testEntityId('tu', 'turn_cleanup_barrier'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        now: () => '2026-07-05T00:00:03.000Z',
-        sandboxBindingRef: `lease-binding:${testEntityId('attempt', 'lease_cleanup_barrier')}`,
-      });
-      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: prepared.attemptId,
-        operationId: `fixture-submit:${prepared.attemptId}`,
-        submission: true,
-        now: () => '2026-07-05T00:00:02.000Z',
-      });
+        { attemptId, observedAt: '2026-07-05T00:00:02.000Z' }
+      );
+      const placement = owner.readRuntimeTarget(`test-target-${entry.turnId}`);
+      if (placement.state !== 'ready' || !placement.value)
+        throw new Error('Fixture has no admitted RuntimeTarget.');
+      const target = placement.value;
 
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
@@ -786,16 +780,28 @@ describe('scheduler records', () => {
         )?.phase
       );
 
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState: 'materializing',
-        attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
-        toState: 'cleanup-pending',
-      });
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState: 'cleanup-pending',
-        attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
-        toState: 'physical-cleaned',
-      });
+      const commitCleanupStage = async (
+        toState: 'cleanup-pending' | 'physical-cleaned',
+        observedAt: string
+      ) => {
+        const { lease } = readRetainedNanoHostSubmission(coreDb, prepared.attemptId)!;
+        const { session, proof } = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostRecoveryLease(sqlite, lease)
+        );
+        const result = await owner.classifyRecovery({
+          kind: 'transition',
+          lease,
+          target,
+          expectedSession: session,
+          expectedRecovery: proof,
+          toState,
+          observedAt,
+        });
+        if (result.state !== 'ready')
+          throw new Error(`Native cleanup ${toState} was not acknowledged: ${result.reason}`);
+      };
+      await commitCleanupStage('cleanup-pending', '2026-07-05T00:00:10.000Z');
+      await commitCleanupStage('physical-cleaned', '2026-07-05T00:00:11.000Z');
       completeTerminalAttempt(coreDb, {
         id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
@@ -807,7 +813,8 @@ describe('scheduler records', () => {
           (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_barrier')
         )?.phase
       );
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         fromState: 'physical-cleaned',
         attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'cleaned',
@@ -874,6 +881,9 @@ describe('scheduler records', () => {
     try {
       const prepared = createPreparedAttempt(coreDb, 'lease_cleanup_grace', false);
       await seedBackendRuntimeTarget(coreDb);
+      const {
+        value: { owner },
+      } = await openAdmittedTestNanoHost(coreDb);
       await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
@@ -912,21 +922,25 @@ describe('scheduler records', () => {
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
+          nanoHostRecovery: testNanoHostRecoveryJoins({ value: { owner } }),
         }).turnExecutor.executionBackend!,
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:05:11.000Z',
       });
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleanup-pending',
       });
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         fromState: 'cleanup-pending',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'physical-cleaned',
       });
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         fromState: 'physical-cleaned',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleaned',
@@ -936,6 +950,7 @@ describe('scheduler records', () => {
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
+          nanoHostRecovery: testNanoHostRecoveryJoins({ value: { owner } }),
         }).turnExecutor.executionBackend!,
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:05:12.000Z',
@@ -1162,10 +1177,12 @@ async function closeOwnedExecutionAttempt(
     integrationDrain: true,
     routesRevoked: true,
   } as const;
+  const owner = currentAdmittedTestNanoHostOwner(db);
   const backend = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb: db,
     env: {},
+    ...(owner ? { nanoHostRecovery: testNanoHostRecoveryJoins({ value: { owner } }) } : {}),
   }).turnExecutor.executionBackend!;
   const result = await backend.release({ ...correlation, proof });
   if (result.state === 'released')

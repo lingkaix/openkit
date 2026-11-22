@@ -41,7 +41,10 @@ import {
 } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHostSettled,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
@@ -737,9 +740,11 @@ describe('E13B2 original allocated private Worker authority', () => {
       phase: 'open',
       recoveryState: null,
     });
-    expect(
-      listWorkerControlAcceptedEvents(w.g.coreDb, w.lineage).map((record) => record.sequence)
-    ).toEqual([0]);
+    const sequences = () =>
+      readAdmittedTestNanoHostSettled(w.g.coreDb, (sqlite) =>
+        listWorkerControlAcceptedEvents({ sqlite }, w.lineage).map((record) => record.sequence)
+      );
+    expect(await sequences()).toEqual([0]);
     await w.f.change(document(), 1);
     // Inspect the original durable owner: event gaps are allowed, not an authentication failure.
     expect(await w.client.appendEvent(target)).toMatchObject({
@@ -754,8 +759,6 @@ describe('E13B2 original allocated private Worker authority', () => {
       accepted: true,
       nextExpectedSequence: 3,
     });
-    expect(
-      listWorkerControlAcceptedEvents(w.g.coreDb, w.lineage).map((record) => record.sequence)
-    ).toEqual([0, 1, 2]);
+    expect(await sequences()).toEqual([0, 1, 2]);
   }, 30_000);
 });

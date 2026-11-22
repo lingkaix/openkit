@@ -27,6 +27,7 @@ import {
   QUALIFIED_STEER_PINS,
 } from '../runtime/turn-executor-factory.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import { readAdmittedTestNanoHostSettled } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -329,14 +330,16 @@ describe('Task steer through the existing native Harness slot', () => {
       void completion.catch(() => undefined);
       // Worker Control Final Status: durable native terminal evidence is not Core closeout.
       const terminalAccepted = vi.waitFor(
-        () => {
+        async () => {
           expect(f.native.executor.nativeLineage).toMatchObject({
             workspaceId: f.input.workspaceId,
             threadId: f.input.threadId,
             turnId: f.input.turnId,
           });
           expect(
-            getWorkerControlAcceptedFinalStatus(f.coreDb, f.native.executor.nativeLineage!)
+            await readAdmittedTestNanoHostSettled(f.coreDb, (sqlite) =>
+              getWorkerControlAcceptedFinalStatus({ sqlite }, f.native.executor.nativeLineage!)
+            )
           ).toMatchObject({ status: 'completed', stopReason: 'completed' });
         },
         { timeout: 30_000 }

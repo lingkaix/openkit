@@ -65,7 +65,8 @@ function createCoreDb(): CoreDb {
  */
 function createAuthorizedCoreApp(
   coreDb: CoreDb,
-  store: ReturnType<typeof createDemoStore>
+  store: ReturnType<typeof createDemoStore>,
+  nanoHostStorage?: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>
 ): ReturnType<typeof createApp> {
   ensureLocalUser(coreDb);
   for (const workspace of store.listWorkspaces()) {
@@ -75,7 +76,11 @@ function createAuthorizedCoreApp(
       workspaceId: workspace.id,
     });
   }
-  return createAppWithWorkspaceAuthority({ coreDb, store });
+  return createAppWithWorkspaceAuthority({
+    coreDb,
+    store,
+    ...(nanoHostStorage ? { nanoHostStorage } : {}),
+  });
 }
 
 /** Installs one failed-health catalog summary after createApp wires the live projection. */
@@ -1586,7 +1591,7 @@ describe('action center app API', () => {
       }
     );
 
-    await openAdmittedTestNanoHost(coreDb);
+    const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
     const nativeDb = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
       fileMustExist: true,
     });
@@ -1627,8 +1632,9 @@ describe('action center app API', () => {
           'Worker control request lineage does not match the active lease.',
           timestamp
         );
+      const app = createAuthorizedCoreApp(coreDb, store, nanoHostStorage);
       const queueEntryId = 'queue_action_center';
-      createSchedulerAdmissionEntry(coreDb, {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
@@ -1640,23 +1646,24 @@ describe('action center app API', () => {
         profileRef: 'agent_codex_host',
         now: () => timestamp,
       });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
-        )
-        .run(queueEntryId);
-      coreDb.sqlite
-        // K8 retired backend_id, preparation_input_json and updated_at from the Core attempt row.
-        .prepare(`INSERT INTO scheduler_execution_attempts
-        (attempt_id, queue_entry_id, workspace_id, thread_id, turn_id,
-         agent_session_id, input_ref, binding_ref, phase, disposition,
-         operation_id, terminal_cause, created_at)
-        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', ?, ?, ?, ?,
-          'as_00000000-0000-7f85-a231-397f40994baa', 'pkg_orphan', 'binding_action_center', 'closing', 'unknown',
-          'operation_action_center', 'native-liveness-expired', ?)`)
-        .run(queueEntryId, DEMO_WORKSPACE_ID, thread.id, turn.id, timestamp);
-
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const { recordTestExecutionAttempt } = await import('./test-support/execution-attempt.js');
+      const { markSchedulerExecutionAttemptClosing } = await import(
+        './runtime/execution-attempt-records.js'
+      );
+      const attempt = recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId: 'attempt_00000000-0000-7fc1-bf4d-d1a128657cd8',
+        agentSessionId: 'as_00000000-0000-7f85-a231-397f40994baa',
+        inputRef: 'pkg_orphan',
+        bindingRef: 'binding_action_center',
+        operationId: 'operation_action_center',
+        now: () => timestamp,
+      });
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: attempt.attemptId,
+        cause: 'native-liveness-expired',
+        now: () => timestamp,
+      });
       const res = await app.request(
         ...operationRequest(
           'attention.list',

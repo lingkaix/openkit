@@ -290,13 +290,14 @@ describe('Agent public native environment administration', () => {
     for (const nativeEnvironment of [undefined, { DEFAULT: 'wrong', EMPTY: '' }])
       expect(() =>
         prepareNanoHostHarnessOperation(
-          { ...f.db, sqlite: f.native.sqlite },
+          f.db,
           {
             harnessInstanceId: 'harness-native',
             operation: 'session.open',
             body: { ...body, ...(nativeEnvironment ? { nativeEnvironment } : {}) },
             timestamp: now,
-          }
+          },
+          { sqlite: f.native.sqlite }
         )
       ).toThrow('exact binding');
     f.native.setup((sqlite) =>
