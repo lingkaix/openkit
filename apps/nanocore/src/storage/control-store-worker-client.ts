@@ -179,10 +179,12 @@ import {
 } from '../runtime/execution-attempt-records.js';
 import {
   type ControlExecutionJournalInput,
+  createExecutionStepJournalReader,
   decodeExecutionJournalIntent,
   readExecutionJournalInvocation,
   readKernelSchedulerGrantInDb,
 } from '../runtime/execution-journal.js';
+import type { ExecutionStepKind } from '../runtime/execution-step-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
 import type { AdmittedNanoHostHarnessTurnLifecycle } from '../runtime/nanohost-harness.js';
@@ -320,11 +322,18 @@ import {
   type ControlNanoHostFirstSubmissionInput,
   ControlNanoHostFirstSubmissionInputSchema,
   type ControlNanoHostFirstSubmissionResult,
+  type ControlNanoHostTerminalReleaseInput,
+  ControlNanoHostTerminalReleaseInputSchema,
   readCoreJournalLineage,
 } from './core-journal-codecs.js';
 import {
+  inspectCoreNanoHostTerminalRelease,
+  nanoHostTerminalReleaseWorkspaceStep,
+} from './core-journal-native.js';
+import {
   type CoreDb,
   inspectServerOwnerFile,
+  openAdmittedWorkspaceReadDb,
   openCoreReadDb,
   openServerOwnerReadConnection,
   openUserReadDb,
@@ -622,6 +631,46 @@ export function readAdmittedNanoHostAttempt(
   return { lease, ...readNanoHostRecoveryLease(sqlite, lease) };
 }
 
+/** Projects only the six acknowledged Workspace occurrences needed by the Core release owner. */
+async function prepareNanoHostReleaseWorkspace(
+  db: WorkspaceDb,
+  attempt: SchedulerExecutionAttemptRecord
+): Promise<Pick<ControlNanoHostTerminalReleaseInput, 'workspaceExecutionId' | 'workspaceSteps'>> {
+  const executions = db.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=? LIMIT 2')
+    .all(attempt.turnId) as { id: string }[];
+  if (executions.length !== 1)
+    throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+  const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+  const ref = { owner, executionId: executions[0]!.id };
+  const reader = createExecutionStepJournalReader(db, owner);
+  const ended = await reader.readEndedSteps(ref);
+  const completed = await Promise.all(
+    ended
+      .filter((step) => step.state === 'completed' && step.control.attemptId === attempt.attemptId)
+      .map(async (step) => ({ step, carriage: (await reader.readInvocation(step.ref)).carriage }))
+  );
+  const proof = (kind: ExecutionStepKind, operation: string) => {
+    const matches = completed.filter(
+      ({ step, carriage }) => step.control.kind === kind && carriage.operation === operation
+    );
+    if (matches.length !== 1)
+      throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    return nanoHostTerminalReleaseWorkspaceStep(matches[0]!.step, matches[0]!.carriage);
+  };
+  return {
+    workspaceExecutionId: ref.executionId,
+    workspaceSteps: {
+      terminal: proof('terminal-publication', 'worker.terminal-publication'),
+      output: proof('collect', 'worker.collect.publication'),
+      evidence: proof('collect', 'worker.collect.transcript'),
+      collection: proof('collect', 'worker.collect.capture'),
+      consume: proof('consume-receipt', 'turn.start'),
+      release: proof('release', 'worker.release'),
+    },
+  };
+}
+
 /** NanoHost composition supplies the landed readers over the admitted query-only connection. */
 interface NanoHostOwnerReaders {
   readonly isEnrollmentAdministrator?: (
@@ -664,6 +713,7 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
+  releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
   waitForWorkerControlAcknowledgement(): Promise<void>;
   workerControlHeartbeat(
@@ -3588,6 +3638,89 @@ class ControlStoreWorkerClient {
         );
       };
 
+      const releaseTerminalScopes: NanoHostOwnerBinding['releaseTerminalScopes'] = async (
+        attemptId,
+        fenceRef
+      ) => {
+        await waitForWorkerControlAcknowledgement();
+        await withNativeReadForCore((core, openingRequestId, nanoHostIdentity) =>
+          withWorkspaceForAttempt(attemptId, async (workspaceIdentity) => {
+            const reader = openCoreReadDb(root);
+            try {
+              const attempt = requireSchedulerExecutionAttempt(reader, attemptId);
+              if (
+                attempt.phase !== 'closed' ||
+                !attempt.agentSessionId ||
+                attempt.fenceRef !== fenceRef
+              )
+                throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+              const target = readCurrent((sqlite) => {
+                const session = readers.getWorkerBackendSession({ sqlite }, attemptId);
+                return session && getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+              });
+              if (!target?.physicalEpoch || !target.connectionGeneration)
+                throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+              const workspace = openAdmittedWorkspaceReadDb(root, attempt.workspaceId);
+              let evidence: Awaited<ReturnType<typeof prepareNanoHostReleaseWorkspace>>;
+              try {
+                if (
+                  readPhysicalDatabaseIdentity(workspace.sqlite.name).identity !== workspaceIdentity
+                )
+                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                evidence = await prepareNanoHostReleaseWorkspace(workspace, attempt);
+              } finally {
+                workspace.sqlite.close();
+              }
+              const input = ControlNanoHostTerminalReleaseInputSchema.parse({
+                attemptId,
+                fenceRef,
+                target: {
+                  targetId: target.targetId,
+                  identityId: target.identityId,
+                  deploymentId: target.deploymentId,
+                  physicalEpoch: target.physicalEpoch,
+                  connectionGeneration: target.connectionGeneration,
+                },
+                coveredScopeRefs: [
+                  `workspace:${attempt.workspaceId}`,
+                  `thread:${attempt.threadId}`,
+                  `turn:${attempt.turnId}`,
+                  `session:${attempt.agentSessionId}`,
+                ],
+                ...evidence,
+              });
+              const coreKey = core.command.database;
+              if (this.backupHold || this.databaseHolds.has(coreKey))
+                throw new ControlStoreWorkerError('busy', 'not-committed');
+              try {
+                const reply = await this.request({
+                  operation: 'nanohost-terminal-release',
+                  database: coreKey,
+                  openingRequestId,
+                  input,
+                  peers: { nanoHostIdentity, workspaceIdentity },
+                });
+                if (reply.operation !== 'nanohost-terminal-release')
+                  throw new ControlStoreWorkerError('integrity', 'unknown');
+                if (reply.result.state !== 'settled')
+                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+              } catch (error) {
+                if (!(error instanceof ControlStoreWorkerError) || error.commit !== 'unknown')
+                  throw error;
+                if (core.host.failed) await core.host.exited.promise;
+                if (
+                  readPhysicalDatabaseIdentity(core.path).identity !== core.identity ||
+                  inspectCoreNanoHostTerminalRelease(reader, input).state !== 'settled'
+                )
+                  throw error;
+              }
+            } finally {
+              reader.sqlite.close();
+            }
+          })
+        );
+      };
+
       const firstSubmission: NanoHostOwnerBinding['firstSubmission'] = (original) =>
         withNativeReadForCore(async (core, coreOpeningRequestId, nativeIdentity) => {
           const coreKey = core.command.database;
@@ -3860,6 +3993,7 @@ class ControlStoreWorkerClient {
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,
+          releaseTerminalScopes,
           writeStorageAttachment,
           waitForWorkerControlAcknowledgement,
           workerControlHeartbeat: (input) => {

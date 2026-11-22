@@ -293,6 +293,7 @@ import {
   admitNanoHostWorkerFinalInDb,
   applyControlCoreJournal,
   observeAcceptedNanoHostFinalInDb,
+  releaseCoreNanoHostTerminalInDb,
 } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import {
@@ -341,6 +342,7 @@ import type { NanoHostEpochKernelReply } from './nanohost-epoch-kernel-codecs.js
 import {
   applyNanoHostRecoveryMutation,
   readNanoHostRecoveryLease,
+  verifyNanoHostTerminalDrainAndRevocation,
 } from './nanohost-recovery-native.js';
 import { applyNanoHostSimulatorFinalStatus } from './nanohost-simulator-final.js';
 import { readOriginalNanoHostWorkerCoordinates } from './nanohost-worker-binding.js';
@@ -516,6 +518,7 @@ type WriteCommand = Extract<
       | 'server-work-owner'
       | 'nanohost-epoch-kernel'
       | 'nanohost-first-submission'
+      | 'nanohost-terminal-release'
       | 'repair-kernel'
       | 'server-work-kernel'
       | 'nanohost-transport'
@@ -1574,11 +1577,15 @@ function applyNanoHostEpochKernel(
   );
 }
 
-/** Proves first submission on the Core writer using the original acknowledged peer files. */
-function applyNanoHostFirstSubmission(
+/** Borrows the acknowledged Native and Workspace files for the original deciding Core writer. */
+function withNanoHostDecisionPeers<Value>(
   owner: OwnedDatabase,
-  request: Extract<WriteRequest, { operation: 'nanohost-first-submission' }>
-) {
+  request: Extract<
+    WriteRequest,
+    { operation: 'nanohost-first-submission' | 'nanohost-terminal-release' }
+  >,
+  apply: (core: CoreDb, nanoHost: Database.Database, workspace: WorkspaceDb) => Value
+): Value {
   const core = requireCurrentKernelOpening(owner, request.openingRequestId);
   const { workspaceId } = requireSchedulerExecutionAttempt(core, request.input.attemptId);
   return withCurrentPeerRead(
@@ -1589,10 +1596,7 @@ function applyNanoHostFirstSubmission(
         workspaceDbPath(core.dataRoot, workspaceId),
         request.peers.workspaceIdentity,
         (workspace) =>
-          admitNanoHostFirstSubmissionInDb(core, request.input, {
-            nanoHost: { sqlite: nanoHost },
-            workspace: bindWorkspaceSqlite(workspace, core.dataRoot, workspaceId),
-          })
+          apply(core, nanoHost, bindWorkspaceSqlite(workspace, core.dataRoot, workspaceId))
       )
   );
 }
@@ -2194,7 +2198,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       for (const lane of selected) lanes.add(lane);
       break;
     }
-    case 'nanohost-first-submission': {
+    case 'nanohost-first-submission':
+    case 'nanohost-terminal-release': {
       const core = requireCurrentKernelOpening(owner, request.openingRequestId);
       const { turnId, agentSessionId } = requireSchedulerExecutionAttempt(
         core,
@@ -4050,7 +4055,27 @@ function flush(owner: OwnedDatabase): void {
               id: request.id,
               status: 'ok',
               operation: 'nanohost-first-submission',
-              result: applyNanoHostFirstSubmission(owner, request),
+              result: withNanoHostDecisionPeers(owner, request, (core, nanoHost, workspace) =>
+                admitNanoHostFirstSubmissionInDb(core, request.input, {
+                  nanoHost: { sqlite: nanoHost },
+                  workspace,
+                })
+              ),
+            };
+          } else if (request.operation === 'nanohost-terminal-release') {
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'nanohost-terminal-release',
+              result: withNanoHostDecisionPeers(owner, request, (core, native, workspace) =>
+                releaseCoreNanoHostTerminalInDb(core, request.input, {
+                  native,
+                  workspace,
+                  verifyDrainAndRevocation: (lease) =>
+                    verifyNanoHostTerminalDrainAndRevocation(native, lease),
+                })
+              ),
             };
           } else if (request.operation === 'repair-kernel') {
             const core = requireCurrentKernelOpening(owner, request.openingRequestId);
@@ -5506,6 +5531,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'server-work-owner' ||
       value.operation === 'nanohost-epoch-kernel' ||
       value.operation === 'nanohost-first-submission' ||
+      value.operation === 'nanohost-terminal-release' ||
       value.operation === 'repair-kernel' ||
       value.operation === 'server-work-kernel' ||
       value.operation === 'nanohost-transport' ||

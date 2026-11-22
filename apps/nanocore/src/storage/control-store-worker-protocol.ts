@@ -95,6 +95,7 @@ import {
   type ControlExecutionJournalInput,
   ControlExecutionJournalInputSchema,
 } from '../runtime/execution-journal.js';
+import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
 import {
   type ControlGoalCommandResult,
   type ControlGoalInput,
@@ -226,6 +227,8 @@ import {
   ControlNanoHostFirstSubmissionInputSchema,
   type ControlNanoHostFirstSubmissionResult,
   ControlNanoHostFirstSubmissionResultSchema,
+  type ControlNanoHostTerminalReleaseInput,
+  ControlNanoHostTerminalReleaseInputSchema,
 } from './core-journal-codecs.js';
 import {
   type ControlEvaluationCandidate,
@@ -317,7 +320,7 @@ import type {
   ServerWorkIntent,
   ServerWorkReceipt,
 } from './server-work-port.js';
-import type { StorageResult } from './storage-owner.js';
+import type { StorageDecision, StorageResult } from './storage-owner.js';
 import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
@@ -1045,10 +1048,24 @@ const nanoHostRecoveryClose = z.strictObject({
   observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
 
-const nanoHostSubmissionPeers = z.strictObject({
+const nanoHostDecisionPeers = z.strictObject({
   nanoHostIdentity: z.string().regex(/^\d+:\d+$/),
   workspaceIdentity: z.string().regex(/^\d+:\d+$/),
 });
+
+const nanoHostTerminalReleaseResult = z.union([
+  z.strictObject({
+    state: z.literal('settled'),
+    receipt: z.strictObject({
+      execution: z.strictObject({
+        owner: z.strictObject({ kind: z.literal('server') }),
+        executionId: z.string().min(1).max(128),
+      }),
+      stepId: z.string().min(1).max(128),
+    }),
+  }),
+  z.strictObject({ state: z.enum(['conflict', 'unknown']) }),
+]);
 
 const nanoHostHarnessAckPeer = z.strictObject({
   openingRequestId: z.number().int().nonnegative().safe(),
@@ -1530,7 +1547,13 @@ export type ControlWorkerCommand =
           readonly operation: 'nanohost-first-submission';
           readonly openingRequestId: number;
           readonly input: ControlNanoHostFirstSubmissionInput;
-          readonly peers: z.infer<typeof nanoHostSubmissionPeers>;
+          readonly peers: z.infer<typeof nanoHostDecisionPeers>;
+        }
+      | {
+          readonly operation: 'nanohost-terminal-release';
+          readonly openingRequestId: number;
+          readonly input: ControlNanoHostTerminalReleaseInput;
+          readonly peers: z.infer<typeof nanoHostDecisionPeers>;
         }
       | {
           readonly operation: 'repair-kernel';
@@ -1998,6 +2021,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'nanohost-first-submission';
       readonly result: ControlNanoHostFirstSubmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'nanohost-terminal-release';
+      readonly result: StorageDecision<ExecutionStepRef>;
     }
   | {
       readonly status: 'ok';
@@ -2591,6 +2619,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
       ControlNanoHostFirstSubmissionResultSchema.safeParse(reply.result).success
+    );
+  if (reply.operation === 'nanohost-terminal-release')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result']) &&
+      nanoHostTerminalReleaseResult.safeParse(reply.result).success
     );
   if (reply.operation === 'repair-kernel')
     return RepairWorkerReplySchema.safeParse(reply.result).success;
@@ -3240,15 +3273,23 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       NanoHostEpochKernelInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
-  if (value.operation === 'nanohost-first-submission')
+  if (
+    value.operation === 'nanohost-first-submission' ||
+    value.operation === 'nanohost-terminal-release'
+  ) {
+    const schema =
+      value.operation === 'nanohost-first-submission'
+        ? ControlNanoHostFirstSubmissionInputSchema
+        : ControlNanoHostTerminalReleaseInputSchema;
     return (
       exactFields(value, [...scoped, 'openingRequestId', 'input', 'peers']) &&
       Number.isSafeInteger(value.openingRequestId) &&
       (value.openingRequestId as number) >= 0 &&
-      ControlNanoHostFirstSubmissionInputSchema.safeParse(value.input).success &&
-      nanoHostSubmissionPeers.safeParse(value.peers).success &&
+      schema.safeParse(value.input).success &&
+      nanoHostDecisionPeers.safeParse(value.peers).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  }
   if (value.operation === 'repair-kernel')
     return (
       exactFields(value, [...scoped, 'openingRequestId', 'input']) &&
