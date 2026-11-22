@@ -90,6 +90,7 @@ import {
 import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
+import { recordCoreIdleHarnessConsumptionInDb } from '../runtime/core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
   applyControlExecutionJournal,
@@ -107,7 +108,10 @@ import {
 } from '../runtime/goal-owner.js';
 import { StoredGoalCompletionCandidateV1Schema } from '../runtime/goal-retained-v1.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import { acknowledgeNanoHostHarnessResult } from '../runtime/nanohost-harness-records.js';
+import {
+  acknowledgeNanoHostHarnessResult,
+  inspectNanoHostIdleCloseConsumption,
+} from '../runtime/nanohost-harness-records.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type {
   ControlPendingCommandInput,
@@ -287,7 +291,11 @@ import {
   applyServerWorkOwnerMutation,
   prepareServerWorkOwnerMutation,
 } from './control-store-worker-server-work.js';
-import { ControlCoreNanoHostFinalInputSchema, CoreJournalRefusal } from './core-journal-codecs.js';
+import {
+  ControlCoreIdleHarnessConsumptionInputSchema,
+  ControlCoreNanoHostFinalInputSchema,
+  CoreJournalRefusal,
+} from './core-journal-codecs.js';
 import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
@@ -3400,13 +3408,35 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'harness-lifecycle') {
             const { input, nanoHostAckPeer } = request;
-            if (input.kind !== 'result.acknowledge' || !nanoHostAckPeer)
+            if (
+              !nanoHostAckPeer ||
+              (input.kind !== 'result.acknowledge' && input.kind !== 'operation.settle')
+            )
               throw new ServerOwnerAdmissionError('recovery-required');
             const core = requireCurrentKernelOpening(owner, nanoHostAckPeer.openingRequestId);
-            withCurrentPeerRead(
+            const idleAcknowledgedAt = withCurrentPeerRead(
               serverStoragePath(core.dataRoot, 'nanohost'),
               nanoHostAckPeer.ownerIdentity,
-              (sqlite) => acknowledgeNanoHostHarnessResult(core, input, { sqlite })
+              (sqlite) => {
+                if (input.kind === 'result.acknowledge') {
+                  acknowledgeNanoHostHarnessResult(core, input, { sqlite });
+                  return undefined;
+                }
+                return sqlite
+                  .transaction(() => {
+                    const original = inspectNanoHostIdleCloseConsumption(core, input, { sqlite });
+                    if (!original) throw new ServerOwnerAdmissionError('recovery-required');
+                    const evidence = ControlCoreIdleHarnessConsumptionInputSchema.parse({
+                      key: original.key,
+                      consumer: JSON.parse(original.consumer),
+                      observedAt: input.timestamp,
+                    });
+                    const { observedAt: _observedAt, ...witness } = evidence;
+                    return recordCoreIdleHarnessConsumptionInDb(core, evidence, () => witness)
+                      .receipt.acknowledgedAt;
+                  })
+                  .deferred();
+              }
             );
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -3414,6 +3444,7 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'harness-lifecycle',
               result: null,
+              ...(idleAcknowledgedAt ? { idleAcknowledgedAt } : {}),
             };
           } else if (request.operation === 'worker-control-heartbeat') {
             const { content, nanoHostCoreIdentity } = request;

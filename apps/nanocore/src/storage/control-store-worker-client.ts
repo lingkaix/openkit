@@ -695,6 +695,10 @@ interface NanoHostOwnerReaders {
   readonly inspectNanoHostRuntimeTargetTransition: typeof inspectNanoHostRuntimeTargetTransition;
   readonly getWorkerBackendSession: typeof getWorkerBackendSession;
   readonly hasQueuedNanoHostHarnessOperation?: typeof hasQueuedNanoHostHarnessOperation;
+  readonly inspectIdleHarnessClose?: (
+    owner: { readonly sqlite: Database.Database },
+    input: Parameters<AdmittedNanoHostHarnessTurnLifecycle['settle']>[0]
+  ) => boolean;
   readonly readPendingNanoHostEpochRetirement: typeof readPendingNanoHostEpochRetirement;
 }
 
@@ -3919,7 +3923,30 @@ class ControlStoreWorkerClient {
           return result;
         },
         settle: async (input) => {
-          const result = await writeHarnessTurn({ ...input, kind: 'operation.settle' });
+          const original = { ...structuredClone(input), kind: 'operation.settle' } as const;
+          const inspectIdleClose = readers.inspectIdleHarnessClose;
+          const idleAcknowledgedAt =
+            inspectIdleClose && readCurrent((sqlite) => inspectIdleClose({ sqlite }, original))
+              ? await withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+                  const reply = await this.request({
+                    operation: 'harness-lifecycle',
+                    database: core.command.database,
+                    input: original,
+                    nanoHostAckPeer: { openingRequestId, ownerIdentity },
+                  });
+                  if (
+                    reply.operation !== 'harness-lifecycle' ||
+                    reply.result !== null ||
+                    !reply.idleAcknowledgedAt
+                  )
+                    throw new ControlStoreWorkerError('integrity', 'unknown');
+                  return reply.idleAcknowledgedAt;
+                })
+              : undefined;
+          const result = await writeHarnessTurn({
+            ...original,
+            timestamp: idleAcknowledgedAt ?? original.timestamp,
+          });
           if (result !== 'settled' && result !== 'replayed')
             throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;

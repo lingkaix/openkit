@@ -209,7 +209,10 @@ import type {
   IdempotentCommandReceipt,
   InflightIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import { hasQueuedNanoHostHarnessOperation } from './runtime/nanohost-harness-records.js';
+import {
+  hasQueuedNanoHostHarnessOperation,
+  inspectNanoHostIdleCloseConsumption,
+} from './runtime/nanohost-harness-records.js';
 import {
   createNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
@@ -795,6 +798,8 @@ export async function prepareNanoHostOwner(
       },
       getWorkerBackendSession,
       hasQueuedNanoHostHarnessOperation,
+      inspectIdleHarnessClose: (native, input) =>
+        inspectNanoHostIdleCloseConsumption(coreDb, input, native) !== null,
       inspectNanoHostRuntimeTargetTransition,
       listNanoHostTransportTokenRecords,
       prepareNanoHostRuntimeTargetTransition,
