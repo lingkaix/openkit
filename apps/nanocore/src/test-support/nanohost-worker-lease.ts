@@ -15,9 +15,13 @@ import {
   nanoHostStartupDeadline,
 } from '../runtime/nanohost-attempt-clocks.js';
 import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
-import type { WorkerControlRegistration } from '../runtime/worker-control-gateway.js';
+import type {
+  WorkerControlLineage,
+  WorkerControlRegistration,
+} from '../runtime/worker-control-gateway.js';
 import { writeWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
 import type { CoreSchedulerQueueEntry } from '../scheduler-records.js';
+import type { NanoHostOwnerBinding } from '../storage/control-store-worker-client.js';
 import { type CoreDb, serverStoragePath } from '../storage/db.js';
 import {
   NanoHostWorkerRecoveryState,
@@ -128,9 +132,14 @@ export function submitTestNanoHostWorkerLease(
     | 'workerInferenceTokenHash'
     | 'workerCapabilityTokenHash'
   >,
-  fixture: { readonly attemptId?: string; readonly nativePath?: string } = {}
+  fixture: {
+    readonly attemptId?: string;
+    readonly nativePath?: string;
+    readonly observedAt?: string;
+    readonly exclusionRefs?: readonly string[];
+  } = {}
 ) {
-  const createdAt = new Date().toISOString();
+  const createdAt = fixture.observedAt ?? new Date().toISOString();
   const now = () => createdAt;
   const { workspaceId, threadId, turnId } = admission;
   const { agentSessionId, packageSnapshotId: inputRef } = registration;
@@ -151,6 +160,7 @@ export function submitTestNanoHostWorkerLease(
     targetId,
     generation: '1',
     observedAt: createdAt,
+    ...(fixture.exclusionRefs === undefined ? {} : { exclusionRefs: fixture.exclusionRefs }),
   });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 
@@ -308,7 +318,14 @@ export function seedTestNanoHostCompletedWorkspaceHandoff(coreDb: CoreDb, attemp
 export function seedTestNanoHostWorkerLaunch(
   coreDb: CoreDb,
   attemptId: string,
-  registration: WorkerControlRegistration,
+  registration: Pick<
+    WorkerControlRegistration,
+    | 'agentSessionId'
+    | 'packageSnapshotId'
+    | 'workerControlTokenHash'
+    | 'workerInferenceTokenHash'
+    | 'workerCapabilityTokenHash'
+  >,
   observedAt: string
 ): void {
   const original = readRetainedNanoHostSubmission(coreDb, attemptId);
@@ -363,6 +380,16 @@ export function seedTestNanoHostWorkerLaunch(
       );
     if (written.changes !== 1)
       throw new Error('Modeled Worker launch requires its exact Native anchor.');
+  });
+}
+
+/** Simulates loss of the exact physical anchor while retaining the original Core grant. */
+export function removeTestNativeWorkerAnchor(coreDb: CoreDb, attemptId: string): void {
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const removed = sqlite
+      .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
+      .run(attemptId);
+    if (removed.changes !== 1) throw new Error('The fixture lost a different Native anchor.');
   });
 }
 
@@ -458,4 +485,34 @@ export function seedTestWorkerControlReceipt(
   mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
     writeWorkerControlAcceptedRecord({ sqlite }, input)
   );
+}
+
+/** Posts the deterministic observation without changing its original timing or sequence. */
+export function postTestNativeWorkerHeartbeat(
+  owner: Pick<NanoHostOwnerBinding, 'workerControlHeartbeat'>,
+  input: {
+    readonly lineage: WorkerControlLineage;
+    readonly sandboxBindingRef: string;
+    readonly tokenHash: string;
+    readonly sequence: number;
+    readonly observedAt: string;
+    readonly processKeyHash?: string;
+  }
+) {
+  const { lineage, sandboxBindingRef, tokenHash, sequence, observedAt, processKeyHash } = input;
+  return owner.workerControlHeartbeat({
+    sandboxBindingRef,
+    lineage,
+    tokenHash,
+    payload: {
+      acceptedAt: observedAt,
+      request: {
+        schemaVersion: 2,
+        operation: 'heartbeat',
+        sequence,
+        lineage,
+        body: processKeyHash ? { status: 'starting', processKeyHash } : { status: 'running' },
+      },
+    },
+  });
 }
