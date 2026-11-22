@@ -299,7 +299,7 @@ async function runPublicWorkerMcpLifecycle() {
           assert.equal(target.connectionGeneration, previousTarget.connectionGeneration + 1);
           assert.equal(target.ready, false);
           assert.equal(target.physicalEpoch, null);
-          assert.equal(target.predecessorFenced, true);
+          assert.equal(target.freshEmpty, false);
         }
       },
     });
