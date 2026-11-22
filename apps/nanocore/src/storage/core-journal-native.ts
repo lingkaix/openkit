@@ -55,6 +55,7 @@ import {
   readExecutionJournalRoot,
   readKernelSchedulerGrantInDb,
   releaseKernelExecutionScopesInDb,
+  schedulerPreparationClockAllowsOperation,
   settleExecutionJournalStep,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
   writeExecutionJournalIntent,
@@ -84,7 +85,10 @@ import {
   hasPendingWorkerCancellationFinal,
 } from '../runtime/worker-control-records.js';
 import { matchesAcceptedWorkerControlSequence } from '../runtime/worker-control-sequences.js';
-import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import {
+  type CoreSchedulerQueueEntry,
+  requireSchedulerExecutionAttemptAdmissionContext,
+} from '../scheduler-records.js';
 import type {
   ExecutionGrant,
   ExecutionHandoff,
@@ -102,6 +106,7 @@ import {
   type ControlNanoHostFirstSubmissionInput,
   type ControlNanoHostFirstSubmissionResult,
   ControlNanoHostFirstSubmissionResultSchema,
+  type ControlNanoHostMaterializationPreparationInput,
   type ControlNanoHostOrphanRetirementInput,
   type ControlNanoHostTerminalReleaseInput,
   CoreJournalRefusal,
@@ -339,6 +344,88 @@ export function applyControlCoreImageResult(
     exclusionRefs: closes ? [] : root.exclusionRefs,
   });
   return digest;
+}
+
+/** Qualifies one Native anchor against the original Core preparation under pinned owner reads. */
+export function requireCoreNanoHostMaterializationPreparation(
+  db: CoreDb,
+  input: ControlNanoHostMaterializationPreparationInput,
+  readers: {
+    readonly nanoHost: Pick<NanoHostCoreReads, 'readTarget'>;
+    readonly readSelectedInput: (admission: CoreSchedulerQueueEntry) => boolean;
+  }
+) {
+  if (!db.sqlite.inTransaction)
+    throw new ExecutionAttemptRefusal('Native materialization requires its Core snapshot.');
+  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    attempt.phase !== 'open' ||
+    attempt.deadline !== null ||
+    attempt.terminalCause !== null ||
+    attempt.outcomeRef !== null ||
+    attempt.fenceRef !== null ||
+    admission.status !== 'admitted' ||
+    attempt.queueEntryId !== input.queueEntryId ||
+    admission.inputHash !== input.admissionHash ||
+    !isDeepStrictEqual(admission.inputRef, input.selectedInput) ||
+    attempt.workspaceId !== input.workspaceId ||
+    attempt.threadId !== input.threadId ||
+    attempt.turnId !== input.turnId ||
+    attempt.agentSessionId !== input.agentSessionId ||
+    attempt.inputRef !== input.inputRef ||
+    attempt.bindingRef !== input.bindingRef
+  )
+    throw new ExecutionAttemptRefusal('Native materialization has no exact original Core claim.');
+
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  const observed = Date.parse(input.observedAt ?? new Date().toISOString());
+  if (!(observed >= Date.parse(attempt.updatedAt) && observed < Date.parse(startupDeadline)))
+    throw new ExecutionAttemptRefusal('Native materialization has no original startup allowance.');
+  const operationId = attempt.operationId;
+  const grant = db.sqlite
+    .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+    .get(attempt.attemptId);
+  if (
+    grant ||
+    attempt.disposition !== (operationId === null ? 'not_accepted' : 'accepted') ||
+    !schedulerPreparationClockAllowsOperation(
+      db,
+      attempt.attemptId,
+      {
+        operationId,
+        turnId: attempt.turnId,
+        admissionHash: admission.inputHash,
+        actor: admission.triggerActor,
+        started: BigInt(Date.parse(attempt.createdAt)) * 1_000_000n,
+        startupDeadline: BigInt(Date.parse(startupDeadline)) * 1_000_000n,
+      },
+      BigInt(observed) * 1_000_000n
+    )
+  )
+    throw new ExecutionAttemptRefusal(
+      'Native materialization has no acknowledged preparation operation.'
+    );
+
+  if (!readers.readSelectedInput(admission))
+    throw new ExecutionAttemptRefusal(
+      'Native materialization has no exact selected Workspace input.'
+    );
+  const result = readers.nanoHost.readTarget(input.target.targetId);
+  const target = result.state === 'ready' ? result.value : null;
+  if (
+    !target?.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.targetId !== input.target.targetId ||
+    target.identityId !== input.target.identityId ||
+    target.deploymentId !== input.target.deploymentId ||
+    target.connectionGeneration !== input.target.connectionGeneration ||
+    target.physicalEpoch !== input.target.physicalEpoch
+  )
+    throw new ExecutionAttemptRefusal('Native materialization has no exact Native placement.');
+  return { attempt, preparationOperation: operationId, startupDeadline, target: input.target };
 }
 
 /** Decides the ordinary NanoHost submit under the pinned Core, Native and Workspace owners. */

@@ -4,6 +4,7 @@ import {
   ExecutionAttemptIdSchema,
   PolicyDocumentV1Schema,
   ThreadIdSchema,
+  TurnIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
@@ -12,6 +13,7 @@ import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements
 import {
   KernelExecutionGrantSchema,
   KernelExecutionProofIntentSchema,
+  SelectedKernelInputSchema,
 } from './control-kernel-proof-codecs.js';
 import { SchedulerExecutionAttemptSchema } from './execution-attempt-codecs.js';
 import {
@@ -123,6 +125,26 @@ export const ControlCoreNanoHostAcceptedFinalResultSchema = z.union([
 
 export type ControlCoreNanoHostAcceptedFinalResult = z.infer<
   typeof ControlCoreNanoHostAcceptedFinalResultSchema
+>;
+
+/** Exact original claim and the Native placement of the proposed materialization. */
+export const ControlNanoHostMaterializationPreparationInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  queueEntryId: text,
+  admissionHash: finalFingerprint,
+  selectedInput: SelectedKernelInputSchema.shape.input,
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  agentSessionId: AgentSessionIdSchema,
+  inputRef: text,
+  bindingRef: text,
+  target: imageTarget.extend({ physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/) }),
+  observedAt: z.iso.datetime().optional(),
+});
+
+export type ControlNanoHostMaterializationPreparationInput = z.infer<
+  typeof ControlNanoHostMaterializationPreparationInputSchema
 >;
 
 /** First submission names the attempt and the exact admitted Native placement. */

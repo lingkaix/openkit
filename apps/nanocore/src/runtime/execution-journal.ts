@@ -1959,8 +1959,8 @@ function executionClockAllowsOperation(
   return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
 }
 
-interface AcknowledgedSchedulerPreparation {
-  readonly operationId: string;
+interface SchedulerPreparationClock {
+  readonly operationId: string | null;
   readonly actor: ExecutionStepControl['actor'];
   readonly turnId: string;
   readonly admissionHash: string;
@@ -1968,10 +1968,11 @@ interface AcknowledgedSchedulerPreparation {
   readonly startupDeadline: bigint;
 }
 
-function acknowledgedSchedulerPreparationAllowsSubmission(
+/** Uses the original claim and, once issued, the exact acknowledged lifecycle operation. */
+export function schedulerPreparationClockAllowsOperation(
   db: CoreDb,
   attemptId: string,
-  preparation: AcknowledgedSchedulerPreparation,
+  preparation: SchedulerPreparationClock,
   now: bigint
 ): boolean {
   const execution: ExecutionJournalRef = {
@@ -2002,6 +2003,14 @@ function acknowledgedSchedulerPreparationAllowsSubmission(
   const observationRef = latest.get(execution.executionId, 'observe') as
     | { stepId: string }
     | undefined;
+  const hasOriginalClock = ({ row, control, invocation }: typeof claim) =>
+    row.state === 'completed' &&
+    control.attemptId === attemptId &&
+    control.fingerprint === preparation.admissionHash &&
+    isDeepStrictEqual(control.actor, preparation.actor) &&
+    executionClockAllowsOperation(invocation.clock, now, preparation.startupDeadline);
+  if (preparation.operationId === null)
+    return !intentRef && !observationRef && hasOriginalClock(claim);
   if (!intentRef || !observationRef) return false;
   const intent = storedStep(db, { execution, stepId: intentRef.stepId });
   const observation = storedStep(db, { execution, stepId: observationRef.stepId });
@@ -2017,14 +2026,7 @@ function acknowledgedSchedulerPreparationAllowsSubmission(
   )
     return false;
 
-  return [claim, intent, observation].every(
-    ({ row, control, invocation }) =>
-      row.state === 'completed' &&
-      control.attemptId === attemptId &&
-      control.fingerprint === preparation.admissionHash &&
-      isDeepStrictEqual(control.actor, preparation.actor) &&
-      executionClockAllowsOperation(invocation.clock, now, preparation.startupDeadline)
-  );
+  return [claim, intent, observation].every(hasOriginalClock);
 }
 
 /** Check the retained anchor for another effect without renewing its original deadline. */
@@ -2034,7 +2036,7 @@ export function kernelSchedulerGrantClockAllowsOperation(
   submitted: boolean,
   now: bigint,
   deadline: bigint,
-  preparation?: AcknowledgedSchedulerPreparation
+  preparation?: SchedulerPreparationClock & { readonly operationId: string }
 ): boolean {
   const first = db.sqlite
     .prepare(`
@@ -2048,7 +2050,7 @@ export function kernelSchedulerGrantClockAllowsOperation(
     return (
       !submitted &&
       preparation !== undefined &&
-      acknowledgedSchedulerPreparationAllowsSubmission(db, execution.executionId, preparation, now)
+      schedulerPreparationClockAllowsOperation(db, execution.executionId, preparation, now)
     );
   const original = readRetainedKernelSchedulerGrant(db, execution, first.operationId);
   if (!original) return false;
