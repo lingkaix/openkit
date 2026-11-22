@@ -146,11 +146,14 @@ const projectionRow = z.looseObject({
   claim: z.string(),
 });
 
+const projectionAdmissionKey = projectionRow.pick({ queueEntryId: true });
+
 function decodeAttempt(coreDb: CoreDb, row: unknown): SchedulerExecutionAttemptRecord {
   return readRetainedV1(row, (value) => {
+    const { queueEntryId } = projectionAdmissionKey.parse(value);
+    const admission = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
     const fields = projectionRow.parse(value);
     const claim = SchedulerPreparationClaimSchema.parse(JSON.parse(fields.claim));
-    const admission = requireSchedulerAdmissionEntry(coreDb, fields.queueEntryId);
     if (
       claim.queueEntryId !== admission.queueEntryId ||
       claim.admissionHash !== admission.inputHash ||
