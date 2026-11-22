@@ -4314,7 +4314,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       primaryError = asWorkerArtifactTurnError(error);
     }
 
-    let failedAttempt: ReturnType<typeof requireSchedulerExecutionAttempt>;
+    let failedAttempt: ReturnType<typeof requireSchedulerExecutionAttempt> | undefined;
     try {
       context.onSubmissionSettled?.();
       if (
@@ -4327,21 +4327,29 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw primaryError;
       }
       if (primaryFailed) errors.unshift(primaryError);
-      failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
-      if (primaryFailed && failedAttempt.operationId === null)
-        failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
-          attemptId: failedAttempt.attemptId,
-          noOutstandingEffects: true,
-          cause: 'turn-start-failed',
-          ...(this.now ? { now: this.now } : {}),
-        });
-      else if (primaryFailed)
-        failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
-          attemptId: failedAttempt.attemptId,
-          cause: 'execution-failed',
-          ...(this.now ? { now: this.now } : {}),
-        });
-      if (backendCleanupRequired) {
+      try {
+        const attempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
+        if (!primaryFailed) failedAttempt = attempt;
+        else if (attempt.operationId === null)
+          failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
+            attemptId: attempt.attemptId,
+            noOutstandingEffects: true,
+            cause: 'turn-start-failed',
+            ...(this.now ? { now: this.now } : {}),
+          });
+        else
+          failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
+            attemptId: attempt.attemptId,
+            cause: 'execution-failed',
+            ...(this.now ? { now: this.now } : {}),
+          });
+      } catch (classificationError) {
+        if (!primaryFailed) throw classificationError;
+        // Failed classification gives cleanup no new authority. Keep the original start error
+        // first, even when reading or transitioning the retained attempt fails independently.
+        errors.push(classificationError);
+      }
+      if (backendCleanupRequired && failedAttempt) {
         if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
           errors.push(new Error('Backend cleanup is missing its durable runtime lineage.'));
         } else {
@@ -4442,7 +4450,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               error,
               primaryError,
               !submissionInvoked &&
-                failedAttempt.phase === 'closed' &&
+                failedAttempt?.phase === 'closed' &&
                 failedAttempt.operationId === null &&
                 errors.length === 1 &&
                 !backendCleanupRequired &&
@@ -4456,7 +4464,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           }
         } catch (failureError) {
           throw new AggregateError(
-            [error, failureError],
+            [...errors, failureError],
             'Worker execution failed and the failed turn could not be persisted.'
           );
         }
@@ -4466,6 +4474,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         primaryFailed &&
         // Definite pre-submission closure already settled the Core attempt without a fence.
         // It supplies no native release result; keep that journal obligation for inspection.
+        failedAttempt &&
         failedAttempt.phase !== 'closed' &&
         errors.length === 1 &&
         (!submissionInvoked || failedAttempt.disposition === 'not_accepted') &&

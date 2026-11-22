@@ -462,16 +462,77 @@ async function recordExecutorAttempt(
 
 /** Supplies the precise owner handoff for tests whose external Worker is a model. */
 async function createAdmittedModeledWorkerExecutor(
-  options: WorkerGovernanceTurnExecutorOptions & { coreDb: CoreDb }
+  options: WorkerGovernanceTurnExecutorOptions & { coreDb: CoreDb },
+  completeModeledTurn = false
 ) {
   const { coreDb } = options;
   const {
     value: { owner },
   } = await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest);
+  const finals = new Map<string, string>();
+  if (completeModeledTurn) {
+    const collect = options.backend.collectTranscript.bind(options.backend);
+    vi.spyOn(options.backend, 'collectTranscript').mockImplementation(async (...args) => {
+      const transcript = await collect(...args);
+      const final = finals.get(args[0]);
+      if (!final) return transcript;
+      return {
+        ...transcript,
+        eventsJsonl: [transcript.eventsJsonl?.trimEnd(), final, '']
+          .filter((line) => line !== undefined)
+          .join('\n'),
+      };
+    });
+  }
   return new WorkerGovernanceTurnExecutor({
     ...options,
     readNanoHostEnvironment: owner.read,
     commitNanoHostCloseout: owner.classifyRecovery,
+    ...(completeModeledTurn
+      ? {
+          async awaitWorkerCompletion(pkg: AgentEnvironmentPackage, attemptId: string) {
+            const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+            if (!original) throw new Error('Modeled completion has no original Core grant.');
+            const { workspaceId, threadId, turnId, agentSessionId, requestId } = pkg.scope;
+            const lineage = {
+              workspaceId,
+              threadId,
+              turnId,
+              agentSessionId,
+              requestId,
+              packageSnapshotId: pkg.snapshotId,
+            };
+            const acceptedAt = options.now?.() ?? new Date().toISOString();
+            const terminalData = { status: 'completed', stopReason: 'completed' } as const;
+            await owner.workerControlFinalStatus({
+              lineage,
+              sandboxBindingRef: original.lease.grant.bindingRef!,
+              tokenHash: 'a'.repeat(64),
+              payload: {
+                terminalData,
+                acceptedAt,
+                eventAcceptedAt: acceptedAt,
+                sequence: 1,
+              },
+            });
+            const accepted = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+            );
+            if (!accepted) throw new Error('Modeled completion has no acknowledged Native final.');
+            finals.set(
+              pkg.snapshotId,
+              JSON.stringify(
+                buildWorkerCanonicalTerminalEventRecord({
+                  lineage,
+                  sequence: 1,
+                  data: terminalData,
+                })
+              )
+            );
+            return accepted;
+          },
+        }
+      : {}),
     async admitNanoHostSubmission({ attemptId, observedAt = new Date().toISOString() }) {
       const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
       if (readRetainedNanoHostSubmission(coreDb, attemptId))
@@ -4199,16 +4260,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ).join('\n')
           : `${JSON.stringify(transcriptRecord)}\n`;
       };
-      const executor = await createAdmittedModeledWorkerExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', `as_governance_live_events_${mode}`),
-        environmentBackend: {
-          kind: 'openshell',
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', `as_governance_live_events_${mode}`),
+          environmentBackend: {
+            kind: 'openshell',
+          },
+          now: () => '2026-07-15T00:00:01.000Z',
         },
-        now: () => '2026-07-15T00:00:01.000Z',
-      });
+        mode === 'exact'
+      );
       const requestId = {
         conflict: '00000000-0000-4000-8000-000000000233',
         exact: '00000000-0000-4000-8000-000000000231',
@@ -8358,16 +8422,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
           },
         ];
       });
-    const executor = await createAdmittedModeledWorkerExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_actor_scope_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', 'as_actor_scope_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => fixture.timestamp,
       },
-      now: () => fixture.timestamp,
-    });
+      true
+    );
     let startError: unknown = null;
 
     try {
@@ -9698,17 +9765,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }
         return await terminal(database, input);
       });
-    const executor = await createAdmittedModeledWorkerExecutor({
-      // Keep the existing deterministic fixture clock across the native owner boundary.
-      now: () => new Date().toISOString(),
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      coreDb,
-      backend: new FakeWorkerGovernanceBackend(),
-      createAgentSessionId: () => testEntityId('as', 'as_completed_turn_persistence_fail_1'),
-      environmentBackend: {
-        kind: 'openshell',
+    const executor = await createAdmittedModeledWorkerExecutor(
+      {
+        // Keep the existing deterministic fixture clock across the native owner boundary.
+        now: () => new Date().toISOString(),
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        coreDb,
+        backend: new FakeWorkerGovernanceBackend(),
+        createAgentSessionId: () => testEntityId('as', 'as_completed_turn_persistence_fail_1'),
+        environmentBackend: {
+          kind: 'openshell',
+        },
       },
-    });
+      true
+    );
 
     try {
       await expect(
@@ -14424,17 +14494,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
         timestamp = '2026-07-05T00:00:10.000Z';
         return nativeLaunch(...args);
       });
-      const executor = await createAdmittedModeledWorkerExecutor({
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_env_1'),
-        environmentBackend: {
-          kind: 'openshell',
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_env_1'),
+          environmentBackend: {
+            kind: 'openshell',
+          },
+          now: () => timestamp,
+          vaultBackend: () => vaultUnlockState.backend(),
         },
-        now: () => timestamp,
-        vaultBackend: () => vaultUnlockState.backend(),
-      });
+        true
+      );
 
       try {
         const run = startWithExecutorAttempt(
@@ -15521,17 +15594,20 @@ describe('credential carrier neutral placement acceptance', () => {
             | undefined,
         };
       });
-      const executor = await createAdmittedModeledWorkerExecutor({
-        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb: fixture.coreDb,
-        policyInterception: () => interception,
-        readRuntimeConfig: () => readConfiguration(),
-        createAgentSessionId: () => fixture.agentSessionId,
-        environmentBackend: { kind: 'openshell' },
-        now: () => timestamp,
-        vaultBackend: () => vault.backend(),
-      });
+      const executor = await createAdmittedModeledWorkerExecutor(
+        {
+          fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+          backend,
+          coreDb: fixture.coreDb,
+          policyInterception: () => interception,
+          readRuntimeConfig: () => readConfiguration(),
+          createAgentSessionId: () => fixture.agentSessionId,
+          environmentBackend: { kind: 'openshell' },
+          now: () => timestamp,
+          vaultBackend: () => vault.backend(),
+        },
+        fault === 'exact'
+      );
       const agentSetup = createTestAgentSetup({
         credentialDeclarations: [
           { id: 'static_file', vaultGrantId: grantId, visibility: 'runtime-file', targetPath },
@@ -17128,8 +17204,8 @@ describe('retained-record failure publication', () => {
           expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('completed');
         } else {
           const caught = await start.catch((error: unknown) => error);
-          expect(caught).toBeInstanceOf(cleanupFails ? AggregateError : Error);
-          const primary = caught instanceof AggregateError ? caught.errors[0] : caught;
+          expect(caught).toBeInstanceOf(AggregateError);
+          const primary = (caught as AggregateError).errors[0];
           if (variant === 'syntax') expect((primary as Error).message).toContain(marker);
           else
             expect(primary).toMatchObject({
@@ -17150,7 +17226,8 @@ describe('retained-record failure publication', () => {
               ]),
             });
           expect(backend.calls).toContain('materialize');
-          expect(backend.calls).toContain('cleanupSession');
+          // Corrupt admitted Core facts no longer authorize physical cleanup.
+          expect(backend.calls).not.toContain('cleanupSession');
           expect(backend.calls).not.toContain('submit');
           const turn = fixture.store.getTurnById(fixture.turn.id);
           const retainedDb = openTestWorkspaceDb(fixture.coreDb);
@@ -17164,25 +17241,15 @@ describe('retained-record failure publication', () => {
           } finally {
             retainedDb.sqlite.close();
           }
-          expect(turn).toMatchObject({
-            status: 'failed',
-            error: {
-              code: 'worker_governance_turn_failed',
-              message: 'The record could not be processed.',
-            },
-          });
-          expect(JSON.parse(disk)).toMatchObject({ error: turn.error });
+          // Without a readable original attempt the terminal writer cannot choose a new winner.
+          expect(turn.error).toBeNull();
+          expect(JSON.parse(disk)).toMatchObject({ error: null });
           const session = fixture.store.getAgentSession(fixture.agentSessionId);
-          expect(session).toMatchObject({
-            status: 'failed',
-            message: 'The record could not be processed.',
-          });
-          const terminal = fixture.store
-            .getTurnEvents(fixture.turn.id)
-            .find((event) => event.event === 'turn.completed');
-          expect(terminal).toMatchObject({
-            data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
-          });
+          expect(session.message).toBeNull();
+          const turnEvents = fixture.store.getTurnEvents(fixture.turn.id);
+          expect(turnEvents).not.toContainEqual(
+            expect.objectContaining({ event: 'turn.completed' })
+          );
           const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
           const response = await app.request('/api/app/operations/turn.read', {
             method: 'POST',
@@ -17199,7 +17266,7 @@ describe('retained-record failure publication', () => {
           for (const published of [
             disk,
             JSON.stringify(session),
-            JSON.stringify(terminal),
+            JSON.stringify(turnEvents),
             JSON.stringify(body),
           ])
             expect(published).not.toContain(marker);
