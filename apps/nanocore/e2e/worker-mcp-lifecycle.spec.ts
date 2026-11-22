@@ -947,7 +947,7 @@ async function submitWorkerArtifact(
     );
     const exported = await waitForEffect(h2, 'file.export', () => failure);
     assert.equal(exported.command.slot, 'turn-output');
-    assert.equal(exported.command.relativePath, 'golden-l3.txt');
+    assert.equal(exported.command.relativePath, `${agentSessionId}/outputs/golden-l3.txt`);
     await settleFileExport(h2, exported.command, Buffer.from('L3 native artifact bytes'));
     const submitted = await result;
     assert.notEqual(submitted.isError, true);
