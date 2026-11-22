@@ -60,6 +60,10 @@ import {
 } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
+  inspectAcceptedNanoHostFinalInDb,
+  type NanoHostAcceptedFinalCommitment,
+} from '../storage/core-journal-native.js';
+import {
   bindWorkspaceSqlite,
   type CoreDb,
   openAdmittedWorkspaceReadDb,
@@ -493,8 +497,11 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly isTurnExecutionActive: (turnId: string) => boolean;
   /** Prepares original results and reports exact Core idle ownership without physical contact. */
   readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => boolean;
-  /** Restores and closes one worker whose final status is already durable. */
-  readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
+  /** Restores and closes one worker whose final status and K8b commitment recovery verified. */
+  readonly reconcileAcceptedFinalStatus: (
+    session: WorkerBackendSessionRecord,
+    commitment: NanoHostAcceptedFinalCommitment
+  ) => Promise<{
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
     readonly turn: ReturnType<FsStore['getTurnById']>;
   }>;
@@ -750,51 +757,58 @@ function createNanoHostWorkerLifecycleRuntime(
       backend.failHarnessDelivery(command, failure),
     readNanoHostResidentTurnLimit: () => backend.readResidentTurnLimit(),
     runtimeTargetKind: 'nanohost',
-    reconcileAcceptedFinalStatus: async (session) => {
+    reconcileAcceptedFinalStatus: async (session, commitment) => {
       if (turnExecutor instanceof SimulatedTurnExecutor) {
         return turnExecutor.reconcileAcceptedFinalStatus(
           sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
           session
         );
       }
-      const environmentPackage = await restoreDurableSession(session);
-      const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
-      let captureDisposed = false;
-      let collected = false;
-      const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
-      try {
-        if (await hasPendingWorkspaceCapture(coreDb, db, session, environmentPackage, store)) {
-          const turn = store.getTurnById(session.turnId);
-          if (
-            turn.status === 'completed' ||
-            turn.status === 'failed' ||
-            turn.status === 'cancelled' ||
-            turn.status === 'interrupted'
-          )
-            return { status: turn.status, turn };
-          throw new WorkspaceCaptureRecoveryRequired(
-            'Original Workspace capture requires durable recovery disposition.'
-          );
-        }
-        captureDisposed = listWorkspaceReconciliationRecords(db, session.workspaceId).some(
-          (record) =>
-            record.id.startsWith('wrr_capture_') &&
-            record.stateAfter === 'unrecoverable' &&
-            record.backendHandleSummary.attemptId === session.attemptId
+      // K8b: one per-Turn claim covers package restore, capture, collection and closeout.
+      return turnExecutor.runRestartCloseout(session.turnId, async (close) => {
+        const environmentPackage = await restoreDurableSession(session);
+        // K8b guarded read before publication-capable capture recovery and before its early return.
+        const readback = requireNanoHostObservation(
+          coreDb,
+          (sqlite) => inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, session.attemptId),
+          readNanoHostEnvironment
         );
-        collected = await hasCompletedWorkerTurnCollection(db, session);
-      } finally {
-        db.sqlite.close();
-      }
-      // Cleaned closeout uses durable cleanup and release without restoring an obsolete live binding.
-      if (session.state !== 'cleaned' && !captureDisposed && !collected)
-        backend.restoreSession(environmentPackage, session.attemptId);
-      const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
-        store,
-        environmentPackage,
-        session
-      );
-      return { status: recoveredStatus, turn: store.getTurnById(session.turnId) };
+        if (!isDeepStrictEqual(readback, commitment))
+          throw new Error('Restart closeout final proof changed after recovery inspection.');
+        const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
+        let captureDisposed = false;
+        let collected = false;
+        const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
+        try {
+          if (await hasPendingWorkspaceCapture(coreDb, db, session, environmentPackage, store)) {
+            const turn = store.getTurnById(session.turnId);
+            if (
+              turn.status === 'completed' ||
+              turn.status === 'failed' ||
+              turn.status === 'cancelled' ||
+              turn.status === 'interrupted'
+            )
+              return { status: turn.status, turn };
+            throw new WorkspaceCaptureRecoveryRequired(
+              'Original Workspace capture requires durable recovery disposition.'
+            );
+          }
+          captureDisposed = listWorkspaceReconciliationRecords(db, session.workspaceId).some(
+            (record) =>
+              record.id.startsWith('wrr_capture_') &&
+              record.stateAfter === 'unrecoverable' &&
+              record.backendHandleSummary.attemptId === session.attemptId
+          );
+          collected = await hasCompletedWorkerTurnCollection(db, session);
+        } finally {
+          db.sqlite.close();
+        }
+        // Cleaned closeout uses durable cleanup and release without restoring an obsolete live binding.
+        if (session.state !== 'cleaned' && !captureDisposed && !collected)
+          backend.restoreSession(environmentPackage, session.attemptId);
+        const recoveredStatus = await close(store, environmentPackage, session, commitment);
+        return { status: recoveredStatus, turn: store.getTurnById(session.turnId) };
+      });
     },
     restoreBackendSession: async (session) => {
       const environmentPackage = await restoreDurableSession(session);
