@@ -303,6 +303,14 @@ export async function activateWorkerStorageAttachment(
   );
 }
 
+/** Existing Native release CAS after the owning caller establishes Sandbox cleanup. */
+export type WriteNanoHostStorageRelease = (
+  input: Extract<
+    Parameters<ReturnType<typeof getControlStoreWorkerClient>['workerStorageBinding']>[1],
+    { kind: 'release' }
+  >
+) => Promise<WorkerStorageBinding>;
+
 /** Publishes the existing exact releaseWorkerStorageAttachment transition after its covering FULL acknowledgement. */
 export async function releaseWorkerStorageAttachment(
   coreDb: CoreDb,
@@ -313,9 +321,11 @@ export async function releaseWorkerStorageAttachment(
     readonly now?: string;
     readonly sandboxBindingRef?: string | null;
     readonly storageRef: string;
-  }
+  },
+  admitted?: WriteNanoHostStorageRelease
 ): Promise<WorkerStorageBinding> {
   const snapshot = structuredClone(input);
+  if (admitted) return admitted({ ...snapshot, kind: 'release' });
   const { client, database } = await bindingWriter(coreDb);
   return client.workerStorageBinding(database, { ...snapshot, kind: 'release' });
 }

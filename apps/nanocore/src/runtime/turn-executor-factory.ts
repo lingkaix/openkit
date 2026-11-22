@@ -175,6 +175,7 @@ import {
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
   type NanoHostHarnessResultSettlement,
+  type NanoHostIdleSandboxAuthority,
   openNanoHostAgentSessionBinding,
   type PreparedNanoHostHarnessOperation,
   prepareNanoHostHarnessOperation,
@@ -186,6 +187,7 @@ import {
   removeNanoHostSandboxRuntimeByBinding,
   restoreNanoHostSandboxAdmissionIfSafe,
   settleNanoHostHarnessOperation,
+  type WriteNanoHostIdleSandboxLifecycle,
 } from './nanohost-harness.js';
 import {
   getNanoHostRuntimeTarget,
@@ -292,6 +294,7 @@ import {
   type WorkerStorageSelectionInput,
   type WorkerStorageTarget,
   type WriteNanoHostStorageAttachment,
+  type WriteNanoHostStorageRelease,
 } from './worker-storage-bindings.js';
 import type {
   WorkerRuntimeProvenanceCollection,
@@ -354,6 +357,11 @@ type NanoHostLifecycleOwner = Pick<
   'harnessLifecycle' | 'read'
 >;
 
+export interface AdmittedNanoHostIdleSandbox {
+  readonly writeIdleHarnessDrain: WriteNanoHostIdleSandboxLifecycle;
+  readonly releaseStorage: WriteNanoHostStorageRelease;
+}
+
 export interface CreateConfiguredTurnExecutorOptions {
   /** Immutable Core identity admitted by the boot owner; absence refuses real Worker admission. */
   releaseIdentity?: ReleaseBuildIdentity | undefined;
@@ -391,6 +399,7 @@ export interface CreateConfiguredTurnExecutorOptions {
         >;
         readonly writeStorageAttachment?: WriteNanoHostStorageAttachment;
         readonly harnessTurnLifecycle?: AdmittedNanoHostHarnessTurnLifecycle;
+        readonly idleSandbox?: AdmittedNanoHostIdleSandbox;
         readonly advanceIdleCleanup?: (selection: IdleCleanupSelection) => Promise<void>;
       }
     | undefined;
@@ -612,12 +621,15 @@ function createNanoHostWorkerLifecycleRuntime(
     configuredProviderReader,
     nanoHostOwner,
     nanoHostRecovery?.harnessTurnLifecycle,
-    nanoHostRecovery?.writeStorageAttachment
+    nanoHostRecovery?.writeStorageAttachment,
+    nanoHostRecovery?.idleSandbox
   );
   const advanceIdleCleanup = async (selection: IdleCleanupSelection): Promise<void> => {
-    if (!nanoHostRecovery) return await backend.advanceIdleCleanup(selection);
-    if (!nanoHostRecovery.advanceIdleCleanup) throw new NanoHostCleanupFencePendingError();
-    return await nanoHostRecovery.advanceIdleCleanup(selection);
+    if (nanoHostRecovery?.advanceIdleCleanup)
+      return await nanoHostRecovery.advanceIdleCleanup(selection);
+    if (nanoHostRecovery && !nanoHostRecovery.idleSandbox)
+      throw new NanoHostCleanupFencePendingError();
+    await backend.advanceIdleCleanup(selection);
   };
   executionReconciler = new ExecutionReconciler({
     coreDb,
@@ -1058,6 +1070,7 @@ interface NanoHostIdleSandboxEviction {
   readonly sandboxCompatibilityKey: string;
   readonly sandboxId: string;
   readonly sandboxRuntimeId: string;
+  readonly target: NanoHostIdleSandboxAuthority['target'];
   /** Exact retained resident owner for wider cleanup; never the incoming Turn. */
   readonly retirementOwner: WorkerBackendSessionRecord | null;
 }
@@ -1185,7 +1198,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader,
     private readonly nanoHostOwner?: StorageResult<'nanohost', NanoHostLifecycleOwner>,
     private readonly admittedHarnessTurn?: AdmittedNanoHostHarnessTurnLifecycle,
-    private readonly writeStorageAttachment?: WriteNanoHostStorageAttachment
+    private readonly writeStorageAttachment?: WriteNanoHostStorageAttachment,
+    private readonly admittedIdleSandbox?: AdmittedNanoHostIdleSandbox
   ) {}
 
   private unavailableNanoHostRuntime(): never {
@@ -1207,6 +1221,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.nanoHostOwner.state !== 'ready' || !this.admittedHarnessTurn)
       this.unavailableNanoHostRuntime();
     return this.admittedHarnessTurn;
+  }
+
+  private idleSandboxLifecycle(): AdmittedNanoHostIdleSandbox | undefined {
+    if (!this.nanoHostOwner) return undefined;
+    if (this.nanoHostOwner.state !== 'ready' || !this.admittedIdleSandbox)
+      this.unavailableNanoHostRuntime();
+    return this.admittedIdleSandbox;
   }
 
   /** Runs native observations against the acknowledged owner generation during split serving. */
@@ -3762,13 +3783,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         identity.deploymentId
       );
     else this.markProvedSandboxDeletion(sandboxBindingRef, originPhysicalEpoch);
+    const storage = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef })
+    );
     try {
       await this.handoffSandboxAgentSessionProofs(sandboxBindingRef, {
         sandboxBindingRef,
         originPhysicalEpoch,
         physicalAbsent: !sameEpoch,
       });
-      await this.releaseWorkerStorageForSandbox(sandboxBindingRef);
+      await this.releaseWorkerStorageForSandbox(sandboxBindingRef, storage);
       await removeNanoHostSandboxRuntimeByBinding(this.harnessWriter(), sandboxBindingRef);
       this.forgetSharedSandbox(resident.sandboxCompatibilityKey);
     } catch (error) {
@@ -3879,7 +3903,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /** Releases an existing attachment after writer cleanup proof without reconstructing missing storage. */
   private async releaseWorkerStorageForSandbox(
-    sandboxBindingRef: string
+    sandboxBindingRef: string,
+    expected?: WorkerStorageBinding | null
   ): Promise<WorkerStorageBinding | null> {
     const binding = this.readNanoHost((owner) =>
       getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef })
@@ -3890,13 +3915,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       return null;
     }
-    return await releaseWorkerStorageAttachment(this.coreDb, {
-      attachmentGeneration: binding.attachmentGeneration,
-      cleanupProved: true,
-      expectedRevision: binding.revision,
-      sandboxBindingRef,
-      storageRef: binding.storageRef,
-    });
+    if (
+      expected !== undefined &&
+      (!expected ||
+        binding.storageRef !== expected.storageRef ||
+        binding.revision !== expected.revision ||
+        binding.attachmentGeneration !== expected.attachmentGeneration)
+    )
+      throw new WorkerStorageBindingError(
+        'revision_conflict',
+        'Worker storage association changed before cleanup release.'
+      );
+    return await releaseWorkerStorageAttachment(
+      this.coreDb,
+      {
+        attachmentGeneration: binding.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: binding.revision,
+        sandboxBindingRef,
+        storageRef: binding.storageRef,
+      },
+      this.idleSandboxLifecycle()?.releaseStorage
+    );
   }
 
   /** Snapshots the sole active reservation, requiring exact Sandbox ownership for pending cleanup. */
@@ -3999,6 +4039,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return 'available';
   }
 
+  private readIdleSandboxTarget(targetId: string): NanoHostIdleSandboxAuthority['target'] | null {
+    const target = this.readNanoHost((owner) => getNanoHostRuntimeTarget(owner, targetId));
+    if (!target?.ready || !target.predecessorFenced || !target.freshEmpty || !target.physicalEpoch)
+      return null;
+    const { identityId, deploymentId, connectionGeneration, physicalEpoch } = target;
+    return { targetId, identityId, deploymentId, connectionGeneration, physicalEpoch };
+  }
+
   /** Finds an idle replacement or a fenced predecessor resident proved absent in a fresh Epoch. */
   private inspectIncompatibleIdleSandbox(
     environmentPackage: AgentEnvironmentPackagePreview,
@@ -4032,8 +4080,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly sandboxRuntimeId: string;
       readonly maxActiveTurns: number;
     }>;
-    const currentPhysicalEpoch = this.readCurrentPhysicalEpoch(runtimeTargetId);
-    if (!currentPhysicalEpoch) return 'capacity-saturated';
+    const target = this.readIdleSandboxTarget(runtimeTargetId);
+    if (!target?.physicalEpoch) return 'capacity-saturated';
+    const currentPhysicalEpoch = target.physicalEpoch;
     if (sandboxes.length === 0) {
       // A known delete does not permit the same physical name to alias pending Core closeouts.
       return this.nonClosedSandboxAttempts(
@@ -4337,6 +4386,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       closeCleanupRequired: widenCleanup,
       originPhysicalEpoch: sandboxOriginPhysicalEpoch,
       retirementOwner,
+      target,
       physicalAbsent,
       sandboxBindingRef: sandbox.sandboxBindingRef,
       sandboxCompatibilityKey: sandbox.sandboxCompatibilityKey,
@@ -4360,61 +4410,75 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
     }
     const eviction = inspected;
+    if (!eviction) return null;
+    const admitted = this.idleSandboxLifecycle();
     let authorizedReplacementBinding: WorkerStorageBinding | null = null;
-    if (eviction) {
+    if (
+      this.nanoHostOwner &&
+      eviction.closeAgentSessions &&
+      eviction.retirementOwner &&
+      isScopeAdmitted(this.coreDb.dataRoot, 'workspace', eviction.retirementOwner.workspaceId) &&
+      eviction.bindings.some((binding) => binding.lifecycleState !== 'closed')
+    )
+      this.unavailableNanoHostRuntime();
+    if (replacementSelection) {
+      const selectedBinding = this.validateWorkerStorageSelection(
+        environmentPackage,
+        eviction.sandboxBindingRef,
+        replacementSelection
+      );
+      if (selectedBinding.currentSandboxBindingRef === eviction.sandboxBindingRef)
+        authorizedReplacementBinding = selectedBinding;
+    }
+    // A completed handoff without a drain is already an inspectMaterializationCapacity outcome.
+    // Refusal/crash here keeps that recoverable state; no physical cleanup has started.
+    for (const binding of eviction.bindings)
+      await this.handoffDurableAgentSessionProof(binding, undefined, eviction);
+    const current = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
+    if (
+      !current ||
+      current === 'capacity-saturated' ||
+      current.sandboxRuntimeId !== eviction.sandboxRuntimeId ||
+      current.sandboxBindingRef !== eviction.sandboxBindingRef ||
+      !isDeepStrictEqual(current.target, eviction.target)
+    ) {
+      throw new WorkerGovernanceCapacityUnavailableError(
+        'NanoHost one-Sandbox capacity is occupied or unproved.'
+      );
+    }
+    if (replacementSelection) {
+      const selectedBinding = this.validateWorkerStorageSelection(
+        environmentPackage,
+        eviction.sandboxBindingRef,
+        replacementSelection
+      );
       if (
-        this.nanoHostOwner &&
-        eviction.closeAgentSessions &&
-        eviction.retirementOwner &&
-        isScopeAdmitted(this.coreDb.dataRoot, 'workspace', eviction.retirementOwner.workspaceId) &&
-        eviction.bindings.some((binding) => binding.lifecycleState !== 'closed')
+        authorizedReplacementBinding &&
+        (selectedBinding.storageRef !== authorizedReplacementBinding.storageRef ||
+          selectedBinding.revision !== authorizedReplacementBinding.revision)
       )
-        this.unavailableNanoHostRuntime();
-      if (replacementSelection) {
-        const selectedBinding = this.validateWorkerStorageSelection(
-          environmentPackage,
-          eviction.sandboxBindingRef,
-          replacementSelection
-        );
-        if (selectedBinding.currentSandboxBindingRef === eviction.sandboxBindingRef)
-          authorizedReplacementBinding = selectedBinding;
-      }
-      // A completed handoff without a drain is already an inspectMaterializationCapacity outcome.
-      // Refusal/crash here keeps that recoverable state; no physical cleanup has started.
-      for (const binding of eviction.bindings)
-        await this.handoffDurableAgentSessionProof(binding, undefined, eviction);
-      const current = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
-      if (
-        !current ||
-        current === 'capacity-saturated' ||
-        current.sandboxRuntimeId !== eviction.sandboxRuntimeId ||
-        current.sandboxBindingRef !== eviction.sandboxBindingRef
-      ) {
-        throw new WorkerGovernanceCapacityUnavailableError(
-          'NanoHost one-Sandbox capacity is occupied or unproved.'
-        );
-      }
-      if (replacementSelection) {
-        const selectedBinding = this.validateWorkerStorageSelection(
-          environmentPackage,
-          eviction.sandboxBindingRef,
-          replacementSelection
-        );
-        if (
-          authorizedReplacementBinding &&
-          (selectedBinding.storageRef !== authorizedReplacementBinding.storageRef ||
-            selectedBinding.revision !== authorizedReplacementBinding.revision)
-        )
-          throw new Error('Worker storage selection changed before drain claim.');
-      }
-      await claimNanoHostIdleSandboxDrain(this.coreDb, {
+        throw new Error('Worker storage selection changed before drain claim.');
+    }
+    const originalStorageBinding = this.readNanoHost((owner) =>
+      getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef: eviction.sandboxBindingRef })
+    );
+    if (
+      authorizedReplacementBinding &&
+      (originalStorageBinding?.storageRef !== authorizedReplacementBinding.storageRef ||
+        originalStorageBinding.revision !== authorizedReplacementBinding.revision)
+    )
+      throw new Error('Worker storage selection changed before drain claim.');
+    const claimedAt = new Date().toISOString();
+    await claimNanoHostIdleSandboxDrain(
+      this.coreDb,
+      {
         sandboxRuntimeId: eviction.sandboxRuntimeId,
         sandboxBindingRef: eviction.sandboxBindingRef,
         sandboxCompatibilityKey: eviction.sandboxCompatibilityKey,
-        runtimeTargetId: requireNanoHostRuntimeTargetId(this.planSession(environmentPackage)),
+        runtimeTargetId: eviction.target.targetId,
         originPhysicalEpoch: eviction.originPhysicalEpoch,
         physicalAbsent: eviction.physicalAbsent,
-        timestamp: new Date().toISOString(),
+        timestamp: claimedAt,
         incoming: {
           workspaceId: environmentPackage.scope.workspaceId,
           threadId: environmentPackage.scope.threadId,
@@ -4431,22 +4495,26 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           lifecycleState: binding.lifecycleState,
           nativeHandleDigest: binding.nativeHandleDigest,
         })),
-        ...(authorizedReplacementBinding
+        ...(originalStorageBinding
           ? {
               replacementStorage: {
-                storageRef: authorizedReplacementBinding.storageRef,
-                revision: authorizedReplacementBinding.revision,
+                storageRef: originalStorageBinding.storageRef,
+                revision: originalStorageBinding.revision,
               },
             }
           : {}),
-      });
-    }
-    if (!eviction) {
-      return null;
-    }
+      },
+      admitted
+        ? { write: admitted.writeIdleHarnessDrain, authority: { target: eviction.target } }
+        : undefined
+    );
+    let cleanupProved = eviction.physicalAbsent;
     try {
       await this.assertWorkspaceCaptureSettled(eviction.sandboxBindingRef);
       if (eviction.physicalAbsent) {
+        const target = this.readIdleSandboxTarget(eviction.target.targetId);
+        if (!isDeepStrictEqual(target, eviction.target))
+          throw new NanoHostCleanupFencePendingError();
         await this.invalidatePhysicallyAbsentSandbox(eviction);
       }
       // An excluded package cannot be restored for local close; the exact wider delete below owns cleanup.
@@ -4498,13 +4566,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           eviction.bridgeOpen,
           eviction.originPhysicalEpoch
         );
+        cleanupProved = true;
       }
       const releasedBinding = this.readNanoHost((owner) =>
         getWorkerStorageBindingForSandbox(owner, {
           sandboxBindingRef: eviction.sandboxBindingRef,
         })
       )
-        ? await this.releaseWorkerStorageForSandbox(eviction.sandboxBindingRef)
+        ? await this.releaseWorkerStorageForSandbox(
+            eviction.sandboxBindingRef,
+            originalStorageBinding
+          )
         : authorizedReplacementBinding
           ? this.readNanoHost((owner) =>
               getWorkerStorageBinding(owner, {
@@ -4526,12 +4598,23 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // A drain claim is reversible when no uncertain cleanup or failed Harness owns a fence.
       // The effect owner fences its exact target after dispatch; a pre-dispatch failure cannot.
       if (
+        !cleanupProved &&
         !(error instanceof WorkspaceCaptureRecoveryRequired) &&
         !(error instanceof NanoHostLoginDepartureIncompleteError)
       )
-        await restoreNanoHostSandboxAdmissionIfSafe(this.coreDb, {
-          sandboxRuntimeId: eviction.sandboxRuntimeId,
-        });
+        await restoreNanoHostSandboxAdmissionIfSafe(
+          this.coreDb,
+          { sandboxRuntimeId: eviction.sandboxRuntimeId },
+          admitted
+            ? {
+                write: admitted.writeIdleHarnessDrain,
+                authority: {
+                  target: eviction.target,
+                  rollback: { sandboxBindingRef: eviction.sandboxBindingRef, claimedAt },
+                },
+              }
+            : undefined
+        );
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       throw error;
     }

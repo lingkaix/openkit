@@ -1,11 +1,13 @@
 import { readRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
+import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import {
   nanoHostSandboxId,
   readNanoHostWorkspaceCaptureAnchors,
 } from '../runtime/nanohost-capture-anchors.js';
-import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
+import type { NanoHostIdleSandboxAuthority } from '../runtime/nanohost-harness.js';
 import * as records from '../runtime/nanohost-harness-records.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-read.js';
 import { presentControlFacts } from './control-store-input.js';
 import {
@@ -25,7 +27,7 @@ import {
 export function applyControlHarnessLifecycle(
   owner: CoreDb | { readonly scope?: never; readonly sqlite: Database.Database },
   input: ControlHarnessLifecycleInput,
-  admitted?: { readonly coreDb: CoreDb }
+  admitted?: { readonly coreDb: CoreDb; readonly idleSandbox?: NanoHostIdleSandboxAuthority }
 ) {
   assertControlProductWriter(owner.sqlite);
   if (
@@ -37,6 +39,34 @@ export function applyControlHarnessLifecycle(
     throw new ControlProductPreconditionError();
   try {
     switch (input.kind) {
+      case 'sandbox.claim-idle-drain':
+      case 'sandbox.restore-admission': {
+        if (owner.scope === 'core' || !admitted?.idleSandbox) break;
+        const authority = admitted.idleSandbox;
+        return owner.sqlite.transaction(() => {
+          const target = getNanoHostRuntimeTarget(owner, authority.target.targetId);
+          if (
+            !target?.ready ||
+            !target.predecessorFenced ||
+            !target.freshEmpty ||
+            target.identityId !== authority.target.identityId ||
+            target.deploymentId !== authority.target.deploymentId ||
+            target.connectionGeneration !== authority.target.connectionGeneration ||
+            target.physicalEpoch !== authority.target.physicalEpoch
+          ) {
+            if (input.kind === 'sandbox.restore-admission') return null;
+            throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
+          }
+          if (input.kind === 'sandbox.claim-idle-drain') {
+            if (input.runtimeTargetId !== target.targetId)
+              throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
+            claimIdleSandboxDrain(admitted.coreDb, input, owner);
+          } else if (authority.rollback) {
+            restoreSandboxAdmission(admitted.coreDb, input.sandboxRuntimeId, owner, authority);
+          }
+          return null;
+        })();
+      }
       case 'operation.queue':
         if (admitted) return records.queueNanoHostHarnessOperation(admitted.coreDb, input, owner);
         break;
@@ -139,14 +169,30 @@ function refuseHarnessLifecycle(error: unknown): never {
 }
 
 /** Restores the exact two-table admission tuple while its current Core proof remains inside the native savepoint. */
-function restoreSandboxAdmission(coreDb: CoreDb, sandboxRuntimeId: string): void {
-  const sandbox = coreDb.sqlite
-    .prepare(
-      'SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records WHERE sandbox_runtime_id=?'
-    )
-    .get(sandboxRuntimeId) as { binding: string } | undefined;
-  if (!sandbox) return;
-  const anchors = readNanoHostWorkspaceCaptureAnchors(coreDb, sandbox.binding);
+function restoreSandboxAdmission(
+  coreDb: CoreDb,
+  sandboxRuntimeId: string,
+  owner: { readonly sqlite: Database.Database } = coreDb,
+  authority?: NanoHostIdleSandboxAuthority
+): void {
+  const sandbox = owner.sqlite
+    .prepare(`SELECT sandbox_binding_ref AS binding, runtime_target_id AS targetId,
+      origin_physical_epoch AS epoch, drain_state AS drain, updated_at AS updatedAt
+      FROM sandbox_runtime_records WHERE sandbox_runtime_id=?`)
+    .get(sandboxRuntimeId) as
+    | { binding: string; targetId: string; epoch: string; drain: string; updatedAt: string }
+    | undefined;
+  if (
+    !sandbox ||
+    (authority &&
+      (sandbox.targetId !== authority.target.targetId ||
+        sandbox.epoch !== authority.target.physicalEpoch ||
+        sandbox.binding !== authority.rollback?.sandboxBindingRef ||
+        sandbox.updatedAt !== authority.rollback.claimedAt ||
+        sandbox.drain !== 'draining'))
+  )
+    return;
+  const anchors = readNanoHostWorkspaceCaptureAnchors(owner, sandbox.binding);
   const attempts = new Set(anchors.map((anchor) => anchor.attemptId));
   // Capture dispositions are observations, never Workspace writes or a retained Main authorization boolean.
   for (const workspaceId of new Set(anchors.map((anchor) => anchor.workspaceId))) {
@@ -172,16 +218,27 @@ function restoreSandboxAdmission(coreDb: CoreDb, sandboxRuntimeId: string): void
       reader?.sqlite.close();
     }
   }
-  const restored = coreDb.sqlite
+  const restored = owner.sqlite
     .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'accepting'
     WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open' AND health_state = 'ready'
       AND cleanup_state = 'clean' AND NOT EXISTS (
         SELECT 1 FROM harness_instance_records WHERE sandbox_runtime_id = ?
-          AND (lifecycle_state <> 'open' OR operation_state IN ('queued', 'dispatched', 'unknown'))
-      )`)
-    .run(sandboxRuntimeId, sandboxRuntimeId);
+          AND (lifecycle_state <> 'open' OR operation_state IN ('queued', 'dispatched', 'unknown')
+            OR (?=1 AND (active_turn_count<>0 OR drain_state<>'draining')))
+      ) AND (?=0 OR NOT EXISTS (
+        SELECT 1 FROM agent_session_runtime_bindings b
+        JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+        WHERE h.sandbox_runtime_id=? AND (b.current_attempt_id IS NOT NULL OR b.current_turn_id IS NOT NULL)
+      ))`)
+    .run(
+      sandboxRuntimeId,
+      sandboxRuntimeId,
+      Number(!!authority),
+      Number(!!authority),
+      sandboxRuntimeId
+    );
   if (restored.changes === 1)
-    coreDb.sqlite
+    owner.sqlite
       .prepare(`UPDATE harness_instance_records
     SET drain_state = 'accepting' WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'`)
       .run(sandboxRuntimeId);
@@ -190,12 +247,13 @@ function restoreSandboxAdmission(coreDb: CoreDb, sandboxRuntimeId: string): void
 /** Rechecks current physical residency, occupancy and exact handed-off bindings before the original reversible two-table claim. */
 function claimIdleSandboxDrain(
   coreDb: CoreDb,
-  input: Extract<ControlHarnessLifecycleInput, { kind: 'sandbox.claim-idle-drain' }>
+  input: Extract<ControlHarnessLifecycleInput, { kind: 'sandbox.claim-idle-drain' }>,
+  owner: { readonly sqlite: Database.Database } = coreDb
 ): void {
   function refuse(): never {
     throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
   }
-  const targets = coreDb.sqlite
+  const targets = owner.sqlite
     .prepare(`SELECT sandbox_runtime_id AS id, sandbox_binding_ref AS binding,
     sandbox_compatibility_key AS compatibility, origin_physical_epoch AS epoch
     FROM sandbox_runtime_records WHERE runtime_target_id=?`)
@@ -206,7 +264,7 @@ function claimIdleSandboxDrain(
     epoch: string;
   }>;
   const sandbox = targets[0];
-  const target = coreDb.sqlite
+  const target = owner.sqlite
     .prepare(`SELECT predecessor_fenced AS fenced, ready, fresh_empty AS fresh,
     physical_epoch AS epoch FROM nanohost_runtime_targets WHERE target_id=?`)
     .get(input.runtimeTargetId) as
@@ -228,26 +286,16 @@ function claimIdleSandboxDrain(
     (target.epoch !== sandbox.epoch) !== input.physicalAbsent
   )
     refuse();
-  const domainAttempts = coreDb.sqlite
-    .prepare(`SELECT w.backend_session_id AS session FROM scheduler_execution_attempts a
-    JOIN worker_backend_sessions w ON w.attempt_id=a.attempt_id WHERE a.backend_id=? AND w.runtime_target_id=?
-    AND w.origin_physical_epoch=? AND a.phase<>'closed' AND NOT (a.phase='open' AND a.operation_id IS NULL
-    AND a.deadline IS NULL AND a.workspace_id=? AND a.thread_id=? AND a.turn_id=? AND a.input_ref=?)`)
-    .all(
+  if (
+    nonClosedSandboxAttempts(
+      coreDb,
       input.incoming.backendId,
+      { scope: input.incoming, snapshotId: input.incoming.packageSnapshotId },
       input.runtimeTargetId,
       input.originPhysicalEpoch,
-      input.incoming.workspaceId,
-      input.incoming.threadId,
-      input.incoming.turnId,
-      input.incoming.packageSnapshotId
-    ) as Array<{ session: string }>;
-  if (
-    domainAttempts.some(
-      (row) =>
-        nanoHostSandboxIdFromBackendSessionId(row.session) ===
-        nanoHostSandboxId(input.sandboxCompatibilityKey)
-    )
+      nanoHostSandboxId(input.sandboxCompatibilityKey),
+      owner
+    ).length > 0
   )
     refuse();
   if (
@@ -259,7 +307,7 @@ function claimIdleSandboxDrain(
       .get(input.sandboxBindingRef)
   )
     refuse();
-  const bindings = coreDb.sqlite
+  const bindings = owner.sqlite
     .prepare(`SELECT b.agent_session_id AS agentSessionId,
     b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId, b.harness_instance_id AS harnessInstanceId,
     h.harness_binding_ref AS harnessBindingRef,h.harness_compatibility_key AS harnessCompatibilityKey,
@@ -307,8 +355,12 @@ function claimIdleSandboxDrain(
       refuse();
     if (
       coreDb.sqlite
-        .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE agent_session_id=? AND phase<>'closed'
-      AND NOT (workspace_id=? AND thread_id=? AND turn_id=? AND backend_id=? AND phase='open' AND operation_id IS NULL) LIMIT 1`)
+        .prepare(`SELECT 1 FROM scheduler_execution_attempts a
+      LEFT JOIN scheduler_admission_entries q ON q.queue_entry_id=a.queue_entry_id
+        AND q.workspace_id=a.workspace_id AND q.thread_id=a.thread_id AND q.turn_id=a.turn_id
+      WHERE a.agent_session_id=? AND a.phase<>'closed'
+      AND NOT (a.workspace_id=? AND a.thread_id=? AND a.turn_id=? AND q.backend_id IS ?
+        AND a.phase='open' AND a.operation_id IS NULL) LIMIT 1`)
         .get(
           binding.agentSessionId,
           input.incoming.workspaceId,
@@ -319,7 +371,7 @@ function claimIdleSandboxDrain(
     )
       refuse();
   }
-  const harnesses = coreDb.sqlite
+  const harnesses = owner.sqlite
     .prepare(`SELECT active_turn_count AS active,operation_state AS operationState,
     lifecycle_state AS lifecycle,drain_state AS drain,
     (lifecycle_state='failed' AND drain_state='draining' AND operation='session.close' AND operation_state='settled'
@@ -348,17 +400,17 @@ function claimIdleSandboxDrain(
     refuse();
   if (
     input.replacementStorage &&
-    !coreDb.sqlite
+    !owner.sqlite
       .prepare('SELECT 1 FROM worker_storage_bindings WHERE storage_ref=? AND revision=?')
       .get(input.replacementStorage.storageRef, input.replacementStorage.revision)
   )
     refuse();
   const absent = Number(input.physicalAbsent);
-  const sandboxUpdate = coreDb.sqlite
+  const sandboxUpdate = owner.sqlite
     .prepare(`UPDATE sandbox_runtime_records SET drain_state='draining',updated_at=?
     WHERE sandbox_runtime_id=? AND (?=1 OR (lifecycle_state='open' AND health_state='ready' AND drain_state='accepting' AND cleanup_state='clean'))`)
     .run(input.timestamp, input.sandboxRuntimeId, absent);
-  const harnessUpdate = coreDb.sqlite
+  const harnessUpdate = owner.sqlite
     .prepare(`UPDATE harness_instance_records SET drain_state='draining',updated_at=?
     WHERE sandbox_runtime_id=? AND active_turn_count=0 AND (operation_state IN ('idle','settled') OR ?=1)
     AND (?=1 OR (lifecycle_state='open' AND drain_state='accepting') OR (lifecycle_state='failed' AND drain_state='draining'

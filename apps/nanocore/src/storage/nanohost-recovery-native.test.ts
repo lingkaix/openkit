@@ -14,11 +14,13 @@ import { FsStore } from '../lib/store.js';
 import { recordCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithFence,
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
 import {
   CORE_SCHEDULER_EXECUTION_DEFINITION,
@@ -27,6 +29,11 @@ import {
   readExecutionJournalRoot,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
+import {
+  claimNanoHostIdleSandboxDrain,
+  restoreNanoHostSandboxAdmissionIfSafe,
+  type WriteNanoHostIdleSandboxLifecycle,
+} from '../runtime/nanohost-harness.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { listWorkspaceRuntimeEvidence } from '../runtime/runtime-evidence.js';
 import {
@@ -46,10 +53,16 @@ import {
   WorkerGovernanceTurnExecutor,
 } from '../runtime/worker-governance-turn-executor.js';
 import {
+  activateWorkerStorageAttachment,
   createWorkerStorageBinding,
   getWorkerStorageBinding,
+  reserveWorkerStorageAttachment,
   workerStorageSchedulerRows,
 } from '../runtime/worker-storage-binding-records.js';
+import {
+  releaseWorkerStorageAttachment,
+  type WriteNanoHostStorageRelease,
+} from '../runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -219,7 +232,9 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
           }
           if (command.kind === 'submit')
             return native.applyNanoHostWorkerSubmission(sqlite, command.input);
-          if (['dispatch', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
+          if (command.kind === 'storage-release')
+            return storage.applyControlWorkerStorageBinding({ sqlite }, command.input);
+          if (['dispatch', 'idle-sandbox', 'pinned-heartbeat', 'pinned-record'].includes(command.kind)) {
             const coreDb = db.openCoreReadDb(command.dataRoot);
             try {
               return coreDb.sqlite.transaction(() => {
@@ -229,7 +244,9 @@ async function fixture(mode: 'live' | 'queued' = 'live') {
                   return record.applyControlWorkerRecord({
                     sqlite, coreDb, input: command.input, observedAt: command.observedAt,
                   });
-                return harness.applyControlHarnessLifecycle({ sqlite }, command.input, { coreDb });
+                return harness.applyControlHarnessLifecycle(
+                  { sqlite }, command.input, { coreDb, idleSandbox: command.authority }
+                );
               })();
             } finally {
               coreDb.sqlite.close();
@@ -874,6 +891,201 @@ async function admitOriginal(prepareWorkspace = false) {
   await expect(dispatch()).resolves.toBeNull();
   return { f, root, core, store, actor, input, now, retained };
 }
+
+it('claims and rolls back only the exact admitted Native Sandbox and original drain', async () => {
+  const { f, core, root, now } = await admitOriginal(true);
+  const sandboxCompatibilityKey = 'a'.repeat(64);
+  f.owner.setup((sqlite) => {
+    sqlite
+      .prepare('UPDATE sandbox_runtime_records SET sandbox_compatibility_key=?')
+      .run(sandboxCompatibilityKey);
+    sqlite
+      .prepare('UPDATE worker_backend_sessions SET backend_session_id=?')
+      .run(`nh-${sandboxCompatibilityKey.slice(0, 16)}-${'b'.repeat(16)}`);
+    sqlite.prepare("UPDATE harness_instance_records SET operation_state='settled'").run();
+  });
+  const target = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  const write: WriteNanoHostIdleSandboxLifecycle = async (input, authority) => {
+    expect(await f.send({ kind: 'idle-sandbox', dataRoot: root, input, authority })).toBeNull();
+  };
+  const incoming = {
+    workspaceId,
+    threadId,
+    turnId: testEntityId('tu', 'native-idle-drain-successor'),
+    packageSnapshotId: inputRef,
+    backendId: 'nanohost',
+  };
+  const claim = {
+    sandboxRuntimeId: 'sandbox',
+    sandboxBindingRef: 'sandbox-binding',
+    sandboxCompatibilityKey,
+    runtimeTargetId: targetId,
+    originPhysicalEpoch: physicalEpoch,
+    physicalAbsent: false,
+    timestamp: acceptedAt,
+    incoming,
+    bindings: [
+      {
+        agentSessionId,
+        agentSessionRuntimeBindingId: 'session-binding',
+        harnessInstanceId: 'harness',
+        harnessBindingRef: 'harness-binding',
+        harnessCompatibilityKey: 'compat',
+        lifecycleState: 'open',
+        nativeHandleDigest: null,
+      },
+    ],
+  };
+  const drain = () => [
+    f.owner.sqlite.prepare('SELECT drain_state FROM sandbox_runtime_records').pluck().get(),
+    f.owner.sqlite.prepare('SELECT drain_state FROM harness_instance_records').pluck().get(),
+  ];
+  const submit = (snapshot = target, input = claim) =>
+    claimNanoHostIdleSandboxDrain(core, input, { write, authority: { target: snapshot } });
+  await expect(submit()).rejects.toThrow('changed before drain claim');
+  expect(drain()).toEqual(['accepting', 'accepting']);
+  const closing = markSchedulerExecutionAttemptClosing(core, {
+    attemptId,
+    cause: 'completed',
+    now,
+  });
+  closeSchedulerExecutionAttemptWithFence(core, {
+    correlation: schedulerExecutionCorrelation(closing),
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+    fenceRef: 'fixture-idle-release',
+    now,
+  });
+  await expect(
+    submit({ ...target, connectionGeneration: target.connectionGeneration + 1 })
+  ).rejects.toThrow('changed before drain claim');
+  f.owner.setup((sqlite) =>
+    sqlite
+      .prepare('UPDATE worker_backend_sessions SET agent_session_id=?')
+      .run(testEntityId('as', 'foreign-idle-drain-session'))
+  );
+  await expect(submit()).rejects.toThrow('lacks the original Core backend admission');
+  expect(drain()).toEqual(['accepting', 'accepting']);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare('UPDATE worker_backend_sessions SET agent_session_id=?').run(agentSessionId)
+  );
+  await submit();
+  expect(drain()).toEqual(['draining', 'draining']);
+
+  const restore = (snapshot = target, claimedAt = claim.timestamp) =>
+    restoreNanoHostSandboxAdmissionIfSafe(
+      core,
+      { sandboxRuntimeId: claim.sandboxRuntimeId },
+      {
+        write,
+        authority: {
+          target: snapshot,
+          rollback: { sandboxBindingRef: claim.sandboxBindingRef, claimedAt },
+        },
+      }
+    );
+  await restore(target, created);
+  expect(drain()).toEqual(['draining', 'draining']);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare("UPDATE harness_instance_records SET operation_state='unknown'").run()
+  );
+  await restore();
+  expect(drain()).toEqual(['draining', 'draining']);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare("UPDATE harness_instance_records SET operation_state='settled'").run()
+  );
+  await f.owner.reopen();
+  await restore();
+  expect(drain()).toEqual(['accepting', 'accepting']);
+
+  f.owner.setup((sqlite) =>
+    sqlite
+      .prepare('UPDATE nanohost_runtime_targets SET connection_generation=2, physical_epoch=?')
+      .run('f'.repeat(64))
+  );
+  const successor = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  await expect(submit(successor)).rejects.toThrow('changed before drain claim');
+  await submit(successor, { ...claim, physicalAbsent: true });
+  await restore(successor);
+  expect(drain()).toEqual(['draining', 'draining']);
+});
+
+it('releases only the cleaned Sandbox attachment and exact revision on the admitted Native owner', async () => {
+  const { f, core, actor } = await admitOriginal();
+  let attached!: ReturnType<typeof activateWorkerStorageAttachment>;
+  f.owner.setup((sqlite) => {
+    const owner = { sqlite };
+    const layout = {
+      family: 'openkit-worker',
+      version: '1',
+      uid: 1000,
+      gid: 1000,
+      workingDirectory: '/workspace',
+      platform: { architecture: 'amd64' as const, os: 'linux' as const },
+      targets: [{ target: '/workspace' }],
+    };
+    const idle = createWorkerStorageBinding(owner, {
+      deploymentId,
+      runtimeTargetId: targetId,
+      workspaceId,
+      layout,
+      now: created,
+    });
+    const reserved = reserveWorkerStorageAttachment(owner, {
+      storageRef: idle.storageRef,
+      expectedRevision: idle.revision,
+      workspaceId,
+      layout,
+      purpose: 'work',
+      goalId: null,
+      taskId: null,
+      threadId,
+      agentSessionId,
+      responsibleUserId: actor.id,
+      runtimeTargetId: targetId,
+      authorizeContributor: () => true,
+      now: created,
+    });
+    attached = activateWorkerStorageAttachment(owner, {
+      storageRef: reserved.storageRef,
+      expectedRevision: reserved.revision,
+      attachmentGeneration: reserved.attachmentGeneration,
+      sandboxBindingRef: 'sandbox-binding',
+      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+      now: created,
+    });
+  });
+  const original = {
+    attachmentGeneration: attached.attachmentGeneration,
+    cleanupProved: true,
+    expectedRevision: attached.revision,
+    sandboxBindingRef: 'sandbox-binding',
+    storageRef: attached.storageRef,
+  };
+  const write: WriteNanoHostStorageRelease = (input) => f.send({ kind: 'storage-release', input });
+  const release = (input = original) => releaseWorkerStorageAttachment(core, input, write);
+  await expect(release({ ...original, cleanupProved: false })).rejects.toThrow(
+    'cleanup is not proved'
+  );
+  await expect(release({ ...original, sandboxBindingRef: 'other-sandbox' })).rejects.toThrow(
+    'does not match'
+  );
+  await expect(release({ ...original, expectedRevision: attached.revision - 1 })).rejects.toThrow();
+  expect(getWorkerStorageBinding(f.owner, { storageRef: original.storageRef })).toEqual(attached);
+  await expect(release()).resolves.toMatchObject({
+    storageRef: original.storageRef,
+    state: 'idle',
+    revision: original.expectedRevision + 1,
+    attachmentGeneration: original.attachmentGeneration,
+    currentSandboxBindingRef: null,
+  });
+});
 
 it.each(['accepted', 'expired', 'unavailable'] as const)(
   'handles the exact Native completion observation within the original deadline (%s)',
