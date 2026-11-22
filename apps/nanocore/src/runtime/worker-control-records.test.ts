@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { canonicalJsonText } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -21,6 +22,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -34,18 +36,28 @@ import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
 } from './worker-backend-sessions.js';
-import { WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  WorkerControlGateway,
+  WorkerControlGatewayError,
+  type WorkerControlGatewayOptions,
+  workerControlEventReceipt,
+} from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   createWorkerControlAcceptedRecordRecorder,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
+  prepareWorkerControlObservation,
   recordWorkerControlAcceptedRecord,
   recoverWorkerObservationSource,
   resolveWorkerControlFinalStatusTokenBinding,
   waitForWorkerControlFinalStatus,
+  writeWorkerControlAcceptedRecord,
 } from './worker-control-records.js';
-import { createWorkerControlSequenceRecorder } from './worker-control-sequences.js';
+import {
+  acceptWorkerControlSequence,
+  createWorkerControlSequenceRecorder,
+} from './worker-control-sequences.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_00000000-0000-7e3a-a966-bbf1c9a21fcc',
@@ -626,7 +638,11 @@ it.each([
 });
 
 /** Real Turn, named retained AEP, token-authenticated gateway, receipts and restricted body store. */
-async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null = 8) {
+async function nativeReceiver(
+  captureValue: 'on' | 'off' = 'on',
+  bound: number | null = 8,
+  split?: (db: ReturnType<typeof openCoreDb>) => WorkerControlGatewayOptions
+) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-ret2-receiver-'));
   let coreDb = openCoreDb(root);
   applyMigrations(coreDb);
@@ -685,11 +701,16 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     packageSnapshotId: pkg.snapshotId,
   };
   const makeGateway = () => {
-    const gateway = new WorkerControlGateway({
-      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    const gateway = new WorkerControlGateway(
+      split?.(coreDb) ?? {
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+      }
+    );
+    gateway.registerSession(activePackage, {
+      ...activeTokens,
+      ...(split ? { sandboxBindingRef: 'observation-sandbox' } : {}),
     });
-    gateway.registerSession(activePackage, activeTokens);
     return gateway;
   };
   let gateway = makeGateway();
@@ -849,6 +870,166 @@ function nativeBodies(f: ReturnType<typeof nativeReceiver>) {
       return { ref, bytes: bytes === null ? null : Buffer.from(bytes) };
     });
 }
+
+async function splitObservationReceiver(prepare = true) {
+  const native = openNanoHostTestOwner();
+  const admitted = native.storage.owner.read;
+  let read = admitted;
+  let checked = 0;
+  let beforePublication: ((record: WorkerCanonicalEventRecord) => void) | undefined;
+  const f = await nativeReceiver('on', 8, (coreDb) => ({
+    ...(prepare
+      ? { prepareObservation: (record) => prepareWorkerControlObservation(coreDb, record, read) }
+      : {}),
+    publishControlOperation: async ({ lineage, payload, fingerprint }) => {
+      if (payload.operation !== 'event_append') throw new Error('Expected an event append.');
+      beforePublication?.(payload.record);
+      checked += 1;
+      let accepted: { duplicate: boolean; nextExpectedSequence: number } | undefined;
+      native.setup((sqlite) => {
+        const owner = { sqlite };
+        const result = acceptWorkerControlSequence(owner, {
+          lineage,
+          operation: payload.operation,
+          sequence: payload.sequence,
+          fingerprint,
+        });
+        if (result.status !== 'accepted')
+          throw new WorkerControlGatewayError(result.code, result.message, 409);
+        writeWorkerControlAcceptedRecord(owner, { ...payload, lineage });
+        accepted = {
+          duplicate: result.duplicate,
+          nextExpectedSequence: result.nextExpectedSequence,
+        };
+      });
+      return accepted!;
+    },
+  }));
+  return {
+    ...f,
+    native,
+    publicationCount: () => checked,
+    beforePublication(check: (record: WorkerCanonicalEventRecord) => void) {
+      beforePublication = check;
+    },
+    records: () =>
+      native.sqlite
+        .prepare('SELECT record_json FROM worker_control_records ORDER BY sequence')
+        .all(),
+    hold: () => {
+      read = () => ({ state: 'unavailable', owner: 'nanohost', reason: 'busy' });
+    },
+  };
+}
+
+it('prepares admitted split observation metadata and its body before the redacted Native receipt', async () => {
+  const f = await splitObservationReceiver();
+  const bytes = Buffer.from('body');
+  const metadata = nativeMetadata(f, 'split-observation', bytes);
+  // A non-null image claim must go through the selected Native reader as well.
+  const chunk = nativeChunk(metadata.observationId, bytes);
+  const claim = {
+    ...metadata,
+    fact: {
+      ...metadata.fact,
+      native: { ...metadata.fact.native, imageDigest: `sha256:${'a'.repeat(64)}` },
+    },
+  };
+  f.beforePublication(({ event }) => {
+    if (event.type === 'observation.recorded')
+      expect(f.rows()).toContainEqual(expect.objectContaining({ type: 'runtime.observed' }));
+    if (event.type === 'observation.content.chunk')
+      expect(nativeBodies(f)).toMatchObject([{ bytes }]);
+  });
+  expect(await f.send(1, 'observation.recorded', claim)).toMatchObject({ accepted: true });
+  expect(f.rows()).toMatchObject([{ type: 'runtime.observed' }]);
+  expect(await f.send(2, 'observation.content.chunk', chunk)).toMatchObject({ accepted: true });
+  expect(nativeBodies(f)).toMatchObject([{ bytes }]);
+  const rows = f.rows();
+  const records = f.records();
+  expect(records).toHaveLength(3);
+  expect(JSON.stringify(records)).not.toContain(bytes.toString('base64'));
+  expect(
+    f.coreDb.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='worker_control_records'").get()
+  ).toBeUndefined();
+  expect(await f.send(1, 'observation.recorded', claim)).toMatchObject({ accepted: true });
+  expect(await f.send(2, 'observation.content.chunk', chunk)).toMatchObject({ accepted: true });
+  expect(f.rows()).toEqual(rows);
+  expect(f.records()).toEqual(records);
+});
+
+it.each(['missing preparation', 'held reader'] as const)(
+  'holds split observation admission for %s before Workspace publication',
+  async (fault) => {
+    const f = await splitObservationReceiver(fault === 'held reader');
+    const metadata = nativeMetadata(f, 'held-observation', Buffer.from('held'));
+    const initial = f.records();
+    const publications = f.publicationCount();
+    expect(
+      await f.send(1, 'observation.recorded', metadata, {
+        lineage: { ...f.lineage, requestId: 'foreign-request' },
+      })
+    ).toMatchObject({ accepted: false, error: { code: 'worker_control_lineage_mismatch' } });
+    if (fault === 'held reader') f.hold();
+    expect(await f.send(1, 'observation.recorded', metadata)).toMatchObject({
+      accepted: false,
+      error: { code: 'worker_observation_storage_unavailable', status: 503 },
+    });
+    expect(f.rows()).toEqual([]);
+    expect(f.records()).toEqual(initial);
+    expect(f.publicationCount()).toBe(publications);
+  }
+);
+
+it.each(['fingerprint', 'receipt'] as const)(
+  'refuses a changed retained split observation %s before Workspace publication',
+  async (retained) => {
+    const f = await splitObservationReceiver();
+    const original = nativeMetadata(f, 'original-unacknowledged', Buffer.from('orig'));
+    const record = retainedObservationRecord(f, 1, 'observation.recorded', original);
+    f.native.setup((sqlite) => {
+      const input = {
+        lineage: record.lineage,
+        operation: 'event_append' as const,
+        sequence: record.sequence,
+      };
+      if (retained === 'fingerprint') {
+        const result = acceptWorkerControlSequence(
+          { sqlite },
+          {
+            ...input,
+            fingerprint: canonicalJsonText(workerControlEventReceipt(record)),
+          }
+        );
+        expect(result.status).toBe('accepted');
+      } else {
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            ...input,
+            record,
+            recordKey: String(record.sequence),
+            acceptedAt: original.observedAt,
+          }
+        );
+      }
+    });
+    const before = f.records();
+    const publications = f.publicationCount();
+    expect(
+      await f.send(1, 'observation.recorded', {
+        ...original,
+        observationId: 'changed-unacknowledged',
+      })
+    ).toMatchObject({
+      accepted: false,
+      error: { code: 'worker_control_sequence_conflict', status: 409 },
+    });
+    expect(f.rows()).toEqual([]);
+    expect(f.records()).toEqual(before);
+    expect(f.publicationCount()).toBe(publications);
+  }
+);
 
 /** Records an image through the existing trusted backend owner, without a Worker-supplied grant. */
 async function nativeImageBinding(

@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { type AgentEnvironmentPackage, NativeLogMaxBytesSchema } from '@openkit/config-schema';
 import {
+  canonicalJsonText,
   readRetainedV1,
   type StopReason,
   StopReasonSchema,
@@ -23,6 +24,7 @@ import {
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
+import { OperationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
@@ -54,7 +56,8 @@ import type {
   WorkerControlLineage,
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
-import { workerControlEventReceipt } from './worker-control-gateway.js';
+import { WorkerControlGatewayError, workerControlEventReceipt } from './worker-control-gateway.js';
+import { matchesAcceptedWorkerControlSequence } from './worker-control-sequences.js';
 
 type WorkerControlReceiptDb = { readonly sqlite: Database.Database };
 
@@ -384,40 +387,67 @@ export function writeWorkerControlAcceptedRecord(
     );
 }
 
-/** Verifies original Core identity, then awaits native observation publication before any Core receipt. */
-function prepareWorkerControlObservation(
+/** Awaits the existing Workspace preparation for an already authenticated observation. */
+export function prepareWorkerControlObservation(
   coreDb: CoreDb,
-  event: WorkerCanonicalEventRecord
+  event: WorkerCanonicalEventRecord,
+  read?: Parameters<typeof requireNanoHostObservation>[2]
 ): Promise<void> {
   if (coreDb.sqlite.inTransaction)
     throw new Error('Observation preparation must precede the Core transaction');
-  const existing = requireNanoHostObservation(
-    coreDb,
-    (sqlite) =>
-      sqlite
-        .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
+  const readOwner = <Value>(query: (sqlite: Database.Database) => Value): Value => {
+    try {
+      return requireNanoHostObservation(coreDb, query, read);
+    } catch (error) {
+      if (read && error instanceof OperationError && error.code === 'operation_storage_unavailable')
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'NanoHost Worker control storage is unavailable.',
+          503
+        );
+      throw error;
+    }
+  };
+  const receipt = workerControlEventReceipt(event);
+  const { existing, fingerprintMatches } = readOwner((sqlite) => ({
+    existing: sqlite
+      .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
     FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
-        .get(
-          event.lineage.agentSessionId,
-          event.lineage.packageSnapshotId,
-          String(event.sequence)
-        ) as { schemaVersion: unknown; recordJson: string } | undefined
-  );
+      .get(event.lineage.agentSessionId, event.lineage.packageSnapshotId, String(event.sequence)) as
+      | { schemaVersion: unknown; recordJson: string }
+      | undefined,
+    fingerprintMatches: matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage: event.lineage,
+        operation: 'event_append',
+        sequence: event.sequence,
+        fingerprint: canonicalJsonText(receipt),
+      }
+    ),
+  }));
   if (
-    existing &&
-    !readRetainedV1(existing, () =>
-      isDeepStrictEqual(JSON.parse(existing.recordJson), workerControlEventReceipt(event))
-    )
-  )
-    throw new Error('recovery_required: worker receipt identity conflict');
-  return recordWorkerObservation(coreDb, event, existing !== undefined);
+    fingerprintMatches === false ||
+    (existing &&
+      !readRetainedV1(existing, () => isDeepStrictEqual(JSON.parse(existing.recordJson), receipt)))
+  ) {
+    if (!read) throw new Error('recovery_required: worker receipt identity conflict');
+    throw new WorkerControlGatewayError(
+      'worker_control_sequence_conflict',
+      'Worker observation does not match the retained event sequence.',
+      409
+    );
+  }
+  return recordWorkerObservation(coreDb, event, existing !== undefined, readOwner);
 }
 
 /** Retains one observation under verified outer lineage before a sanitized control receipt can be acknowledged. */
 async function recordWorkerObservation(
   coreDb: CoreDb,
   event: WorkerCanonicalEventRecord,
-  replay: boolean
+  replay: boolean,
+  readOwner: <Value>(query: (sqlite: Database.Database) => Value) => Value = (query) =>
+    requireNanoHostObservation(coreDb, query)
 ): Promise<void> {
   if (
     event.event.type !== 'observation.recorded' &&
@@ -449,7 +479,7 @@ async function recordWorkerObservation(
     if (native.imageDigest !== null) {
       // This owner binds physical NanoHost Epochs; backendKind names the logical backend.
       // Only its unique same-package physical binding can verify a Worker image claim.
-      const backend = requireNanoHostObservation(coreDb, (sqlite) => {
+      const backend = readOwner((sqlite) => {
         const bindings = sqlite
           .prepare(
             `SELECT attempt_id AS attemptId FROM worker_backend_sessions
