@@ -64,7 +64,11 @@ export async function verifyOpenKitAccessTokenRecord(
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  const result = await client.accessTokenVerification(database, input);
+  const result = await client.accessTokenVerification(
+    database,
+    input,
+    !!retained?.runSubject && retained.status === 'active'
+  );
   if (retained?.runSubject) {
     if (options.runtimeConfigManager) {
       await new SecurityTriggerStore(coreDb).consumeSensor(

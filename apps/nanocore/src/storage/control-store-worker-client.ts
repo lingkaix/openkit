@@ -922,6 +922,9 @@ interface Opening {
   nanoHostTargetTransition?: Promise<void>;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
+  verifyRunBoundAccessToken?(
+    input: ControlAccessTokenVerification
+  ): Promise<ControlAccessTokenVerificationResult>;
   postCanaryAudit?(
     coreDb: CoreDb,
     input: ControlStandaloneAuditInput,
@@ -3693,6 +3696,19 @@ class ControlStoreWorkerClient {
             acknowledged.resolve();
             releaseNative();
           }
+        });
+
+      opening.verifyRunBoundAccessToken = (input) =>
+        withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+          const reply = await this.request({
+            operation: 'access-token-verification',
+            database: core.command.database,
+            input,
+            nanoHostPeer: { openingRequestId, ownerIdentity },
+          });
+          if (reply.operation !== 'access-token-verification')
+            throw new ControlStoreWorkerError('integrity', 'unknown');
+          return reply.result;
         });
 
       opening.postCanaryAudit = async (coreDb, input, authenticatedCapabilityHash) => {
@@ -7875,8 +7891,19 @@ class ControlStoreWorkerClient {
   /** Returns current redacted token authority only after its last-use FULL acknowledgement. */
   async accessTokenVerification(
     database: string,
-    input: ControlAccessTokenVerification
+    input: ControlAccessTokenVerification,
+    runBound = false
   ): Promise<ControlAccessTokenVerificationResult> {
+    const core = runBound ? this.openings.get(database) : undefined;
+    const dataRoot = core?.command.dataRoot;
+    if (
+      core?.command.initialize === 'core' &&
+      dataRoot &&
+      database === `core:${coreDbPath(dataRoot)}`
+    ) {
+      const native = this.openings.get(`server-owner:${serverStoragePath(dataRoot, 'nanohost')}`);
+      if (native?.verifyRunBoundAccessToken) return native.verifyRunBoundAccessToken(input);
+    }
     const reply = await this.request({ operation: 'access-token-verification', database, input });
     return (reply as Extract<Success, { operation: 'access-token-verification' }>).result;
   }

@@ -1098,14 +1098,14 @@ const nanoHostTerminalReleaseResult = z.union([
   z.strictObject({ state: z.enum(['conflict', 'unknown']) }),
 ]);
 
-const nanoHostHarnessAckPeer = z.strictObject({
+const nanoHostCoreReadPeer = z.strictObject({
   openingRequestId: z.number().int().nonnegative().safe(),
   ownerIdentity: z.string().regex(/^\d+:\d+$/),
 });
 
 const nanoHostFinalStage = z.discriminatedUnion('kind', [
-  nanoHostHarnessAckPeer.extend({ kind: z.literal('intake') }),
-  nanoHostHarnessAckPeer.extend({ kind: z.literal('observe') }),
+  nanoHostCoreReadPeer.extend({ kind: z.literal('intake') }),
+  nanoHostCoreReadPeer.extend({ kind: z.literal('observe') }),
   z.strictObject({
     kind: z.literal('settle'),
     coreIdentity: z.string().regex(/^\d+:\d+$/),
@@ -1711,6 +1711,7 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'access-token-verification';
           readonly input: ControlAccessTokenVerification;
+          readonly nanoHostPeer?: z.infer<typeof nanoHostCoreReadPeer>;
         }
       | { readonly operation: 'remote-mcp-audit'; readonly input: ControlRemoteMcpAudit }
       | {
@@ -1741,7 +1742,7 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'harness-lifecycle';
           readonly input: ControlHarnessLifecycleInput;
-          readonly nanoHostAckPeer?: z.infer<typeof nanoHostHarnessAckPeer>;
+          readonly nanoHostAckPeer?: z.infer<typeof nanoHostCoreReadPeer>;
         }
       | {
           readonly operation: 'recovery-target-preparation';
@@ -3569,7 +3570,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'access-token-verification')
     return (
-      exactFields(value, [...scoped, 'input']) &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostPeer']) &&
+      (value.nanoHostPeer === undefined ||
+        nanoHostCoreReadPeer.safeParse(value.nanoHostPeer).success) &&
       ControlAccessTokenVerificationSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
@@ -3709,7 +3712,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       input.success &&
       (value.nanoHostAckPeer === undefined ||
         ((input.data.kind === 'result.acknowledge' || input.data.kind === 'operation.settle') &&
-          nanoHostHarnessAckPeer.safeParse(value.nanoHostAckPeer).success)) &&
+          nanoHostCoreReadPeer.safeParse(value.nanoHostAckPeer).success)) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   }
