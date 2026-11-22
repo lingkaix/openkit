@@ -250,6 +250,8 @@ export interface WorkerControlGatewayOptions {
   now?: () => string;
   /** Optional durable recorder for accepted worker-control records. */
   acceptedRecordRecorder?: WorkerControlAcceptedRecordRecorder;
+  /** Prepares Workspace evidence on the split path before publishing the original Native event. */
+  prepareObservation?: WorkerControlAcceptedRecordRecorder['prepareObservation'];
   /** Optional durable sandbox binding resolver for live lease enforcement. */
   resolveTokenBinding?: WorkerControlTokenBindingResolver;
   /** Optional durable sequence fingerprint recorder. */
@@ -524,6 +526,7 @@ export class WorkerControlGateway {
   private readonly createCapabilityToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
+  private readonly prepareObservation: WorkerControlGatewayOptions['prepareObservation'];
   private readonly publishControlOperation: WorkerControlGatewayOptions['publishControlOperation'];
   private readonly publishHeartbeat: WorkerControlGatewayOptions['publishHeartbeat'];
   private readonly heartbeatClock: WorkerControlGatewayOptions['now'];
@@ -550,6 +553,9 @@ export class WorkerControlGateway {
     this.createCapabilityToken = options.createCapabilityToken ?? createRandomToken;
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
+    this.prepareObservation =
+      options.prepareObservation ??
+      options.acceptedRecordRecorder?.prepareObservation?.bind(options.acceptedRecordRecorder);
     this.publishFinalStatus = options.publishFinalStatus;
     this.publishHeartbeat = options.publishHeartbeat;
     this.publishControlOperation = options.publishControlOperation;
@@ -1370,11 +1376,20 @@ export class WorkerControlGateway {
             schemaVersion: 2,
           });
         });
-      return (record.event.type === 'observation.recorded' ||
-        record.event.type === 'observation.content.chunk') &&
-        this.acceptedRecordRecorder?.prepareObservation
-        ? this.acceptedRecordRecorder.prepareObservation(record).then(publish)
-        : publish();
+      if (
+        record.event.type !== 'observation.recorded' &&
+        record.event.type !== 'observation.content.chunk'
+      )
+        return publish();
+      this.requireSandboxBindingRef(state);
+      input.recheckAdmission?.();
+      if (!this.prepareObservation)
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'Observation receipt requires durable storage.',
+          503
+        );
+      return this.prepareObservation(record).then(publish);
     }
     const accept = (): WorkerControlResponseEnvelope => {
       input.recheckAdmission?.();
