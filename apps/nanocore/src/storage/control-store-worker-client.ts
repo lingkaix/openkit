@@ -718,6 +718,12 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
+  writeIdleHarnessDrain(
+    input: Extract<
+      ControlHarnessLifecycleInput,
+      { kind: 'sandbox.claim-idle-drain' | 'sandbox.restore-admission' }
+    >
+  ): Promise<void>;
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
   waitForWorkerControlAcknowledgement(): Promise<void>;
@@ -4005,6 +4011,11 @@ class ControlStoreWorkerClient {
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,
+          writeIdleHarnessDrain: async (input) => {
+            await waitForWorkerControlAcknowledgement();
+            const result = await writeHarnessTurn(input);
+            if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
+          },
           releaseTerminalScopes,
           writeStorageAttachment,
           waitForWorkerControlAcknowledgement,
