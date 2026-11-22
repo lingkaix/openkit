@@ -91,6 +91,7 @@ import {
 } from './providers/vault-credential-resolver.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
 import {
+  type AdmittedNanoHostAttemptRecovery,
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
@@ -129,9 +130,13 @@ import { drainSecurityNotices } from './security/publication.js';
 import { SecurityTriggerStore } from './security/trigger.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { communicationOwner } from './storage/communication-owner.js';
-import type { ControlStoreProductReadHandle } from './storage/control-store-product-records.js';
+import {
+  ControlProductPreconditionError,
+  type ControlStoreProductReadHandle,
+} from './storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
+  type NanoHostOwnerBinding,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import {
@@ -169,6 +174,30 @@ import { closeRevokedCredentialBindings } from './vault/vault-operation-implemen
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
+
+/** Uses the same acknowledged owner that fenced the RuntimeTarget before serving. */
+function bindBootNanoHostAttemptRecovery(
+  owner: NanoHostOwnerBinding
+): AdmittedNanoHostAttemptRecovery {
+  const hold = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' } as const;
+  return {
+    owner,
+    close: owner.closeRecovery,
+    commit: async (input) => {
+      if (input.kind === 'retire-orphan') return hold;
+      return owner.classifyRecovery(
+        input as Parameters<NanoHostOwnerBinding['classifyRecovery']>[0]
+      );
+    },
+    reconcileFinal: async () => {
+      // Boot needs an inspect-only join of the original Core observation and Native final.
+      throw new ControlProductPreconditionError();
+    },
+    // Recovery already reads exact physical receipts on replay. A first cleanup needs a
+    // transport that pins the original lease and target and returns that same receipt.
+    cleanup: async () => hold,
+  };
+}
 
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
@@ -579,17 +608,20 @@ const bootResult = await runBootPhases({
           workerControlGateway: bootWorkerControlGateway,
         });
         const recoveryRuntime = workerLifecycleRuntime;
+        const admittedNanoHostRecovery =
+          nanoHostStorage.state === 'ready'
+            ? {
+                state: 'ready' as const,
+                value: bindBootNanoHostAttemptRecovery(nanoHostStorage.value.owner),
+              }
+            : nanoHostStorage;
         const recoveryInput = {
           executionBackend: requireBootValue(
             recoveryRuntime.turnExecutor.executionBackend,
             'Execution backend was not initialized.'
           ),
           store: recoveryStore,
-          admittedNanoHostRecovery: {
-            state: 'unavailable',
-            owner: 'nanohost',
-            reason: 'recovery-required',
-          },
+          admittedNanoHostRecovery,
           reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
           reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
