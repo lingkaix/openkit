@@ -19,6 +19,7 @@ import {
   writeExecutionJournalIntent,
 } from './execution-journal.js';
 import type {
+  ExecutionInvocation,
   ExecutionInvocationCarriage,
   ExecutionJournalExecution,
   ExecutionJournalIntent,
@@ -266,6 +267,25 @@ export function recordCoreIdleHarnessConsumptionInDb(
     state: 'applied',
     receipt: { key, consumer: serialized, acknowledgedAt: now },
   } as const;
+}
+
+/** Proves the exact linked consumption of the original physical effect result. */
+export function hasCoreIdleCleanupConsumption(db: CoreDb, original: ExecutionInvocation): boolean {
+  if (
+    original.control.outputRefs.length !== 1 ||
+    !/^sha256:[0-9a-f]{64}$/.test(original.control.outputRefs[0]!)
+  )
+    return false;
+  return readExecutionJournalLinkedInspections(db, original.ref).some(
+    ({ inspection }) =>
+      inspection.state === 'completed' &&
+      inspection.control.kind === 'consume-receipt' &&
+      inspection.ref.execution.executionId === original.ref.execution.executionId &&
+      inspection.ref.stepId === `${original.ref.stepId}:consume` &&
+      inspection.control.operationId === original.carriage.requestId &&
+      isDeepStrictEqual(inspection.control.inputRefs, original.control.outputRefs) &&
+      isDeepStrictEqual(inspection.control.outputRefs, original.control.outputRefs)
+  );
 }
 
 /** Settles the existing complete idle outcome plus linked consumption tuple on the deciding Core connection. */

@@ -24,6 +24,7 @@ import { validatePolicyDocument } from '../policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   abandonCoreImageJournal,
+  hasCoreIdleCleanupConsumption,
   readCoreHarnessConsumption,
   settleCoreIdleJournal,
 } from '../runtime/core-journal-records.js';
@@ -65,9 +66,15 @@ import type {
   ExecutionJournalIntent,
   ExecutionStepRef,
 } from '../runtime/execution-step-journal.js';
+import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import { nanoHostStartupDeadline } from '../runtime/nanohost-attempt-clocks.js';
+import {
+  createNanoHostEffectRequest,
+  nanoHostSandboxIdFromBackendSessionId,
+} from '../runtime/nanohost-effect-identity.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import {
+  getWorkerBackendSession,
   getWorkerBackendSessionByPackage,
   readNanoHostSubmissionPlacement,
   readNanoHostWorkerLease,
@@ -1486,12 +1493,204 @@ function appendContainmentEvidenceHandoff(
   });
 }
 
+type IdleCleanupIntent = Extract<ControlCoreJournalInput, { kind: 'idle-intent' }>;
+
+function requireIdleDeletePredecessor(
+  db: CoreDb,
+  input: IdleCleanupIntent,
+  sandboxId: string
+): void {
+  const request = createNanoHostEffectRequest(input.identity, input.attemptId, 'bridge.close', {
+    attemptId: input.attemptId,
+    sandboxId,
+  });
+  const ref: ExecutionStepRef = {
+    execution: { owner: { kind: 'server' }, executionId: `idle-cleanup:${request.requestId}` },
+    stepId: `effect:${request.requestId}`,
+  };
+  const present = db.sqlite
+    .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+    .get(ref.execution.executionId);
+  // The original direct delete is permitted when there is no bridge occurrence to continue.
+  if (!present && !input.predecessor) return;
+  const refusal = 'Idle cleanup predecessor changed before delete admission.';
+  if (!present || !input.predecessor || !isDeepStrictEqual(input.predecessor.ref, ref))
+    throw new CoreJournalRefusal(refusal);
+  const root = readExecutionJournalRoot(db, ref.execution);
+  const previous = readExecutionJournalInvocation(db, ref);
+  if (
+    root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+    root.workId !== request.requestId ||
+    root.revision !== input.predecessor.revision ||
+    root.phase !== 'closed' ||
+    previous.state !== 'completed' ||
+    previous.carriage.operation !== 'bridge.close' ||
+    previous.carriage.requestId !== request.requestId ||
+    previous.carriage.bindingRef !== input.sandboxBindingRef ||
+    previous.control.attemptId !== input.attemptId ||
+    previous.control.target?.targetId !== input.identity.runtimeTargetId ||
+    previous.control.target.allocationRef !== input.sandboxBindingRef ||
+    !previous.control.physicalFenceRefs.includes(input.originPhysicalEpoch) ||
+    !isDeepStrictEqual(previous.control.actor, input.package.triggerActor) ||
+    !hasCoreIdleCleanupConsumption(db, previous)
+  )
+    throw new CoreJournalRefusal(refusal);
+}
+
+/** Reserves the original closed resident's physical scope against one pinned Native snapshot. */
+export function reserveCoreIdleCleanupInDb(
+  db: CoreDb,
+  input: IdleCleanupIntent,
+  native: CoreDb['sqlite'] | undefined
+): string {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly || !native?.readonly || !native.inTransaction)
+    throw new CoreJournalRefusal('Idle cleanup requires an original Core scope reservation.');
+
+  const intent = decodeExecutionJournalIntent(input.intentJson);
+  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, input.attemptId);
+  const nanoHost = { sqlite: native };
+  const anchor = getWorkerBackendSession(nanoHost, input.attemptId);
+  const target = getNanoHostRuntimeTarget(nanoHost, input.identity.runtimeTargetId);
+  const identity = anchor && {
+    agentSessionId: anchor.agentSessionId,
+    backendKind: anchor.backendKind,
+    backendSessionId: anchor.backendSessionId,
+    deploymentId: anchor.deploymentId,
+    packageSnapshotId: anchor.packageSnapshotId,
+    runtimeTargetId: anchor.runtimeTargetId,
+    stagingDirectoryRef: anchor.stagingDirectoryRef,
+    transientProviderInstanceId: anchor.transientProviderInstanceId,
+  };
+  if (
+    attempt.phase !== 'closed' ||
+    !attempt.fenceRef ||
+    attempt.backendId !== input.backendId ||
+    !anchor ||
+    !isDeepStrictEqual(identity, input.identity) ||
+    anchor.workspaceId !== attempt.workspaceId ||
+    anchor.threadId !== attempt.threadId ||
+    anchor.turnId !== attempt.turnId ||
+    anchor.agentSessionId !== attempt.agentSessionId ||
+    anchor.packageSnapshotId !== attempt.inputRef ||
+    anchor.sandboxBindingRef !== attempt.bindingRef ||
+    anchor.originPhysicalEpoch !== input.originPhysicalEpoch ||
+    !target?.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.deploymentId !== anchor.deploymentId ||
+    target.physicalEpoch !== input.originPhysicalEpoch ||
+    !/^[0-9a-f]{64}$/.test(input.originPhysicalEpoch)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup has no exact closed resident provenance or current Epoch.'
+    );
+  if (
+    input.package.workspaceId !== anchor.workspaceId ||
+    input.package.threadId !== anchor.threadId ||
+    input.package.turnId !== anchor.turnId ||
+    input.package.agentSessionId !== anchor.agentSessionId ||
+    input.package.snapshotId !== anchor.packageSnapshotId ||
+    !isDeepStrictEqual(input.package.triggerActor, admission.triggerActor) ||
+    !isDeepStrictEqual(intent.control.actor, admission.triggerActor)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup immutable package actor or physical lineage conflicts.'
+    );
+
+  const { operation, requestId } = intent.carriage;
+  const cleanup = operation === 'bridge.close' || operation === 'sandbox.delete';
+  const sandboxId = nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId);
+  const resident = native
+    .prepare(`SELECT sandbox_runtime_id AS id, drain_state AS drain FROM sandbox_runtime_records
+      WHERE sandbox_binding_ref = ? AND runtime_target_id = ? AND origin_physical_epoch = ?
+      AND ('nh-' || substr(sandbox_compatibility_key, 1, 16)) = ?`)
+    .get(input.sandboxBindingRef, target.targetId, input.originPhysicalEpoch, sandboxId) as
+    | { id: string; drain: string }
+    | undefined;
+  if (
+    !resident ||
+    (cleanup && resident.drain !== 'draining') ||
+    (input.sandboxId !== undefined && input.sandboxId !== sandboxId) ||
+    nonClosedSandboxAttempts(
+      db,
+      input.backendId,
+      { scope: input.package, snapshotId: input.package.snapshotId },
+      target.targetId,
+      input.originPhysicalEpoch,
+      sandboxId,
+      nanoHost
+    ).length !== 0 ||
+    native
+      .prepare(`SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id = ?
+        AND (h.schema_version <> 1 OR h.active_turn_count <> 0
+          OR h.operation_state NOT IN ('idle', 'settled')
+          OR EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
+            WHERE b.harness_instance_id = h.harness_instance_id
+            AND (b.schema_version <> 1 OR b.current_turn_id IS NOT NULL
+              OR b.current_attempt_id IS NOT NULL))) LIMIT 1`)
+      .get(resident.id)
+  )
+    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
+
+  const expectedKind =
+    operation === 'bridge.close'
+      ? 'inspect-cleanup'
+      : operation === 'sandbox.delete'
+        ? 'release'
+        : 'collect';
+  if (
+    intent.execution.ref.owner.kind !== 'server' ||
+    intent.execution.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+    (!cleanup && operation !== 'workspace.collect' && operation !== 'file.export') ||
+    intent.control.kind !== expectedKind ||
+    intent.execution.ref.executionId !== `idle-cleanup:${requestId}` ||
+    intent.execution.workId !== requestId ||
+    intent.stepId !== `effect:${requestId}` ||
+    intent.control.operationId !== requestId ||
+    intent.carriage.bindingRef !== input.sandboxBindingRef ||
+    intent.control.attemptId !== input.attemptId ||
+    intent.control.target?.allocationRef !== input.sandboxBindingRef ||
+    intent.control.target.targetId !== target.targetId ||
+    !isDeepStrictEqual(intent.execution.exclusionRefs, [
+      input.sandboxBindingRef,
+      input.originPhysicalEpoch,
+    ]) ||
+    !intent.control.authorityRefs.includes(anchor.sandboxBindingRef) ||
+    !intent.control.physicalFenceRefs.includes(input.originPhysicalEpoch) ||
+    intent.control.deadlineUnixNano === null ||
+    intent.control.deadlineUnixNano <= BigInt(Date.now()) * 1_000_000n ||
+    (cleanup &&
+      requestId !==
+        createNanoHostEffectRequest(input.identity, input.attemptId, operation, {
+          attemptId: input.attemptId,
+          sandboxId,
+        }).requestId)
+  )
+    throw new CoreJournalRefusal('Core idle cleanup intent conflicts with its original scope.');
+  if (
+    db.sqlite
+      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+      .get(intent.execution.ref.executionId)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup key already exists; inspect retained result only.',
+      'idle_cleanup_result_only'
+    );
+  if (operation === 'sandbox.delete') requireIdleDeletePredecessor(db, input, sandboxId);
+  else if (input.predecessor)
+    throw new CoreJournalRefusal('Idle cleanup predecessor changed before delete admission.');
+
+  return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent, input.processWitness));
+}
+
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
   db: CoreDb,
   input: ControlCoreJournalInput | ControlCoreImageResult,
   publication?: NativeRuntimePolicyPublication,
-  nanoHost?: NanoHostCoreReads
+  nanoHost?: NanoHostCoreReads,
+  idleCleanupNative?: CoreDb['sqlite']
 ): string | null {
   assertControlProductWriter(db.sqlite);
   if (input.kind === 'image-result') return applyControlCoreImageResult(db, input, nanoHost);
@@ -1564,8 +1763,7 @@ export function applyControlCoreJournal(
       )
     );
   }
-  // New idle effects require a covering Core reservation of the physical scope.
-  throw new CoreJournalRefusal('Idle cleanup requires an original Core scope reservation.');
+  return reserveCoreIdleCleanupInDb(db, input, idleCleanupNative);
 }
 
 type ContainmentInput = Extract<

@@ -48,6 +48,7 @@ import {
   observeAcceptedNanoHostFinalInDb,
   readCoreImageAcquisitionRef,
   releaseCoreNanoHostTerminalInDb,
+  reserveCoreIdleCleanupInDb,
 } from '../storage/core-journal-native.js';
 import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -78,6 +79,7 @@ import {
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
   recordCoreIdleHarnessConsumptionInDb,
+  settleCoreIdleJournal,
 } from './core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -96,6 +98,7 @@ import {
   admitKernelInputInDb,
   admitKernelSchedulerGrantInDb,
   admitRepairCallEntryInDb,
+  CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
@@ -119,6 +122,7 @@ import {
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
 import type {
   ExecutionJournalAdmission,
   ExecutionJournalIntent,
@@ -126,6 +130,7 @@ import type {
   ExecutionJournalSpan,
 } from './execution-step-journal.js';
 import { hasNanoHostAttemptPreEffectProof } from './nanohost-attempt-recovery.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
@@ -1507,6 +1512,402 @@ describe('persisted execution journal contracts', () => {
       terminalCause: 'late-observation',
     });
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
+  });
+
+  function idleCleanupFixture() {
+    const f = journalFixture();
+    const native = openNanoHostTestOwner();
+    const workspaceId = testEntityId('ws', 'idle-reservation');
+    const threadId = testEntityId('th', 'idle-reservation');
+    const turnId = f.execution.workId;
+    const agentSessionId = testEntityId('as', 'idle-reservation');
+    const userId = ensureLocalUser(f.db);
+    const actor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      queueEntryId: 'idle-reservation-queue',
+      backendId: 'nanohost',
+      triggerActor: actor,
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original idle resident'),
+      requestedAgentId: 'agent_worker',
+    });
+    const sandboxBindingRef = 'idle-sandbox-binding';
+    const packageSnapshotId = 'idle-original-package';
+    const attempt = submitTestNanoHostWorkerLease(
+      f.db,
+      entry,
+      sandboxBindingRef,
+      {
+        agentSessionId,
+        packageSnapshotId,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      { nativePath: native.sqlite.name }
+    );
+    const { attemptId, createdAt } = attempt;
+    const sandboxKey = '8'.repeat(64);
+    const sandboxId = `nh-${sandboxKey.slice(0, 16)}`;
+    const target = getNanoHostRuntimeTarget(native, `test-target-${turnId}`)!;
+    const originPhysicalEpoch = target.physicalEpoch!;
+    const identity = {
+      agentSessionId,
+      backendKind: 'openshell' as const,
+      backendSessionId: `${sandboxId}-${'9'.repeat(16)}`,
+      deploymentId: target.deploymentId,
+      packageSnapshotId,
+      runtimeTargetId: target.targetId,
+      stagingDirectoryRef: `fixture-staging-${attemptId}`,
+      transientProviderInstanceId: null,
+    };
+    native.setup((sqlite) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_session_id = ? WHERE attempt_id = ?')
+        .run(identity.backendSessionId, attemptId);
+      sqlite
+        .prepare(`INSERT INTO sandbox_runtime_records (
+        sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
+        sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
+        max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state,
+        drain_state, cleanup_state, created_at, updated_at
+      ) VALUES ('idle-sandbox', ?, ?, ?, 'idle-integration', ?, 'image', 'local',
+        2, 2, 1, 'open', 'ready', 'draining', 'clean', ?, ?)`)
+        .run(
+          target.targetId,
+          originPhysicalEpoch,
+          sandboxBindingRef,
+          sandboxKey,
+          createdAt,
+          createdAt
+        );
+      sqlite
+        .prepare(`INSERT INTO harness_instance_records (
+        harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
+        runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json,
+        max_open_sessions, max_active_turns, open_session_count, active_turn_count, lifecycle_state,
+        drain_state, next_sequence, operation_state, created_at, updated_at
+      ) VALUES ('idle-harness', 'idle-sandbox', 'idle-harness-binding', 'compat', 'local',
+        'adapter', 'version', 1, '[]', 2, 1, 0, 0, 'open', 'draining', 1, 'idle', ?, ?)`)
+        .run(createdAt, createdAt);
+    });
+    const closing = markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId,
+      cause: 'turn-completed',
+    });
+    closeSchedulerExecutionAttemptWithFence(f.db, {
+      correlation: schedulerExecutionCorrelation(closing),
+      fenceRef: 'original-idle-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
+    const effect = (operation: 'bridge.close' | 'sandbox.delete') => {
+      const effectInput = { attemptId, sandboxId };
+      const requestId = createNanoHostEffectRequest(identity, attemptId, operation, effectInput)
+        .requestId!;
+      const draft = f.intent(operation === 'bridge.close' ? 72 : 74);
+      const fingerprint = commandInputHash({
+        definition: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+        requestId,
+        operation,
+        identity,
+        attemptId,
+        originPhysicalEpoch,
+        sandboxBindingRef,
+      });
+      const intent: ExecutionJournalIntent = {
+        ...draft,
+        execution: {
+          ...draft.execution,
+          ref: { owner: { kind: 'server' }, executionId: `idle-cleanup:${requestId}` },
+          definitionVersion: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+          workId: requestId,
+          fingerprint,
+          exclusionRefs: [sandboxBindingRef, originPhysicalEpoch],
+        },
+        stepId: `effect:${requestId}`,
+        carriage: { operation, requestId, sequence: null, bindingRef: sandboxBindingRef },
+        control: {
+          ...draft.control,
+          definitionVersion: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+          workId: requestId,
+          fingerprint,
+          kind: operation === 'bridge.close' ? 'inspect-cleanup' : 'release',
+          target: {
+            backendKind: 'openshell',
+            targetId: target.targetId,
+            allocationRef: sandboxBindingRef,
+          },
+          attemptId,
+          operationId: requestId,
+          actor,
+          authorityRefs: [
+            packageSnapshotId,
+            sandboxBindingRef,
+            sandboxBindingRef,
+            originPhysicalEpoch,
+          ],
+          inputRefs: [
+            packageSnapshotId,
+            agentSessionId,
+            sandboxBindingRef,
+            sandboxBindingRef,
+            originPhysicalEpoch,
+            commandInputHash(effectInput),
+          ],
+          physicalFenceRefs: [originPhysicalEpoch],
+        },
+      };
+      const input = {
+        kind: 'idle-intent' as const,
+        intentJson: encodeExecutionJournalValue(intent),
+        processWitness: executionJournalProcessWitness(),
+        backendId: 'nanohost',
+        attemptId,
+        identity,
+        package: {
+          workspaceId,
+          threadId,
+          turnId,
+          agentSessionId,
+          snapshotId: packageSnapshotId,
+          triggerActor: actor,
+        },
+        originPhysicalEpoch,
+        sandboxBindingRef,
+        sandboxId,
+      };
+      return { intent, input, ref: { execution: intent.execution.ref, stepId: intent.stepId } };
+    };
+    const reserve = (
+      input: ReturnType<typeof effect>['input'] & {
+        predecessor?: { ref: ReturnType<typeof effect>['ref']; revision: number };
+      },
+      available = true
+    ) =>
+      f.db.sqlite
+        .transaction(() =>
+          native.sqlite
+            .transaction(() =>
+              reserveCoreIdleCleanupInDb(f.db, input, available ? native.sqlite : undefined)
+            )
+            .deferred()
+        )
+        .immediate();
+    const settle = (intent: ExecutionJournalIntent, digest: string) =>
+      f.db.sqlite
+        .transaction(() =>
+          settleCoreIdleJournal(f.db, intent, 'completed', digest, executionJournalProcessWitness())
+        )
+        .immediate();
+    return { f, native, effect, reserve, settle, target, sandboxBindingRef, originPhysicalEpoch };
+  }
+
+  it('reserves the exact draining Core idle scope only with admitted vacant Native placement', () => {
+    const { f, native, effect, reserve, sandboxBindingRef, originPhysicalEpoch } =
+      idleCleanupFixture();
+    const bridge = effect('bridge.close');
+    expect(() => reserve(bridge.input, false)).toThrow(
+      'Idle cleanup requires an original Core scope reservation.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare("UPDATE sandbox_runtime_records SET sandbox_binding_ref = 'different-resident'")
+        .run()
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE sandbox_runtime_records SET sandbox_binding_ref = ?, origin_physical_epoch = ?'
+        )
+        .run(sandboxBindingRef, 'b'.repeat(64))
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) => {
+      sqlite
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
+        .run(originPhysicalEpoch);
+      sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
+    });
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    expect(
+      f.db.sqlite
+        .prepare('SELECT 1 FROM control_executions WHERE id=?')
+        .get(bridge.ref.execution.executionId)
+    ).toBeUndefined();
+    native.setup((sqlite) =>
+      sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run()
+    );
+
+    const siblingWorkspace = testEntityId('ws', 'idle-live-sibling');
+    const siblingThread = testEntityId('th', 'idle-live-sibling');
+    const siblingTurn = testEntityId('tu', 'idle-live-sibling');
+    const siblingSession = testEntityId('as', 'idle-live-sibling');
+    const actor = bridge.input.package.triggerActor;
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: siblingWorkspace,
+      ownerUserId: actor.id,
+    });
+    const admission = createSchedulerAdmissionEntry(f.db, {
+      queueEntryId: 'idle-live-sibling-queue',
+      backendId: bridge.input.backendId,
+      triggerActor: actor,
+      workspaceId: siblingWorkspace,
+      threadId: siblingThread,
+      turnId: siblingTurn,
+      inputRef: schedulerFixtureInput(siblingWorkspace, siblingTurn, 'Live sibling'),
+      requestedAgentId: 'agent_worker',
+    });
+    const sibling = createSchedulerExecutionAttempt(f.db, {
+      entry: admission,
+      preparationInput: {},
+    });
+    bindSchedulerExecutionAttemptSession(f.db, {
+      attemptId: sibling.attemptId,
+      agentSessionId: siblingSession,
+    });
+    const prepared = finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: sibling.attemptId,
+      inputRef: 'sibling-package',
+      bindingRef: 'sibling-attempt-binding',
+    });
+    native.setup((sqlite) =>
+      recordWorkerBackendSessionMaterializing(
+        f.db,
+        {
+          backendLineage: { kind: 'reference', imageRef: 'registry.example/worker' },
+          backendVersion: '1.0.0',
+          sandboxBindingRef: 'sibling-attempt-binding',
+          lineage: { workspaceId: siblingWorkspace, threadId: siblingThread, turnId: siblingTurn },
+          identity: {
+            ...bridge.input.identity,
+            agentSessionId: siblingSession,
+            packageSnapshotId: 'sibling-package',
+            backendSessionId: `${bridge.input.sandboxId}-${'1'.repeat(16)}`,
+            stagingDirectoryRef: 'sibling-staging',
+          },
+        },
+        { attempt: prepared, owner: { sqlite } }
+      )
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_session_id=? WHERE attempt_id=?')
+        .run(`nh-${'2'.repeat(16)}-${'1'.repeat(16)}`, sibling.attemptId)
+    );
+
+    reserve(bridge.input);
+    const root = readExecutionJournalRoot(f.db, bridge.ref.execution);
+    expect(root).toMatchObject({
+      phase: 'open',
+      exclusionRefs: [sandboxBindingRef, originPhysicalEpoch],
+      openSteps: [bridge.ref],
+    });
+    expect(readExecutionJournalInvocation(f.db, bridge.ref)).toMatchObject({
+      state: 'intent',
+      carriage: bridge.intent.carriage,
+    });
+  });
+
+  it('recovers an idle ACK result-only and admits delete only after the exact consumed bridge result', async () => {
+    const { f, native, effect, reserve, settle } = idleCleanupFixture();
+    const bridge = effect('bridge.close');
+    const deletion = effect('sandbox.delete');
+    reserve(bridge.input);
+    expect(() => reserve(bridge.input)).toThrow(
+      expect.objectContaining({ reasonCode: 'idle_cleanup_result_only' })
+    );
+    const advance = vi.fn<
+      ConstructorParameters<typeof ExecutionReconciler>[0]['advanceIdleCleanup']
+    >(async () => {});
+    const reconciler = new ExecutionReconciler({
+      coreDb: f.db,
+      nanoHost: createNanoHostCoreReads(native.storage.owner),
+      advanceIdleCleanup: advance,
+    });
+    await reconciler.runOnce();
+    expect(advance).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        action: 'result-only',
+        candidate: expect.objectContaining({ ref: bridge.ref }),
+      })
+    );
+    const revision = () => readExecutionJournalRoot(f.db, bridge.ref.execution).revision;
+    const pending = { ref: bridge.ref, revision: revision() };
+    expect(() => reserve({ ...deletion.input, predecessor: pending })).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    const result = commandInputHash({
+      requestId: bridge.intent.carriage.requestId,
+      disposition: 'accepted',
+    });
+    settle(bridge.intent, result);
+    const consumed = { ref: bridge.ref, revision: revision() };
+    advance.mockClear();
+    await reconciler.runOnce();
+    expect(advance).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ action: 'delete', candidate: consumed })
+    );
+    const restoreConsumption = new Error('Restore the original consumption fixture.');
+    expect(() =>
+      f.db.sqlite.transaction(() => {
+        f.db.sqlite
+          .prepare('DELETE FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+          .run(bridge.ref.execution.executionId, `${bridge.ref.stepId}:consume`);
+        expect(() => reserve({ ...deletion.input, predecessor: consumed })).toThrow(
+          'Idle cleanup predecessor changed before delete admission.'
+        );
+        throw restoreConsumption;
+      })()
+    ).toThrow(restoreConsumption);
+    expect(() => reserve(deletion.input)).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    expect(() => reserve({ ...deletion.input, predecessor: pending })).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    expect(() =>
+      reserve({
+        ...deletion.input,
+        predecessor: {
+          ...consumed,
+          ref: { ...bridge.ref, stepId: `${bridge.ref.stepId}:consume` },
+        },
+      })
+    ).toThrow('Idle cleanup predecessor changed before delete admission.');
+    f.reopen();
+    await native.reopen();
+    settle(bridge.intent, result);
+    expect(revision()).toBe(consumed.revision);
+    reserve({ ...deletion.input, predecessor: consumed });
+    expect(readExecutionJournalInvocation(f.db, deletion.ref)).toMatchObject({
+      state: 'intent',
+      carriage: deletion.intent.carriage,
+    });
+    expect(() => reserve({ ...deletion.input, predecessor: consumed })).toThrow(
+      expect.objectContaining({ reasonCode: 'idle_cleanup_result_only' })
+    );
+    expect(revision()).toBe(consumed.revision);
   });
 
   function schedulerGrantFixture(createdAt?: string) {
