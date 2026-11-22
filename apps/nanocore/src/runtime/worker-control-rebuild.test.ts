@@ -19,6 +19,7 @@ import {
   openWorkspaceDb,
 } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -276,18 +277,22 @@ describe('worker control gateway restart hydration', () => {
 
   it('restores the owning AEP for token-only package authentication', async () => {
     const fixture = await createRestorableWorkerControlFixture();
+    const read = fixture.nanoHost.storage.owner.read;
     const gateway = new WorkerControlGateway({
-      resolveTokenBinding: () => ({ status: 'accepted' }),
+      resolveTokenBinding: (input) => {
+        const binding = read((sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(fixture.coreDb, sqlite, input)
+        );
+        if (binding.state !== 'ready') throw new Error('The admitted fixture is unavailable.');
+        return binding.value;
+      },
     });
 
     try {
-      expect(
-        rebuildWorkerControlGatewaySessions(
-          fixture.coreDb,
-          gateway,
-          fixture.nanoHost.storage.owner.read
-        )
-      ).toEqual({ state: 'ready', value: undefined });
+      expect(rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway, read)).toEqual({
+        state: 'ready',
+        value: undefined,
+      });
 
       expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
         redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)

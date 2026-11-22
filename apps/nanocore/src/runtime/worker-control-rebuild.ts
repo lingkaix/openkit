@@ -14,11 +14,7 @@ import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.j
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import type { StorageResult } from '../storage/storage-owner.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import {
-  listRestorableNanoHostExecutionAttempts,
-  type NanoHostExecutionAttemptRecord,
-  requireNanoHostExecutionAttempt,
-} from './nanohost-attempt-records.js';
+import type { NanoHostExecutionAttemptRecord } from './nanohost-attempt-records.js';
 import {
   listWorkerBackendSessions,
   readNanoHostWorkerRouteBinding,
@@ -53,7 +49,7 @@ export function rebuildWorkerControlGatewaySessions(
     query: (sqlite: Database.Database) => Value
   ) => StorageResult<'nanohost', Value>
 ): StorageResult<'nanohost', void> {
-  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite }, true);
+  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
   try {
     const observed = readNanoHost
       ? readNanoHost(plan)
@@ -68,16 +64,10 @@ export function rebuildWorkerControlGatewaySessions(
 
 function planWorkerControlRestore(
   coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database },
-  admitted: boolean
+  owner: { readonly sqlite: Database.Database }
 ): WorkerControlSessionRestoreInput[] {
   const now = new Date().toISOString();
-  const leases = admitted
-    ? listAdmittedWorkerControlLeases(coreDb, owner)
-    : [
-        ...listRestorableNanoHostExecutionAttempts(coreDb),
-        ...listTerminalControlLeases(coreDb, owner, now),
-      ];
+  const leases = listAdmittedWorkerControlLeases(coreDb, owner);
   const planned: WorkerControlSessionRestoreInput[] = [];
   for (const lease of leases) {
     if (
@@ -103,7 +93,6 @@ function planWorkerControlRestore(
       !getWorkerControlAcceptedFinalStatus(owner, lineage) &&
       !hasPendingWorkerCancellationFinal(lease, now) &&
       !(
-        admitted &&
         lease.phase === 'closing' &&
         lease.terminalCause === 'worker-final-status' &&
         lease.fenceRef === null &&
@@ -161,60 +150,6 @@ function listAdmittedWorkerControlLeases(
     (attempt.phase === 'open' ? live : terminal).push(attempt);
   }
   return [...live, ...terminal];
-}
-
-/** Core supplies candidate placement. Only the admitted record owner can show final acceptance. */
-function listTerminalControlLeases(
-  coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database },
-  now: string
-): NanoHostExecutionAttemptRecord[] {
-  const table = coreDb.sqlite
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get('scheduler_execution_attempts');
-  if (!table) return [];
-
-  const rows = coreDb.sqlite
-    .prepare(
-      `SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
-         turn_id AS turnId, agent_session_id AS agentSessionId, input_ref AS packageSnapshotId,
-         phase, terminal_cause AS terminalCause
-       FROM scheduler_execution_attempts
-       WHERE phase IN ('closing', 'closed') AND binding_ref IS NOT NULL
-         AND worker_control_token_hash IS NOT NULL AND worker_inference_token_hash IS NOT NULL
-         AND deadline > ?
-       ORDER BY created_at ASC, attempt_id ASC`
-    )
-    .all(now) as Array<
-    Omit<WorkerControlLineage, 'requestId'> & {
-      attemptId: string;
-      phase: 'closing' | 'closed';
-      terminalCause: string | null;
-    }
-  >;
-  if (rows.length === 0) return [];
-
-  const hasFinal = owner.sqlite.prepare(
-    `SELECT 1 FROM worker_control_records
-     WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND agent_session_id = ?
-       AND package_snapshot_id = ? AND operation = 'final_status' LIMIT 1`
-  );
-  return rows
-    .filter(
-      (lease) =>
-        (lease.phase === 'closing' &&
-          ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-            lease.terminalCause ?? ''
-          )) ||
-        hasFinal.get(
-          lease.workspaceId,
-          lease.threadId,
-          lease.turnId,
-          lease.agentSessionId,
-          lease.packageSnapshotId
-        )
-    )
-    .map((lease) => requireNanoHostExecutionAttempt(coreDb, lease.attemptId));
 }
 
 /**
