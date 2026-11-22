@@ -969,6 +969,9 @@ describe('administrator runtime cleanup view', () => {
     await populate(input.coreDb);
     for (let index = 2; index <= 25; index += 1)
       attempt(input.coreDb, `attempt_${String(index).padStart(3, '0')}`);
+    const sentinel = Array.from({ length: 25 }, (_, index) =>
+      testEntityId('attempt', `attempt_${String(index + 1).padStart(3, '0')}`)
+    ).sort()[2]!;
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     let consumed = 0;
     const selected = new Set<string>();
@@ -995,13 +998,20 @@ describe('administrator runtime cleanup view', () => {
       vi.spyOn(statement, 'iterate').mockImplementation(function* (...parameters: unknown[]) {
         for (const row of iterate(...parameters)) {
           consumed += 1;
-          yield row;
+          // The count sentinel proves omission. An invalid preparation on it must stay unread.
+          const attempt = row as { attemptId?: string };
+          yield attempt.attemptId === sentinel ? { ...attempt, claim: null } : row;
         }
       });
       return statement;
     });
     const result = await read(input, 2);
     expect(result.items).toHaveLength(2);
+    expect(result.sources[0]).toMatchObject({
+      availability: 'available',
+      incomplete: true,
+      reasons: ['count_limit'],
+    });
     expect(consumed).toBeLessThanOrEqual(3);
     expect(selected).toEqual(new Set(['scheduler_execution_attempts']));
     expect(

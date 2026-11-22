@@ -1,4 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJsonText } from '@openkit/protocol';
+import {
+  buildWorkerCanonicalTerminalEventRecord,
+  type WorkerCanonicalTerminalEventDataInput,
+} from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import type {
   WorkerControlSequenceRecorder,
@@ -38,32 +43,8 @@ export function acceptWorkerControlSequence(
   owner: WorkerControlSequenceDb,
   input: WorkerControlSequenceRecorderInput
 ): WorkerControlSequenceRecorderResult {
-  const duplicate = matchesAcceptedWorkerControlSequence(owner, input);
-  if (duplicate !== null) {
-    if (!duplicate) {
-      return {
-        code: 'worker_control_sequence_conflict',
-        message: `Worker control ${input.operation} sequence already accepted with different content: ${input.sequence}`,
-        status: 'conflict',
-      };
-    }
-
-    return {
-      duplicate: true,
-      nextExpectedSequence: nextExpectedSequence(owner, input),
-      status: 'accepted',
-    };
-  }
-
-  const highest = highestAcceptedSequence(owner, input);
-
-  if (highest !== null && input.sequence < highest) {
-    return {
-      code: 'worker_control_sequence_stale',
-      message: `Worker control ${input.operation} sequence is older than the latest accepted sequence: ${input.sequence}`,
-      status: 'stale',
-    };
-  }
+  const observed = inspectWorkerControlSequence(owner, input);
+  if (observed.status !== 'accepted' || observed.duplicate) return observed;
 
   owner.sqlite
     .prepare(
@@ -96,9 +77,90 @@ export function acceptWorkerControlSequence(
       new Date().toISOString()
     );
 
+  return { ...observed, nextExpectedSequence: nextExpectedSequence(owner, input) };
+}
+
+/** Builds the exact two fingerprints used by both the admitted inspector and the final writer. */
+export function workerFinalSequenceInputs(
+  lineage: WorkerControlSequenceRecorderInput['lineage'],
+  payload: {
+    readonly sequence: number;
+    readonly terminalData: WorkerCanonicalTerminalEventDataInput;
+  }
+) {
+  const { sequence, terminalData } = payload;
+  const event = buildWorkerCanonicalTerminalEventRecord({ data: terminalData, lineage, sequence });
+  return {
+    event,
+    final: {
+      lineage,
+      operation: 'final_status' as const,
+      sequence,
+      fingerprint: canonicalJsonText({ ...terminalData, lineage, sequence }),
+    },
+    append: {
+      lineage,
+      operation: 'event_append' as const,
+      sequence,
+      fingerprint: canonicalJsonText(event),
+    },
+  };
+}
+
+/** Checks the original two Native streams under the pinned reader before Core consumes intake. */
+export function inspectNanoHostWorkerFinalSequences(
+  owner: WorkerControlSequenceDb,
+  lineage: WorkerControlSequenceRecorderInput['lineage'],
+  payload: Parameters<typeof workerFinalSequenceInputs>[1]
+) {
+  if (!owner.sqlite.readonly || !owner.sqlite.inTransaction)
+    throw new Error('Worker final preflight requires the pinned NanoHost read transaction.');
+  const { final, append } = workerFinalSequenceInputs(lineage, payload);
+  const finalSequence = inspectWorkerControlSequence(owner, final);
+  if (finalSequence.status !== 'accepted') return finalSequence;
+  const eventSequence = inspectWorkerControlSequence(owner, append);
+  if (eventSequence.status !== 'accepted') return eventSequence;
+  return {
+    status: 'accepted' as const,
+    finalStatusDuplicate: finalSequence.duplicate,
+    eventDuplicate: eventSequence.duplicate,
+  };
+}
+
+function inspectWorkerControlSequence(
+  owner: WorkerControlSequenceDb,
+  input: WorkerControlSequenceRecorderInput
+): WorkerControlSequenceRecorderResult {
+  const duplicate = matchesAcceptedWorkerControlSequence(owner, input);
+  if (duplicate !== null) {
+    if (!duplicate) {
+      return {
+        code: 'worker_control_sequence_conflict',
+        message: `Worker control ${input.operation} sequence already accepted with different content: ${input.sequence}`,
+        status: 'conflict',
+      };
+    }
+
+    return {
+      duplicate: true,
+      nextExpectedSequence: nextExpectedSequence(owner, input),
+      status: 'accepted',
+    };
+  }
+
+  const highest = highestAcceptedSequence(owner, input);
+
+  if (highest !== null && input.sequence < highest) {
+    return {
+      code: 'worker_control_sequence_stale',
+      message: `Worker control ${input.operation} sequence is older than the latest accepted sequence: ${input.sequence}`,
+      status: 'stale',
+    };
+  }
+
   return {
     duplicate: false,
-    nextExpectedSequence: nextExpectedSequence(owner, input),
+    nextExpectedSequence: input.sequence + 1,
     status: 'accepted',
   };
 }
