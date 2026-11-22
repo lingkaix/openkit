@@ -460,12 +460,6 @@ async function runPublicWorkerMcpLifecycle() {
       [...contextManifest.fileInventory.map((file) => file.path), 'package.json'].sort()
     );
     harnessOperations.push(started.operation);
-    await settleHarness(h2, integrationBindingRef, started, {
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'started',
-    });
-
     const capabilityToken = requireString(started.body.capabilityToken, 'Capability token');
     const workerControlToken = requireString(
       started.body.workerControlToken,
@@ -512,6 +506,69 @@ async function runPublicWorkerMcpLifecycle() {
     );
     assert.equal(heartbeat.status, 200, responseFailure('Worker heartbeat', heartbeat));
 
+    const event = (sequence: number, type: string, data: object) => ({
+      kind: 'event',
+      lineage,
+      schemaVersion: 1,
+      sequence,
+      event: { type, data },
+    });
+    const append = (record: ReturnType<typeof event>) =>
+      requestHttp2(h2, 'POST', '/worker-control/events/append', JSON.stringify({ lineage, record }), {
+        authorization: `Bearer ${workerControlToken}`,
+        'content-type': 'application/json',
+      });
+    const liveEvents = Array.from({ length: 5 }, (_, sequence) =>
+      event(sequence, 'worker.ready', {})
+    );
+    for (const record of liveEvents) {
+      const response = await append(record);
+      assert.equal(response.status, 200, responseFailure('Worker startup event', response));
+    }
+    const observationBody = Buffer.from('L3 restricted observation body');
+    const observation = event(5, 'observation.recorded', {
+      observationId: 'l3-live-observation',
+      sourceRef: 'l3-worker-capture',
+      sourceSequence: 0,
+      observedAt: new Date().toISOString(),
+      fact: {
+        kind: 'assistant',
+        phase: 'updated',
+        runtimeOriginRef: null,
+        messageRef: 'l3-observation',
+        representation: 'delta',
+      },
+      content: {
+        state: 'expected',
+        boundary: 'assistant.text',
+        mediaType: 'text/plain',
+        bytes: observationBody.length,
+        sha256: `sha256:${createHash('sha256').update(observationBody).digest('hex')}`,
+        chunkCount: 1,
+      },
+    });
+    const chunk = event(6, 'observation.content.chunk', {
+      observationId: 'l3-live-observation',
+      chunkIndex: 0,
+      byteOffset: 0,
+      encoding: 'base64',
+      data: observationBody.toString('base64'),
+    });
+    // A real Worker sends observations before the host's turn.start result is acknowledged.
+    const result = settleHarness(h2, integrationBindingRef, started, {
+      nativeHandleDigest: null,
+      nativeHandleState: 'pending',
+      state: 'started',
+    });
+    const [metadata] = await Promise.all([sleep(10).then(() => append(observation)), result]);
+    assert.equal(
+      metadata.status,
+      200,
+      responseFailure('Worker observation during turn.start settlement', metadata)
+    );
+    const body = await append(chunk);
+    assert.equal(body.status, 200, responseFailure('Worker observation body', body));
+
     const mcpClient = new Client({ name: 'openkit-public-worker-mcp-l3', version: '1.0.0' });
     try {
       await mcpClient.connect(
@@ -548,15 +605,10 @@ async function runPublicWorkerMcpLifecycle() {
       status: 'completed',
       stopReason: 'completed',
     };
-    const terminalBytes = Buffer.from(
-      `${JSON.stringify({
-        event: { data: terminalBody, type: 'turn.completed' },
-        kind: 'event',
-        lineage,
-        schemaVersion: 1,
-        sequence: 1,
-      })}\n`
-    );
+    const jsonLines = (records: ReturnType<typeof event>[]) =>
+      Buffer.from(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+    const terminalBytes = jsonLines([...liveEvents, observation, event(7, 'turn.completed', terminalBody)]);
+    const observationSource = jsonLines([observation, chunk]);
     const finalStatus = await requestHttp2(
       h2,
       'POST',
@@ -566,7 +618,7 @@ async function runPublicWorkerMcpLifecycle() {
         lineage,
         operation: 'final_status',
         schemaVersion: 2,
-        sequence: 1,
+        sequence: 7,
       }),
       { authorization: `Bearer ${workerControlToken}`, 'content-type': 'application/json' }
     );
@@ -596,7 +648,9 @@ async function runPublicWorkerMcpLifecycle() {
       if (exported.status === 200) {
         const command = parseJson(exported, 'file.export command');
         exports.push({ presence: command.presence, relativePath: command.relativePath });
-        if (command.presence === 'optional') {
+        if (command.relativePath.endsWith('/runtime/observations/5.jsonl')) {
+          await settleFileExport(h2, command, observationSource);
+        } else if (command.presence === 'optional') {
           await settleJsonEffect(h2, 'file.export', {
             requestId: command.requestId,
             state: 'absent',
@@ -955,6 +1009,7 @@ async function writeFixtureConfiguration(
   await writeJson(join(dataRoot, 'config', 'server.jsonc'), {
     defaults: { defaultAgentId: 'agent_codex_host' },
     mode: 'server',
+    policy: { workDataCapture: { value: 'on' } },
     nanohost: {
       bind: { host: '127.0.0.1', port: nanoHostPort },
       credentialRef: 'nanohost-transport:worker-mcp-smoke',
