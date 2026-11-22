@@ -677,6 +677,8 @@ export function createDefaultWorkerControlGateway(
     }
   };
   const gateway = new WorkerControlGateway({
+    afterWorkerControlAcknowledgement: (read, signal) =>
+      withWorkerControlAcknowledgement(owner, read, signal),
     ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
     resolveFinalStatusTokenBinding(input) {
       const binding = owner.read((sqlite) =>
@@ -2470,19 +2472,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     await next();
   });
   app.use('/api/worker-control/*', browserCors);
-  if (nanoHostStorage?.state === 'ready') {
-    const { owner } = nanoHostStorage.value;
-    for (const path of [
-      '/api/worker-control/heartbeat',
-      '/api/worker-control/events/append',
-      '/api/worker-capabilities/mcp/*',
-    ]) {
-      app.use(path, async (c, next) => {
-        await withWorkerControlAcknowledgement(owner, () => undefined, c.req.raw.signal);
-        await next();
-      });
-    }
-  }
   registerWorkerControlRoutes({
     app,
     coreDb: options.coreDb,
@@ -2509,17 +2498,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   app.use('/api/worker-inference/*', browserCors);
-  const workerInferenceOwner =
-    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.owner : undefined;
   registerWorkerInferenceRoutes({
     exposureAvailable: () =>
       operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
-    ...(workerInferenceOwner
-      ? {
-          afterWorkerControlAcknowledgement: (read, signal) =>
-            withWorkerControlAcknowledgement(workerInferenceOwner, read, signal),
-        }
-      : {}),
     onRawOutputStop: (scope, reason) =>
       turnExecutor.interruptTurn(sharedStore, scope.turnId, {
         requestId: null,

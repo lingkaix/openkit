@@ -135,9 +135,7 @@ async function fixture(
   rawSource: 'complete' | 'controlled' = 'complete',
   authority?: {
     resolveTokenBinding: WorkerControlTokenBindingResolver;
-    afterWorkerControlAcknowledgement: NonNullable<
-      Parameters<typeof registerWorkerInferenceRoutes>[0]['afterWorkerControlAcknowledgement']
-    >;
+    afterWorkerControlAcknowledgement: WorkerControlGateway['afterWorkerControlAcknowledgement'];
   }
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
@@ -170,6 +168,9 @@ async function fixture(
   });
   const gateway = new WorkerControlGateway({
     resolveTokenBinding: authority?.resolveTokenBinding ?? (() => ({ status: 'accepted' })),
+    ...(authority
+      ? { afterWorkerControlAcknowledgement: authority.afterWorkerControlAcknowledgement }
+      : {}),
   });
   const token = 'B'.repeat(43);
   gateway.registerSession(environmentPackage, {
@@ -229,9 +230,6 @@ async function fixture(
     app,
     coreDb,
     workerControlGateway: gateway,
-    ...(authority
-      ? { afterWorkerControlAcknowledgement: authority.afterWorkerControlAcknowledgement }
-      : {}),
     ...(nativeStop ? { onRawOutputStop } : {}),
     llmGatewayDispatcher: {
       createResponses: observedDispatch,

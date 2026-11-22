@@ -1926,7 +1926,6 @@ export function registerWorkerInferenceRoutes({
   resolveGatewayProvider,
   runtimeConfig,
   workerControlGateway,
-  afterWorkerControlAcknowledgement,
   onRawOutputStop,
 }: {
   /** Hono application receiving the internal routes. */
@@ -1946,11 +1945,6 @@ export function registerWorkerInferenceRoutes({
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
   readonly exposureAvailable?: () => boolean;
-  /** Joins an in-flight serving write before rereading the original Worker authority. */
-  readonly afterWorkerControlAcknowledgement?: <Value>(
-    read: () => Value,
-    signal?: AbortSignal
-  ) => Promise<Value>;
   /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
   readonly onRawOutputStop?: (
     scope: { workspaceId: string; threadId: string; turnId: string },
@@ -1965,8 +1959,6 @@ export function registerWorkerInferenceRoutes({
         403
       );
   };
-  const readWorkerAuthority = <Value>(read: () => Value, signal: AbortSignal) =>
-    afterWorkerControlAcknowledgement ? afterWorkerControlAcknowledgement(read, signal) : read();
   const activeRawCalls = new Map<
     string,
     {
@@ -2001,7 +1993,10 @@ export function registerWorkerInferenceRoutes({
       const authorization = c.req.header('authorization') ?? null;
       const authenticate = () =>
         workerControlGateway.authenticatePackageToken(authorization, { tokenFamily: 'inference' });
-      const environmentPackage = await readWorkerAuthority(authenticate, c.req.raw.signal);
+      const environmentPackage = await workerControlGateway.afterWorkerControlAcknowledgement(
+        authenticate,
+        c.req.raw.signal
+      );
 
       assertExposureAvailable();
       rejectWorkerInferenceAuthorityHeaders(c.req.raw.headers);
@@ -2031,7 +2026,7 @@ export function registerWorkerInferenceRoutes({
         ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
         : null;
       const assertAuthority = (signal = c.req.raw.signal) =>
-        readWorkerAuthority(() => {
+        workerControlGateway.afterWorkerControlAcknowledgement(() => {
           authenticate();
           if (
             !coreDb ||
