@@ -1,4 +1,4 @@
-import type { NANOHOST_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import type { NANOHOST_OPERATION_DEFINITIONS, OperationInput } from '@openkit/app-api-schemas';
 import {
   AbortNanoHostTransportRotationResponseSchema,
   DecommissionNanoHostResponseSchema,
@@ -271,6 +271,7 @@ export function createNanoHostOperationImplementations({
   sessionAuthority,
   readNanoHostTarget,
   nanoHostEnrollment,
+  afterNanoHostTransportAcknowledgement,
 }: {
   readonly coreDb: CoreDb | undefined;
   readonly mode: CoreMode;
@@ -278,6 +279,11 @@ export function createNanoHostOperationImplementations({
     Partial<OpenKitNanoHostConfig>;
   readonly sessionAuthority?: NanoHostTransportSessionAuthority;
   readonly readNanoHostTarget?: NanoHostCoreReads['readTarget'];
+  /** Waits for the admitted Native owner before running a synchronous administrator read. */
+  readonly afterNanoHostTransportAcknowledgement?: <Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ) => Promise<Value>;
   readonly nanoHostEnrollment?: {
     readonly storage: StorageResult<'nanohost', AdmittedNanoHostTransportStorage>;
     readonly commitEnroll: NanoHostAdministratorEnroll;
@@ -442,9 +448,13 @@ export function createNanoHostOperationImplementations({
 
       const { storage, commitEnroll } = nanoHostEnrollment;
       const config = requireNanoHostConfig();
-      const existingIdentity = storage.value.owner.read((sqlite) =>
-        isNanoHostTransportIdentityActive({ sqlite }, config.identityId, config.deploymentId)
-      );
+      const readExistingIdentity = () =>
+        storage.value.owner.read((sqlite) =>
+          isNanoHostTransportIdentityActive({ sqlite }, config.identityId, config.deploymentId)
+        );
+      const existingIdentity = afterNanoHostTransportAcknowledgement
+        ? await afterNanoHostTransportAcknowledgement(readExistingIdentity, context.signal)
+        : readExistingIdentity();
       if (existingIdentity.state !== 'ready') return unavailableNanoHostTransportStorage();
       if (existingIdentity.value)
         return failure(
@@ -532,17 +542,27 @@ export function createNanoHostOperationImplementations({
       }
     },
 
-    'nanohost.runtime-target': () => {
-      const observation = readConfiguredNanoHostRuntimeTargetStatus({
-        coreDb,
-        mode,
-        ...(readNanoHostTarget ? { readNanoHostTarget } : {}),
-        ...(nanoHostConfig ? { nanoHostConfig } : {}),
-      });
-      if (!observation.ok) {
-        return failure(observation.message, observation.code, observation.httpStatus);
-      }
-      return observation.status;
+    'nanohost.runtime-target': (
+      _input?: OperationInput<'nanohost.runtime-target'>,
+      context?: AdmittedOperationContext
+    ) => {
+      const read = () => {
+        const observation = readConfiguredNanoHostRuntimeTargetStatus({
+          coreDb,
+          mode,
+          ...(readNanoHostTarget ? { readNanoHostTarget } : {}),
+          ...(nanoHostConfig ? { nanoHostConfig } : {}),
+        });
+        if (!observation.ok)
+          return failure(observation.message, observation.code, observation.httpStatus);
+        return observation.status;
+      };
+      return afterNanoHostTransportAcknowledgement &&
+        mode === 'server' &&
+        nanoHostConfig &&
+        readNanoHostTarget
+        ? afterNanoHostTransportAcknowledgement(read, context?.signal)
+        : read();
     },
 
     'nanohost.token-issue': async (input, context) => {

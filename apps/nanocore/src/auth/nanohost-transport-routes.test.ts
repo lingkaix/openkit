@@ -42,7 +42,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { remoteMcpInvocation } from '../test-support/remote-mcp-invocation.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import type { BetterAuthServer } from './middleware.js';
-import { createNanoHostOperationImplementations } from './nanohost-operations.js';
+import * as nanoHostOperations from './nanohost-operations.js';
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
   createNanoHostTransportTokenRecord,
@@ -1999,6 +1999,109 @@ async function administrationFixture(acceptingProductWork = true) {
 }
 
 describe('definition-derived deployment administration cutover', () => {
+  it('serves an honest unready RuntimeTarget after the delayed restart admission ACK', async () => {
+    const ack = Promise.withResolvers<void>();
+    const queued = Promise.withResolvers<AbortSignal | undefined>();
+    let held = false;
+    const readWhileHeld = vi.fn();
+    const createAdminReadFixture = nanoHostOperations.createNanoHostOperationImplementations;
+    const factory = vi
+      .spyOn(nanoHostOperations, 'createNanoHostOperationImplementations')
+      .mockImplementation((options) =>
+        createAdminReadFixture({
+          ...options,
+          async afterNanoHostTransportAcknowledgement(read, signal) {
+            if (held) {
+              queued.resolve(signal);
+              await ack.promise;
+            }
+            signal?.throwIfAborted();
+            return read();
+          },
+          readNanoHostTarget: (id) => {
+            if (!held) return options.readNanoHostTarget!(id);
+            readWhileHeld();
+            return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+          },
+        })
+      );
+    let fixture: Awaited<ReturnType<typeof administrationFixture>> | undefined;
+    let pending: Promise<Response> | undefined;
+    try {
+      const f = await administrationFixture();
+      fixture = f;
+      const [path, init] = operationRequest('nanohost.runtime-target', {}, { headers: f.headers });
+      const poll = () => f.app.request(new Request(`http://localhost${path}`, init));
+      const missing = await poll();
+      expect(missing.status).toBe(404);
+      await expect(missing.json()).resolves.toMatchObject({
+        code: 'nanohost_runtime_target_not_found',
+      });
+
+      const configured = {
+        targetId: f.config.identityId,
+        identityId: f.config.identityId,
+        deploymentId: f.config.deploymentId,
+      };
+      const first = await allocateFixtureTarget(f.coreDb, {
+        ...configured,
+        observedAt: '2026-10-03T00:00:00.000Z',
+      });
+      await readyFixtureTarget(f.coreDb, {
+        ...configured,
+        connectionGeneration: first.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch: 'a'.repeat(64),
+        observedAt: '2026-10-03T00:00:01.000Z',
+      });
+      const successor = await allocateFixtureTarget(f.coreDb, {
+        ...configured,
+        observedAt: '2026-10-03T00:00:02.000Z',
+      });
+      await closeFixtureTarget(f.coreDb, {
+        targetId: configured.targetId,
+        closedGeneration: first.connectionGeneration,
+        authoritativeGeneration: successor.connectionGeneration,
+        observedAt: '2026-10-03T00:00:03.000Z',
+      });
+
+      // Model the admitted read being unavailable until the committing restart transition's ACK.
+      // The operation itself still uses the real App admission and stored NanoHost projection.
+      held = true;
+      const request = new Request(`http://localhost${path}`, init);
+      pending = f.app.request(request);
+      expect(
+        await Promise.race([queued.promise, pending.then((response) => response.status)])
+      ).toBe(request.signal);
+      expect(readWhileHeld).not.toHaveBeenCalled();
+      held = false;
+      ack.resolve();
+
+      const response = await pending;
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        connectionGeneration: successor.connectionGeneration,
+        deploymentId: configured.deploymentId,
+        freshEmpty: false,
+        identityId: configured.identityId,
+        observedAt: '2026-10-03T00:00:02.000Z',
+        physicalEpoch: null,
+        predecessorFenced: true,
+        ready: false,
+      });
+      expect(readWhileHeld).not.toHaveBeenCalled();
+    } finally {
+      held = false;
+      ack.resolve();
+      await pending?.catch(() => undefined);
+      factory.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      fixture?.coreDb.sqlite.close();
+    }
+  });
+
   it.each(['close', 'restart', 'revoke'] as const)(
     'projects the stored physical Epoch through native, HTTP, MCP and CLI reads after %s',
     async (loss) => {
@@ -2015,7 +2118,7 @@ describe('definition-derived deployment administration cutover', () => {
             responsibleServerAdminActorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
           }
         );
-        const native = createNanoHostOperationImplementations({
+        const native = nanoHostOperations.createNanoHostOperationImplementations({
           coreDb: f.coreDb,
           mode: 'server',
           nanoHostConfig: f.config,

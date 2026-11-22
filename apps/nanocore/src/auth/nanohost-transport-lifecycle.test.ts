@@ -192,6 +192,9 @@ it.each(['committed', 'not-committed', 'unknown'] as const)(
         throw new ControlStoreWorkerError('unavailable', 'unknown');
       return result;
     };
+    const ack = Promise.withResolvers<void>();
+    const identityReadQueued = Promise.withResolvers<AbortSignal | undefined>();
+    const requestSignal = new AbortController().signal;
     const operations = createNanoHostOperationImplementations({
       coreDb,
       mode: 'server',
@@ -203,6 +206,11 @@ it.each(['committed', 'not-committed', 'unknown'] as const)(
       },
       readNanoHostTarget: (id) =>
         storage.owner.read((sqlite) => getNanoHostRuntimeTarget({ sqlite }, id)),
+      async afterNanoHostTransportAcknowledgement<Value>(read: () => Value, signal?: AbortSignal) {
+        identityReadQueued.resolve(signal);
+        await ack.promise;
+        return read();
+      },
       nanoHostEnrollment: { storage: admitted, commitEnroll },
     });
     const context = {
@@ -210,6 +218,7 @@ it.each(['committed', 'not-committed', 'unknown'] as const)(
       actor: { kind: 'local', userId },
       actorRef: { kind: 'user', id: userId },
       scope: { kind: 'server' },
+      signal: requestSignal,
       recheckAdmission: async () => {
         rechecks += 1;
       },
@@ -222,6 +231,25 @@ it.each(['committed', 'not-committed', 'unknown'] as const)(
         .pluck()
         .get();
     const pending = operations['nanohost.enroll']({ expiresAt, targetSlot: 'A' }, context);
+    void pending.catch(() => undefined);
+    try {
+      expect(
+        await Promise.race([
+          identityReadQueued.promise,
+          pending.then(
+            () => 'enrollment completed',
+            () => 'enrollment refused'
+          ),
+        ])
+      ).toBe(requestSignal);
+      expect(rechecks).toBe(0);
+      expect(submissions).toBe(0);
+      expect(existsSync(sink.secretPath)).toBe(false);
+      expect(existsSync(sink.companionPath)).toBe(false);
+      expect(auditCount()).toBe(0);
+    } finally {
+      ack.resolve();
+    }
     if (acknowledgement !== 'committed') {
       await expect(pending).rejects.toMatchObject({ code: 'nanohost_enroll_failed' });
       const retained = acknowledgement === 'unknown';
