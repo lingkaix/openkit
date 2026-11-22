@@ -1406,9 +1406,16 @@ export function settleExecutionJournalStep(
         .get(input.ref.execution.executionId)
     ).span_json
   );
+  // Preserve the local lifecycle step's observed clock even if wall time moved backward.
+  // Only the enclosing diagnostic span needs a nonnegative duration.
+  const rootEnd =
+    stored.root.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION &&
+    span.endTimeUnixNano < stored.root.span.startTimeUnixNano
+      ? stored.root.span.startTimeUnixNano
+      : span.endTimeUnixNano;
   const rootSpan =
     input.nextPhase === 'closed'
-      ? { ...retainedRootSpan, endTimeUnixNano: span.endTimeUnixNano, status: span.status }
+      ? { ...retainedRootSpan, endTimeUnixNano: rootEnd, status: span.status }
       : retainedRootSpan;
   const advanced = db.sqlite
     .prepare(
