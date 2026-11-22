@@ -687,7 +687,10 @@ export function createDefaultWorkerControlGateway(
       return binding.value;
     },
     publishHeartbeat: (input) => publishObservation(() => owner.workerControlHeartbeat(input)),
-    prepareObservation: (record) => prepareWorkerControlObservation(coreDb, record, owner.read),
+    prepareObservation: (record) =>
+      withWorkerControlAcknowledgement(owner, () =>
+        prepareWorkerControlObservation(coreDb, record, owner.read)
+      ),
     publishControlOperation: ({ payload, fingerprint, ...coordinates }) =>
       publishObservation(async () => {
         const accepted = await owner.workerControlRecord({
@@ -708,8 +711,15 @@ export function createDefaultWorkerControlGateway(
           (payload.operation === 'artifact_notice' || payload.operation === 'supply_refresh_ack')
         ) {
           const { operation, recordKey } = payload;
-          const receipt = owner.read((sqlite) =>
-            readWorkerControlDuplicateReceipt({ sqlite }, coordinates.lineage, operation, recordKey)
+          const receipt = await withWorkerControlAcknowledgement(owner, () =>
+            owner.read((sqlite) =>
+              readWorkerControlDuplicateReceipt(
+                { sqlite },
+                coordinates.lineage,
+                operation,
+                recordKey
+              )
+            )
           );
           if (receipt.state !== 'ready') return requireWorkerControlStorage();
           if (receipt.value) return { duplicate, nextExpectedSequence, record: receipt.value };
@@ -780,6 +790,20 @@ function requireWorkerControlStorage(): never {
     'NanoHost Worker control storage is unavailable.',
     503
   );
+}
+
+/** Maps a bounded owner wait to the same closed Worker storage refusal as an unreadable owner. */
+async function withWorkerControlAcknowledgement<Value>(
+  owner: NanoHostOwnerBinding,
+  read: () => Value | Promise<Value>,
+  signal?: AbortSignal
+): Promise<Value> {
+  try {
+    return await owner.afterWorkerControlAcknowledgement(read, signal);
+  } catch (error) {
+    if (error instanceof ControlStoreWorkerError) return requireWorkerControlStorage();
+    throw error;
+  }
 }
 
 /** Joins the acknowledged Native owner to the existing Core decision worker. */
@@ -2454,8 +2478,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       '/api/worker-control/events/append',
       '/api/worker-capabilities/mcp/*',
     ]) {
-      app.use(path, async (_c, next) => {
-        await owner.waitForWorkerControlAcknowledgement();
+      app.use(path, async (c, next) => {
+        await withWorkerControlAcknowledgement(owner, () => undefined, c.req.raw.signal);
         await next();
       });
     }
@@ -2486,13 +2510,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   app.use('/api/worker-inference/*', browserCors);
+  const workerInferenceOwner =
+    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.owner : undefined;
   registerWorkerInferenceRoutes({
     exposureAvailable: () =>
       operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
-    ...(nanoHostStorage.state === 'ready'
+    ...(workerInferenceOwner
       ? {
-          afterWorkerControlAcknowledgement:
-            nanoHostStorage.value.owner.afterWorkerControlAcknowledgement,
+          afterWorkerControlAcknowledgement: (read, signal) =>
+            withWorkerControlAcknowledgement(workerInferenceOwner, read, signal),
         }
       : {}),
     onRawOutputStop: (scope, reason) =>

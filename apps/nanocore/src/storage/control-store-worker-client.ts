@@ -732,8 +732,7 @@ export interface NanoHostOwnerBinding
   readonly releaseIdleSandboxStorage: WriteNanoHostStorageRelease;
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
-  waitForWorkerControlAcknowledgement(): Promise<void>;
-  afterWorkerControlAcknowledgement<Value>(read: () => Value): Promise<Value>;
+  afterWorkerControlAcknowledgement<Value>(read: () => Value, signal?: AbortSignal): Promise<Value>;
   workerControlHeartbeat(
     input: ControlWorkerHeartbeatCommand
   ): Promise<ControlWorkerHeartbeatResult>;
@@ -893,6 +892,7 @@ interface Opening {
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
   nanoHostWritePending?: true | 'core-owner-read' | 'target-stable-write';
+  nanoHostTargetStableAcknowledgement?: Promise<void>;
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
   communicationReader?: Database.Database;
@@ -3396,6 +3396,11 @@ class ControlStoreWorkerClient {
           (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
             ? 'target-stable-write'
             : true;
+        const acknowledged =
+          opening.nanoHostWritePending === 'target-stable-write'
+            ? Promise.withResolvers<void>()
+            : undefined;
+        if (acknowledged) opening.nanoHostTargetStableAcknowledgement = acknowledged.promise;
         try {
           const reply = (await this.request(
             { operation: 'nanohost-owner', database, openingRequestId, mutation },
@@ -3468,81 +3473,108 @@ class ControlStoreWorkerClient {
           throw error;
         } finally {
           delete opening.nanoHostWritePending;
+          if (acknowledged) {
+            delete opening.nanoHostTargetStableAcknowledgement;
+            acknowledged.resolve();
+          }
         }
       };
 
       const pendingWorkerControlAcknowledgement = () =>
         !this.backupHold && !opening.nanoHostTargetTransition
-          ? opening.nanoHostCoreHoldPending
+          ? (opening.nanoHostCoreHoldPending ?? opening.nanoHostTargetStableAcknowledgement)
           : undefined;
+
       const afterWorkerControlAcknowledgement = async <Value>(
-        next: () => Value | Promise<Value>
+        next: () => Value | Promise<Value>,
+        signal?: AbortSignal
       ): Promise<Value> => {
-        for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
-          await pending;
-          pending = pendingWorkerControlAcknowledgement();
+        signal?.throwIfAborted();
+        let pending = pendingWorkerControlAcknowledgement();
+        if (pending) {
+          // Retain a single budget even if another acknowledged write wins the next slot.
+          const deadline = performance.now() + 5000;
+          const expired = Promise.withResolvers<never>();
+          const timer = setTimeout(
+            () => expired.reject(new ControlStoreWorkerError('busy', 'not-committed')),
+            deadline - performance.now()
+          );
+          const abort = () => expired.reject(signal?.reason);
+          signal?.addEventListener('abort', abort, { once: true });
+          try {
+            while (pending) {
+              assertCurrent(true);
+              if (performance.now() >= deadline)
+                throw new ControlStoreWorkerError('busy', 'not-committed');
+              await Promise.race([pending, expired.promise]);
+              signal?.throwIfAborted();
+              pending = pendingWorkerControlAcknowledgement();
+            }
+          } finally {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+          }
         }
-        // Let the next operation enroll in this continuation before another producer can claim.
+        // Read or reserve in this continuation before another producer can claim.
         return await next();
       };
-      const waitForWorkerControlAcknowledgement = () =>
-        afterWorkerControlAcknowledgement(() => undefined);
 
       // Drain Core postings while the original authority is used by the Native writer.
-      const withCoreHold = async <Value>(submit: (identity: string) => Promise<Value>) => {
-        const corePath = serverStoragePath(root, 'control-kernel');
-        const coreKey = `core:${corePath}`;
-        const core = this.openings.get(coreKey);
-        const identity = core?.identity;
-        assertCurrent();
-        if (
-          !core?.acknowledged ||
-          !identity ||
-          core.command.initialize !== 'core' ||
-          core.command.dataRoot !== root ||
-          core.host.failed ||
-          core.retirement ||
-          this.backupHold ||
-          opening.nanoHostCoreHoldPending
-        )
-          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        const acknowledged = Promise.withResolvers<void>();
-        opening.nanoHostCoreHoldPending = acknowledged.promise;
-        try {
-          return await this.runOperation(
-            async () => {
-              const resume = await this.pauseForDataRootBackup(coreKey);
-              try {
-                let physical: ReturnType<typeof readPhysicalDatabaseIdentity>;
+      const withCoreHold = <Value>(submit: (identity: string) => Promise<Value>) =>
+        afterWorkerControlAcknowledgement(async () => {
+          const corePath = serverStoragePath(root, 'control-kernel');
+          const coreKey = `core:${corePath}`;
+          const core = this.openings.get(coreKey);
+          const identity = core?.identity;
+          assertCurrent();
+          if (
+            !core?.acknowledged ||
+            !identity ||
+            core.command.initialize !== 'core' ||
+            core.command.dataRoot !== root ||
+            core.host.failed ||
+            core.retirement ||
+            this.backupHold ||
+            opening.nanoHostCoreHoldPending
+          )
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          const acknowledged = Promise.withResolvers<void>();
+          opening.nanoHostCoreHoldPending = acknowledged.promise;
+          try {
+            return await this.runOperation(
+              async () => {
+                const resume = await this.pauseForDataRootBackup(coreKey);
                 try {
-                  physical = readPhysicalDatabaseIdentity(corePath);
-                } catch {
-                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                  let physical: ReturnType<typeof readPhysicalDatabaseIdentity>;
+                  try {
+                    physical = readPhysicalDatabaseIdentity(corePath);
+                  } catch {
+                    throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                  }
+                  if (
+                    this.openings.get(coreKey) !== core ||
+                    core.host.failed ||
+                    core.retirement ||
+                    !physical.file.isFile() ||
+                    physical.file.nlink !== 1 ||
+                    physical.path !== corePath ||
+                    physical.identity !== identity
+                  )
+                    throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                  return await submit(identity);
+                } finally {
+                  if (opening.host.failed) await opening.host.exited.promise;
+                  resume();
                 }
-                if (
-                  this.openings.get(coreKey) !== core ||
-                  core.host.failed ||
-                  core.retirement ||
-                  !physical.file.isFile() ||
-                  physical.file.nlink !== 1 ||
-                  physical.path !== corePath ||
-                  physical.identity !== identity
-                )
-                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-                return await submit(identity);
-              } finally {
-                if (opening.host.failed) await opening.host.exited.promise;
-                resume();
-              }
-            },
-            undefined,
-            database
-          );
-        } finally {
-          delete opening.nanoHostCoreHoldPending;
-          acknowledged.resolve();
-        }
-      };
+              },
+              undefined,
+              database
+            );
+          } finally {
+            delete opening.nanoHostCoreHoldPending;
+            acknowledged.resolve();
+          }
+        });
 
       const enrollTransport: NanoHostAdministratorEnroll = async (input) => {
         const enrolled = ControlNanoHostTransportInputSchema.parse(input);
@@ -3582,48 +3614,49 @@ class ControlStoreWorkerClient {
         });
       };
 
-      const withNativeReadForCore = async <Value>(
+      const withNativeReadForCore = <Value>(
         run: (core: Opening, openingRequestId: number, nativeIdentity: string) => Promise<Value>
-      ): Promise<Value> => {
-        assertCurrent();
-        readCurrent(() => undefined);
-        if (
-          opening.nanoHostTargetTransition ||
-          opening.nanoHostCoreHoldPending ||
-          !opening.identity ||
-          this.backupHold
-        )
-          throw new ControlStoreWorkerError('busy', 'not-committed');
-        const nativeIdentity = opening.identity;
-        const corePath = coreDbPath(root);
-        const coreKey = `core:${corePath}`;
-        const core = this.openings.get(coreKey);
-        const coreOpeningRequestId = core?.openingRequestId;
-        if (
-          !core?.acknowledged ||
-          core.command.initialize !== 'core' ||
-          coreOpeningRequestId === undefined ||
-          core.host.failed ||
-          core.retirement ||
-          readPhysicalDatabaseIdentity(corePath).identity !== core.identity
-        )
-          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        if (this.databaseHolds.has(coreKey))
-          throw new ControlStoreWorkerError('busy', 'not-committed');
-        const releaseNative = reserveMainScopeReadAcquisition(opening.path);
-        const acknowledged = Promise.withResolvers<void>();
-        opening.nanoHostCoreHoldPending = acknowledged.promise;
-        opening.nanoHostWritePending = 'core-owner-read';
-        try {
-          return await run(core, coreOpeningRequestId, nativeIdentity);
-        } finally {
-          if (core.host.failed) await core.host.exited.promise;
-          delete opening.nanoHostWritePending;
-          delete opening.nanoHostCoreHoldPending;
-          acknowledged.resolve();
-          releaseNative();
-        }
-      };
+      ) =>
+        afterWorkerControlAcknowledgement(async () => {
+          assertCurrent();
+          readCurrent(() => undefined);
+          if (
+            opening.nanoHostTargetTransition ||
+            opening.nanoHostCoreHoldPending ||
+            !opening.identity ||
+            this.backupHold
+          )
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          const nativeIdentity = opening.identity;
+          const corePath = coreDbPath(root);
+          const coreKey = `core:${corePath}`;
+          const core = this.openings.get(coreKey);
+          const coreOpeningRequestId = core?.openingRequestId;
+          if (
+            !core?.acknowledged ||
+            core.command.initialize !== 'core' ||
+            coreOpeningRequestId === undefined ||
+            core.host.failed ||
+            core.retirement ||
+            readPhysicalDatabaseIdentity(corePath).identity !== core.identity
+          )
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          if (this.databaseHolds.has(coreKey))
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          const releaseNative = reserveMainScopeReadAcquisition(opening.path);
+          const acknowledged = Promise.withResolvers<void>();
+          opening.nanoHostCoreHoldPending = acknowledged.promise;
+          opening.nanoHostWritePending = 'core-owner-read';
+          try {
+            return await run(core, coreOpeningRequestId, nativeIdentity);
+          } finally {
+            if (core.host.failed) await core.host.exited.promise;
+            delete opening.nanoHostWritePending;
+            delete opening.nanoHostCoreHoldPending;
+            acknowledged.resolve();
+            releaseNative();
+          }
+        });
 
       const withWorkspaceForAttempt = async <Value>(
         attemptId: string,
@@ -3677,7 +3710,6 @@ class ControlStoreWorkerClient {
         const terminalRelease = readers.terminalRelease;
         if (!terminalRelease)
           throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        await waitForWorkerControlAcknowledgement();
         await withNativeReadForCore((core, openingRequestId, nanoHostIdentity) =>
           withWorkspaceForAttempt(attemptId, async (workspaceIdentity) => {
             const reader = openCoreReadDb(root);
@@ -3822,14 +3854,10 @@ class ControlStoreWorkerClient {
         input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input']
       ) => {
         const original = structuredClone(input);
-        const submit = () =>
-          withCoreHold(
-            async (coreIdentity) =>
-              (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
-          );
-        return original.kind === 'operation.settle'
-          ? afterWorkerControlAcknowledgement(submit)
-          : submit();
+        return withCoreHold(
+          async (coreIdentity) =>
+            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
+        );
       };
       const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
         const original = structuredClone(input);
@@ -3849,24 +3877,22 @@ class ControlStoreWorkerClient {
       const writeWorkerObservation = async <Value>(
         publish: (coreIdentity: string) => Promise<Value>
       ) =>
-        afterWorkerControlAcknowledgement(() =>
-          withCoreHold(async (coreIdentity) => {
-            assertCurrent();
-            if (opening.nanoHostTargetTransition)
-              throw new ControlStoreWorkerError('busy', 'not-committed');
-            opening.nanoHostWritePending = 'target-stable-write';
-            try {
-              return await publish(coreIdentity);
-            } catch (error) {
-              if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
-                this.fail(opening.host);
-              throw error;
-            } finally {
-              if (opening.host.failed) await opening.host.exited.promise;
-              delete opening.nanoHostWritePending;
-            }
-          })
-        );
+        withCoreHold(async (coreIdentity) => {
+          assertCurrent();
+          if (opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          opening.nanoHostWritePending = 'target-stable-write';
+          try {
+            return await publish(coreIdentity);
+          } catch (error) {
+            if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+              this.fail(opening.host);
+            throw error;
+          } finally {
+            if (opening.host.failed) await opening.host.exited.promise;
+            delete opening.nanoHostWritePending;
+          }
+        });
       const workerControlFinalStatus: NanoHostOwnerBinding['workerControlFinalStatus'] = async (
         input
       ) => {
@@ -3970,18 +3996,16 @@ class ControlStoreWorkerClient {
             return result;
           }),
         acknowledge: (input) =>
-          afterWorkerControlAcknowledgement(() =>
-            withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
-              const reply = await this.request({
-                operation: 'harness-lifecycle',
-                database: core.command.database,
-                input: { ...input, kind: 'result.acknowledge' },
-                nanoHostAckPeer: { openingRequestId, ownerIdentity },
-              });
-              if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
-                throw new ControlStoreWorkerError('integrity', 'unknown');
-            })
-          ),
+          withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+            const reply = await this.request({
+              operation: 'harness-lifecycle',
+              database: core.command.database,
+              input: { ...input, kind: 'result.acknowledge' },
+              nanoHostAckPeer: { openingRequestId, ownerIdentity },
+            });
+            if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
+              throw new ControlStoreWorkerError('integrity', 'unknown');
+          }),
       };
 
       opening.prepareNanoHostBackend = async (input) => {
@@ -4071,7 +4095,6 @@ class ControlStoreWorkerClient {
               ...placement,
               target: { ...placement.target, physicalEpoch: placement.target.physicalEpoch },
             };
-            await waitForWorkerControlAcknowledgement();
             await withCoreHold(async (coreIdentity) => {
               await write({
                 kind: 'harness-idle-sandbox',
@@ -4092,7 +4115,6 @@ class ControlStoreWorkerClient {
           },
           releaseTerminalScopes,
           writeStorageAttachment,
-          waitForWorkerControlAcknowledgement,
           afterWorkerControlAcknowledgement,
           workerControlHeartbeat: (input) => {
             const original = structuredClone(input);
