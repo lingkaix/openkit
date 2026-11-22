@@ -285,6 +285,8 @@ import {
   readAdmittedNanoHostAttempt,
 } from './storage/control-store-worker-client.js';
 import {
+  inspectCoreNanoHostTerminalRelease,
+  nanoHostTerminalReleaseWorkspaceStep,
   readContainmentEvidenceHandoff,
   readCoreImageAcquisitionRef,
 } from './storage/core-journal-native.js';
@@ -787,6 +789,10 @@ export async function prepareNanoHostOwner(
     coreDb.dataRoot,
     {
       isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
+      terminalRelease: {
+        inspect: inspectCoreNanoHostTerminalRelease,
+        projectStep: nanoHostTerminalReleaseWorkspaceStep,
+      },
       getWorkerBackendSession,
       hasQueuedNanoHostHarnessOperation,
       inspectNanoHostRuntimeTargetTransition,
