@@ -639,7 +639,7 @@ export function applyControlExecutionJournal(
       !isDeepStrictEqual(consume.inspectedStep, settlement.ref) ||
       !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage) ||
       (settlement.observedChild &&
-        !matchesObservedChildConsumption(settlement, ended.control, consume))
+        !matchesObservedChildConsumption(ended.control, settlement.outputRefs[0], consume))
     )
       throw new Error('Receipt consumption conflicts with its original outcome.');
     // The existing request savepoint makes the observed outcome and ACK obligation indivisible.
@@ -655,7 +655,8 @@ function observedWorkspaceChildSettlement(
   original: NonNullable<ExecutionJournalSettlement['observedChild']>,
   agentSessionId: string
 ): ExecutionJournalSettlement {
-  const { root, row, control, invocation, span } = storedStep(db, settlement.ref);
+  const stored = storedStep(db, settlement.ref);
+  const { root, row, control, invocation, span } = stored;
   if (
     row.state !== 'intent' ||
     root.phase !== 'open' ||
@@ -663,8 +664,7 @@ function observedWorkspaceChildSettlement(
     settlement.terminalCause !== root.terminalCause ||
     !isDeepStrictEqual(settlement.exclusionRefs, root.exclusionRefs) ||
     settlement.expectedExecutionRevision > root.revision ||
-    !observedWorkspaceChildKinds.has(control.kind) ||
-    control.operationId === null ||
+    (control.operationId !== null && !observedWorkspaceChildKinds.has(control.kind)) ||
     control.attemptId === null ||
     !isDeepStrictEqual(control.authorityRefs, [root.workId, agentSessionId, control.attemptId]) ||
     !isDeepStrictEqual(control, original.control) ||
@@ -679,17 +679,108 @@ function observedWorkspaceChildSettlement(
       !isDeepStrictEqual(settlement.outputRefs, control.inputRefs))
   )
     throw new Error('Observed Workspace child settlement conflicts with its original authority.');
+  if (control.operationId === null && !hasAcknowledgedHarnessWait(db, settlement, stored))
+    throw new Error('Observed Harness wait requires its original completed child and receipt.');
   return { ...settlement, expectedExecutionRevision: root.revision };
+}
+
+/** Workspace wait carriers produced by queueAndWaitForHarnessOperation's successful branch. */
+const harnessWaitOperations = new Map<ExecutionStepControl['kind'], string>([
+  ['open-session', 'session.open'],
+  ['inspect-session', 'session.inspect'],
+  ['deliver-start', 'turn.start'],
+  ['deliver-steer', 'turn.steer'],
+  ['cancel', 'turn.interrupt'],
+  ['inspect-cleanup', 'session.close'],
+]);
+
+/** A wait can rebase only after the one original Harness command and its ACK are complete. */
+function hasAcknowledgedHarnessWait(
+  db: WorkspaceDb,
+  settlement: ExecutionJournalSettlement,
+  wait: ReturnType<typeof storedStep>
+): boolean {
+  const operation = harnessWaitOperations.get(wait.control.kind);
+  const { carriage, parent } = wait.invocation;
+  const [operationId] = settlement.outputRefs;
+  if (
+    settlement.state !== 'completed' ||
+    settlement.outputRefs.length !== 1 ||
+    !operation ||
+    carriage.operation !== `worker.${operation}.wait` ||
+    carriage.bindingRef === null ||
+    carriage.sequence !== null ||
+    parent !== null ||
+    wait.row.parent_step_id !== null ||
+    wait.row.inspected_step_id !== null
+  )
+    return false;
+
+  const execution = settlement.ref.execution;
+  const children = db.sqlite
+    .prepare(`SELECT step_id FROM control_execution_steps
+      WHERE execution_id = ? AND parent_step_id = ? LIMIT 2`)
+    .all(execution.executionId, settlement.ref.stepId) as { step_id: string }[];
+  if (children.length !== 1) return false;
+  const childRef = { execution, stepId: children[0]!.step_id };
+  const child = storedStep(db, childRef);
+  const childCarriage = child.invocation.carriage;
+  const [fingerprint] = child.control.outputRefs;
+  if (
+    child.row.state !== 'completed' ||
+    child.control.kind !== wait.control.kind ||
+    child.control.attemptId !== wait.control.attemptId ||
+    child.control.operationId !== operationId ||
+    childCarriage.operation !== operation ||
+    childCarriage.requestId !== operationId ||
+    childCarriage.sequence === null ||
+    childCarriage.bindingRef !== carriage.bindingRef ||
+    !isDeepStrictEqual(child.control.actor, wait.control.actor) ||
+    !isDeepStrictEqual(child.control.authorityRefs, wait.control.authorityRefs) ||
+    !isDeepStrictEqual(child.control.target, wait.control.target) ||
+    !isDeepStrictEqual(child.invocation.parent, {
+      ref: settlement.ref,
+      deadlineUnixNano: wait.control.deadlineUnixNano,
+    }) ||
+    child.span.parentSpanId !== wait.span.spanId ||
+    child.control.outputRefs.length !== 1 ||
+    fingerprint === undefined ||
+    !/^[a-f0-9]{64}$/.test(fingerprint)
+  )
+    return false;
+
+  const receipts = db.sqlite
+    .prepare(`SELECT step_id FROM control_execution_steps
+      WHERE inspected_execution_id = ? AND inspected_step_id = ? AND execution_id = ?
+      AND json_extract(control_json, '$.kind') = 'consume-receipt' LIMIT 2`)
+    .all(execution.executionId, childRef.stepId, execution.executionId) as { step_id: string }[];
+  if (receipts.length !== 1) return false;
+  const receipt = storedStep(db, { execution, stepId: receipts[0]!.step_id });
+  return (
+    receipt.row.state === 'completed' &&
+    isDeepStrictEqual(receipt.invocation.carriage, childCarriage) &&
+    matchesObservedChildConsumption(
+      child.control,
+      fingerprint,
+      {
+        control: receipt.control,
+        parent: receipt.invocation.parent,
+        parentStepId: receipt.row.parent_step_id,
+      },
+      [fingerprint]
+    )
+  );
 }
 
 /** A consume obligation must carry the same original result and authority in the same savepoint. */
 function matchesObservedChildConsumption(
-  settlement: ExecutionJournalSettlement,
   control: ExecutionStepControl,
-  consume: ExecutionJournalIntent
+  result: string | undefined,
+  consume: Pick<ExecutionJournalIntent, 'control' | 'parent' | 'parentStepId'>,
+  outputRefs: readonly string[] = []
 ): boolean {
-  const result = settlement.outputRefs[0];
   return (
+    control.operationId !== null &&
     result !== undefined &&
     consume.parent === null &&
     consume.parentStepId === null &&
@@ -699,7 +790,7 @@ function matchesObservedChildConsumption(
       target: null,
       invocationId: consume.control.invocationId,
       inputRefs: [result],
-      outputRefs: [],
+      outputRefs,
       fingerprint: commandInputHash({ child: control.fingerprint, result }),
       deadlineUnixNano: null,
     })

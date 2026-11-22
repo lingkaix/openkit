@@ -1516,7 +1516,7 @@ describe('persisted execution journal contracts', () => {
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
   });
 
-  it('settles delayed Harness and Artifact siblings at the native Workspace writer', async () => {
+  it('settles delayed Harness and Artifact siblings and the acknowledged Harness wait parent', async () => {
     const f = journalFixture();
     onTestFinished(shutdownControlStoreWorkerClient);
     const actor = { kind: 'user' as const, id: ensureLocalUser(f.db) };
@@ -1716,6 +1716,82 @@ describe('persisted execution journal contracts', () => {
       commit: 'not-committed',
     });
     expect(root()).toEqual(settled);
+
+    const prepareWait = async (id: number) => {
+      const draft = child(id, 'deliver-start', 'worker.turn.start.wait');
+      const wait: ExecutionJournalIntent = {
+        ...draft,
+        control: { ...draft.control, operationId: null },
+        carriage: { ...draft.carriage, requestId: turn.id },
+      };
+      const nativeCommand = child(id + 1, 'deliver-start', 'turn.start');
+      const delivery: ExecutionJournalIntent = {
+        ...nativeCommand,
+        parentStepId: wait.stepId,
+        parent: { ref: inspected(wait), deadlineUnixNano: wait.control.deadlineUnixNano },
+        carriage: { ...nativeCommand.carriage, sequence: 1 },
+        span: { ...nativeCommand.span, parentSpanId: wait.span.spanId },
+      };
+      const receiptFingerprint = harnessResult.slice('sha256:'.length);
+      const ack = consume(delivery, receiptFingerprint, id + 2);
+      await store.writeWorkspaceExecutionJournalIntent(workspace.id, wait);
+      await store.writeWorkspaceExecutionJournalIntent(workspace.id, delivery);
+      await settle(end(delivery, [receiptFingerprint], root()), ack);
+      return { wait, operationId: delivery.carriage.requestId, ack, receiptFingerprint };
+    };
+
+    const originalWait = await prepareWait(7);
+    const waitSnapshot = () => end(originalWait.wait, [originalWait.operationId], root());
+    const missingAck = root();
+    await expect(settle(waitSnapshot())).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(missingAck);
+    await settle(end(originalWait.ack, [originalWait.receiptFingerprint], root()));
+
+    const sibling = child(10, 'collect', 'file.export');
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, sibling);
+    const waitEnd = waitSnapshot();
+    await settle(end(sibling, [artifactResult], root()));
+    const afterSibling = root();
+    await shutdownControlStoreWorkerClient();
+    const { observedChild: _strict, ...strictWait } = waitEnd;
+    await expect(settle(strictWait)).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle({ ...waitEnd, outputRefs: [artifact.carriage.requestId] })
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    await expect(
+      settle({
+        ...waitEnd,
+        state: 'unknown',
+        span: { ...waitEnd.span, status: { code: 'ERROR' } },
+      })
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(afterSibling);
+    expect(readExecutionJournalInvocation(db, waitEnd.ref).state).toBe('intent');
+    await expect(settle(waitEnd)).resolves.toMatchObject({
+      control: { outputRefs: [originalWait.operationId] },
+      span: waitEnd.span,
+    });
+    const afterWait = root();
+    expect(afterWait).toMatchObject({ revision: afterSibling.revision + 1, openSteps: [] });
+    await expect(settle(waitEnd)).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(afterWait);
+
+    const mismatched = await prepareWait(11);
+    const { observedChild: _bad, ...strictAck } = end(mismatched.ack, [artifactResult], root());
+    await settle(strictAck);
+    const beforeMismatch = root();
+    await expect(
+      settle(end(mismatched.wait, [mismatched.operationId], beforeMismatch))
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(beforeMismatch);
+    expect(readExecutionJournalInvocation(db, inspected(mismatched.wait)).state).toBe('intent');
+    expect(readExecutionJournalEndedStep(db, inspected(mismatched.ack)).control.outputRefs).toEqual(
+      [artifactResult]
+    );
 
     const pending = child(5, 'collect', 'file.export');
     const terminal = child(6, 'terminal-publication', 'worker.terminal-publication');
