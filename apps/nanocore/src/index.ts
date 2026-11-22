@@ -587,6 +587,8 @@ const bootResult = await runBootPhases({
                 value: bindBootNanoHostAttemptRecovery(nanoHostStorage.value.owner, {
                   coreDb: recoveryCoreDb,
                   reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
+                  cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+                  isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
                 }),
               }
             : nanoHostStorage;

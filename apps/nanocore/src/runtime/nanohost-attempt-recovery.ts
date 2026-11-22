@@ -97,11 +97,15 @@ export interface AdmittedNanoHostAttemptRecovery {
   commit(
     input: NanoHostRecoveryMutation
   ): Promise<StorageResult<'nanohost' | 'control-kernel', WorkerBackendSessionRecord>>;
-  /** Rechecks this exact target and the same decided cleanup scope at the physical carriage boundary. */
+  /**
+   * K8b first cleanup of the claimed row. Rechecks this exact target and the same decided cleanup scope
+   * at the physical carriage boundary, contacts once, and returns the independently reread receipt.
+   */
   cleanup(
     identity: WorkerGovernanceBackendSessionIdentity,
     target: NanoHostRuntimeTargetRecord,
-    lease: NanoHostRecoveryLease
+    lease: NanoHostRecoveryLease,
+    now: () => string
   ): Promise<
     StorageResult<
       'nanohost' | 'control-kernel',
@@ -723,21 +727,25 @@ async function cleanupPhysicalSession(
     if (!receipt) throw new Error('NanoHost recovery has no exact physical cleanup receipt.');
     return receipt.session;
   }
-  let session = originalSession;
-  if (session.state !== 'cleanup-pending')
-    session = await commitRecoveryStage(
-      coreDb,
-      recovery,
-      session,
-      { kind: 'transition', toState: 'cleanup-pending', target },
-      now()
-    );
+  // K8b: a claim that exists before this pass may have reached the host. It is never resent, and it
+  // holds for the operator until exact receipt or scoped absence proof.
+  if (originalSession.state === 'cleanup-pending' || originalSession.state === 'cleanup-failed')
+    throw new Error('NanoHost recovery cleanup claim is unresolved.');
+  // The claim is the existing Native row, compared with this session and pinned to this target.
+  const session = await commitRecoveryStage(
+    coreDb,
+    recovery,
+    originalSession,
+    { kind: 'transition', toState: 'cleanup-pending', target },
+    now()
+  );
   if (!isDeepStrictEqual(requireRecoveryTarget(recovery, session), target))
     throw new Error('NanoHost recovery RuntimeTarget changed before physical cleanup.');
   const cleaned = await recovery.cleanup(
     toRestartBackendIdentity(session),
     target,
-    retainedLease(coreDb, session.attemptId)
+    retainedLease(coreDb, session.attemptId),
+    now
   );
   if (cleaned.state !== 'ready')
     throw new Error('NanoHost recovery has no exact physical cleanup acknowledgement.');

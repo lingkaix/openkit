@@ -1088,6 +1088,16 @@ export function admitNanoHostWorkerFinalInDb(
   })();
 }
 
+/** The receipt occurrence depends only on the session deployment and the original submit operation. */
+function acceptedNanoHostFinalReceiptOccurrence(deploymentId: string, operationId: string) {
+  return {
+    deploymentId,
+    sourceOwner: 'nanohost',
+    verb: 'apply-execution-proof',
+    occurrenceKey: `worker-final-accepted:${operationId}`,
+  } as const;
+}
+
 /** The deterministic `worker-final-accepted` receipt identity for one original Core intake. */
 function acceptedNanoHostFinalReceiptIntent(
   deploymentId: string,
@@ -1108,12 +1118,7 @@ function acceptedNanoHostFinalReceiptIntent(
       }),
     },
   } as const;
-  const occurrence = {
-    deploymentId,
-    sourceOwner: 'nanohost',
-    verb: 'apply-execution-proof',
-    occurrenceKey: `worker-final-accepted:${grant.operationId}`,
-  } as const;
+  const occurrence = acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId);
   const intent: ExecutionProofIntent = {
     ...occurrence,
     requestId: storageRequestId(occurrence),
@@ -1448,6 +1453,37 @@ export function inspectAcceptedNanoHostFinalInDb(
     if (error instanceof WorkerFinalStatusRefusal) return held('conflict');
     return held('unknown');
   }
+}
+
+/**
+ * K8b first cleanup with no Native final: complete current Core history proves the original grant's
+ * deterministic `worker-final-accepted` receipt absent. A history gap or a missing grant is unknown.
+ *
+ * @param db Core snapshot that holds the original submitted grant.
+ * @param attemptId Original submitted attempt.
+ * @param deploymentId Deployment of the original Native session, which keys the receipt.
+ */
+export function isAcceptedNanoHostFinalReceiptAbsent(
+  db: CoreDb,
+  attemptId: string,
+  deploymentId: string
+): boolean {
+  return db.sqlite
+    .transaction(() => {
+      const original = readRetainedNanoHostSubmission(db, attemptId);
+      if (!original) return false;
+      const { grant } = original.lease;
+      const requestId = storageRequestId(
+        acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId)
+      );
+      return (
+        hasCompleteExecutionHistory(db, grant.execution) &&
+        !db.sqlite
+          .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+          .get(grant.execution.executionId, requestId)
+      );
+    })
+    .deferred();
 }
 
 /** Reads the exact currently live route under the admitted Core and Native snapshots. */

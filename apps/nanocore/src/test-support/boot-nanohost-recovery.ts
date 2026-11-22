@@ -1,5 +1,5 @@
 import {
-  type BootNanoHostAcceptedFinalCloseout,
+  type BootNanoHostRecoveryOwners,
   bindBootNanoHostAttemptRecovery,
 } from '../bootstrap/nanohost-recovery.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
@@ -12,20 +12,32 @@ import {
 
 /**
  * The Boot recovery selection for a fixture root that holds an admitted NanoHost opening.
- * Without a closeout owner, a verified accepted final stops at a hold before closeout.
+ * Without a closeout owner, a verified accepted final stops at a hold before closeout. Without a
+ * physical transport, a first cleanup fails at contact, and Boot keeps that claim held.
  */
 export function testBootNanoHostRecovery(
   coreDb: CoreDb,
-  reconcileAcceptedFinalStatus: BootNanoHostAcceptedFinalCloseout['reconcileAcceptedFinalStatus'] = async () => {
+  reconcileAcceptedFinalStatus: BootNanoHostRecoveryOwners['reconcileAcceptedFinalStatus'] = async () => {
     throw new Error('This recovery fixture has no restart closeout owner.');
-  }
+  },
+  lifecycle: Partial<
+    Pick<BootNanoHostRecoveryOwners, 'cleanupBackendSession' | 'isTurnExecutionActive'>
+  > = {}
 ): StorageResult<'nanohost', AdmittedNanoHostAttemptRecovery> | undefined {
   if (directRecoveryRoots.has(coreDb.dataRoot)) return undefined;
   const owner = currentAdmittedTestNanoHostOwner(coreDb);
   return owner
     ? {
         state: 'ready',
-        value: bindBootNanoHostAttemptRecovery(owner, { coreDb, reconcileAcceptedFinalStatus }),
+        value: bindBootNanoHostAttemptRecovery(owner, {
+          coreDb,
+          reconcileAcceptedFinalStatus,
+          cleanupBackendSession: async () => {
+            throw new Error('This recovery fixture has no physical cleanup transport.');
+          },
+          isTurnExecutionActive: () => false,
+          ...lifecycle,
+        }),
       }
     : undefined;
 }
