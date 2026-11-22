@@ -414,6 +414,7 @@ describe('worker MCP routes', () => {
             ],
           }),
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
       });
@@ -822,6 +823,7 @@ describe('worker MCP routes', () => {
         interception,
         vaultUnlockState,
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
         workerMcpGateway: gateway,
@@ -1348,6 +1350,7 @@ describe('worker MCP routes', () => {
             workspaceMcpServerCatalogs: [],
           }),
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => pkg),
         } as unknown as WorkerControlGateway,
         workerMcpGateway: gateway,
@@ -1663,6 +1666,7 @@ describe('worker MCP routes', () => {
         }),
       store,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
@@ -6188,6 +6192,7 @@ describe('worker MCP routes', () => {
         }),
       store,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
@@ -7228,6 +7233,7 @@ describe('worker MCP routes', () => {
       });
       recordMcpWorkerLineage(coreDb, environmentPackage);
       const workerControlGateway = {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway;
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -8628,6 +8634,7 @@ async function createMcpCommitFixture(
         maintain: vi.fn(),
       },
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
     });

@@ -43,6 +43,28 @@ export interface AdmittedNanoHostTransportStorage {
   readonly kernel: NanoHostRuntimeTargetEpochKernel;
 }
 
+/** A Native owner read could not cross the existing serving ACK boundary. */
+export class NanoHostAcknowledgementUnavailable extends Error {
+  constructor(cause: ControlStoreWorkerError) {
+    super('NanoHost acknowledged storage is unavailable.', { cause });
+  }
+}
+
+/** Reuses the serving owner's bounded wait without changing synchronous fixture reads. */
+export function afterAdmittedNanoHostAcknowledgement<Value>(
+  storage: AdmittedNanoHostTransportStorage | undefined,
+  read: () => Value,
+  signal?: AbortSignal
+): Value | Promise<Value> {
+  const owner = storage?.owner;
+  if (!owner?.afterWorkerControlAcknowledgement) return read();
+  return owner.afterWorkerControlAcknowledgement(read, signal).catch((error: unknown) => {
+    if (error instanceof ControlStoreWorkerError)
+      throw new NanoHostAcknowledgementUnavailable(error);
+    throw error;
+  });
+}
+
 /** Captures a distinct authenticated transport occurrence before submitting its original tuple. */
 export async function transitionAdmittedNanoHostRuntimeTarget(
   { owner, kernel }: AdmittedNanoHostTransportStorage,

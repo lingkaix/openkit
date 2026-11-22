@@ -317,6 +317,26 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
   const activeRequests = new Map<string, AbortController>();
   const toolCallTails = new Map<string, Promise<void>>();
   const builtinInflight = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
+  const afterAcknowledgement = <Value>(read: () => Value, signal?: AbortSignal) =>
+    input.workerControlGateway.afterWorkerControlAcknowledgement(read, signal);
+  const requireCurrentTurn = (environmentPackage: AgentEnvironmentPackage) => {
+    requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+    requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+  };
+  const beforeProtocolRead = async <Value>(read: () => Value, signal: AbortSignal) => {
+    try {
+      return await afterAcknowledgement(read, signal);
+    } catch (error) {
+      if (!isMcpAcknowledgementUnavailable(error)) throw error;
+      const refusal = new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        error.message,
+        workerMcpFailureData(error)
+      );
+      refusal.cause = error;
+      throw refusal;
+    }
+  };
   input.app.post('/api/worker-capabilities/mcp/_list-servers', async (context) => {
     let call: StartedCapabilityCall | null = null;
     let releaseMutation: (() => void) | null = null;
@@ -337,9 +357,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       ) {
         throw new WorkerControlGatewayError('mcp-call-failed', 'MCP server listing failed.', 400);
       }
-      const environmentPackage = input.workerControlGateway.authenticatePackageToken(
-        context.req.header('authorization') ?? null,
-        { tokenFamily: 'capability' }
+      const requestSignal = context.req.raw.signal;
+      const environmentPackage = await afterAcknowledgement(
+        () =>
+          input.workerControlGateway.authenticatePackageToken(
+            context.req.header('authorization') ?? null,
+            { tokenFamily: 'capability' }
+          ),
+        requestSignal
       );
       releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
         input.coreDb.dataRoot,
@@ -447,10 +472,15 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           });
           const result = { servers };
           await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
-          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-          requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
-          if (!workerMcpExposureAvailable(input))
-            throw new WorkerControlGatewayError('mcp-denied', 'MCP resource is unavailable.', 403);
+          await afterAcknowledgement(() => {
+            requireCurrentTurn(environmentPackage);
+            if (!workerMcpExposureAvailable(input))
+              throw new WorkerControlGatewayError(
+                'mcp-denied',
+                'MCP resource is unavailable.',
+                403
+              );
+          }, requestSignal);
           return context.json(result);
         } catch (error) {
           const normalized =
@@ -475,9 +505,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           503
         );
       }
-      const environmentPackage = input.workerControlGateway.authenticatePackageToken(
-        context.req.header('authorization') ?? null,
-        { tokenFamily: 'capability' }
+      const requestSignal = context.req.raw.signal;
+      const environmentPackage = await afterAcknowledgement(
+        () =>
+          input.workerControlGateway.authenticatePackageToken(
+            context.req.header('authorization') ?? null,
+            { tokenFamily: 'capability' }
+          ),
+        requestSignal
       );
       if (!workerMcpExposureAvailable(input)) throw mcpDeniedError();
       const serverId = context.req.param('serverId');
@@ -500,17 +535,18 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               ?.abort(new DOMException('MCP caller cancelled request.', 'AbortError'));
           return new Response(null, { status: 202 });
         }
-        requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-        requireCurrentMcpWorkspaceAuthority(input.coreDb, environmentPackage);
+        await afterAcknowledgement(() => requireCurrentTurn(environmentPackage), requestSignal);
         if (environmentPackage.capabilities.mode !== 'enabled') throw unavailableServer();
         const mcp = new Server(
           { name: 'openkit-discovery', version: '1.0.0' },
           { capabilities: { tools: {} } }
         );
         server = mcp;
-        mcp.setRequestHandler('tools/list', async () => {
-          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-          requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+        mcp.setRequestHandler('tools/list', async (_request, ctx) => {
+          await beforeProtocolRead(
+            () => requireCurrentTurn(environmentPackage),
+            AbortSignal.any([ctx.mcpReq.signal, requestSignal])
+          );
           return { tools: WORKER_MCP_DISCOVERY_TOOLS } as ListToolsResult;
         });
         mcp.setRequestHandler('tools/call', async (request, ctx) => {
@@ -572,11 +608,16 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           { capabilities: { tools: {} } }
         );
         server = mcp;
-        mcp.setRequestHandler('tools/list', async () => {
-          if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
-            throw mcpDeniedError();
-          }
-          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+        mcp.setRequestHandler('tools/list', async (_request, ctx) => {
+          await beforeProtocolRead(
+            () => {
+              if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+                throw mcpDeniedError();
+              }
+              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+            },
+            AbortSignal.any([ctx.mcpReq.signal, requestSignal])
+          );
           return {
             tools: tools
               .filter(
@@ -598,9 +639,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         });
         mcp.setRequestHandler('tools/call', async (request, ctx) => {
           const execute = async () => {
-            if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
-              throw mcpDeniedError();
-            }
+            await beforeProtocolRead(
+              () => {
+                if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+                  throw mcpDeniedError();
+                }
+              },
+              AbortSignal.any([ctx.mcpReq.signal, requestSignal])
+            );
             const toolCancellation = registerMcpActiveRequest(
               activeRequests,
               environmentPackage,
@@ -618,8 +664,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             }
             let activeWorkspaceDb: WorkspaceDb | null = null;
             try {
-              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-              requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              await beforeProtocolRead(
+                () => requireCurrentTurn(environmentPackage),
+                toolCancellation.signal
+              );
               // Recognition precedes ordinary Tool/schema/Policy refusal; the source is always inert.
               if (serverId === createSecurityCanaryMcpSupply().id) {
                 if (
@@ -748,7 +796,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 )
                   throw mcpDeniedError();
               };
-              requireCurrentBuiltinToolPolicy();
+              const recheckBuiltin = () =>
+                beforeProtocolRead(requireCurrentBuiltinToolPolicy, toolCancellation.signal);
+              await recheckBuiltin();
               if (workBuiltin && request.params.name === 'work_input_request') {
                 try {
                   const duplicate = preflightWorkRequestInput(
@@ -763,7 +813,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   throw new ProtocolError(
                     ProtocolErrorCode.InvalidRequest,
                     normalized.message,
-                    projectOperationError(normalized) ?? { code: normalized.code }
+                    workerMcpFailureData(normalized)
                   );
                 }
               }
@@ -786,7 +836,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   workspaceDb: workspaceDb,
                 });
                 try {
-                  requireCurrentBuiltinToolPolicy();
+                  await recheckBuiltin();
                   if (workBuiltin) {
                     const result = await dispatchOpenkitWorkTool(
                       {
@@ -859,6 +909,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                           ? { captureArtifact: input.captureArtifact }
                           : {}),
                         signal: toolCancellation.signal,
+                        afterWorkerControlAcknowledgement: afterAcknowledgement,
                         requireAdmission: () => {
                           requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
                           requireRawOutputCapabilityAdmission(workspaceDb!, environmentPackage);
@@ -895,9 +946,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     const delivered = mcp.projectCallToolResult(result, undefined);
                     let resultCurrent = false;
                     try {
-                      requireCurrentBuiltinToolPolicy();
+                      await recheckBuiltin();
                       resultCurrent = true;
-                    } catch {
+                    } catch (error) {
+                      if (isMcpProtocolAcknowledgementUnavailable(error)) throw error;
                       // Withhold content after authority changes; the completed effect stays completed.
                     }
                     await finishCapabilityCall({
@@ -911,8 +963,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     });
                     if (resultCurrent) {
                       try {
-                        requireCurrentBuiltinToolPolicy();
-                      } catch {
+                        await recheckBuiltin();
+                      } catch (error) {
+                        if (isMcpProtocolAcknowledgementUnavailable(error)) throw error;
                         resultCurrent = false;
                       }
                     }
@@ -941,7 +994,11 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       protocolRequestId: ctx.mcpReq.id,
                       readRuntimePolicy: () =>
                         input.runtimeConfig().openKitConfig.policy?.mediation,
-                      recheckEntry: async () => requireCurrentBuiltinToolPolicy(),
+                      recheckEntry: () =>
+                        afterAcknowledgement(
+                          requireCurrentBuiltinToolPolicy,
+                          toolCancellation.signal
+                        ),
                     },
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
@@ -952,8 +1009,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     workspaceDb: workspaceDb,
                   });
                   try {
-                    requireCurrentBuiltinToolPolicy();
-                  } catch {
+                    await recheckBuiltin();
+                  } catch (error) {
+                    if (isMcpProtocolAcknowledgementUnavailable(error)) throw error;
                     throw new WorkerControlGatewayError(
                       'mcp-denied',
                       'MCP call completed; current authority does not permit result delivery.',
@@ -1030,9 +1088,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       );
       server = mcp;
       mcp.setRequestHandler('tools/list', async (_request, ctx) => {
-        if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
-          throw mcpDeniedError();
-        }
+        await beforeProtocolRead(
+          () => {
+            if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+              throw mcpDeniedError();
+            }
+          },
+          AbortSignal.any([ctx.mcpReq.signal, requestSignal])
+        );
         const cancellation = registerMcpActiveRequest(
           activeRequests,
           environmentPackage,
@@ -1083,8 +1146,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               workspaceDb: workspaceDb,
             });
             try {
-              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-              requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              await afterAcknowledgement(
+                () => requireCurrentTurn(environmentPackage),
+                cancellation.signal
+              );
               if (snapshotFailure) throw snapshotFailure.error;
               if (!current) {
                 current = readTurnMcpToolSchemaSnapshot({
@@ -1112,8 +1177,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   status: 'succeeded',
                   workspaceDb: workspaceDb,
                 });
-                requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-                requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                await afterAcknowledgement(
+                  () => requireCurrentTurn(environmentPackage),
+                  cancellation.signal
+                );
                 const result = {
                   tools: admittedMcpToolDefinitions(
                     {
@@ -1166,8 +1233,10 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 status: 'succeeded',
                 workspaceDb: workspaceDb,
               });
-              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-              requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              await afterAcknowledgement(
+                () => requireCurrentTurn(environmentPackage),
+                cancellation.signal
+              );
               const result = {
                 tools: admittedMcpToolDefinitions(
                   {
@@ -1199,9 +1268,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         }
       });
       mcp.setRequestHandler('tools/call', async (request, ctx) => {
-        if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
-          throw mcpDeniedError();
-        }
+        await beforeProtocolRead(
+          () => {
+            if (!hasCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage)) {
+              throw mcpDeniedError();
+            }
+          },
+          AbortSignal.any([ctx.mcpReq.signal, requestSignal])
+        );
         const cancellation = registerMcpActiveRequest(
           activeRequests,
           environmentPackage,
@@ -1993,17 +2067,22 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       // Untyped gateway failures after dispatch cannot prove that the Tool was not contacted.
       upstreamEffect = 'unknown';
       const result = await input.input.workerMcpGateway.callTool({
-        recheckAdmission: () => {
-          if (
-            input.signal.aborted ||
-            policyInput?.stillCurrent() !== true ||
-            !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
-            !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
-          )
-            throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-          if (observed.credentials || input.resolved.scope === 'server')
-            assertCurrentMcpVaultBindings(input, observed.injections);
-        },
+        recheckAdmission: () =>
+          input.input.workerControlGateway.afterWorkerControlAcknowledgement(() => {
+            if (
+              input.signal.aborted ||
+              policyInput?.stillCurrent() !== true ||
+              !hasCurrentMcpWorkspaceAuthority(
+                input.input.coreDb!,
+                input.environmentPackage,
+                true
+              ) ||
+              !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+            )
+              throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+            if (observed.credentials || input.resolved.scope === 'server')
+              assertCurrentMcpVaultBindings(input, observed.injections);
+          }, input.signal),
         arguments: input.arguments,
         ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
         credentialGrantIds: observed.injections.map((injection) => injection.grant.grantId),
@@ -2064,7 +2143,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             { code: 'mcp-denied' }
           );
       };
-      assertResultCurrent();
+      await input.input.workerControlGateway.afterWorkerControlAcknowledgement(
+        assertResultCurrent,
+        input.signal
+      );
       if (policyInput) {
         // A failed completed observation must not rewrite the settled upstream call.
         try {
@@ -2078,7 +2160,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         }
       }
       if (publicationFailure) throw publicationFailure.error;
-      assertResultCurrent();
+      await input.input.workerControlGateway.afterWorkerControlAcknowledgement(
+        assertResultCurrent,
+        input.signal
+      );
       return result;
     } catch (error) {
       // Acknowledged terminal outcomes stay decided when later observation or reply checks fail.
@@ -2089,7 +2174,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         throw new ProtocolError(
           ProtocolErrorCode.InvalidRequest,
           normalized.message,
-          projectOperationError(normalized) ?? { code: normalized.code }
+          workerMcpFailureData(normalized)
         );
       }
       if (error instanceof WorkerMcpGatewayCallError) {
@@ -2192,7 +2277,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           throw new ProtocolError(
             ProtocolErrorCode.InvalidRequest,
             normalized.message,
-            projectOperationError(normalized) ?? { code: normalized.code }
+            workerMcpFailureData(normalized)
           );
         }
       }
@@ -3217,16 +3302,17 @@ async function observeWorkerMcpTools(input: {
   )
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   const gatewayInput = {
-    recheckAdmission: () => {
-      if (
-        input.signal.aborted ||
-        input.current?.() === false ||
-        !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
-        !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
-      )
-        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-      assertCurrentMcpVaultBindings(input, resolvedCredentials.injections, input.operation);
-    },
+    recheckAdmission: () =>
+      input.input.workerControlGateway.afterWorkerControlAcknowledgement(() => {
+        if (
+          input.signal.aborted ||
+          input.current?.() === false ||
+          !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
+          !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+        )
+          throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+        assertCurrentMcpVaultBindings(input, resolvedCredentials.injections, input.operation);
+      }, input.signal),
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
     credentialGrantIds: resolvedCredentials.injections.map((injection) => injection.grant.grantId),
     server: input.resolved,
@@ -3555,7 +3641,7 @@ async function finishMcpHandlerFailure(
   return new ProtocolError(
     ProtocolErrorCode.InvalidRequest,
     normalized.message,
-    projectOperationError(normalized) ?? { code: normalized.code }
+    workerMcpFailureData(normalized)
   );
 }
 
@@ -3946,10 +4032,34 @@ function unavailableServer(): WorkerControlGatewayError {
   return new WorkerControlGatewayError('mcp-server-unavailable', 'MCP server is unavailable.', 503);
 }
 
+function isMcpAcknowledgementUnavailable(error: unknown): error is WorkerControlGatewayError & {
+  readonly code: 'worker_observation_storage_unavailable';
+  readonly status: 503;
+} {
+  return (
+    error instanceof WorkerControlGatewayError &&
+    error.code === 'worker_observation_storage_unavailable' &&
+    error.status === 503
+  );
+}
+
+function isMcpProtocolAcknowledgementUnavailable(error: unknown): boolean {
+  return error instanceof ProtocolError && isMcpAcknowledgementUnavailable(error.cause);
+}
+
+function workerMcpFailureData(error: WorkerControlGatewayError | OperationError) {
+  if (isMcpAcknowledgementUnavailable(error)) return { code: error.code, status: error.status };
+  return projectOperationError(error) ?? { code: error.code };
+}
+
 /** Maps one private route failure to the closed worker-visible vocabulary. */
 function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError | OperationError {
   if (error instanceof WorkerControlGatewayError || error instanceof OperationError) return error;
-  if (error instanceof ProtocolError && error.cause instanceof OperationError) return error.cause;
+  if (
+    error instanceof ProtocolError &&
+    (error.cause instanceof OperationError || isMcpAcknowledgementUnavailable(error.cause))
+  )
+    return error.cause;
   const classified = projectOperationError(error);
   if (classified)
     return new OperationError(classified.code, classified.message, classified.status, {
@@ -3968,7 +4078,7 @@ function workerMcpHttpError(error: unknown): Response {
         data:
           error instanceof ProtocolError && error.cause instanceof OperationError
             ? error.data
-            : (projectOperationError(normalized) ?? { code: normalized.code }),
+            : workerMcpFailureData(normalized),
         message: normalized.message,
       },
       id: null,

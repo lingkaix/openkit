@@ -14,6 +14,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb } from '../storage/db.js';
 import {
   type AdmittedNanoHostTransportStorage,
+  afterAdmittedNanoHostAcknowledgement,
   transitionAdmittedNanoHostRuntimeTarget,
 } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
@@ -46,6 +47,8 @@ export interface AdmitNanoHostTransportConnectionInput {
   readonly targetId?: string;
   /** Optional verification clock. */
   readonly now?: Date;
+  /** Cancellation of the original admission request. */
+  readonly signal?: AbortSignal;
   /** Optional last-use channel label. */
   readonly channel?: string;
   /** Optional last-use source summary. */
@@ -93,7 +96,10 @@ type TransportAdmissionStorage = {
     secret: string,
     options: NonNullable<Parameters<typeof verifyNanoHostTransportTokenRecord>[2]>
   ): Promise<NanoHostTransportTokenRecord | null>;
-  readCurrent(tokenId: string, now?: Date): NanoHostTransportTokenRecord | null;
+  readCurrent(
+    tokenId: string,
+    now?: Date
+  ): NanoHostTransportTokenRecord | null | Promise<NanoHostTransportTokenRecord | null>;
   allocate(
     input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
   ): Promise<NanoHostRuntimeTargetRecord>;
@@ -137,19 +143,30 @@ export async function admitNativeNanoHostTransportConnection(
     return await admitTransportConnection(
       {
         async verify(secret, options) {
-          const request = requireNativeResult(
-            owner.read((sqlite) =>
-              prepareNanoHostTransportVerification({ sqlite }, secret, options)
-            )
+          return afterAdmittedNanoHostAcknowledgement(
+            storage,
+            async () => {
+              const request = requireNativeResult(
+                owner.read((sqlite) =>
+                  prepareNanoHostTransportVerification({ sqlite }, secret, options)
+                )
+              );
+              if (!request) return null;
+              const result = await owner.transport(request);
+              if (result.kind !== 'record') throw new NanoHostTransportStorageUnavailable();
+              return result.record;
+            },
+            input.signal
           );
-          if (!request) return null;
-          const result = await owner.transport(request);
-          if (result.kind !== 'record') throw new NanoHostTransportStorageUnavailable();
-          return result.record;
         },
         readCurrent: (tokenId, now) =>
-          requireNativeResult(
-            owner.read((sqlite) => readCurrentTransportToken({ sqlite }, tokenId, now))
+          afterAdmittedNanoHostAcknowledgement(
+            storage,
+            () =>
+              requireNativeResult(
+                owner.read((sqlite) => readCurrentTransportToken({ sqlite }, tokenId, now))
+              ),
+            input.signal
           ),
         async allocate(target) {
           const record = await transition({ ...target, kind: 'allocate' });
@@ -211,7 +228,7 @@ async function admitTransportConnection(
     ...(request.now ? { now: request.now } : {}),
   });
 
-  const current = verified ? storage.readCurrent(verified.tokenId, request.now) : null;
+  const current = verified ? await storage.readCurrent(verified.tokenId, request.now) : null;
   if (
     !verified ||
     !current ||
@@ -252,15 +269,8 @@ async function admitTransportConnection(
       observedAt,
       targetId,
     });
-    const admittedToken = storage.readCurrent(verified.tokenId, request.now);
-    if (
-      connection.destroyed ||
-      connection.closed ||
-      !admittedToken ||
-      admittedToken.ownerNanoHostIdentityId !== verified.ownerNanoHostIdentityId ||
-      admittedToken.deploymentId !== verified.deploymentId
-    ) {
-      await storage.close({
+    const closeAllocated = () =>
+      storage.close({
         authoritativeGeneration: authority.authoritativeGeneration(
           verified.ownerNanoHostIdentityId
         ),
@@ -268,6 +278,22 @@ async function admitTransportConnection(
         observedAt,
         targetId,
       });
+    let admittedToken: NanoHostTransportTokenRecord | null;
+    try {
+      const current = storage.readCurrent(verified.tokenId, request.now);
+      admittedToken = current instanceof Promise ? await current : current;
+    } catch (error) {
+      await closeAllocated();
+      throw error;
+    }
+    if (
+      connection.destroyed ||
+      connection.closed ||
+      !admittedToken ||
+      admittedToken.ownerNanoHostIdentityId !== verified.ownerNanoHostIdentityId ||
+      admittedToken.deploymentId !== verified.deploymentId
+    ) {
+      await closeAllocated();
       return { ok: false, reason: 'rejected' };
     }
     const session = authority.admit({
@@ -288,14 +314,7 @@ async function admitTransportConnection(
     });
 
     if (session.role !== 'authoritative' && session.role !== 'candidate') {
-      await storage.close({
-        authoritativeGeneration: authority.authoritativeGeneration(
-          verified.ownerNanoHostIdentityId
-        ),
-        closedGeneration: target.connectionGeneration,
-        observedAt,
-        targetId,
-      });
+      await closeAllocated();
       return { ok: false, reason: 'rejected' };
     }
 
@@ -372,6 +391,7 @@ export function registerNanoHostTransportAdmissionRoutes({
       transportRevision: c.req.header('x-openkit-nanohost-transport-revision'),
       secret,
       source: 'session-admit-http',
+      signal: c.req.raw.signal,
       ...(nanoHostConfig?.identityId ? { targetId: nanoHostConfig.identityId } : {}),
     };
     const admitted =

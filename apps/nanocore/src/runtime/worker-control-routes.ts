@@ -85,6 +85,7 @@ export function registerWorkerControlRoutes({
     return {
       input: {
         authorization: c.req.header('authorization') ?? null,
+        signal: c.req.raw.signal,
         tokenFamily: 'worker-control' as const,
         recheckAdmission: () => assertExposureAvailable(c),
         onAuthenticated: (lineage: WorkerControlLineage) => {
