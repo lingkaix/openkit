@@ -33,7 +33,12 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { ItemIdSchema, ThreadSchema, TurnReadProjectionSchema } from '@openkit/protocol';
+import {
+  DeploymentIdSchema,
+  ItemIdSchema,
+  ThreadSchema,
+  TurnReadProjectionSchema,
+} from '@openkit/protocol';
 import { describe, it } from 'vitest';
 import transportRevision from '../dist/auth/nanohost-transport-revision.json' with { type: 'json' };
 import { fetchWhenCaptureAllows } from './_lib/capture-fence.js';
@@ -1080,6 +1085,8 @@ async function writeFixtureConfiguration(
   fixtureRoot: string,
   nanoHostPort: number
 ) {
+  const layout = JSON.parse(await readFile(join(dataRoot, 'server', 'layout.json'), 'utf8'));
+  const deploymentId = DeploymentIdSchema.parse(layout.deploymentId);
   await mkdir(join(dataRoot, 'config', 'agents'), { recursive: true });
   await mkdir(join(dataRoot, 'config', 'providers'), { recursive: true });
   await writeJson(join(dataRoot, 'config', 'server.jsonc'), {
@@ -1099,7 +1106,7 @@ async function writeFixtureConfiguration(
           secretPath: join(fixtureRoot, 'transport-b.token'),
         },
       },
-      deploymentId: 'dep_0190f4c8-0000-7000-8000-000000000602',
+      deploymentId,
       identityId: 'nanohost-worker-mcp-smoke',
       rendezvousUrl: `http://127.0.0.1:${nanoHostPort}`,
     },
