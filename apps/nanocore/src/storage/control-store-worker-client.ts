@@ -3474,25 +3474,21 @@ class ControlStoreWorkerClient {
         !this.backupHold && !opening.nanoHostTargetTransition
           ? opening.nanoHostCoreHoldPending
           : undefined;
-      const waitForWorkerControlAcknowledgement = async (): Promise<void> => {
+      const afterWorkerControlAcknowledgement = async <Value>(
+        next: () => Value | Promise<Value>
+      ): Promise<Value> => {
         for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
           await pending;
           pending = pendingWorkerControlAcknowledgement();
         }
+        // Let the next operation enroll in this continuation before another producer can claim.
+        return await next();
       };
+      const waitForWorkerControlAcknowledgement = () =>
+        afterWorkerControlAcknowledgement(() => undefined);
 
       // Drain Core postings while the original authority is used by the Native writer.
-      const withCoreHold = async <Value>(
-        submit: (identity: string) => Promise<Value>,
-        joinServing = false
-      ) => {
-        // Take the hold in the same continuation that observes the preceding ACK.
-        if (joinServing) {
-          for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
-            await pending;
-            pending = pendingWorkerControlAcknowledgement();
-          }
-        }
+      const withCoreHold = async <Value>(submit: (identity: string) => Promise<Value>) => {
         const corePath = serverStoragePath(root, 'control-kernel');
         const coreKey = `core:${corePath}`;
         const core = this.openings.get(coreKey);
@@ -3825,11 +3821,14 @@ class ControlStoreWorkerClient {
         input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input']
       ) => {
         const original = structuredClone(input);
-        return withCoreHold(
-          async (coreIdentity) =>
-            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value,
-          original.kind === 'operation.settle'
-        );
+        const submit = () =>
+          withCoreHold(
+            async (coreIdentity) =>
+              (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
+          );
+        return original.kind === 'operation.settle'
+          ? afterWorkerControlAcknowledgement(submit)
+          : submit();
       };
       const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
         const original = structuredClone(input);
@@ -3848,25 +3847,25 @@ class ControlStoreWorkerClient {
       };
       const writeWorkerObservation = async <Value>(
         publish: (coreIdentity: string) => Promise<Value>
-      ) => {
-        await waitForWorkerControlAcknowledgement();
-        return withCoreHold(async (coreIdentity) => {
-          assertCurrent();
-          if (opening.nanoHostTargetTransition)
-            throw new ControlStoreWorkerError('busy', 'not-committed');
-          opening.nanoHostWritePending = 'target-stable-write';
-          try {
-            return await publish(coreIdentity);
-          } catch (error) {
-            if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
-              this.fail(opening.host);
-            throw error;
-          } finally {
-            if (opening.host.failed) await opening.host.exited.promise;
-            delete opening.nanoHostWritePending;
-          }
-        });
-      };
+      ) =>
+        afterWorkerControlAcknowledgement(() =>
+          withCoreHold(async (coreIdentity) => {
+            assertCurrent();
+            if (opening.nanoHostTargetTransition)
+              throw new ControlStoreWorkerError('busy', 'not-committed');
+            opening.nanoHostWritePending = 'target-stable-write';
+            try {
+              return await publish(coreIdentity);
+            } catch (error) {
+              if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+                this.fail(opening.host);
+              throw error;
+            } finally {
+              if (opening.host.failed) await opening.host.exited.promise;
+              delete opening.nanoHostWritePending;
+            }
+          })
+        );
       const workerControlFinalStatus: NanoHostOwnerBinding['workerControlFinalStatus'] = async (
         input
       ) => {
@@ -3939,50 +3938,49 @@ class ControlStoreWorkerClient {
           if (typeof result !== 'object') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         },
-        settle: async (input) => {
-          const original = { ...structuredClone(input), kind: 'operation.settle' } as const;
-          for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
-            await pending;
-            pending = pendingWorkerControlAcknowledgement();
-          }
-          const inspectIdleClose = readers.inspectIdleHarnessClose;
-          const idleAcknowledgedAt =
-            inspectIdleClose && readCurrent((sqlite) => inspectIdleClose({ sqlite }, original))
-              ? await withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
-                  const reply = await this.request({
-                    operation: 'harness-lifecycle',
-                    database: core.command.database,
-                    input: original,
-                    nanoHostAckPeer: { openingRequestId, ownerIdentity },
-                  });
-                  if (
-                    reply.operation !== 'harness-lifecycle' ||
-                    reply.result !== null ||
-                    !reply.idleAcknowledgedAt
-                  )
-                    throw new ControlStoreWorkerError('integrity', 'unknown');
-                  return reply.idleAcknowledgedAt;
-                })
-              : undefined;
-          const result = await writeHarnessTurn({
-            ...original,
-            timestamp: idleAcknowledgedAt ?? original.timestamp,
-          });
-          if (result !== 'settled' && result !== 'replayed')
-            throw new ControlStoreWorkerError('integrity', 'unknown');
-          return result;
-        },
-        acknowledge: (input) =>
-          withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
-            const reply = await this.request({
-              operation: 'harness-lifecycle',
-              database: core.command.database,
-              input: { ...input, kind: 'result.acknowledge' },
-              nanoHostAckPeer: { openingRequestId, ownerIdentity },
+        settle: (input) =>
+          afterWorkerControlAcknowledgement(async () => {
+            const original = { ...structuredClone(input), kind: 'operation.settle' } as const;
+            const inspectIdleClose = readers.inspectIdleHarnessClose;
+            const idleAcknowledgedAt =
+              inspectIdleClose && readCurrent((sqlite) => inspectIdleClose({ sqlite }, original))
+                ? await withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+                    const reply = await this.request({
+                      operation: 'harness-lifecycle',
+                      database: core.command.database,
+                      input: original,
+                      nanoHostAckPeer: { openingRequestId, ownerIdentity },
+                    });
+                    if (
+                      reply.operation !== 'harness-lifecycle' ||
+                      reply.result !== null ||
+                      !reply.idleAcknowledgedAt
+                    )
+                      throw new ControlStoreWorkerError('integrity', 'unknown');
+                    return reply.idleAcknowledgedAt;
+                  })
+                : undefined;
+            const result = await writeHarnessTurn({
+              ...original,
+              timestamp: idleAcknowledgedAt ?? original.timestamp,
             });
-            if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
+            if (result !== 'settled' && result !== 'replayed')
               throw new ControlStoreWorkerError('integrity', 'unknown');
+            return result;
           }),
+        acknowledge: (input) =>
+          afterWorkerControlAcknowledgement(() =>
+            withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
+              const reply = await this.request({
+                operation: 'harness-lifecycle',
+                database: core.command.database,
+                input: { ...input, kind: 'result.acknowledge' },
+                nanoHostAckPeer: { openingRequestId, ownerIdentity },
+              });
+              if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
+                throw new ControlStoreWorkerError('integrity', 'unknown');
+            })
+          ),
       };
 
       opening.prepareNanoHostBackend = async (input) => {
