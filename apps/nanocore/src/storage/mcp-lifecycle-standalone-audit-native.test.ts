@@ -1189,6 +1189,7 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
   const { getWorkerControlAcceptedFinalStatus } = await import(
     '../runtime/worker-control-records.js'
   );
+  const { readAdmittedTestNanoHostSettled } = await import('../test-support/admitted-nanohost.js');
   const { listWorkspaceCapabilityCalls, listWorkspaceUsageRecords } = await import(
     '../capability/usage-ledger.js'
   );
@@ -1234,9 +1235,9 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
             });
             expect(isCanonicalUserActive(coreDb, userId)).toBe(false);
             expect(revokedPublication.inventory()).toBe(beforeImport);
-            const final = getWorkerControlAcceptedFinalStatus(
-              coreDb,
-              native.executor.nativeLineage!
+            const lineage = native.executor.nativeLineage!;
+            const final = await readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+              getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
             );
             expect(final).toMatchObject({ status: 'completed', stopReason: 'completed' });
             expect(store.getTurnById(revokedPublication.turnId).status).not.toBe('completed');

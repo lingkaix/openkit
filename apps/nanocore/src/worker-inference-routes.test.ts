@@ -68,7 +68,10 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
-import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -2174,11 +2177,21 @@ describe('worker inference routes', () => {
       .get(scope.turnId) as Record<string, unknown>;
     expect(attempt).toBeDefined();
     expect(Number.isFinite(Date.parse(String(attempt.deadline)))).toBe(true);
-    // Move only the authority deadline into the fixture's still-live adapter window.
-    const deadline = new Date(Date.now() + 1000).toISOString();
-    db.sqlite
-      .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
-      .run(deadline, attempt.attempt_id);
+    const deadline = String(attempt.deadline);
+    const heartbeatAt = new Date(Date.parse(deadline) - 1_000).toISOString();
+    // Model an acknowledged late heartbeat whose independent 30s liveness window straddles
+    // the original absolute grant. Changing the Core deadline would break that grant's lineage.
+    mutateAdmittedTestNanoHost(db, (sqlite) =>
+      sqlite
+        .prepare(`UPDATE worker_backend_sessions SET worker_recovery_json = json_set(
+          worker_recovery_json, '$.heartbeatDeadline', ?, '$.lastAcceptedHeartbeatAt', ?, '$.lastWorkerSequence', 0
+        ) WHERE attempt_id = ?`)
+        .run(
+          new Date(Date.parse(heartbeatAt) + 30_000).toISOString(),
+          heartbeatAt,
+          attempt.attempt_id
+        )
+    );
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(Date.parse(deadline) - 1);
@@ -3625,10 +3638,15 @@ describe('Worker Turn admitted limits', () => {
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
+    const { admitTestNativeEnvironmentForRoot } = await import(
+      './test-support/native-environment.js'
+    );
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const app = createApp({
       coreDb,
       dataRoot,
       store,
+      nanoHostStorage,
       turnExecutor: native.executor,
       fileAdmission: native.fileAdmission,
       workerControlGateway: native.workerControlGateway,

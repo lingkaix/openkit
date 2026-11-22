@@ -26,10 +26,6 @@ import {
 } from './src/config/runtime-config.js';
 import { ProviderRegistry } from './src/providers/registry.js';
 import { listSchedulerExecutionAttemptsForTurn } from './src/runtime/execution-attempt-records.js';
-import {
-  dispatchNanoHostHarnessOperation,
-  settleNanoHostHarnessOperation,
-} from './src/runtime/nanohost-harness.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -47,6 +43,10 @@ import { FileStorageAdmission } from './src/storage/artifacts/file-admission.js'
 import { shutdownControlStoreWorkerClient } from './src/storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './src/storage/db.js';
 import { applyMigrations } from './src/storage/migrate.js';
+import {
+  readAdmittedTestNanoHostSettled,
+  testNanoHostRecoveryJoins,
+} from './src/test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -134,6 +134,7 @@ export async function assertCapturedOutcome(
     mcpIds: ['echo'],
   });
   const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
+  const harness = nanoHostStorage.value.owner.harnessTurnLifecycle;
   let repositoryApprovalId: string | null = null;
   const catalog = parseWorkspaceMcpServerCatalog({
     schemaVersion: 1,
@@ -339,7 +340,11 @@ export async function assertCapturedOutcome(
       throw new Error('Unexpected semantic route.');
     },
   };
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+  const workerControlGateway = createDefaultWorkerControlGateway(
+    coreDb,
+    undefined,
+    nanoHostStorage
+  );
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   const startup = observeNativeTaskStartup(store);
   const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
@@ -348,6 +353,7 @@ export async function assertCapturedOutcome(
     coreDb,
     readRuntimeConfig: () => runtimeConfigManager.current(),
     env: {},
+    nanoHostRecovery: testNanoHostRecoveryJoins(nanoHostStorage),
     nanoHostSessionDispatch,
     store,
     workerControlGateway,
@@ -395,14 +401,18 @@ export async function assertCapturedOutcome(
       | 'session.close'
   ) => {
     while (!caseSignal.aborted) {
-      const bindings = coreDb.sqlite
-        .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
-            FROM sandbox_runtime_records`)
-        .all() as { integrationRef: string }[];
+      const bindings = await readAdmittedTestNanoHostSettled(
+        coreDb,
+        (sqlite) =>
+          sqlite
+            .prepare(`SELECT sandbox_integration_binding_ref AS integrationRef
+              FROM sandbox_runtime_records`)
+            .all() as { integrationRef: string }[]
+      );
       let binding: { integrationRef: string } | undefined;
-      let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>> = null;
+      let command: Awaited<ReturnType<typeof harness.dispatch>> = null;
       for (const candidate of bindings) {
-        command = await dispatchNanoHostHarnessOperation(coreDb, {
+        command = await harness.dispatch({
           sandboxIntegrationBindingRef: candidate.integrationRef,
         });
         if (command) {
@@ -411,8 +421,9 @@ export async function assertCapturedOutcome(
         }
       }
       if (command) {
+        const wire = await workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
+        if (!wire) continue;
         if (operation === 'turn.start' && command.operation === 'session.inspect') {
-          command = await workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
           await settle(
             { command, integrationRef: binding!.integrationRef },
             {
@@ -426,8 +437,7 @@ export async function assertCapturedOutcome(
           continue;
         }
         expect(command.operation).toBe(operation);
-        command = await workerLifecycleRuntime.acceptNanoHostHarnessCommand(command);
-        return { command, integrationRef: binding!.integrationRef };
+        return { command: wire, integrationRef: binding!.integrationRef };
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 1));
     }
@@ -441,7 +451,10 @@ export async function assertCapturedOutcome(
     );
   };
   const settle = async (
-    dispatched: Awaited<ReturnType<typeof dispatchNext>>,
+    dispatched: {
+      command: NonNullable<Awaited<ReturnType<typeof harness.dispatch>>>;
+      integrationRef: string;
+    },
     body: Readonly<Record<string, unknown>>
   ) => {
     const result = {
@@ -452,12 +465,18 @@ export async function assertCapturedOutcome(
       schemaVersion: 2 as const,
       sequence: dispatched.command.sequence,
     };
-    await settleNanoHostHarnessOperation(coreDb, {
+    const completedAt = new Date().toISOString();
+    const settlement = await harness.settle({
       result,
       sandboxIntegrationBindingRef: dispatched.integrationRef,
-      timestamp: new Date().toISOString(),
+      timestamp: completedAt,
     });
-    await workerLifecycleRuntime.acceptNanoHostHarnessResult(result);
+    await workerLifecycleRuntime.acceptNanoHostHarnessResult(
+      result,
+      settlement === 'settled'
+        ? { disposition: 'settled', completedAt }
+        : { disposition: 'replayed' }
+    );
   };
   const driveTask = async (blocked: boolean) => {
     if (blocked) {

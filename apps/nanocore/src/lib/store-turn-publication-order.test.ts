@@ -25,6 +25,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { nativeProductScope, readNativeProduct } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
@@ -145,7 +146,7 @@ async function beforeRelease<T>(result: Promise<T>): Promise<T | 'pending'> {
   return Promise.race([result, waiting]).finally(() => clearTimeout(timer));
 }
 /** Creates actual native authority through acknowledged Store and shared AEP owners. */
-async function fixture() {
+async function fixture(admitArtifactEnvironment = false) {
   const root = mkdtempSync(join(tmpdir(), 'store-turn-order-'));
   roots.push(root);
   const store = createTestStore({ dataRoot: root });
@@ -162,9 +163,12 @@ async function fixture() {
   const turn = await store.createTurn(workspace.id, thread.id, 'Produce reports', actor);
   const peerThread = await store.createThread(workspace.id, 'Independent Thread');
   const peer = await store.createTurn(workspace.id, peerThread.id, 'Independent work', actor);
+  const agentSetup = createTestAgentSetup();
+  if (admitArtifactEnvironment)
+    await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
   const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
-    agentSetup: createTestAgentSetup(),
+    agentSetup,
     agentSessionId: allocateEntityId('as'),
     triggerActor: turn.triggerActor,
     backend: { kind: 'openshell' },
@@ -256,7 +260,7 @@ afterEach(async () => {
 // Owner: durable_execution_and_control_store, Write And Space Budget, natural batching paragraph.
 describe('Store same-Turn publication order through the real native worker', () => {
   it('holds a successor Artifact submission until its predecessor FULL ACK without blocking another Turn', async () => {
-    const f = await fixture();
+    const f = await fixture(true);
     const gate = holdReply('review');
     const order: string[] = [],
       notifications: number[] = [];
@@ -271,7 +275,7 @@ describe('Store same-Turn publication order through the real native worker', () 
     );
     let second: typeof first | undefined;
     try {
-      await gate.reached;
+      expect(await Promise.race([gate.reached.then(() => 'held'), first])).toBe('held');
       second = observe(
         f.submit(randomUUID()).then((value) => {
           order.push('second');
