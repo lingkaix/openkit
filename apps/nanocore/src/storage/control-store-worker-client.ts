@@ -7605,6 +7605,7 @@ class ControlStoreWorkerClient {
       }
       const nativeDatabase = `server-owner:${serverStoragePath(opening.command.dataRoot, 'nanohost')}`;
       if (
+        input.kind === 'idle-intent' ||
         input.kind === 'image-intent' ||
         input.kind === 'image-result' ||
         input.kind === 'containment-stop-outcome'
@@ -7621,13 +7622,15 @@ class ControlStoreWorkerClient {
           !this.backupHold
         ) {
           candidate.nanoHostWritePending =
-            input.kind === 'image-intent' || input.kind === 'image-result'
+            input.kind === 'idle-intent' ||
+            input.kind === 'image-intent' ||
+            input.kind === 'image-result'
               ? 'core-owner-read'
               : true;
           nativeRead = candidate;
         }
       }
-      if (input.kind === 'image-result' && !nativeRead)
+      if ((input.kind === 'image-result' || input.kind === 'idle-intent') && !nativeRead)
         throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
       return await this.runOperation(
         async () => {
