@@ -3344,6 +3344,7 @@ describe('worker MCP routes', () => {
   );
 
   it.each([
+    'authenticated-capability-hash',
     'trip',
     'policy-hidden-foreign',
     'near-name',
@@ -3556,6 +3557,38 @@ describe('worker MCP routes', () => {
               runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
           return { response, body };
         };
+        if (scenario === 'authenticated-capability-hash') {
+          const postAudit = vi
+            .spyOn(getControlStoreWorkerClient(), 'standaloneAudit')
+            .mockResolvedValueOnce(undefined);
+          try {
+            const reply = await rpc(
+              'openkit-security',
+              'tools/call',
+              { name: 'security_admin_export', arguments: {} },
+              199
+            );
+            expect(reply.response.status).toBe(200);
+            expect(reply.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            expect(postAudit).toHaveBeenCalledTimes(1);
+            const [, audit, presentedHash] = postAudit.mock.calls[0]!;
+            const expectedHash = createHash('sha256')
+              .update(Buffer.from(capabilityToken, 'base64url'))
+              .digest('hex');
+            expect(
+              presentedHash === expectedHash,
+              'the Audit post has the authenticated hash'
+            ).toBe(true);
+            expect(audit.stage).toBe('security.canary');
+            const auditBytes = JSON.stringify(audit);
+            expect(auditBytes.includes(capabilityToken) || auditBytes.includes(expectedHash)).toBe(
+              false
+            );
+          } finally {
+            postAudit.mockRestore();
+          }
+          return;
+        }
         // Dormant baseline MUST pass this real source/list/ordinary precondition before any OLD credit.
         const workList = await rpc('openkit-work', 'tools/list', {}, 100);
         expect(workList.response.status).toBe(200);

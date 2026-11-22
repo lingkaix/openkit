@@ -2148,6 +2148,12 @@ export function hashWorkerRouteToken(token: string): string {
   return createHash('sha256').update(Buffer.from(token, 'base64url')).digest('hex');
 }
 
+/** Hashes a previously authenticated bearer in the exact durable Worker route-token format. */
+export function hashWorkerRouteBearer(authorization: string | null): string | null {
+  const token = bearerToken(authorization);
+  return token && isWorkerRouteToken(token) ? hashWorkerRouteToken(token) : null;
+}
+
 /**
  * Checks the fixed 32-byte unpadded base64url route-token shape.
  *
