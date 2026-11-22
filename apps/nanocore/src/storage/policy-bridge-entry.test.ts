@@ -20,13 +20,13 @@ import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js'
 import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
 import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { currentAdmittedTestNanoHostOwner } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -552,7 +552,10 @@ async function fixture() {
   const harnessInstanceId = `harness:${randomUUID()}`;
   const bindingId = `binding:${randomUUID()}`;
   const integrationRef = `integration:${randomUUID()}`;
-  await createNanoHostHarnessRuntime(core, {
+  // Harness records live in the admitted NanoHost file; the fixture writes through its owner, as production does.
+  const nanoHost = currentAdmittedTestNanoHostOwner(core);
+  if (!nanoHost) throw new Error('The policy bridge fixture has no admitted NanoHost owner.');
+  await createNanoHostHarnessRuntime(nanoHost, {
     maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: 'test',
@@ -568,7 +571,7 @@ async function fixture() {
     runtimeTargetId: target.targetId,
     timestamp,
   });
-  await openNanoHostAgentSessionBinding(core, {
+  await openNanoHostAgentSessionBinding(nanoHost, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId,
     agentSessionRuntimeBindingId: bindingId,
@@ -601,14 +604,18 @@ async function fixture() {
     operation: 'turn.start',
     timestamp,
   });
-  await queueNanoHostHarnessOperation(core, {
-    body,
-    prepared,
-    harnessInstanceId,
-    operation: 'turn.start',
-    timestamp,
-  });
-  const dispatched = await dispatchNanoHostHarnessOperation(core, {
+  await queueNanoHostHarnessOperation(
+    core,
+    {
+      body,
+      prepared,
+      harnessInstanceId,
+      operation: 'turn.start',
+      timestamp,
+    },
+    nanoHost.harnessTurnLifecycle
+  );
+  const dispatched = await nanoHost.harnessTurnLifecycle.dispatch({
     sandboxIntegrationBindingRef: integrationRef,
     now,
   });

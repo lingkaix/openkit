@@ -42,7 +42,8 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   admitTestNativeEnvironmentForRoot,
-  settleTestNativeImageResult,
+  openTestNativeImagePeer,
+  seedTestNativeImageSettlement,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -116,7 +117,7 @@ function createNanoHostDispatch(
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await settleTestNativeImageResult(coreDb, {
+        await seedTestNativeImageSettlement(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,
@@ -258,6 +259,8 @@ describe('Worker environment App composition', () => {
           );
           return actualReload(input);
         });
+        // The injected peer is a connected ready target of the admitted NanoHost owner.
+        const nanoHostStorage = await openTestNativeImagePeer(coreDb);
         const app = createApp({
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           runtimeConfigManager,
@@ -266,6 +269,7 @@ describe('Worker environment App composition', () => {
           dataRoot,
           llmGatewayDispatcher: { createResponses },
           mode: 'server',
+          nanoHostStorage,
           nanoHostSessionDispatch: createNanoHostDispatch(coreDb, nanoHostEffect),
           store,
         });

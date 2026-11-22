@@ -10,6 +10,7 @@ import {
   type WorkerEnvironmentResolvedCandidateArtifact,
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
+import { NativeEnvironmentRecordSchema } from '@openkit/worker-protocol';
 import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
@@ -26,6 +27,10 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -33,6 +38,7 @@ import { seedTestNativeImageSettlement } from '../test-support/native-environmen
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  type CreateWorkerEnvironmentActivationInput,
   createWorkerEnvironmentActivation,
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environment-activation.js';
@@ -100,6 +106,30 @@ interface BaseFixture {
   readonly administrationWorkspaceId: string;
   readonly coreDb: CoreDb;
   readonly store: FsStore;
+}
+
+/**
+ * The App's admitted NanoHost joins of activation (`app.ts`): the exact read and the confirmed-defaults
+ * admission go through the latest admitted owner of the fixture root, as production passes its owner.
+ */
+function admittedActivationStorage(coreDb: CoreDb) {
+  const owner = () => {
+    const current = currentAdmittedTestNanoHostOwner(coreDb);
+    if (!current) throw new Error('The activation fixture has no admitted NanoHost owner.');
+    return current;
+  };
+  return {
+    readNanoHost: (query) => owner().read(query),
+    admitImageEnvironment: (candidate, measurement) =>
+      owner().workerImage({
+        kind: 'environment',
+        candidate,
+        environment: NativeEnvironmentRecordSchema.parse(measurement),
+      }),
+  } satisfies Pick<
+    CreateWorkerEnvironmentActivationInput,
+    'readNanoHost' | 'admitImageEnvironment'
+  >;
 }
 
 /** Creates Core storage plus one private administration Thread. */
@@ -327,6 +357,7 @@ describe('Worker environment activation', () => {
         runtimeEffects: { inspectImage },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig,
@@ -342,9 +373,11 @@ describe('Worker environment activation', () => {
       });
       expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(reloadRuntimeConfig).not.toHaveBeenCalled();
@@ -380,6 +413,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -446,6 +480,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -459,9 +494,11 @@ describe('Worker environment activation', () => {
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(replaceResidentWork).not.toHaveBeenCalled();
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
     }
   );
@@ -476,6 +513,7 @@ describe('Worker environment activation', () => {
       runtimeEffects: { inspectImage },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig: () => reloadResult('applied'),
@@ -526,6 +564,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -540,9 +579,11 @@ describe('Worker environment activation', () => {
       ).rejects.toThrow();
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
     }
   );
@@ -568,6 +609,7 @@ describe('Worker environment activation', () => {
       runtimeEffects: { inspectImage },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig,
@@ -614,6 +656,7 @@ describe('Worker environment activation', () => {
       },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig: () => reloadResult('applied'),
@@ -663,6 +706,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -741,6 +785,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: resident.coreDb,
+        ...admittedActivationStorage(resident.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult(reloadStatus),

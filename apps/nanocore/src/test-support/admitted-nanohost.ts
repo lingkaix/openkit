@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { prepareNanoHostOwner } from '../app.js';
+import type { CreateConfiguredTurnExecutorOptions } from '../runtime/turn-executor-factory.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, serverStoragePath } from '../storage/db.js';
 import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
@@ -79,4 +80,28 @@ export async function seedAdmittedTestNanoHost(
   const storage = await openAdmittedTestNanoHost(coreDb);
   mutateAdmittedTestNanoHost(coreDb, seed);
   return storage;
+}
+
+/**
+ * The App's NanoHost recovery joins of the configured Worker lifecycle runtime (`app.ts`, keep identical):
+ * fixtures that build the runtime by hand pass the same admitted owner entries production passes.
+ * @param storage Ready admitted NanoHost storage of the fixture root.
+ */
+export function testNanoHostRecoveryJoins(
+  storage: Extract<Awaited<ReturnType<typeof prepareNanoHostOwner>>, { state: 'ready' }>
+) {
+  const { owner } = storage.value;
+  return {
+    owner: { state: 'ready', value: owner },
+    admitSubmission: owner.firstSubmission,
+    harnessTurnLifecycle: owner.harnessTurnLifecycle,
+    idleSandbox: {
+      writeIdleHarnessDrain: owner.writeIdleHarnessDrain,
+      releaseStorage: owner.releaseIdleSandboxStorage,
+    },
+    readWorkerCompletion: owner.readWorkerCompletion,
+    releaseTerminalScopes: owner.releaseTerminalScopes,
+    writeStorageAttachment: owner.writeStorageAttachment,
+    commitCloseout: owner.classifyRecovery,
+  } satisfies NonNullable<CreateConfiguredTurnExecutorOptions['nanoHostRecovery']>;
 }

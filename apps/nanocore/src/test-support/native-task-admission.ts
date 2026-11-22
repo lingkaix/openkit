@@ -339,6 +339,12 @@ export async function createNativeTaskAdmissionFixture(
       admitSubmission: owner.firstSubmission,
       readWorkerCompletion: owner.readWorkerCompletion,
       harnessTurnLifecycle: harnessWriter,
+      // Same idle Sandbox join as the App (`app.ts`); without it the runtime posts the idle drain
+      // to the retired Core writer.
+      idleSandbox: {
+        writeIdleHarnessDrain: owner.writeIdleHarnessDrain,
+        releaseStorage: owner.releaseIdleSandboxStorage,
+      },
       releaseTerminalScopes: owner.releaseTerminalScopes,
       writeStorageAttachment: owner.writeStorageAttachment,
       commitCloseout: owner.classifyRecovery,

@@ -966,37 +966,29 @@ describe('scheduler records', () => {
         });
 
         await releaseModeledAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`));
-        expect(
-          observeExecutionAttempts(coreDb).find(
-            (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-          )?.phase
-        ).toBe('closed');
-        const first = observeExecutionAttempts(coreDb).find(
-          (row) => row.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-        )!;
-        expect(first.terminal_cause).toEqual(expect.any(String));
-        expect(first.outcome_ref).toBe(
-          `turn:${testEntityId('tu', `turn_${suffix}`)}:${turnStatus}`
-        );
+        const attemptId = testEntityId('attempt', `lease_${suffix}`);
+        // The terminal product outcome and fence are projected from the Core lifecycle steps
+        // (`execution-attempt-records.ts`); the attempt row no longer carries them.
+        const first = attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, attemptId);
+        expect(first.phase).toBe('closed');
+        expect(first.terminalCause).toEqual(expect.any(String));
+        expect(first.outcomeRef).toBe(`turn:${testEntityId('tu', `turn_${suffix}`)}:${turnStatus}`);
         /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
         const protectedFacts = (db: typeof coreDb) => {
+          const row = attemptActionOwners.requireSchedulerExecutionAttempt(db, attemptId);
+          expect(row.disposition).toBe('unknown');
+          expect(row.operationId).toBe(`fixture-submit:${attemptId}`);
+          expect(row.fenceRef).toBe(`self-check:${attemptId}`);
           const rows = observeExecutionAttempts(db);
-          const row = rows.find((candidate) => candidate.attempt_id === first.attempt_id);
-          expect(row).toBeDefined();
-          expect(row!.disposition).toBe('unknown');
-          expect(row!.operation_id).toBe(
-            `fixture-submit:${testEntityId('attempt', `lease_${suffix}`)}`
-          );
-          expect(row!.fence_ref).toBe(`self-check:${testEntityId('attempt', `lease_${suffix}`)}`);
           expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
-          expect(rows.map((candidate) => candidate.attempt_id)).toEqual([first.attempt_id]);
+          expect(rows.map((candidate) => candidate.attempt_id)).toEqual([attemptId]);
           return {
-            attemptId: row!.attempt_id,
-            phase: row!.phase,
-            firstTerminalCause: row!.terminal_cause,
-            outcomeRef: row!.outcome_ref,
-            disposition: row!.disposition,
-            fenceRef: row!.fence_ref,
+            attemptId: row.attemptId,
+            phase: row.phase,
+            firstTerminalCause: row.terminalCause,
+            outcomeRef: row.outcomeRef,
+            disposition: row.disposition,
+            fenceRef: row.fenceRef,
           };
         };
         const protectedFirst = protectedFacts(coreDb);

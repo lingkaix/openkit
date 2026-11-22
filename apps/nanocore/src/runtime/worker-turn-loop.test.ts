@@ -698,7 +698,8 @@ function admittedWorker(
               lineage: { workspaceId, threadId, turnId },
               sandboxBindingRef: attempt.bindingRef!,
             },
-            owner
+            // The admitted writer takes the NanoHost owner and the exact original Core attempt.
+            { owner, attempt }
           );
           if (hooks.nativeRecovery === 'never-submitted') {
             transitionWorkerBackendSessionState(owner, {

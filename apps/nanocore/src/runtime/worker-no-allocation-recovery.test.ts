@@ -49,7 +49,7 @@ afterEach(async () => {
 /** Syntax detection avoids inherited eval-only flags; process exit removes the real scheduler claim. */
 const producer = String.raw`
 import { readFileSync } from 'node:fs';
-import { createApp } from './src/app.ts';
+import { createApp, prepareNanoHostOwner } from './src/app.ts';
 import { FsStore } from './src/lib/store.ts';
 import { ProviderRegistry } from './src/providers/registry.ts';
 import { FileStorageAdmission } from './src/storage/artifacts/file-admission.ts';
@@ -103,8 +103,11 @@ store.updateTurn = async (...args) => {
 };
 const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
 const executor = new WorkerGovernanceTurnExecutor({ coreDb, backend, fileAdmission });
+// Boot joins the persisted admitted NanoHost owner of this root; image evidence is read there.
+const nanoHostStorage = await prepareNanoHostOwner(coreDb, { enabled: () => true });
+if (nanoHostStorage.state !== 'ready') throw new Error('NanoHost admission: ' + nanoHostStorage.reason);
 const app = createApp({
-  coreDb, dataRoot, store, turnExecutor: executor, fileAdmission, localUserId: userId,
+  coreDb, dataRoot, store, turnExecutor: executor, fileAdmission, localUserId: userId, nanoHostStorage,
   agentManifests: [setup.manifest], gatewayConfig,
   providerRegistry: new ProviderRegistry([{
     defaultModel: 'openai/gpt-5.2', displayName: 'Test inference provider',

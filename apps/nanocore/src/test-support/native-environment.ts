@@ -364,3 +364,16 @@ export async function admitTestNativeImageEnvironment(
     admitWorkerImageEnvironment({ sqlite }, candidate, environment);
   });
 }
+
+/**
+ * Opens the admitted NanoHost owner of a fixture root whose injected dispatch models the connected Native peer.
+ * The peer's ready target is recorded first, so the App sees the connected ready RuntimeTarget that production
+ * has. The injected peer then records its result with `seedTestNativeImageSettlement`, because only the
+ * production dispatch writes the Core image-intent journal that the admitted settle step requires.
+ * @returns The admitted NanoHost storage the caller passes to its App.
+ */
+export async function openTestNativeImagePeer(coreDb: CoreDb, targetId = 'target_local') {
+  await recordTestNativeRuntimeTarget(coreDb, targetId);
+  const { reopenAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  return reopenAdmittedTestNanoHost(coreDb);
+}

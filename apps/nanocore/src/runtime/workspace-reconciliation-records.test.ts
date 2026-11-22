@@ -140,7 +140,8 @@ describe('workspace reconciliation records', () => {
                   sandboxBindingRef: 'lease-binding:capture-receipt',
                   now: () => timestamp,
                 },
-                { sqlite }
+                // The admitted writer takes the NanoHost owner and the exact original Core attempt.
+                { owner: { sqlite }, attempt }
               );
             })
             .immediate();
