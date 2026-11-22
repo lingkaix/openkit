@@ -1,9 +1,10 @@
 import { sha256Hex } from '@openkit/protocol/digest';
+import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { type CoreSchedulerQueueEntry, schedulerAdmissionInputHash } from '../scheduler-records.js';
 import type { WorkInputRef } from '../storage/control-kernel-port.js';
-import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import {
   findWorkspaceQueueInputRef,
   readWorkspaceQueueInput,
@@ -20,44 +21,83 @@ type WorkspaceQueueInputScope = {
   readonly turnId: string;
 };
 
-/** Resolves a carried batch by its original Turn and holds if its retained delivery link needs recovery. */
-export function readFrozenSchedulerInputForTurn(dataRoot: string, scope: WorkspaceQueueInputScope) {
-  const manifestRef = findWorkspaceQueueInputRef(dataRoot, scope, {
-    inputId: scope.turnId,
-    originalInvocationId: scope.turnId,
-  });
-  if (manifestRef) return readFrozenSchedulerInput(dataRoot, scope, manifestRef);
-  const db = openAdmittedWorkspaceReadDb(dataRoot, scope.workspaceId);
+/** Reuses the caller's admitted reader only for this synchronous observation. */
+function withSchedulerInputReader<Value>(
+  dataRoot: string,
+  workspaceId: string,
+  borrowed: WorkspaceDb | undefined,
+  read: (db: WorkspaceDb) => Value
+): Value {
+  if (borrowed) {
+    assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
+    if (
+      borrowed.dataRoot !== dataRoot ||
+      borrowed.workspaceId !== workspaceId ||
+      !borrowed.sqlite.open ||
+      !borrowed.sqlite.readonly
+    )
+      throw new Error('Scheduler input requires its admitted Workspace reader.');
+    return read(borrowed);
+  }
+  const db = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
   try {
-    const retained = db.sqlite
-      .prepare(
-        'SELECT 1 FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? LIMIT 1'
-      )
-      .get(scope.workspaceId, scope.threadId, scope.turnId);
-    return retained ? null : [];
+    return read(db);
   } finally {
     db.sqlite.close();
   }
 }
 
+const pendingDeliveryStatements = new WeakMap<
+  WorkspaceDb['sqlite'],
+  ReturnType<WorkspaceDb['sqlite']['prepare']>
+>();
+
+/** Resolves a carried batch by its original Turn and holds if its retained delivery link needs recovery. */
+export function readFrozenSchedulerInputForTurn(
+  dataRoot: string,
+  scope: WorkspaceQueueInputScope,
+  borrowed?: WorkspaceDb
+) {
+  return withSchedulerInputReader(dataRoot, scope.workspaceId, borrowed, (db) => {
+    const manifestRef = findWorkspaceQueueInputRef(
+      dataRoot,
+      scope,
+      { inputId: scope.turnId, originalInvocationId: scope.turnId },
+      db
+    );
+    if (manifestRef) return readFrozenSchedulerInput(dataRoot, scope, manifestRef, db);
+    let pending = pendingDeliveryStatements.get(db.sqlite);
+    if (!pending) {
+      pending = db.sqlite.prepare(
+        'SELECT 1 FROM pending_requests WHERE workspace_id = ? AND thread_id = ? AND delivery_turn_id = ? LIMIT 1'
+      );
+      pendingDeliveryStatements.set(db.sqlite, pending);
+    }
+    return pending.get(scope.workspaceId, scope.threadId, scope.turnId) ? null : [];
+  });
+}
+
 /** Resolves the original start text and verifies every batch member before use. */
 export function readScheduledAdmissionText(
   coreDb: CoreDb,
-  entry: CoreSchedulerQueueEntry
+  entry: CoreSchedulerQueueEntry,
+  borrowed?: WorkspaceDb
 ): string | null {
   try {
     if (schedulerAdmissionInputHash(entry) !== entry.inputHash) return null;
-    if (entry.inputRef.inputId === entry.turnId)
-      return readFrozenSchedulerInput(coreDb.dataRoot, entry, entry.inputRef)
-        ? PENDING_WORKER_TRIGGER_INPUT
+    return withSchedulerInputReader(coreDb.dataRoot, entry.workspaceId, borrowed, (db) => {
+      if (entry.inputRef.inputId === entry.turnId)
+        return readFrozenSchedulerInput(coreDb.dataRoot, entry, entry.inputRef, db)
+          ? PENDING_WORKER_TRIGGER_INPUT
+          : null;
+      if (readFrozenSchedulerInputForTurn(coreDb.dataRoot, entry, db) === null) return null;
+      const recurring = readScheduledRecurringQueueInput(coreDb, entry);
+      if (recurring !== undefined) return recurring;
+      const staged = readWorkspaceQueueInput(coreDb.dataRoot, entry, entry.inputRef, db);
+      return staged?.originalInvocationId === (entry.requestId ?? entry.queueEntryId)
+        ? staged.text
         : null;
-    if (readFrozenSchedulerInputForTurn(coreDb.dataRoot, entry) === null) return null;
-    const recurring = readScheduledRecurringQueueInput(coreDb, entry);
-    if (recurring !== undefined) return recurring;
-    const staged = readWorkspaceQueueInput(coreDb.dataRoot, entry, entry.inputRef);
-    return staged?.originalInvocationId === (entry.requestId ?? entry.queueEntryId)
-      ? staged.text
-      : null;
+    });
   } catch {
     return null;
   }

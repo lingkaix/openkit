@@ -429,7 +429,11 @@ export function readGoalTaskPolicyContext(input: {
       schedulerAdmissionInputHash(admission) !== admission.inputHash
     )
       throw unavailable();
-    const turnInput = readScheduledAdmissionText(coreDb, admission);
+    const turnInput = readScheduledAdmissionText(
+      coreDb,
+      admission,
+      db.sqlite.readonly ? db : undefined
+    );
     if (turnInput === null) throw unavailable();
     const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, scope).filter(
       (attempt) =>
