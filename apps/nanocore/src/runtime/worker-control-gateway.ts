@@ -2343,6 +2343,7 @@ function sequencedControlFingerprint(payload: unknown): string {
   delete canonicalPayload.authorization;
   delete canonicalPayload.onAuthenticated;
   delete canonicalPayload.recheckAdmission;
+  delete canonicalPayload.signal;
   return canonicalJsonText(canonicalPayload);
 }
 
