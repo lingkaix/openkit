@@ -26,9 +26,13 @@ import { FsStore } from '../lib/store.js';
 import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
+import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
 import {
   RECURRING_PORTABLE_PATHS,
   readRecurringPortableFiles,
@@ -98,6 +102,9 @@ beforeAll(async () => {
   const demoOnlyRoot = mkdtempSync(join(tmpdir(), 'd0-boot-tpl-demo-'));
   templateRoots.push(demoOnlyRoot);
   await createDemoStore({ dataRoot: demoOnlyRoot });
+  await expect(
+    getControlStoreWorkerClient().provisionServerOwner(demoOnlyRoot, nanoHostStoreDescriptor)
+  ).resolves.toEqual({ state: 'ready', owner: 'nanohost' });
   await shutdownControlStoreWorkerClient();
 
   const unregisteredRoot = mkdtempSync(join(tmpdir(), 'd0-boot-tpl-unreg-'));
