@@ -290,6 +290,36 @@ it('closes a proved no-effect attempt and requeues its original admission exactl
   }).toEqual(beforeReplay);
 });
 
+it('closes a proved no-effect attempt when the wall clock moves backward', async () => {
+  const { db, entry } = fixture('13');
+  const claimedAt = '2026-11-01T00:01:00.000Z';
+  const closedAt = '2026-11-01T00:00:59.000Z';
+  const attempt = await createSchedulerExecutionAttempt(db, {
+    entry,
+    preparationInput: { admission: entry },
+    now: () => claimedAt,
+  });
+  const closed = await closeSchedulerExecutionAttemptWithoutEffects(db, {
+    attemptId: attempt.attemptId,
+    noOutstandingEffects: true,
+    cause: 'turn-start-failed',
+    now: () => closedAt,
+  });
+  expect(closed).toMatchObject({
+    phase: 'closed',
+    disposition: 'not_accepted',
+    terminalCause: 'turn-start-failed',
+    updatedAt: closedAt,
+  });
+  const terminalSpan = db.sqlite
+    .prepare(
+      "SELECT json_extract(span_json, '$.endTimeUnixNano') FROM control_executions WHERE id = ?"
+    )
+    .pluck()
+    .get(`scheduler-lifecycle:${attempt.attemptId}`);
+  expect(terminalSpan).toBe(String(BigInt(Date.parse(claimedAt)) * 1_000_000n));
+});
+
 it('rolls back the new attempt when admission acquisition fails inside the worker transaction', async () => {
   const { db, entry } = fixture('3');
   db.sqlite.pragma('query_only = OFF');
