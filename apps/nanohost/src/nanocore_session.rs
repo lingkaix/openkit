@@ -4755,8 +4755,13 @@ mod tests {
                             request.uri().path_and_query().unwrap().as_str().to_string(),
                             request.headers().clone(),
                         )).unwrap();
+                        let status = if request.uri().path() == HARNESS_RESULT_PATH {
+                            StatusCode::CONFLICT
+                        } else {
+                            StatusCode::NO_CONTENT
+                        };
                         respond.send_response(Response::builder()
-                            .status(StatusCode::NO_CONTENT).body(()).unwrap(), true).unwrap();
+                            .status(status).body(()).unwrap(), true).unwrap();
                     });
                 }
             });
@@ -4782,9 +4787,13 @@ mod tests {
             });
             let (mut client, connection) = h2::client::handshake(client_io).await.unwrap();
             let nested_driver = tokio::spawn(connection);
-            // Collect every bounded row so one query failure cannot hide the missing header guard.
+            // A result refusal is carried as HTTP on the same route. The next poll
+            // still reaches Core and proves live carriage through the same binding.
             let mut failures = Vec::new();
-            for route in [HARNESS_POLL_PATH, HARNESS_RESULT_PATH] {
+            for (route, expected) in [
+                (HARNESS_RESULT_PATH, StatusCode::CONFLICT),
+                (HARNESS_POLL_PATH, StatusCode::NO_CONTENT),
+            ] {
                 for query in ["", "?proof=sec2a"] {
                     let path = format!("{route}{query}");
                     let request = Request::builder().method(Method::POST).uri(&path)
@@ -4805,7 +4814,7 @@ mod tests {
                             && !headers.contains_key("x-openkit-harness-binding")
                             && !headers.contains_key(http::header::AUTHORIZATION)
                     });
-                    if status != StatusCode::NO_CONTENT || result.is_err() || !exact_projection {
+                    if status != expected || result != Ok(route == HARNESS_POLL_PATH) || !exact_projection {
                         failures.push(format!("{path}: clean projection status={status}, exact={exact_projection}"));
                     }
                 }
