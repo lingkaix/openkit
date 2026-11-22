@@ -333,6 +333,7 @@ import {
   readCoreJournalLineage,
 } from './core-journal-codecs.js';
 import type {
+  captureSecurityCanaryAuditObservation,
   inspectCoreNanoHostTerminalRelease,
   nanoHostTerminalReleaseWorkspaceStep,
 } from './core-journal-native.js';
@@ -680,6 +681,7 @@ async function prepareNanoHostReleaseWorkspace(
 
 /** NanoHost composition supplies the landed readers over the admitted query-only connection. */
 interface NanoHostOwnerReaders {
+  readonly captureCanaryAuditObservation?: typeof captureSecurityCanaryAuditObservation;
   readonly terminalRelease?: {
     readonly inspect: typeof inspectCoreNanoHostTerminalRelease;
     readonly projectStep: typeof nanoHostTerminalReleaseWorkspaceStep;
@@ -899,6 +901,11 @@ interface Opening {
   nanoHostTargetTransition?: true;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
+  postCanaryAudit?(
+    coreDb: CoreDb,
+    input: ControlStandaloneAuditInput,
+    authenticatedCapabilityHash?: string
+  ): Promise<void>;
   prepareNanoHostBackend?(
     input:
       | Extract<ControlBackendSessionInput, { kind: 'materializing' }>
@@ -3610,6 +3617,39 @@ class ControlStoreWorkerClient {
           acknowledged.resolve();
           releaseNative();
         }
+      };
+
+      opening.postCanaryAudit = async (coreDb, input, authenticatedCapabilityHash) => {
+        const capture = readers.captureCanaryAuditObservation;
+        const lineage = input.canaryLineage;
+        if (!capture || !lineage)
+          throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        await withNativeReadForCore(async (core, _openingRequestId, ownerIdentity) => {
+          const canaryObservation = readCurrent((native) =>
+            coreDb.sqlite
+              .transaction(() =>
+                native
+                  .transaction(() => capture(coreDb, native, lineage, authenticatedCapabilityHash))
+                  .deferred()
+              )
+              .deferred()
+          );
+          if (!canaryObservation)
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          const json = JSON.stringify({ ...input, canaryObservation });
+          const reply = await this.request(
+            {
+              operation: 'standalone-audit',
+              database: core.command.database,
+              input: frameControlScalarText(json),
+              content: new ArrayBuffer(0),
+              nanoHostOwnerIdentity: ownerIdentity,
+            },
+            [json]
+          );
+          if (reply.operation !== 'standalone-audit' || reply.result !== null)
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        });
       };
 
       const withWorkspaceForAttempt = async <Value>(
@@ -6748,7 +6788,8 @@ class ControlStoreWorkerClient {
   /** Reuses the exact physical owner for a closed originally standalone Core or Workspace Audit. */
   async standaloneAudit(
     db: CoreDb | WorkspaceDb,
-    input: ControlStandaloneAuditInput
+    input: ControlStandaloneAuditInput,
+    authenticatedCapabilityHash?: string
   ): Promise<void> {
     return this.runOperation(
       async () => {
@@ -6767,6 +6808,13 @@ class ControlStoreWorkerClient {
           throw new ControlStoreWorkerError('invalid-request', 'not-committed');
         const parsed = ControlStandaloneAuditInputSchema.safeParse(input);
         if (!parsed.success) throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        if (parsed.data.stage === 'security.canary') {
+          const nativeDatabase = `server-owner:${serverStoragePath(db.dataRoot, 'nanohost')}`;
+          const opening = this.openings.get(nativeDatabase);
+          if (db.scope !== 'core' || !opening?.postCanaryAudit)
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          return opening.postCanaryAudit(db, parsed.data, authenticatedCapabilityHash);
+        }
         // The original shared-disable resource can exceed the structured envelope.
         // Validate its closed stage first, then use the existing bounded scalar carrier.
         const json = JSON.stringify(parsed.data);

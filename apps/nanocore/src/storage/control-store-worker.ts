@@ -3704,8 +3704,22 @@ function flush(owner: OwnedDatabase): void {
           } else if (request.operation === 'standalone-audit') {
             if (owner.scopeDb?.scope !== 'workspace' && owner.scopeDb?.scope !== 'core')
               throw new ControlProductPreconditionError();
-            if (!request.preparedStandaloneAudit) throw new ControlProductPreconditionError();
-            applyStandaloneAuditInDb(owner.scopeDb, request.preparedStandaloneAudit);
+            const audit = request.preparedStandaloneAudit;
+            if (!audit) throw new ControlProductPreconditionError();
+            if (audit.stage === 'security.canary') {
+              const core = owner.scopeDb;
+              const identity = request.nanoHostOwnerIdentity;
+              if (core.scope !== 'core' || !identity) throw new ControlProductPreconditionError();
+              withCurrentPeerRead(
+                serverStoragePath(core.dataRoot, 'nanohost'),
+                identity,
+                (native) =>
+                  native.transaction(() => applyStandaloneAuditInDb(core, audit, native)).deferred()
+              );
+            } else {
+              if (request.nanoHostOwnerIdentity) throw new ControlProductPreconditionError();
+              applyStandaloneAuditInDb(owner.scopeDb, audit);
+            }
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
