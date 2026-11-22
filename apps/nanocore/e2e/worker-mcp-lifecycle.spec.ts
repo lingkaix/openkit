@@ -126,7 +126,7 @@ async function runPublicWorkerMcpLifecycle() {
   const callFile = join(fixtureRoot, 'mcp-calls.txt');
   let harness: NanoCoreHarness | undefined;
   let h2: ClientHttp2Session | undefined;
-  let mcpServerPid: number | null = null;
+  const mcpServerPids = new Set<number>();
   try {
     // The existing administration owner creates its private Thread before any model is configured.
     harness = await startNanoCoreHarness({
@@ -178,60 +178,11 @@ async function runPublicWorkerMcpLifecycle() {
       files.files.filter((file) => file.id === 'providers/agent-openrouter.provider.jsonc').length,
       1
     );
-    const workspace = await publicOperation<{ id: string }>(
+    const { workspaceId, threadId } = await createPublicWorkerThread(
       app,
-      'workspace.create',
-      { name: 'Public Worker MCP lifecycle', requestId: randomUUID() },
-      201
+      callFile,
+      'Public Worker MCP lifecycle'
     );
-    const workspaceId = workspace.id;
-    const thread = ThreadSchema.parse(
-      await publicOperation(app, 'thread.create', {
-        workspaceId,
-        name: 'Public Task MCP',
-        visibility: 'workspace',
-        requestId: randomUUID(),
-      })
-    );
-    assert.equal(thread.visibility, 'workspace');
-    const threadId = thread.id;
-    const catalog = await publicOperation<GetWorkspaceCatalogResponse>(app, 'catalog.read', {
-      workspaceId,
-    });
-    const created = await publicOperation<CreateMcpConfigResponse>(
-      app,
-      'catalog.mcp-create',
-      {
-        workspaceId,
-        id: 'echo',
-        displayName: 'Echo fixture',
-        allowedTools: ['echo'],
-        declaration: {
-          kind: 'stdio',
-          command: process.execPath,
-          args: [join(repoRoot, 'apps/nanocore/src/test-support/mcp-stdio-stub.mjs'), callFile],
-          cwd: null,
-          environment: {},
-          environmentSlots: {},
-        },
-        expectedRevision: catalog.revision,
-        requestId: randomUUID(),
-      },
-      201
-    );
-    assert.equal(created.entry.currentVersionDigest, created.versionDigest);
-    await publicOperation(app, 'catalog.mcp-binding', {
-      workspaceId,
-      mcpId: created.entry.id,
-      allowedTools: ['echo'],
-      enabled: true,
-      schemaPolicy: 'tracking',
-      timeoutMs: 10_000,
-      credentialBindings: [],
-      bindingRevision: created.entry.bindingRevision,
-      expectedRevision: created.revision,
-      requestId: randomUUID(),
-    });
     await publicOperation(
       app,
       'nanohost.enroll',
@@ -256,7 +207,7 @@ async function runPublicWorkerMcpLifecycle() {
     ));
     await prepareAndActivateEnvironment(app, h2, administrationThreadId);
     const setMcpServerPid = (pid: number) => {
-      mcpServerPid = pid;
+      mcpServerPids.add(pid);
     };
     const firstTurn = await runPublicWorkerMcpTurn({
       app,
@@ -268,11 +219,23 @@ async function runPublicWorkerMcpLifecycle() {
       expectedMcpCalls: 1,
       setMcpServerPid,
     });
+    const sibling = await createPublicWorkerThread(app, callFile, 'Public Worker MCP sibling');
+    const siblingTurn = await runPublicWorkerMcpTurn({
+      app,
+      h2,
+      ...sibling,
+      requestId: randomUUID(),
+      callFile,
+      expectedMcpCalls: 2,
+      retiringSandboxId: firstTurn.sandboxId,
+      setMcpServerPid,
+    });
+    assert.notEqual(firstTurn.turnId, siblingTurn.turnId);
     assert.equal(existsSync(dataRoot), true);
     await stopWorkerPeer(harness, firstPeer.closed);
-    assert.ok(mcpServerPid !== null);
-    await waitForProcessExit(mcpServerPid);
-    mcpServerPid = null;
+    assert.ok(mcpServerPids.size > 0);
+    await Promise.all([...mcpServerPids].map(waitForProcessExit));
+    mcpServerPids.clear();
     await assertPortClosed(nanoHostPort);
 
     harness = await startNanoCoreHarness({
@@ -295,20 +258,21 @@ async function runPublicWorkerMcpLifecycle() {
       threadId,
       requestId: randomUUID(),
       callFile,
-      expectedMcpCalls: 2,
+      expectedMcpCalls: 3,
       setMcpServerPid,
     });
-    assert.notEqual(firstTurn, secondTurn);
+    assert.notEqual(firstTurn.turnId, secondTurn.turnId);
     await stopWorkerPeer(harness, secondPeer.closed);
-    assert.ok(mcpServerPid !== null);
-    await waitForProcessExit(mcpServerPid);
+    assert.ok(mcpServerPids.size > 0);
+    await Promise.all([...mcpServerPids].map(waitForProcessExit));
+    mcpServerPids.clear();
     await assertPortClosed(nanoHostPort);
   } finally {
     h2?.destroy();
     await harness?.stop();
-    if (mcpServerPid) {
+    for (const pid of mcpServerPids) {
       try {
-        process.kill(mcpServerPid, 'SIGKILL');
+        process.kill(pid, 'SIGKILL');
       } catch {}
     }
     await rm(fixtureRoot, { force: true, recursive: true });
@@ -316,6 +280,65 @@ async function runPublicWorkerMcpLifecycle() {
     assert.equal(existsSync(fixtureRoot), false);
     assert.equal(existsSync(dataRoot), false);
   }
+}
+
+/** Creates one public Workspace, Thread and governed MCP declaration. */
+async function createPublicWorkerThread(app: PublicApp, callFile: string, name: string) {
+  const workspace = await publicOperation<{ id: string }>(
+    app,
+    'workspace.create',
+    { name, requestId: randomUUID() },
+    201
+  );
+  const workspaceId = workspace.id;
+  const thread = ThreadSchema.parse(
+    await publicOperation(app, 'thread.create', {
+      workspaceId,
+      name: 'Public Task MCP',
+      visibility: 'workspace',
+      requestId: randomUUID(),
+    })
+  );
+  assert.equal(thread.visibility, 'workspace');
+  const threadId = thread.id;
+  const catalog = await publicOperation<GetWorkspaceCatalogResponse>(app, 'catalog.read', {
+    workspaceId,
+  });
+  const created = await publicOperation<CreateMcpConfigResponse>(
+    app,
+    'catalog.mcp-create',
+    {
+      workspaceId,
+      id: 'echo',
+      displayName: 'Echo fixture',
+      allowedTools: ['echo'],
+      declaration: {
+        kind: 'stdio',
+        command: process.execPath,
+        args: [join(repoRoot, 'apps/nanocore/src/test-support/mcp-stdio-stub.mjs'), callFile],
+        cwd: null,
+        environment: {},
+        environmentSlots: {},
+      },
+      expectedRevision: catalog.revision,
+      requestId: randomUUID(),
+    },
+    201
+  );
+  assert.equal(created.entry.currentVersionDigest, created.versionDigest);
+  await publicOperation(app, 'catalog.mcp-binding', {
+    workspaceId,
+    mcpId: created.entry.id,
+    allowedTools: ['echo'],
+    enabled: true,
+    schemaPolicy: 'tracking',
+    timeoutMs: 10_000,
+    credentialBindings: [],
+    bindingRevision: created.entry.bindingRevision,
+    expectedRevision: created.revision,
+    requestId: randomUUID(),
+  });
+  return { workspaceId, threadId };
 }
 
 /** Authenticates the fixture peer against the currently serving Core and reports its own Epoch. */
@@ -379,8 +402,9 @@ async function runPublicWorkerMcpTurn(input: {
   requestId: string;
   callFile: string;
   expectedMcpCalls: number;
+  retiringSandboxId?: string;
   setMcpServerPid: (pid: number) => void;
-}): Promise<string> {
+}): Promise<{ turnId: string; sandboxId: string }> {
   const { app, h2, workspaceId, threadId, requestId, callFile, expectedMcpCalls, setMcpServerPid } =
     input;
   let taskFailure: unknown = null;
@@ -388,7 +412,7 @@ async function runPublicWorkerMcpTurn(input: {
     workspaceId,
     threadId,
     input: 'Implement the MCP verification by calling the echo tool.',
-    requestId: requestId,
+    requestId,
   };
   const taskPromise = fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
     body: JSON.stringify(taskInput),
@@ -410,6 +434,20 @@ async function runPublicWorkerMcpTurn(input: {
     }
   );
 
+  if (input.retiringSandboxId) {
+    for (const [operation, state] of [
+      ['bridge.close', 'closed'],
+      ['sandbox.delete', 'deleted'],
+    ]) {
+      const { command } = await waitForEffect(h2, operation, () => taskFailure);
+      assert.equal(command.sandboxId, input.retiringSandboxId);
+      await settleJsonEffect(h2, operation, {
+        requestId: command.requestId,
+        sandboxId: command.sandboxId,
+        state,
+      });
+    }
+  }
   const image = await waitForEffect(h2, 'image.acquire', () => taskFailure);
   assert.equal(image.command.imageReference, smokeImageDigest);
   await settleJsonEffect(h2, 'image.acquire', {
@@ -840,14 +878,14 @@ async function runPublicWorkerMcpTurn(input: {
   await assertPublicDurableOutcome(app, workspaceId, threadId, task.turn.id);
   assert.deepEqual(collections, ['baseline', 'capture', 'capture']);
   assert.ok(importCount >= 1);
-  return task.turn.id;
+  return { turnId: task.turn.id, sandboxId };
 }
 
 describe('public Worker MCP lifecycle', () => {
   it(
-    'completes public Worker Turns with governed MCP before and after restarting Core and the host peer',
+    'runs sibling Workspace Turns and resumes the original Thread after Core and NanoHost restart',
     runPublicWorkerMcpLifecycle,
-    120_000
+    150_000
   );
 });
 /** Invokes one registered operation with the same public request identity in body and header. */
