@@ -6,15 +6,15 @@ import {
   getWorkerBackendSessionByPackage,
   readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from '../runtime/worker-control-final-receipt.js';
 import type {
   WorkerControlFinalStatusTokenBindingResolution,
   WorkerControlLineage,
   WorkerControlTokenBindingInput,
 } from '../runtime/worker-control-gateway.js';
-import {
-  getWorkerControlAcceptedFinalStatus,
-  hasPendingWorkerCancellationFinal,
-} from '../runtime/worker-control-records.js';
 import type { CoreDb } from './db.js';
 import { hasAcknowledgedNanoHostClosedPlacement } from './nanohost-epoch-invalidation-native.js';
 import { readNanoHostRecoveryLease } from './nanohost-recovery-native.js';
