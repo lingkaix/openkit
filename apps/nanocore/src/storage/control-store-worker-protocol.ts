@@ -2194,6 +2194,7 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'harness-lifecycle';
       readonly result: ControlHarnessLifecycleResult;
+      readonly idleAcknowledgedAt?: string;
     }
   | {
       readonly status: 'ok';
@@ -2840,7 +2841,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'execution-attempt')
     return ControlExecutionAttemptResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'harness-lifecycle')
-    return ControlHarnessLifecycleResultSchema.safeParse(reply.result).success;
+    return (
+      ControlHarnessLifecycleResultSchema.safeParse(reply.result).success &&
+      (reply.idleAcknowledgedAt === undefined ||
+        (reply.result === null && z.iso.datetime().safeParse(reply.idleAcknowledgedAt).success))
+    );
   if (reply.operation === 'worker-storage-binding')
     return ControlWorkerStorageResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-sharing')
@@ -3699,7 +3704,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input'], ['nanoHostAckPeer']) &&
       input.success &&
       (value.nanoHostAckPeer === undefined ||
-        (input.data.kind === 'result.acknowledge' &&
+        ((input.data.kind === 'result.acknowledge' || input.data.kind === 'operation.settle') &&
           nanoHostHarnessAckPeer.safeParse(value.nanoHostAckPeer).success)) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
