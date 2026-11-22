@@ -1106,6 +1106,8 @@ export interface WorkerGovernanceTurnExecutorOptions {
   commitNanoHostCloseout?: CommitNanoHostCloseout | undefined;
   /** Acknowledges the qualified Core release after the original Workspace release. */
   releaseTerminalScopes?: ((attemptId: string, fenceRef: string) => Promise<void>) | undefined;
+  /** The admitted Native Harness writer that the factory uses for its own Sandbox drains. */
+  nanoHostHarnessWriter?: (() => Parameters<typeof drainNanoHostSandboxAdmission>[0]) | undefined;
   /** Same current Goal/Task scope reader as other Worker effects. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Same operation interception owner used by authenticated agent and public callers. */
@@ -1189,6 +1191,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly admitNanoHostSubmission: AdmitNanoHostSubmission | undefined;
   private readonly commitNanoHostCloseout: CommitNanoHostCloseout | undefined;
   private readonly releaseTerminalScopes: WorkerGovernanceTurnExecutorOptions['releaseTerminalScopes'];
+  private readonly nanoHostHarnessWriter: WorkerGovernanceTurnExecutorOptions['nanoHostHarnessWriter'];
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: (() => string) | undefined;
@@ -1226,6 +1229,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.admitNanoHostSubmission = options.admitNanoHostSubmission;
     this.commitNanoHostCloseout = options.commitNanoHostCloseout;
     this.releaseTerminalScopes = options.releaseTerminalScopes;
+    this.nanoHostHarnessWriter = options.nanoHostHarnessWriter;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now;
@@ -3231,7 +3235,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       cleanups.set(binding.sandboxBindingRef, anchor);
     }
     for (const [sandboxBindingRef, anchor] of cleanups)
-      await drainNanoHostSandboxAdmission(coreDb, {
+      await drainNanoHostSandboxAdmission(this.nanoHostHarnessWriter?.() ?? coreDb, {
         sandboxBindingRef,
         originPhysicalEpoch: anchor.originPhysicalEpoch,
       });

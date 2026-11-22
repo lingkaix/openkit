@@ -58,13 +58,21 @@ import {
   type BetterAuthServer,
   createAuthMiddleware,
 } from './auth/middleware.js';
+import {
+  type NanoHostAdministratorRevoke,
+  revokeAdmittedNanoHostInboundCredential,
+} from './auth/nanohost-operations.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
 import { fenceNanoHostTransportAuthority } from './auth/nanohost-transport-lifecycle.js';
 import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
 } from './auth/nanohost-transport-session.js';
-import { listNanoHostTransportTokenRecords } from './auth/nanohost-transport-token-store.js';
+import {
+  listNanoHostTransportTokenRecords,
+  prepareNanoHostTransportWriter,
+  recordNanoHostTransportAudit,
+} from './auth/nanohost-transport-token-store.js';
 import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
@@ -156,6 +164,7 @@ import type {
   OperationInvocationDependencies,
 } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
+import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import {
   registerOperationJsonRoutes,
@@ -2633,6 +2642,49 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           },
         }
       : undefined;
+  // The same acknowledged pair decides every later Token stage: Native Token rows, Core Audit.
+  const nanoHostAdministration =
+    options.enableNanoHostEnrollment && nanoHostStorage.state === 'ready' && options.coreDb
+      ? { storage: nanoHostStorage, owner: nanoHostStorage.value.owner, coreDb: options.coreDb }
+      : undefined;
+  const nanoHostAdministratorTransport: import('./operation-composition.js').OperationInvocationDependencies['nanoHostAdministratorTransport'] =
+    nanoHostAdministration && {
+      storage: nanoHostAdministration.storage,
+      submit: async (input) => {
+        if (input.kind === 'lifecycle-audit' || input.kind === 'decommission-audit')
+          return (await prepareNanoHostTransportWriter(nanoHostAdministration.coreDb)).submit(
+            input
+          );
+        return 'actor' in input && input.actor
+          ? nanoHostAdministration.owner.administerTransport(input)
+          : nanoHostAdministration.owner.transport(input);
+      },
+    };
+  const commitNanoHostTransportRevoke: NanoHostAdministratorRevoke | undefined =
+    nanoHostAdministration &&
+    (async ({ actor, expected }) => {
+      const result = await nanoHostAdministration.owner.administerTransport({
+        kind: 'revoke',
+        tokenId: expected.tokenId,
+        actor,
+      });
+      if (result.kind !== 'record' || !result.record)
+        return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+      const record = result.record;
+      return {
+        state: 'ready',
+        value: {
+          record,
+          acknowledgeAudit: () =>
+            recordNanoHostTransportAudit(nanoHostAdministration.coreDb, {
+              kind: 'lifecycle-audit',
+              action: 'nanohost.transport.revoke',
+              record,
+              actorUserId: actor.userId,
+            }),
+        },
+      };
+    });
   const nanoHostCleanupOwner =
     nanoHostStorage.state === 'ready'
       ? { state: 'ready' as const, value: nanoHostStorage.value.owner }
@@ -2647,6 +2699,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           : communicationStorage?.listNanoHostTransportTokens?.()) ?? nanoHostStorage
       );
     },
+    ...(nanoHostAdministration && commitNanoHostTransportRevoke
+      ? {
+          revokeNanoHostTransportToken: (tokenId: string, context: AdmittedOperationContext) =>
+            revokeAdmittedNanoHostInboundCredential(
+              {
+                storage: nanoHostAdministration.storage,
+                sessionAuthority: nanohostTransportSessionAuthority,
+                commitRevoke: commitNanoHostTransportRevoke,
+              },
+              tokenId,
+              context
+            ),
+        }
+      : {}),
   };
   registerDiscordInteractionRoutes({
     app,
@@ -3465,6 +3531,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readNanoHostTarget,
     ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
     ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
+    ...(nanoHostAdministratorTransport ? { nanoHostAdministratorTransport } : {}),
     nanoHostCleanupOwner,
   });
 
@@ -3537,6 +3604,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readNanoHostTarget,
     ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
     ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
+    ...(nanoHostAdministratorTransport ? { nanoHostAdministratorTransport } : {}),
     nanoHostCleanupOwner,
   });
 

@@ -672,6 +672,16 @@ function createNanoHostWorkerLifecycleRuntime(
           commitNanoHostCloseout: nanoHostRecovery?.commitCloseout,
           releaseTerminalScopes:
             nanoHostOwner?.state === 'ready' ? nanoHostRecovery?.releaseTerminalScopes : undefined,
+          nanoHostHarnessWriter: nanoHostOwner
+            ? () => {
+                if (nanoHostOwner.state === 'ready') return nanoHostOwner.value;
+                throw new OperationError(
+                  'operation_storage_unavailable',
+                  'NanoHost runtime storage is unavailable.',
+                  503
+                );
+              }
+            : undefined,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
           ...(policyInterception ? { policyInterception } : {}),
           ...(goalTaskPolicy ? { goalTaskPolicy } : {}),
