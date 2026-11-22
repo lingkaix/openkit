@@ -152,15 +152,18 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   currentAdmittedTestNanoHostOwner,
+  currentAdmittedTestNanoHostStorage,
   mutateAdmittedTestNanoHost,
+  mutateStoppedTestNanoHost,
   readAdmittedTestNanoHost,
   readAdmittedTestNanoHostSettled,
+  readStoppedTestNanoHost,
   reopenAdmittedTestNanoHost,
   testNanoHostRecoveryJoins,
 } from '../test-support/admitted-nanohost.js';
 import { retainPreparedTestNanoHostSubmission } from '../test-support/nanohost-worker-lease.js';
 import {
-  queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
+  queueTestPreparedHarnessOperation,
   recordTestExecutionAttempt,
 } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -939,6 +942,43 @@ async function anchorNanoHostMaterialization(
     ));
 }
 
+/**
+ * The backend's admitted storage attachment (`storageAttachmentAdmission`, keep identical): the open attempt's
+ * exact ready RuntimeTarget on the root's admitted NanoHost owner. Undefined when the root has no admitted owner.
+ */
+function admittedTestStorageAttachment(
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
+  attemptId: string,
+  runtimeTargetId: string
+): AdmittedWorkerStorageAttachment | undefined {
+  const nanoHost = currentAdmittedTestNanoHostOwner(coreDb);
+  const target = nanoHost?.readRuntimeTarget(runtimeTargetId);
+  if (!nanoHost || target?.state !== 'ready' || !target.value) return undefined;
+  return {
+    attemptId,
+    target: target.value,
+    read: nanoHost.read,
+    write: nanoHost.writeStorageAttachment,
+    authorizeContributor: () => true,
+    isCurrentAttempt: () =>
+      attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
+  };
+}
+
+/**
+ * Seeds an uncertain retained-storage association through the admitted Native storage writer, which owns the
+ * `mark-unknown` transition after K8. Falls back to the legacy publisher on a root without an admitted owner.
+ */
+async function markTestWorkerStorageUnknown(
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
+  input: Parameters<typeof markWorkerStorageAttachmentUnknown>[1]
+) {
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  return owner
+    ? owner.workerStorageBinding({ ...input, kind: 'mark-unknown' })
+    : markWorkerStorageAttachmentUnknown(coreDb, input);
+}
+
 /** Adds the attached retained-storage owner required by one directly-authored Sandbox fixture. */
 async function attachNanoHostStorageFixture(
   coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
@@ -1466,6 +1506,15 @@ const dispatchNanoHostHarnessOperation = (
     ? owner.harnessTurnLifecycle.dispatch(input)
     : harnessRecords.dispatchNanoHostHarnessOperation(coreDb, input);
 };
+const queueNanoHostHarnessOperation = (
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof queueTestPreparedHarnessOperation>[1]
+) =>
+  queueTestPreparedHarnessOperation(
+    coreDb,
+    input,
+    currentAdmittedTestNanoHostOwner(coreDb)?.harnessTurnLifecycle
+  );
 const settleNanoHostHarnessOperation = (
   coreDb: ReturnType<typeof openCoreDb>,
   input: Parameters<typeof harnessRecords.settleNanoHostHarnessOperation>[1]
@@ -1590,7 +1639,7 @@ describe('createConfiguredTurnExecutor', () => {
       await dispatch.readiness!(
         physical,
         Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        runtimeTarget
+        admittedReadinessTarget(runtimeTarget)
       );
 
       const identity: WorkerGovernanceBackendSessionIdentity = {
@@ -1724,7 +1773,7 @@ describe('createConfiguredTurnExecutor', () => {
       await dispatch.readiness!(
         physical,
         Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        runtimeTarget
+        admittedReadinessTarget(runtimeTarget)
       );
 
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -5870,7 +5919,7 @@ describe('createConfiguredTurnExecutor', () => {
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-          { ...target, coreDb }
+          admittedReadinessTarget({ ...target, coreDb })
         );
         // Project an already observed producer request; never re-run its completed private owner hooks.
         const {
@@ -10066,7 +10115,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       expect(new Set(startAuthorities).size).toBe(3);
       expect(
-        harnessRecords.readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: a })
+        readAdmittedThreadAgentSessionBinding(coreDb, { workspaceId, threadId: a })
       ).toEqual({ agentSessionId: first.session.id });
 
       const freshChoice = { kind: 'fresh' as const, goalId: null, taskId: null };
@@ -10395,54 +10444,84 @@ describe('createConfiguredTurnExecutor', () => {
           threadId: environmentPackage.scope.threadId,
           workspaceId: environmentPackage.scope.workspaceId,
         };
-        const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
-          ...reservationFacts,
-          deploymentId: identity.deploymentId,
-        });
+        // The open attempt reserves on the admitted NanoHost owner, as the backend does.
+        const storageAttachment = admittedTestStorageAttachment(
+          coreDb,
+          testEntityId('attempt', 'lease_pending_cleanup'),
+          identity.runtimeTargetId
+        );
+        const reserved = await createAndReserveWorkerStorageAttachment(
+          coreDb,
+          {
+            ...reservationFacts,
+            deploymentId: identity.deploymentId,
+          },
+          storageAttachment
+        );
         const attached = bindingRef
-          ? await activateWorkerStorageAttachment(coreDb, {
-              attachmentGeneration: reserved.attachmentGeneration,
-              expectedRevision: reserved.revision,
-              sandboxBindingRef: bindingRef,
-              storageRef: reserved.storageRef,
-              targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-            })
+          ? await activateWorkerStorageAttachment(
+              coreDb,
+              {
+                attachmentGeneration: reserved.attachmentGeneration,
+                expectedRevision: reserved.revision,
+                sandboxBindingRef: bindingRef,
+                storageRef: reserved.storageRef,
+                targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+              },
+              storageAttachment
+            )
           : reserved;
         if (state === 'unknown') {
-          await markWorkerStorageAttachmentUnknown(coreDb, {
+          await markTestWorkerStorageUnknown(coreDb, {
             attachmentGeneration: reserved.attachmentGeneration,
             expectedRevision: attached.revision,
             storageRef: reserved.storageRef,
           });
         }
         const before = readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef: reserved.storageRef }))!;
-        const sibling = await createAndReserveWorkerStorageAttachment(coreDb, {
-          ...reservationFacts,
-          agentSessionId: testEntityId('as', 'as_sibling_cleanup'),
-          deploymentId: identity.deploymentId,
-          threadId: 'th_00000000-0000-7d26-a570-f586e40d63eb',
-        });
+        const sibling = await createAndReserveWorkerStorageAttachment(
+          coreDb,
+          {
+            ...reservationFacts,
+            agentSessionId: testEntityId('as', 'as_sibling_cleanup'),
+            deploymentId: identity.deploymentId,
+            threadId: 'th_00000000-0000-7d26-a570-f586e40d63eb',
+          },
+          storageAttachment
+        );
         let expectedAfterFailure = before;
         let duplicate: typeof before | null = null;
         if (outcome === 'ambiguous') {
-          duplicate = await createAndReserveWorkerStorageAttachment(coreDb, {
-            ...reservationFacts,
-            deploymentId: identity.deploymentId,
-          });
+          duplicate = await createAndReserveWorkerStorageAttachment(
+            coreDb,
+            {
+              ...reservationFacts,
+              deploymentId: identity.deploymentId,
+            },
+            storageAttachment
+          );
         }
         if (outcome === 'stale') {
           beforeCleanupResult = async () => {
-            const released = await releaseWorkerStorageAttachment(coreDb, {
-              attachmentGeneration: before.attachmentGeneration,
-              cleanupProved: true,
-              expectedRevision: before.revision,
-              storageRef: before.storageRef,
-            });
-            expectedAfterFailure = await reserveWorkerStorageAttachment(coreDb, {
-              ...reservationFacts,
-              expectedRevision: released.revision,
-              storageRef: released.storageRef,
-            });
+            const released = await releaseWorkerStorageAttachment(
+              coreDb,
+              {
+                attachmentGeneration: before.attachmentGeneration,
+                cleanupProved: true,
+                expectedRevision: before.revision,
+                storageRef: before.storageRef,
+              },
+              currentAdmittedTestNanoHostOwner(coreDb)?.releaseIdleSandboxStorage
+            );
+            expectedAfterFailure = await reserveWorkerStorageAttachment(
+              coreDb,
+              {
+                ...reservationFacts,
+                expectedRevision: released.revision,
+                storageRef: released.storageRef,
+              },
+              storageAttachment
+            );
           };
         }
 
@@ -13842,7 +13921,7 @@ describe('createConfiguredTurnExecutor', () => {
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-          target
+          admittedReadinessTarget(target)
         );
         const runtime = createConfiguredWorkerLifecycleRuntime({
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -14266,20 +14345,20 @@ describe('createConfiguredTurnExecutor', () => {
       for (const join of joins.splice(0)) await join();
       await native.restore();
       await shutdownControlStoreWorkerClient();
-      const binding = readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+      const binding = readStoppedTestNanoHost(coreDb, (sqlite) => sqlite
         .prepare(`SELECT agent_session_runtime_binding_id AS bindingId
         FROM agent_session_runtime_bindings WHERE agent_session_id = ?`)
         .get(originalSessionId)) as { bindingId: string };
       expect(binding).toBeDefined();
       const bindingId = binding.bindingId;
       // Deliberate corruption of this projection is the original restored-copy precondition.
-      mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+      mutateStoppedTestNanoHost(coreDb, (sqlite) => sqlite
         .prepare(
           'DELETE FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
         )
         .run(bindingId));
       expect(
-        readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+        readStoppedTestNanoHost(coreDb, (sqlite) => sqlite
           .prepare(
             'SELECT COUNT(*) AS count FROM agent_session_runtime_binding_image_digests WHERE agent_session_runtime_binding_id = ?'
           )
@@ -14307,7 +14386,11 @@ describe('createConfiguredTurnExecutor', () => {
         WHERE agent_session_runtime_binding_id = ?`)
           .get(bindingId))
       ).toEqual({ imageDigest });
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, bindingId)).toBe(imageDigest);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, bindingId)
+        )
+      ).toBe(imageDigest);
     } finally {
       try {
         for (const join of joins.splice(0)) await join();
@@ -15068,7 +15151,7 @@ describe('createConfiguredTurnExecutor', () => {
           state: 'attached',
           currentSandboxBindingRef: expect.any(String),
         });
-        const firstBinding = harnessRecords.readNanoHostThreadAgentSessionBinding(coreDb, {
+        const firstBinding = readAdmittedThreadAgentSessionBinding(coreDb, {
           workspaceId,
           threadId: first.threadId,
         });
@@ -15161,7 +15244,7 @@ describe('createConfiguredTurnExecutor', () => {
           if (firstAttempt[field] !== null)
             expect(retainedAttempt[field]).toBe(firstAttempt[field]);
         expect(
-          harnessRecords.readNanoHostThreadAgentSessionBinding(coreDb, {
+          readAdmittedThreadAgentSessionBinding(coreDb, {
             workspaceId,
             threadId: first.threadId,
           })
@@ -15743,7 +15826,10 @@ describe('createConfiguredTurnExecutor', () => {
           } finally {
             packageDb.sqlite.close();
           }
-          originalStorage = readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, original.retainedStorage!))!;
+          // The previous case stopped every opening; read the retained Native proof on a short admitted generation.
+          originalStorage = readStoppedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerStorageBinding({ sqlite }, original!.retainedStorage!)
+          )!;
           originalHistory = store.getTurnEvents(first.entry.turnId);
           resume = { digest: original.nativeHandleDigest!, locator: original.id };
           snapshotPath = join(
@@ -20367,10 +20453,10 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         await shutdownControlStoreWorkerClient();
         if (missingStorage) {
           // Deliberate stopped-owner fault: preserve the accepted pair and historical attachment.
-          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+          mutateStoppedTestNanoHost(coreDb, (sqlite) => sqlite
             .prepare('DELETE FROM worker_storage_contributors WHERE storage_ref = ?')
             .run(retained.storageRef));
-          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+          mutateStoppedTestNanoHost(coreDb, (sqlite) => sqlite
             .prepare('DELETE FROM worker_storage_bindings WHERE storage_ref = ?')
             .run(retained.storageRef));
         }
@@ -20395,7 +20481,10 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           imageRef: `sha256:${'5'.repeat(64)}`,
           requiredCapabilities: ['trusted-worker-inference-relay'],
         });
-        admitFactoryNativeEnvironment(coreDb, setup.manifest);
+        // The owner is stopped here; seed the new image evidence in its NanoHost file as Core was seeded before K8.
+        mutateStoppedTestNanoHost(coreDb, (sqlite) =>
+          admitTestNativeEnvironment({ sqlite }, setup.manifest)
+        );
         let earned: ReturnType<typeof getWorkerStorageBinding> | undefined;
         let competing: ReturnType<typeof getWorkerStorageBinding> | undefined;
         const releaseOwner = storageOwners.releaseWorkerStorageAttachment;
@@ -21860,7 +21949,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: anchor.originPhysicalEpoch })),
-          { ...target, coreDb: f.coreDb }
+          admittedReadinessTarget({ ...target, coreDb: f.coreDb })
         );
       }
       void listener(request, response);
@@ -22075,7 +22164,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       await dispatch.readiness!(
         physical!,
         Buffer.from(JSON.stringify({ physicalEpoch: anchor.originPhysicalEpoch })),
-        { ...target, coreDb: currentDb }
+        admittedReadinessTarget({ ...target, coreDb: currentDb })
       );
       const waitingEffects = vi.spyOn(dispatch, 'effect');
       const resultOnly = vi.spyOn(dispatch, 'expectResultOnly');
@@ -22286,7 +22375,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         await dispatch.readiness!(
           physical!,
           Buffer.from(JSON.stringify({ physicalEpoch: anchor.originPhysicalEpoch })),
-          { ...target, coreDb: currentDb }
+          admittedReadinessTarget({ ...target, coreDb: currentDb })
         );
         const contacts = vi.spyOn(dispatch, 'effect');
         try {
@@ -22427,7 +22516,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       await reopened.readiness!(
         physical!,
         Buffer.from(JSON.stringify({ physicalEpoch: anchor.originPhysicalEpoch })),
-        { ...target, coreDb: cold }
+        admittedReadinessTarget({ ...target, coreDb: cold })
       );
       await expect(reopened.result(physical!, 'bridge.close', result)).resolves.toBeUndefined();
       await expect(
@@ -23608,6 +23697,9 @@ async function closeFactoryAttempt(
     owner
       ? await readAdmittedTestNanoHostSettled(db, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
       : getWorkerBackendSession(db, attemptId);
+  const submitted = attempts.requireSchedulerExecutionAttempt(db, attemptId);
+  if (owner && submitted.operationId && submitted.phase !== 'closed')
+    return closeAdmittedFactoryAttempt(db, owner, submitted, outcomeRef, releaseOwner);
   const native = await readSession();
   if (native && native.state !== 'cleaned') {
     if (!['cleanup-pending', 'cleanup-failed', 'physical-cleaned'].includes(native.state))
@@ -23671,6 +23763,104 @@ async function closeFactoryAttempt(
     fenceRef: released.fenceRef!,
     proof,
   });
+}
+
+/**
+ * Closes one submitted admitted NanoHost attempt in the executor's order (`cleanupBackendLifecycle`, then
+ * `releaseTerminalAttempt`): the Core closing tuple first, then each Native closeout stage through the admitted
+ * recovery writer, which retains the physical-cleanup receipt the release requires, then release and fence.
+ */
+async function closeAdmittedFactoryAttempt(
+  db: ReturnType<typeof openCoreDb>,
+  owner: NonNullable<ReturnType<typeof currentAdmittedTestNanoHostOwner>>,
+  submitted: ReturnType<typeof attempts.requireSchedulerExecutionAttempt>,
+  outcomeRef: string | null,
+  releaseOwner: Pick<WorkerGovernanceBackend, 'release'>
+) {
+  const { attemptId } = submitted;
+  const closing =
+    submitted.phase === 'closing'
+      ? submitted
+      : await nativeAttemptOwners.markSchedulerExecutionAttemptClosing(db, {
+          attemptId,
+          cause: 'worker-final-phase',
+          outcomeRef,
+        });
+  const original = readRetainedNanoHostSubmission(db, attemptId);
+  if (!original) throw new Error('Fixture closeout has no original Core grant.');
+  const advance = async (
+    stage: 'cleanup-pending' | 'physical-cleaned' | 'workspace-handoff' | 'cleaned'
+  ) => {
+    const { session, proof, target } = await readAdmittedTestNanoHostSettled(db, (sqlite) => {
+      const current = readNanoHostRecoveryLease(sqlite, original.lease);
+      return {
+        ...current,
+        target: getNanoHostRuntimeTarget({ sqlite }, current.session.runtimeTargetId),
+      };
+    });
+    const expected = {
+      lease: original.lease,
+      expectedSession: session,
+      expectedRecovery: proof,
+      observedAt: new Date().toISOString(),
+    };
+    const result = await owner.classifyRecovery(
+      stage === 'workspace-handoff'
+        ? { ...expected, kind: stage }
+        : stage === 'cleaned'
+          ? { ...expected, kind: 'finish-cleanup' }
+          : { ...expected, kind: 'transition', toState: stage, target: target! }
+    );
+    if (result.state !== 'ready') throw new Error(`Fixture closeout ${stage}: ${result.reason}`);
+    return result.value;
+  };
+  let session = await readAdmittedTestNanoHostSettled(db, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, attemptId)
+  );
+  if (session && session.state !== 'cleaned') {
+    if (!['cleanup-pending', 'cleanup-failed', 'physical-cleaned'].includes(session.state))
+      session = await advance('cleanup-pending');
+    if (session.state !== 'physical-cleaned') session = await advance('physical-cleaned');
+    if (session.workspaceHandoffState !== 'complete') session = await advance('workspace-handoff');
+    await advance('cleaned');
+  }
+  const proof = {
+    terminalHandoff: true,
+    output: true,
+    evidence: true,
+    outsideWorkspaceCollection: true,
+    integrationDrain: true,
+    routesRevoked: true,
+  } as const;
+  const correlation = attempts.schedulerExecutionCorrelation(closing);
+  const released = await releaseOwner.release({ ...correlation, proof });
+  expect(released.state).toBe('released');
+  return nativeAttemptOwners.closeSchedulerExecutionAttemptWithFence(db, {
+    correlation,
+    fenceRef: released.fenceRef!,
+    proof,
+  });
+}
+
+/** Reads the Thread's native AgentSession occupancy from the admitted NanoHost file, where K8 moved it. */
+function readAdmittedThreadAgentSessionBinding(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof harnessRecords.readNanoHostThreadAgentSessionBinding>[1]
+) {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    harnessRecords.readNanoHostThreadAgentSessionBinding({ sqlite }, input)
+  );
+}
+
+/**
+ * The App passes its admitted NanoHost storage with each RuntimeTarget readiness
+ * (`nanohost-session-dispatch.ts` readiness route); an admitted fixture root does the same.
+ */
+function admittedReadinessTarget<Target extends { readonly coreDb: ReturnType<typeof openCoreDb> }>(
+  target: Target
+) {
+  const nativeStorage = currentAdmittedTestNanoHostStorage(target.coreDb);
+  return nativeStorage ? { ...target, nativeStorage } : target;
 }
 
 /** Resolves the original staged input for the fixture's pending Turn and receipt. */

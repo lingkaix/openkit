@@ -32,6 +32,7 @@ export async function reopenAdmittedTestNanoHost(coreDb: CoreDb) {
   const storage = await prepareNanoHostOwner(coreDb, { enabled: () => true });
   if (storage.state !== 'ready') throw new Error(`NanoHost admission: ${storage.reason}`);
   latestAdmittedOwners.set(coreDb.dataRoot, storage.value.owner);
+  latestAdmittedStorage.set(coreDb.dataRoot, storage.value);
   return storage;
 }
 
@@ -40,6 +41,18 @@ type AdmittedTestNanoHostOwner = Extract<
   { state: 'ready' }
 >['value']['owner'];
 const latestAdmittedOwners = new Map<string, AdmittedTestNanoHostOwner>();
+const latestAdmittedStorage = new Map<
+  string,
+  Extract<Awaited<ReturnType<typeof prepareNanoHostOwner>>, { state: 'ready' }>['value']
+>();
+
+/**
+ * Returns the latest admitted NanoHost storage of this fixture root, if any: the App's
+ * `nativeStorage` selection that production passes with each RuntimeTarget readiness.
+ */
+export function currentAdmittedTestNanoHostStorage(coreDb: Pick<CoreDb, 'dataRoot'>) {
+  return latestAdmittedStorage.get(coreDb.dataRoot);
+}
 
 /** Returns the owner of the latest admitted NanoHost opening of this fixture root, if any. */
 export function currentAdmittedTestNanoHostOwner(
@@ -83,6 +96,45 @@ export function mutateAdmittedTestNanoHost<Value>(
   const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
     fileMustExist: true,
   });
+  try {
+    return sqlite.transaction(mutate).immediate(sqlite);
+  } finally {
+    sqlite.close();
+  }
+}
+
+function openStoppedTestNanoHost(coreDb: Pick<CoreDb, 'dataRoot'>) {
+  // A stopped root has no admitted generation; refuse to bypass a running owner.
+  const opening = getControlStoreWorkerClient().readAdmittedNanoHost(
+    coreDb.dataRoot,
+    () => undefined
+  );
+  if (opening.state === 'ready') throw new Error('NanoHost fixture root is not stopped.');
+  return new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), { fileMustExist: true });
+}
+
+/**
+ * Reads the NanoHost file of a stopped fixture root (after its owner stopped, before a restart reopens it).
+ * After K8 this evidence lives only in the NanoHost file, which a stopped root has not opened.
+ */
+export function readStoppedTestNanoHost<Value>(
+  coreDb: Pick<CoreDb, 'dataRoot'>,
+  query: (sqlite: Database.Database) => Value
+): Value {
+  const sqlite = openStoppedTestNanoHost(coreDb);
+  try {
+    return sqlite.transaction(query).deferred(sqlite);
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Changes the NanoHost bytes of a stopped fixture root: the deliberate at-rest fault of a stopped owner. */
+export function mutateStoppedTestNanoHost<Value>(
+  coreDb: Pick<CoreDb, 'dataRoot'>,
+  mutate: (sqlite: Database.Database) => Value
+): Value {
+  const sqlite = openStoppedTestNanoHost(coreDb);
   try {
     return sqlite.transaction(mutate).immediate(sqlite);
   } finally {

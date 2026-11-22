@@ -201,6 +201,7 @@ import {
 } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
+  currentAdmittedTestNanoHostOwner,
   readAdmittedTestNanoHost,
   seedAdmittedTestNanoHost,
   testWorkerExecutorNanoHostJoins,
@@ -7330,7 +7331,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           await completion;
         }
       );
-      const executor = new WorkerGovernanceTurnExecutor({
+      // The factory mounts the Worker executor with its admitted NanoHost joins.
+      const executor = await createAdmittedModeledWorkerExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         awaitWorkerCompletion,
         backend,
@@ -7393,11 +7395,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         recordKey: '1',
         sequence: 1,
       });
+      // The Worker final-status route marks its accepted attempt closing with the receipt.
+      await nativeExecutionAttempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        cause: 'worker-final-status',
+        now: () => '2026-07-15T00:00:04.000Z',
+      });
       const reopensStore = finalStatus === 'failed' || 'routeHashEcho' in testCase;
       const reopenedCoreDb = reopensStore ? openCoreDb(coreDb.dataRoot) : coreDb;
       const reopenedStore = reopensStore
         ? await createDemoStore({ dataRoot: coreDb.dataRoot })
         : store;
+      const restartedOwner = currentAdmittedTestNanoHostOwner(reopenedCoreDb);
+      if (!restartedOwner) throw new Error('Restart fixture has no admitted NanoHost owner.');
+      // The restarted executor mounts the modeled Worker join set: this direct start has no
+      // scheduler-consumed turn.start receipt, which terminal scope release proves separately.
+      const { releaseTerminalScopes: _scopeRelease, ...restartJoins } =
+        testWorkerExecutorNanoHostJoins({ value: { owner: restartedOwner } });
       const restartedExecutor = new WorkerGovernanceTurnExecutor({
         fileAdmission: new FileStorageAdmission(reopenedCoreDb.dataRoot, () => 0n),
         backend,
@@ -7406,6 +7420,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           kind: 'openshell',
         },
         now: () => '2026-07-15T00:00:04.000Z',
+        ...restartJoins,
       });
 
       if ('artifactRecoveryRequired' in testCase || 'artifactCollectionInvalid' in testCase) {
