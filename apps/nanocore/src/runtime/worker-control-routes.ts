@@ -526,7 +526,8 @@ function observeControlRequest(
 }
 
 /**
- * Stores product-safe evidence only after gateway authentication proved the request lineage.
+ * Stores product-safe evidence after gateway authentication. A transient ACK expiry must return
+ * before entering the writer that may still be held by the original request.
  *
  * @param input Rejection metadata from a worker-control route.
  */
@@ -541,7 +542,8 @@ async function quarantineWorkerControlRejection(input: {
     !input.coreDb ||
     !input.lineage ||
     !(input.error instanceof WorkerControlGatewayError) ||
-    input.error.code === 'worker_control_reconnect_required'
+    input.error.code === 'worker_control_reconnect_required' ||
+    (input.error.status === 503 && input.error.code === 'worker_observation_storage_unavailable')
   ) {
     return;
   }

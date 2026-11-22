@@ -16,6 +16,7 @@ import {
   WorkerObservationDataSchema,
   workerObservationSourceRelativePath,
 } from '@openkit/worker-protocol';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { WorkerTranscriptWriter } from '../../../packages/worker-shim/src/transcript.js';
@@ -50,7 +51,7 @@ import {
 import {
   hashWorkerRouteToken,
   WorkerControlGateway,
-  type WorkerControlGatewayError,
+  WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './runtime/worker-control-gateway.js';
 import {
@@ -60,6 +61,7 @@ import {
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
+import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
 import {
   beginWorkerTurnJournalStep,
@@ -97,6 +99,10 @@ import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -510,6 +516,95 @@ function absoluteAttemptDeadline(coreDb: CoreDb, turnId: string): string {
 }
 
 describe('worker control routes', () => {
+  it('returns authenticated ACK expiry without quarantining and retains a genuine final binding refusal', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { environmentPackage, lineage } = await createWorkerControlRouteFixture([], coreDb);
+    await openAdmittedTestNanoHost(coreDb);
+    let failAfterPublication: 'expiry' | 'authority' = 'expiry';
+    let published = false;
+    const publishFinalStatus = vi.fn(async () => {
+      published = true;
+      return {
+        finalStatusDuplicate: false,
+        eventDuplicate: false,
+        nextFinalStatusSequence: 8,
+        nextEventSequence: 8,
+      };
+    });
+    const resolveFinalStatusTokenBinding = vi.fn(() =>
+      published && failAfterPublication === 'authority'
+        ? ({ status: 'rejected', reason: 'attempt-not-live' } as const)
+        : ({ status: 'accepted', replayOnly: false } as const)
+    );
+    const gateway = new WorkerControlGateway({
+      publishFinalStatus,
+      resolveFinalStatusTokenBinding,
+      async afterWorkerControlAcknowledgement(read) {
+        if (published && failAfterPublication === 'expiry')
+          throw new WorkerControlGatewayError(
+            'worker_observation_storage_unavailable',
+            'NanoHost Worker control storage is unavailable.',
+            503
+          );
+        return read();
+      },
+    });
+    const { token } = gateway.registerSession(environmentPackage, {
+      sandboxBindingRef: 'lease-binding:ack-quarantine',
+    });
+    const app = new Hono();
+    registerWorkerControlRoutes({ app, coreDb, workerControlGateway: gateway });
+    const postFinal = () =>
+      app.request('/api/worker-control/final-status', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          body: { status: 'completed', stopReason: 'completed' },
+          lineage,
+          operation: 'final_status',
+          schemaVersion: 2,
+          sequence: 7,
+        }),
+      });
+    const evidence = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, lineage.workspaceId)
+      );
+    const quarantineWrite = vi.spyOn(getControlStoreWorkerClient(), 'workerControlEvidence');
+    try {
+      const expired = await postFinal();
+      expect(publishFinalStatus).toHaveBeenCalledOnce();
+      expect(resolveFinalStatusTokenBinding).toHaveBeenCalledOnce();
+      expect(expired.status).toBe(503);
+      await expect(expired.json()).resolves.toMatchObject({
+        code: 'worker_observation_storage_unavailable',
+      });
+      expect(quarantineWrite).not.toHaveBeenCalled();
+      expect(evidence()).toEqual([]);
+
+      published = false;
+      failAfterPublication = 'authority';
+      const refused = await postFinal();
+      expect(refused.status).toBe(403);
+      await expect(refused.json()).resolves.toMatchObject({
+        code: 'worker_control_lease_not_live',
+      });
+      expect(quarantineWrite).toHaveBeenCalledOnce();
+      expect(evidence()).toMatchObject([
+        {
+          operation: 'final_status',
+          errorCode: 'worker_control_lease_not_live',
+          httpStatus: 403,
+          turnId: lineage.turnId,
+        },
+      ]);
+    } finally {
+      quarantineWrite.mockRestore();
+    }
+  });
+
   it.each([
     ['final-status', 'final_status'],
     ['supply-refresh-ack', 'supply_refresh_ack'],
