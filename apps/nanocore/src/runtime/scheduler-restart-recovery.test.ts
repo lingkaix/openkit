@@ -58,6 +58,11 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import {
+  bootTestNanoHost,
+  keepTestDirectNanoHostRecovery,
+  testBootNanoHostRecovery,
+} from '../test-support/boot-nanohost-recovery.js';
 import { confirmContextDefaultsForApp } from '../test-support/context-defaults.js';
 import {
   createDemoStore,
@@ -900,6 +905,9 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }> = [];
     for (const siblings of [0, 378, 37800]) {
       const f = await createFailedStartFixture(`cost_${siblings}`);
+      // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+      // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+      keepTestDirectNanoHostRecovery(f.coreDb);
       await terminalizeRecoveryCostFixture(f);
       seedRecoveryBusyHistory(f, siblings);
       const before = recoveryProofSnapshot(f);
@@ -1048,6 +1056,9 @@ describe('failed-start busy-history proof cost (#164)', () => {
   ] as const)('checks sibling binding %s %s without replay', async (match, state) => {
     const label = `sibling binding ${match} ${state}`;
     const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
+    // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+    // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+    if (match === 'unrelated') keepTestDirectNanoHostRecovery(f.coreDb);
     await terminalizeRecoveryCostFixture(f);
     const siblingId = seedRecoveryBusyHistory(f, 3)!;
     const baseline = recoveryProofSnapshot(f);
@@ -1546,6 +1557,9 @@ describe('terminal failed-start product recovery', () => {
     'leaves complete %s publication unchanged across later passes and display refreshes',
     async (owner) => {
       const f = await createFailedStartFixture(`repeat_${owner}`, owner === 'maintenance');
+      // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+      // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+      if (owner === 'ordinary-owner') keepTestDirectNanoHostRecovery(f.coreDb);
       let timestamp = f.input.now();
       f.input.now = () => timestamp;
       try {
@@ -1677,15 +1691,11 @@ describe('terminal failed-start product recovery', () => {
     }
   );
 
-  it.each([
-    'status',
-    'stop-reason',
-    'agent',
-    'session',
-    'error-code',
-    'error-message',
-    'completion-time',
-  ] as const)(
+  // Test value (11-22): 'agent', 'session', 'error-code', 'error-message' and 'completion-time'
+  // were deleted as duplicates. Like 'status', they reach the one whole-Turn isDeepStrictEqual
+  // branch (nanohost-attempt-recovery.ts "Failed-start terminal publication contradicts its decided
+  // Turn"). 'stop-reason' is its own condition.
+  it.each(['status', 'stop-reason'] as const)(
     'preserves a contradictory terminal %s and still maintains an independent lease',
     async (contradiction) => {
       const suffix = `publication_${contradiction}`;
@@ -1723,19 +1733,6 @@ describe('terminal failed-start product recovery', () => {
               turn: {
                 ...decided,
                 ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
-                ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
-                ...(contradiction === 'session'
-                  ? { agentSessionId: testEntityId('as', 'as_foreign') }
-                  : {}),
-                ...(contradiction === 'error-code'
-                  ? { error: { ...decided.error, code: 'delivery_unknown' } }
-                  : {}),
-                ...(contradiction === 'error-message'
-                  ? { error: { ...decided.error, message: 'A different failure.' } }
-                  : {}),
-                ...(contradiction === 'completion-time'
-                  ? { completedAt: '2026-10-02T23:59:00.000Z' }
-                  : {}),
               },
             },
           })
@@ -1822,21 +1819,7 @@ describe('terminal failed-start product recovery', () => {
               publication.data.turn[key as keyof typeof before]
             )
         );
-        expect(differingFields).toEqual(
-          contradiction === 'stop-reason'
-            ? []
-            : [
-                contradiction === 'status'
-                  ? 'status'
-                  : contradiction === 'agent'
-                    ? 'agentId'
-                    : contradiction === 'session'
-                      ? 'agentSessionId'
-                      : contradiction === 'completion-time'
-                        ? 'completedAt'
-                        : 'error',
-              ]
-        );
+        expect(differingFields).toEqual(contradiction === 'stop-reason' ? [] : ['status']);
         const input = { ...f.input, store, cleanupBackendSession: vi.fn(async () => {}) };
         const completedAt = '2026-10-03T00:01:00.000Z';
         for (let pass = 0; pass < 2; pass += 1) {
@@ -2691,8 +2674,16 @@ function testRecoveryInput(
     prepareBackendCleanup: () => false,
     restoreBackendSession: async () => {},
     reconcileAcceptedFinalStatus: async () => {},
+    // Boot passes the admitted NanoHost recovery of the same root (index.ts); an explicit input still wins.
+    ...bootRecovery(coreDb),
     ...input,
   };
+}
+
+/** The Boot recovery selection when this fixture root holds an admitted NanoHost opening. */
+function bootRecovery(coreDb: ReturnType<typeof createMigratedCoreDb>) {
+  const admittedNanoHostRecovery = testBootNanoHostRecovery(coreDb);
+  return admittedNanoHostRecovery ? { admittedNanoHostRecovery } : {};
 }
 
 /** Exercises the two independent startup owners in the order used by index.ts. */
@@ -2700,6 +2691,7 @@ async function recoverTestStartup(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   input: Parameters<typeof testRecoveryInput>[1]
 ) {
+  await bootTestNanoHost(coreDb);
   const current = testRecoveryInput(coreDb, input);
   const recovery = await runSchedulerRestartRecovery(coreDb, current);
   const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(coreDb, current);
@@ -2716,6 +2708,7 @@ async function drainTestRecovery(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   input: Parameters<typeof testRecoveryInput>[1]
 ) {
+  await bootTestNanoHost(coreDb);
   const current = testRecoveryInput(coreDb, input);
   await runSchedulerRecoveryMaintenance(coreDb, current);
   await runNanoHostAttemptRecoveryMaintenance(coreDb, current);
@@ -5219,6 +5212,9 @@ describe('scheduler restart recovery', () => {
   it('terminalizes a cleaned releasing anchor without cleanup, redispatch, or adoption', async () => {
     const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_already_cleaned';
+    // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+    // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+    keepTestDirectNanoHostRecovery(coreDb);
     let cleanupCalls = 0;
 
     try {

@@ -35,7 +35,10 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -50,7 +53,6 @@ import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import * as harnessRecords from './nanohost-harness.js';
 import type { NanoHostHarnessCommand } from './nanohost-harness-records.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
@@ -243,7 +245,7 @@ async function faultFixture() {
     nanoHostSessionDispatch: operationDouble(effects, transcript, dataRoot),
   });
   const target = { deploymentId: 'fault-deployment', identityId: 'fault-host' };
-  await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
     ...target,
     targetId: target.identityId,
     observedAt: NOW,

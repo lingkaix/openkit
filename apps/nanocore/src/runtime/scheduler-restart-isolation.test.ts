@@ -11,6 +11,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
@@ -25,11 +26,7 @@ import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
 } from './nanohost-attempt-recovery.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import {
   type PreAnchorRecoveryContext,
   runSchedulerRecoveryMaintenance,
@@ -103,13 +100,13 @@ function attempt(db: CoreDb, suffix: string, submitted = false) {
 async function anchored(db: CoreDb, suffix: string) {
   const row = attempt(db, suffix, true);
   if (!getNanoHostRuntimeTarget(db, 'runtime-target-isolation')) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
+    const allocated = await transitionTestNativeRuntimeTargetFields('allocate', db, {
       deploymentId: 'deployment-isolation',
       identityId: 'identity-isolation',
       observedAt: '2026-07-05T00:00:00.000Z',
       targetId: 'runtime-target-isolation',
     });
-    await upsertNanoHostRuntimeTarget(db, {
+    await transitionTestNativeRuntimeTargetFields('ready', db, {
       ...allocated,
       freshEmpty: true,
       observedAt: '2026-07-05T00:00:01.000Z',

@@ -11,20 +11,22 @@ import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { runtimeConfigCandidateRequiresRestart } from './config/runtime-config-files.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -97,6 +99,13 @@ function writeServerConfig(dataRoot: string, model: string): void {
     );
 }
 
+/** Reads the RuntimeTarget from the admitted NanoHost owner of the fixture root. */
+function readAdmittedTarget(coreDb: CoreDb, targetId: string) {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, targetId)
+  );
+}
+
 describe('NanoHost restart-required reload fencing', () => {
   for (const mode of ['safe', 'strict', 'dry-run', 'read-failed'] as const) {
     it(`keeps native connection authority consistent after ${mode} reload`, async () => {
@@ -134,15 +143,25 @@ describe('NanoHost restart-required reload fencing', () => {
         writeHost(host);
         const manager = createRuntimeConfigManager({ dataRoot });
         const initial = manager.current();
-        let app = createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
+        // NanoHost transport and readiness records live in the admitted NanoHost owner of this root.
+        const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+        let app = createApp({
+          coreDb,
+          dataRoot,
+          nanoHostStorage,
+          runtimeConfigManager: manager,
+          store,
+        });
         const authority = getNanoHostTransportSessionAuthority(app);
         authorities.push(authority);
-        coreDb.sqlite
-          .prepare(
-            'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
-          )
-          .run(host.identityId, deploymentId, 'active', new Date().toISOString());
-        const token = await createNanoHostTransportTokenRecord(coreDb, {
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
+            )
+            .run(host.identityId, deploymentId, 'active', new Date().toISOString())
+        );
+        const token = await createNanoHostTransportTokenRecord(nanoHostStorage.value, {
           deploymentId,
           expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
           ownerNanoHostIdentityId: host.identityId,
@@ -190,8 +209,8 @@ describe('NanoHost restart-required reload fencing', () => {
         const first = await admit();
         expect(first.status).toBe(200);
         expect(first.body.role).toBe('authoritative');
-        const target = getNanoHostRuntimeTarget(coreDb, host.identityId)!;
-        await upsertNanoHostRuntimeTarget(coreDb, {
+        const target = readAdmittedTarget(coreDb, host.identityId)!;
+        await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
           ...target,
           freshEmpty: true,
           observedAt: new Date().toISOString(),
@@ -199,7 +218,7 @@ describe('NanoHost restart-required reload fencing', () => {
           predecessorFenced: true,
           ready: true,
         });
-        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+        expect(readAdmittedTarget(coreDb, host.identityId)).toMatchObject({
           ready: true,
           physicalEpoch: 'a'.repeat(64),
         });
@@ -214,10 +233,14 @@ describe('NanoHost restart-required reload fencing', () => {
         // Direct callers and public operations must cross the same reload fence.
         if (mode === 'read-failed') {
           const failure = new Error('Synthetic readiness observation read failed.');
-          const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
-          const targetBeforeReload = getNanoHostRuntimeTarget(coreDb, host.identityId);
+          // The readiness observation is read on the admitted NanoHost owner's read connection.
+          const observation = nanoHostStorage.value.owner.read((sqlite) => sqlite);
+          if (observation.state !== 'ready')
+            throw new Error('NanoHost fixture read is unavailable.');
+          const prepare = observation.value.prepare.bind(observation.value);
+          const targetBeforeReload = readAdmittedTarget(coreDb, host.identityId);
           const readFailure = vi
-            .spyOn(coreDb.sqlite, 'prepare')
+            .spyOn(observation.value, 'prepare')
             .mockImplementation((sql: string) => {
               if (sql.includes('target_id AS targetId') && sql.includes('WHERE identity_id = ?'))
                 throw failure;
@@ -236,7 +259,7 @@ describe('NanoHost restart-required reload fencing', () => {
             readFailure.mockRestore();
           }
           // Failed durable observation stays unchanged; process fencing does not claim a committed readiness update.
-          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
+          expect(readAdmittedTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
         } else if (mode === 'safe') {
           const result = await manager.reload({ mode: 'safe' });
           expect(result.status).toBe('applied');
@@ -264,7 +287,7 @@ describe('NanoHost restart-required reload fencing', () => {
         if (mode === 'strict' || mode === 'dry-run') expect(manager.current()).toBe(initial);
         if (mode === 'dry-run') {
           expect(authority.mayCarryWork(sessions[0]!)).toBe(true);
-          expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+          expect(readAdmittedTarget(coreDb, host.identityId)).toMatchObject({
             ready: true,
             physicalEpoch: 'a'.repeat(64),
           });
@@ -272,7 +295,7 @@ describe('NanoHost restart-required reload fencing', () => {
         }
         expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
-        expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toMatchObject({
+        expect(readAdmittedTarget(coreDb, host.identityId)).toMatchObject({
           ready: false,
           freshEmpty: false,
           physicalEpoch: null,
@@ -334,7 +357,13 @@ describe('NanoHost restart-required reload fencing', () => {
         // A new App lifetime reads the restored startup file and admits a fresh generation.
         writeHost(host);
         const restartedManager = createRuntimeConfigManager({ dataRoot });
-        app = createApp({ coreDb, dataRoot, runtimeConfigManager: restartedManager, store });
+        app = createApp({
+          coreDb,
+          dataRoot,
+          nanoHostStorage,
+          runtimeConfigManager: restartedManager,
+          store,
+        });
         expect(restartedManager.status().pendingRestart).toEqual([]);
         authorities.push(getNanoHostTransportSessionAuthority(app));
         expect((await admit()).status).toBe(200);
@@ -443,13 +472,13 @@ describe('runtime config reload API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_reload_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_reload_fixture',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),

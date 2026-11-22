@@ -25,10 +25,6 @@ import {
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
@@ -37,7 +33,10 @@ import {
 } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, createTestStore, createTestWorkspaceDb } from '../test-support/store.js';
 import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
@@ -535,14 +534,14 @@ async function fixture() {
     createdAt: timestamp,
   });
   expect(pkg.llm.mode).toBe('harness');
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+  const target = await transitionTestNativeRuntimeTargetFields('allocate', core, {
     deploymentId: 'policy-bridge',
     identityId: 'policy-bridge',
     targetId: 'policy-bridge',
     observedAt: timestamp,
   });
   const physicalEpoch = 'e'.repeat(64);
-  await upsertNanoHostRuntimeTarget(core, {
+  await transitionTestNativeRuntimeTargetFields('ready', core, {
     ...target,
     ready: true,
     freshEmpty: true,

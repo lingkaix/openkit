@@ -7,10 +7,6 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import { recordWorkerBackendSessionMaterializing } from '../runtime/worker-backend-sessions.js';
 import { createAndReserveWorkerStorageAttachment } from '../runtime/worker-storage-bindings.js';
 import { publishWorkspaceCapture as acceptWorkspaceCapture } from '../runtime/workspace-capture-publication.js';
@@ -34,6 +30,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
@@ -121,13 +118,13 @@ async function fixture(bytes = Buffer.from('original captured work\n')) {
       startedAt: timestamp,
     }
   );
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
     deploymentId: readDataRootLayoutMarker(root).deploymentId,
     identityId: 'capture-owner',
     targetId: 'capture-owner',
     observedAt: timestamp,
   });
-  await upsertNanoHostRuntimeTarget(coreDb, {
+  await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
     ...target,
     ready: true,
     freshEmpty: true,

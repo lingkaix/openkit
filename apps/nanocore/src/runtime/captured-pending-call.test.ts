@@ -656,6 +656,7 @@ describe('captured pending MCP schema identity at grant', () => {
       interception,
       workerMcpGateway: f.gateway,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: () => f.environmentPackage,
       } as unknown as WorkerControlGateway,
       runtimeConfig: () =>

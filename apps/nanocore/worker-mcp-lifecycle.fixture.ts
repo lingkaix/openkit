@@ -30,10 +30,6 @@ import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
 } from './src/runtime/nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './src/runtime/nanohost-runtime-target.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -63,7 +59,10 @@ import { createDemoStore } from './src/test-support/demo-store.js';
 import { testEntityId } from './src/test-support/entity-ids.js';
 import { ensureLocalUser } from './src/test-support/local-user.js';
 import { admitTestMcpApproval } from './src/test-support/mcp-tool-policy.js';
-import { admitTestNativeEnvironmentForRoot } from './src/test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from './src/test-support/native-environment.js';
 import { observeNativeTaskStartup } from './src/test-support/native-task-admission.js';
 import { operationRequest } from './src/test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './src/test-support/release-identity.js';
@@ -218,13 +217,13 @@ export async function assertCapturedOutcome(
       ],
     }),
   });
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
     deploymentId: 'deployment_mcp_lifecycle',
     identityId: 'identity_mcp_lifecycle',
     observedAt: '2026-09-03T00:00:00.000Z',
     targetId: 'target_local',
   });
-  await upsertNanoHostRuntimeTarget(coreDb, {
+  await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: '2026-09-03T00:00:01.000Z',

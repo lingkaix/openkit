@@ -16,15 +16,12 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
 import type {
   WorkerGovernanceBackend,
   WorkerGovernanceNativeResume,
@@ -225,13 +222,13 @@ it.each([
       const agentSessionId = testEntityId('as', 'resume-next-opencode');
       const attemptId = testEntityId('attempt', 'resume-next-attempt');
       const bindingRef = `fixture-binding:${turn.id}`;
-      const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
         deploymentId: 'deployment_fake_executor',
         identityId: 'identity_fake_executor',
         observedAt: timestamp,
         targetId: 'runtime-target-test',
       });
-      await upsertNanoHostRuntimeTarget(coreDb, {
+      await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
         ...target,
         freshEmpty: true,
         observedAt: timestamp,

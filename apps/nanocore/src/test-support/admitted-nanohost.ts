@@ -28,7 +28,21 @@ export async function openAdmittedTestNanoHost(coreDb: CoreDb) {
 export async function reopenAdmittedTestNanoHost(coreDb: CoreDb) {
   const storage = await prepareNanoHostOwner(coreDb, { enabled: () => true });
   if (storage.state !== 'ready') throw new Error(`NanoHost admission: ${storage.reason}`);
+  latestAdmittedOwners.set(coreDb.dataRoot, storage.value.owner);
   return storage;
+}
+
+type AdmittedTestNanoHostOwner = Extract<
+  Awaited<ReturnType<typeof prepareNanoHostOwner>>,
+  { state: 'ready' }
+>['value']['owner'];
+const latestAdmittedOwners = new Map<string, AdmittedTestNanoHostOwner>();
+
+/** Returns the owner of the latest admitted NanoHost opening of this fixture root, if any. */
+export function currentAdmittedTestNanoHostOwner(
+  coreDb: Pick<CoreDb, 'dataRoot'>
+): AdmittedTestNanoHostOwner | undefined {
+  return latestAdmittedOwners.get(coreDb.dataRoot);
 }
 
 /** Reads fixture evidence from the same acknowledged NanoHost generation as production. */

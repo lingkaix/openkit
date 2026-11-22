@@ -28,7 +28,6 @@ import type {
 import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
 import * as schedulerDispatch from '../runtime/scheduler-dispatch-loop.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -41,7 +40,10 @@ import {
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  settleTestNativeImageResult,
+} from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -114,7 +116,7 @@ function createNanoHostDispatch(
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await writeWorkerImageSettlement(coreDb, {
+        await settleTestNativeImageResult(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,

@@ -147,6 +147,7 @@ import {
   DEMO_WORKSPACE_ID,
 } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { mutateAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
   recordTestExecutionAttempt,
@@ -155,7 +156,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironment,
   admitTestNativeEnvironmentForRoot,
-  createTestNativeEnvironmentDb,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
@@ -317,12 +317,24 @@ vi.mock('node:worker_threads', async (load) => {
   return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
 });
 
-const packageFixtureDb = createTestNativeEnvironmentDb();
+/**
+ * Seeds image evidence in the admitted NanoHost file of an already admitted fixture root (synchronous, so
+ * existing call sites keep their shape). The retired Core table is absent; a root without an admitted
+ * NanoHost opening refuses here instead of seeding Core.
+ */
+function admitFactoryNativeEnvironment(
+  coreDb: ReturnType<typeof openCoreDb>,
+  manifest: Parameters<typeof admitTestNativeEnvironment>[1]
+): void {
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => admitTestNativeEnvironment({ sqlite }, manifest));
+}
+
 function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
   input: T
-): T & { coreDb: typeof packageFixtureDb } {
-  const coreDb = input.coreDb ?? packageFixtureDb;
-  admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
+): T & { coreDb: ReturnType<typeof openCoreDb> } {
+  // Metadata-only cases share the admitted factory root seeded before the cases.
+  const coreDb = input.coreDb ?? factoryCoreDb;
+  admitFactoryNativeEnvironment(coreDb, input.agentSetup.manifest);
   return { ...input, coreDb };
 }
 const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
@@ -3295,7 +3307,7 @@ describe('createConfiguredTurnExecutor', () => {
         logicalModelId,
         requiredCapabilities: ['trusted-worker-inference-relay'],
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      admitFactoryNativeEnvironment(coreDb, setup.manifest);
       const authored = AuthoredAgentConfigSchema.parse({
         ...setup.manifest,
         sandbox: {
@@ -4515,7 +4527,7 @@ describe('createConfiguredTurnExecutor', () => {
         imageRef: `sha256:${'a'.repeat(64)}`,
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }).manifest;
-      admitTestNativeEnvironment(coreDb, manifest);
+      admitFactoryNativeEnvironment(coreDb, manifest);
       const config = loadRuntimeConfig(dataRoot);
       const configuration = createInMemoryRuntimeConfigSnapshot({
         ...config,
@@ -4666,7 +4678,7 @@ describe('createConfiguredTurnExecutor', () => {
         imageRef: `sha256:${'a'.repeat(64)}`,
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }).manifest;
-      admitTestNativeEnvironment(coreDb, manifest);
+      admitFactoryNativeEnvironment(coreDb, manifest);
       const readRuntimeConfig = () => {
         const config = loadRuntimeConfig(dataRoot);
         return createInMemoryRuntimeConfigSnapshot({
@@ -8790,7 +8802,7 @@ describe('createConfiguredTurnExecutor', () => {
         }).manifest
     );
     if (sharedAdapters)
-      for (const manifest of manifests) admitTestNativeEnvironment(coreDb, manifest);
+      for (const manifest of manifests) admitFactoryNativeEnvironment(coreDb, manifest);
     let manifest = manifests[0]!;
     let configuration = createInMemoryRuntimeConfigSnapshot({ dataRoot });
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
@@ -13864,7 +13876,7 @@ describe('createConfiguredTurnExecutor', () => {
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
       await recordTestNativeRuntimeTarget(coreDb);
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      admitFactoryNativeEnvironment(coreDb, setup.manifest);
       const entry = await createTestQueueEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${attemptId}`,
@@ -14063,7 +14075,7 @@ describe('createConfiguredTurnExecutor', () => {
       imageRef: imageDigest,
       requiredCapabilities: ['trusted-worker-inference-relay'],
     }).manifest;
-    admitTestNativeEnvironment(coreDb, manifest);
+    admitFactoryNativeEnvironment(coreDb, manifest);
     const readRuntimeConfig = () =>
       createInMemoryRuntimeConfigSnapshot({
         ...loadRuntimeConfig(dataRoot),
@@ -15311,7 +15323,7 @@ describe('createConfiguredTurnExecutor', () => {
           }).manifest
       );
       if (!reuseOrdinaryProof)
-        for (const manifest of manifests) admitTestNativeEnvironment(coreDb, manifest);
+        for (const manifest of manifests) admitFactoryNativeEnvironment(coreDb, manifest);
       const readRuntimeConfig = () =>
         createInMemoryRuntimeConfigSnapshot({
           ...loadRuntimeConfig(dataRoot),
@@ -15622,7 +15634,7 @@ describe('createConfiguredTurnExecutor', () => {
             await run(prior, null);
             baseline = original = store.getAgentSession(prior.agentSessionId);
             manifests[0]!.runtime.version = '0.153.4';
-            admitTestNativeEnvironment(coreDb, manifests[0]!);
+            admitFactoryNativeEnvironment(coreDb, manifests[0]!);
           }
           first = await entryFor(1, 0, 0);
           originalAttemptId = first.attemptId;
@@ -16289,7 +16301,7 @@ describe('createConfiguredTurnExecutor', () => {
                 : { version: '0.153.5' }),
             },
           };
-          admitTestNativeEnvironment(coreDb, manifests[0]!);
+          admitFactoryNativeEnvironment(coreDb, manifests[0]!);
         }
         const second = await entryFor(2, crossThread ? 1 : 0, crossThread ? 1 : 0);
         const negative = corrupted || scenario.endsWith('pre-naming-live') || known || ignored;
@@ -16575,7 +16587,7 @@ describe('createConfiguredTurnExecutor', () => {
       /** Uses real package resolution so returning OpenCode selects its original static identity. */
       const packageFor = async (adapter: string, number: number) => {
         const setup = createTestAgentSetup({ adapter, agentId: `agent_${adapter}` });
-        admitTestNativeEnvironment(coreDb, setup.manifest);
+        admitFactoryNativeEnvironment(coreDb, setup.manifest);
         return await resolveAgentEnvironmentPackage({
           coreDb,
           captureCoverage: { scope: 'server', value: 'off' },
@@ -18825,7 +18837,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           imageRef: `sha256:${'2'.repeat(64)}`,
           requiredCapabilities: ['trusted-worker-inference-relay'],
         });
-        admitTestNativeEnvironment(coreDb, setup.manifest);
+        admitFactoryNativeEnvironment(coreDb, setup.manifest);
         const store = new FsStore({ dataRoot: coreDb.dataRoot });
         // Product admission composes the real Core entry and the real NanoHost executor.
         const app = createAppWithWorkspaceAuthority({
@@ -20265,7 +20277,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           imageRef: `sha256:${'5'.repeat(64)}`,
           requiredCapabilities: ['trusted-worker-inference-relay'],
         });
-        admitTestNativeEnvironment(coreDb, setup.manifest);
+        admitFactoryNativeEnvironment(coreDb, setup.manifest);
         let earned: ReturnType<typeof getWorkerStorageBinding> | undefined;
         let competing: ReturnType<typeof getWorkerStorageBinding> | undefined;
         const releaseOwner = storageOwners.releaseWorkerStorageAttachment;
@@ -20771,7 +20783,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         imageRef: `sha256:${'a'.repeat(64)}`,
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }).manifest;
-      admitTestNativeEnvironment(coreDb, manifest);
+      admitFactoryNativeEnvironment(coreDb, manifest);
       const manager = createRuntimeConfigManager({
         dataRoot: coreDb.dataRoot,
         initialSnapshot: createInMemoryRuntimeConfigSnapshot({
@@ -20962,7 +20974,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       imageRef: `sha256:${'a'.repeat(64)}`,
       requiredCapabilities: ['trusted-worker-inference-relay'],
     }).manifest;
-    admitTestNativeEnvironment(coreDb, manifest);
+    admitFactoryNativeEnvironment(coreDb, manifest);
     const configuration = createInMemoryRuntimeConfigSnapshot({
       ...loadRuntimeConfig(coreDb.dataRoot),
       agentManifests: [manifest],
@@ -24243,7 +24255,7 @@ async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
         requiredCapabilities: ['trusted-worker-inference-relay'],
       }).manifest
   );
-  for (const manifest of manifests) admitTestNativeEnvironment(coreDb, manifest);
+  for (const manifest of manifests) admitFactoryNativeEnvironment(coreDb, manifest);
   const readRuntimeConfig = () =>
     createInMemoryRuntimeConfigSnapshot({
       ...loadRuntimeConfig(dataRoot),
@@ -24311,7 +24323,7 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
     agentId: 'agent_retired_scope',
     requiredCapabilities: ['trusted-worker-inference-relay'],
   }).manifest;
-  admitTestNativeEnvironment(coreDb, manifest);
+  admitFactoryNativeEnvironment(coreDb, manifest);
   const readRuntimeConfig = () =>
     createInMemoryRuntimeConfigSnapshot({
       ...loadRuntimeConfig(dataRoot),
@@ -24738,7 +24750,7 @@ describe('inert initial private Login exchange through the concrete backend sess
           providerRegistry,
           localInferenceSetup.logicalModels.allowed.map((model) => model.id)
         );
-        admitTestNativeEnvironment(coreDb, setup.manifest);
+        admitFactoryNativeEnvironment(coreDb, setup.manifest);
         let preferenceManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
         if (preferencePreview) {
           // Initialize canonical A sources before the one native publication owner is bound.
@@ -28059,7 +28071,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
       providerRegistry,
       setup.logicalModels.allowed.map((model) => model.id)
     );
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    admitFactoryNativeEnvironment(coreDb, setup.manifest);
     const authored = AuthoredAgentConfigSchema.parse({
       ...setup.manifest,
       requiredFeatures: ['worker.harness-login.v1'],

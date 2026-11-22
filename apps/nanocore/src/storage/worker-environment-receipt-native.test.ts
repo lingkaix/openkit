@@ -12,14 +12,16 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import * as bindings from '../runtime/worker-storage-bindings.js';
 import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  recordTestNativeRuntimeTarget,
+  settleTestNativeImageResult,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
@@ -257,7 +259,7 @@ async function fixture(kind: Kind) {
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await writeWorkerImageSettlement(coreDb, {
+        await settleTestNativeImageResult(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,

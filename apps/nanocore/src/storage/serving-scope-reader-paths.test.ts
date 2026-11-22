@@ -238,6 +238,7 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
     // Existing fixture boundary supplies an authenticated outside AEP; every durable/current
     // Turn, Workspace, policy and capability predicate remains in the actual Tool route.
     workerControlGateway: {
+      afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
       authenticatePackageToken: () => aep,
     } as unknown as WorkerControlGateway,
   });

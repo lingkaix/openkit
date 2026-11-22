@@ -11,12 +11,19 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolveAgentEnvironmentPackageInput } from '../runtime/agent-environment.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
+import {
+  type AllocateNanoHostRuntimeTargetConnectionGenerationInput,
+  getNanoHostRuntimeTarget,
+  type RecordNanoHostRuntimeTargetConnectionCloseInput,
+  type UpsertNanoHostRuntimeTargetInput,
+} from '../runtime/nanohost-runtime-target.js';
 import {
   admitWorkerImageEnvironment,
   insertWorkerImageSettlementInTransaction,
   readAdmittedWorkerImageEnvironment,
   readWorkerImageSettlement,
+  type WorkerImageSettlement,
+  type WorkerImageSettlementIdentity,
 } from '../runtime/worker-image-settlements-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -234,4 +241,126 @@ export async function transitionTestNativeRuntimeTarget(
   if (result.state !== 'ready') throw new Error(`NanoHost fixture transition: ${result.reason}`);
   if (!result.value) throw new Error('NanoHost fixture transition has no current target.');
   return result.value;
+}
+
+/**
+ * Applies one retired Core runtime-target writer input to the admitted NanoHost owner of the same root.
+ * Copies exactly the fields the retired allocate / ready / close writers posted, so fixtures that spread a
+ * current target record keep their original input and the admitted codec stays strict.
+ */
+export async function transitionTestNativeRuntimeTargetFields(
+  kind: 'allocate',
+  coreDb: CoreDb,
+  input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
+): ReturnType<typeof transitionTestNativeRuntimeTarget>;
+export async function transitionTestNativeRuntimeTargetFields(
+  kind: 'ready',
+  coreDb: CoreDb,
+  input: UpsertNanoHostRuntimeTargetInput
+): ReturnType<typeof transitionTestNativeRuntimeTarget>;
+export async function transitionTestNativeRuntimeTargetFields(
+  kind: 'close',
+  coreDb: CoreDb,
+  input: RecordNanoHostRuntimeTargetConnectionCloseInput
+): ReturnType<typeof transitionTestNativeRuntimeTarget>;
+export async function transitionTestNativeRuntimeTargetFields(
+  kind: 'allocate' | 'ready' | 'close',
+  coreDb: CoreDb,
+  input:
+    | AllocateNanoHostRuntimeTargetConnectionGenerationInput
+    | UpsertNanoHostRuntimeTargetInput
+    | RecordNanoHostRuntimeTargetConnectionCloseInput
+) {
+  if (kind === 'allocate') {
+    const value = input as AllocateNanoHostRuntimeTargetConnectionGenerationInput;
+    return transitionTestNativeRuntimeTarget(coreDb, {
+      kind,
+      targetId: value.targetId,
+      identityId: value.identityId,
+      deploymentId: value.deploymentId,
+      observedAt: value.observedAt,
+    });
+  }
+  if (kind === 'ready') {
+    const value = input as UpsertNanoHostRuntimeTargetInput;
+    return transitionTestNativeRuntimeTarget(coreDb, {
+      kind,
+      targetId: value.targetId,
+      identityId: value.identityId,
+      deploymentId: value.deploymentId,
+      observedAt: value.observedAt,
+      connectionGeneration: value.connectionGeneration,
+      predecessorFenced: value.predecessorFenced,
+      ready: value.ready,
+      freshEmpty: value.freshEmpty,
+      physicalEpoch: value.physicalEpoch,
+    });
+  }
+  const value = input as RecordNanoHostRuntimeTargetConnectionCloseInput;
+  return transitionTestNativeRuntimeTarget(coreDb, {
+    kind,
+    targetId: value.targetId,
+    closedGeneration: value.closedGeneration,
+    authoritativeGeneration: value.authoritativeGeneration,
+    observedAt: value.observedAt,
+  });
+}
+
+/**
+ * Settles one fixture image result through the production admitted settlement owner of the same root.
+ * Replaces the retired Core image writer in fixtures whose injected NanoHost dispatch models the outside peer:
+ * the result is retained only after the current admitted target and, for acquisition, the original Core
+ * journal decision accept it.
+ * @param coreDb Caller-owned migrated Core database whose admitted NanoHost owner holds the target.
+ * @param settlement Exact receiver result the injected peer returned.
+ * @param targetId Fixture target identity recorded by recordTestNativeRuntimeTarget.
+ */
+export async function settleTestNativeImageResult(
+  coreDb: CoreDb,
+  settlement: WorkerImageSettlement,
+  targetId = 'target_local'
+) {
+  const { reopenAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  const { settlePreparedNanoHostImage } = await import('../app.js');
+  const storage = await reopenAdmittedTestNanoHost(coreDb);
+  const current = storage.value.owner.read((sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, targetId)
+  );
+  if (current.state !== 'ready' || !current.value?.physicalEpoch)
+    throw new Error('NanoHost fixture image settlement requires a ready target.');
+  const { deploymentId, identityId, connectionGeneration, physicalEpoch } = current.value;
+  await settlePreparedNanoHostImage(coreDb, storage, {
+    settlement,
+    target: { deploymentId, identityId, targetId, connectionGeneration, physicalEpoch },
+  });
+}
+
+/**
+ * Seeds one retained image settlement row in the admitted NanoHost file of the same root.
+ * Fixture-only replacement for seeding through the retired Core image writer: no peer effect and no journal.
+ * @returns The admitted NanoHost storage the caller can pass to its App.
+ */
+export async function seedTestNativeImageSettlement(
+  coreDb: CoreDb,
+  settlement: WorkerImageSettlement
+) {
+  const { seedAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  return seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+    insertWorkerImageSettlementInTransaction({ sqlite }, settlement);
+  });
+}
+
+/**
+ * Admits confirmed image defaults in the admitted NanoHost file of the same root, through the same records-module
+ * stage (`admitWorkerImageEnvironment`) the retired async Core writer posted. Fixture-only: no peer effect.
+ */
+export async function admitTestNativeImageEnvironment(
+  coreDb: CoreDb,
+  candidate: WorkerImageSettlementIdentity,
+  environment: unknown
+) {
+  const { seedAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  return seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+    admitWorkerImageEnvironment({ sqlite }, candidate, environment);
+  });
 }

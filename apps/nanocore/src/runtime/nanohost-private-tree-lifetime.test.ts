@@ -11,8 +11,8 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import { removeNanoHostStagedExport } from './worker-governance-backend.js';
 
@@ -40,7 +40,7 @@ it('propagates completed export cleanup failure, preserves sibling bytes and per
       identityId: 'export-lifetime',
       targetId: 'export-lifetime',
     };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       ...target,
       observedAt: new Date().toISOString(),
     });

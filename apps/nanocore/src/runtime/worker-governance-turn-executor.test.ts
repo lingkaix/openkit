@@ -212,6 +212,7 @@ import {
   createAppWithWorkspaceAuthority,
   createTestSessionActor,
 } from '../test-support/app.js';
+import { testBootNanoHostRecovery } from '../test-support/boot-nanohost-recovery.js';
 import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -1448,6 +1449,12 @@ function remoteGitInputFixture() {
   };
 }
 
+/** The Boot recovery selection when this fixture root holds an admitted NanoHost opening. */
+function bootRecovery(coreDb: Pick<CoreDb, 'dataRoot'>) {
+  const admittedNanoHostRecovery = testBootNanoHostRecovery(coreDb);
+  return admittedNanoHostRecovery ? { admittedNanoHostRecovery } : {};
+}
+
 describe('WorkerGovernanceTurnExecutor', () => {
   it('holds original Worker outcome delivery when the reopened manifest presents a different order', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-original-manifest-'));
@@ -2292,6 +2299,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         restoreBackendSession: vi.fn(async () => {}),
         reconcileAcceptedFinalStatus: vi.fn(async () => {}),
         projectRecoveredTurn: vi.fn(async () => ({ status: 'failed' as const })),
+        // Boot passes the admitted NanoHost recovery of the same root (index.ts).
+        ...bootRecovery(coreDb),
       };
       if (proof === 'store-read-failure') {
         const getSession = store.getAgentSession.bind(store);
@@ -9136,6 +9145,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
             reconcileAcceptedFinalStatus: async () => {
               throw new Error('Failed fetch has no accepted final status.');
             },
+            // Boot passes the admitted NanoHost recovery of the same root (index.ts).
+            ...bootRecovery(coreDb),
             projectRecoveredTurn: async () => {
               const result = await terminalizeGovernedWorkerTurn({
                 store: reloaded,

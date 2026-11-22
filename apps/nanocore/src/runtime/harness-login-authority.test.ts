@@ -19,7 +19,10 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
 import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { agentSessionsRoot, nativeProductScope } from '../storage/workspace-file-records.js';
-import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import {
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -278,8 +281,9 @@ async function fixture(
   });
 
   const physicalEpoch = 'e'.repeat(64);
+  // The target belongs to this root's deployment (the helper default), so an exact generation change can
+  // retire its Vault Epoch through Core; Core refuses a foreign deployment as a conflict.
   const target = await recordTestNativeRuntimeTarget(coreDb, 'login-auth-fixture', {
-    deploymentId: 'login-auth-fixture',
     identityId: 'login-auth-fixture',
     allocationAt: timestamp,
     readyAt: timestamp,
@@ -389,9 +393,18 @@ async function fixture(
     if (typeof value !== 'string') throw new Error('Auth fixture lacks an owner-produced token.');
     return value;
   };
+  // The gateway reaches the admitted owner through this binding. A case that restarts the writer rebinds the
+  // same root's owner after reopening it, and keeps the original gateway, registration and Login closure.
+  let gatewayOwner = nativeStorage.owner;
+  const rebindableOwner = new Proxy(nativeStorage.owner, {
+    get: (_original, property) => {
+      const value = Reflect.get(gatewayOwner, property, gatewayOwner);
+      return typeof value === 'function' ? value.bind(gatewayOwner) : value;
+    },
+  });
   const gateway = createDefaultWorkerControlGateway(coreDb, undefined, {
     state: 'ready',
-    value: nativeStorage,
+    value: { ...nativeStorage, owner: rebindableOwner },
   });
   const registration = gateway.registerSession(environmentPackage, {
     sandboxBindingRef: attemptBindingRef,
@@ -459,6 +472,9 @@ async function fixture(
   return {
     coreDb,
     nativeStorage,
+    rebindNativeOwner: (owner: typeof nativeStorage.owner) => {
+      gatewayOwner = owner;
+    },
     workspaceDb,
     gateway,
     physical,
@@ -1003,6 +1019,9 @@ describe('private Harness Login request authentication', () => {
         // Stop the actual writer before the shared physical-corruption fixture changes its row.
         reader.close();
         await shutdownControlStoreWorkerClient();
+        // Rebind the existing admitted NanoHost owner of this root to the restarted writer, so the positive
+        // controls and the Login check below reach the canonical Workspace row, not a closed owner.
+        f.rebindNativeOwner((await reopenAdmittedTestNanoHost(f.coreDb)).value.owner);
         reader = openControlStoreProductReadHandle(scope.path, scope.owner);
         try {
           // Satisfy SQL's positive-revision constraint while violating the canonical safe integer.
