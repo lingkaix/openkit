@@ -181,6 +181,11 @@ export interface ExecutionJournalIntent {
 export interface ExecutionJournalSettlement {
   readonly ref: ExecutionStepRef;
   readonly expectedExecutionRevision: number;
+  /** Only the Workspace command may settle this exact observed child at the current root revision. */
+  readonly observedChild?: Pick<
+    ExecutionJournalIntent,
+    'control' | 'parent' | 'carriage' | 'inspectedStep'
+  >;
   readonly state: EndedExecutionStepState;
   readonly outputRefs: readonly string[];
   readonly span: ExecutionJournalSpan & { readonly endTimeUnixNano: bigint };
