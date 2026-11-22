@@ -3470,13 +3470,29 @@ class ControlStoreWorkerClient {
         }
       };
 
+      const pendingWorkerControlAcknowledgement = () =>
+        !this.backupHold && !opening.nanoHostTargetTransition
+          ? opening.nanoHostCoreHoldPending
+          : undefined;
       const waitForWorkerControlAcknowledgement = async (): Promise<void> => {
-        const pending = opening.nanoHostCoreHoldPending;
-        if (pending && !this.backupHold && !opening.nanoHostTargetTransition) await pending;
+        for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
+          await pending;
+          pending = pendingWorkerControlAcknowledgement();
+        }
       };
 
       // Drain Core postings while the original authority is used by the Native writer.
-      const withCoreHold = async <Value>(submit: (identity: string) => Promise<Value>) => {
+      const withCoreHold = async <Value>(
+        submit: (identity: string) => Promise<Value>,
+        joinServing = false
+      ) => {
+        // Take the hold in the same continuation that observes the preceding ACK.
+        if (joinServing) {
+          for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
+            await pending;
+            pending = pendingWorkerControlAcknowledgement();
+          }
+        }
         const corePath = serverStoragePath(root, 'control-kernel');
         const coreKey = `core:${corePath}`;
         const core = this.openings.get(coreKey);
@@ -3811,7 +3827,8 @@ class ControlStoreWorkerClient {
         const original = structuredClone(input);
         return withCoreHold(
           async (coreIdentity) =>
-            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
+            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value,
+          original.kind === 'operation.settle'
         );
       };
       const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
@@ -3924,6 +3941,10 @@ class ControlStoreWorkerClient {
         },
         settle: async (input) => {
           const original = { ...structuredClone(input), kind: 'operation.settle' } as const;
+          for (let pending = pendingWorkerControlAcknowledgement(); pending; ) {
+            await pending;
+            pending = pendingWorkerControlAcknowledgement();
+          }
           const inspectIdleClose = readers.inspectIdleHarnessClose;
           const idleAcknowledgedAt =
             inspectIdleClose && readCurrent((sqlite) => inspectIdleClose({ sqlite }, original))

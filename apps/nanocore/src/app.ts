@@ -2449,7 +2449,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/api/worker-control/*', browserCors);
   if (nanoHostStorage?.state === 'ready') {
     const { owner } = nanoHostStorage.value;
-    for (const path of ['/api/worker-control/heartbeat', '/api/worker-control/events/append']) {
+    for (const path of [
+      '/api/worker-control/heartbeat',
+      '/api/worker-control/events/append',
+      '/api/worker-capabilities/mcp/*',
+    ]) {
       app.use(path, async (_c, next) => {
         await owner.waitForWorkerControlAcknowledgement();
         await next();
