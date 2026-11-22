@@ -85,7 +85,10 @@ import {
   getWorkerControlAcceptedFinalStatus,
   hasPendingWorkerCancellationFinal,
 } from '../runtime/worker-control-records.js';
-import { matchesAcceptedWorkerControlSequence } from '../runtime/worker-control-sequences.js';
+import {
+  inspectNanoHostWorkerFinalSequences,
+  matchesAcceptedWorkerControlSequence,
+} from '../runtime/worker-control-sequences.js';
 import {
   type CoreSchedulerQueueEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -98,6 +101,7 @@ import type {
 } from './control-kernel-port.js';
 import type { KernelExecutionEvidence } from './control-kernel-proof-codecs.js';
 import { commandInputHash } from './control-store-input.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreImageResult,
@@ -1037,6 +1041,17 @@ export function admitNanoHostWorkerFinalInDb(
         'A closing cancelled Turn accepts only a cancellation or interruption final with aborted StopReason.',
         403
       );
+    let sequences: ReturnType<typeof inspectNanoHostWorkerFinalSequences>;
+    try {
+      sequences = inspectNanoHostWorkerFinalSequences({ sqlite }, input.lineage, input.payload);
+    } catch {
+      throw new ControlProductPreconditionError();
+    }
+    if (sequences.status !== 'accepted')
+      throw new WorkerFinalStatusRefusal(sequences.code, sequences.message, 409);
+    // A retained final fingerprint requires the accepted final record checked above.
+    if (sequences.finalStatusDuplicate) throw new ControlProductPreconditionError();
+
     const decision: NanoHostWorkerFinalDecision = {
       kind: cancellation ? 'cancellation-decided' : 'decided',
       grant,

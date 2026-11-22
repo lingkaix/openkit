@@ -67,7 +67,11 @@ import {
   waitForWorkerControlFinalStatus,
   writeWorkerControlAcceptedRecord,
 } from '../runtime/worker-control-records.js';
-import { inspectNanoHostWorkerFinalSequences } from '../runtime/worker-control-sequences.js';
+import {
+  acceptWorkerControlSequence,
+  inspectNanoHostWorkerFinalSequences,
+  workerFinalSequenceInputs,
+} from '../runtime/worker-control-sequences.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -102,6 +106,7 @@ import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestWorkspaceDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './control-store-input.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
 import {
   admitNanoHostWorkerFinalInDb,
   inspectCoreNanoHostTerminalRelease,
@@ -997,13 +1002,7 @@ it('refuses a stale Native final before Core intake and preserves the valid canc
   const intake = (input: ControlWorkerFinalStatusCommand) =>
     core.sqlite
       .transaction(() =>
-        readNative(() => {
-          // The Worker intake pins and authenticates this exact owner before this Native preflight.
-          const result = inspect(input);
-          if (result.status !== 'accepted')
-            throw new WorkerFinalStatusRefusal(result.code, result.message, 409);
-          return admitNanoHostWorkerFinalInDb(core, input, f.owner.sqlite);
-        })
+        readNative(() => admitNanoHostWorkerFinalInDb(core, input, f.owner.sqlite))
       )
       .immediate();
   const before = requireSchedulerExecutionAttempt(core, attemptId);
@@ -1013,11 +1012,29 @@ it('refuses a stale Native final before Core intake and preserves the valid canc
         "SELECT step_id FROM control_execution_steps WHERE execution_id=? AND step_id LIKE 'worker-final-%'"
       )
       .all(retained!.lease.grant.execution.executionId);
-  expect(() => intake({ ...valid, payload: { ...valid.payload, sequence: 6 } })).toThrow(
-    expect.objectContaining({ code: 'worker_control_sequence_stale', status: 409 })
-  );
+  const stale = await Promise.resolve()
+    .then(() => intake({ ...valid, payload: { ...valid.payload, sequence: 6 } }))
+    .catch((error: unknown) => error);
+  expect(steps()).toEqual([]);
+  expect(stale).toBeInstanceOf(WorkerFinalStatusRefusal);
+  expect(stale).toMatchObject({
+    code: 'worker_control_sequence_stale',
+    message: 'Worker control event_append sequence is older than the latest accepted sequence: 6',
+    status: 409,
+  });
   expect(() => intake({ ...valid, payload: { ...valid.payload, sequence: 7 } })).toThrow(
     expect.objectContaining({ code: 'worker_control_sequence_conflict', status: 409 })
+  );
+  expect(() =>
+    core.sqlite.transaction(() => admitNanoHostWorkerFinalInDb(core, valid, f.owner.sqlite))()
+  ).toThrow(ControlProductPreconditionError);
+  const { final: orphan } = workerFinalSequenceInputs(lineage, valid.payload);
+  f.owner.setup((sqlite) => acceptWorkerControlSequence({ sqlite }, orphan));
+  expect(() => intake(valid)).toThrow(ControlProductPreconditionError);
+  f.owner.setup((sqlite) =>
+    sqlite
+      .prepare("DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'final_status'")
+      .run()
   );
   expect(steps()).toEqual([]);
   expect(requireSchedulerExecutionAttempt(core, attemptId)).toEqual(before);
@@ -2165,7 +2182,9 @@ it('retries the exact terminal release after Workspace ACK and admits only the q
     },
   };
   const finalDecision = core.sqlite.transaction(() =>
-    admitNanoHostWorkerFinalInDb(core, finalInput, f.owner.sqlite)
+    f.owner.sqlite
+      .transaction(() => admitNanoHostWorkerFinalInDb(core, finalInput, f.owner.sqlite))
+      .deferred()
   )();
   await f.send({
     kind: 'worker-final',
