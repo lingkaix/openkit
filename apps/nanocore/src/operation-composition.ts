@@ -238,6 +238,10 @@ export interface OperationInvocationDependencies {
   readonly nanoHostEnrollment?: Parameters<
     typeof createNanoHostOperationImplementations
   >[0]['nanoHostEnrollment'];
+  /** The acknowledged Native and Core writers for administrator Token stages after enrollment. */
+  readonly nanoHostAdministratorTransport?: Parameters<
+    typeof createNanoHostOperationImplementations
+  >[0]['administratorTransport'];
   /** Trusted deployment storage path and process-local transport fencing owner. */
   readonly dataRoot?: string | null;
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
@@ -372,6 +376,9 @@ export function createOperationImplementations(dependencies: OperationInvocation
         : {}),
       ...(dependencies.nanoHostSessionAuthority
         ? { sessionAuthority: dependencies.nanoHostSessionAuthority }
+        : {}),
+      ...(dependencies.nanoHostAdministratorTransport
+        ? { administratorTransport: dependencies.nanoHostAdministratorTransport }
         : {}),
     }),
     createDataRootAdminOperationImplementations(

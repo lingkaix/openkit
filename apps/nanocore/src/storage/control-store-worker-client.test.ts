@@ -2390,6 +2390,44 @@ describe('admitted NanoHost owner worker', () => {
     await expect(checkpoint).resolves.toBeDefined();
   });
 
+  it('rechecks the current Core administrator before each administrator Token stage', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const administrator = ensureLocalUser(core);
+    const tokenId = allocateEntityId('nhtok');
+    await f.owner.enrollTransport({
+      kind: 'enroll',
+      actor: { kind: 'local', userId: administrator },
+      record: {
+        tokenId,
+        tokenHash: `sha256:${'b'.repeat(64)}`,
+        ownerNanoHostIdentityId: nanoHostTarget.identityId,
+        deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+        responsibleServerAdminActorId: administrator,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    });
+    const revoke = (actor?: { kind: 'local'; userId: string }) =>
+      f.owner.administerTransport({ kind: 'revoke', tokenId, ...(actor ? { actor } : {}) });
+    await expect(revoke({ kind: 'local', userId: allocateEntityId('usr') })).rejects.toMatchObject({
+      code: 'deployment_admin_required',
+      status: 403,
+    });
+    await expect(revoke()).rejects.toMatchObject({
+      code: 'precondition',
+      commit: 'not-committed',
+    });
+    await expect(f.owner.listTransportTokens()).resolves.toMatchObject({
+      state: 'ready',
+      value: [{ tokenId, status: 'active' }],
+    });
+    await expect(revoke({ kind: 'local', userId: administrator })).resolves.toMatchObject({
+      kind: 'record',
+      record: { tokenId, status: 'revoked' },
+    });
+  });
+
   it('admits only local serving tuples and rechecks original proof before dispatch', async () => {
     const workspaceId = allocateEntityId('ws');
     const materialization = {
