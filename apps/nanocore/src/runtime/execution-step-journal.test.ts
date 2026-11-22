@@ -16,7 +16,10 @@ import { runKernelRepair } from '../llm/kernel-repair-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerExecutionAttemptAdmissionContext,
+} from '../scheduler-records.js';
 import type {
   ExecutionGrant,
   ExecutionInputProof,
@@ -33,6 +36,7 @@ import {
   ControlCoreNanoHostFinalDecisionSchema,
   ControlCoreNanoHostFinalInputSchema,
   ControlNanoHostFirstSubmissionInputSchema,
+  ControlNanoHostMaterializationPreparationInputSchema,
   ControlNanoHostOrphanRetirementInputSchema,
   ControlNanoHostTerminalReleaseInputSchema,
 } from '../storage/core-journal-codecs.js';
@@ -48,6 +52,7 @@ import {
   observeAcceptedNanoHostFinalInDb,
   readCoreImageAcquisitionRef,
   releaseCoreNanoHostTerminalInDb,
+  requireCoreNanoHostMaterializationPreparation,
   reserveCoreIdleCleanupInDb,
 } from '../storage/core-journal-native.js';
 import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
@@ -1983,6 +1988,114 @@ describe('persisted execution journal contracts', () => {
     });
     return { f, attempt, execution, operationId, proposal, reserve, next };
   }
+
+  it('projects only the exact live NanoHost materialization preparation', async () => {
+    const startedAt = '2026-11-20T08:00:00.000Z';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => vi.useRealTimers());
+    vi.setSystemTime(new Date(startedAt));
+    const { f, attempt } = schedulerGrantFixture(startedAt);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(f.db, attempt.attemptId);
+    const agentSessionId = testEntityId('as', 'materialization-claim');
+    const inputRef = 'original-materialization-package';
+    const bindingRef = 'original-materialization-binding';
+    const native = openNanoHostTestOwner();
+    const target = {
+      targetId: 'materialization-target',
+      identityId: 'materialization-identity',
+      deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      connectionGeneration: 1,
+      physicalEpoch: 'a'.repeat(64),
+    };
+    const { connectionGeneration: _generation, physicalEpoch: _epoch, ...targetIdentity } = target;
+    await native.transition({ ...targetIdentity, kind: 'allocate', observedAt: startedAt });
+    await native.transition({
+      ...target,
+      kind: 'ready',
+      observedAt: startedAt,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+    });
+    const readSelectedInput = vi.fn(() => true);
+    const input = ControlNanoHostMaterializationPreparationInputSchema.parse({
+      attemptId: attempt.attemptId,
+      queueEntryId: attempt.queueEntryId,
+      admissionHash: admission.inputHash,
+      selectedInput: admission.inputRef,
+      workspaceId: attempt.workspaceId,
+      threadId: attempt.threadId,
+      turnId: attempt.turnId,
+      agentSessionId,
+      inputRef,
+      bindingRef,
+      target,
+    });
+    const read = (command = input) =>
+      f.db.sqlite.transaction(() =>
+        requireCoreNanoHostMaterializationPreparation(f.db, command, {
+          nanoHost: createNanoHostCoreReads(native.storage.owner),
+          readSelectedInput,
+        })
+      )();
+    expect(() => read()).toThrow('Native materialization has no exact original Core claim.');
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+    });
+    expect(read()).toMatchObject({
+      attempt: { attemptId: attempt.attemptId, phase: 'open', deadline: null },
+      preparationOperation: null,
+      startupDeadline: '2026-11-20T08:25:00.000Z',
+      target,
+    });
+    expect(readSelectedInput).toHaveBeenCalledWith(admission);
+    readSelectedInput.mockReturnValue(false);
+    expect(() => read()).toThrow('Native materialization has no exact selected Workspace input.');
+    readSelectedInput.mockReturnValue(true);
+    expect(() => read({ ...input, admissionHash: `sha256:${'e'.repeat(64)}` })).toThrow(
+      'Native materialization has no exact original Core claim.'
+    );
+    expect(() =>
+      read({ ...input, selectedInput: { ...input.selectedInput, digest: 'f'.repeat(64) } })
+    ).toThrow('Native materialization has no exact original Core claim.');
+    expect(() => read({ ...input, target: { ...target, connectionGeneration: 2 } })).toThrow(
+      'Native materialization has no exact Native placement.'
+    );
+
+    vi.setSystemTime(new Date('2026-11-20T08:00:01.000Z'));
+    const operationId = 'image:first';
+    const pending = recordSchedulerExecutionOperation(f.db, {
+      attemptId: attempt.attemptId,
+      operationId,
+    });
+    expect(() => read()).toThrow(
+      'Native materialization has no acknowledged preparation operation.'
+    );
+    vi.setSystemTime(new Date('2026-11-20T08:00:02.000Z'));
+    const accepted = acceptSchedulerExecutionObservation(f.db, {
+      ...schedulerExecutionCorrelation(pending),
+      disposition: 'accepted',
+      execution: 'pending',
+      outcomeRef: null,
+      fenceRef: null,
+    });
+    f.reopen();
+    expect(read()).toMatchObject({ attempt: accepted, preparationOperation: operationId, target });
+    expect(() => read({ ...input, observedAt: '2026-11-20T08:25:00.000Z' })).toThrow(
+      'Native materialization has no original startup allowance.'
+    );
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(accepted);
+    vi.setSystemTime(new Date('2026-11-20T08:00:03.000Z'));
+    recordSchedulerExecutionOperation(f.db, {
+      attemptId: attempt.attemptId,
+      operationId: 'later-submission',
+      submission: true,
+    });
+    expect(() => read()).toThrow('Native materialization has no exact original Core claim.');
+  });
 
   it('closes only the original failed start with positive retained no-effect proof', () => {
     const { f, attempt } = schedulerGrantFixture();
