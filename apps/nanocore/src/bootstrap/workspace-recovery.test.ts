@@ -16,13 +16,14 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { readScheduledAdmissionText } from '../runtime/scheduler-dispatch-input.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -30,8 +31,9 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openCoreReadDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
+import { NanoHostWorkerRecoveryState } from '../storage/nanohost-recovery-native.js';
 import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
 import {
   RECURRING_PORTABLE_PATHS,
@@ -57,9 +59,16 @@ import {
   finishWorkspaceRecovery,
   type WorkspaceTargetRecoveryInput,
 } from '../storage/workspace-restore.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { recoveryJournalFact } from '../test-support/recovery-journal.js';
+import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 const disposals: (() => Promise<void> | void)[] = [];
@@ -920,6 +929,173 @@ describe('D0-3 actual next-boot admission', () => {
     expect(bytes(badRoot)).toEqual(before);
     expect(existsSync(missingPath)).toBe(false);
   }, 120_000);
+
+  it.each(['admitted', 'missing'] as const)(
+    'recovers only the original submitted Native lease on real boot with an %s owner',
+    async (selection) => {
+      const f = await fixture(true);
+      const core = openCoreDb(f.dataRoot);
+      const workspace = openWorkspaceDb(f.dataRoot, f.badId);
+      const actor = { kind: 'user' as const, id: f.ownerId };
+      const now = new Date().toISOString();
+      const nativePath = serverStoragePath(f.dataRoot, 'nanohost');
+      const proof = (sqlite: Database.Database, attemptId: string) =>
+        NanoHostWorkerRecoveryState.parse(
+          JSON.parse(
+            sqlite
+              .prepare(
+                'SELECT worker_recovery_json FROM worker_backend_sessions WHERE attempt_id=?'
+              )
+              .pluck()
+              .get(attemptId) as string
+          )
+        );
+      let attemptId: string;
+      try {
+        await openAdmittedTestNanoHost(core);
+        const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+          suffix: 'actual-boot-nanohost',
+          triggerActor: actor,
+          threadId: DEMO_THREAD_ID,
+          workspaceInputIds: [],
+        });
+        const entry = await createTestQueueEntry(core, {
+          backendId: 'nanohost',
+          now: () => now,
+          queueEntryId: 'queue-actual-boot-nanohost',
+          requestId: pkg.scope.requestId ?? null,
+          requestedAgentId: pkg.agent.agentId,
+          threadId: pkg.scope.threadId,
+          turnId: pkg.scope.turnId,
+          workspaceId: f.badId,
+          triggerActor: actor,
+          text: 'Recover the original submitted Worker.',
+        });
+        ({ attemptId } = submitTestNanoHostWorkerLease(
+          core,
+          entry,
+          'original-boot-binding',
+          {
+            agentSessionId: pkg.scope.agentSessionId,
+            packageSnapshotId: pkg.snapshotId,
+            workerControlTokenHash: '1'.repeat(64),
+            workerInferenceTokenHash: '2'.repeat(64),
+            workerCapabilityTokenHash: '3'.repeat(64),
+          },
+          { observedAt: now }
+        ));
+        const { deploymentId } = readDataRootLayoutMarker(f.dataRoot);
+        mutateAdmittedTestNanoHost(core, (sqlite) => {
+          sqlite.prepare('UPDATE nanohost_runtime_targets SET deployment_id=?').run(deploymentId);
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET deployment_id=?, worker_recovery_json=? WHERE attempt_id=?'
+            )
+            .run(
+              deploymentId,
+              canonicalJsonText({
+                ...proof(sqlite, attemptId),
+                lastAcceptedHeartbeatAt: now,
+                lastWorkerSequence: 1,
+                workerProcessKeyHash: 'b'.repeat(43),
+              }),
+              attemptId
+            );
+        });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspace.sqlite.close();
+        core.sqlite.close();
+      }
+      if (selection === 'missing') rmSync(nativePath);
+      const server = await boot(f.dataRoot);
+      const readCore = openCoreReadDb(f.dataRoot);
+      try {
+        const current = () => requireSchedulerExecutionAttempt(readCore, attemptId);
+        const original = current();
+        expect(original.phase).toBe('open');
+        if (selection === 'admitted') {
+          const native = new Database(nativePath, { readonly: true, fileMustExist: true });
+          try {
+            expect(proof(native, attemptId)).toMatchObject({
+              recoveryState: 'awaiting-reconnect',
+              lastWorkerSequence: 1,
+            });
+            expect(
+              native.prepare('SELECT ready, physical_epoch FROM nanohost_runtime_targets').get()
+            ).toEqual({ ready: 0, physical_epoch: null });
+            // The original reconnect window elapses. A different physical Epoch has no
+            // predecessor fence, so maintenance may close the lease and must retain its hold.
+            const fixtureWriter = new Database(nativePath, { fileMustExist: true });
+            try {
+              fixtureWriter
+                .prepare(`UPDATE nanohost_runtime_targets SET
+                physical_epoch=?, connection_generation=connection_generation+1,
+                ready=1, fresh_empty=1, predecessor_fenced=0`)
+                .run('b'.repeat(64));
+              fixtureWriter
+                .prepare(
+                  'UPDATE worker_backend_sessions SET worker_recovery_json=? WHERE attempt_id=?'
+                )
+                .run(
+                  canonicalJsonText({
+                    ...proof(native, attemptId),
+                    heartbeatDeadline: now,
+                    recoveryDeadline: now,
+                  }),
+                  attemptId
+                );
+            } finally {
+              fixtureWriter.close();
+            }
+            await vi.waitFor(
+              () => {
+                expect(current()).toMatchObject({
+                  phase: 'closing',
+                  terminalCause: 'native-liveness-expired',
+                  operationId: original.operationId,
+                  deadline: original.deadline,
+                  fenceRef: null,
+                });
+              },
+              { interval: 250, timeout: 40_000 }
+            );
+            expect(
+              native
+                .prepare(
+                  'SELECT state, physical_cleaned_at FROM worker_backend_sessions WHERE attempt_id=?'
+                )
+                .get(attemptId)
+            ).toEqual({ state: 'launching', physical_cleaned_at: null });
+          } finally {
+            native.close();
+          }
+        } else {
+          const healthy = await server.call(
+            'thread.create',
+            {
+              workspaceId: f.goodId,
+              name: 'Healthy with missing NanoHost owner',
+              requestId: randomUUID(),
+            },
+            f.token
+          );
+          expect(healthy.status, await healthy.clone().text()).toBe(200);
+          expect(current()).toMatchObject({
+            phase: 'open',
+            operationId: original.operationId,
+            deadline: original.deadline,
+            fenceRef: null,
+          });
+          expect(existsSync(nativePath)).toBe(false);
+        }
+      } finally {
+        readCore.sqlite.close();
+        await server.stop();
+      }
+    },
+    120_000
+  );
 
   it('WM 411–415: process exit after the move-out report leaves a read-only, inspectable tombstone on the next real boot', async () => {
     const f = await fixture(true);
