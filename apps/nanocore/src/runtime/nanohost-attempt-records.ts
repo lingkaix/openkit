@@ -656,38 +656,6 @@ function resolveNanoHostAttemptBinding(
 }
 
 /**
- * Lists live execution attempts that can be restored into worker-control serving state.
- *
- * @param coreDb Open Core database handle.
- * @returns Restorable live execution attempts.
- */
-export function listRestorableNanoHostExecutionAttempts(
-  coreDb: CoreDb
-): NanoHostExecutionAttemptRecord[] {
-  const table = coreDb.sqlite
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get('scheduler_execution_attempts');
-
-  if (!table) {
-    return [];
-  }
-
-  const rows = coreDb.sqlite
-    .prepare(
-      `${nanoHostExecutionAttemptSelectSql()}
-      WHERE phase = 'open' AND deadline IS NOT NULL
-        AND binding_ref IS NOT NULL
-        AND worker_control_token_hash IS NOT NULL
-        AND worker_inference_token_hash IS NOT NULL
-        AND worker_capability_token_hash IS NOT NULL
-      ORDER BY created_at ASC, attempt_id ASC`
-    )
-    .all() as NanoHostExecutionAttemptRow[];
-
-  return rows.map((row) => mapNanoHostExecutionAttemptRow(row, coreDb));
-}
-
-/**
  * Reads one execution attempt or throws.
  *
  * @param coreDb Open Core database handle.
