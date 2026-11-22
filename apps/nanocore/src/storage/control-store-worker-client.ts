@@ -187,7 +187,10 @@ import {
 import type { ExecutionStepKind } from '../runtime/execution-step-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from '../runtime/nanohost-attempt-recovery.js';
-import type { AdmittedNanoHostHarnessTurnLifecycle } from '../runtime/nanohost-harness.js';
+import type {
+  AdmittedNanoHostHarnessTurnLifecycle,
+  WriteNanoHostIdleSandboxLifecycle,
+} from '../runtime/nanohost-harness.js';
 import type { hasQueuedNanoHostHarnessOperation } from '../runtime/nanohost-harness-records.js';
 import {
   getNanoHostRuntimeTarget,
@@ -206,7 +209,10 @@ import {
   type WorkerStorageBinding,
   WorkerStorageBindingError,
 } from '../runtime/worker-storage-binding-records.js';
-import type { WriteNanoHostStorageAttachment } from '../runtime/worker-storage-bindings.js';
+import type {
+  WriteNanoHostStorageAttachment,
+  WriteNanoHostStorageRelease,
+} from '../runtime/worker-storage-bindings.js';
 import {
   type ControlMaterialCommandInput,
   type ControlMaterialCommandResult,
@@ -718,12 +724,8 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
-  writeIdleHarnessDrain(
-    input: Extract<
-      ControlHarnessLifecycleInput,
-      { kind: 'sandbox.claim-idle-drain' | 'sandbox.restore-admission' }
-    >
-  ): Promise<void>;
+  readonly writeIdleHarnessDrain: WriteNanoHostIdleSandboxLifecycle;
+  readonly releaseIdleSandboxStorage: WriteNanoHostStorageRelease;
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
   /** Joins the current serving acknowledgement before ordinary Worker control admission. */
   waitForWorkerControlAcknowledgement(): Promise<void>;
@@ -3383,6 +3385,7 @@ class ControlStoreWorkerClient {
           mutation.kind === 'backend-session' ||
           mutation.kind === 'harness-lifecycle' ||
           mutation.kind === 'harness-turn-lifecycle' ||
+          mutation.kind === 'harness-idle-sandbox' ||
           mutation.kind === 'recovery-classification' ||
           mutation.kind === 'worker-image' ||
           (mutation.kind === 'worker-storage-binding' && verifyStorageAttachment)
@@ -3420,6 +3423,7 @@ class ControlStoreWorkerClient {
             switch (mutation.kind) {
               case 'harness-lifecycle':
               case 'harness-turn-lifecycle':
+              case 'harness-idle-sandbox':
                 if (domain.code === 'harness_refused') {
                   const refusal = new Error(domain.message, { cause: error });
                   if (domain.exhaustedBound)
@@ -4011,10 +4015,33 @@ class ControlStoreWorkerClient {
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,
-          writeIdleHarnessDrain: async (input) => {
+          writeIdleHarnessDrain: async (input, authority) => {
+            const original = structuredClone(input);
+            const placement = structuredClone(authority);
+            if (!placement.target.physicalEpoch)
+              throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+            const exact = {
+              ...placement,
+              target: { ...placement.target, physicalEpoch: placement.target.physicalEpoch },
+            };
             await waitForWorkerControlAcknowledgement();
-            const result = await writeHarnessTurn(input);
-            if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
+            await withCoreHold(async (coreIdentity) => {
+              await write({
+                kind: 'harness-idle-sandbox',
+                input: original,
+                coreIdentity,
+                authority: exact,
+              });
+            });
+          },
+          releaseIdleSandboxStorage: async (input) => {
+            const original = structuredClone(input);
+            return (
+              await write(
+                { kind: 'worker-storage-binding', input: original },
+                () => original.cleanupProved && typeof original.sandboxBindingRef === 'string'
+              )
+            ).value;
           },
           releaseTerminalScopes,
           writeStorageAttachment,
