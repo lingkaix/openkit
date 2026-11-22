@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
-import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   createSchedulerExecutionAttempt,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
