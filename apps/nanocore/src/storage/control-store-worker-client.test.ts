@@ -57,6 +57,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
+import { inspectCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
@@ -69,7 +70,10 @@ import {
   CORE_SCHEDULER_EXECUTION_DEFINITION,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
-import { hasQueuedNanoHostHarnessOperation } from '../runtime/nanohost-harness-records.js';
+import {
+  hasQueuedNanoHostHarnessOperation,
+  prepareNanoHostHarnessOperation,
+} from '../runtime/nanohost-harness-records.js';
 import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
@@ -2887,6 +2891,117 @@ describe('admitted NanoHost owner worker', () => {
         }),
       })
     );
+  });
+
+  it('commits the original Core idle close receipt before the Native FULL acknowledgement', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreReadDb(f.root);
+    try {
+      const selected = await prepareNanoHostOwner(core, f.serving);
+      if (selected.state !== 'ready') throw new Error('Expected the admitted NanoHost owner.');
+      const { owner } = selected.value;
+      const { harnessTurnLifecycle: lifecycle } = owner;
+      for (const target of [nanoHostTarget, nanoHostReady]) {
+        const original = await prepareNanoHostTarget(owner, target);
+        await expect(
+          owner.transitionRuntimeTarget(nanoHostUnknownKernel, original)
+        ).resolves.toMatchObject({ state: 'ready' });
+      }
+
+      const timestamp = new Date().toISOString();
+      const harnessBindingRef = 'idle-close-harness-binding';
+      const harnessInstanceId = 'idle-close-harness';
+      const sandboxIntegrationBindingRef = 'idle-close-integration';
+      await owner.harnessLifecycle({
+        kind: 'runtime.create',
+        adapterId: 'codex',
+        adapterVersion: 'fixture',
+        harnessBindingRef,
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId,
+        imageDigest: `sha256:${'c'.repeat(64)}`,
+        originPhysicalEpoch: nanoHostReady.physicalEpoch,
+        runtimeTargetId: nanoHostTarget.targetId,
+        sandboxBindingRef: 'idle-close-sandbox-binding',
+        sandboxCompatibilityKey: 'd'.repeat(64),
+        sandboxIntegrationBindingRef,
+        sandboxRuntimeId: 'idle-close-sandbox',
+        timestamp,
+      });
+      const consumer = {
+        workspaceId: allocateEntityId('ws'),
+        threadId: allocateEntityId('th'),
+        agentSessionId: allocateEntityId('as'),
+        agentSessionRuntimeBindingId: 'idle-close-agent-session',
+      };
+      await owner.harnessLifecycle({
+        kind: 'session-binding.open',
+        ...consumer,
+        agentSessionCompatibilityKey: 'e'.repeat(64),
+        effectiveSetupGeneration: 1,
+        harnessInstanceId,
+        timestamp,
+      });
+      const request = {
+        harnessInstanceId,
+        operation: 'session.close' as const,
+        body: {
+          agentSessionId: consumer.agentSessionId,
+          agentSessionRuntimeBindingId: consumer.agentSessionRuntimeBindingId,
+        },
+        timestamp,
+      };
+      const prepared = owner.read((sqlite) =>
+        prepareNanoHostHarnessOperation(core, request, { sqlite })
+      );
+      if (prepared.state !== 'ready') throw new Error('Expected the original idle close.');
+      await lifecycle.queue({ ...request, prepared: prepared.value });
+      const dispatched = await lifecycle.dispatch({ sandboxIntegrationBindingRef });
+      expect(dispatched).toMatchObject({ operation: 'session.close' });
+      if (!dispatched) throw new Error('Expected the original idle close dispatch.');
+      const result = {
+        schemaVersion: 2 as const,
+        harnessInstanceId,
+        operationId: dispatched.operationId,
+        sequence: dispatched.sequence,
+        disposition: 'succeeded' as const,
+        body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+      };
+      const key = {
+        harnessBindingRef,
+        operationId: result.operationId,
+        sequence: result.sequence,
+        resultFingerprint: sha256CanonicalJson(result),
+      };
+      const settlementInput = { sandboxIntegrationBindingRef, timestamp, result };
+      expect(inspectCoreHarnessConsumption(core, key)).toBeNull();
+
+      Atomics.store(f.gate, 0, 0);
+      const settlement = lifecycle.settle(settlementInput);
+      // An unexpected refusal must still release the Native test gate.
+      void settlement.catch(() => undefined);
+      const receipt = { consumer: canonicalJsonText(consumer), acknowledgedAt: timestamp };
+      try {
+        await waitForHold(f.gate);
+        expect(inspectCoreHarnessConsumption(core, key)).toEqual(receipt);
+      } finally {
+        release(f.gate);
+      }
+      await expect(settlement).resolves.toBe('settled');
+      const replayClock = new Date(Date.parse(timestamp) + 1000).toISOString();
+      await expect(lifecycle.settle({ ...settlementInput, timestamp: replayClock })).resolves.toBe(
+        'replayed'
+      );
+      await lifecycle.acknowledge({
+        result,
+        harnessBindingRef,
+        consumerReceipt: receipt.consumer,
+        timestamp: replayClock,
+      });
+      expect(inspectCoreHarnessConsumption(core, key)).toEqual(receipt);
+    } finally {
+      core.sqlite.close();
+    }
   });
 
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
