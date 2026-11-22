@@ -1104,6 +1104,8 @@ export interface WorkerGovernanceTurnExecutorOptions {
   admitNanoHostSubmission?: AdmitNanoHostSubmission | undefined;
   /** Admitted Native recovery CAS, pinned to the current Core closing grant by the owner. */
   commitNanoHostCloseout?: CommitNanoHostCloseout | undefined;
+  /** Acknowledges the qualified Core release after the original Workspace release. */
+  releaseTerminalScopes?: ((attemptId: string, fenceRef: string) => Promise<void>) | undefined;
   /** Same current Goal/Task scope reader as other Worker effects. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Same operation interception owner used by authenticated agent and public callers. */
@@ -1186,6 +1188,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly readNanoHostEnvironment: NanoHostEnvironmentRead | undefined;
   private readonly admitNanoHostSubmission: AdmitNanoHostSubmission | undefined;
   private readonly commitNanoHostCloseout: CommitNanoHostCloseout | undefined;
+  private readonly releaseTerminalScopes: WorkerGovernanceTurnExecutorOptions['releaseTerminalScopes'];
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
   private readonly now: (() => string) | undefined;
@@ -1222,6 +1225,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.readNanoHostEnvironment = options.readNanoHostEnvironment;
     this.admitNanoHostSubmission = options.admitNanoHostSubmission;
     this.commitNanoHostCloseout = options.commitNanoHostCloseout;
+    this.releaseTerminalScopes = options.releaseTerminalScopes;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
     this.now = options.now;
@@ -4691,16 +4695,28 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     environmentPackage: AgentEnvironmentPackage
   ): Promise<void> {
     if (!this.coreDb) throw new Error('Attempt release requires Core authority.');
-    let attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
-    if (attempt.phase === 'closed') {
-      if (!attempt.fenceRef) throw new Error('Closed Worker attempt has no release fence.');
-      const workspaceDb = this.openWorkspaceDb(attempt.workspaceId);
+    const acknowledgeRelease = async (
+      original: ReturnType<typeof requireSchedulerExecutionAttempt>,
+      fenceRef: string
+    ) => {
+      const workspaceDb = this.openWorkspaceDb(original.workspaceId);
       if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
       try {
-        await endWorkerTurnJournalRelease(store, workspaceDb, attempt.turnId, attempt.fenceRef);
+        await endWorkerTurnJournalRelease(store, workspaceDb, original.turnId, fenceRef);
       } finally {
         workspaceDb.sqlite.close();
       }
+      if (
+        this.readNanoHostEnvironment &&
+        original.backendId === 'nanohost' &&
+        original.disposition === 'accepted'
+      )
+        await this.releaseTerminalScopes?.(original.attemptId, fenceRef);
+    };
+    let attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+    if (attempt.phase === 'closed') {
+      if (!attempt.fenceRef) throw new Error('Closed Worker attempt has no release fence.');
+      await acknowledgeRelease(attempt, attempt.fenceRef);
       return;
     }
     const turn = store.getTurnById(attempt.turnId);
@@ -4734,19 +4750,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       )
         throw new Error('Release response contradicts the exact original operation.');
       if (result.state === 'released' && result.fenceRef) {
-        await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+        const closed = await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
           correlation,
           proof,
           fenceRef: result.fenceRef,
           ...(this.now ? { now: this.now } : {}),
         });
-        const workspaceDb = this.openWorkspaceDb(attempt.workspaceId);
-        if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
-        try {
-          await endWorkerTurnJournalRelease(store, workspaceDb, attempt.turnId, result.fenceRef);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
+        await acknowledgeRelease(closed, result.fenceRef);
         return;
       }
       if (pass !== 0 || result.state !== 'unknown') break;

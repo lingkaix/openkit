@@ -20,7 +20,12 @@ import {
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import { CORE_SCHEDULER_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
+import {
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
+  readExecutionJournalEndedStep,
+  readExecutionJournalInvocation,
+  readExecutionJournalRoot,
+} from '../runtime/execution-journal.js';
 import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { listWorkspaceRuntimeEvidence } from '../runtime/runtime-evidence.js';
@@ -35,6 +40,8 @@ import {
 } from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import {
+  beginWorkerTurnJournalStep,
+  endWorkerTurnJournalStep,
   prepareWorkerTurnJournalIntents,
   WorkerGovernanceTurnExecutor,
 } from '../runtime/worker-governance-turn-executor.js';
@@ -52,6 +59,13 @@ import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestWorkspaceDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './control-store-input.js';
+import {
+  admitNanoHostWorkerFinalInDb,
+  inspectCoreNanoHostTerminalRelease,
+  nanoHostTerminalReleaseWorkspaceStep,
+  observeAcceptedNanoHostFinalInDb,
+  releaseCoreNanoHostTerminalInDb,
+} from './core-journal-native.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import {
@@ -60,6 +74,7 @@ import {
   type NanoHostWorkerRecoveryState,
   readNanoHostPhysicalCleanupReceipt,
   readNanoHostRecoveryLease,
+  verifyNanoHostTerminalDrainAndRevocation,
 } from './nanohost-recovery-native.js';
 import {
   nanoHostWorkerFinalDecisionFingerprint,
@@ -1292,5 +1307,277 @@ it('compares the current Core Scheduler rows before purging the exact Native ass
   expect(getWorkerStorageBinding(f.owner, { storageRef })).toMatchObject({
     state: 'unknown',
     revision: idle.revision + 2,
+  });
+});
+
+it('retries the exact terminal release after Workspace ACK and admits only the qualified next Turn', async () => {
+  const { actor, core, f, root, store: fixtureStore, retained } = await admitOriginal(true);
+  const store = fixtureStore!;
+  const workspace = createTestWorkspaceDb(root, workspaceId);
+  onTestFinished(() => workspace.sqlite.close());
+  await store.createThread(workspaceId, 'Terminal release', threadId);
+  const turn = await store.createTurn(workspaceId, threadId, 'Original Turn', actor, null, {
+    turnId,
+  });
+  await store.createAgentSession({
+    agentId: 'agent_worker',
+    createdAt: created,
+    environmentPackageSnapshotId: inputRef,
+    id: agentSessionId,
+    message: null,
+    status: 'busy',
+    threadId,
+    updatedAt: created,
+    workspaceId,
+  });
+  await store.updateTurn(turnId, { agentSessionId });
+  const prepared = await recordTestAgentEnvironmentPackage(workspace, {
+    suffix: 'native-terminal-release',
+    triggerActor: actor,
+    workspaceInputIds: [],
+  });
+  const pkg = AgentEnvironmentPackageSchema.parse({
+    ...prepared,
+    snapshotId: inputRef,
+    scope: { ...prepared.scope, workspaceId, threadId, turnId, agentSessionId, requestId: null },
+  });
+  const [materialize, terminal, release] = prepareWorkerTurnJournalIntents(
+    workspace,
+    pkg,
+    retained!.lease.attempt,
+    { backendKind: 'openshell', targetId, allocationRef: bindingRef }
+  );
+  for (const intent of [materialize!, terminal!, release!])
+    await store.writeWorkspaceExecutionJournalIntent(workspaceId, intent);
+  await endWorkerTurnJournalStep(store, workspace, materialize!, 'completed');
+  const collect = async (operation: string) => {
+    const intent = await beginWorkerTurnJournalStep(store, workspace, turnId, 'collect', {
+      operation,
+      requestId: turnId,
+      sequence: null,
+      bindingRef,
+    });
+    await endWorkerTurnJournalStep(store, workspace, intent, 'completed');
+    return intent;
+  };
+  const evidence = await collect('worker.collect.transcript');
+  const collection = await collect('worker.collect.capture');
+  const output = await collect('worker.collect.publication');
+  const consumeKey = {
+    harnessBindingRef: 'harness-binding',
+    operationId: f.input.command.operationId,
+    sequence: f.input.command.sequence,
+    resultFingerprint: 'd'.repeat(64),
+  };
+  const consume: ExecutionJournalIntent = {
+    ...materialize!,
+    stepId: 'release-consume',
+    carriage: {
+      operation: 'turn.start',
+      requestId: consumeKey.operationId,
+      sequence: consumeKey.sequence,
+      bindingRef: consumeKey.harnessBindingRef,
+    },
+    control: {
+      ...materialize!.control,
+      kind: 'consume-receipt',
+      invocationId: 'release-consume',
+      inputRefs: [consumeKey.resultFingerprint],
+    },
+    span: { ...materialize!.span, spanId: 'd'.repeat(16) },
+  };
+  await store.writeWorkspaceExecutionJournalIntent(workspaceId, consume);
+  const execution = release!.execution.ref;
+  core.sqlite.transaction(() =>
+    recordCoreHarnessConsumption(
+      core,
+      consumeKey,
+      JSON.stringify({
+        workspaceId,
+        turnId,
+        executionId: execution.executionId,
+        stepId: consume.stepId,
+      }),
+      acceptedAt
+    )
+  )();
+  await endWorkerTurnJournalStep(store, workspace, consume, 'completed', [
+    consumeKey.resultFingerprint,
+  ]);
+
+  const { grant } = retained!.lease;
+  const finalInput: ControlWorkerFinalStatusCommand = {
+    ...binding,
+    payload: {
+      terminalData: { status: 'completed', stopReason: 'end_turn', evidenceManifestDigests: {} },
+      sequence: 2,
+      acceptedAt,
+      eventAcceptedAt: acceptedAt,
+    },
+  };
+  const finalDecision = core.sqlite.transaction(() =>
+    admitNanoHostWorkerFinalInDb(core, finalInput, f.owner.sqlite)
+  )();
+  await f.send({
+    kind: 'worker-final',
+    original: readRetainedNanoHostSubmission(core, attemptId)!,
+    input: finalInput,
+    decision: finalDecision,
+  });
+  expect(
+    core.sqlite.transaction(() =>
+      observeAcceptedNanoHostFinalInDb(core, finalInput, f.owner.sqlite)
+    )()
+  ).toMatchObject({ state: 'applied' });
+  const closing = readRetainedNanoHostSubmission(core, attemptId)!.lease;
+  const target = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  const cleanedAt = new Date().toISOString();
+  const originalFence = `worker-backend:${attemptId}:${cleanedAt}`;
+  const coveredScopeRefs = [...readExecutionJournalRoot(core, grant.execution).exclusionRefs];
+  const backendRelease = vi.fn(
+    async (input: Parameters<WorkerGovernanceBackend['release']>[0]) => ({
+      ...input,
+      state: 'released' as const,
+      fenceRef: originalFence,
+    })
+  );
+  const descriptor = (intent: ExecutionJournalIntent) => {
+    const ref = { execution, stepId: intent.stepId };
+    return nanoHostTerminalReleaseWorkspaceStep(
+      readExecutionJournalEndedStep(workspace, ref),
+      readExecutionJournalInvocation(workspace, ref).carriage
+    );
+  };
+  const decide = (originalAttemptId: string, fenceRef: string) => {
+    expect(originalAttemptId).toBe(attemptId);
+    expect(fenceRef).toBe(originalFence);
+    expect(readExecutionJournalRoot(workspace, execution)).toMatchObject({ phase: 'closed' });
+    const input = {
+      attemptId: originalAttemptId,
+      fenceRef,
+      target: {
+        targetId: target.targetId,
+        identityId: target.identityId,
+        deploymentId: target.deploymentId,
+        connectionGeneration: target.connectionGeneration,
+        physicalEpoch,
+      },
+      workspaceExecutionId: execution.executionId,
+      coveredScopeRefs,
+      workspaceSteps: {
+        terminal: descriptor(terminal!),
+        output: descriptor(output),
+        evidence: descriptor(evidence),
+        collection: descriptor(collection),
+        consume: descriptor(consume),
+        release: descriptor(release!),
+      },
+    };
+    const result = core.sqlite
+      .transaction(() =>
+        releaseCoreNanoHostTerminalInDb(core, input, {
+          workspace,
+          native: f.owner.sqlite,
+          verifyDrainAndRevocation: (original) =>
+            verifyNanoHostTerminalDrainAndRevocation(f.owner.sqlite, original),
+        })
+      )
+      .immediate();
+    if (result.state !== 'settled')
+      throw new Error(`Exact Native terminal release is held (${result.state}).`);
+    expect(inspectCoreNanoHostTerminalRelease(core, input)).toEqual(result);
+  };
+  const releaseTerminalScopes = vi.fn(async (id: string, fence: string) => decide(id, fence));
+  const executor = new WorkerGovernanceTurnExecutor({
+    backend: {
+      release: backendRelease,
+      cleanupSession: async () => {},
+    } as unknown as WorkerGovernanceBackend,
+    coreDb: core,
+    readNanoHostEnvironment: f.owner.storage.owner.read,
+    releaseTerminalScopes,
+    commitNanoHostCloseout: async (mutation) => ({
+      state: 'ready',
+      value: await f.mutate(mutation),
+    }),
+    now: () => cleanedAt,
+  });
+  const { session } = readNanoHostRecoveryLease(f.owner.sqlite, closing);
+  // biome-ignore lint/complexity/useLiteralKeys: Exercise the original cleanup and Workspace evidence writer.
+  await executor['cleanupBackendLifecycle'](
+    store,
+    {
+      identity: { ...session, backendKind: 'openshell' },
+      physicalCleanedAt: null,
+      session,
+      workspaceHandoffState: session.workspaceHandoffState,
+    },
+    workspace,
+    pkg,
+    { kind: 'openshell', capabilities: [], dynamicCapabilities: [] }
+  );
+  f.owner.setup((sqlite) => {
+    sqlite.prepare("UPDATE harness_instance_records SET operation_state='settled'").run();
+    sqlite.prepare("UPDATE agent_session_runtime_bindings SET cleanup_state='pending'").run();
+  });
+  // biome-ignore lint/complexity/useLiteralKeys: Exercise the original product terminal publication.
+  await executor['completeTurn'](store, turn, agentSessionId, null);
+  expect(store.getTurnById(turnId).status).toBe('completed');
+  const successorTurn = testEntityId('tu', 'native-release-successor');
+  const nextEntry = createSchedulerAdmissionEntry(core, {
+    backendId: 'nanohost',
+    queueEntryId: 'native-release-successor',
+    workspaceId,
+    threadId,
+    turnId: successorTurn,
+    inputRef: schedulerFixtureInput(workspaceId, successorTurn, 'Next Turn'),
+    triggerActor: actor,
+    requestedAgentId: pkg.agent.agentId,
+  });
+  const place = () =>
+    createSchedulerExecutionAttempt(core, { entry: nextEntry, preparationInput: {} });
+  const close = () =>
+    // biome-ignore lint/complexity/useLiteralKeys: The live and restart owner share this closeout entry.
+    executor['releaseTerminalAttempt'](store, attemptId, pkg);
+  expect(place).toThrow('Execution placement has an unresolved writer.');
+  await expect(close()).rejects.toThrow('Exact Native terminal release is held (unknown).');
+  expect(releaseTerminalScopes).toHaveBeenCalledExactlyOnceWith(attemptId, originalFence);
+  expect(requireSchedulerExecutionAttempt(core, attemptId)).toMatchObject({
+    phase: 'closed',
+    fenceRef: originalFence,
+  });
+  expect(place).toThrow('Execution placement has an unresolved writer.');
+  f.owner.setup((sqlite) =>
+    sqlite.prepare("UPDATE agent_session_runtime_bindings SET cleanup_state='clean'").run()
+  );
+  await f.owner.reopen();
+  const original = readRetainedNanoHostSubmission(core, attemptId)!.lease;
+  const verify = () => verifyNanoHostTerminalDrainAndRevocation(f.owner.sqlite, original);
+  expect(verify()).toBe(true);
+  expect(
+    verifyNanoHostTerminalDrainAndRevocation(f.owner.sqlite, {
+      ...original,
+      attempt: { ...original.attempt, phase: 'closing' },
+    })
+  ).toBe(false);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare('UPDATE agent_session_runtime_bindings SET current_attempt_id=?').run(attemptId)
+  );
+  expect(verify()).toBe(false);
+  f.owner.setup((sqlite) =>
+    sqlite.prepare('UPDATE agent_session_runtime_bindings SET current_attempt_id=NULL').run()
+  );
+  await expect(close()).resolves.toBeUndefined();
+  expect(place()).toMatchObject({ turnId: successorTurn, phase: 'open' });
+  await expect(close()).resolves.toBeUndefined();
+  expect(backendRelease).toHaveBeenCalledTimes(1);
+  expect(releaseTerminalScopes.mock.calls).toEqual([
+    [attemptId, originalFence],
+    [attemptId, originalFence],
+    [attemptId, originalFence],
+  ]);
+  expect(resolveAdmittedNanoHostWorkerBinding(core, f.owner.sqlite, binding)).toEqual({
+    status: 'rejected',
+    reason: 'attempt-not-live',
   });
 });
