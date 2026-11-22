@@ -24,6 +24,7 @@ import { createDefaultWorkerControlGateway } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import {
   acceptNanoHostAttemptHeartbeat,
   acceptNanoHostAttemptHeartbeatByBinding,
@@ -104,6 +105,7 @@ import {
   mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
 } from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
@@ -114,6 +116,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from './test-support/nanohost-worker-lease.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
@@ -211,9 +214,17 @@ function releaseHeartbeatNativeCommit(gate: Int32Array): void {
   Atomics.notify(gate, 2);
 }
 
-/** Keeps Main responsive while the existing test timeout bounds native crossing observation. */
+/**
+ * Keeps Main responsive while waiting for one native crossing. The wait is bounded inside the case,
+ * so a crossing that never happens fails here and the case cleanup still releases the held COMMIT
+ * and shuts the intercepted worker down before the next case starts.
+ */
 async function waitForHeartbeatNativeObservation(observed: () => boolean): Promise<void> {
-  while (!observed()) await nextTurn();
+  const deadline = Date.now() + 10_000;
+  while (!observed()) {
+    if (Date.now() > deadline) throw new Error('The native heartbeat crossing was not observed.');
+    await nextTurn();
+  }
 }
 
 /** Private Core handles explicitly opened by the control-envelope cases; drained before disposal. */
@@ -330,6 +341,7 @@ async function createDurableWorkerControlLease(
   suffix: string
 ): Promise<string> {
   const binding = `lease-binding:lease_${suffix}`;
+  await admittedRouteNanoHost(coreDb);
 
   createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -347,29 +359,26 @@ async function createDurableWorkerControlLease(
     ),
     workspaceId: lineage.workspaceId,
   });
-  const submittedAttempt = recordTestExecutionAttempt(coreDb, {
-    entry: requireSchedulerAdmissionEntry(coreDb, `queue_${suffix}`),
-    attemptId: testEntityId('attempt', `lease_${suffix}`),
-    agentSessionId: lineage.agentSessionId,
-    inputRef: lineage.packageSnapshotId,
-    bindingRef: binding,
-    sessionCompatibilityKey: 'fixture-compatibility',
-    now: () => new Date().toISOString(),
-    operationId: `fixture-submit:${String(testEntityId('attempt', `lease_${suffix}`))}`,
-  });
+  // The original Native submission carries the three route-token hashes (K8 owner).
+  const submittedAttempt = submitTestNanoHostWorkerLease(
+    coreDb,
+    requireSchedulerAdmissionEntry(coreDb, `queue_${suffix}`),
+    binding,
+    {
+      agentSessionId: lineage.agentSessionId,
+      packageSnapshotId: lineage.packageSnapshotId,
+      workerCapabilityTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'capability')),
+      workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
+      workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
+    },
+    { attemptId: testEntityId('attempt', `lease_${suffix}`) }
+  );
   attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
     ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
     disposition: 'accepted',
     execution: 'running',
     fenceRef: null,
     outcomeRef: null,
-  });
-  bindNanoHostAttemptRouteTokenHashes(coreDb, {
-    attemptId: testEntityId('attempt', `lease_${suffix}`),
-    sandboxBindingRef: binding,
-    workerCapabilityTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'capability')),
-    workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
-    workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
   });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
@@ -384,6 +393,63 @@ async function createDurableWorkerControlLease(
   }
 
   return binding;
+}
+
+/** The retained submission operation of a lease fixture (lease-watch ruling: never a literal). */
+function submittedLeaseOperationId(lineage: WorkerControlLineage, suffix: string): string {
+  return commandInputHash({
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
+    inputRef: lineage.packageSnapshotId,
+    operation: 'submit',
+  });
+}
+
+/** Admitted NanoHost storage per fixture root; production passes it to the default gateway. */
+const routeNanoHostStorage = new Map<
+  string,
+  Awaited<ReturnType<typeof openAdmittedTestNanoHost>>
+>();
+
+/** Opens the fixture root's admitted NanoHost owner once, as Boot does for the server. */
+async function admittedRouteNanoHost(coreDb: CoreDb) {
+  const opened = routeNanoHostStorage.get(coreDb.dataRoot);
+  if (opened) return opened;
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  routeNanoHostStorage.set(coreDb.dataRoot, storage);
+  return storage;
+}
+
+/** Rejoins the persisted NanoHost owner after the fixture stops the previous worker generation. */
+async function reopenRouteNanoHost(coreDb: CoreDb) {
+  const storage = await reopenAdmittedTestNanoHost(coreDb);
+  routeNanoHostStorage.set(coreDb.dataRoot, storage);
+  return storage;
+}
+
+/**
+ * Builds the default database gateway with the root's admitted NanoHost storage, as `app.ts` does.
+ * A root the fixture never admitted keeps the held gateway, as production does without storage.
+ */
+function durableWorkerControlGateway(coreDb: CoreDb) {
+  return createDefaultWorkerControlGateway(
+    coreDb,
+    undefined,
+    routeNanoHostStorage.get(coreDb.dataRoot)
+  );
+}
+
+/** Reads or changes the NanoHost-owned Worker control journal for fixture assertions. */
+function workerControlJournal(coreDb: CoreDb) {
+  return {
+    prepare: (sql: string) => ({
+      get: (...args: unknown[]) =>
+        readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.prepare(sql).get(...args)),
+      all: (...args: unknown[]) =>
+        readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.prepare(sql).all(...args)),
+      run: (...args: unknown[]) =>
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.prepare(sql).run(...args)),
+    }),
+  };
 }
 
 /** Derives one deterministic 32-byte raw route token for a durable fixture. */
@@ -669,7 +735,7 @@ describe('worker control routes', () => {
       fixture.lineage,
       'diagnostic_gap'
     );
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(
       gateway,
       fixture.environmentPackage,
@@ -747,7 +813,7 @@ describe('worker control routes', () => {
       ).toMatchObject({
         phase: 'open',
         disposition: 'accepted',
-        operationId: `fixture-submit:${testEntityId('attempt', 'lease_diagnostic_gap')}`,
+        operationId: submittedLeaseOperationId(fixture.lineage, 'diagnostic_gap'),
         fenceRef: null,
       });
       releaseCarriage();
@@ -764,7 +830,7 @@ describe('worker control routes', () => {
         heartbeatDeadline: baseline!.heartbeatDeadline,
       });
       expect(
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(
             "SELECT count(*) AS count FROM worker_control_records WHERE operation = 'final_status'"
           )
@@ -821,7 +887,7 @@ describe('worker control routes', () => {
       fixture.lineage,
       'ordinary_sequence_gap'
     );
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(
       gateway,
       fixture.environmentPackage,
@@ -1098,7 +1164,7 @@ describe('worker control routes', () => {
         await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
         const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
         const makeApp = () => {
-          const gateway = createDefaultWorkerControlGateway(coreDb);
+          const gateway = durableWorkerControlGateway(coreDb);
           registerDurableWorkerControlSession(gateway, fixture.environmentPackage, binding);
           return createApp({
             coreDb,
@@ -1169,7 +1235,7 @@ describe('worker control routes', () => {
         const reconnect = await postHeartbeat(restartedApp, 1, reconnectKey);
         const lease = readLease();
         const durableWorkerControl = JSON.stringify(
-          coreDb.sqlite
+          workerControlJournal(coreDb)
             .prepare(
               `SELECT record_json FROM worker_control_records
              UNION ALL
@@ -1186,7 +1252,9 @@ describe('worker control routes', () => {
         }
         if (expectedErrorCode === 'worker_control_reconnect_required') {
           expect(
-            listWorkerControlRejectedEvidenceForWorkspace(coreDb, fixture.lineage.workspaceId)
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, fixture.lineage.workspaceId)
+            )
           ).toEqual([]);
         }
         expect(lease).toMatchObject(
@@ -1299,7 +1367,7 @@ describe('worker control routes', () => {
         lineage,
         'durable_sequence'
       );
-      const firstGateway = createDefaultWorkerControlGateway(coreDb);
+      const firstGateway = durableWorkerControlGateway(coreDb);
       const firstRegistration = registerDurableWorkerControlSession(
         firstGateway,
         environmentPackage,
@@ -1329,7 +1397,7 @@ describe('worker control routes', () => {
         method: 'POST',
       });
 
-      const secondGateway = createDefaultWorkerControlGateway(coreDb);
+      const secondGateway = durableWorkerControlGateway(coreDb);
       const secondRegistration = registerDurableWorkerControlSession(
         secondGateway,
         environmentPackage,
@@ -1435,7 +1503,7 @@ describe('worker control routes', () => {
         lineage,
         'durable_records'
       );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         environmentPackage,
@@ -1472,7 +1540,7 @@ describe('worker control routes', () => {
         },
         method: 'POST',
       });
-      const rows = coreDb.sqlite
+      const rows = workerControlJournal(coreDb)
         .prepare(
           `
           SELECT operation, record_key AS recordKey, sequence, record_json AS recordJson
@@ -1540,7 +1608,7 @@ describe('worker control routes', () => {
       lineage,
       'chunk_receipt'
     );
-    let gateway = createDefaultWorkerControlGateway(coreDb);
+    let gateway = durableWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
     let app = createApp({
       coreDb,
@@ -1614,12 +1682,12 @@ describe('worker control routes', () => {
       },
     };
     const retained = () => ({
-      fingerprints: coreDb.sqlite
+      fingerprints: workerControlJournal(coreDb)
         .prepare(
           "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
         )
         .all(lineage.packageSnapshotId) as { sequence: number; fingerprint: string }[],
-      receipts: coreDb.sqlite
+      receipts: workerControlJournal(coreDb)
         .prepare(
           "SELECT sequence, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
         )
@@ -1637,7 +1705,8 @@ describe('worker control routes', () => {
     closeWorkspaceProductReadHandles(dataRoot);
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
-    gateway = createDefaultWorkerControlGateway(coreDb);
+    await reopenRouteNanoHost(coreDb);
+    gateway = durableWorkerControlGateway(coreDb);
     app = createApp({
       coreDb,
       mode: 'server',
@@ -1695,7 +1764,7 @@ describe('worker control routes', () => {
         lineage,
         operation
       );
-      let gateway = createDefaultWorkerControlGateway(coreDb);
+      let gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         environmentPackage,
@@ -1742,7 +1811,7 @@ describe('worker control routes', () => {
       expect(first.status).toBe(200);
       const original = (await first.json()) as Record<string, Record<string, unknown>>;
       const readReceipt = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(
             'SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
           )
@@ -1758,21 +1827,21 @@ describe('worker control routes', () => {
         ...JSON.parse(accepted.recordJson),
         futureNote: 'inert descriptive annotation',
       });
-      coreDb.sqlite
+      workerControlJournal(coreDb)
         .prepare(
           'UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
         )
         .run(annotated, lineage.packageSnapshotId, operation, '1');
       const beforeReplay = readReceipt();
       const fingerprints = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(
             'SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = ? ORDER BY sequence'
           )
           .all(lineage.packageSnapshotId, operation);
       const originalFingerprints = fingerprints();
       // A fresh default gateway with the exact original credentials must obtain the original receipt from its durable reader.
-      gateway = createDefaultWorkerControlGateway(coreDb);
+      gateway = durableWorkerControlGateway(coreDb);
       expect(registerDurableWorkerControlSession(gateway, environmentPackage, binding).token).toBe(
         registration.token
       );
@@ -1818,7 +1887,7 @@ describe('worker control routes', () => {
       lineage,
       'ordinary_event_annotation'
     );
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
     const app = createApp({
       coreDb,
@@ -1855,13 +1924,13 @@ describe('worker control routes', () => {
       diagnostics: [],
     });
     const readReceipt = () =>
-      coreDb.sqlite
+      workerControlJournal(coreDb)
         .prepare(
           "SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = 'event_append' AND record_key = '1'"
         )
         .get(lineage.packageSnapshotId) as { acceptedAt: string; recordJson: string };
     const fingerprints = () =>
-      coreDb.sqlite
+      workerControlJournal(coreDb)
         .prepare(
           "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
         )
@@ -1873,7 +1942,7 @@ describe('worker control routes', () => {
     expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events).toEqual([record]);
     const liveBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events;
     const setReceipt = (value: unknown) =>
-      coreDb.sqlite
+      workerControlJournal(coreDb)
         .prepare(
           "UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = 'event_append' AND record_key = '1'"
         )
@@ -2132,7 +2201,7 @@ describe('worker control routes', () => {
         lineage,
         'rejected_records'
       );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         environmentPackage,
@@ -2173,9 +2242,11 @@ describe('worker control routes', () => {
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(responseSettled).toBe(false);
-        expect(listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId)).toEqual(
-          []
-        );
+        expect(
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, lineage.workspaceId)
+          )
+        ).toEqual([]);
       } finally {
         resumeNativeWrites();
       }
@@ -2202,7 +2273,7 @@ describe('worker control routes', () => {
             threadId: string;
           }
         | undefined;
-      const acceptedCount = coreDb.sqlite
+      const acceptedCount = workerControlJournal(coreDb)
         .prepare('SELECT COUNT(*) AS count FROM worker_control_records')
         .get() as { count: number };
 
@@ -2329,7 +2400,9 @@ describe('worker control routes', () => {
         .all();
       expect(JSON.stringify(evidence).includes(registration.token)).toBe(false);
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_records').get()
+        workerControlJournal(coreDb)
+          .prepare('SELECT COUNT(*) AS count FROM worker_control_records')
+          .get()
       ).toEqual({ count: 0 });
     } finally {
       await shutdownControlStoreWorkerClient();
@@ -2392,7 +2465,7 @@ describe('worker control routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -2489,7 +2562,7 @@ describe('worker control routes', () => {
 
     expect.soft(staleSequenceResponse.status).toBe(409);
     expect.soft(staleSequenceBody.code).toBe('worker_control_sequence_stale');
-    coreDb.sqlite
+    workerControlJournal(coreDb)
       .prepare(
         "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
       )
@@ -2518,12 +2591,12 @@ describe('worker control routes', () => {
       method: 'POST',
     });
     coreDb.sqlite.exec('DROP TRIGGER reject_second_heartbeat_acceptance');
-    const failedSequence = coreDb.sqlite
+    const failedSequence = workerControlJournal(coreDb)
       .prepare(
         "SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
       )
       .get(2) as { count: number };
-    const failedRecord = coreDb.sqlite
+    const failedRecord = workerControlJournal(coreDb)
       .prepare(
         "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'heartbeat' AND record_key = ?"
       )
@@ -2542,7 +2615,7 @@ describe('worker control routes', () => {
       lastWorkerSequence: heartbeatBaseline.lastWorkerSequence,
       phase: heartbeatBaseline.phase,
     });
-    coreDb.sqlite
+    workerControlJournal(coreDb)
       .prepare(
         "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
       )
@@ -2584,12 +2657,13 @@ describe('worker control routes', () => {
       outcome: 'completed',
     });
 
-    expect(() =>
+    // r37: the default Gateway's acknowledgement hook refuses asynchronously.
+    await expect(
       gateway.recordHeartbeat({
         authorization: `Bearer ${registration.token}`,
         ...heartbeatEnvelope(lineage, 3, 'running'),
       })
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'worker_control_lease_not_live',
         status: 403,
@@ -2614,7 +2688,8 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      await admittedRouteNanoHost(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         environmentPackage,
@@ -2657,7 +2732,7 @@ describe('worker control routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:database_failure',
     });
@@ -2852,7 +2927,7 @@ describe('worker control routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
     applyScopedMigrations(workspaceDb);
     await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
@@ -2978,7 +3053,7 @@ describe('worker control routes', () => {
       },
       method: 'POST',
     });
-    const recordsAfterFailure = coreDb.sqlite
+    const recordsAfterFailure = workerControlJournal(coreDb)
       .prepare(
         `SELECT operation
            FROM worker_control_records
@@ -2986,7 +3061,7 @@ describe('worker control routes', () => {
           ORDER BY operation`
       )
       .all(lineage.turnId);
-    const fingerprintsAfterFailure = coreDb.sqlite
+    const fingerprintsAfterFailure = workerControlJournal(coreDb)
       .prepare(
         `SELECT operation
            FROM worker_control_sequence_fingerprints
@@ -3006,7 +3081,7 @@ describe('worker control routes', () => {
     );
 
     coreDb.sqlite.exec('DROP TRIGGER reject_final_status_release');
-    const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
+    const rebuiltGateway = durableWorkerControlGateway(coreDb);
     const rebuiltApp = createApp({
       coreDb,
       mode: 'server',
@@ -3022,7 +3097,7 @@ describe('worker control routes', () => {
       method: 'POST',
     });
 
-    const acceptedRecords = coreDb.sqlite
+    const acceptedRecords = workerControlJournal(coreDb)
       .prepare(
         `SELECT operation, COUNT(*) AS count
            FROM worker_control_records
@@ -3031,7 +3106,7 @@ describe('worker control routes', () => {
           ORDER BY operation`
       )
       .all(lineage.turnId);
-    const acceptedFingerprints = coreDb.sqlite
+    const acceptedFingerprints = workerControlJournal(coreDb)
       .prepare(
         `SELECT operation, COUNT(*) AS count
            FROM worker_control_sequence_fingerprints
@@ -3217,14 +3292,14 @@ describe('worker control routes', () => {
         },
         method: 'POST',
       });
-      const acceptedRecordCount = coreDb.sqlite
+      const acceptedRecordCount = workerControlJournal(coreDb)
         .prepare(
           `SELECT COUNT(*) AS count
              FROM worker_control_records
             WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
         )
         .get(lineage.turnId) as { count: number };
-      const fingerprintCount = coreDb.sqlite
+      const fingerprintCount = workerControlJournal(coreDb)
         .prepare(
           `SELECT COUNT(*) AS count
              FROM worker_control_sequence_fingerprints
@@ -3343,14 +3418,14 @@ describe('worker control routes', () => {
       // Cleanup is a settled replay precondition; deadline expiry remains the synchronous transaction-entry fault.
       await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
       const replay = await app.request('/api/worker-control/final-status', request);
-      const acceptedRecordCount = coreDb.sqlite
+      const acceptedRecordCount = workerControlJournal(coreDb)
         .prepare(
           `SELECT COUNT(*) AS count
              FROM worker_control_records
             WHERE turn_id = ? AND operation IN ('event_append', 'final_status')`
         )
         .get(lineage.turnId) as { count: number };
-      const fingerprintCount = coreDb.sqlite
+      const fingerprintCount = workerControlJournal(coreDb)
         .prepare(
           `SELECT COUNT(*) AS count
              FROM worker_control_sequence_fingerprints
@@ -3527,7 +3602,7 @@ describe('worker control routes', () => {
         workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
         workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
       });
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -3556,7 +3631,7 @@ describe('worker control routes', () => {
       expect(response.status).toBe(200);
       expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
 
-      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      const restartedGateway = durableWorkerControlGateway(coreDb);
       const restartedApp = createApp({
         coreDb,
         mode: 'server',
@@ -3705,7 +3780,7 @@ describe('worker control routes', () => {
         lineage,
         'final_status_replay'
       );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const app = createApp({
         coreDb,
         mode: 'server',
@@ -3738,7 +3813,7 @@ describe('worker control routes', () => {
         headers: { authorization, 'content-type': 'application/json' },
         method: 'POST',
       });
-      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      const restartedGateway = durableWorkerControlGateway(coreDb);
       const restartedApp = createApp({
         coreDb,
         mode: 'server',
@@ -3771,7 +3846,7 @@ describe('worker control routes', () => {
         headers: { authorization, 'content-type': 'application/json' },
         method: 'POST',
       });
-      const acceptedRecords = coreDb.sqlite
+      const acceptedRecords = workerControlJournal(coreDb)
         .prepare(
           `SELECT operation, COUNT(*) AS count
              FROM worker_control_records
@@ -3780,7 +3855,7 @@ describe('worker control routes', () => {
             ORDER BY operation`
         )
         .all(lineage.turnId);
-      const acceptedFingerprints = coreDb.sqlite
+      const acceptedFingerprints = workerControlJournal(coreDb)
         .prepare(
           `SELECT operation, COUNT(*) AS count
              FROM worker_control_sequence_fingerprints
@@ -3913,7 +3988,8 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      await admittedRouteNanoHost(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -3929,35 +4005,32 @@ describe('worker control routes', () => {
         ),
         workspaceId: lineage.workspaceId,
       });
-      const submittedAttempt = recordTestExecutionAttempt(coreDb, {
-        entry: requireSchedulerAdmissionEntry(coreDb, 'queue_supply_refresh'),
-        attemptId: testEntityId('attempt', 'lease_supply_refresh'),
-        agentSessionId: lineage.agentSessionId,
-        inputRef: lineage.packageSnapshotId,
-        bindingRef: 'lease-binding:lease_supply_refresh',
-        sessionCompatibilityKey: 'fixture-compatibility',
-        now: () => new Date().toISOString(),
-        operationId: `fixture-submit:${String(testEntityId('attempt', 'lease_supply_refresh'))}`,
-      });
+      // The original Native submit carries the three route-token hashes (K8 owner).
+      const submittedAttempt = submitTestNanoHostWorkerLease(
+        coreDb,
+        requireSchedulerAdmissionEntry(coreDb, 'queue_supply_refresh'),
+        'lease-binding:lease_supply_refresh',
+        {
+          agentSessionId: lineage.agentSessionId,
+          packageSnapshotId: lineage.packageSnapshotId,
+          workerCapabilityTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_supply_refresh', 'capability')
+          ),
+          workerControlTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_supply_refresh', 'worker-control')
+          ),
+          workerInferenceTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_supply_refresh', 'inference')
+          ),
+        },
+        { attemptId: testEntityId('attempt', 'lease_supply_refresh') }
+      );
       attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
         ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
         disposition: 'accepted',
         execution: 'running',
         fenceRef: null,
         outcomeRef: null,
-      });
-      bindNanoHostAttemptRouteTokenHashes(coreDb, {
-        attemptId: testEntityId('attempt', 'lease_supply_refresh'),
-        sandboxBindingRef: 'lease-binding:lease_supply_refresh',
-        workerCapabilityTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_supply_refresh', 'capability')
-        ),
-        workerControlTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_supply_refresh', 'worker-control')
-        ),
-        workerInferenceTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_supply_refresh', 'inference')
-        ),
       });
       const registration = registerDurableWorkerControlSession(
         gateway,
@@ -3985,7 +4058,7 @@ describe('worker control routes', () => {
       });
 
       expect(res.status).toBe(200);
-      const durableAck = coreDb.sqlite
+      const durableAck = workerControlJournal(coreDb)
         .prepare(
           "SELECT record_json AS recordJson FROM worker_control_records WHERE turn_id = ? AND operation = 'supply_refresh_ack'"
         )
@@ -4185,7 +4258,7 @@ describe('worker control routes', () => {
         fixture.lineage,
         'artifact_notice_carriage'
       );
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         fixture.environmentPackage,
@@ -4219,7 +4292,7 @@ describe('worker control routes', () => {
         .soft(gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)?.artifacts)
         .toEqual([expect.objectContaining(artifact)]);
       const records = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(
             "SELECT record_json AS recordJson FROM worker_control_records WHERE operation='artifact_notice' AND package_snapshot_id=?"
           )
@@ -4231,7 +4304,7 @@ describe('worker control routes', () => {
       closeWorkspaceProductReadHandles(dataRoot);
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+      const restartedGateway = durableWorkerControlGateway(coreDb);
       app = createApp({
         coreDb,
         mode: 'server',
@@ -4325,7 +4398,7 @@ describe('worker control routes', () => {
       const attemptId = testEntityId('attempt', 'lease_heartbeat_transaction_tail');
       const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
       const fingerprints = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
             WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = 'heartbeat'`)
           .all(lineage.agentSessionId, lineage.packageSnapshotId);
@@ -4407,7 +4480,7 @@ describe('worker control routes', () => {
           toState: 'launching',
         });
         await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendAttemptId });
-        let gateway = createDefaultWorkerControlGateway(coreDb);
+        let gateway = durableWorkerControlGateway(coreDb);
         const registration = registerDurableWorkerControlSession(
           gateway,
           environmentPackage,
@@ -4447,7 +4520,7 @@ describe('worker control routes', () => {
             recoveryState: 'awaiting-reconnect',
             recoveryDeadline: expect.any(String),
           });
-          gateway = createDefaultWorkerControlGateway(coreDb);
+          gateway = durableWorkerControlGateway(coreDb);
           registerDurableWorkerControlSession(gateway, environmentPackage, binding);
         }
         const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
@@ -4458,7 +4531,7 @@ describe('worker control routes', () => {
         expect(before.workerProcessKeyHash).toBe(processKeyHash);
         const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
         const fingerprints = () =>
-          coreDb.sqlite
+          workerControlJournal(coreDb)
             .prepare(
               `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
            WHERE package_snapshot_id = ? AND operation = 'heartbeat' ORDER BY sequence`
@@ -4466,7 +4539,7 @@ describe('worker control routes', () => {
             .all(lineage.packageSnapshotId);
         const fingerprintsBefore = fingerprints();
         const heartbeatRows = () =>
-          coreDb.sqlite
+          workerControlJournal(coreDb)
             .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
             .all();
         const request = {
@@ -4604,7 +4677,7 @@ describe('worker control routes', () => {
         'heartbeat_native_authority'
       );
       const attemptId = testEntityId('attempt', 'lease_heartbeat_native_authority');
-      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const gateway = durableWorkerControlGateway(coreDb);
       const registration = registerDurableWorkerControlSession(
         gateway,
         environmentPackage,
@@ -4615,7 +4688,7 @@ describe('worker control routes', () => {
       const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
       const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
       const fingerprints = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare(
             `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
          WHERE package_snapshot_id = ? AND operation = 'heartbeat' ORDER BY sequence`
@@ -4679,7 +4752,7 @@ describe('worker control routes', () => {
         memoryBefore
       );
       expect(
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
           .all()
       ).toEqual([]);
@@ -4748,7 +4821,8 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const firstGateway = createDefaultWorkerControlGateway(coreDb);
+      await admittedRouteNanoHost(coreDb);
+      const firstGateway = durableWorkerControlGateway(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -4765,35 +4839,32 @@ describe('worker control routes', () => {
         ),
         workspaceId: lineage.workspaceId,
       });
-      const submittedAttempt = recordTestExecutionAttempt(coreDb, {
-        entry: requireSchedulerAdmissionEntry(coreDb, 'queue_rebuild'),
-        attemptId: testEntityId('attempt', 'lease_rebuild'),
-        agentSessionId: lineage.agentSessionId,
-        inputRef: lineage.packageSnapshotId,
-        bindingRef: 'lease-binding:lease_rebuild',
-        sessionCompatibilityKey: 'fixture-compatibility',
-        now: () => new Date().toISOString(),
-        operationId: `fixture-submit:${String(testEntityId('attempt', 'lease_rebuild'))}`,
-      });
+      // The original Native submit carries the three route-token hashes (K8 owner).
+      const submittedAttempt = submitTestNanoHostWorkerLease(
+        coreDb,
+        requireSchedulerAdmissionEntry(coreDb, 'queue_rebuild'),
+        'lease-binding:lease_rebuild',
+        {
+          agentSessionId: lineage.agentSessionId,
+          packageSnapshotId: lineage.packageSnapshotId,
+          workerCapabilityTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_rebuild', 'capability')
+          ),
+          workerControlTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_rebuild', 'worker-control')
+          ),
+          workerInferenceTokenHash: hashWorkerRouteToken(
+            workerRouteToken('lease-binding:lease_rebuild', 'inference')
+          ),
+        },
+        { attemptId: testEntityId('attempt', 'lease_rebuild') }
+      );
       attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
         ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
         disposition: 'accepted',
         execution: 'running',
         fenceRef: null,
         outcomeRef: null,
-      });
-      bindNanoHostAttemptRouteTokenHashes(coreDb, {
-        attemptId: testEntityId('attempt', 'lease_rebuild'),
-        sandboxBindingRef: 'lease-binding:lease_rebuild',
-        workerCapabilityTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_rebuild', 'capability')
-        ),
-        workerControlTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_rebuild', 'worker-control')
-        ),
-        workerInferenceTokenHash: hashWorkerRouteToken(
-          workerRouteToken('lease-binding:lease_rebuild', 'inference')
-        ),
       });
 
       const firstRegistration = registerDurableWorkerControlSession(
@@ -4837,7 +4908,7 @@ describe('worker control routes', () => {
       );
       expect(acceptedAttempt.heartbeatDeadline).not.toBe(beforeHeartbeat.heartbeatDeadline);
       const heartbeatRows = () =>
-        coreDb.sqlite
+        workerControlJournal(coreDb)
           .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
           .all();
       expect.soft(heartbeatRows()).toEqual([]);
@@ -4875,9 +4946,10 @@ describe('worker control routes', () => {
       closeWorkspaceProductReadHandles(dataRoot);
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
+      await reopenRouteNanoHost(coreDb);
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(Date.parse(acceptedAttempt.lastAcceptedHeartbeatAt!) + 1_000));
-      const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
+      const rebuiltGateway = durableWorkerControlGateway(coreDb);
       expect
         .soft(rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat)
         .toBeNull();

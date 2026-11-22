@@ -757,14 +757,15 @@ describe('Server-shared MCP through governed Worker routes', () => {
       code: 'worker_observation_storage_unavailable',
       status: 503,
     });
-    expect(() =>
+    // r37: the admitted Gateway's acknowledgement hook refuses asynchronously.
+    await expect(
       gateway.recordHeartbeat({
         ...request,
         body: { status: 'starting', processKeyHash: 'a'.repeat(43) },
         operation: 'heartbeat',
         schemaVersion: 2,
       })
-    ).toThrow(held);
+    ).rejects.toThrow(held);
     await expect(
       gateway.recordArtifactNotice({
         ...request,

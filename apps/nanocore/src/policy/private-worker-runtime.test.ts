@@ -32,10 +32,7 @@ import {
   acceptSchedulerExecutionObservation,
   schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
-import {
-  bindNanoHostAttemptRouteTokenHashes,
-  requireNanoHostExecutionAttempt,
-} from '../runtime/nanohost-attempt-records.js';
+import { requireNanoHostExecutionAttempt } from '../runtime/nanohost-attempt-records.js';
 import { hashWorkerRouteToken } from '../runtime/worker-control-gateway.js';
 import { listWorkerControlAcceptedEvents } from '../runtime/worker-control-records.js';
 import {
@@ -44,9 +41,10 @@ import {
 } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
@@ -104,7 +102,8 @@ function document(...statements: unknown[]): PolicyDocumentV1 {
 async function fixture(
   serverConfig: Record<string, unknown> = {},
   createOptions: (
-    coreDb: ReturnType<typeof createTestCoreDb>
+    coreDb: ReturnType<typeof createTestCoreDb>,
+    nanoHostStorage: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>
   ) => Partial<Parameters<typeof createApp>[0]> = () => ({})
 ) {
   const pending: Promise<unknown>[] = [];
@@ -118,6 +117,8 @@ async function fixture(
     await disposeTestStore(dataRoot, ...workspaceReaders, coreDb);
   });
   ensureLocalUser(coreDb); // initialization only; no local Actor is ever used
+  // Boot admits the NanoHost owner before the Worker control gateway is built (`app.ts`).
+  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
   let auth = createBetterAuth(coreDb, { env: { BETTER_AUTH_URL: BASE } });
   async function human(label: string, administrator: boolean) {
     const response = await auth.handler(
@@ -304,7 +305,7 @@ async function fixture(
       store,
       auth,
       runtimeConfigManager: manager,
-      ...createOptions(coreDb),
+      ...createOptions(coreDb, nanoHostStorage),
     });
     return {
       coreDb,
@@ -395,8 +396,8 @@ function sourceGroup(entry: string) {
 /** Existing S1 allocation owners seed a real package/session/attempt; no SQL grant or allow decision is inserted. */
 async function workerFixture() {
   let gateway!: ReturnType<typeof createDefaultWorkerControlGateway>;
-  const f = await fixture({}, (coreDb) => {
-    gateway = createDefaultWorkerControlGateway(coreDb);
+  const f = await fixture({}, (coreDb, nanoHostStorage) => {
+    gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
     return { workerControlGateway: gateway };
   });
   const g = f.graph();
@@ -479,16 +480,25 @@ async function workerFixture() {
 
   const attemptId = allocateEntityId('attempt');
   const binding = `lease-binding:${attemptId}`;
-  const attempt = recordTestExecutionAttempt(g.coreDb, {
-    entry: requireSchedulerAdmissionEntry(g.coreDb, queueEntryId),
-    attemptId,
-    agentSessionId: lineage.agentSessionId,
-    inputRef: environmentPackage.snapshotId,
-    bindingRef: binding,
-    sessionCompatibilityKey: 'e13-native-fixture',
-    now: () => new Date().toISOString(),
-    operationId: `fixture-submit:${attemptId}`,
-  });
+  const secrets = {
+    control: randomBytes(32).toString('base64url'),
+    capability: randomBytes(32).toString('base64url'),
+    inference: randomBytes(32).toString('base64url'),
+  };
+  // The original Native submit carries the three route-token hashes (K8 owner).
+  const attempt = submitTestNanoHostWorkerLease(
+    g.coreDb,
+    requireSchedulerAdmissionEntry(g.coreDb, queueEntryId),
+    binding,
+    {
+      agentSessionId: lineage.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      workerControlTokenHash: hashWorkerRouteToken(secrets.control),
+      workerCapabilityTokenHash: hashWorkerRouteToken(secrets.capability),
+      workerInferenceTokenHash: hashWorkerRouteToken(secrets.inference),
+    },
+    { attemptId }
+  );
   await recordAgentEnvironmentPackageSnapshot(db, {
     environmentPackage,
     createdAt: environmentPackage.createdAt,
@@ -522,18 +532,6 @@ async function workerFixture() {
     execution: 'running',
     fenceRef: null,
     outcomeRef: null,
-  });
-  const secrets = {
-    control: randomBytes(32).toString('base64url'),
-    capability: randomBytes(32).toString('base64url'),
-    inference: randomBytes(32).toString('base64url'),
-  };
-  bindNanoHostAttemptRouteTokenHashes(g.coreDb, {
-    attemptId,
-    sandboxBindingRef: binding,
-    workerControlTokenHash: hashWorkerRouteToken(secrets.control),
-    workerCapabilityTokenHash: hashWorkerRouteToken(secrets.capability),
-    workerInferenceTokenHash: hashWorkerRouteToken(secrets.inference),
   });
   const registration = gateway.registerSession(environmentPackage, {
     sandboxBindingRef: binding,
@@ -688,8 +686,9 @@ describe('E13B2 original allocated private Worker authority', () => {
       });
     const first = await w.client.appendEvent(event(0));
     expect(first).toMatchObject({ accepted: true, nextExpectedSequence: 1 });
+    // The admitted Gateway owns observation preparation directly (`app.ts` `prepareObservation`).
     type Recorder = { prepareObservation: (record: ReturnType<typeof event>) => Promise<void> };
-    const recorder = Reflect.get(w.gateway, 'acceptedRecordRecorder') as Recorder;
+    const recorder = w.gateway as unknown as Recorder;
     expect(typeof recorder?.prepareObservation).toBe('function');
     const original = recorder.prepareObservation;
     let release!: () => void, reached!: () => void;
@@ -702,7 +701,7 @@ describe('E13B2 original allocated private Worker authority', () => {
     let armed = true;
     recorder.prepareObservation = async (record) => {
       // Original native observation owner/ACK completes unchanged. Hold ONLY its continuation.
-      await original.call(recorder, record);
+      await original(record);
       if (
         armed &&
         record.sequence === 1 &&

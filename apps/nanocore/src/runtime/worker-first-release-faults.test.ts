@@ -28,6 +28,7 @@ import {
 import { openBootVerifiedWorkspaceDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { testNanoHostRecoveryJoins } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -231,8 +232,9 @@ async function faultFixture() {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
-  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
-  const gateway = createDefaultWorkerControlGateway(coreDb);
+  // The fixture joins the admitted NanoHost owner of its root the way the App does (`app.ts`).
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
+  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
   const effects: NanoHostSessionEffectRequest[] = [];
   const transcript = { events: '' };
   const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -243,6 +245,7 @@ async function faultFixture() {
     store,
     workerControlGateway: gateway,
     nanoHostSessionDispatch: operationDouble(effects, transcript, dataRoot),
+    nanoHostRecovery: testNanoHostRecoveryJoins(nanoHostStorage),
   });
   const target = { deploymentId: 'fault-deployment', identityId: 'fault-host' };
   await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
@@ -258,9 +261,12 @@ async function faultFixture() {
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     app,
     coreDb,
+    nativeStorage: nanoHostStorage,
+    nativeHarnessLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
     nanoHostConfig: target,
     dispatch: createNanoHostSessionDispatch({
       coreDb,
+      nativeStorage: nanoHostStorage,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
     }),
@@ -471,8 +477,9 @@ async function faultFixture() {
   // Observe the committed real enqueue, including one that precedes its readiness waiter.
   const enqueueObserver = vi
     .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
-    .mockImplementation(async (db, input) => {
-      const sequence = await queueOperation(db, input);
+    .mockImplementation(async (db, input, ...admitted) => {
+      // Forward the admitted Native lifecycle too; without it the writer falls back to Core.
+      const sequence = await queueOperation(db, input, ...admitted);
       if (db === coreDb && input.operation in enqueued) {
         enqueued[input.operation as keyof typeof enqueued].resolve();
       }

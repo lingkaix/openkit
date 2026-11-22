@@ -25,7 +25,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -280,12 +280,14 @@ async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGate
   const store = createTestStore({ dataRoot });
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
   const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
-  admitTestNativeEnvironment(
+  // Image evidence lives in the admitted NanoHost file of this root; the App joins the same owner.
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
     coreDb,
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
   );
   const app = createApp({
     fileAdmission,
+    nanoHostStorage,
     ...(agentId
       ? {
           agentManifests: [createTestAgentSetup({ agentId }).manifest],

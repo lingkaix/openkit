@@ -9,6 +9,7 @@ import {
   type WorkerLineage,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerTranscriptWriter } from '../../../../packages/worker-shim/src/transcript.js';
 import { compactWorkspaceEvidenceBundles, readWorkObservationBody } from '../evidence-bundles.js';
@@ -17,26 +18,37 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import {
+  seedTestWorkerControlReceipt,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+  allocateNanoHostRuntimeTargetConnectionGeneration as allocateNativeRuntimeTarget,
+  upsertNanoHostRuntimeTarget as upsertNativeRuntimeTarget,
+} from './nanohost-runtime-target-records.js';
 import {
   getWorkerBackendSession,
-  recordWorkerBackendSessionMaterializing,
-} from './worker-backend-sessions.js';
+  recordWorkerBackendSessionMaterializing as recordNativeBackendSessionMaterializing,
+} from './worker-backend-session-records.js';
 import {
+  hashWorkerRouteToken,
   WorkerControlGateway,
   WorkerControlGatewayError,
   type WorkerControlGatewayOptions,
@@ -44,20 +56,15 @@ import {
 } from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
-  createWorkerControlAcceptedRecordRecorder,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
   prepareWorkerControlObservation,
-  recordWorkerControlAcceptedRecord,
   recoverWorkerObservationSource,
   resolveWorkerControlFinalStatusTokenBinding,
   waitForWorkerControlFinalStatus,
   writeWorkerControlAcceptedRecord,
 } from './worker-control-records.js';
-import {
-  acceptWorkerControlSequence,
-  createWorkerControlSequenceRecorder,
-} from './worker-control-sequences.js';
+import { acceptWorkerControlSequence } from './worker-control-sequences.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_00000000-0000-7e3a-a966-bbf1c9a21fcc',
@@ -85,90 +92,91 @@ function eventRecord(sequence: number, recordLineage = lineage): WorkerCanonical
   };
 }
 
-/** Establishes exact submitted attempt authority for the durable final-status waiter. */
-function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
+/** Gives a fixture its original Core submission and acknowledged Native lease (K8 owner). */
+async function submitJournalLease(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: { queueEntryId: string; suffix: string; binding: string; text: string; at: string }
+): Promise<void> {
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: lineage.workspaceId,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
+  await openAdmittedTestNanoHost(coreDb);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
-    queueEntryId: 'queue_events_wait',
+    now: () => input.at,
+    profileRef: 'profile_worker',
+    queueEntryId: input.queueEntryId,
     requestId: lineage.requestId,
-    workspaceId: lineage.workspaceId,
-    threadId: lineage.threadId,
-    turnId: lineage.turnId,
-    inputRef: schedulerFixtureInput(
-      lineage.workspaceId,
-      lineage.turnId,
-      'Wait for the exact durable worker final status'
-    ),
     requestedAgentId: 'agent_worker',
+    threadId: lineage.threadId,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    now: () => '2026-07-15T00:00:00.000Z',
+    turnId: lineage.turnId,
+    inputRef: schedulerFixtureInput(lineage.workspaceId, lineage.turnId, input.text),
+    workspaceId: lineage.workspaceId,
   });
-  recordTestExecutionAttempt(coreDb, {
+  submitTestNanoHostWorkerLease(
+    coreDb,
     entry,
-    attemptId: testEntityId('attempt', 'lease_events_1'),
-    agentSessionId: lineage.agentSessionId,
-    inputRef: lineage.packageSnapshotId,
-    bindingRef: 'lease-binding:events-1',
-    sessionCompatibilityKey: 'events-wait',
-    operationId: 'submit:events-wait',
-    now: () => '2026-07-15T00:00:00.000Z',
+    input.binding,
+    {
+      agentSessionId: lineage.agentSessionId,
+      packageSnapshotId: lineage.packageSnapshotId,
+      workerCapabilityTokenHash: hashWorkerRouteToken(`capability:${input.suffix}`),
+      workerControlTokenHash: hashWorkerRouteToken(`control:${input.suffix}`),
+      workerInferenceTokenHash: hashWorkerRouteToken(`inference:${input.suffix}`),
+    },
+    { attemptId: testEntityId('attempt', `lease_${input.suffix}`), observedAt: input.at }
+  );
+}
+
+/** Establishes exact submitted attempt authority for the durable final-status waiter. */
+function insertWorkerAttempt(coreDb: ReturnType<typeof openCoreDb>): Promise<void> {
+  return submitJournalLease(coreDb, {
+    queueEntryId: 'queue_events_wait',
+    suffix: 'events_1',
+    binding: 'lease-binding:events-1',
+    text: 'Wait for the exact durable worker final status',
+    at: '2026-07-15T00:00:00.000Z',
   });
 }
 
-/**
- * Creates one admission-backed submitted Native attempt for final-status binding tests.
- *
- * @param coreDb Open Core database handle.
- */
-function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): void {
-  ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    workspaceId: lineage.workspaceId,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-  });
-  const entry = createSchedulerAdmissionEntry(coreDb, {
-    backendId: 'nanohost',
-    now: () => '2026-07-15T00:00:00.000Z',
-    profileRef: 'profile_worker',
+/** Creates one admission-backed submitted Native attempt for final-status binding tests. */
+function createFinalStatusAttempt(coreDb: ReturnType<typeof openCoreDb>): Promise<void> {
+  return submitJournalLease(coreDb, {
     queueEntryId: 'queue_events_final_status',
-    requestId: lineage.requestId,
-    requestedAgentId: 'agent_worker',
-    threadId: lineage.threadId,
-    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    turnId: lineage.turnId,
-    inputRef: schedulerFixtureInput(
-      lineage.workspaceId,
-      lineage.turnId,
-      'Run final-status binding test'
-    ),
-    workspaceId: lineage.workspaceId,
+    suffix: 'events_final_status',
+    binding: 'lease-binding:events-final-status',
+    text: 'Run final-status binding test',
+    at: new Date().toISOString(),
   });
-  recordTestExecutionAttempt(coreDb, {
-    entry,
-    attemptId: testEntityId('attempt', 'lease_events_final_status'),
-    agentSessionId: lineage.agentSessionId,
-    inputRef: lineage.packageSnapshotId,
-    bindingRef: 'lease-binding:events-final-status',
-    sessionCompatibilityKey: 'events-final-status',
-    operationId: 'submit:events-final-status',
-    now: () => new Date().toISOString(),
-  });
+}
+
+/** Runs a journal reader on the admitted NanoHost file so its own refusal stays observable. */
+function onJournal<Value>(
+  coreDb: ReturnType<typeof openCoreDb>,
+  read: (owner: { sqlite: Database.Database }) => Value
+): Value {
+  return mutateAdmittedTestNanoHost(coreDb, (sqlite) => read({ sqlite }));
+}
+
+/** Writes a receipt through the Native owner's writer connection (its `sqlite` reads only). */
+function writeNativeReceipt(
+  native: ReturnType<typeof openNanoHostTestOwner>,
+  input: Parameters<typeof writeWorkerControlAcceptedRecord>[1]
+): void {
+  native.setup((sqlite) => writeWorkerControlAcceptedRecord({ sqlite }, input));
 }
 
 describe('worker final-status token binding', () => {
-  it('accepts exact live request lineage without projecting a physical owner', () => {
+  it('accepts exact live request lineage without projecting a physical owner', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-live-')));
     applyMigrations(coreDb);
-    createFinalStatusAttempt(coreDb);
+    await createFinalStatusAttempt(coreDb);
 
     try {
       vi.setSystemTime(new Date('2026-07-15T00:00:10.000Z'));
@@ -190,13 +198,13 @@ describe('worker final-status token binding', () => {
     }
   });
 
-  it('admits closing replay only for an exact durable request id', () => {
+  it('admits closing replay only for an exact durable request id', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-binding-replay-')));
     applyMigrations(coreDb);
-    createFinalStatusAttempt(coreDb);
-    recordWorkerControlAcceptedRecord(coreDb, {
+    await createFinalStatusAttempt(coreDb);
+    seedTestWorkerControlReceipt(coreDb, {
       acceptedAt: '2026-07-15T00:00:03.000Z',
       lineage: { ...lineage, requestId: 'req_events_other' },
       operation: 'final_status',
@@ -225,7 +233,7 @@ describe('worker final-status token binding', () => {
         })
       ).toEqual({ reason: 'attempt-not-live', status: 'rejected' });
 
-      recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-15T00:00:05.000Z',
         lineage,
         operation: 'final_status',
@@ -251,6 +259,7 @@ describe('worker control accepted event records', () => {
   it('reads canonical events only from the complete package lineage in sequence order', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-events-')));
     applyMigrations(coreDb);
+    const native = openNanoHostTestOwner();
     const second = eventRecord(2);
     const first = eventRecord(1);
     const otherLineages: WorkerLineage[] = [
@@ -275,7 +284,7 @@ describe('worker control accepted event records', () => {
     ];
 
     for (const [record, acceptedAt] of records) {
-      recordWorkerControlAcceptedRecord(coreDb, {
+      writeNativeReceipt(native, {
         acceptedAt,
         lineage: record.lineage,
         operation: 'event_append',
@@ -284,7 +293,7 @@ describe('worker control accepted event records', () => {
         sequence: record.sequence,
       });
     }
-    recordWorkerControlAcceptedRecord(coreDb, {
+    writeNativeReceipt(native, {
       acceptedAt: '2026-07-15T00:00:03.000Z',
       lineage,
       operation: 'heartbeat',
@@ -293,7 +302,7 @@ describe('worker control accepted event records', () => {
       sequence: 3,
     });
 
-    expect(listWorkerControlAcceptedEvents(coreDb, lineage)).toEqual([first, second]);
+    expect(listWorkerControlAcceptedEvents(native, lineage)).toEqual([first, second]);
 
     const nullRequestLineage = {
       ...lineage,
@@ -302,7 +311,7 @@ describe('worker control accepted event records', () => {
       requestId: null,
     };
     const nullRequestRecord = eventRecord(20, nullRequestLineage);
-    recordWorkerControlAcceptedRecord(coreDb, {
+    writeNativeReceipt(native, {
       acceptedAt: '2026-07-15T00:00:20.000Z',
       lineage: nullRequestLineage,
       operation: 'event_append',
@@ -310,7 +319,7 @@ describe('worker control accepted event records', () => {
       recordKey: '20',
       sequence: 20,
     });
-    recordWorkerControlAcceptedRecord(coreDb, {
+    writeNativeReceipt(native, {
       acceptedAt: '2026-07-15T00:00:21.000Z',
       lineage: { ...nullRequestLineage, requestId: 'req_events_other' },
       operation: 'event_append',
@@ -318,7 +327,7 @@ describe('worker control accepted event records', () => {
       recordKey: '21',
       sequence: 21,
     });
-    expect(listWorkerControlAcceptedEvents(coreDb, nullRequestLineage)).toEqual([
+    expect(listWorkerControlAcceptedEvents(native, nullRequestLineage)).toEqual([
       nullRequestRecord,
     ]);
     coreDb.sqlite.close();
@@ -333,7 +342,8 @@ describe('worker control accepted event records', () => {
         mkdtempSync(join(tmpdir(), 'openkit-worker-control-invalid-event-'))
       );
       applyMigrations(coreDb);
-      recordWorkerControlAcceptedRecord(coreDb, {
+      const native = openNanoHostTestOwner();
+      writeNativeReceipt(native, {
         acceptedAt: '2026-07-15T00:00:00.000Z',
         lineage,
         operation: 'event_append',
@@ -342,10 +352,12 @@ describe('worker control accepted event records', () => {
         sequence: 1,
       });
       // Corrupt the durable artifact directly: the production recorder now validates ingress too.
-      coreDb.sqlite
-        .prepare('UPDATE worker_control_records SET record_json = ?')
-        .run(JSON.stringify(record));
-      expect(() => listWorkerControlAcceptedEvents(coreDb, lineage)).toThrow();
+      native.setup((sqlite) => {
+        sqlite
+          .prepare('UPDATE worker_control_records SET record_json = ?')
+          .run(JSON.stringify(record));
+      });
+      expect(() => listWorkerControlAcceptedEvents(native, lineage)).toThrow();
       coreDb.sqlite.close();
     }
   });
@@ -354,17 +366,18 @@ describe('worker control accepted event records', () => {
 describe('durable failure diagnostics', () => {
   it('writes v1 control records and retains cause diagnostics online and after database reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-failure-cause-'));
-    let coreDb = openCoreDb(dataRoot);
+    const coreDb = openCoreDb(dataRoot);
     onTestFinished(() => {
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     });
     applyMigrations(coreDb);
+    const native = openNanoHostTestOwner();
     const diagnostics = {
       failureCause: 'DeepSeek model returned a completed response with no content.',
       cleanup: 'host stopped',
     };
-    recordWorkerControlAcceptedRecord(coreDb, {
+    writeNativeReceipt(native, {
       acceptedAt: '2026-07-15T00:01:01.000Z',
       lineage,
       operation: 'final_status',
@@ -373,27 +386,33 @@ describe('durable failure diagnostics', () => {
       sequence: 9,
     });
     try {
-      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
-      const retained = coreDb.sqlite
+      expect(getWorkerControlAcceptedFinalStatus(native, lineage)).toMatchObject({ diagnostics });
+      const retained = native.sqlite
         .prepare(`SELECT schema_version AS schemaVersion,
         record_json FROM worker_control_records`)
         .get();
       expect(retained).toMatchObject({ schemaVersion: 1 });
-      coreDb.sqlite.close();
-      coreDb = openCoreDb(dataRoot);
-      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
-      expect(
-        coreDb.sqlite
-          .prepare(`SELECT schema_version AS schemaVersion,
+      // The NanoHost journal owns the record; a reopened handle on its file retains it.
+      const reopened = { sqlite: new Database(native.sqlite.name, { readonly: true }) };
+      try {
+        expect(getWorkerControlAcceptedFinalStatus(reopened, lineage)).toMatchObject({
+          diagnostics,
+        });
+        expect(
+          reopened.sqlite
+            .prepare(`SELECT schema_version AS schemaVersion,
         record_json FROM worker_control_records`)
-          .get()
-      ).toEqual(retained);
+            .get()
+        ).toEqual(retained);
+      } finally {
+        reopened.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('refuses unknown control versions before receipt decode, replay or closing token admission', () => {
+  it('refuses unknown control versions before receipt decode, replay or closing token admission', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-version-'));
@@ -405,7 +424,7 @@ describe('durable failure diagnostics', () => {
     });
     try {
       applyMigrations(coreDb);
-      createFinalStatusAttempt(coreDb);
+      await createFinalStatusAttempt(coreDb);
       const event = eventRecord(1);
       const input = {
         acceptedAt: '2026-07-15T00:00:03.000Z',
@@ -415,8 +434,8 @@ describe('durable failure diagnostics', () => {
         recordKey: '1',
         sequence: 1,
       };
-      recordWorkerControlAcceptedRecord(coreDb, input);
-      recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, input);
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-15T00:00:05.000Z',
         lineage,
         operation: 'final_status',
@@ -429,16 +448,18 @@ describe('durable failure diagnostics', () => {
         now: () => '2026-07-15T00:00:04.000Z',
         cause: 'worker-final-status',
       });
-      coreDb.sqlite.exec("UPDATE worker_control_records SET schema_version = 2, record_json = '{'");
-      coreDb.sqlite.exec(`CREATE TRIGGER reject_unsupported_control_insert BEFORE INSERT ON worker_control_records
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.exec("UPDATE worker_control_records SET schema_version = 2, record_json = '{'");
+        sqlite.exec(`CREATE TRIGGER reject_unsupported_control_insert BEFORE INSERT ON worker_control_records
         BEGIN SELECT RAISE(FAIL, 'Unsupported control record reached an INSERT'); END`);
-      expect(() => listWorkerControlAcceptedEvents(coreDb, lineage)).toThrow(
-        'Unsupported retained record format.'
-      );
-      expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow(
-        'Unsupported retained record format.'
-      );
-      expect(() => recordWorkerControlAcceptedRecord(coreDb, input)).toThrow(
+      });
+      expect(() =>
+        onJournal(coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        onJournal(coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+      ).toThrow('Unsupported retained record format.');
+      expect(() => seedTestWorkerControlReceipt(coreDb, input)).toThrow(
         'Unsupported retained record format.'
       );
       vi.setSystemTime(new Date('2026-07-15T00:00:10.000Z'));
@@ -449,10 +470,12 @@ describe('durable failure diagnostics', () => {
         })
       ).toThrow('Unsupported retained record format.');
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT schema_version AS schemaVersion, record_json
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT schema_version AS schemaVersion, record_json
         FROM worker_control_records ORDER BY sequence`)
-          .all()
+            .all()
+        )
       ).toEqual([
         { schemaVersion: 2, record_json: '{' },
         { schemaVersion: 2, record_json: '{' },
@@ -468,7 +491,8 @@ describe('durable failure diagnostics', () => {
     (diagnostics) => {
       const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-invalid-failure-cause-')));
       applyMigrations(coreDb);
-      recordWorkerControlAcceptedRecord(coreDb, {
+      const native = openNanoHostTestOwner();
+      writeNativeReceipt(native, {
         acceptedAt: '2026-07-15T00:01:01.000Z',
         lineage,
         operation: 'final_status',
@@ -477,7 +501,7 @@ describe('durable failure diagnostics', () => {
         sequence: 9,
       });
       try {
-        expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow();
+        expect(() => getWorkerControlAcceptedFinalStatus(native, lineage)).toThrow();
       } finally {
         coreDb.sqlite.close();
       }
@@ -491,13 +515,14 @@ describe('durable worker final-status wait', () => {
     vi.setSystemTime(new Date('2026-07-15T00:01:00.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-final-status-wait-')));
     applyMigrations(coreDb);
-    insertWorkerAttempt(coreDb);
+    await insertWorkerAttempt(coreDb);
 
     try {
-      const completion = waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: testEntityId('attempt', 'lease_events_1'),
-        lineage,
-      });
+      const completion = waitForWorkerControlFinalStatus(
+        coreDb,
+        { attemptId: testEntityId('attempt', 'lease_events_1'), lineage },
+        currentAdmittedTestNanoHostOwner(coreDb)!.readWorkerCompletion
+      );
       let settled = false;
       completion.finally(() => {
         settled = true;
@@ -505,7 +530,7 @@ describe('durable worker final-status wait', () => {
       await Promise.resolve();
       expect(settled).toBe(false);
 
-      recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-15T00:01:01.000Z',
         lineage,
         operation: 'final_status',
@@ -531,8 +556,8 @@ describe('durable worker final-status wait', () => {
     vi.setSystemTime(new Date('2026-07-15T02:00:01.000Z'));
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-final-status-lineage-')));
     applyMigrations(coreDb);
-    insertWorkerAttempt(coreDb);
-    recordWorkerControlAcceptedRecord(coreDb, {
+    await insertWorkerAttempt(coreDb);
+    seedTestWorkerControlReceipt(coreDb, {
       acceptedAt: '2026-07-15T00:00:20.000Z',
       lineage: { ...lineage, packageSnapshotId: 'aepsnap_events_other' },
       operation: 'final_status',
@@ -542,13 +567,14 @@ describe('durable worker final-status wait', () => {
     });
 
     await expect(
-      waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: testEntityId('attempt', 'lease_events_1'),
-        lineage,
-      })
+      waitForWorkerControlFinalStatus(
+        coreDb,
+        { attemptId: testEntityId('attempt', 'lease_events_1'), lineage },
+        currentAdmittedTestNanoHostOwner(coreDb)!.readWorkerCompletion
+      )
     ).rejects.toThrow('expired before durable final status');
 
-    recordWorkerControlAcceptedRecord(coreDb, {
+    seedTestWorkerControlReceipt(coreDb, {
       acceptedAt: '2026-07-15T00:00:25.000Z',
       lineage,
       operation: 'final_status',
@@ -557,10 +583,11 @@ describe('durable worker final-status wait', () => {
       sequence: 9,
     });
     await expect(
-      waitForWorkerControlFinalStatus(coreDb, {
-        attemptId: testEntityId('attempt', 'lease_events_1'),
-        lineage,
-      })
+      waitForWorkerControlFinalStatus(
+        coreDb,
+        { attemptId: testEntityId('attempt', 'lease_events_1'), lineage },
+        currentAdmittedTestNanoHostOwner(coreDb)!.readWorkerCompletion
+      )
     ).resolves.toEqual({
       acceptedAt: '2026-07-15T00:00:25.000Z',
       status: 'completed',
@@ -644,6 +671,8 @@ async function nativeReceiver(
   split?: (db: ReturnType<typeof openCoreDb>) => WorkerControlGatewayOptions
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-ret2-receiver-'));
+  // Without a caller split, the receiver journals through the admitted Native owner, as production does.
+  const native = split ? undefined : openNanoHostTestOwner();
   let coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot: root });
@@ -702,14 +731,11 @@ async function nativeReceiver(
   };
   const makeGateway = () => {
     const gateway = new WorkerControlGateway(
-      split?.(coreDb) ?? {
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
-      }
+      split?.(coreDb) ?? nativeJournalOptions(native!, coreDb)
     );
     gateway.registerSession(activePackage, {
       ...activeTokens,
-      ...(split ? { sandboxBindingRef: 'observation-sandbox' } : {}),
+      sandboxBindingRef: 'observation-sandbox',
     });
     return gateway;
   };
@@ -758,12 +784,13 @@ async function nativeReceiver(
     root,
     pkg,
     owner,
+    native,
     lineage: selectedLineage,
     store,
     send,
     rows: () => readWorkObservations(db, owner),
     receipts: () =>
-      coreDb.sqlite
+      (native?.sqlite ?? coreDb.sqlite)
         .prepare('SELECT record_json FROM worker_control_records ORDER BY sequence')
         .all(),
     restart: () => {
@@ -869,6 +896,41 @@ function nativeBodies(f: ReturnType<typeof nativeReceiver>) {
       });
       return { ref, bytes: bytes === null ? null : Buffer.from(bytes) };
     });
+}
+
+/**
+ * The admitted Native journal composition of the production gateway (`app.ts`): the observation is prepared
+ * through the Native reader, and the sequence and accepted record commit in one NanoHost transaction.
+ */
+function nativeJournalOptions(
+  native: ReturnType<typeof openNanoHostTestOwner>,
+  coreDb: ReturnType<typeof openCoreDb>
+): WorkerControlGatewayOptions {
+  return {
+    prepareObservation: (record) =>
+      prepareWorkerControlObservation(coreDb, record, native.storage.owner.read),
+    publishControlOperation: async ({ lineage, payload, fingerprint }) => {
+      if (payload.operation !== 'event_append') throw new Error('Expected an event append.');
+      let accepted: { duplicate: boolean; nextExpectedSequence: number } | undefined;
+      native.setup((sqlite) => {
+        const owner = { sqlite };
+        const result = acceptWorkerControlSequence(owner, {
+          lineage,
+          operation: payload.operation,
+          sequence: payload.sequence,
+          fingerprint,
+        });
+        if (result.status !== 'accepted')
+          throw new WorkerControlGatewayError(result.code, result.message, 409);
+        writeWorkerControlAcceptedRecord(owner, { ...payload, lineage });
+        accepted = {
+          duplicate: result.duplicate,
+          nextExpectedSequence: result.nextExpectedSequence,
+        };
+      });
+      return accepted!;
+    },
+  };
 }
 
 async function splitObservationReceiver(prepare = true) {
@@ -1062,7 +1124,7 @@ async function nativeImageBinding(
     now,
   });
   const attemptId = testEntityId('attempt', 'ret2-image');
-  recordTestExecutionAttempt(coreDb, {
+  const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId,
     agentSessionId: bindingLineage.agentSessionId,
@@ -1071,38 +1133,52 @@ async function nativeImageBinding(
     sessionCompatibilityKey: 'ret2-image',
     now,
   });
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-    deploymentId: 'deployment-ret2-image',
-    identityId: 'nanohost-ret2-image',
-    observedAt: now(),
-    targetId: 'runtime-target-ret2-image',
+  // The receiver's NanoHost owner holds the RuntimeTarget and backend session (K8 owner);
+  // the admitted writer takes that owner and the exact original Core attempt.
+  const native = f.native!;
+  let written: ReturnType<typeof recordNativeBackendSessionMaterializing> | undefined;
+  native.setup((sqlite) => {
+    const owner = { sqlite };
+    {
+      const target = allocateNativeRuntimeTarget(owner, {
+        deploymentId: 'deployment-ret2-image',
+        identityId: 'nanohost-ret2-image',
+        observedAt: now(),
+        targetId: 'runtime-target-ret2-image',
+      });
+      upsertNativeRuntimeTarget(owner, {
+        ...target,
+        freshEmpty: true,
+        observedAt: now(),
+        physicalEpoch: 'a'.repeat(64),
+        predecessorFenced: true,
+        ready: true,
+      });
+      written = recordNativeBackendSessionMaterializing(
+        coreDb,
+        {
+          backendLineage: { kind: 'reference', imageRef },
+          backendVersion: '0.0.99',
+          identity: {
+            agentSessionId: bindingLineage.agentSessionId,
+            backendKind: f.pkg.backend.preferred,
+            backendSessionId: 'nh-ret2-image',
+            deploymentId: target.deploymentId,
+            packageSnapshotId: bindingLineage.packageSnapshotId,
+            runtimeTargetId: target.targetId,
+            stagingDirectoryRef: `server/runtime/worker-backend-sessions/${bindingLineage.packageSnapshotId}`,
+            transientProviderInstanceId: null,
+          },
+          lineage: bindingLineage,
+          now,
+          sandboxBindingRef: 'lease-binding:ret2-image',
+        },
+        { owner, attempt }
+      );
+    }
   });
-  await upsertNanoHostRuntimeTarget(coreDb, {
-    ...target,
-    freshEmpty: true,
-    observedAt: now(),
-    physicalEpoch: 'a'.repeat(64),
-    predecessorFenced: true,
-    ready: true,
-  });
-  const recorded = await recordWorkerBackendSessionMaterializing(coreDb, {
-    backendLineage: { kind: 'reference', imageRef },
-    backendVersion: '0.0.99',
-    identity: {
-      agentSessionId: bindingLineage.agentSessionId,
-      backendKind: f.pkg.backend.preferred,
-      backendSessionId: 'nh-ret2-image',
-      deploymentId: target.deploymentId,
-      packageSnapshotId: bindingLineage.packageSnapshotId,
-      runtimeTargetId: target.targetId,
-      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${bindingLineage.packageSnapshotId}`,
-      transientProviderInstanceId: null,
-    },
-    lineage: bindingLineage,
-    now,
-    sandboxBindingRef: 'lease-binding:ret2-image',
-  });
-  expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(recorded);
+  const recorded = written!;
+  expect(getWorkerBackendSession(native, attemptId)).toEqual(recorded);
   expect(recorded).toMatchObject({
     workspaceId: bindingLineage.workspaceId,
     threadId: bindingLineage.threadId,
@@ -1140,7 +1216,7 @@ it('RET-2 retains the exact trusted backend image binding independently of nativ
   const f = await nativeReceiver();
   const binding = await nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
   f.restart();
-  expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toEqual(binding);
+  expect(getWorkerBackendSession(f.native!, binding.attemptId)).toEqual(binding);
   expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
 });
 
@@ -1891,7 +1967,7 @@ it.each([
     ];
     if (fault === 'missing-live-receipt') {
       // Fault between real native preparation and the separate synchronous Core receipt.
-      await createWorkerControlAcceptedRecordRecorder(f.coreDb).prepareObservation!(metadata);
+      await prepareWorkerControlObservation(f.coreDb, metadata, f.native!.storage.owner.read);
       expect(f.rows()).toHaveLength(1);
     } else if (fault !== 'missing-live-metadata') {
       expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);

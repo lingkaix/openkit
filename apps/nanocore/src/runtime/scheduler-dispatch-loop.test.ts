@@ -1567,9 +1567,14 @@ describe('scheduler dispatch loop', () => {
           const attempt = executionAttempts(coreDb)[0]!;
           expect(attempt).toMatchObject(
             outcome === 'post-lease'
-              ? { phase: 'closing', disposition: 'unknown', fence_ref: null }
+              ? { phase: 'closing', disposition: 'unknown' }
               : { phase: 'closed', disposition: 'not_accepted', operation_id: null }
           );
+          // The fence is projected from the Core lifecycle steps, not an attempt column.
+          if (outcome === 'post-lease')
+            expect(
+              attemptRecords.requireSchedulerExecutionAttempt(coreDb, String(attempt.attempt_id))
+            ).toMatchObject({ phase: 'closing', disposition: 'unknown', fenceRef: null });
           expect(backgroundResult).toBeNull();
           expect(errors).toHaveLength(1);
           expect(errors[0]).toBe(failure);
@@ -1846,6 +1851,9 @@ describe('scheduler dispatch loop', () => {
   it.each(['acknowledged', 'ack lost'] as const)(
     'fences expired preparation and dispatches another Thread before its late result: %s',
     async (closeReply) => {
+      // The modeled completion records its final through the packaged self-check owner.
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      onTestFinished(() => vi.unstubAllEnvs());
       const coreDb = createMigratedCoreDb(false);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
@@ -1973,6 +1981,9 @@ describe('scheduler dispatch loop', () => {
   );
 
   it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
+    // The modeled completion records its final through the packaged self-check owner.
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({

@@ -26,7 +26,10 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { transitionTestNativeRuntimeTargetFields } from './test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -470,6 +473,9 @@ describe('runtime config reload API', () => {
   });
 
   it('keeps the active AgentSession across a live Provider reload', async () => {
+    // The simulated executor records its final through the packaged self-check owner.
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -501,6 +507,9 @@ describe('runtime config reload API', () => {
         providerModel: 'openai/gpt-5.1',
       },
     });
+    // Turn start needs this manifest's verified Worker image defaults in the admitted NanoHost file;
+    // the App joins that same owner.
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
     const completion = Promise.withResolvers<void>();
     void completion.promise.catch(() => undefined);
     let running: Promise<void> | undefined;
@@ -544,6 +553,7 @@ describe('runtime config reload API', () => {
         ],
         requiredFeatures: [],
       },
+      nanoHostStorage,
       providerRegistry: new ProviderRegistry([provider]),
       // This lifecycle fixture needs configured non-Vault supply, without a Provider call.
       providerCredentialResolver: (secretRef) =>

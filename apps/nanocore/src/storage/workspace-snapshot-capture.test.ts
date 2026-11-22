@@ -1670,7 +1670,7 @@ describe('C-a additional owner families', () => {
     const attemptId = allocateEntityId('attempt');
     const agentSessionId = allocateEntityId('as');
     const now = () => new Date().toISOString();
-    recordTestExecutionAttempt(f.coreDb, {
+    const attempt = recordTestExecutionAttempt(f.coreDb, {
       entry,
       attemptId,
       agentSessionId,
@@ -1729,7 +1729,8 @@ describe('C-a additional owner families', () => {
           now,
           sandboxBindingRef: 'lease-binding:cleanup-fixture',
         },
-        { sqlite: nativeFixture }
+        // The admitted writer takes the NanoHost owner and the exact original Core attempt.
+        { owner: { sqlite: nativeFixture }, attempt }
       );
     } finally {
       nativeFixture.close();

@@ -22,6 +22,7 @@ import {
   readAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { testBootNanoHostRecovery } from '../test-support/boot-nanohost-recovery.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -42,6 +43,7 @@ import {
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import {
   getWorkerBackendSession,
@@ -150,11 +152,17 @@ async function createFixture() {
     { attemptId: ATTEMPT_ID }
   );
   const { deploymentId } = readDataRootLayoutMarker(dataRoot);
+  const { image } = environmentPackage.runtime;
+  if (image.kind !== 'reference')
+    throw new Error('Cancellation fixture expects a reference image.');
   mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
     sqlite.prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?').run(deploymentId);
+    // The launched placement carries this package's image lineage, as Native materialization writes it.
     sqlite
-      .prepare('UPDATE worker_backend_sessions SET deployment_id = ? WHERE attempt_id = ?')
-      .run(deploymentId, ATTEMPT_ID);
+      .prepare(
+        'UPDATE worker_backend_sessions SET deployment_id = ?, backend_lineage_json = ? WHERE attempt_id = ?'
+      )
+      .run(deploymentId, JSON.stringify({ imageRef: image.ref }), ATTEMPT_ID);
   });
   const lineage: WorkerControlLineage = {
     agentSessionId: environmentPackage.scope.agentSessionId,
@@ -194,6 +202,40 @@ async function createFixture() {
       gateway = createDefaultWorkerControlGateway(coreDb, undefined, nativeStorage);
       await runSchedulerRestartRecovery(coreDb, input);
       await classifyNanoHostAttemptsAfterRestart(coreDb, input);
+    },
+    /**
+     * The NanoHost reconnect after the restart: a new connection generation reports the same target
+     * fenced, ready and fresh-empty with a new physical Epoch, which recovery requires before cleanup.
+     */
+    async reconnectFreshTarget() {
+      const { runtimeTargetId } = launchedBackend(this as Fixture);
+      const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getNanoHostRuntimeTarget({ sqlite }, runtimeTargetId)
+      );
+      if (!target) throw new Error('Fixture RuntimeTarget is absent.');
+      const configured = {
+        targetId: target.targetId,
+        identityId: target.identityId,
+        deploymentId: target.deploymentId,
+        observedAt: new Date().toISOString(),
+      };
+      const allocated = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'allocate',
+        ...configured,
+      });
+      if (allocated.state !== 'ready' || !allocated.value)
+        throw new Error('Fixture reconnect was not allocated.');
+      const ready = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'ready',
+        ...configured,
+        connectionGeneration: allocated.value.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch: 'b'.repeat(64),
+      });
+      if (ready.state !== 'ready' || !ready.value?.ready)
+        throw new Error('Fixture reconnect is not ready.');
     },
     /** Transfers the exact attempt to cancellation without asserting cleanup. */
     close(cause = 'turn-cancelled') {
@@ -276,6 +318,35 @@ function recoveryPorts() {
     now: () => new Date().toISOString(),
   } satisfies RunNanoHostAttemptRecoveryInput;
   return { input, cleanupBackendSession, prepareBackendCleanup };
+}
+
+/**
+ * The production Boot recovery selection (`bindBootNanoHostAttemptRecovery`, as `index.ts` mounts it)
+ * with its first physical cleanup observed. Boot holds that cleanup until K8b pins the original lease
+ * and target, so no in-process callback can stand in for a cleanup result.
+ */
+function bootRecovery(fixture: Fixture, ports: ReturnType<typeof recoveryPorts>) {
+  const selection = testBootNanoHostRecovery(fixture.coreDb);
+  if (selection?.state !== 'ready') throw new Error('Fixture has no admitted Boot recovery.');
+  const cleanup = vi.fn(selection.value.cleanup);
+  const input = {
+    ...ports.input,
+    admittedNanoHostRecovery: { state: 'ready', value: { ...selection.value, cleanup } },
+  } satisfies RunNanoHostAttemptRecoveryInput;
+  return { input, cleanup };
+}
+
+/** Reads the hold of one maintenance pass: the exact first-cleanup acknowledgement is absent. */
+async function expectFirstCleanupHeld(fixture: Fixture, input: RunNanoHostAttemptRecoveryInput) {
+  const failure = await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, input).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure).toMatchObject({ message: 'Native attempt recovery failed.' });
+  expect((failure as AggregateError).errors.map((error: Error) => error.message)).toEqual([
+    'NanoHost recovery has no exact physical cleanup acknowledgement.',
+  ]);
 }
 
 /** Composes the real HTTP parsers and bearer selection with the current durable gateway. */
@@ -1001,25 +1072,30 @@ describe('Core cancellation-only final admission', () => {
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-        ).rejects.toThrow('Native attempt recovery failed');
-        expect(ports.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
+        await fixture.reconnectFreshTarget();
+        const boot = bootRecovery(fixture, ports);
+        await expectFirstCleanupHeld(fixture, boot.input);
+        // Cleanup starts at the original deadline for the exact launched placement; Boot holds its
+        // first physical cleanup (K8b), and the retired direct callback is never used.
+        expect(boot.cleanup).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
             agentSessionId: backend.agentSessionId,
             backendSessionId: backend.backendSessionId,
             packageSnapshotId: backend.packageSnapshotId,
             runtimeTargetId: backend.runtimeTargetId,
             deploymentId: backend.deploymentId,
-          })
+          }),
+          expect.anything(),
+          expect.anything()
         );
+        expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
         expect(
           readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
             getWorkerBackendSession({ sqlite }, ATTEMPT_ID)
           )
         ).toMatchObject({
-          state: 'cleanup-failed',
+          state: 'cleanup-pending',
           workspaceHandoffState: 'complete',
           physicalCleanedAt: null,
         });
@@ -1094,16 +1170,18 @@ describe('Core cancellation-only final admission', () => {
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-        ).rejects.toThrow('Native attempt recovery failed');
-        expect(ports.cleanupBackendSession).toHaveBeenCalledTimes(1);
+        await fixture.reconnectFreshTarget();
+        const boot = bootRecovery(fixture, ports);
+        // Existing evidence does not wait for a first final: cleanup starts now and Boot holds it (K8b).
+        await expectFirstCleanupHeld(fixture, boot.input);
+        expect(boot.cleanup).toHaveBeenCalledTimes(1);
+        expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
         expect(
           readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
             getWorkerBackendSession({ sqlite }, ATTEMPT_ID)
           )
         ).toMatchObject({
-          state: 'cleanup-failed',
+          state: 'cleanup-pending',
           workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
           physicalCleanedAt: null,
         });

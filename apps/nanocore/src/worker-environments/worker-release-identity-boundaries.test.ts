@@ -22,7 +22,8 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   admitTestNativeEnvironmentForRoot,
-  settleTestNativeImageResult,
+  openTestNativeImagePeer,
+  seedTestNativeImageSettlement,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -74,7 +75,7 @@ async function administrationFixture() {
       effects.push(request);
       if (request.kind === 'image.acquire') {
         if (request.imageSettlement)
-          await settleTestNativeImageResult(coreDb, {
+          await seedTestNativeImageSettlement(coreDb, {
             ...request.imageSettlement,
             requestId: request.requestId,
             operation: request.kind,
@@ -114,11 +115,14 @@ async function administrationFixture() {
       throw new Error('Unexpected semantic route.');
     },
   };
+  // The injected peer is a connected ready target of the admitted NanoHost owner.
+  const nanoHostStorage = await openTestNativeImagePeer(coreDb);
   const app = createAppWithLocalIdentity({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     dataRoot: root,
     store,
+    nanoHostStorage,
     nanoHostSessionDispatch: dispatch,
     llmGatewayDispatcher: {
       async createResponses() {

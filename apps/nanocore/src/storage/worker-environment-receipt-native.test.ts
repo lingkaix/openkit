@@ -13,14 +13,14 @@ import type {
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
 import * as bindings from '../runtime/worker-storage-bindings.js';
-import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
+  openTestNativeImagePeer,
   recordTestNativeRuntimeTarget,
-  settleTestNativeImageResult,
+  seedTestNativeImageSettlement,
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -259,7 +259,7 @@ async function fixture(kind: Kind) {
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await settleTestNativeImageResult(coreDb, {
+        await seedTestNativeImageSettlement(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,
@@ -279,8 +279,9 @@ async function fixture(kind: Kind) {
       throw new Error('Unexpected semantic route.');
     },
   };
-  // Image settlements and storage attachments are retained by the admitted NanoHost owner.
-  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+  // Image settlements and storage attachments are retained by the admitted NanoHost owner; the injected
+  // peer is a connected ready target, so its image results settle there.
+  const nanoHostStorage = await openTestNativeImagePeer(coreDb);
   const makeApp = (selectedStore: FsStore) =>
     createAppWithLocalIdentity({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
