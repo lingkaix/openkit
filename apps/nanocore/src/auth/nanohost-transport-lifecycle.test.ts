@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import {
   ControlStoreWorkerError,
@@ -22,6 +22,10 @@ import {
   revokeAdmittedNanoHostInboundCredential,
 } from './nanohost-operations.js';
 import { admitNativeNanoHostTransportConnection } from './nanohost-transport-admission.js';
+import type {
+  ControlNanoHostTransportInput,
+  ControlNanoHostTransportResult,
+} from './nanohost-transport-codecs.js';
 import {
   abortNanoHostTransportRotation,
   fenceNanoHostTransportAuthority,
@@ -555,6 +559,72 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         now,
       })
     ).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it('fences decommission on an unknown Native ACK without clearing the slot or auditing success', async () => {
+    const coreDb = openMigratedCoreDb();
+    const native = openNanoHostTestOwner();
+    const authority = createNanoHostTransportSessionAuthority();
+    const slots = slotPair();
+    onTestFinished(() => rmSync(slots.root, { recursive: true, force: true }));
+    const userId = ensureLocalUser(coreDb);
+    await seedReadyRuntimeTarget(native);
+    const issued = await enrollFixtureOwner(native, 'unknown-decommission-ack');
+    deliverNanoHostTransportTokenToNamedSlot({
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      issuanceGeneration: 1,
+      secret: issued.secret,
+      sink: slots.A,
+      slot: 'A',
+      tokenId: issued.tokenId,
+      writeDisposition: 'exclusive-create',
+    });
+    const unknown = new ControlStoreWorkerError('unavailable', 'unknown');
+    const submit = vi.fn(
+      async (_input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult> => {
+        throw unknown;
+      }
+    );
+    const operations = createNanoHostOperationImplementations({
+      coreDb,
+      mode: 'server',
+      sessionAuthority: authority,
+      nanoHostConfig: { identityId: IDENTITY, deploymentId: DEPLOYMENT, credentialSlots: slots },
+      administratorTransport: {
+        storage: { state: 'ready', value: native.storage },
+        submit,
+      },
+    });
+    await expect(
+      operations['nanohost.decommission'](
+        {},
+        {
+          kind: 'public',
+          actor: { kind: 'local', userId },
+          actorRef: { kind: 'user', id: userId },
+          scope: { kind: 'server' },
+        }
+      )
+    ).rejects.toBe(unknown);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0]?.[0]).toMatchObject({
+      kind: 'decommission',
+      deploymentId: DEPLOYMENT,
+      identityId: IDENTITY,
+      actor: { kind: 'local', userId },
+    });
+    expectRuntimeTargetUnready(native);
+    expect(slotHoldsUsableMaterial(slots.A)).toBe(true);
+    expect(getNanoHostTransportTokenRecord(native, issued.tokenId)?.status).toBe('active');
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) FROM audit_events WHERE action = 'nanohost.transport.decommission'"
+        )
+        .pluck()
+        .get()
+    ).toBe(0);
   });
 
   it('decommission revokes every token without fabricating a connection', async () => {

@@ -18,6 +18,7 @@ import {
   getNanoHostTransportTokenRecord,
   type NanoHostTransportTokenRecord,
   nanoHostTransportCommitState,
+  type PreparedNanoHostTransportWriter,
   prepareNanoHostTransportWriter,
   recordNanoHostTransportAudit,
   submitNanoHostTransportRotationAbort,
@@ -33,6 +34,8 @@ export interface AbortNanoHostTransportRotationInput {
   readonly successorSink: NanoHostCredentialSinkPaths;
   /** Existing responsible request actor for the approved failed-abort Audit; never an authorization bypass. */
   readonly auditActorUserId?: string;
+  /** Admitted deciding Token and Audit stages for the public administrator operation. */
+  readonly administratorTransport?: PreparedNanoHostTransportWriter;
   /** Optional abort clock. */
   readonly now?: Date;
 }
@@ -154,7 +157,10 @@ export async function abortNanoHostTransportRotation(
   const predecessor = readFencingStorage(storage, (owner) =>
     getNanoHostTransportTokenRecord(owner, snapshot.predecessorTokenId)
   );
-  const writer = await prepareNanoHostTransportWriter(storage);
+  const writer =
+    admin && snapshot.administratorTransport
+      ? snapshot.administratorTransport
+      : await prepareNanoHostTransportWriter(storage);
   await beforeSubmit?.();
   let aborted: AbortNanoHostTransportRotationResult | null;
   try {
@@ -187,8 +193,9 @@ export async function abortNanoHostTransportRotation(
   // Terminal revocation is not undone by abort; report the proved pair after attempting mandatory cleanup.
   if (aborted.predecessor.status !== 'active') {
     try {
-      if ('owner' in storage) throw new Error('NanoHost administrator Audit is unavailable.');
-      await recordNanoHostTransportAudit(storage, {
+      const audit = snapshot.administratorTransport ?? ('owner' in storage ? undefined : storage);
+      if (!audit) throw new Error('NanoHost administrator Audit is unavailable.');
+      await recordNanoHostTransportAudit(audit, {
         kind: 'lifecycle-audit',
         action: 'nanohost.transport.rotate',
         record: aborted.successor,
