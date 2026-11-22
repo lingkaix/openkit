@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
@@ -435,6 +436,67 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
     expect(repeated.removedCount).toBe(0);
     expect(repeated.rows[0]?.decision).toBe('absent');
     expect(schedulerSnapshot(fixture.dataRoot)).toEqual(before);
+  });
+
+  it('retains a failed-start checkpoint when Native evidence names its exact attempt', async () => {
+    const fixture = await createFixture();
+    const identity = identityFor(fixture, testEntityId('tu', 'stopped-failed-start-native'));
+    const requestId = '0190f4c8-0000-7000-8000-000000001217';
+    writeStartFailureLease(fixture.coreDb, { ...identity, requestId });
+    await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
+    const attemptId = testEntityId('attempt', `lease_${identity.turnId}`);
+    await closeFixture(fixture);
+
+    const native = new Database(serverStoragePath(fixture.dataRoot, 'nanohost'), {
+      fileMustExist: true,
+    });
+    try {
+      // The Native row contradicts the Turn lookup but still identifies the exact Core attempt.
+      native
+        .prepare(`INSERT INTO worker_backend_sessions (
+        attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+        backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+        workspace_handoff_state, state, created_at, updated_at, origin_physical_epoch, worker_recovery_json
+      ) VALUES (?, ?, ?, ?, ?, 'original-package', 'openshell', 'fixture-deployment', 'backend',
+        'staging', 'complete', 'launching', ?, ?, ?, ?)`)
+        .run(
+          attemptId,
+          identity.workspaceId,
+          identity.threadId,
+          testEntityId('tu', 'contradictory-native-turn'),
+          testEntityId('as', `as_${identity.turnId}`),
+          '2026-11-20T00:00:00.000Z',
+          '2026-11-20T00:00:01.000Z',
+          'a'.repeat(64),
+          canonicalJsonText({
+            version: 1,
+            sessionCompatibilityKey: 'original-session',
+            startupDeadline: '2026-11-20T00:01:00.000Z',
+            heartbeatTimeoutMs: 30_000,
+            heartbeatDeadline: '2026-11-20T00:00:31.000Z',
+            lastAcceptedHeartbeatAt: '2026-11-20T00:00:01.000Z',
+            lastWorkerSequence: 1,
+            workerProcessKeyHash: 'b'.repeat(43),
+            recoveryState: null,
+            recoveryDeadline: null,
+          })
+        );
+    } finally {
+      native.close();
+    }
+
+    const result = await cleanCancelledAdmissionTaskCheckpoints({
+      apply: true,
+      backupRoot: fixture.backupRoot,
+      checkpoints: [identity],
+      dataRoot: fixture.dataRoot,
+    });
+    expect(result).toMatchObject({
+      removedCount: 0,
+      backupRoot: null,
+      rows: [{ ...identity, decision: 'refused', reason: 'runtime-evidence' }],
+    });
+    expect(readCheckpoint(fixture.dataRoot, identity)).not.toBeNull();
   });
 
   it.each([

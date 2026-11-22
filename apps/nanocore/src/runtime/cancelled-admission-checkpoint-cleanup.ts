@@ -451,6 +451,8 @@ async function readCleanupHistory(
       lock,
       (sqlite) =>
         sqlite.transaction(() => {
+          // The Native session carries the original route hashes and liveness.
+          // A row for the exact attempt defeats absence even if the retained Turn link disagrees.
           const evidence = sqlite.prepare(`
             SELECT 1 FROM worker_backend_sessions
               WHERE turn_id = @turn OR (@lease IS NOT NULL AND attempt_id = @lease)
@@ -757,17 +759,6 @@ function classifyProof(
     attempt.terminalCause !== 'turn-start-failed'
   )
     return { decision: 'refused', reason: 'missing-provenance' };
-  // K7 still retains these Core latches. A positive latch alone contradicts non-submission.
-  if (
-    coreDb.sqlite
-      .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE attempt_id = ? AND (
-        last_accepted_heartbeat_at IS NOT NULL OR last_worker_sequence IS NOT NULL
-        OR worker_process_key_hash IS NOT NULL OR worker_control_token_hash IS NOT NULL
-        OR worker_inference_token_hash IS NOT NULL OR worker_capability_token_hash IS NOT NULL
-      )`)
-      .get(attempt.attemptId)
-  )
-    return { decision: 'refused', reason: 'runtime-evidence' };
   return { decision: 'removable', reason: 'turn-start-failed' };
 }
 
