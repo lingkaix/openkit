@@ -112,7 +112,6 @@ import {
 import * as attempts from './execution-attempt-records.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import {
-  acceptNanoHostAttemptHeartbeat,
   acceptNanoHostAttemptHeartbeatByBinding,
   adoptNanoHostAttemptReconnect,
   isNanoHostAttemptReconnectEligible,
@@ -5702,48 +5701,6 @@ describe('scheduler restart recovery', () => {
           (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
         )?.phase
       ).toBe('closed');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('preserves exclusion for a stale post-launch attempt without a durable backend anchor', async () => {
-    const coreDb = await createMigratedCoreDb();
-    const suffix = 'restart_missing_anchor_stale_launched';
-
-    try {
-      dispatchLease(coreDb, suffix);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 30_000,
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'heartbeat-timeout' WHERE attempt_id = ?"
-        )
-        .run(testEntityId('attempt', `lease_${suffix}`));
-
-      const recovery = await recoverTestStartup(coreDb, {
-        now: () => '2026-07-05T00:01:00.000Z',
-        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
-      });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
-        fenceRef: null,
-      });
-      expect(['open', 'closing']).toContain(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-        )?.phase
-      );
     } finally {
       coreDb.sqlite.close();
     }

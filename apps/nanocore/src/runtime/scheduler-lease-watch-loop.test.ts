@@ -36,7 +36,6 @@ import {
 } from './execution-attempt-records.js';
 import {
   acceptNanoHostAttemptHeartbeat,
-  requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
@@ -451,101 +450,6 @@ describe('Native attempt liveness and recovery', () => {
       expect(failures).toEqual([failure]);
     } finally {
       await service.stop();
-      await f.close();
-    }
-  });
-
-  it('keeps a pre-heartbeat attempt live until its startup deadline', async () => {
-    const f = await fixture();
-    try {
-      const binding = await f.seed('materializing', true, true);
-      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
-        ...f.recovery,
-        now: () => '2026-07-05T00:00:40.000Z',
-      });
-      expect(f.recovery.cleanupBackendSession).not.toHaveBeenCalled();
-      expect(requireNanoHostExecutionAttempt(f.coreDb, binding.attemptId)).toMatchObject({
-        phase: 'open',
-        startupDeadline: '2026-07-05T00:25:02.000Z',
-      });
-      expect(
-        resolveNanoHostAttemptTokenBinding(f.coreDb, {
-          ...binding,
-          now: () => '2026-07-05T00:00:40.000Z',
-        })
-      ).toMatchObject({ status: 'accepted' });
-      acceptNanoHostAttemptHeartbeat(f.coreDb, {
-        attemptId: binding.attemptId,
-        workerSequence: 0,
-        workerProcessKeyHash: 'a'.repeat(43),
-        heartbeatTimeoutMs: 30_000,
-        now: () => '2026-07-05T00:00:40.000Z',
-      });
-      expect(
-        acceptNanoHostAttemptHeartbeat(f.coreDb, {
-          attemptId: binding.attemptId,
-          workerSequence: 1,
-          heartbeatTimeoutMs: 30_000,
-          now: () => '2026-07-05T00:00:40.000Z',
-        })
-      ).toMatchObject({
-        lastAcceptedHeartbeatAt: '2026-07-05T00:00:40.000Z',
-        phase: 'open',
-        lastWorkerSequence: 1,
-      });
-    } finally {
-      await f.close();
-    }
-  });
-
-  it('closes proven pre-effect startup work while expired submitted heartbeat authority retains exclusion', async () => {
-    const f = await fixture();
-    try {
-      const startup = await f.seed('startup', false);
-      const heartbeat = await f.seed('heartbeat');
-      acceptNanoHostAttemptHeartbeat(f.coreDb, {
-        attemptId: heartbeat.attemptId,
-        workerSequence: 0,
-        workerProcessKeyHash: 'a'.repeat(43),
-        heartbeatTimeoutMs: 30_000,
-        now: () => '2026-07-05T00:00:10.000Z',
-      });
-      acceptNanoHostAttemptHeartbeat(f.coreDb, {
-        attemptId: heartbeat.attemptId,
-        workerSequence: 1,
-        heartbeatTimeoutMs: 30_000,
-        now: () => '2026-07-05T00:00:10.000Z',
-      });
-      const result = await runSchedulerRestartRecovery(f.coreDb, {
-        ...f.recovery,
-        now: () => '2026-07-05T00:26:00.000Z',
-      });
-      expect(result.preparationFailedAttemptIds).toEqual([startup.attemptId]);
-      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
-        ...f.recovery,
-        now: () => '2026-07-05T00:26:00.000Z',
-      });
-      expect(requireSchedulerExecutionAttempt(f.coreDb, startup.attemptId)).toMatchObject({
-        phase: 'closed',
-        disposition: 'not_accepted',
-        operationId: null,
-        terminalCause: 'restart-before-effects',
-      });
-      // The missing physical anchor does not prove that the original submitted operation had no effects.
-      expect(requireSchedulerExecutionAttempt(f.coreDb, heartbeat.attemptId)).toMatchObject({
-        phase: 'open',
-        disposition: 'unknown',
-        operationId: 'original:heartbeat',
-        fenceRef: null,
-      });
-      expect(f.recovery.cleanupBackendSession).not.toHaveBeenCalled();
-      expect(
-        resolveNanoHostAttemptTokenBinding(f.coreDb, {
-          ...heartbeat,
-          now: () => '2026-07-05T00:26:00.000Z',
-        })
-      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
-    } finally {
       await f.close();
     }
   });

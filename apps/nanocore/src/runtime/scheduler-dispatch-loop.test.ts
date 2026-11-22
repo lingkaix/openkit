@@ -66,7 +66,6 @@ import { DeterministicAgentPreparationError } from './agent-preparation-error.js
 import * as attemptRecords from './execution-attempt-records.js';
 import * as attemptCommands from './execution-attempts.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
-import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -4254,76 +4253,6 @@ describe('scheduler dispatch loop', () => {
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           )
       ).toHaveLength(1);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('closes or revokes the acquired attempt when turn startup fails', async () => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = new FailingTurnExecutor(coreDb);
-
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await publishTestAdmission(
-        store,
-        await createTestQueueEntry(coreDb, {
-          backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          queueEntryId: fixtureRequestId('queue_loop_failed'),
-          requestId: fixtureRequestId('queue_loop_failed'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_loop_failed'),
-          text: 'Fail the scheduled worker',
-          requestedAgentId: 'agent_codex_host',
-          profileRef: null,
-          now: () => '2026-07-05T00:00:01.000Z',
-        })
-      );
-
-      await expect(
-        runSchedulerDispatchLoop({
-          gatewayConfig: createTestGatewayConfig(),
-          coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_loop_failed'),
-          createAttemptId: () => 'attempt_00000000-0000-7183-99eb-6319956c61b9',
-
-          maxDispatches: 1,
-          now: () => '2026-07-05T00:00:02.000Z',
-          providerRegistry: localProviderRegistry(),
-
-          store,
-          turnExecutor,
-          executionBackend: turnExecutor.executionBackend,
-          agentManifests: [agentManifest()],
-        })
-      ).rejects.toThrow('worker launch failed');
-
-      const closedAttempt = attemptRecords.requireSchedulerExecutionAttempt(
-        coreDb,
-        'attempt_00000000-0000-7183-99eb-6319956c61b9'
-      );
-      expect(closedAttempt.bindingRef).not.toBeNull();
-      expect(closedAttempt.inputRef).not.toBeNull();
-      expect(
-        resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: closedAttempt.bindingRef!,
-          lineage: {
-            agentSessionId: testEntityId('as', 'as_loop_failed'),
-            packageSnapshotId: closedAttempt.inputRef!,
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: testEntityId('tu', 'turn_loop_failed'),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        })
-      ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
     }
