@@ -15,6 +15,7 @@ import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
   createTestServerThread,
@@ -23,7 +24,6 @@ import {
 import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
@@ -199,7 +199,7 @@ async function preparationFixture() {
     identityId: 'independent-host',
     targetId: 'independent-host',
   };
-  await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
+  await transitionTestNativeRuntimeTargetFields('allocate', db, {
     ...target,
     observedAt: new Date().toISOString(),
   });

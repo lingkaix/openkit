@@ -11,10 +11,6 @@ import type {
   ExecutionBackendCorrelation,
   ExecutionReleaseProof,
 } from '../runtime/execution-backend.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnStartRuntimeContext } from '../runtime/types.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -26,8 +22,8 @@ import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-st
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
-
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
 
@@ -544,13 +540,13 @@ describe('server auth flow', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-inflight-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_server_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_server_fixture',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),

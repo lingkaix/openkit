@@ -13,7 +13,6 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -21,7 +20,10 @@ import {
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  settleTestNativeImageResult,
+} from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -72,7 +74,7 @@ async function administrationFixture() {
       effects.push(request);
       if (request.kind === 'image.acquire') {
         if (request.imageSettlement)
-          await writeWorkerImageSettlement(coreDb, {
+          await settleTestNativeImageResult(coreDb, {
             ...request.imageSettlement,
             requestId: request.requestId,
             operation: request.kind,

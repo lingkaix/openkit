@@ -978,6 +978,7 @@ async function fixture(
       goalTaskPolicy,
       goalWake,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: () => environmentPackage,
       } as unknown as WorkerControlGateway,
       workerMcpGateway: gateway,

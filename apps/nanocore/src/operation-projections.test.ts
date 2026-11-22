@@ -602,6 +602,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
       }),
     workerMcpGateway: createDefaultWorkerMcpGateway(f.coreDb),
     workerControlGateway: {
+      afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
       authenticatePackageToken: () => environmentPackage,
     } as unknown as WorkerControlGateway,
   });

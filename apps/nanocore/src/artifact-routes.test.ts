@@ -19,10 +19,6 @@ import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { listSchedulerExecutionAttemptsForTurn } from './runtime/execution-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
 import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -42,6 +38,7 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -985,13 +982,13 @@ describe('Core artifact routes', () => {
     );
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_artifact_redo_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_artifact_redo_fixture',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),

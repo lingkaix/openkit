@@ -32,10 +32,6 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
-import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   workerBackendLineageFromRuntimeImage,
@@ -67,6 +63,7 @@ import { agentSessionsRoot } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from './test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
 import { selectQueuedThreadMaterialRevision } from './workspace-materials.js';
@@ -508,13 +505,13 @@ async function preparedMaterial(
     agentId: agentSetup.manifest.id,
     agentSessionId,
   });
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+  const target = await transitionTestNativeRuntimeTargetFields('allocate', f.coreDb, {
     deploymentId: 'fixture-deployment',
     identityId: 'fixture-host',
     observedAt: timestamp,
     targetId: 'fixture-target',
   });
-  await upsertNanoHostRuntimeTarget(f.coreDb, {
+  await transitionTestNativeRuntimeTargetFields('ready', f.coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: timestamp,

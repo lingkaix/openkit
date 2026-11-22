@@ -17,10 +17,7 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  readAdmittedWorkerImageEnvironment,
-  writeWorkerImageSettlement,
-} from '../runtime/worker-image-settlements.js';
+import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
   createAndReserveWorkerStorageAttachment,
@@ -32,6 +29,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { seedTestNativeImageSettlement } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -213,7 +211,7 @@ async function candidatePair(
     schemaVersion: 1,
     target: TARGET,
   };
-  await writeWorkerImageSettlement(fixture.coreDb, {
+  await seedTestNativeImageSettlement(fixture.coreDb, {
     authoredArtifactId: authoredCandidate.artifactId,
     authoredArtifactVersion: 1,
     authoredContentDigest: authoredCandidate.contentDigest,
