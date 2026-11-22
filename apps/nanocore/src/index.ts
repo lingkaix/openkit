@@ -584,7 +584,10 @@ const bootResult = await runBootPhases({
           nanoHostStorage.state === 'ready'
             ? {
                 state: 'ready' as const,
-                value: bindBootNanoHostAttemptRecovery(nanoHostStorage.value.owner),
+                value: bindBootNanoHostAttemptRecovery(nanoHostStorage.value.owner, {
+                  coreDb: recoveryCoreDb,
+                  reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
+                }),
               }
             : nanoHostStorage;
         const recoveryInput = {
@@ -595,7 +598,6 @@ const bootResult = await runBootPhases({
           store: recoveryStore,
           admittedNanoHostRecovery,
           reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
-          reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
           prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
           restoreBackendSession: recoveryRuntime.restoreBackendSession,

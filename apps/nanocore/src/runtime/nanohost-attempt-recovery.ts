@@ -84,12 +84,16 @@ export interface AdmittedNanoHostAttemptRecovery {
     readonly observedAt: string;
     readonly outcomeRef?: string;
   }): Promise<StorageResult<'nanohost' | 'control-kernel', SchedulerExecutionAttemptRecord>>;
-  /** Verifies the original accepted Native final against its Core observation receipt. */
+  /**
+   * Verifies the original accepted Native final against its Core observation receipt (K8b).
+   * An exact settled match goes to guarded closeout and returns `closed`. `native-only` means that the Native
+   * pair matches the original intake and that complete Core history proves the receipt absent. Any other proof holds by throwing.
+   */
   reconcileFinal(
     lease: NanoHostRecoveryLease,
     session: WorkerBackendSessionRecord,
     final: AcceptedWorkerFinalStatus
-  ): Promise<void>;
+  ): Promise<'closed' | 'native-only'>;
   commit(
     input: NanoHostRecoveryMutation
   ): Promise<StorageResult<'nanohost' | 'control-kernel', WorkerBackendSessionRecord>>;
@@ -117,7 +121,6 @@ export interface RunNanoHostAttemptRecoveryInput extends RunSchedulerRestartReco
   /** Prepares original cleanup; true excludes an exact Core idle owner from orphan cleanup. */
   readonly prepareBackendCleanup: (session: WorkerGovernanceBackendSessionIdentity) => boolean;
   readonly restoreBackendSession: (session: WorkerBackendSessionRecord) => Promise<void>;
-  readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<unknown>;
 }
 interface RecoveryWorkspace {
   readonly db: WorkspaceDb;
@@ -337,9 +340,12 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         )
       );
       if (final) {
-        if (!input.isTurnExecutionActive?.(attempt.turnId))
-          await recovery.reconcileFinal(retainedLease(coreDb, session.attemptId), session, final);
-        continue;
+        if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
+        const lease = retainedLease(coreDb, session.attemptId);
+        const readback = await recovery.reconcileFinal(lease, session, final);
+        // K8b: a Native-only final waits only until the original absolute deadline. The first pass at or
+        // after it takes the expiry path below: closing ACK with the first cause, then first cleanup.
+        if (readback !== 'native-only' || lease.grant.deadline > timestamp) continue;
       }
       // The original Native and absolute deadlines bound this wait; cleanup resumes on expiry.
       if (

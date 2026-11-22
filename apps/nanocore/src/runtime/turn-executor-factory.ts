@@ -59,6 +59,7 @@ import {
   readProduct,
 } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import type { NanoHostAcceptedFinalCommitment } from '../storage/core-journal-native.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -492,8 +493,11 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly isTurnExecutionActive: (turnId: string) => boolean;
   /** Prepares original results and reports exact Core idle ownership without physical contact. */
   readonly prepareBackendCleanup: (identity: WorkerGovernanceBackendSessionIdentity) => boolean;
-  /** Restores and closes one worker whose final status is already durable. */
-  readonly reconcileAcceptedFinalStatus: (session: WorkerBackendSessionRecord) => Promise<{
+  /** Restores and closes one worker whose final status and K8b commitment recovery verified. */
+  readonly reconcileAcceptedFinalStatus: (
+    session: WorkerBackendSessionRecord,
+    commitment: NanoHostAcceptedFinalCommitment
+  ) => Promise<{
     readonly status: 'cancelled' | 'completed' | 'failed' | 'interrupted';
     readonly turn: ReturnType<FsStore['getTurnById']>;
   }>;
@@ -739,7 +743,7 @@ function createNanoHostWorkerLifecycleRuntime(
       backend.failHarnessDelivery(command, failure),
     readNanoHostResidentTurnLimit: () => backend.readResidentTurnLimit(),
     runtimeTargetKind: 'nanohost',
-    reconcileAcceptedFinalStatus: async (session) => {
+    reconcileAcceptedFinalStatus: async (session, commitment) => {
       if (turnExecutor instanceof SimulatedTurnExecutor) {
         return turnExecutor.reconcileAcceptedFinalStatus(
           sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
@@ -781,7 +785,8 @@ function createNanoHostWorkerLifecycleRuntime(
       const recoveredStatus = await turnExecutor.resumeAcceptedFinalStatus(
         store,
         environmentPackage,
-        session
+        session,
+        commitment
       );
       return { status: recoveredStatus, turn: store.getTurnById(session.turnId) };
     },

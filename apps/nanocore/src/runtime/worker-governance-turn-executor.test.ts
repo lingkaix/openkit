@@ -1511,7 +1511,7 @@ function remoteGitInputFixture() {
 }
 
 /** The Boot recovery selection when this fixture root holds an admitted NanoHost opening. */
-function bootRecovery(coreDb: Pick<CoreDb, 'dataRoot'>) {
+function bootRecovery(coreDb: CoreDb) {
   const admittedNanoHostRecovery = testBootNanoHostRecovery(coreDb);
   return admittedNanoHostRecovery ? { admittedNanoHostRecovery } : {};
 }

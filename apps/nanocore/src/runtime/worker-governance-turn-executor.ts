@@ -91,6 +91,10 @@ import type { FileStorageAdmission } from '../storage/artifacts/file-admission.j
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
+  inspectAcceptedNanoHostFinalInDb,
+  type NanoHostAcceptedFinalCommitment,
+} from '../storage/core-journal-native.js';
+import {
   bindWorkspaceSqlite,
   type CoreDb,
   openAdmittedWorkspaceReadDb,
@@ -4501,15 +4505,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param store Product store that owns the turn.
    * @param environmentPackage Immutable package restored from the workspace ledger.
    * @param session Exact durable backend session restored by the lifecycle runtime.
+   * @param commitment K8b readback that recovery verified; the guarded read must match it exactly.
    * @returns Product terminal status established by closeout.
    */
   public async resumeAcceptedFinalStatus(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
-    session: WorkerBackendSessionRecord
+    session: WorkerBackendSessionRecord,
+    commitment: NanoHostAcceptedFinalCommitment
   ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
     const turnId = environmentPackage.scope.turnId;
-    const execution = this.closeAcceptedFinalStatus(store, environmentPackage, session);
+    const execution = this.closeAcceptedFinalStatus(store, environmentPackage, session, commitment);
     this.activeTurnExecutions.set(turnId, execution);
     try {
       return await execution;
@@ -4523,9 +4529,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private async closeAcceptedFinalStatus(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
-    session: WorkerBackendSessionRecord
+    session: WorkerBackendSessionRecord,
+    commitment: NanoHostAcceptedFinalCommitment
   ): Promise<'cancelled' | 'completed' | 'failed' | 'interrupted'> {
-    if (!this.coreDb) {
+    const coreDb = this.coreDb;
+    if (!coreDb) {
       throw new Error('Restart closeout requires the durable Core database.');
     }
     assertRestoredSession(
@@ -4534,10 +4542,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       this.backend.planSession(environmentPackage)
     );
     const turn = store.getTurnById(environmentPackage.scope.turnId);
-    const accepted = requireNanoHostObservation(
-      this.coreDb,
-      (sqlite) =>
-        getWorkerControlAcceptedFinalStatus(
+    const { accepted, readback } = requireNanoHostObservation(
+      coreDb,
+      (sqlite) => ({
+        accepted: getWorkerControlAcceptedFinalStatus(
           { sqlite },
           {
             agentSessionId: environmentPackage.scope.agentSessionId,
@@ -4548,10 +4556,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             workspaceId: environmentPackage.scope.workspaceId,
           }
         ),
+        readback: inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, session.attemptId),
+      }),
       this.readNanoHostEnvironment
     );
     if (!accepted) {
       throw new Error('Restart closeout requires the exact durable final status.');
+    }
+    // K8b guarded read: collection, publication and release need the full commitment that recovery verified.
+    if (!isDeepStrictEqual(readback, commitment)) {
+      throw new Error('Restart closeout final proof changed after recovery inspection.');
     }
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(
       accepted,
