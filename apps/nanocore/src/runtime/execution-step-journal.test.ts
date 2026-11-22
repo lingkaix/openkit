@@ -445,11 +445,15 @@ describe('persisted execution journal contracts', () => {
         ControlCoreNanoHostFinalDecisionSchema.parse(
           f.db.sqlite
             .transaction(() =>
-              admitNanoHostWorkerFinalInDb(
-                f.db,
-                ControlCoreNanoHostFinalInputSchema.parse(command),
-                native.sqlite
-              )
+              native.sqlite
+                .transaction(() =>
+                  admitNanoHostWorkerFinalInDb(
+                    f.db,
+                    ControlCoreNanoHostFinalInputSchema.parse(command),
+                    native.sqlite
+                  )
+                )
+                .deferred()
             )
             .immediate()
         );
@@ -964,32 +968,36 @@ describe('persisted execution journal contracts', () => {
         }
       })();
       f.db.sqlite.transaction(() =>
-        admitNanoHostWorkerFinalInDb(
-          f.db,
-          {
-            lineage: {
-              workspaceId,
-              threadId,
-              turnId,
-              agentSessionId,
-              packageSnapshotId: pkg.snapshotId,
-              requestId: null,
-            },
-            sandboxBindingRef: bindingRef,
-            tokenHash: 'a'.repeat(64),
-            payload: {
-              sequence: 2,
-              acceptedAt: new Date(Date.parse(attempt.createdAt) + 1_000).toISOString(),
-              eventAcceptedAt: new Date(Date.parse(attempt.createdAt) + 1_001).toISOString(),
-              terminalData: {
-                status: 'completed',
-                stopReason: 'end_turn',
-                evidenceManifestDigests: {},
+        native.sqlite
+          .transaction(() =>
+            admitNanoHostWorkerFinalInDb(
+              f.db,
+              {
+                lineage: {
+                  workspaceId,
+                  threadId,
+                  turnId,
+                  agentSessionId,
+                  packageSnapshotId: pkg.snapshotId,
+                  requestId: null,
+                },
+                sandboxBindingRef: bindingRef,
+                tokenHash: 'a'.repeat(64),
+                payload: {
+                  sequence: 2,
+                  acceptedAt: new Date(Date.parse(attempt.createdAt) + 1_000).toISOString(),
+                  eventAcceptedAt: new Date(Date.parse(attempt.createdAt) + 1_001).toISOString(),
+                  terminalData: {
+                    status: 'completed',
+                    stopReason: 'end_turn',
+                    evidenceManifestDigests: {},
+                  },
+                },
               },
-            },
-          },
-          native.sqlite
-        )
+              native.sqlite
+            )
+          )
+          .deferred()
       )();
       acceptSchedulerExecutionObservation(f.db, {
         ...grant,
