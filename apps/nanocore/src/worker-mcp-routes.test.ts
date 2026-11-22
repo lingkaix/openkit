@@ -5064,9 +5064,10 @@ describe('worker MCP routes', () => {
           await expect(
             lineageClient.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
           ).rejects.toSatisfy((error: unknown) => {
-            expect(error).toMatchObject({ data: { status: 403 } });
+            // The changed Core tuple no longer resolves a bearer against its original grant.
+            expect(error).toMatchObject({ data: { status: 401 } });
             expect(JSON.parse((error as { data: { text: string } }).data.text)).toMatchObject({
-              error: { data: { code: 'worker_control_lineage_mismatch' } },
+              error: { data: { code: 'worker_control_unauthorized' } },
             });
             return true;
           });
