@@ -1,3 +1,4 @@
+import type { WorkerContextPackageAuthorityReaderInput } from './context/worker-context-authorities.js';
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -87,6 +88,8 @@ export interface KnowledgeRetrievalAccess {
   workspaceDb?: WorkspaceDb | undefined;
   /** Existing authenticated-self database, supplied by native Memory assembly when available. */
   userDb?: UserDb | undefined;
+  /** The deciding Worker's acknowledged NanoHost reader, supplied only by native schema application. */
+  readNanoHost?: WorkerContextPackageAuthorityReaderInput['readNanoHost'];
 }
 /** Checks the existing Server owner without opening a notebook, Source or derived index. */
 export function canReadServerKnowledge(input: {
@@ -947,6 +950,7 @@ function* pinnedSourcesReadableSteps(
       store,
       workspaceId: input.workspaceId,
       allowImportedHistory: Boolean(store.getWorkspace(input.workspaceId).importedFrom),
+      ...(input.access.readNanoHost ? { readNanoHost: input.access.readNanoHost } : {}),
     });
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
