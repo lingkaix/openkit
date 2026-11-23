@@ -15601,7 +15601,7 @@ describe('createConfiguredTurnExecutor', () => {
     60_000
   );
 
-  it('defers the held-placement claim refusal when the holder releases before Main reads the reply', async () => {
+  it('defers the held-placement claim refusal when the holder releases before dispatch classifies it', async () => {
     const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -15666,9 +15666,9 @@ describe('createConfiguredTurnExecutor', () => {
           }
         )
       );
-    // The client acknowledges the Worker reply before the Worker takes its next write, so the
-    // predecessor's release can commit only after the client returns the typed claim refusal. Hold
-    // that typed refusal at the claim reply boundary, before dispatch classifies it.
+    // The predecessor's release does not commit while the claim's Worker reply is unhandled. The
+    // race window is after the client returns the typed claim refusal and before dispatch classifies
+    // it. Hold that typed refusal at this claim reply boundary.
     const claim = nativeAttemptOwners.createSchedulerExecutionAttempt;
     const captured = Promise.withResolvers<() => void>();
     let heldReply = false;
@@ -15743,8 +15743,8 @@ describe('createConfiguredTurnExecutor', () => {
         if (result?.type !== 'return') throw new Error('Original Task dispatch has not entered.');
         return { execution: result.value };
       });
-      // The deciding Core refusal named the held placement. Main defers it although a later read
-      // of the placement is false. The second Task keeps its original durable admission.
+      // The deciding Core refusal named the held placement. Dispatch defers it although a later
+      // read of the placement is false. The second Task keeps its original durable admission.
       await expect(execution).resolves.toMatchObject({
         startedTurns: [],
         terminalResult: { status: 'queued', reason: 'thread-busy' },
