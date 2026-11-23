@@ -638,7 +638,8 @@ async function publishTestNanoHostWorkerFinal(
   terminalData: Parameters<
     NonNullable<ReturnType<typeof currentAdmittedTestNanoHostOwner>>['workerControlFinalStatus']
   >[0]['payload']['terminalData'] = { status: 'completed', stopReason: 'completed' },
-  acceptedAt = '2026-09-06T00:00:01.000Z'
+  acceptedAt = '2026-09-06T00:00:01.000Z',
+  sequence = 1
 ) {
   const { attemptId } = coreDb.sqlite
     .prepare('SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE input_ref = ?')
@@ -656,8 +657,39 @@ async function publishTestNanoHostWorkerFinal(
     lineage: nanoHostWorkerLineage(original),
     sandboxBindingRef: original.lease.grant.bindingRef!,
     tokenHash,
-    payload: { terminalData, acceptedAt, eventAcceptedAt: acceptedAt, sequence: 1 },
+    payload: { terminalData, acceptedAt, eventAcceptedAt: acceptedAt, sequence },
   });
+}
+
+/** Records the Workspace owner's original materialization evidence before NanoHost acknowledges handoff. */
+async function publishFactoryWorkspaceHandoff(
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
+  environmentPackage: AgentEnvironmentPackage,
+  materialization: Parameters<WorkerGovernanceBackend['prepareLaunch']>[0]
+) {
+  const { recordWorkspaceBackendHandoff } = await import('./workspace-backend-handoff.js');
+  const { buildWorkspaceInputSnapshots, buildWorkspaceMaterializationRecords } = await import('./workspace-materializer.js');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+  try {
+    const createdAt = environmentPackage.createdAt;
+    const backendKind = 'openshell';
+    const inputSnapshots = buildWorkspaceInputSnapshots({
+      backendKind,
+      backendCapabilities: materialization.requiredCapabilities,
+      createdAt,
+      environmentPackage,
+    }).map((snapshot) => {
+      const commit = materialization.workspaceBaseCommits?.[snapshot.resourceId];
+      return commit ? { ...snapshot, base: { ...snapshot.base, commit } } : snapshot;
+    });
+    await recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, buildWorkspaceMaterializationRecords({
+      createdAt,
+      inputSnapshots,
+      materialization: { ...materialization, backendKind },
+    }));
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }
 
 /** Drives the actual preparation and submission crossings of a directly-authored Native fixture. */
@@ -2782,6 +2814,8 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceDataSourceCatalog?: ResolveAgentEnvironmentPackageInput['workspaceDataSourceCatalog'];
       onSourceAuthorityRead?: () => void;
       gitBaseline?: { commit: string; tree: string };
+      /** Uses the split, admitted Harness turn peer instead of the retired Core fixture path. */
+      admittedHarnessPeer?: boolean;
       nativeValues?: Record<string, string>;
       inspection?: 'unavailable' | 'stale';
       effects?: NanoHostSessionEffectRequest[];
@@ -2808,6 +2842,8 @@ describe('createConfiguredTurnExecutor', () => {
       /** Admits original observation output while this fixture's submitted Turn is still live. */
       /** Live fault cases leave subsequent closeout to the recovery subject. */
       finishAfterLiveCheck?: boolean;
+      /** Next event sequence when this case publishes before the original final. */
+      finalSequence?: number;
       /** Explicitly joins public whole-Sandbox cleanup instead of retaining a warm resident. */
       wholeSandboxCleanup?: boolean;
       beforeFinalStatus?: (input: {
@@ -3026,6 +3062,11 @@ describe('createConfiguredTurnExecutor', () => {
       body: Readonly<Record<string, unknown>>
     ) => {
       const queued = Promise.withResolvers<void>();
+      const writer = options.admittedHarnessPeer
+        ? currentAdmittedTestNanoHostOwner(coreDb)!.harnessTurnLifecycle
+        : undefined;
+      const dispatch = (input: Parameters<typeof dispatchNanoHostHarnessOperation>[1]) =>
+        writer ? writer.dispatch(input) : dispatchNanoHostHarnessOperation(coreDb, input);
       const queue = harnessRecords.queueNanoHostHarnessOperation;
       const observation = vi
         .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
@@ -3037,12 +3078,12 @@ describe('createConfiguredTurnExecutor', () => {
       onTestFinished(() => observation.mockRestore());
       let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>> = null;
       try {
-        command = await dispatchNanoHostHarnessOperation(coreDb, {
+        command = await dispatch({
           sandboxIntegrationBindingRef: await integrationRef(),
         });
         if (!command) {
           await queued.promise;
-          command = await dispatchNanoHostHarnessOperation(coreDb, {
+          command = await dispatch({
             sandboxIntegrationBindingRef: await integrationRef(),
           });
         }
@@ -3063,12 +3104,18 @@ describe('createConfiguredTurnExecutor', () => {
         schemaVersion: 2 as const,
         sequence: command.sequence,
       };
-      await settleNanoHostHarnessOperation(coreDb, {
+      const timestamp = writer ? new Date().toISOString() : '2026-09-06T00:00:01.000Z';
+      const settlement = await settleNanoHostHarnessOperation(coreDb, {
         result,
         sandboxIntegrationBindingRef: await integrationRef(),
-        timestamp: '2026-09-06T00:00:01.000Z',
-      });
-      await runtime.acceptNanoHostHarnessResult(result);
+        timestamp,
+      }, writer);
+      if (writer) {
+        expect(settlement).toBe('settled');
+        await runtime.acceptNanoHostHarnessResult(result, { disposition: 'settled', completedAt: timestamp });
+      } else {
+        await runtime.acceptNanoHostHarnessResult(result);
+      }
       return command;
     };
     await options.beforeSubmit?.({
@@ -3078,19 +3125,24 @@ describe('createConfiguredTurnExecutor', () => {
       runtime,
       materialization,
     });
+    if (options.admittedHarnessPeer)
+      await publishFactoryWorkspaceHandoff(coreDb, environmentPackage, materialization);
     const launch = submitTestNanoHostTurn(
       coreDb,
       backend,
       materialization,
       privateContext?.runtimeFileCredentials?.map(workerCredentialFileBinding)
     );
-    const initialOpen = await settleNext('session.open', {
+    const opening = settleNext('session.open', {
       ...(options.gitBaseline ? { workspaceGitBaseline: options.gitBaseline } : {}),
       maxActiveTurns: options.capacity ?? 20,
       nativeHandleDigest: null,
       nativeHandleState: 'pending',
       state: 'open',
     });
+    const initialOpen = await (options.admittedHarnessPeer
+      ? Promise.race([opening, launch.then(() => opening)])
+      : opening);
     if (options.nativeValues)
       expect(initialOpen.body.nativeEnvironment).toEqual(options.nativeValues);
     await options.beforeFirstTurn?.({
@@ -3126,7 +3178,7 @@ describe('createConfiguredTurnExecutor', () => {
         effects,
       };
     }
-    await publishTestNanoHostWorkerFinal(coreDb, environmentPackage.snapshotId);
+    await publishTestNanoHostWorkerFinal(coreDb, environmentPackage.snapshotId, undefined, undefined, options.finalSequence);
     const inspection = backend.inspectTerminalHarnessSession(
       backend.sessions.get(environmentPackage.snapshotId)
     );
@@ -6273,6 +6325,7 @@ describe('createConfiguredTurnExecutor', () => {
       let sourcePath = '';
       let serial = 0;
       const f = await admitIdleSupplyResident(`observation_bridge_${mode}`, {
+        ...(mode === 'committed' ? { finalSequence: 2 } : {}),
         configurePackage: async (pkg, coreDb) => {
           pkg.observability.captureCoverage = { scope: 'server', value: 'on' };
           await new FsStore({ dataRoot: coreDb.dataRoot }).createTurn(
@@ -6289,7 +6342,7 @@ describe('createConfiguredTurnExecutor', () => {
             }
           );
         },
-        beforeFinalStatus: async ({ coreDb, environmentPackage: pkg }) => {
+        beforeFinalStatus: async ({ coreDb, backend, environmentPackage: pkg }) => {
           const { workspaceId, threadId, turnId, agentSessionId, requestId } = pkg.scope;
           const lineage = {
             workspaceId,
@@ -6345,16 +6398,29 @@ describe('createConfiguredTurnExecutor', () => {
               },
             },
           });
-          // The accepted Worker records live in the NanoHost file (K8); production prepares each observation first.
-          for (const record of mode === 'committed' ? [metadata, chunk] : [metadata]) {
-            await prepareWorkerControlObservation(coreDb, record);
+          if (mode === 'committed') {
+            // Publication, not a seeded receipt alone, owns the original committed event frontier.
+            const resident = (backend as unknown as {
+              sessions: Map<string, { liveRouteTokens: [string, string, string] | null }>;
+            }).sessions.get(pkg.snapshotId);
+            if (!resident?.liveRouteTokens) throw new Error('Original observation has no admitted route.');
+            const gateway = createDefaultWorkerControlGateway(coreDb, undefined, await openAdmittedTestNanoHost(coreDb));
+            for (const record of [metadata, chunk]) {
+              expect(await gateway.appendEvent({
+                authorization: `Bearer ${resident.liveRouteTokens[0]}`,
+                lineage,
+                record,
+              })).toMatchObject({ accepted: true, nextExpectedSequence: record.sequence + 1 });
+            }
+          } else {
+            await prepareWorkerControlObservation(coreDb, metadata);
             seedTestWorkerControlReceipt(coreDb, {
               acceptedAt: pkg.createdAt,
               lineage,
               operation: 'event_append',
-              record,
-              recordKey: String(record.sequence),
-              sequence: record.sequence,
+              record: metadata,
+              recordKey: String(metadata.sequence),
+              sequence: metadata.sequence,
             });
           }
           source = Buffer.from(`${JSON.stringify(metadata)}\n${JSON.stringify(chunk)}\n`);
@@ -6660,6 +6726,7 @@ describe('createConfiguredTurnExecutor', () => {
       const rejected = admitIdleSupplyResident(`source_revoked_${boundary}`, {
         effects,
         gitBaseline: { commit: 'a'.repeat(40), tree: 'c'.repeat(40) },
+        admittedHarnessPeer: true,
         workspaceDataSourceCatalog: source.catalog,
         onSourceAuthorityRead: () => {
           if (armed && boundary === 'awaited-preparation' && !scheduled) {
@@ -6700,6 +6767,7 @@ describe('createConfiguredTurnExecutor', () => {
       const independentSource = collectionGitSource('b'.repeat(40));
       const independent = await admitIdleSupplyResident(`source_independent_${boundary}`, {
         gitBaseline: { commit: 'b'.repeat(40), tree: 'd'.repeat(40) },
+        admittedHarnessPeer: true,
         workspaceDataSourceCatalog: independentSource.catalog,
         configurePackage: (env) => {
           env.workspace.inputs = [
@@ -8647,9 +8715,11 @@ describe('createConfiguredTurnExecutor', () => {
       expect(session.liveRouteTokens).toHaveLength(3);
       for (const token of session.liveRouteTokens!) expect(live.sensitiveValues).toContain(token);
       expect(live.sensitiveValues).toContain('sandbox-binding:credential_admission');
-      f.coreDb.sqlite
-        .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
-        .run('2000-01-01T00:00:00.000Z', testEntityId('attempt', 'lease_credential_admission'));
+      const attemptId = testEntityId('attempt', 'lease_credential_admission');
+      const original = readRetainedNanoHostSubmission(f.coreDb, attemptId);
+      if (!original) throw new Error('Credential evidence requires the original retained submission.');
+      // Expiry is an observed clock, not a mutation of the accepted Core grant.
+      vi.setSystemTime(new Date(original.lease.grant.deadline + 1));
       const recovered = await collector.transcriptCredentialCheckValues(
         {
           ...session,
@@ -8663,11 +8733,10 @@ describe('createConfiguredTurnExecutor', () => {
       expect(recovered.sensitiveValues).toEqual(['sandbox-binding:credential_admission']);
       for (const token of session.liveRouteTokens!)
         expect(recovered.sensitiveValues).not.toContain(token);
-      f.coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_execution_attempts SET worker_control_token_hash = NULL WHERE attempt_id = ?'
-        )
-        .run(testEntityId('attempt', 'lease_credential_admission'));
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite.prepare(`UPDATE worker_backend_sessions SET worker_route_binding_json =
+          json_remove(worker_route_binding_json, '$.control') WHERE attempt_id = ?`).run(attemptId)
+      );
       await expect(
         collector.transcriptCredentialCheckValues(
           {
@@ -8679,6 +8748,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
       ).rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     } finally {
+      vi.useRealTimers();
       workspaceDb.sqlite.close();
       f.coreDb.sqlite.close();
     }
@@ -13028,6 +13098,11 @@ describe('createConfiguredTurnExecutor', () => {
       let startedTurns = 0;
       let holdInterruptReply = false;
       const interruptDispatched = Promise.withResolvers<void>();
+      const writer = adapterId === 'pi' && purpose === 'completed'
+        ? currentAdmittedTestNanoHostOwner(coreDb)!.harnessTurnLifecycle
+        : undefined;
+      const dispatch = (input: Parameters<typeof dispatchNanoHostHarnessOperation>[1]) =>
+        writer ? writer.dispatch(input) : dispatchNanoHostHarnessOperation(coreDb, input);
       const settleNext = async (
         operation:
           | 'session.open'
@@ -13050,12 +13125,12 @@ describe('createConfiguredTurnExecutor', () => {
         onTestFinished(() => observation.mockRestore());
         let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>> = null;
         try {
-          command = await dispatchNanoHostHarnessOperation(coreDb, {
+          command = await dispatch({
             sandboxIntegrationBindingRef: integration.integrationRef,
           });
           if (!command) {
             await queued.promise;
-            command = await dispatchNanoHostHarnessOperation(coreDb, {
+            command = await dispatch({
               sandboxIntegrationBindingRef: integration.integrationRef,
             });
           }
@@ -13115,15 +13190,22 @@ describe('createConfiguredTurnExecutor', () => {
           schemaVersion: 2 as const,
           sequence: command.sequence,
         };
-        await settleNanoHostHarnessOperation(coreDb, {
+        const timestamp = new Date().toISOString();
+        const settlement = await settleNanoHostHarnessOperation(coreDb, {
           result,
           sandboxIntegrationBindingRef: integration.integrationRef,
-          timestamp: new Date().toISOString(),
-        });
-        await runtime.acceptNanoHostHarnessResult(result);
+          timestamp,
+        }, writer);
+        if (writer) {
+          expect(settlement).toBe('settled');
+          await runtime.acceptNanoHostHarnessResult(result, { disposition: 'settled', completedAt: timestamp });
+        } else {
+          await runtime.acceptNanoHostHarnessResult(result);
+        }
         return command;
       };
 
+      if (writer) await publishFactoryWorkspaceHandoff(coreDb, environmentPackage, materialization);
       const launch = submitTestNanoHostTurn(coreDb, backend, materialization);
       await Promise.race([
         settleNext('session.open', {
@@ -16571,8 +16653,13 @@ describe('createConfiguredTurnExecutor', () => {
           // Establish the clean control before faults; an always-failing restore cannot pass this matrix.
           await native.runtime.restoreBackendSession(anchor);
           expect(store.getAgentSession(original.id)).toEqual(proof);
+          const readAuthorityRows = (table: string) =>
+            readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.prepare(`SELECT * FROM ${table}`).all());
           /** Proves cold refusal without changing accepted native or durable authority. */
-          const refuse = async (fault: string, afterRead?: () => void) => {
+          const refuse = async (
+            fault: string,
+            afterRead?: () => { table: string; field: string; value: string }
+          ) => {
             const effects = [...outside.effects];
             const sent = [...commands];
             const bytes = readFileSync(snapshotPath, 'utf8');
@@ -16582,7 +16669,7 @@ describe('createConfiguredTurnExecutor', () => {
               'worker_storage_bindings',
             ].map((table) => ({
               table,
-              rows: coreDb.sqlite.prepare(`SELECT * FROM ${table}`).all(),
+              rows: readAuthorityRows(table),
             }));
             // Keep controller construction outside the expected restore refusal.
             await stop();
@@ -16599,10 +16686,13 @@ describe('createConfiguredTurnExecutor', () => {
                 .mockImplementationOnce((...args) => {
                   const inspection = read(...args);
                   expect(inspection).not.toBeNull();
-                  afterRead();
+                  const { table, field, value } = afterRead();
                   injected = true;
-                  for (const entry of authority)
-                    entry.rows = coreDb.sqlite.prepare(`SELECT * FROM ${entry.table}`).all();
+                  const entry = authority.find((row) => row.table === table)!;
+                  expect(entry.rows).toHaveLength(1);
+                  // The active reader still owns its prior snapshot. Expect precisely the
+                  // fixture's externally committed change, not a second read on that snapshot.
+                  entry.rows = [{ ...(entry.rows[0] as Record<string, unknown>), [field]: value }];
                   return inspection;
                 });
               try {
@@ -16633,7 +16723,7 @@ describe('createConfiguredTurnExecutor', () => {
             expect(readFileSync(snapshotPath, 'utf8')).toBe(bytes);
             // Recovery refusal must preserve the deliberately damaged authority, not repair it.
             for (const { table, rows } of authority)
-              expect(coreDb.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual(rows);
+              expect(readAuthorityRows(table)).toEqual(rows);
           };
           for (const [table, field, altered] of [
             ['agent_session_runtime_bindings', 'agent_session_runtime_binding_id', 'wrong-binding'],
@@ -16656,26 +16746,32 @@ describe('createConfiguredTurnExecutor', () => {
             ['agent_session_runtime_bindings', 'agent_session_compatibility_key', 'e'.repeat(64)],
             ['worker_storage_bindings', 'current_sandbox_binding_ref', 'wrong-binding'],
           ] as const) {
-            const rows = coreDb.sqlite.prepare(`SELECT ${field} AS value FROM ${table}`).all() as {
+            const rows = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              sqlite.prepare(`SELECT ${field} AS value FROM ${table}`).all()
+            ) as {
               value: string;
             }[];
             expect(rows).toHaveLength(1);
+            const writeField = (value: string) =>
+              expect(mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+                sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(value).changes
+              )).toBe(1);
             try {
-              const mutate = () =>
-                expect(
-                  coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(altered).changes
-                ).toBe(1);
+              const mutate = () => writeField(altered);
               const stale =
                 field === 'agent_session_runtime_binding_id' || field === 'native_handle_digest';
               if (field === 'native_handle_digest') {
                 mutate();
                 await refuse(`${table}.${field}:cold`);
-                coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(rows[0]!.value);
+                writeField(rows[0]!.value);
               }
               if (!stale) mutate();
-              await refuse(`${table}.${field}`, stale ? mutate : undefined);
+              await refuse(`${table}.${field}`, stale ? () => {
+                mutate();
+                return { table, field, value: altered };
+              } : undefined);
             } finally {
-              coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(rows[0]!.value);
+              writeField(rows[0]!.value);
             }
           }
           for (const fault of [
@@ -18782,49 +18878,82 @@ describe('createConfiguredTurnExecutor', () => {
       releaseNull.resolve(); // A timed-out body must not retain the test's response hold.
     });
 
-    // Observe the actual client's original native response; do NOT spy on the
-    // queue/consumption module properties that the fixture itself owns.
-    const observeClient = (controller: 'A' | 'B') => {
-      const database = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
-      const client = getControlStoreWorkerClient();
-      const original = client.harnessLifecycle.bind(client);
-      const probe = vi.spyOn(client, 'harnessLifecycle').mockImplementation(async (db, input) => {
-        if (db !== database) return await original(db, input);
-        const snapshot = structuredClone(input);
-        entries.push({ controller, kind: snapshot.kind });
-        const result = await original(db, input); // Real Worker/SQLite, unchanged rejection.
-        const returned = ++tick;
-        if (snapshot.kind === 'operation.queue') {
-          expect(result).toBe(snapshot.prepared.command.sequence);
-          queued.push({ command: snapshot.prepared.command, ack: returned });
+    // Observe the actual admitted Harness methods before the new peer's first poll.
+    // Hold only delivery of the real null result; the owning writer stays free.
+    type Writer = NonNullable<ReturnType<typeof currentAdmittedTestNanoHostOwner>>['harnessTurnLifecycle'];
+    const observeClient = (controller: 'A' | 'B', writer: Writer) => {
+      const queue = writer.queue.bind(writer);
+      const dispatch = writer.dispatch.bind(writer);
+      const settle = writer.settle.bind(writer);
+      const acknowledge = writer.acknowledge.bind(writer);
+      const hooks = [
+        vi.spyOn(writer, 'queue').mockImplementation(async (input) => {
+          entries.push({ controller, kind: 'operation.queue' });
+          const sequence = await queue(input);
+          expect(sequence).toBe(input.prepared.command.sequence);
+          queued.push({ command: structuredClone(input.prepared.command), ack: ++tick });
           if (controller === 'B') {
             bQueueAcks++;
             firstBQueueAck.resolve();
           }
-        } else if (snapshot.kind === 'operation.dispatch') {
-          if (result !== null) {
+          return sequence;
+        }),
+        vi.spyOn(writer, 'dispatch').mockImplementation(async (input) => {
+          entries.push({ controller, kind: 'operation.dispatch' });
+          const result = await dispatch(input);
+          const returned = ++tick;
+          if (result !== null)
             dispatched.push({ controller, command: structuredClone(result) as Command, returned });
-          } else if (controller === 'B' && !held) {
+          else if (controller === 'B' && !held) {
             held = true;
             nullReturned.resolve();
-            // Hold THIS ORIGINAL real native null response, not a substituted result.
             await releaseNull.promise;
           }
-        } else if (snapshot.kind === 'operation.settle') {
-          settled.push(key(snapshot.result));
-        } else if (snapshot.kind === 'result.acknowledge') {
-          consumed.push(key(snapshot.result));
-        }
-        return result;
-      });
+          return result;
+        }),
+        vi.spyOn(writer, 'settle').mockImplementation(async (input) => {
+          entries.push({ controller, kind: 'operation.settle' });
+          const result = await settle(input);
+          ++tick;
+          settled.push(key(input.result));
+          return result;
+        }),
+        vi.spyOn(writer, 'acknowledge').mockImplementation(async (input) => {
+          entries.push({ controller, kind: 'result.acknowledge' });
+          const result = await acknowledge(input);
+          ++tick;
+          consumed.push(key(input.result));
+          return result;
+        }),
+      ];
       let restored = false;
       const restore = () => {
         if (restored) return;
         restored = true;
-        probe.mockRestore();
+        for (const hook of hooks) hook.mockRestore();
       };
       probes.push(restore);
-      return restore;
+    };
+    const createObservedFixture = async (controller: 'A' | 'B', outside?: Native['outside']) => {
+      const client = getControlStoreWorkerClient();
+      const bind = client.bindNanoHostOwner.bind(client);
+      const observed = new Set<Writer>();
+      const observation = vi.spyOn(client, 'bindNanoHostOwner').mockImplementation(async (...args) => {
+        const result = await bind(...args);
+        if (args[0] === dataRoot && result.state === 'ready') {
+          const writer = result.value.harnessTurnLifecycle;
+          if (!observed.has(writer)) {
+            observed.add(writer);
+            observeClient(controller, writer);
+          }
+        }
+        return result;
+      });
+      try {
+        return await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig }, outside);
+      } finally {
+        observation.mockRestore();
+      }
     };
 
     const enter = async (native: Native, label: string, expectedSessionId?: string) => {
@@ -18877,8 +19006,7 @@ describe('createConfiguredTurnExecutor', () => {
     };
 
     try {
-      const restoreAProbe = observeClient('A');
-      a = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
+      a = await createObservedFixture('A');
       const first = await start(a, 'a');
       const predecessor = await finish(first);
       expect(predecessor.retainedStorage).toBeTruthy();
@@ -18888,15 +19016,14 @@ describe('createConfiguredTurnExecutor', () => {
       expect(outside.integrationBindingRef).not.toBe('');
       await first.admitted.cleanup();
       await a.restore();
-      restoreAProbe();
+      for (const restore of probes) restore();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
 
       // Same root, retained outside facts, unchanged Epoch: no synthesized readiness.
       coreDb = openCoreDb(dataRoot);
       store = await createDemoStore({ dataRoot });
-      observeClient('B'); // Installed before B's actual bootstrap dispatch.
-      b = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig }, outside);
+      b = await createObservedFixture('B', outside);
       phase = 'await-real-bootstrap-null';
       await nullReturned.promise;
 
@@ -23340,7 +23467,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       ));
       if (!attachment?.currentSandboxBindingRef)
         throw new Error('Idle join fixture has no actual attached resident.');
-      await harnessRecords.drainNanoHostSandboxAdmission(coreDb, {
+      await harnessRecords.drainNanoHostSandboxAdmission(currentAdmittedTestNanoHostOwner(coreDb)!, {
         sandboxBindingRef: attachment.currentSandboxBindingRef,
         originPhysicalEpoch: anchor.originPhysicalEpoch,
       });
