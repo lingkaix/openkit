@@ -49,12 +49,14 @@ export async function createTestQueueEntry(
  * @param entry Successor admission on the predecessor's Workspace and Thread.
  * @param predecessor Idle predecessor package whose environment the successor keeps.
  * @param ids Successor attempt and its fresh AgentSession.
+ * @param options Optional attempt clock; it fixes the attempt's absolute startup allowance.
  */
 export async function admitTestReplacementAttempt(
   coreDb: CoreDb,
   entry: CoreSchedulerQueueEntry,
   predecessor: AgentEnvironmentPackage,
-  ids: { readonly attemptId: string; readonly agentSessionId: string }
+  ids: { readonly attemptId: string; readonly agentSessionId: string },
+  options: { readonly now?: () => string } = {}
 ) {
   if (
     entry.workspaceId !== predecessor.scope.workspaceId ||
@@ -65,6 +67,7 @@ export async function admitTestReplacementAttempt(
     entry,
     attemptId: ids.attemptId,
     preparationInput: { admission: entry },
+    ...(options.now ? { now: options.now } : {}),
   });
   await bindSchedulerExecutionAttemptSession(coreDb, ids);
   return {

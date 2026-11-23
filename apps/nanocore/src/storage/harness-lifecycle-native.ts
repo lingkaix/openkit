@@ -79,7 +79,11 @@ export function applyControlHarnessLifecycle(
         owner.sqlite.transaction(() => claimIdleCaptureDrain(admitted.coreDb, input, owner))();
         return null;
       case 'operation.queue':
-        if (admitted) return records.queueNanoHostHarnessOperation(admitted.coreDb, input, owner);
+        if (admitted)
+          // A replacement close compares its selection and queues in one deciding commit.
+          return owner.sqlite.transaction(() =>
+            records.queueNanoHostHarnessOperation(admitted.coreDb, input, owner)
+          )();
         break;
       case 'operation.dispatch':
         if (admitted)
@@ -215,8 +219,8 @@ function captureDispositionsRecovered(
 
 /**
  * Releases an idle capture latch on an accepting Sandbox in the authorized target Epoch, after a
- * proved local close or a close refused before queue. A whole-Sandbox drain claim, a Harness drain,
- * a pending operation and a close without a succeeded result keep their drain.
+ * proved local close or a close refused before queue or as unsent stale. A whole-Sandbox drain
+ * claim, a Harness drain, a pending operation and any other close outcome keep their drain.
  */
 function restoreHarnessAdmissionAfterLocalClose(
   coreDb: CoreDb,
@@ -237,7 +241,9 @@ function restoreHarnessAdmissionAfterLocalClose(
     .prepare(`UPDATE harness_instance_records SET drain_state='accepting'
     WHERE sandbox_runtime_id=? AND lifecycle_state='open' AND drain_state='draining'
       AND operation_state IN ('idle','settled') AND (operation IS NULL OR (operation<>'harness.drain'
-      AND (operation<>'session.close' OR json_extract(result_json, '$.disposition')='succeeded')))`)
+      AND (operation<>'session.close' OR json_extract(result_json, '$.disposition')='succeeded'
+        OR (json_extract(result_json, '$.disposition')='refused'
+          AND json_extract(result_json, '$.body.reasonCode')='stale'))))`)
     .run(sandboxRuntimeId);
 }
 

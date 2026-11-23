@@ -37,7 +37,10 @@ import {
   nanoHostSandboxCompatibilityKey,
 } from './nanohost-compatibility.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
-import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from './nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
 import {
@@ -438,7 +441,23 @@ export interface QueueNanoHostHarnessOperationInput {
   readonly harnessInstanceId: string;
   readonly operation: NanoHostHarnessOperation;
   readonly timestamp: string;
+  /** A replacement close's original selection, compared again inside this deciding commit. */
+  readonly replacement?: NanoHostReplacementCloseSelection | undefined;
 }
+
+/** The selected idle binding's revision and lifecycle on its authenticated target Epoch. */
+export interface NanoHostReplacementCloseSelection {
+  readonly target: Pick<
+    NanoHostRuntimeTargetRecord,
+    'targetId' | 'identityId' | 'deploymentId' | 'connectionGeneration' | 'physicalEpoch'
+  >;
+  readonly bindingRevision: string;
+  readonly bindingLifecycleState: string;
+}
+
+/** Domain refusal of a replacement close whose selection changed before its queue commit. */
+export const NANO_HOST_REPLACEMENT_SELECTION_CHANGED =
+  'NanoHost replacement close selection changed before enqueue.';
 
 /** Input for dispatching the next exact Harness operation. */
 export interface DispatchNanoHostHarnessOperationInput {
@@ -1324,6 +1343,7 @@ export function queueNanoHostHarnessOperation(
       throw new Error('NanoHost Harness is not accepting new work.');
     }
     requireOperationLineage(coreDb, harness, input.operation, body, owner);
+    if (input.replacement) requireReplacementCloseSelection(owner, harness, input, body);
     const command = input.prepared.command;
     const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
     const commandBodyJson = canonicalJson(durableBody);
@@ -1366,6 +1386,52 @@ export function queueNanoHostHarnessOperation(
   } catch (error) {
     throw error;
   }
+}
+
+/**
+ * Compares a replacement close's original selection in the queue commit: the same idle binding on
+ * its open Harness and accepting Sandbox, in the same ready target Epoch.
+ */
+function requireReplacementCloseSelection(
+  owner: NanoHostHarnessDb,
+  harness: HarnessRow,
+  input: QueueNanoHostHarnessOperationInput,
+  body: Readonly<Record<string, unknown>>
+): void {
+  const selection = input.replacement!;
+  const target = getNanoHostRuntimeTarget(owner, selection.target.targetId);
+  const binding =
+    input.operation === 'session.close'
+      ? (owner.sqlite
+          .prepare(`SELECT b.updated_at AS revision, b.lifecycle_state AS lifecycleState
+          FROM agent_session_runtime_bindings b
+          JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+          WHERE b.agent_session_runtime_binding_id=? AND b.agent_session_id=?
+          AND b.current_turn_id IS NULL AND b.current_attempt_id IS NULL
+          AND b.cleanup_state='clean' AND h.harness_instance_id=? AND h.lifecycle_state='open'
+          AND s.runtime_target_id=? AND s.origin_physical_epoch=? AND s.lifecycle_state='open'
+          AND s.health_state='ready' AND s.drain_state='accepting' AND s.cleanup_state='clean'`)
+          .get(
+            body.agentSessionRuntimeBindingId,
+            body.agentSessionId,
+            harness.harness_instance_id,
+            selection.target.targetId,
+            selection.target.physicalEpoch
+          ) as { revision: string; lifecycleState: string } | undefined)
+      : undefined;
+  if (
+    !target?.ready ||
+    !target.predecessorFenced ||
+    !target.freshEmpty ||
+    target.identityId !== selection.target.identityId ||
+    target.deploymentId !== selection.target.deploymentId ||
+    target.connectionGeneration !== selection.target.connectionGeneration ||
+    target.physicalEpoch !== selection.target.physicalEpoch ||
+    binding?.revision !== selection.bindingRevision ||
+    binding.lifecycleState !== selection.bindingLifecycleState
+  )
+    throw new Error(NANO_HOST_REPLACEMENT_SELECTION_CHANGED);
 }
 
 /** Observes pending dispatch for one current Integration on the admitted Native reader. */
