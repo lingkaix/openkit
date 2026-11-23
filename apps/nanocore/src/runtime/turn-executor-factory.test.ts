@@ -3,6 +3,7 @@ import {
   createTestServerWorkStore,
 } from '../test-support/server-work-store.js';
 import {
+  admitTestReplacementAttempt,
   schedulerFixtureInput,
   createTestQueueEntry,
 } from '../test-support/scheduler-admissions.js';
@@ -2856,6 +2857,8 @@ describe('createConfiguredTurnExecutor', () => {
       }) => Promise<void>;
       /** Explicitly joins public whole-Sandbox cleanup instead of retaining a warm resident. */
       wholeSandboxCleanup?: boolean;
+      /** Leaves the ordinarily cleaned warm resident's attempt for the caller's own production release. */
+      leaveAttemptOpen?: boolean;
       beforeFinalStatus?: (input: {
         backend: WorkerGovernanceBackend;
         turnExecutor: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>['turnExecutor'];
@@ -3218,6 +3221,17 @@ describe('createConfiguredTurnExecutor', () => {
     } else {
       await backend.cleanupSession(backend.planSession(environmentPackage));
     }
+    if (options.leaveAttemptOpen)
+      return {
+        runtime,
+        backend,
+        coreDb,
+        environmentPackage,
+        readyDigest,
+        settleNext,
+        session: capturedSession,
+        effects,
+      };
 
     await closeFactoryAttempt(
       coreDb,
@@ -6903,7 +6917,8 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   }, 60_000);
-  it.each(['turn-end', 'release', 'successor'] as const)(
+  // The successor boundary needs a released predecessor placement; it runs on the native owner below.
+  it.each(['turn-end', 'release'] as const)(
     'waits for %s collection before allowing its lifecycle transition',
     async (boundary) => {
       let finish!: (result: Record<string, unknown>) => void;
@@ -6925,27 +6940,29 @@ describe('createConfiguredTurnExecutor', () => {
           arrived();
           return await capture;
         },
+        // Release keeps its own closing attempt; production release() joins the drain below.
+        leaveAttemptOpen: boundary === 'release',
       });
       const backend = f.backend as typeof f.backend & { readonly sessions: Map<string, unknown> };
       const session = f.session as { nativeSessionReusable: boolean };
       backend.sessions.set(f.environmentPackage.snapshotId, session);
+      const attemptId = testEntityId('attempt', `lease_capture_${boundary}`);
+      if (boundary === 'release') {
+        // An authorized wider drain (the credential-revocation writer) began after ordinary cleanup.
+        const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, attemptId)
+        )!;
+        await harnessRecords.drainNanoHostSandboxAdmission(
+          currentAdmittedTestNanoHostOwner(f.coreDb)!,
+          { sandboxBindingRef: anchor.sandboxBindingRef, originPhysicalEpoch: anchor.originPhysicalEpoch }
+        );
+      }
       let settled = false;
       try {
         const operation =
           boundary === 'turn-end'
             ? backend.collectWorkspaceChanges!(f.environmentPackage.snapshotId, true)
-            : boundary === 'release'
-              ? backend.cleanupSession(backend.planSession(f.environmentPackage), {
-                  failedCloseout: true,
-                })
-              : backend.prepareAgentSessionContinuity!({
-                  agentSessionCompatibilityKey: sessionCompatibilityDigest(f.environmentPackage),
-                  agentSessionId: f.environmentPackage.scope.agentSessionId,
-                  environmentPackage: f.environmentPackage,
-                  reuseAllowed: false,
-                  threadId: f.environmentPackage.scope.threadId,
-                  workspaceId: f.environmentPackage.scope.workspaceId,
-                });
+            : closeFactoryAttempt(f.coreDb, attemptId, null, backend);
         void operation.then(
           () => {
             settled = true;
@@ -6979,6 +6996,554 @@ describe('createConfiguredTurnExecutor', () => {
       }
     }
   );
+  it('waits for successor collection before allowing its lifecycle transition', async () => {
+    // The predecessor closes out through the real executor, releasing its placement, so the
+    // successor's own persisted pre-submit attempt can request the predecessor close.
+    const coreDb = await createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(coreDb.dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Successor capture fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    const capture = Promise.withResolvers<void>();
+    onTestFinished(async () => {
+      capture.resolve();
+      await admitted?.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    });
+    const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
+      sessionDispatch: NanoHostSessionDispatch;
+    };
+    let gated = false;
+    const entered = Promise.withResolvers<void>();
+    const effect = backend.sessionDispatch.effect.bind(backend.sessionDispatch);
+    const injected = vi
+      .spyOn(backend.sessionDispatch, 'effect')
+      .mockImplementation(async (...args) => {
+        const request = (args[1] ?? args[0]) as NanoHostSessionEffectRequest;
+        if (gated && request.kind === 'workspace.collect' && request.input.mode !== 'baseline') {
+          expect(request.input.mode).toBe('capture');
+          entered.resolve();
+          await capture.promise;
+        }
+        return await effect(...args);
+      });
+    onTestFinished(() => injected.mockRestore());
+    const attemptId = testEntityId('attempt', 'capture_successor');
+    const agentSessionId = testEntityId('as', 'capture_successor');
+    const entry = await createTestQueueEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${attemptId}`,
+      requestId: testEntityId('tu', 'capture_successor_request').slice(3),
+      requestedAgentId: manifest.id,
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      turnId: testEntityId('tu', 'capture_successor'),
+      text: 'Leave one warm idle predecessor.',
+      triggerActor: { kind: 'user', id: ownerUserId },
+    });
+    await publishFactoryAdmission(store, entry);
+    admitted = await native.admitTurn(entry, {
+      attemptId,
+      agentSessionId,
+      candidateAgentSessionId: agentSessionId,
+    });
+    await admitted.complete();
+    const successor = await admitFactoryReplacement(coreDb, admitted.pkg, 'capture_successor', {
+      store,
+      requestedAgentId: manifest.id,
+    });
+    const harnessOperations = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+      ) as { operation: string | null }[];
+    gated = true;
+    let settled = false;
+    const operation = backend.prepareAgentSessionContinuity!({
+      admissionAgentSessionId: successor.agentSessionId,
+      admissionAttemptId: successor.attemptId,
+      agentSessionId,
+      environmentPackage: successor.environmentPackage,
+      reuseAllowed: false,
+      threadId: entry.threadId,
+      workspaceId: entry.workspaceId,
+    });
+    void operation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await entered.promise;
+    expect(settled).toBe(false);
+    // No predecessor session.close is queued while its pre-successor capture is pending.
+    expect(harnessOperations().map(({ operation }) => operation)).not.toContain('session.close');
+    capture.resolve();
+    expect(await operation).toBe('closed');
+    expect(settled).toBe(true);
+    expect(harnessOperations().map(({ operation }) => operation)).toContain('session.close');
+    expect(
+      native.effects.filter(
+        (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
+      )
+    ).toHaveLength(1);
+  }, 60_000);
+
+  /**
+   * Leaves one warm idle predecessor (optionally beside an idle co-resident sibling) through the real
+   * executor closeout, then persists its successor's pre-submit attempt on the predecessor's Thread.
+   */
+  async function admitNativeReplacementClose(label: string, options: { sibling?: boolean } = {}) {
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    let coreDb = await createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const ownerUserId = ensureLocalUser(coreDb);
+    let store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Replacement close fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const runtimeOptions = { readRuntimeConfig: () => configuration };
+    let native = await createNativeTaskAdmissionFixture(coreDb, store, runtimeOptions);
+    const admissions: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
+    const capture = Promise.withResolvers<void>();
+    onTestFinished(async () => {
+      capture.resolve();
+      for (const admission of admissions) await admission.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    });
+    // Every Harness command the peer accepts, in order; a close names its AgentSession.
+    const commands: { operation: string; agentSessionId: unknown; operationId: string }[] = [];
+    let loseClose = false;
+    let beforeCloseDispatch: (() => Promise<unknown>) | undefined;
+    let gated = false;
+    const entered = Promise.withResolvers<void>();
+    const observe = () => {
+      const accept = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+      vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand').mockImplementation(
+        async (command) => {
+          // One production writer runs after the close is queued and before Core accepts its dispatch.
+          if (beforeCloseDispatch && command.operation === 'session.close') {
+            const change = beforeCloseDispatch;
+            beforeCloseDispatch = undefined;
+            await change();
+          }
+          const wire = await accept(command);
+          if (wire)
+            commands.push({
+              operation: command.operation,
+              agentSessionId: command.body.agentSessionId,
+              operationId: command.operationId,
+            });
+          // The peer loses the dispatched close before any result reaches Core.
+          if (wire && loseClose && command.operation === 'session.close')
+            throw new Error('Lost close acknowledgement.');
+          return wire;
+        }
+      );
+      const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
+        sessionDispatch: NanoHostSessionDispatch;
+      };
+      const effect = backend.sessionDispatch.effect.bind(backend.sessionDispatch);
+      vi.spyOn(backend.sessionDispatch, 'effect').mockImplementation(async (...args) => {
+        const request = (args[1] ?? args[0]) as NanoHostSessionEffectRequest;
+        if (gated && request.kind === 'workspace.collect' && request.input.mode !== 'baseline') {
+          gated = false;
+          entered.resolve();
+          await capture.promise;
+        }
+        return await effect(...args);
+      });
+      return backend;
+    };
+    let backend = observe();
+    const admit = async (key: string, threadId: string, agentSessionId?: string) => {
+      const attemptId = testEntityId('attempt', `${label}_${key}`);
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${attemptId}`,
+        requestId: testEntityId('tu', `${label}_${key}_request`).slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId,
+        turnId: testEntityId('tu', `${label}_${key}`),
+        text: `Complete ${key} and stay warm.`,
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const admission = await native.admitTurn(entry, {
+        attemptId,
+        agentSessionId: agentSessionId ?? testEntityId('as', `${label}_${key}`),
+        candidateAgentSessionId: testEntityId('as', `${label}_${key}`),
+      });
+      admissions.push(admission);
+      await admission.complete();
+      return { entry, admission, agentSessionId: admission.attempt.agentSessionId! };
+    };
+    const predecessor = await admit('predecessor', DEMO_THREAD_ID);
+    const siblingThread = options.sibling
+      ? (await store.createThread(DEMO_WORKSPACE_ID, 'Idle co-resident', testEntityId('th', `${label}_sibling`))).id
+      : undefined;
+    const sibling = siblingThread ? await admit('sibling', siblingThread) : undefined;
+    let successor = await admitFactoryReplacement(coreDb, predecessor.admission.pkg, label, {
+      store,
+      requestedAgentId: manifest.id,
+    });
+    const readRows = (agentSessionId: string) =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT b.lifecycle_state AS binding, b.native_handle_digest AS digest,
+          b.updated_at AS revision, b.harness_instance_id AS harness, h.lifecycle_state AS harnessState,
+          h.drain_state AS harnessDrain, s.sandbox_runtime_id AS sandbox, s.lifecycle_state AS sandboxState,
+          s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
+          FROM agent_session_runtime_bindings b
+          JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+          WHERE b.agent_session_id = ?`)
+          .get(agentSessionId)
+      ) as Record<string, unknown> | undefined;
+    return {
+      get coreDb() {
+        return coreDb;
+      },
+      get native() {
+        return native;
+      },
+      get backend() {
+        return backend;
+      },
+      get successor() {
+        return successor;
+      },
+      commands,
+      predecessor,
+      sibling,
+      siblingThread,
+      admit,
+      readRows,
+      entered: entered.promise,
+      gate() {
+        gated = true;
+      },
+      release: () => capture.resolve(),
+      loseClose() {
+        loseClose = true;
+      },
+      onCloseDispatch(change: () => Promise<unknown>) {
+        beforeCloseDispatch = change;
+      },
+      close: () =>
+        backend.prepareAgentSessionContinuity!({
+          admissionAgentSessionId: successor.agentSessionId,
+          admissionAttemptId: successor.attemptId,
+          agentSessionId: predecessor.agentSessionId,
+          environmentPackage: successor.environmentPackage,
+          reuseAllowed: false,
+          threadId: DEMO_THREAD_ID,
+          workspaceId: DEMO_WORKSPACE_ID,
+        }),
+      /** Requeues the same successor Turn and acquires its next pre-submit attempt, as dispatch does. */
+      async retry(key: string) {
+        successor = {
+          entry: successor.entry,
+          ...(await admitTestReplacementAttempt(
+            coreDb,
+            attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, successor.entry.queueEntryId),
+            predecessor.admission.pkg,
+            {
+              attemptId: testEntityId('attempt', `replacement_${label}_${key}`),
+              agentSessionId: testEntityId('as', `replacement_${label}_${key}`),
+            }
+          )),
+        };
+      },
+      /** Stops this process's owners and reopens the same data root with a fresh executor. */
+      async reopen() {
+        for (const admission of admissions.splice(0)) await admission.cleanup();
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        coreDb = openCoreDb(dataRoot);
+        store = await createDemoStore({ dataRoot });
+        native = await createNativeTaskAdmissionFixture(coreDb, store, runtimeOptions, native.outside);
+        backend = observe();
+      },
+    };
+  }
+
+  it.each(['request-requeued', 'target-generation'] as const)(
+    'refuses a replacement close whose selection changed before slot admission (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`p23_selection_${change}`);
+      const before = f.readRows(f.predecessor.agentSessionId);
+      expect(before).toMatchObject({ binding: 'open', sandboxDrain: 'accepting' });
+      f.gate();
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await f.entered;
+      if (change === 'request-requeued') {
+        // The successor's preparation loses its attempt while the predecessor capture is in flight.
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+      } else {
+        const { targetId } = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT runtime_target_id AS targetId FROM sandbox_runtime_records').get()
+        ) as { targetId: string };
+        const current = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getNanoHostRuntimeTarget({ sqlite }, targetId)
+        )!;
+        // The authenticated target reconnects on a new connection generation in the same physical
+        // Epoch before the close slot: it is ready again, so only the selected generation differs.
+        const allocated = await transitionTestNativeRuntimeTargetFields('allocate', f.coreDb, {
+          deploymentId: current.deploymentId,
+          identityId: current.identityId,
+          targetId: current.targetId,
+          observedAt: new Date().toISOString(),
+        });
+        expect(allocated.connectionGeneration).not.toBe(current.connectionGeneration);
+        await transitionTestNativeRuntimeTargetFields('ready', f.coreDb, {
+          deploymentId: current.deploymentId,
+          identityId: current.identityId,
+          targetId: current.targetId,
+          observedAt: new Date().toISOString(),
+          connectionGeneration: allocated.connectionGeneration,
+          predecessorFenced: true,
+          ready: true,
+          freshEmpty: true,
+          physicalEpoch: current.physicalEpoch!,
+        });
+      }
+      f.release();
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      // Changed selection refuses before dispatch: no close contact, the resume pair is intact.
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before!.binding,
+        digest: before!.digest,
+        revision: before!.revision,
+        sandboxDrain: 'accepting',
+      });
+      if (change === 'request-requeued') {
+        // Exit: the requeued successor's next current attempt closes the same binding exactly once.
+        await f.retry('next');
+        expect(await f.close()).toBe('closed');
+        expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([
+          expect.objectContaining({ agentSessionId: f.predecessor.agentSessionId }),
+        ]);
+      }
+    },
+    90_000
+  );
+
+  it.each(['duplicate-request', 'sandbox-drain'] as const)(
+    'keeps one original close when a replacement races a competing close (%s)',
+    async (competitor) => {
+      const f = await admitNativeReplacementClose(`p23_competing_${competitor}`);
+      f.gate();
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await f.entered;
+      if (competitor === 'duplicate-request') {
+        // A second producer for the same binding joins no slot and contacts nothing. While the first
+        // producer's capture write is pending, the owner read refuses before the producer check.
+        await expect(f.close()).rejects.toSatisfy(
+          (error: { code?: string; message?: string }) =>
+            error.code === 'operation_storage_unavailable' ||
+            error.message === 'NanoHost AgentSession close already has a live producer.'
+        );
+      } else {
+        // A wider drain (the credential-revocation writer) claims the shared Sandbox first.
+        const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, f.predecessor.admission.attempt.attemptId)
+        )!;
+        await harnessRecords.drainNanoHostSandboxAdmission(
+          currentAdmittedTestNanoHostOwner(f.coreDb)!,
+          { sandboxBindingRef: anchor.sandboxBindingRef, originPhysicalEpoch: anchor.originPhysicalEpoch }
+        );
+      }
+      f.release();
+      const closes = () => f.commands.filter(({ operation }) => operation === 'session.close');
+      if (competitor === 'duplicate-request') {
+        expect(await operation).toBe('closed');
+        expect(closes()).toEqual([
+          expect.objectContaining({ agentSessionId: f.predecessor.agentSessionId }),
+        ]);
+      } else {
+        await expect(operation).rejects.toMatchObject({
+          name: 'WorkerGovernanceCapacityUnavailableError',
+          message: 'The selected predecessor binding changed before its replacement close.',
+        });
+        // The drain's own owner closes; the replacement made no contact.
+        expect(closes()).toEqual([]);
+      }
+    },
+    90_000
+  );
+
+  it('closes one of two co-residents while its sibling continues', async () => {
+    const f = await admitNativeReplacementClose('p23_sibling');
+    const predecessor = f.readRows(f.predecessor.agentSessionId)!;
+    // Product keys each Sandbox by Thread (unproved cross-Thread co-residency), so admission never
+    // places a sibling here. The production session-binding writer seeds one idle co-resident.
+    const siblingSessionId = testEntityId('as', 'p23_sibling_resident');
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionCompatibilityKey: 'c'.repeat(64),
+      agentSessionId: siblingSessionId,
+      agentSessionRuntimeBindingId: 'agent-session-binding-p23-sibling',
+      effectiveSetupGeneration: 1,
+      harnessInstanceId: String(predecessor.harness),
+      threadId: testEntityId('th', 'p23_sibling_resident'),
+      timestamp: new Date().toISOString(),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const sibling = f.readRows(siblingSessionId)!;
+    expect(sibling).toMatchObject({ harness: predecessor.harness, sandbox: predecessor.sandbox });
+    const slots = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycle
+          FROM agent_session_runtime_bindings ORDER BY agent_session_id`)
+          .all()
+      );
+    const effects = f.native.effects.length;
+    expect(await f.close()).toBe('closed');
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([
+      expect.objectContaining({ agentSessionId: f.predecessor.agentSessionId }),
+    ]);
+    // A local close leaves the sibling, its slot and the shared Sandbox intact.
+    expect(f.readRows(siblingSessionId)).toEqual({
+      ...sibling,
+      harnessState: 'open',
+      harnessDrain: 'accepting',
+    });
+    expect(slots()).toContainEqual({ agentSessionId: siblingSessionId, lifecycle: 'opening' });
+    expect(
+      f.native.effects
+        .slice(effects)
+        .filter((effect) => ['bridge.close', 'sandbox.delete'].includes(effect.kind))
+    ).toEqual([]);
+    // The shared Harness admits again after only the predecessor's proved close.
+    expect(
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT h.drain_state AS drain, s.drain_state AS sandboxDrain,
+          s.lifecycle_state AS sandbox FROM harness_instance_records h
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id`)
+          .all()
+      )
+    ).toEqual([{ drain: 'accepting', sandboxDrain: 'accepting', sandbox: 'open' }]);
+  }, 120_000);
+
+  it('refuses a replacement close whose request is requeued between queue and dispatch', async () => {
+    const f = await admitNativeReplacementClose('p23_dispatch_requeued');
+    const before = f.readRows(f.predecessor.agentSessionId);
+    f.onCloseDispatch(() =>
+      nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: f.successor.attemptId,
+        noOutstandingEffects: true,
+        cause: 'backend-busy',
+        requeue: true,
+      })
+    );
+    await expect(f.close()).rejects.toThrow(
+      'NanoHost Harness session.close delivery incomplete: outcome unknown.'
+    );
+    // The dispatch recheck refuses before the peer contacts the Harness.
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    // The queued close keeps its fence as an unknown outcome; the resume pair is intact.
+    expect(
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT operation, operation_state AS state FROM harness_instance_records`)
+          .all()
+      )
+    ).toEqual([{ operation: 'session.close', state: 'unknown' }]);
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before!.binding,
+      digest: before!.digest,
+      revision: before!.revision,
+    });
+  }, 90_000);
+
+  it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
+    const f = await admitNativeReplacementClose('p23_lost_ack');
+    f.loseClose();
+    await expect(f.close()).rejects.toThrow();
+    const closes = f.commands.filter(({ operation }) => operation === 'session.close');
+    expect(closes).toEqual([
+      expect.objectContaining({ agentSessionId: f.predecessor.agentSessionId }),
+    ]);
+    const harness = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT operation, operation_id AS operationId, operation_state AS state,
+          lifecycle_state AS lifecycle, drain_state AS drain FROM harness_instance_records`)
+          .all()
+      );
+    const retained = harness();
+    expect(retained).toEqual([
+      expect.objectContaining({ operation: 'session.close', operationId: closes[0]!.operationId }),
+    ]);
+    const binding = f.readRows(f.predecessor.agentSessionId);
+    await f.reopen();
+    const effects = f.native.effects.length;
+    const commands = f.commands.length;
+    // No early successor: the retained close outcome still occupies the placement.
+    expect(await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)).toBe(
+      'capacity-saturated'
+    );
+    await expect(f.close()).rejects.toThrow();
+    expect(f.native.effects.slice(effects)).toEqual([]);
+    expect(f.commands.slice(commands)).toEqual([]);
+    // One original close: the same operation and fence remain the only close evidence.
+    expect(harness()).toEqual(retained);
+    expect(f.readRows(f.predecessor.agentSessionId)).toEqual(binding);
+  }, 120_000);
   it.each([
     { gitSource: false, format: 'text' },
     { gitSource: true, format: 'text' },
@@ -7559,14 +8124,21 @@ describe('createConfiguredTurnExecutor', () => {
         }
         return reserve(writes);
       });
+      // The successor's own persisted pre-submit attempt requests the predecessor close.
+      const successor = await admitFactoryReplacement(coreDb, admitted.pkg, `capture_${fault}`, {
+        store,
+        requestedAgentId: manifest.id,
+      });
       const beforeIdle = native.effects.length;
       try {
         await expect(
           backend.prepareAgentSessionContinuity!({
+            admissionAgentSessionId: successor.agentSessionId,
+            admissionAttemptId: successor.attemptId,
             agentSessionId,
             threadId: entry.threadId,
             workspaceId: entry.workspaceId,
-            environmentPackage: admitted.pkg,
+            environmentPackage: successor.environmentPackage,
             reuseAllowed: false,
           })
         ).rejects.toThrow();
@@ -24547,6 +25119,35 @@ function readFactoryAdmissionInput(
     throw new Error('Factory fixture has no verified original Workspace input.');
   }
   return original.text;
+}
+
+/** Publishes one successor admission on its predecessor's Thread and acquires its pre-submit attempt. */
+async function admitFactoryReplacement(
+  coreDb: ReturnType<typeof openCoreDb>,
+  predecessor: AgentEnvironmentPackage,
+  label: string,
+  options: { readonly store: FsStore; readonly requestedAgentId: string }
+) {
+  const attemptId = testEntityId('attempt', `replacement_${label}`);
+  const entry = await createTestQueueEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue:${attemptId}`,
+    requestId: testEntityId('tu', `replacement_request_${label}`).slice(3),
+    requestedAgentId: options.requestedAgentId,
+    threadId: predecessor.scope.threadId,
+    turnId: testEntityId('tu', `replacement_${label}`),
+    text: 'Replace the selected idle predecessor binding.',
+    triggerActor: predecessor.scope.triggerActor,
+    workspaceId: predecessor.scope.workspaceId,
+  });
+  await publishFactoryAdmission(options.store, entry);
+  return {
+    entry,
+    ...(await admitTestReplacementAttempt(coreDb, entry, predecessor, {
+      attemptId,
+      agentSessionId: testEntityId('as', `replacement_${label}`),
+    })),
+  };
 }
 
 /** Publishes the same pending Turn and ordinary receipt produced by the command owner before dispatch. */

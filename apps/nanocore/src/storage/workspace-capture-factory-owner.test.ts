@@ -24,7 +24,10 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
-import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
+import {
+  admitTestReplacementAttempt,
+  createTestQueueEntry,
+} from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   getControlStoreWorkerClient,
@@ -86,34 +89,41 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
       triggerActor: { kind: 'user', id: userId },
     });
     // Original Factory publication pattern: the Store owns the actual pending Turn and receipt.
-    const createdAt = new Date().toISOString();
-    const scope = { workspaceId: entry.workspaceId, threadId: entry.threadId, actorId: userId };
-    await store.createTurn(
-      entry.workspaceId,
-      entry.threadId,
-      turnInput,
-      entry.triggerActor,
-      undefined,
-      {
-        turnId: entry.turnId,
-        status: 'pending',
-        agentId: entry.requestedAgentId,
-        executorKind: 'worker',
-        commandReceipt: {
-          key: commandRequestKey('turn.start', entry.requestId, scope),
-          command: 'turn.start',
-          requestId: entry.requestId,
-          scope,
-          inputHash: commandInputHash({
-            queueEntryId: entry.queueEntryId,
-            turnInput,
-          }),
-          responseKind: 'turn',
-          createdAt,
-          expiresAt: commandRequestExpiresAt(createdAt),
-        },
-      }
-    );
+    const publish = async (published: typeof entry, text: string) => {
+      const createdAt = new Date().toISOString();
+      const scope = {
+        workspaceId: published.workspaceId,
+        threadId: published.threadId,
+        actorId: userId,
+      };
+      await store.createTurn(
+        published.workspaceId,
+        published.threadId,
+        text,
+        published.triggerActor,
+        undefined,
+        {
+          turnId: published.turnId,
+          status: 'pending',
+          agentId: published.requestedAgentId,
+          executorKind: 'worker',
+          commandReceipt: {
+            key: commandRequestKey('turn.start', published.requestId, scope),
+            command: 'turn.start',
+            requestId: published.requestId,
+            scope,
+            inputHash: commandInputHash({
+              queueEntryId: published.queueEntryId,
+              turnInput: text,
+            }),
+            responseKind: 'turn',
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
+        }
+      );
+    };
+    await publish(entry, turnInput);
     admitted = await native.admitTurn(entry, {
       attemptId,
       agentSessionId,
@@ -137,6 +147,24 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
         workspaceId: entry.workspaceId,
       })
     ).not.toBeNull();
+    // The successor's own persisted pre-submit attempt on this Thread requests the idle close.
+    const successorText = 'Replace the idle predecessor after its capture.';
+    const successorEntry = await createTestQueueEntry(coreDb, {
+      backendId: 'nanohost',
+      requestId: testEntityId('tu', 'factory-idle-atomic-rollback-successor-request').slice(3),
+      queueEntryId: 'factory-idle-atomic-rollback-successor',
+      requestedAgentId: manifest.id,
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      turnId: testEntityId('tu', 'factory-idle-atomic-rollback-successor'),
+      text: successorText,
+      triggerActor: { kind: 'user', id: userId },
+    });
+    await publish(successorEntry, successorText);
+    const successor = await admitTestReplacementAttempt(coreDb, successorEntry, admitted.pkg, {
+      attemptId: testEntityId('attempt', 'factory-idle-atomic-rollback-successor'),
+      agentSessionId: testEntityId('as', 'factory-idle-atomic-rollback-successor'),
+    });
 
     // Close only the target physical owner; the real peer still polls Core.
     const nativeScope = nativeProductScope(root, {
@@ -180,10 +208,12 @@ it('rolls back the Factory idle receipt and completion together on a late SQL re
     // Landed RED may occur at the actual Main idle claim before this late native fault is reachable.
     await expect(
       backend.prepareAgentSessionContinuity({
+        admissionAgentSessionId: successor.agentSessionId,
+        admissionAttemptId: successor.attemptId,
         agentSessionId,
         threadId: entry.threadId,
         workspaceId: entry.workspaceId,
-        environmentPackage: admitted.pkg,
+        environmentPackage: successor.environmentPackage,
         reuseAllowed: false,
       })
     ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
