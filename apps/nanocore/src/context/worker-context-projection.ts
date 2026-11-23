@@ -30,6 +30,7 @@ import {
 import {
   createWorkerContextPackageAuthorityReader,
   createWorkerContextPackageAuthorityStepReader,
+  type WorkerContextPackageAuthorityReaderInput,
 } from './worker-context-authorities.js';
 import {
   readPortableWorkerContextPackageTrace,
@@ -66,6 +67,8 @@ export interface WorkerContextProjectionInput {
   readonly workspaceDb: WorkspaceDb;
   /** Thread whose immutable traces are inspected. */
   readonly threadId: string;
+  /** The deciding Worker's acknowledged NanoHost reader for backend handoff proofs. */
+  readonly readNanoHost?: NonNullable<WorkerContextPackageAuthorityReaderInput['readNanoHost']>;
 }
 
 /**
