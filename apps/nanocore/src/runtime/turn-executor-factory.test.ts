@@ -30,6 +30,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { Worker as NativeWorker } from 'node:worker_threads';
 import { getRequestListener } from '@hono/node-server';
+import Database from 'better-sqlite3';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -114,7 +115,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import { ensureLayout, readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -11260,11 +11261,24 @@ describe('createConfiguredTurnExecutor', () => {
         ).toEqual({ count: 2 });
       }
 
-      coreDb.sqlite.pragma('foreign_keys = OFF');
+      // Only this fixture connection may create the dangling reference. Preserve the exact row
+      // and restore it on the same Native connection; the admitted owner remains unchanged.
+      const fault = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+        fileMustExist: true,
+      });
+      let removed = false;
       try {
-        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
-          .prepare('DELETE FROM nanohost_runtime_targets WHERE target_id = ?')
-          .run(identity.runtimeTargetId));
+        fault.pragma('foreign_keys = OFF');
+        fault
+          .prepare(
+            'CREATE TEMP TABLE saved_target AS SELECT * FROM nanohost_runtime_targets WHERE target_id = ?'
+          )
+          .run(identity.runtimeTargetId);
+        removed =
+          fault
+            .prepare('DELETE FROM nanohost_runtime_targets WHERE target_id = ?')
+            .run(identity.runtimeTargetId).changes === 1;
+        if (!removed) throw new Error('Expected the original Native RuntimeTarget to be present.');
         expect(() => restartedRuntime.prepareBackendCleanup(identity)).toThrow();
         expect(resultOnlyRegistrations).toBe(1);
         expect(effects).toEqual([]);
@@ -11278,16 +11292,12 @@ describe('createConfiguredTurnExecutor', () => {
             .get())
         ).toEqual({ count: 2 });
       } finally {
-        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
-          .prepare(
-            `INSERT INTO nanohost_runtime_targets (
-               target_id, identity_id, deployment_id, connection_generation,
-               predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-             ) VALUES ('target_post_fence', 'identity_post_fence',
-                       'deployment_post_fence', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
-          )
-          .run('2026-08-21T00:00:00.000Z'));
-        coreDb.sqlite.pragma('foreign_keys = ON');
+        try {
+          if (removed)
+            fault.exec('INSERT INTO nanohost_runtime_targets SELECT * FROM saved_target');
+        } finally {
+          fault.close();
+        }
       }
 
       for (const [column, invalidValue, restoredValue] of [
@@ -22734,7 +22744,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       effect.mockRestore();
       cold = openCoreDb(f.coreDb.dataRoot);
       currentDb = cold;
-      if (originalOutcome === 'intent') nativeStorage = await openAdmittedTestNanoHost(currentDb);
+      nativeStorage = await openAdmittedTestNanoHost(currentDb);
       dispatch = createNanoHostSessionDispatch({ coreDb: currentDb, sessionAuthority: authority });
       runtime = createConfiguredWorkerLifecycleRuntime({
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -22941,6 +22951,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         currentDb.sqlite.close();
         cold = openCoreDb(f.coreDb.dataRoot);
         currentDb = cold;
+        nativeStorage = await openAdmittedTestNanoHost(currentDb);
         expect(settlementBytes()).toStrictEqual(retainedBytes);
         expect(await readCleanup(currentDb)).toEqual(retained);
         dispatch = createNanoHostSessionDispatch({
@@ -23453,7 +23464,9 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       const attachment = readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, originalSession.retainedStorage!));
       if (!attachment?.currentSandboxBindingRef)
         throw new Error('Unacknowledged proof has no attached resident.');
-      await harnessRecords.drainNanoHostSandboxAdmission(coreDb, {
+      const owner = currentAdmittedTestNanoHostOwner(coreDb);
+      if (!owner) throw new Error('Unacknowledged proof has no admitted NanoHost owner.');
+      await harnessRecords.drainNanoHostSandboxAdmission(owner, {
         sandboxBindingRef: attachment.currentSandboxBindingRef,
         originPhysicalEpoch: readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))!.originPhysicalEpoch,
       });
