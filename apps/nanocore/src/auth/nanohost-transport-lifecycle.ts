@@ -199,6 +199,7 @@ export async function abortNanoHostTransportRotation(
         kind: 'lifecycle-audit',
         action: 'nanohost.transport.rotate',
         record: aborted.successor,
+        predecessor: aborted.predecessor,
         actorUserId:
           snapshot.auditActorUserId ??
           admin?.userId ??
