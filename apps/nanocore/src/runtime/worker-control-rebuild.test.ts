@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,6 +10,8 @@ import {
 import { type ActorRef, writeRetainedV1 } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { createDefaultWorkerControlGateway } from '../app.js';
+import { refuseScope } from '../bootstrap/readiness.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import {
@@ -18,11 +20,16 @@ import {
   openCoreDb,
   openWorkspaceDb,
 } from '../storage/db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
@@ -451,5 +458,345 @@ describe('worker control gateway restart hydration', () => {
         fixture.coreDb.sqlite.close();
       }
     }
+  });
+});
+
+type ClosedPredecessorFault = 'none' | 'retired' | 'package-unreadable' | 'shared-final-record';
+
+const ISOLATION_USER_ID = 'usr_00000000-0000-7000-8000-000000000001';
+
+/**
+ * A closed predecessor with an accepted final in Workspace A and a live Turn in a healthy Workspace B,
+ * hydrated through the App's own gateway factory on the admitted NanoHost owner.
+ *
+ * @param fault Deliberate fault applied after the predecessor's real final was accepted.
+ * @returns Both owners, the new healthy Session's package and the predecessor's retained AEP path.
+ */
+async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-isolation-'));
+  const coreDb = openCoreDb(dataRoot);
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-isolation-source-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    disposeTestStore(dataRoot, coreDb);
+    disposeTestStore(sourceRoot);
+  });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const store = await createDemoStore({ dataRoot: sourceRoot });
+  const healthyWorkspace = await store.createWorkspace('Healthy restore isolation');
+  // Each Turn runs on its own Thread; one Thread admits only one nonterminal Turn.
+  const predecessorThread = await store.createThread(DEMO_WORKSPACE_ID, 'Predecessor Thread');
+  const healthyThread = await store.createThread(healthyWorkspace.id, 'Healthy Thread');
+  const newSessionThread = await store.createThread(healthyWorkspace.id, 'New Session Thread');
+  const agentSetup = createTestAgentSetup();
+  const imageDigest = `sha256:${'a'.repeat(64)}`;
+  const inputDigest = commandInputHash(materializeRuntimeImage(agentSetup.manifest.runtime.image));
+  const values = { REBUILD_FROM_NATIVE_DEFAULT: 'retained' };
+  const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
+  const imageIdentity = {
+    authoredArtifactId: testEntityId('ar', 'restore-isolation-image'),
+    authoredArtifactVersion: 1 as const,
+    authoredContentDigest: inputDigest,
+    inputDigest,
+  };
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    insertWorkerImageSettlementInTransaction(
+      { sqlite },
+      {
+        ...imageIdentity,
+        requestId: 'b'.repeat(64),
+        operation: 'image.acquire',
+        outcome: { kind: 'success', imageDigest },
+      }
+    );
+    admitWorkerImageEnvironment({ sqlite }, imageIdentity, { imageDigest, defaultsDigest, values });
+  });
+  const resolvePackage = async (
+    workspaceId: string,
+    threadId: string,
+    agentSessionId: string,
+    requestId: string
+  ) => {
+    const turn = await store.createTurn(workspaceId, threadId, 'Isolate closed replay', {
+      kind: 'user',
+      id: ISOLATION_USER_ID,
+    });
+    return AgentEnvironmentPackageSchema.parse(
+      await resolveAgentEnvironmentPackage({
+        captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
+        agentSetup,
+        coreDb,
+        readNanoHostEnvironment: storage.value.owner.read,
+        agentSessionId,
+        backend: { kind: 'openshell' },
+        createdAt: '2026-07-13T00:00:00.000Z',
+        requestId,
+        triggerActor: { kind: 'user', id: ISOLATION_USER_ID },
+        turn,
+        workspaceCwd: '/workspace/openkit',
+        workspaceRoots: [],
+      })
+    );
+  };
+  for (const workspaceId of [DEMO_WORKSPACE_ID, healthyWorkspace.id]) {
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ISOLATION_USER_ID });
+    const predecessorDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(predecessorDb);
+    predecessorDb.sqlite.close();
+    initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
+  }
+  await verifyAndMigrateExistingScopedDatabases(dataRoot);
+  const owners = [
+    {
+      name: 'predecessor',
+      environmentPackage: await resolvePackage(
+        DEMO_WORKSPACE_ID,
+        predecessorThread.id,
+        testEntityId('as', 'restore-isolation-predecessor'),
+        'req_isolation_predecessor'
+      ),
+      tokens: ['D', 'E', 'F'].map((letter) => letter.repeat(43)),
+    },
+    {
+      name: 'healthy',
+      environmentPackage: await resolvePackage(
+        healthyWorkspace.id,
+        healthyThread.id,
+        testEntityId('as', 'restore-isolation-healthy'),
+        'req_isolation_healthy'
+      ),
+      tokens: ['G', 'H', 'I'].map((letter) => letter.repeat(43)),
+    },
+  ].map((owner) => ({
+    ...owner,
+    attemptId: testEntityId('attempt', `restore-isolation-${owner.name}`),
+    lineage: {
+      agentSessionId: owner.environmentPackage.scope.agentSessionId,
+      packageSnapshotId: owner.environmentPackage.snapshotId,
+      requestId: owner.environmentPackage.scope.requestId,
+      threadId: owner.environmentPackage.scope.threadId,
+      turnId: owner.environmentPackage.scope.turnId,
+      workspaceId: owner.environmentPackage.scope.workspaceId,
+    },
+  }));
+  for (const owner of owners) {
+    const { environmentPackage } = owner;
+    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, environmentPackage.scope.workspaceId);
+    try {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const entry = await createTestQueueEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: environmentPackage.scope.triggerActor,
+      now: () => '2026-07-13T00:00:02.000Z',
+      profileRef: 'default',
+      queueEntryId: `queue_restore_isolation_${owner.name}`,
+      requestId: environmentPackage.scope.requestId!,
+      requestedAgentId: environmentPackage.agent.agentId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      text: 'Isolate closed replay',
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
+    const [control, inference, capability] = owner.tokens as [string, string, string];
+    submitTestNanoHostWorkerLease(
+      coreDb,
+      entry,
+      `lease-binding:restore-isolation-${owner.name}`,
+      {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        workerCapabilityTokenHash: hashWorkerRouteToken(capability),
+        workerControlTokenHash: hashWorkerRouteToken(control),
+        workerInferenceTokenHash: hashWorkerRouteToken(inference),
+      },
+      { attemptId: owner.attemptId }
+    );
+  }
+  const [predecessor, healthy] = owners as [(typeof owners)[0], (typeof owners)[0]];
+  // The predecessor's Turn really ended: Core closed it with its proof, NanoHost kept its final.
+  const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+    attemptId: predecessor.attemptId,
+    cause: 'turn-completed',
+  });
+  closeSchedulerExecutionAttemptWithFence(coreDb, {
+    correlation: schedulerExecutionCorrelation(closing),
+    fenceRef: 'restore-isolation-original-fence',
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+    writeWorkerControlAcceptedRecord(
+      { sqlite },
+      {
+        acceptedAt: '2026-07-13T00:00:05.000Z',
+        lineage: predecessor.lineage,
+        operation: 'final_status',
+        record: { status: 'completed', stopReason: 'completed' },
+        recordKey: '0',
+        sequence: 0,
+      }
+    )
+  );
+  const predecessorPackagePath = join(
+    dataRoot,
+    'workspaces',
+    DEMO_WORKSPACE_ID,
+    'runtime/agent-sessions',
+    predecessor.lineage.agentSessionId,
+    'aep-snapshots',
+    `${predecessor.lineage.packageSnapshotId}.json`
+  );
+  const acceptedPackageBytes = readFileSync(predecessorPackagePath, 'utf8');
+  // Faults follow the real final. None of them can be produced by the replay path itself.
+  if (fault === 'retired')
+    refuseScope(dataRoot, { scope: 'workspace', id: DEMO_WORKSPACE_ID, check: 'retired' });
+  if (fault === 'package-unreadable')
+    // A historical retained format this build cannot decode; the record is otherwise intact.
+    writeFileSync(
+      predecessorPackagePath,
+      JSON.stringify({ ...JSON.parse(acceptedPackageBytes), schemaVersion: 2 })
+    );
+  if (fault === 'shared-final-record')
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          "UPDATE worker_control_records SET record_json = '{' WHERE operation = 'final_status'"
+        )
+        .run()
+    );
+  const newSession = await resolvePackage(
+    healthyWorkspace.id,
+    newSessionThread.id,
+    testEntityId('as', 'restore-isolation-new-session'),
+    'req_isolation_new_session'
+  );
+  return {
+    storage,
+    predecessor,
+    healthy,
+    newSession,
+    predecessorPackagePath,
+    acceptedPackageBytes,
+    hydrate: () => {
+      const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const gateway = createDefaultWorkerControlGateway(coreDb, undefined, storage);
+        const holds = log.mock.calls.flatMap(([line]) => {
+          try {
+            const event = JSON.parse(String(line)) as { event?: unknown };
+            return event.event === 'worker.control.restore-held' ? [event] : [];
+          } catch {
+            return [];
+          }
+        });
+        return { gateway, holds };
+      } finally {
+        log.mockRestore();
+      }
+    },
+  };
+}
+
+describe('closed predecessor restore isolation', () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** The predecessor's own old route: its exact final replay with its original control token. */
+  const replayPredecessorFinal = (
+    gateway: WorkerControlGateway,
+    predecessor: Awaited<ReturnType<typeof createClosedPredecessorFixture>>['predecessor']
+  ) =>
+    gateway.recordFinalStatus({
+      authorization: `Bearer ${predecessor.tokens[0]}`,
+      lineage: predecessor.lineage,
+      sequence: 0,
+      status: 'completed',
+      stopReason: 'completed',
+    });
+
+  it('restores the closed predecessor with the healthy owner when its own evidence qualifies', async () => {
+    const f = await createClosedPredecessorFixture('none');
+    const { gateway, holds } = f.hydrate();
+
+    expect(holds).toEqual([]);
+    expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toMatchObject({
+      packageSnapshotId: f.predecessor.lineage.packageSnapshotId,
+    });
+    expect(gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toEqual(
+      redactAgentEnvironmentPackageSnapshot(f.healthy.environmentPackage)
+    );
+  });
+
+  it.each([
+    ['retired', 'workspace-not-admitted'],
+    ['package-unreadable', 'package-unreadable'],
+  ] as const)(
+    'holds only the closed predecessor whose own Workspace cannot prove its replay: %s',
+    async (fault, causeCode) => {
+      const f = await createClosedPredecessorFixture(fault);
+      const { gateway, holds } = f.hydrate();
+
+      // Inspectable, per owner, with finite fields only.
+      expect(holds).toEqual([
+        {
+          event: 'worker.control.restore-held',
+          errorCode: 'recovery_required',
+          causeCode,
+          attemptId: f.predecessor.attemptId,
+          workspaceId: DEMO_WORKSPACE_ID,
+        },
+      ]);
+      // The old route is not restored, so its exact replay stays refused.
+      expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
+      await expect(replayPredecessorFinal(gateway, f.predecessor)).rejects.toMatchObject({
+        code: 'worker_control_unauthorized',
+        status: 401,
+      });
+      // The healthy Workspace keeps serving: its live Turn restores and a new Session registers.
+      expect(gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toEqual(
+        redactAgentEnvironmentPackageSnapshot(f.healthy.environmentPackage)
+      );
+      expect(gateway.registerSession(f.newSession)).toMatchObject({
+        packageSnapshotId: f.newSession.snapshotId,
+      });
+      if (fault === 'package-unreadable') {
+        // Hydration never rewrites the retained record. Its exit is same-owner repair: the next
+        // hydration of the repaired record restores the exact replay.
+        expect(JSON.parse(readFileSync(f.predecessorPackagePath, 'utf8')).schemaVersion).toBe(2);
+        writeFileSync(f.predecessorPackagePath, f.acceptedPackageBytes);
+        const repaired = f.hydrate();
+        expect(repaired.holds).toEqual([]);
+        expect(
+          repaired.gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)
+        ).toMatchObject({ packageSnapshotId: f.predecessor.lineage.packageSnapshotId });
+      }
+    }
+  );
+
+  it('still holds every owner when the shared replay authority itself is untrustworthy', async () => {
+    const f = await createClosedPredecessorFixture('shared-final-record');
+    const { gateway, holds } = f.hydrate();
+
+    expect(holds).toEqual([]);
+    expect(() => gateway.registerSession(f.newSession)).toThrow(
+      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
+    );
+    expect(() => gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toThrow();
+    expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
   });
 });
