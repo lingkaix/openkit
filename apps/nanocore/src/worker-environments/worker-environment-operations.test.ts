@@ -967,6 +967,9 @@ describe('Worker environment operations', () => {
     } finally {
       replies.mockRestore();
     }
+    // The unknown commit fails that admitted owner generation. Restart it to read the committed row.
+    await shutdownControlStoreWorkerClient();
+    await openAdmittedTestNanoHost(fixture.coreDb);
     expect(
       readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
         getWorkerStorageBinding({ sqlite }, input)
