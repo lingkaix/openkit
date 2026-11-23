@@ -6,6 +6,8 @@ import type { ControlExecutionAttemptCommand } from '../storage/execution-attemp
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import * as records from './execution-attempt-records.js';
 
+export { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
+
 export {
   EXECUTION_ATTEMPT_BUDGET_MS,
   isSchedulerExecutionBusyRefusal,

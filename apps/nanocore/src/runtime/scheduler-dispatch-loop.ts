@@ -43,7 +43,6 @@ import {
   openAdmittedWorkspaceReadDb,
   openWorkspaceReadDb,
 } from '../storage/db.js';
-import { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
@@ -51,6 +50,7 @@ import {
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
+  ExecutionAttemptRefusal,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
