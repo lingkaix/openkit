@@ -40,6 +40,7 @@ import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.j
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import * as attemptCommands from './execution-attempts.js';
 import { commandInputHash } from './idempotent-command.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import {
@@ -374,49 +375,50 @@ async function fixture(
 describe('execution backend port through real Core coordination', () => {
   it('keeps a lost-authority claim refusal while an unresolved writer holds the Workspace', async () => {
     const f = await fixture('unknown', 'local', true);
-    f.port.cancel.mockImplementation(async (correlation) => ({
-      ...correlation,
-      disposition: 'unknown',
-      execution: 'unknown',
-      fenceRef: null,
-      outcomeRef: null,
-    }));
     const post = Worker.prototype.postMessage;
-    let revoked = false;
-    let revocationFault: unknown;
+    let intercepted = false;
+    let interceptionFault: unknown;
     const requests = vi.spyOn(Worker.prototype, 'postMessage');
     try {
-      // A's submitted attempt holds the Workspace. Its unknown submit response keeps that hold.
-      await f.queue('authority-holder');
-      await f.dispatch();
-      const holder = f.effectCalls[0]!;
-      f.settleSubmitResponse();
-      await vi.waitFor(() =>
-        expect(attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase).toBe(
-          'closing'
-        )
-      );
+      // B is the oldest satisfiable entry, so Main selects B. Younger A shares B's Workspace.
       const b = await f.queue('authority-lost', 'th_00000000-0000-7a11-83a9-10eb8b40019b');
+      const a = await f.queue('authority-holder', 'th_00000000-0000-7a11-83a9-10eb8b40019c');
       const admission = requireSchedulerAdmissionEntry(f.db, b.queueEntryId);
-      // Main selected B under its current authority. The responsible User is disabled before Core
-      // decides B's claim, so Core refuses B for lost authority while A still holds the Workspace.
-      // The claim request is posted after that commit. The Worker can hold the Core write lock, so
-      // the revocation retries a busy lock without blocking Main.
-      const revoke = async () => {
+      const holderId = testEntityId('attempt', 'authority-holder');
+      // After Main's selection and before Core decides B's claim, two writers commit: A's direct
+      // claim takes the Workspace preparation exclusion, and the responsible User is disabled.
+      // Core must refuse B for lost authority, not classify it as ordinary contention. The Worker
+      // can hold the Core write lock, so each write retries a busy lock without blocking Main.
+      const retryBusy = async (write: () => void) => {
         for (;;) {
           try {
-            f.db.sqlite
-              .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-              .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+            write();
             return;
           } catch (error) {
             if (!(error instanceof Error && 'code' in error && error.code === 'SQLITE_BUSY')) {
-              revocationFault = error;
+              interceptionFault = error;
               return;
             }
             await new Promise((resolve) => setTimeout(resolve, 10));
           }
         }
+      };
+      const interpose = async () => {
+        await retryBusy(() => {
+          const entry = requireSchedulerAdmissionEntry(f.db, a.queueEntryId);
+          // The fixture claim stands in for a selection that skipped B.
+          attemptRecords.createSchedulerExecutionAttempt(f.db, {
+            entry,
+            attemptId: holderId,
+            preparationInput: { admission: entry },
+            selectionPrefixDigest: attemptRecords.readSchedulerSelectionPrefixDigest(f.db, entry),
+          });
+        });
+        await retryBusy(() => {
+          f.db.sqlite
+            .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+            .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+        });
       };
       requests.mockImplementation(function (
         this: Worker,
@@ -424,7 +426,7 @@ describe('execution backend port through real Core coordination', () => {
       ) {
         const message: unknown = args[0];
         if (
-          revoked === false &&
+          intercepted === false &&
           typeof message === 'object' &&
           message !== null &&
           'operation' in message &&
@@ -433,34 +435,98 @@ describe('execution backend port through real Core coordination', () => {
           typeof message.input === 'object' &&
           message.input !== null &&
           'kind' in message.input &&
-          message.input.kind === 'create'
+          message.input.kind === 'create' &&
+          'queueEntryId' in message.input &&
+          message.input.queueEntryId === b.queueEntryId
         ) {
-          revoked = true;
-          void revoke().then(() => post.apply(this, args));
+          intercepted = true;
+          void interpose().then(() => post.apply(this, args));
           return;
         }
         return post.apply(this, args);
       });
-      const dispatched = f.dispatch().then(
+      const outcome = await f.dispatch().then(
         () => undefined,
         (error: unknown) => error
       );
-      const outcome = await dispatched;
-      expect(revoked).toBe(true);
-      expect(revocationFault).toBeUndefined();
+      expect(intercepted).toBe(true);
+      expect(interceptionFault).toBeUndefined();
       expect(outcome).toBeInstanceOf(Error);
       expect((outcome as Error).message).toBe(
         'The exact queued admission is no longer dispatchable.'
       );
       expect(
-        attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase,
-        'A still holds the Workspace when Main handles the refusal.'
-      ).toBe('closing');
+        attempts(f.db).find((row) => row.attempt_id === holderId),
+        'A still holds the Workspace before submission when Main handles the refusal.'
+      ).toMatchObject({
+        turn_id: a.turnId,
+        deadline: null,
+        phase: expect.not.stringMatching(/^closed$/),
+      });
       expect(attempts(f.db).filter((row) => row.turn_id === b.turnId)).toEqual([]);
       expect(requireSchedulerAdmissionEntry(f.db, b.queueEntryId)).toEqual(admission);
-      expect(f.port.submit).toHaveBeenCalledOnce();
+      expect(f.port.submit).not.toHaveBeenCalled();
     } finally {
       requests.mockRestore();
+      f.db.sqlite.close();
+    }
+  });
+
+  it('holds the Workspace on both sides of the first submit commit', async () => {
+    const f = await fixture();
+    const prepare = WorkerGovernanceTurnExecutor.prototype.prepareAgentSessionForTurn.bind(
+      f.executor
+    );
+    const prepared = vi.spyOn(f.executor, 'prepareAgentSessionForTurn');
+    try {
+      const a = await f.queue('submit-gap');
+      const c = await f.queue('submit-gap-other', 'th_00000000-0000-7a11-83a9-10eb8b4001a0');
+      const probes: {
+        readonly side: string;
+        readonly deadline: unknown;
+        readonly claim: unknown;
+      }[] = [];
+      // Another Thread in A's Workspace posts its claim through the real worker.
+      const probe = async (side: string) => {
+        const entry = requireSchedulerAdmissionEntry(f.db, c.queueEntryId);
+        const claim = await attemptCommands
+          .createSchedulerExecutionAttempt(f.db, {
+            entry,
+            attemptId: testEntityId('attempt', `submit-gap-${side}`),
+            preparationInput: { admission: entry },
+            selectionPrefixDigest: attemptRecords.readSchedulerSelectionPrefixDigest(f.db, entry),
+          })
+          .then(
+            () => 'claimed',
+            (error: unknown) => (error as { readonly reason?: string }).reason ?? 'other'
+          );
+        probes.push({
+          side,
+          deadline: attempts(f.db).find((row) => row.turn_id === a.turnId)?.deadline,
+          claim,
+        });
+      };
+      prepared.mockImplementation(async (store, input) => {
+        const result = await prepare(store, input);
+        if (input.turn.id === a.turnId) await probe('before-submit');
+        return result;
+      });
+      const submit = f.port.submit.getMockImplementation()!;
+      f.port.submit.mockImplementation(async (input) => {
+        await probe('after-submit-commit');
+        return submit(input);
+      });
+      await f.dispatch();
+      // Before submission the claim holds its preparation scopes. The submit commit fixes the
+      // deadline and installs the grant together, so no gap admits another claim.
+      expect(probes).toEqual([
+        { side: 'before-submit', deadline: null, claim: 'placement-held' },
+        { side: 'after-submit-commit', deadline: expect.any(String), claim: 'placement-held' },
+      ]);
+      expect(attempts(f.db).filter((row) => row.turn_id === c.turnId)).toEqual([]);
+      expect(f.port.submit).toHaveBeenCalledOnce();
+    } finally {
+      prepared.mockRestore();
       f.db.sqlite.close();
     }
   });
@@ -752,6 +818,23 @@ describe('execution backend port through real Core coordination', () => {
             turn_id: control.turnId,
           })
         );
+        // The positive control opened no external operation. Its local no-effect release removes only that control.
+        // The open pre-submit control holds the other Workspace, so release it before the session
+        // collision there.
+        const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
+        expect(close).toBeTypeOf('function');
+        await close(f.db, {
+          attemptId: testEntityId('attempt', 'control-attempt'),
+          cause: 'turn-start-failed',
+          noOutstandingEffects: true,
+        });
+        expect(
+          attempts(f.db).find(
+            (row) => row.attempt_id === testEntityId('attempt', 'control-attempt')
+          )?.phase
+        ).toBe('closed');
+        // Acquisition made this control admitted; retain that history after its no-effect close.
+        expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
         for (const collision of ['turn', 'thread', 'session'] as const) {
           // Thread collision is negative-only Core input; it grants no product Turn authority.
           const entry =
@@ -796,21 +879,6 @@ describe('execution backend port through real Core coordination', () => {
               workspaceId: entry.workspaceId,
             });
         }
-        // The positive control opened no external operation. Its local no-effect release removes only that control.
-        const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
-        expect(close).toBeTypeOf('function');
-        await close(f.db, {
-          attemptId: testEntityId('attempt', 'control-attempt'),
-          cause: 'turn-start-failed',
-          noOutstandingEffects: true,
-        });
-        expect(
-          attempts(f.db).find(
-            (row) => row.attempt_id === testEntityId('attempt', 'control-attempt')
-          )?.phase
-        ).toBe('closed');
-        // Acquisition made this control admitted; retain that history after its no-effect close.
-        expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
         const setup = createTestAgentSetup();
         await f.store.createThread(
           'ws_00000000-0000-7000-8000-000000000001',

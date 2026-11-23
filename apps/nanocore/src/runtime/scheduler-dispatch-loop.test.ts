@@ -3697,10 +3697,15 @@ describe('scheduler dispatch loop', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const turnExecutor = await RecordingTurnExecutor.create(coreDb);
-    const laterThread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Later dispatchable thread'
-    );
+    // The open pre-submit blocker holds its original Workspace (preparation exclusion), so the
+    // later dispatchable Thread is in another Workspace. The busy Thread's follow-up is skipped.
+    const laterWorkspace = await store.createWorkspace('Later dispatchable Workspace');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: laterWorkspace.id,
+    });
+    const laterThread = await store.createThread(laterWorkspace.id, 'Later dispatchable thread');
 
     try {
       await seedLocalSchedulerTarget(coreDb);
@@ -3751,7 +3756,7 @@ describe('scheduler dispatch loop', () => {
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           queueEntryId: 'queue_later_dispatchable',
           requestId: fixtureRequestId('req_later_dispatchable'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          workspaceId: laterWorkspace.id,
           threadId: laterThread.id,
           turnId: testEntityId('tu', 'turn_later_dispatchable'),
           text: 'Start the later dispatchable Thread',
@@ -4720,3 +4725,461 @@ async function retainPublicationFault(
     db.sqlite.close();
   }
 }
+
+/** FIFO class closure: Main's proposal, the selection handoff and the pass bound. */
+describe('scheduler FIFO class closure in the dispatch pass', () => {
+  const owner = 'usr_00000000-0000-7000-8000-000000000001';
+  type Entry = ReturnType<typeof createSchedulerAdmissionEntry>;
+  const setup = async () => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turnExecutor = await RecordingTurnExecutor.create(coreDb);
+    await seedLocalSchedulerTarget(coreDb);
+    let sequence = 0;
+    let attemptSequence = 0;
+    const workspace = async (name: string) => {
+      const created = await store.createWorkspace(name);
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: owner, workspaceId: created.id });
+      return created.id;
+    };
+    /** Queues one Task. An unpublished Task has no receipt, so Main skips it. */
+    const queue = async (label: string, workspaceId: string, publish = true) => {
+      const thread = await store.createThread(workspaceId, `FIFO ${label}`);
+      sequence += 1;
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: owner },
+        queueEntryId: `queue_fifo_${label}`,
+        requestId: fixtureRequestId(`req_fifo_${label}`),
+        workspaceId,
+        threadId: thread.id,
+        turnId: testEntityId('tu', `turn_fifo_${label}`),
+        text: `Run FIFO ${label}`,
+        requestedAgentId: 'agent_codex_host',
+        profileRef: null,
+        now: () => new Date(Date.parse('2026-07-05T00:00:00.000Z') + sequence * 1000).toISOString(),
+      });
+      if (publish) await publishTestAdmission(store, entry);
+      return entry;
+    };
+    const input = (
+      overrides: Partial<Parameters<typeof runSchedulerDispatchLoop>[0]> = {}
+    ): Parameters<typeof runSchedulerDispatchLoop>[0] => ({
+      gatewayConfig: createTestGatewayConfig(),
+      agentManifests: [agentManifest()],
+      coreDb,
+      createAgentSessionId: () => testEntityId('as', `as_fifo_${attemptSequence}`),
+      createAttemptId: () => testEntityId('attempt', `attempt_fifo_${++attemptSequence}`),
+      maxDispatches: 1,
+      providerRegistry: localProviderRegistry(),
+      store,
+      turnExecutor,
+      executionBackend: turnExecutor.executionBackend,
+      ...overrides,
+    });
+    /** A fixture claim with no local waiter; it attests the prefix that a skipping Main saw. */
+    const claimDirect = (entry: Entry, attemptId: string) => {
+      const current = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId);
+      return attemptRecords.createSchedulerExecutionAttempt(coreDb, {
+        entry: current,
+        attemptId,
+        preparationInput: { admission: current },
+        selectionPrefixDigest: attemptRecords.readSchedulerSelectionPrefixDigest(coreDb, current),
+      });
+    };
+    const attemptsFor = (entry: Entry) =>
+      executionAttempts(coreDb).filter((attempt) => attempt.queue_entry_id === entry.queueEntryId);
+    return { coreDb, store, turnExecutor, workspace, queue, input, claimDirect, attemptsFor };
+  };
+  const started = (result: Awaited<ReturnType<typeof runSchedulerDispatchLoop>>) =>
+    result.startedTurns.map((turn) => turn.dispatch.entry.queueEntryId);
+
+  it('serializes concurrent passes through the selection handoff and joins the exact caller result', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const posts: string[] = [];
+    let held = '';
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push(args.entry.queueEntryId);
+        if (args.entry.queueEntryId === held) {
+          reached.resolve();
+          await gate.promise;
+        }
+        return create(db, args);
+      });
+    try {
+      const c = await f.queue('handoff-c', await f.workspace('Handoff first'));
+      const d = await f.queue('handoff-d', await f.workspace('Handoff disjoint'));
+      held = c.queueEntryId;
+      // The background pass proposes C. Its claim waits before Core decides it.
+      const background = runSchedulerDispatchLoop(f.input());
+      await reached.promise;
+      const foreground = runSchedulerDispatchLoop(f.input({ callerQueueEntryId: c.queueEntryId }));
+      const second = runSchedulerDispatchLoop(f.input());
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      // No other proposal reaches Core while C's claim is undecided: D cannot claim before C.
+      expect(posts).toEqual([c.queueEntryId]);
+      expect(executionAttempts(f.coreDb)).toEqual([]);
+      gate.resolve();
+      const [bg, fg, later] = await Promise.all([background, foreground, second]);
+      expect(started(bg)).toEqual([c.queueEntryId]);
+      // The same-entry caller joins the winner's invocation: one post, the exact result.
+      expect(started(fg)).toEqual([c.queueEntryId]);
+      expect(posts.filter((id) => id === c.queueEntryId)).toHaveLength(1);
+      expect(f.attemptsFor(c)).toHaveLength(1);
+      // The later pass decides only after C's claim: D claims after C or waits behind C's
+      // single-flight preparation.
+      expect(started(later).every((id) => id === d.queueEntryId)).toBe(true);
+      expect(Number(f.attemptsFor(d).length)).toBeLessThanOrEqual(1);
+    } finally {
+      gate.resolve();
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('bounds one pass at 20 claim attempts under continuous selection churn, then claims on the next pass', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const posts: string[] = [];
+    const refusals: (string | undefined)[] = [];
+    let churn = true;
+    let toggles = 0;
+    const x = await f.queue('churn-x', await f.workspace('Churn source'), false);
+    const c = await f.queue('churn-c', await f.workspace('Churn target'));
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push(args.entry.queueEntryId);
+        // Between Main's selection and Core's decision, X alternates between a direct claim
+        // and an in-place requeue. Each change invalidates the observed prefix.
+        if (churn && toggles < 25) {
+          toggles += 1;
+          const current = schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, x.queueEntryId);
+          if (current.status === 'queued')
+            f.claimDirect(x, testEntityId('attempt', `churn_x_${toggles}`));
+          else
+            attemptRecords.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+              attemptId: testEntityId('attempt', `churn_x_${toggles - 1}`),
+              noOutstandingEffects: true,
+              cause: 'fixture-churn',
+              requeue: true,
+            });
+        }
+        try {
+          return await create(db, args);
+        } catch (error) {
+          refusals.push(
+            error instanceof attemptCommands.ExecutionAttemptRefusal ? error.reason : 'other'
+          );
+          throw error;
+        }
+      });
+    try {
+      const first = await runSchedulerDispatchLoop(f.input());
+      // The pass yields at its budget: 20 claim attempts, all refused, nothing committed.
+      expect(posts).toHaveLength(20);
+      expect(refusals).toEqual(Array.from({ length: 20 }, () => 'selection-changed'));
+      expect(first).toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'thread-busy' },
+      });
+      expect(f.attemptsFor(c)).toEqual([]);
+      expect(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, c.queueEntryId).status).toBe(
+        'queued'
+      );
+      churn = false;
+      const next = await runSchedulerDispatchLoop(f.input());
+      expect(started(next)).toEqual([c.queueEntryId]);
+      expect(posts).toHaveLength(21);
+      expect(f.attemptsFor(c)).toHaveLength(1);
+      // X keeps its admission and its position.
+      expect(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, x.queueEntryId).status).toBe(
+        'queued'
+      );
+    } finally {
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('claims a disjoint Task after churn of 21 identities with one fixed-size proposal', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const posts: { readonly id: string; readonly digest: string | undefined }[] = [];
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push({ id: args.entry.queueEntryId, digest: args.selectionPrefixDigest });
+        return create(db, args);
+      });
+    try {
+      const held = await f.workspace('Churn held');
+      const h = await f.queue('ids-h', held, false);
+      f.claimDirect(h, testEntityId('attempt', 'ids_h'));
+      const b = await f.queue('ids-b', held);
+      for (let index = 0; index < 21; index += 1) {
+        const churned = await f.queue(`ids-churn-${index}`, held, false);
+        schedulerRecords.cancelSchedulerAdmissionEntry(f.coreDb, {
+          queueEntryId: churned.queueEntryId,
+          workspaceId: held,
+        });
+      }
+      const d = await f.queue('ids-d', await f.workspace('Churn disjoint'));
+      const result = await runSchedulerDispatchLoop(f.input());
+      expect(started(result)).toEqual([d.queueEntryId]);
+      expect(posts).toEqual([
+        { id: d.queueEntryId, digest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      ]);
+      expect(f.attemptsFor(b)).toEqual([]);
+      expect(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, b.queueEntryId).status).toBe(
+        'queued'
+      );
+    } finally {
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('continues past the first batch when a requeue restores a row into a full queue', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const posts: { readonly id: string; readonly digest: string | undefined }[] = [];
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push({ id: args.entry.queueEntryId, digest: args.selectionPrefixDigest });
+        return create(db, args);
+      });
+    try {
+      const source = await f.workspace('Requeue source');
+      // A prepares while 20 other Tasks refill the queue. Main skips A and the 19 fillers.
+      const a = await f.queue('refill-a', source, false);
+      const aAttempt = f.claimDirect(a, testEntityId('attempt', 'refill_a'));
+      const fillers: Entry[] = [];
+      for (let index = 0; index < 19; index += 1)
+        fillers.push(await f.queue(`refill-${index}`, source, false));
+      const d = await f.queue('refill-d', await f.workspace('Requeue disjoint'));
+      expect(schedulerRecords.listQueuedSchedulerAdmissionEntries(f.coreDb)).toHaveLength(20);
+      // Backend-busy requeue restores A at its original position: 21 queued rows.
+      attemptRecords.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: aAttempt.attemptId,
+        noOutstandingEffects: true,
+        cause: 'fixture-backend-busy',
+        requeue: true,
+      });
+      const queued = schedulerRecords.listQueuedSchedulerAdmissionEntries(f.coreDb);
+      expect(queued).toHaveLength(21);
+      expect(queued[0]?.queueEntryId).toBe(a.queueEntryId);
+      const prefix = attemptRecords.createSchedulerSelectionPrefix();
+      for (const entry of [a, ...fillers])
+        prefix.add(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId));
+      const result = await runSchedulerDispatchLoop(f.input());
+      // D is the 21st row, in the second batch. One proposal with one fixed-size digest.
+      expect(started(result)).toEqual([d.queueEntryId]);
+      expect(posts).toEqual([{ id: d.queueEntryId, digest: prefix.digest() }]);
+      expect(
+        schedulerRecords
+          .listQueuedSchedulerAdmissionEntries(f.coreDb)
+          .map((entry) => entry.queueEntryId)
+      ).toEqual([a, ...fillers].map((entry) => entry.queueEntryId));
+    } finally {
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a pre-submit claim exclusive after a lost claim reply and after image intent, then wakes one successor', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const posts: string[] = [];
+    let loseReply = '';
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push(args.entry.queueEntryId);
+        const attempt = await create(db, args);
+        if (args.entry.queueEntryId === loseReply) throw new Error('Fixture lost the claim reply.');
+        return attempt;
+      });
+    const reopened = openCoreDb(f.coreDb.dataRoot);
+    try {
+      const ws = await f.workspace('Paused claim');
+      const b = await f.queue('paused-b', ws);
+      const c = await f.queue('paused-c', ws);
+      loseReply = b.queueEntryId;
+      // B's claim commits and its reply is lost. The pass fails with the owner fault.
+      await expect(
+        runSchedulerDispatchLoop(
+          f.input({ createAttemptId: () => testEntityId('attempt', 'paused_b') })
+        )
+      ).rejects.toThrow('Fixture lost the claim reply.');
+      loseReply = '';
+      const original = testEntityId('attempt', 'paused_b');
+      expect(f.attemptsFor(b)).toEqual([
+        expect.objectContaining({ attempt_id: original, phase: 'open', deadline: null }),
+      ]);
+      // Image intent alone does not clear the preparation exclusion.
+      attemptRecords.recordSchedulerExecutionOperation(f.coreDb, {
+        attemptId: original,
+        operationId: 'fixture-image-intent',
+      });
+      // A reopened client with no local waiter: its pass reposts nothing, and its direct
+      // post through the real worker is refused.
+      const quiet = await runSchedulerDispatchLoop(f.input({ coreDb: reopened }));
+      expect(started(quiet)).toEqual([]);
+      const current = schedulerRecords.requireSchedulerAdmissionEntry(reopened, c.queueEntryId);
+      await expect(
+        attemptCommands.createSchedulerExecutionAttempt(reopened, {
+          entry: current,
+          attemptId: testEntityId('attempt', 'paused_c_direct'),
+          preparationInput: { admission: current },
+          selectionPrefixDigest: attemptRecords.readSchedulerSelectionPrefixDigest(
+            reopened,
+            current
+          ),
+        })
+      ).rejects.toMatchObject({ reason: 'placement-held' });
+      expect(f.attemptsFor(b)).toHaveLength(1);
+      expect(f.attemptsFor(c)).toEqual([]);
+      // The proved no-effect close releases preparation. Two racing passes claim C once.
+      attemptRecords.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: original,
+        noOutstandingEffects: true,
+        cause: 'fixture-no-effect',
+      });
+      const racing = await Promise.all([
+        runSchedulerDispatchLoop(f.input()),
+        runSchedulerDispatchLoop(f.input({ coreDb: reopened })),
+      ]);
+      expect(racing.flatMap(started)).toEqual([c.queueEntryId]);
+      expect(f.attemptsFor(c)).toHaveLength(1);
+      expect(posts.filter((id) => id === c.queueEntryId)).toHaveLength(2);
+    } finally {
+      spy.mockRestore();
+      reopened.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('lets an independent Task run past a missing receipt and takes the late receipt on the bounded retry', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const x = await f.queue('receipt-x', await f.workspace('Receipt late'), false);
+    const c = await f.queue('receipt-c', await f.workspace('Receipt independent'));
+    // The modeled executor never submits, so C's preparation ends with a definite failure. This
+    // ends the existing single-flight preparation before the retry.
+    const prepare = f.turnExecutor.prepareAgentSessionForTurn.bind(f.turnExecutor);
+    f.turnExecutor.prepareAgentSessionForTurn = async (store, preparation) => {
+      if (preparation.turn.id === c.turnId)
+        throw new DeterministicAgentPreparationError(
+          'Fixture preparation ended',
+          'agent_not_ready',
+          409
+        );
+      return prepare(store, preparation);
+    };
+    // X's receipt is published just after Main sampled it, before C's claim. No wake follows.
+    let published = false;
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        if (args.entry.queueEntryId === c.queueEntryId && !published) {
+          published = true;
+          await publishTestAdmission(f.store, x);
+        }
+        return create(db, args);
+      });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [agentManifest()],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+    });
+    let timerTick: (() => void) | undefined;
+    const { gatewayConfig: _g, agentManifests: _m, providerRegistry: _p, ...dispatch } = f.input();
+    const service = startSchedulerDispatchRetryService({
+      ...dispatch,
+      intervalMs: 60_000,
+      runtimeConfigSnapshot: () => snapshot,
+      setInterval: (callback) => {
+        timerTick = callback;
+        return 'test-timer';
+      },
+      clearInterval: () => {},
+    });
+    try {
+      await vi.waitFor(() => expect(f.attemptsFor(c)).toHaveLength(1));
+      // The sampled receipt gap applied to that proposal only. X stays queued at its position.
+      expect(published).toBe(true);
+      expect(f.attemptsFor(x)).toEqual([]);
+      expect(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, x.queueEntryId).status).toBe(
+        'queued'
+      );
+      // The periodic retry observes the published receipt and claims X.
+      await vi.waitFor(() => expect(getSchedulerPreparationClaims(f.coreDb).size).toBe(0));
+      timerTick?.();
+      await vi.waitFor(() => expect(f.attemptsFor(x)).toHaveLength(1));
+    } finally {
+      service.stop();
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('skips a Workspace frozen before selection and keeps a freeze out of the winner claim handoff', async () => {
+    const f = await setup();
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const client = getControlStoreWorkerClient();
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const posts: string[] = [];
+    const releases: (() => void)[] = [];
+    let held = '';
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push(args.entry.queueEntryId);
+        if (args.entry.queueEntryId === held) {
+          reached.resolve();
+          await gate.promise;
+        }
+        return create(db, args);
+      });
+    try {
+      // A freeze commits before selection: Main skips B, so no claim for B reaches Core.
+      const frozenWorkspace = await f.workspace('Freeze before selection');
+      const b = await f.queue('freeze-b', frozenWorkspace);
+      const c = await f.queue('freeze-c', await f.workspace('Freeze winner'));
+      const before = client.tryFreezeWorkspace(f.coreDb.dataRoot, frozenWorkspace, () => []);
+      expect(before.status).toBe('frozen');
+      if (before.status === 'frozen') releases.push(before.release);
+      held = c.queueEntryId;
+      const pass = runSchedulerDispatchLoop(f.input());
+      await reached.promise;
+      // C's Workspace admission spans its claim handoff, so a freeze of C's Workspace cannot
+      // start and inspects nothing while C's claim is undecided.
+      const inspect = vi.fn(() => []);
+      expect(client.tryFreezeWorkspace(f.coreDb.dataRoot, c.workspaceId, inspect)).toEqual({
+        status: 'busy',
+      });
+      expect(inspect).not.toHaveBeenCalled();
+      gate.resolve();
+      expect(started(await pass)).toEqual([c.queueEntryId]);
+      expect(posts).toEqual([c.queueEntryId]);
+      expect(f.attemptsFor(b)).toEqual([]);
+      expect(schedulerRecords.requireSchedulerAdmissionEntry(f.coreDb, b.queueEntryId).status).toBe(
+        'queued'
+      );
+    } finally {
+      gate.resolve();
+      for (const release of releases) release();
+      spy.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+});

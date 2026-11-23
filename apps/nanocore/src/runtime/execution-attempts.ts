@@ -9,6 +9,7 @@ import * as records from './execution-attempt-records.js';
 export { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
 
 export {
+  createSchedulerSelectionPrefix,
   EXECUTION_ATTEMPT_BUDGET_MS,
   isSchedulerExecutionBusyRefusal,
   listOpenSchedulerExecutionAttempts,
@@ -16,6 +17,7 @@ export {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
+  schedulerClaimBlocked,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 
@@ -77,9 +79,9 @@ export async function createSchedulerExecutionAttempt(
       backendId: input.entry.backendId,
       preparationJson: JSON.stringify(input.preparationInput),
       ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
-      ...(input.deferredQueueEntryIds?.length
-        ? { deferredQueueEntryIds: [...input.deferredQueueEntryIds] }
-        : {}),
+      ...(input.selectionPrefixDigest === undefined
+        ? {}
+        : { selectionPrefixDigest: input.selectionPrefixDigest }),
     },
     input.now
   ))!;

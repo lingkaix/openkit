@@ -22,6 +22,7 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { recordSchedulerExecutionOperation } from '../runtime/execution-attempt-records.js';
 import {
   assertCurrentWorkerCredentialAuthority,
   readVaultRequesterAuthority,
@@ -960,6 +961,14 @@ it('joins Provider receipt generations at the actual sequential native decision'
     expect(getVaultInjectionPlan(f.db, originalPlan.planId)).toEqual(originalPlan);
     // No Harness/SDK/Worker operation was ever submitted; all prefix native calls are joined.
     expect(attempt.operationId).toBeNull();
+    // The still-running first Turn now submits its Worker. Until submission its claim holds the
+    // Workspace, so the independent claim below would refuse.
+    recordSchedulerExecutionOperation(f.db, {
+      attemptId: attempt.attemptId,
+      operationId: `fixture-submit:${attempt.attemptId}`,
+      submission: true,
+      now: () => timestamp,
+    });
 
     // Independent actual Thread/Session: never fake termination of the still-running first Turn.
     ownerStage = 'independent-thread-create';
