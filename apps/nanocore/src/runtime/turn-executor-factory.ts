@@ -6545,11 +6545,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
-  /** Native revocation closes the containment domain; unlinking a path is insufficient. */
+  /**
+   * Native revocation closes the containment domain; unlinking a path is insufficient.
+   * An admitted owner serves the drain, the whole-Sandbox cleanup and an uncertain cleanup's
+   * unknown fence; while that owner is unavailable, revocation refuses before any read.
+   */
   public async revokeCredentialBinding(
     input: Parameters<NonNullable<WorkerGovernanceBackend['revokeCredentialBinding']>>[0]
   ): Promise<{ state: 'removed' | 'unknown'; fenceRef: string | null }> {
-    if (this.nanoHostOwner) return this.unavailableNanoHostRuntime();
+    if (this.nanoHostOwner?.state === 'unavailable') return this.unavailableNanoHostRuntime();
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
     const anchor = this.readNanoHost((native) => getWorkerBackendSession(native, input.attemptId));
     if (
