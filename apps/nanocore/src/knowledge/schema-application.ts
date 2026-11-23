@@ -189,11 +189,17 @@ export class NativeSchemaReadsetConflict extends Error {
   }
 }
 
+/** Reads one deferred snapshot from the acknowledged NanoHost opening of this preparation. */
+type SchemaApplicationNanoHostRead = NonNullable<
+  Parameters<typeof previewWorkspaceSchemaSteps>[0]['readNanoHost']
+>;
+
 /** Current attempt observations own only their opened query-only connections. */
 interface SchemaApplicationObservations {
   readonly revalidateSql: () => void;
   readonly revalidate: () => void;
   readonly close: () => void;
+  readonly readNanoHost?: SchemaApplicationNanoHostRead;
 }
 
 /**
@@ -208,7 +214,8 @@ interface SchemaApplicationObservations {
 function* observeSchemaApplicationInputs(
   workspaceDb: WorkspaceDb,
   coreReader: ReturnType<typeof openControlStoreProductReadHandle>,
-  scopeRefusals: ControlSchemaApplicationInput['facts']['scopeRefusals']
+  scopeRefusals: ControlSchemaApplicationInput['facts']['scopeRefusals'],
+  openNanoHost?: () => WorkspaceDb['sqlite']
 ): Generator<void, SchemaApplicationObservations, void> {
   const { dataRoot, workspaceId } = workspaceDb;
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
@@ -224,6 +231,7 @@ function* observeSchemaApplicationInputs(
     readonly sqlite: WorkspaceDb['sqlite'];
   }> = [];
   const owned: Array<ReturnType<typeof openControlStoreProductReadHandle>> = [];
+  let nanoHost: WorkspaceDb['sqlite'] | undefined;
   let transferred = false;
   const identity = (path: string): string => {
     const entry = lstatSync(path, { bigint: true });
@@ -251,6 +259,7 @@ function* observeSchemaApplicationInputs(
   };
   const close = () => {
     for (const reader of owned) if (reader.sqlite.open) reader.close();
+    if (nanoHost?.open) nanoHost.close();
   };
   try {
     const corePath = coreDbPath(dataRoot);
@@ -260,6 +269,8 @@ function* observeSchemaApplicationInputs(
       version: version(coreReader.sqlite),
       sqlite: coreReader.sqlite,
     });
+    // The census reads backend sessions from the acknowledged NanoHost opening.
+    if (openNanoHost) nanoHost = openNanoHost();
     for (const id of names) {
       const path = workspaceDbPath(dataRoot, id);
       const before = identity(path);
@@ -372,8 +383,21 @@ function* observeSchemaApplicationInputs(
         throw new NativeSchemaReadsetConflict();
       assertBudget(started);
     };
+    const reader = nanoHost;
     transferred = true;
-    return { revalidateSql, revalidate, close };
+    return {
+      revalidateSql,
+      revalidate,
+      close,
+      ...(reader
+        ? {
+            readNanoHost: (query) => ({
+              state: 'ready',
+              value: reader.transaction(() => query(reader)).deferred(),
+            }),
+          }
+        : {}),
+    };
   } finally {
     if (!transferred) close();
   }
@@ -382,9 +406,10 @@ function* observeSchemaApplicationInputs(
 /** Decides the complete current Schema impact on the admitted Workspace connection, before the one capacity exchange. */
 export async function prepareNativeSchemaApplication(
   workspaceDb: WorkspaceDb,
-  input: ControlSchemaApplicationInput
+  input: ControlSchemaApplicationInput,
+  openNanoHost?: () => WorkspaceDb['sqlite']
 ): Promise<PreparedNativeSchemaApplication> {
-  const steps = nativeSchemaApplicationSteps(workspaceDb, input);
+  const steps = nativeSchemaApplicationSteps(workspaceDb, input, openNanoHost);
   try {
     for (;;) {
       const step = steps.next();
@@ -400,7 +425,8 @@ export async function prepareNativeSchemaApplication(
 /** Captures and computes through the existing owners, retaining values rather than a SQL cut. */
 function* nativeSchemaApplicationSteps(
   workspaceDb: WorkspaceDb,
-  input: ControlSchemaApplicationInput
+  input: ControlSchemaApplicationInput,
+  openNanoHost?: () => WorkspaceDb['sqlite']
 ): Generator<void, PreparedNativeSchemaApplication, void> {
   const { request, requestActor, producer, receipt, candidateHead, facts } = input;
   const workspaceId = workspaceDb.workspaceId;
@@ -437,7 +463,8 @@ function* nativeSchemaApplicationSteps(
       observations = yield* observeSchemaApplicationInputs(
         workspaceDb,
         coreReader,
-        facts.scopeRefusals
+        facts.scopeRefusals,
+        openNanoHost
       );
     yield;
     const store = new FsStore({
@@ -587,11 +614,13 @@ function* nativeSchemaApplicationSteps(
       .filter((path) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
       .map((path) => path.slice(0, -3));
     const sources = Object.keys(selected.notebook.readSourcePointers(selected.head.notebookCommit));
+    const readNanoHost = observations?.readNanoHost;
     const report = yield* previewWorkspaceSchemaSteps({
       dataRoot,
       coreDb,
       store,
       workspaceDb,
+      ...(readNanoHost ? { readNanoHost } : {}),
       access,
       workspaceId,
       notebook: selected.notebook,

@@ -2773,6 +2773,34 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : undefined;
   }
 
+  /**
+   * Refuses a stale explicit selection before the close-writer hold. This read-only check is the
+   * same selection validation that the close path runs, so a held close keeps the caller's
+   * own storage refusal. A selection that this check cannot evaluate keeps the hold.
+   */
+  private refuseHeldWorkerStorageSelection(
+    input: WorkerGovernanceAgentSessionContinuityInput,
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): void {
+    const environmentPackage = input.environmentPackage;
+    if (input.workerStorageChoice?.kind !== 'selected' || !environmentPackage) return;
+    const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
+    const sharedHarness = [...this.sharedHarnesses.values()].find(
+      (harness) => harness.harnessBindingRef === inspection.harnessBindingRef
+    );
+    if (!responsibleUserId || !sharedHarness) return;
+    this.validateWorkerStorageSelection(
+      environmentPackage,
+      sharedHarness.sandbox.sandboxBindingRef,
+      this.workerStorageReplacementSelection(
+        environmentPackage,
+        input.workerStorageChoice,
+        responsibleUserId,
+        this.workerStorageAudienceAuthorizer(environmentPackage)
+      )!
+    );
+  }
+
   /** Validates an explicit selection before effects; attachment admission still performs its own CAS. */
   private validateWorkerStorageSelection(
     environmentPackage: AgentEnvironmentPackagePreview,
@@ -2861,8 +2889,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       !input.reuseAllowed &&
       this.nanoHostOwner &&
       this.readThreadAgentSessionBinding(input)?.agentSessionId === input.agentSessionId
-    )
+    ) {
+      if (input.workerStorageChoice?.kind === 'selected') {
+        const held = this.readNanoHost((owner) =>
+          inspectNanoHostAgentSessionContinuity(this.coreDb, input, owner)
+        );
+        if (held) this.refuseHeldWorkerStorageSelection(input, held);
+      }
       this.unavailableNanoHostRuntime();
+    }
     const retirement = input.environmentPackage
       ? this.inspectIncompatibleIdleSandbox(input.environmentPackage)
       : null;
