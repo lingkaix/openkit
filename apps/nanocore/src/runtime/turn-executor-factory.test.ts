@@ -12039,11 +12039,14 @@ describe('createConfiguredTurnExecutor', () => {
             );
             await Promise.race([firstCloseoutPaused.promise, firstCloseout]);
             expect(firstSettled).toBe(false);
+            // Worker control records are Native-owned; read them on the admitted generation.
             const finalFor = (pkg: AgentEnvironmentPackage) =>
-              getWorkerControlAcceptedFinalStatus(coreDb, {
-                ...pkg.scope,
-                packageSnapshotId: pkg.snapshotId,
-              });
+              readAdmittedTestNanoHost(coreDb, (sqlite) =>
+                getWorkerControlAcceptedFinalStatus(
+                  { sqlite },
+                  { ...pkg.scope, packageSnapshotId: pkg.snapshotId }
+                )
+              );
             expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
             const effectsBefore = native.effects.length;
             revocation = app
