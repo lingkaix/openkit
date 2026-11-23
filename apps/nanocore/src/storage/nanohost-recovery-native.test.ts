@@ -1476,6 +1476,9 @@ it.each(['reusable', 'live sibling'] as const)(
           .transaction(() => acknowledgeNanoHostHarnessResult(core, input, f.owner))
           .immediate();
       }),
+      claimIdleCaptureDrain: async (input) => {
+        await writeMixed({ ...input, kind: 'harness.claim-idle-capture-drain' });
+      },
     };
     const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb: core,

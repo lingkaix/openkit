@@ -155,7 +155,13 @@ export interface AdmittedNanoHostHarnessTurnLifecycle {
     input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1]
   ): Promise<'settled' | 'replayed'>;
   acknowledge(input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]): Promise<void>;
+  claimIdleCaptureDrain(input: NanoHostIdleCaptureDrainInput): Promise<void>;
 }
+
+export type NanoHostIdleCaptureDrainInput = Omit<
+  Extract<ControlHarnessLifecycleInput, { kind: 'harness.claim-idle-capture-drain' }>,
+  'kind'
+>;
 
 /** Queues only the exact prepared tuple; existing enqueue diagnostics include the owning FULL acknowledgement. */
 export async function queueNanoHostHarnessOperation(
@@ -295,11 +301,10 @@ export async function claimNanoHostIdleSandboxDrain(
 /** Claims only the exact healthy Harness drain after its Workspace capture recovery acknowledgement. */
 export async function claimNanoHostIdleCaptureDrain(
   coreDb: CoreDb,
-  input: Omit<
-    Extract<ControlHarnessLifecycleInput, { kind: 'harness.claim-idle-capture-drain' }>,
-    'kind'
-  >
+  input: NanoHostIdleCaptureDrainInput,
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<void> {
+  if (admitted) return admitted.claimIdleCaptureDrain(input);
   await publishHarness(coreDb, { ...input, kind: 'harness.claim-idle-capture-drain' });
 }
 

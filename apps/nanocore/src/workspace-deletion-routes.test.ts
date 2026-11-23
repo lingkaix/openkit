@@ -80,6 +80,7 @@ import {
 } from './storage/workspace-recovery-journal.js';
 import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
 import {
+  currentAdmittedTestNanoHostOwner,
   mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
@@ -95,7 +96,10 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { operationRequest } from './test-support/operation-request.js';
 import { recoveryJournalFact } from './test-support/recovery-journal.js';
 import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
-import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
+import {
+  admittedWorkerStoragePurgeDecisions,
+  createWorkerEnvironmentOperations,
+} from './worker-environments/worker-environment-operations.js';
 import { WORKSPACE_DELETION_LEGAL_HOLD_OWNERS } from './workspace-deletion-evidence.js';
 import * as deletionRequestOwner from './workspace-deletion-request.js';
 import {
@@ -3342,9 +3346,13 @@ function deletionStoragePurgeFixture(f: Awaited<ReturnType<typeof nativeDeletion
       return { state: 'purged' as const, storageRef: input.binding.storageRef };
     }
   );
+  const owner = currentAdmittedTestNanoHostOwner(f.coreDb);
+  if (!owner) throw new Error('Purge fixture has no admitted NanoHost owner.');
   const operations = createWorkerEnvironmentOperations({
     coreDb: f.coreDb,
     store: f.store,
+    // The App composition: the admitted owner decides both purge transitions.
+    purgeDecisions: admittedWorkerStoragePurgeDecisions(f.coreDb, owner),
     runtimeEffects: {
       inspectImage: unused,
       prepareImage: unused,

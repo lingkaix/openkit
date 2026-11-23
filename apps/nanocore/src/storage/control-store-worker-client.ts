@@ -211,6 +211,7 @@ import {
 } from '../runtime/worker-storage-binding-records.js';
 import type {
   WriteNanoHostStorageAttachment,
+  WriteNanoHostStoragePurge,
   WriteNanoHostStorageRelease,
 } from '../runtime/worker-storage-bindings.js';
 import {
@@ -777,6 +778,8 @@ export interface NanoHostOwnerBinding
   ): ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
 
   workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
+  /** Reserves one purge after the Core Scheduler census holds in the same Native commit. */
+  readonly reserveStoragePurge: WriteNanoHostStoragePurge;
   readonly writeStorageAttachment: WriteNanoHostStorageAttachment;
   prepareRuntimeTarget(
     input: ControlRuntimeTargetInput,
@@ -3495,6 +3498,7 @@ class ControlStoreWorkerClient {
                 }
                 break;
               case 'worker-storage-binding':
+              case 'worker-storage-purge':
                 throw new WorkerStorageBindingError(
                   domain.code as WorkerStorageBindingError['code'],
                   domain.message
@@ -4128,6 +4132,13 @@ class ControlStoreWorkerClient {
             if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
               throw new ControlStoreWorkerError('integrity', 'unknown');
           }),
+        claimIdleCaptureDrain: async (input) => {
+          const result = await writeHarnessTurn({
+            ...input,
+            kind: 'harness.claim-idle-capture-drain',
+          });
+          if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
+        },
       };
 
       opening.prepareNanoHostBackend = async (input) => {
@@ -4388,6 +4399,13 @@ class ControlStoreWorkerClient {
           },
           workerStorageBinding: async (input) =>
             (await write({ kind: 'worker-storage-binding', input })).value,
+          reserveStoragePurge: (input) => {
+            const original = structuredClone(input);
+            return withCoreHold(
+              async (coreIdentity) =>
+                (await write({ kind: 'worker-storage-purge', input: original, coreIdentity })).value
+            );
+          },
           prepareRuntimeTarget: async (input, occurrenceId) =>
             read((handle) =>
               readers.prepareNanoHostRuntimeTargetTransition(handle, input, occurrenceId)
@@ -8402,7 +8420,7 @@ class ControlStoreWorkerClient {
         error instanceof ControlStoreWorkerError &&
         error.domain?.operation === 'execution-attempt'
       )
-        throw new Error(error.domain.message);
+        throw new ExecutionAttemptRefusal(error.domain.message);
       throw error;
     }
   }

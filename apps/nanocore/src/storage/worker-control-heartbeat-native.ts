@@ -8,7 +8,10 @@ import {
   NanoHostAttemptHeartbeatRejectedError,
   resolveNanoHostAttemptTokenBinding,
 } from '../runtime/nanohost-attempt-records.js';
-import { acceptWorkerControlSequence } from '../runtime/worker-control-sequences.js';
+import {
+  acceptWorkerControlSequence,
+  matchesAcceptedWorkerControlSequence,
+} from '../runtime/worker-control-sequences.js';
 import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
@@ -48,6 +51,8 @@ function applyAdmittedNanoHostWorkerHeartbeat(
   const reconnect = live.status === 'rejected' && live.reason === 'reconnect-required';
   if (live.status === 'rejected' && !(reconnect && payload.reconnectProcessKeyHash))
     refuseBinding(live.reason);
+  if (reconnect && payload.request.sequence === native.proof.lastWorkerSequence)
+    refuseReconnectReadback(sqlite, input, payload, native.proof.workerProcessKeyHash);
   if (reconnect && payload.request.sequence !== native.proof.lastWorkerSequence! + 1)
     throw new WorkerHeartbeatRefusal(
       'worker_control_sequence_stale',
@@ -69,6 +74,48 @@ function applyAdmittedNanoHostWorkerHeartbeat(
       })
     )
   )();
+}
+
+/**
+ * A Worker whose last committed heartbeat lost its ACK retries that exact sequence after restart.
+ * Only the retained process key learns the outcome: an exact retained fingerprint is already
+ * accepted, and any other body at that sequence is stale. This commits nothing.
+ */
+function refuseReconnectReadback(
+  sqlite: Database.Database,
+  input: Pick<ControlWorkerHeartbeatCommand, 'lineage'>,
+  payload: ReturnType<typeof ControlWorkerHeartbeatPayloadSchema.parse>,
+  retainedProcessKeyHash: string | null
+): never {
+  const presented = Buffer.from(payload.reconnectProcessKeyHash ?? '');
+  const retained = Buffer.from(retainedProcessKeyHash ?? '');
+  if (presented.length !== retained.length || !timingSafeEqual(presented, retained))
+    throw new WorkerHeartbeatRefusal(
+      'worker_control_identity_conflict',
+      'Worker control heartbeat identity conflicts with the durable lease binding.',
+      409
+    );
+  if (
+    matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage: input.lineage,
+        operation: 'heartbeat',
+        sequence: payload.request.sequence,
+        fingerprint: canonicalJsonText(payload.request),
+      }
+    ) === true
+  )
+    throw new WorkerHeartbeatRefusal(
+      'worker_control_heartbeat_already_accepted',
+      'Worker reconnect heartbeat was already accepted.',
+      409
+    );
+  throw new WorkerHeartbeatRefusal(
+    'worker_control_sequence_stale',
+    'Worker reconnect must use the exact next heartbeat sequence.',
+    409
+  );
 }
 
 /** Repeats the original binding refusal inside the current Core deciding section. */

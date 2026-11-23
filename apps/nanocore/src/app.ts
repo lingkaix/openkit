@@ -348,6 +348,7 @@ import {
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environments/worker-environment-activation.js';
 import {
+  admittedWorkerStoragePurgeDecisions,
   createWorkerEnvironmentOperations,
   WorkerEnvironmentOperationError,
 } from './worker-environments/worker-environment-operations.js';
@@ -845,6 +846,13 @@ export async function prepareNanoHostOwner(
     {
       // Activation has already rechecked its Administrator and exact candidate audiences.
       verifyImagePublication: (input) => input.kind === 'environment',
+      // Only transitions after the caller's own decision: proved cleanup, an uncertain-contact
+      // fence, or the outcome of a purge that the Core-checked reservation already holds. Attempt-bound
+      // reservations and activations stay on `writeStorageAttachment`.
+      verifyStorageBinding: (input) =>
+        (input.kind === 'release' && input.cleanupProved) ||
+        input.kind === 'mark-unknown' ||
+        input.kind === 'purge-settle',
       verifyWorkspaceHandoff(session) {
         let workspace: WorkspaceDb | undefined;
         try {
@@ -1476,6 +1484,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ? createWorkerEnvironmentOperations({
         coreDb: options.coreDb,
         readNanoHost: readNanoHostEnvironment,
+        ...(nanoHostStorage.state === 'ready'
+          ? {
+              purgeDecisions: admittedWorkerStoragePurgeDecisions(
+                options.coreDb,
+                nanoHostStorage.value.owner
+              ),
+            }
+          : {}),
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,
         store: sharedStore,

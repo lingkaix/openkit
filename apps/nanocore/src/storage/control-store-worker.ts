@@ -985,7 +985,9 @@ function domainRefusal(
           ? 'worker-image'
           : request.mutation.kind === 'harness-turn-lifecycle'
             ? 'harness-lifecycle'
-            : request.mutation.kind;
+            : request.mutation.kind === 'worker-storage-purge'
+              ? 'worker-storage-binding'
+              : request.mutation.kind;
     if (
       kind === 'harness-lifecycle' ||
       kind === 'worker-image' ||
@@ -2029,6 +2031,12 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlWorkerStorageBinding({ sqlite }, mutation.input),
       };
+    case 'worker-storage-purge':
+      // The Scheduler census is rechecked on the pinned Core peer inside this deciding commit.
+      return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => ({
+        kind: mutation.kind,
+        value: applyControlWorkerStorageBinding({ sqlite }, mutation.input, { coreDb }),
+      }));
   }
 }
 
