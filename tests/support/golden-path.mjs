@@ -78,11 +78,26 @@ async function observeEpochMounts() {
   ]);
 }
 
+/** Retry transient release-host failures (5xx, 429, network, abort); every other status fails at once (#988). */
+const DOWNLOAD_BACKOFF_MS = [2_000, 5_000];
+
 /** Download only the same checksum-bound release inputs used by packaging CI. */
-async function download(url, destination, digest) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-  assert.ok(response.ok, `Release download failed (${response.status})`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+async function download(url, destination, digest, backoff = DOWNLOAD_BACKOFF_MS) {
+  let bytes;
+  for (let attempt = 0; !bytes; attempt++) {
+    let retryable = true;
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+      if (!response.ok) {
+        retryable = response.status >= 500 || response.status === 429;
+        assert.fail(`Release download failed (${response.status})`);
+      }
+      bytes = Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      if (!retryable || attempt >= backoff.length) throw error;
+      await delay(backoff[attempt]);
+    }
+  }
   if (digest) assert.equal(createHash('sha256').update(bytes).digest('hex'), digest);
   await fs.writeFile(destination, bytes);
 }
@@ -896,6 +911,48 @@ async function run() {
   console.log('Golden path: fresh Worker Turn and same-association restart Turn PASS');
 }
 
+/** Prove the release download retry policy against a scripted fetch, without waiting on real backoff. */
+async function checkDownloadRetry() {
+  const realFetch = globalThis.fetch;
+  const destination = path.join(root, 'download-retry-fixture');
+  await fs.mkdir(root, { recursive: true });
+  const body = Buffer.from('release bytes');
+  const digest = createHash('sha256').update(body).digest('hex');
+  const run = async (outcomes, expected, sha = digest) => {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      const outcome = outcomes[Math.min(calls++, outcomes.length - 1)];
+      if (outcome instanceof Error) throw outcome;
+      return outcome === 200 ? new Response(body) : new Response('', { status: outcome });
+    };
+    try {
+      if (expected === 'ok') await download('http://fixture/asset', destination, sha, [0, 0]);
+      else
+        await assert.rejects(download('http://fixture/asset', destination, sha, [0, 0]), expected);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    return calls;
+  };
+  assert.equal(await run([503, 429, 200], 'ok'), 3, 'A 5xx then 429 must be retried to success');
+  assert.equal(
+    await run([new TypeError('fetch failed'), 200], 'ok'),
+    2,
+    'A network error must be retried'
+  );
+  assert.equal(await run([503, 503, 503, 200], /\(503\)/), 3, 'At most 3 attempts');
+  assert.equal(await run([404], /\(404\)/), 1, 'A 404 must fail without retry');
+  assert.equal(await run([403, 200], /\(403\)/), 1, 'A 403 must fail without retry');
+  assert.equal(
+    await run([200], /strictly equal/, 'f'.repeat(64)),
+    1,
+    'A digest mismatch must not be retried'
+  );
+  console.log(
+    'Golden path download retry self-check PASS: 5xx, 429, network error, attempt cap, 4xx, digest'
+  );
+}
+
 /** Exercise the original Turn submission and its redacted retry evidence. */
 async function checkTurnCaptureRetry() {
   const realFetch = globalThis.fetch;
@@ -1148,6 +1205,7 @@ async function selfCheck() {
 const mode = process.argv[2];
 if (mode === 'self-check') {
   await checkTurnCaptureRetry();
+  await checkDownloadRetry();
   await selfCheck();
 } else {
   validate();
