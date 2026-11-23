@@ -58,6 +58,10 @@ Each live physical `DatabaseOwner` has one off-Main writer, bounded snapshot rea
 
 The Control Kernel is process-critical. Each Core Service and each stateful Core Extension owns its journal, file-local foreign keys and sole bounded writer. All inter-owner references carry an owner and opaque identity. Owners call typed operations and retain private handles. The following paths are Data Root-relative.
 
+Apply two conditions to each fact proposed for a new Core table or column. The Server must own the fact. The fact must either require an atomic commit with an existing kernel decision or be necessary for the kernel to operate with only the Core database available. Meeting both conditions qualifies the proposal for review. The v0.2.0 allowlist fixes Core at the 24 application tables below.
+
+Keep other proposed facts with the owner designated by the existing storage rules. For a weak reference, retain the owner and opaque record ID. For a cross-owner effect, the source commits its intent before posting and settles it against the deciding owner's exact original receipt under [Cross-Owner Command Settlement](20261019-durable_execution_and_control_store.md#cross-owner-command-settlement).
+
 | Owner and database | Application table families |
 | --- | --- |
 | Control Kernel, `server/db/core.sqlite` | Exactly these 24 tables: `users`, `account`, `session`, `verification`, `workspace_registry`, `workspace_members`, `workspace_invitations`, `openkit_access_tokens`, `permission_decisions`, `audit_events`, `server_settings`, `vault_references`, `vault_grants`, `vault_injection_plans`, `vault_injection_receipts`, `vault_use_records`, `control_executions`, `control_execution_steps`, `scheduler_admission_entries`, `scheduler_execution_attempts`, `recurring_schedules`, `recurring_occurrences`, `recurring_expired_ranges`, `idempotency_requests`. Exempt only SQLite and Drizzle metadata from the allowlist. |
