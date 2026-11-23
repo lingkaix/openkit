@@ -57,6 +57,7 @@ import {
   schedulerClaimScopes,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
+import { kernelSchedulerScopeIsHeld } from './execution-journal.js';
 import {
   externalTriggerTurnPublicationComplete,
   readExternalTriggerPollSource,
@@ -194,8 +195,10 @@ export async function runSchedulerDispatchLoop(
   // Admissions whose placement an unresolved writer holds stay queued in FIFO order for this pass.
   const heldQueueEntryIds = new Set<string>();
   // A deferred admission keeps its FIFO priority for its placement. The holder can release before
-  // dispatch reads the refusal, so a younger admission that shares a scope waits for a later pass.
-  const deferredScopes = new Set<string>();
+  // dispatch reads the refusal. When the deferred claim's scopes are free, a younger admission that
+  // shares one of them waits for a later pass. A deferred claim that is still held does not stop a
+  // younger claim: the younger claim's own Core check decides.
+  const deferredClaims: string[][] = [];
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     if (input.agentWorkPaused?.())
@@ -218,7 +221,14 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
-    if (schedulerClaimScopes(entry).some((scope) => deferredScopes.has(scope))) {
+    const scopes = schedulerClaimScopes(entry);
+    if (
+      deferredClaims.some(
+        (deferred) =>
+          deferred.some((scope) => scopes.includes(scope)) &&
+          !kernelSchedulerScopeIsHeld(input.coreDb, deferred)
+      )
+    ) {
       heldQueueEntryIds.add(entry.queueEntryId);
       count--;
       continue;
@@ -321,7 +331,7 @@ export async function runSchedulerDispatchLoop(
         // The Core claim refused a held placement. Keep the admission queued and select the next
         // eligible entry; the release wake or a later pass dispatches it in FIFO order.
         heldQueueEntryIds.add(entry.queueEntryId);
-        for (const scope of schedulerClaimScopes(entry)) deferredScopes.add(scope);
+        deferredClaims.push(schedulerClaimScopes(entry));
         count--;
         continue;
       }
