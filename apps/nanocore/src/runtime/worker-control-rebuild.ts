@@ -7,12 +7,14 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import type { StorageResult } from '../storage/storage-owner.js';
+import { AgentEnvironmentSnapshotReadError } from '../storage/workspace-file-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type { NanoHostExecutionAttemptRecord } from './nanohost-attempt-records.js';
 import {
@@ -38,9 +40,17 @@ interface WorkerControlRecordRow {
   readonly recordJson: string;
 }
 
+/** A closed predecessor whose own Workspace cannot prove its replay; it holds only that replay. */
+interface WorkerControlRestoreHold {
+  readonly attemptId: string;
+  readonly workspaceId: string;
+  readonly causeCode: 'workspace-not-admitted' | 'package-unreadable';
+}
+
 /**
  * Restores live control, cancellation-only first-final serving state and exact final replay.
  * The acknowledged NanoHost reader must cover the entire plan before any session is published.
+ * A closed predecessor's own Workspace fault holds only its replay. Any other fault holds all.
  */
 export function rebuildWorkerControlGatewaySessions(
   coreDb: CoreDb,
@@ -49,22 +59,45 @@ export function rebuildWorkerControlGatewaySessions(
     query: (sqlite: Database.Database) => Value
   ) => StorageResult<'nanohost', Value>
 ): StorageResult<'nanohost', void> {
-  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
+  const held: WorkerControlRestoreHold[] = [];
+  const plan = (sqlite: Database.Database) => {
+    held.length = 0;
+    return planWorkerControlRestore(coreDb, { sqlite }, held);
+  };
   try {
     const observed = readNanoHost
       ? readNanoHost(plan)
       : readNanoHostObservation(coreDb.dataRoot, plan);
     if (observed.state !== 'ready') return observed;
     gateway.restoreSessions(observed.value);
-    return { state: 'ready', value: undefined };
   } catch {
     return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+  }
+  for (const hold of held) reportWorkerControlRestoreHold(hold);
+  return { state: 'ready', value: undefined };
+}
+
+/** Makes one per-owner replay hold inspectable with finite fields: no paths or exception text. */
+function reportWorkerControlRestoreHold(hold: WorkerControlRestoreHold): void {
+  try {
+    console.error(
+      JSON.stringify({
+        event: 'worker.control.restore-held',
+        errorCode: 'recovery_required',
+        causeCode: hold.causeCode,
+        attemptId: hold.attemptId,
+        workspaceId: hold.workspaceId,
+      })
+    );
+  } catch {
+    // Diagnostics must not change the owning operation.
   }
 }
 
 function planWorkerControlRestore(
   coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database }
+  owner: { readonly sqlite: Database.Database },
+  held: WorkerControlRestoreHold[]
 ): WorkerControlSessionRestoreInput[] {
   const now = new Date().toISOString();
   const leases = listAdmittedWorkerControlLeases(coreDb, owner);
@@ -103,6 +136,14 @@ function planWorkerControlRestore(
       )
     )
       continue;
+    // Closed-terminal branch: the replay's own Workspace is checked before executable admission.
+    // A quarantined or retired owner holds only this replay; its exit is that owner's repair and
+    // re-admission at the next hydration, or its proved retirement. Old routes stay unrestored.
+    const closed = lease.phase !== 'open';
+    if (closed && !isScopeAdmitted(coreDb.dataRoot, 'workspace', lease.workspaceId)) {
+      held.push({ ...ownerOf(lease), causeCode: 'workspace-not-admitted' });
+      continue;
+    }
     const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
@@ -112,6 +153,12 @@ function planWorkerControlRestore(
         lease.workspaceId,
         lease.inputRef
       ).snapshot;
+    } catch (error) {
+      // Only the retained package decoder's own refusal is owner-local. A missing, duplicate or
+      // contradicting package, and every Core or NanoHost fault, still holds the whole plan.
+      if (!closed || !(error instanceof AgentEnvironmentSnapshotReadError)) throw error;
+      held.push({ ...ownerOf(lease), causeCode: 'package-unreadable' });
+      continue;
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -130,6 +177,10 @@ function planWorkerControlRestore(
     });
   }
   return planned;
+}
+
+function ownerOf(lease: NanoHostExecutionAttemptRecord) {
+  return { attemptId: lease.attemptId, workspaceId: lease.workspaceId };
 }
 
 /** Native supplies the candidate tuples; the retained Core submission and phase still decide. */
