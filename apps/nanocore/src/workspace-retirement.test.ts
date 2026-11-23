@@ -30,8 +30,10 @@ import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import {
+  bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
   requireSchedulerExecutionAttempt,
 } from './runtime/execution-attempts.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -313,20 +315,44 @@ async function retainRuntimeFences(f: {
       entry,
       preparationInput: { admission: entry },
     });
-    const owner: AdmittedWorkerStorageAttachment = {
+    // The original preparation tuple, committed through the same owner commands production uses
+    // before any storage post (commitPreparedAgentSessionForTurn on an admitted NanoHost owner).
+    const agentSessionId = testEntityId('as', `retirement-${state}`);
+    const preparation = {
       attemptId,
-      target,
-      read: nanoHost.read,
-      write: nanoHost.writeStorageAttachment,
-      authorizeContributor: () => true,
-      isCurrentAttempt: () =>
-        requireSchedulerExecutionAttempt(f.coreDb, attemptId).phase === 'open',
+      agentSessionId,
+      inputRef: `aepsnap_${entry.turnId}_${agentSessionId}`,
+      bindingRef: `attempt-binding:${attemptId}`,
     };
     try {
+      await bindSchedulerExecutionAttemptSession(f.coreDb, preparation);
+      await finalizeSchedulerExecutionAttemptInput(f.coreDb, preparation);
+      const original = requireSchedulerExecutionAttempt(f.coreDb, attemptId);
+      const owner: AdmittedWorkerStorageAttachment = {
+        attemptId,
+        target,
+        read: nanoHost.read,
+        write: nanoHost.writeStorageAttachment,
+        authorizeContributor: () => true,
+        // The production storageAttachmentAdmission predicate: the open, pre-submission attempt
+        // still carries its original non-null binding, exact package input and exact AgentSession.
+        isCurrentAttempt: () => {
+          const current = requireSchedulerExecutionAttempt(f.coreDb, attemptId);
+          return (
+            current.phase === 'open' &&
+            current.backendId === 'nanohost' &&
+            current.deadline === null &&
+            current.bindingRef !== null &&
+            current.bindingRef === original.bindingRef &&
+            current.inputRef === preparation.inputRef &&
+            current.agentSessionId === preparation.agentSessionId
+          );
+        },
+      };
       const reserved = await createAndReserveWorkerStorageAttachment(
         f.coreDb,
         {
-          agentSessionId: testEntityId('as', `retirement-${state}`),
+          agentSessionId,
           authorizeContributor: () => true,
           deploymentId: target.deploymentId,
           layout,
