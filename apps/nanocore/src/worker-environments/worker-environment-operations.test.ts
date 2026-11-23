@@ -30,6 +30,7 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
+  currentAdmittedTestNanoHostOwner,
   mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
@@ -906,6 +907,112 @@ describe('Worker environment operations', () => {
     });
     expect(replayed).toEqual(first);
     expect(purgeCalls).toBe(1);
+  });
+
+  it('refuses purge before purge-pending when the administrator token expires while the Core hold drains', async () => {
+    const purgeStorage = vi.fn();
+    const fixture = await createFixture({ purgeStorage });
+    const owner = currentAdmittedTestNanoHostOwner(fixture.coreDb)!;
+    const actor: Actor = {
+      kind: 'token',
+      tokenId: 'token_admin_local',
+      tokenScope: 'server-admin',
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+    };
+    const reserving = Promise.withResolvers<void>();
+    let earlier: Promise<unknown> | undefined;
+    const operations = createWorkerEnvironmentOperations({
+      coreDb: fixture.coreDb,
+      runtimeEffects: {
+        inspectImage: vi.fn(),
+        inspectStorage: vi.fn(),
+        prepareImage: vi.fn(),
+        purgeStorage,
+      },
+      store: fixture.store,
+      // The App composition. After the caller's own checks pass, another Core-hold writer starts
+      // first, so the reservation waits for that drain.
+      purgeDecisions: admittedWorkerStoragePurgeDecisions(fixture.coreDb, {
+        workerStorageBinding: owner.workerStorageBinding,
+        reserveStoragePurge: (command, authorizePurge) => {
+          earlier = owner
+            .reserveStoragePurge(
+              {
+                kind: 'purge-pending',
+                storageRef: 'storage_absent_core_hold',
+                expectedRevision: 1,
+                schedulerRows: [],
+              },
+              () => true
+            )
+            .then(
+              () => undefined,
+              (error: unknown) => error
+            );
+          const reserved = owner.reserveStoragePurge(command, authorizePurge);
+          reserving.resolve();
+          return reserved;
+        },
+      }),
+    });
+    const input = {
+      confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
+      expectedRevision: fixture.binding.revision,
+      requestId: '00000000-0000-4000-8000-000000000006',
+      storageRef: fixture.binding.storageRef,
+    } as const;
+    // Main holds the delivery of the earlier Core-hold writer's reply (its refusal).
+    const emit = Worker.prototype.emit;
+    const captured = Promise.withResolvers<() => void>();
+    let armed = true;
+    const replies = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event: string | symbol,
+      ...args: unknown[]
+    ) {
+      const reply = args[0];
+      if (
+        armed &&
+        event === 'message' &&
+        typeof reply === 'object' &&
+        reply !== null &&
+        'domain' in reply &&
+        typeof reply.domain === 'object' &&
+        reply.domain !== null &&
+        'operation' in reply.domain &&
+        reply.domain.operation === 'nanohost-owner'
+      ) {
+        armed = false;
+        captured.resolve(() => emit.call(this, event, ...args));
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    let result: unknown;
+    try {
+      const purge = operations.purge({ actor, workspaceId: fixture.workspaceId }, input).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+      await reserving.promise;
+      const deliver = await captured.promise;
+      // The token's expiry instant arrives while the reservation waits for the Core hold.
+      fixture.coreDb.sqlite
+        .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
+        .run(new Date().toISOString(), 'token_admin_local');
+      deliver();
+      expect(await earlier).toMatchObject({ code: 'not_found' });
+      result = await purge;
+    } finally {
+      replies.mockRestore();
+    }
+    expect(result).toMatchObject({ error: { code: 'authorization_denied' } });
+    expect(purgeStorage).not.toHaveBeenCalled();
+    expect(
+      readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        getWorkerStorageBinding({ sqlite }, { storageRef: fixture.binding.storageRef })
+      )
+    ).toEqual(fixture.binding);
   });
 
   it('does not repeat the host purge when its committed native settlement reply is lost', async () => {

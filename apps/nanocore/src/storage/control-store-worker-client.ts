@@ -4399,12 +4399,18 @@ class ControlStoreWorkerClient {
           },
           workerStorageBinding: async (input) =>
             (await write({ kind: 'worker-storage-binding', input })).value,
-          reserveStoragePurge: (input) => {
+          reserveStoragePurge: (input, authorizePurge) => {
             const original = structuredClone(input);
-            return withCoreHold(
-              async (coreIdentity) =>
-                (await write({ kind: 'worker-storage-purge', input: original, coreIdentity })).value
-            );
+            return withCoreHold(async (coreIdentity) => {
+              // The caller's authority can end while the hold drains. Recheck it before the post.
+              if (!authorizePurge())
+                throw new WorkerStorageBindingError(
+                  'authorization_denied',
+                  'Worker storage purge is not authorized.'
+                );
+              return (await write({ kind: 'worker-storage-purge', input: original, coreIdentity }))
+                .value;
+            });
           },
           prepareRuntimeTarget: async (input, occurrenceId) =>
             read((handle) =>
@@ -8420,7 +8426,9 @@ class ControlStoreWorkerClient {
         error instanceof ControlStoreWorkerError &&
         error.domain?.operation === 'execution-attempt'
       )
-        throw new ExecutionAttemptRefusal(error.domain.message);
+        throw error.domain.reason
+          ? new ExecutionAttemptRefusal(error.domain.message, error.domain.reason)
+          : new ExecutionAttemptRefusal(error.domain.message);
       throw error;
     }
   }

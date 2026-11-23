@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
@@ -371,6 +372,99 @@ async function fixture(
 }
 
 describe('execution backend port through real Core coordination', () => {
+  it('keeps a lost-authority claim refusal while an unresolved writer holds the Workspace', async () => {
+    const f = await fixture('unknown', 'local', true);
+    f.port.cancel.mockImplementation(async (correlation) => ({
+      ...correlation,
+      disposition: 'unknown',
+      execution: 'unknown',
+      fenceRef: null,
+      outcomeRef: null,
+    }));
+    const post = Worker.prototype.postMessage;
+    let revoked = false;
+    let revocationFault: unknown;
+    const requests = vi.spyOn(Worker.prototype, 'postMessage');
+    try {
+      // A's submitted attempt holds the Workspace. Its unknown submit response keeps that hold.
+      await f.queue('authority-holder');
+      await f.dispatch();
+      const holder = f.effectCalls[0]!;
+      f.settleSubmitResponse();
+      await vi.waitFor(() =>
+        expect(attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase).toBe(
+          'closing'
+        )
+      );
+      const b = await f.queue('authority-lost', 'th_00000000-0000-7a11-83a9-10eb8b40019b');
+      const admission = requireSchedulerAdmissionEntry(f.db, b.queueEntryId);
+      // Main selected B under its current authority. The responsible User is disabled before Core
+      // decides B's claim, so Core refuses B for lost authority while A still holds the Workspace.
+      // The claim request is posted after that commit. The Worker can hold the Core write lock, so
+      // the revocation retries a busy lock without blocking Main.
+      const revoke = async () => {
+        for (;;) {
+          try {
+            f.db.sqlite
+              .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+              .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+            return;
+          } catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'SQLITE_BUSY')) {
+              revocationFault = error;
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        }
+      };
+      requests.mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
+        const message: unknown = args[0];
+        if (
+          revoked === false &&
+          typeof message === 'object' &&
+          message !== null &&
+          'operation' in message &&
+          message.operation === 'execution-attempt' &&
+          'input' in message &&
+          typeof message.input === 'object' &&
+          message.input !== null &&
+          'kind' in message.input &&
+          message.input.kind === 'create'
+        ) {
+          revoked = true;
+          void revoke().then(() => post.apply(this, args));
+          return;
+        }
+        return post.apply(this, args);
+      });
+      const dispatched = f.dispatch().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      const outcome = await dispatched;
+      expect(revoked).toBe(true);
+      expect(revocationFault).toBeUndefined();
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(
+        'The exact queued admission is no longer dispatchable.'
+      );
+      expect(
+        attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase,
+        'A still holds the Workspace when Main handles the refusal.'
+      ).toBe('closing');
+      expect(attempts(f.db).filter((row) => row.turn_id === b.turnId)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(f.db, b.queueEntryId)).toEqual(admission);
+      expect(f.port.submit).toHaveBeenCalledOnce();
+    } finally {
+      requests.mockRestore();
+      f.db.sqlite.close();
+    }
+  });
+
   it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
     const f = await fixture();
     const setup = createTestAgentSetup({

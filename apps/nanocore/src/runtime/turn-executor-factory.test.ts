@@ -4823,7 +4823,20 @@ describe('createConfiguredTurnExecutor', () => {
         const result = await Promise.race([dispatch, unexpectedStart]);
         secondStarted = result.startedTurns.length > 0;
         expect(result.startedTurns).toEqual([]);
-        expect(result.terminalResult).toMatchObject({ status: 'queued', reason: 'backend-busy' });
+        // Replaced per A8 P10 ruling (a). The first Turn's unresolved writer holds the Workspace and
+        // the selected storage. The Core claim refuses the second Turn before the backend. The second
+        // Turn keeps its original durable admission and gets no attempt.
+        expect(result.terminalResult).toMatchObject({ status: 'queued', reason: 'thread-busy' });
+        expect(
+          attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+            workspaceId,
+            threadId: threadIds[1]!,
+            turnId: secondTurnId,
+          })
+        ).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, second.queueEntryId)
+        ).toEqual(second);
         expect(native.effects).toHaveLength(beforeEffects);
         expect(commands.mock.calls).toHaveLength(beforeCommands);
         expect(
@@ -15274,30 +15287,67 @@ describe('createConfiguredTurnExecutor', () => {
           return { execution: result.value };
         });
         const deferred = await execution;
+        // Replaced per A8 P10 ruling (a). The first Task's unresolved writer holds the Workspace, so
+        // the Core claim refuses the second Task before any backend capacity check. The second Task
+        // keeps its original durable admission. It gets no attempt and causes no backend contact.
         expect(deferred).toMatchObject({
           startedTurns: [],
-          terminalResult: { status: 'queued', reason: 'backend-busy' },
+          terminalResult: { status: 'queued', reason: 'thread-busy' },
         });
-        const busy = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope);
-        expect(busy).toHaveLength(1);
-        expect(attempts.isSchedulerExecutionBusyRefusal(busy[0]!)).toBe(true);
-        expect(readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, busy[0]!.attemptId))).toBeNull();
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+        ).toEqual(entry);
+        const secondContact = () => [
+          ...earlyContinuity.mock.calls.filter(([input]) => input.threadId === second.threadId),
+          ...earlyCapacity.mock.calls.filter(([pkg]) => pkg.scope.threadId === second.threadId),
+          ...commitObservation.mock.calls.filter(
+            ([, input]) => input.preparation.turn.threadId === second.threadId
+          ),
+          ...materialization.mock.calls.filter(([pkg]) => pkg.scope.threadId === second.threadId),
+        ];
+        expect(secondContact()).toEqual([]);
+        expect(secondCommitted).toBe(false);
+        expect(materializationCapacity).toEqual([]);
+        expect(native.effects.slice(effectsBefore)).toEqual([]);
         const finalGuard = scenario === 'materialization-forced-retirement-guard';
-        const materialized = materialization.mock.calls.flatMap(([pkg], index) =>
-          pkg.scope.threadId === second.threadId ? [materialization.mock.results[index]!.value] : []
-        );
-        expect(materialized).toHaveLength(finalGuard ? 1 : 0);
-        if (finalGuard)
-          await expect(materialized[0]).rejects.toBeInstanceOf(
-            WorkerGovernanceCapacityUnavailableError
-          );
-        if (scenario === 'late-capacity') {
-          expect(configuration).toBe(reduced);
-          expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(2);
+        if (delayedGuard) {
+          // The Core hold now refuses before these backend guards. Keep them witnessed at the
+          // backend owner. The probe is the first Task's real package, moved to the second Thread
+          // and Turn. Core refused the second Task, so it has no package of its own.
+          const firstPackage = materialization.mock.calls.find(
+            ([pkg]) => pkg.scope.threadId === first.threadId
+          )![0];
+          const probe = {
+            ...firstPackage,
+            scope: {
+              ...firstPackage.scope,
+              threadId: second.threadId,
+              turnId: second.id,
+              requestId: requestIds[1]!,
+              agentSessionId: testEntityId('as', 'busy-backend-guard'),
+            },
+          };
+          const probeEffects = native.effects.length;
+          if (scenario === 'late-capacity') {
+            // The late capacity reduction does not change the resident limit. The real capacity
+            // recheck still refuses a distinct Thread against the actual first binding.
+            configuration = reduced;
+            expect(await inspect(probe)).toBe('capacity-saturated');
+            expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(2);
+            configuration = initial;
+          }
+          if (finalGuard) {
+            // The final materialization owner refuses against the actual first binding without
+            // opening or deleting anything, under the configured capacity of 2.
+            expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
+            expect(await inspect(probe)).toBe('capacity-saturated');
+            await expect(materialize(probe)).rejects.toBeInstanceOf(
+              WorkerGovernanceCapacityUnavailableError
+            );
+          }
+          expect(native.effects).toHaveLength(probeEffects);
         }
-        expect(materializationCapacity).toEqual(finalGuard ? ['capacity-saturated'] : []);
-        if (finalGuard)
-          expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
         const retainedAttempt = attempts.requireSchedulerExecutionAttempt(
           coreDb,
           firstAttempt.attemptId
@@ -15370,6 +15420,9 @@ describe('createConfiguredTurnExecutor', () => {
         for (const [command] of commandObservation.mock.calls)
           expect(['session.open', 'session.inspect', 'turn.start']).toContain(command.operation);
         expect(executor.releaseResults).toEqual([]);
+        // No attempt or backend contact for the second Task while the first Task holds the Workspace.
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+        expect(secondContact()).toEqual([]);
         staleObservation = false;
         configuration = scenario === 'late-capacity' ? raised : initial;
         if (scenario === 'late-capacity')
@@ -15398,7 +15451,11 @@ describe('createConfiguredTurnExecutor', () => {
         expect(store.getTurnById(first.id).status).toBe('completed');
         const attemptId = testEntityId('attempt', 'attempt_busy_after_release');
         const agentSessionId = testEntityId('as', 'as_busy_second');
-        expect(attemptId).not.toBe(busy[0]!.attemptId);
+        // The same durable admission resumes after the release. Core created no attempt for it.
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+        ).toEqual(entry);
         admitted = await native.admitTurn(entry, {
           attemptId,
           agentSessionId,
@@ -15493,7 +15550,8 @@ describe('createConfiguredTurnExecutor', () => {
           attempts
             .listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)
             .map((attempt) => attempt.attemptId)
-        ).toEqual([busy[0]!.attemptId, attemptId]);
+          // Replaced per A8 P10 ruling (a): the held claim committed no busy attempt.
+        ).toEqual([attemptId]);
       } finally {
         staleObservation = false;
         configuration = initial;
@@ -15542,6 +15600,197 @@ describe('createConfiguredTurnExecutor', () => {
     },
     60_000
   );
+
+  it('defers the held-placement claim refusal when the holder releases before dispatch classifies it', async () => {
+    const coreDb = await createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const threadIds = ['first', 'second'].map((label) => testEntityId('th', `th_reply_${label}`));
+    for (const threadId of threadIds)
+      await store.createThread(workspaceId, 'Independent Task', threadId);
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const initial = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(coreDb.dataRoot),
+      agentManifests: [setup.manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Reply fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      openKitConfig: {
+        defaults: { defaultAgentId: setup.manifest.id },
+        nanohost: { maxActiveTurnsPerSandbox: 1 },
+      },
+    });
+    const config = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      initialSnapshot: initial,
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => config.current(),
+    });
+    const executor = native.executor;
+    const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
+    const dispatches = vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop');
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: executor,
+      runtimeConfigManager: config,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
+    });
+    const requestIds = [
+      '00000000-0000-4000-8000-000000000310',
+      '00000000-0000-4000-8000-000000000311',
+    ];
+    const post = (index: number) =>
+      app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId, threadId: threadIds[index]! },
+          {
+            body: JSON.stringify({
+              requestId: requestIds[index],
+              input: 'Run an independent Task and complete once the Workspace is released.',
+            }),
+          }
+        )
+      );
+    // The predecessor's release does not commit while the claim's Worker reply is unhandled. The
+    // race window is after the client returns the typed claim refusal and before dispatch classifies
+    // it. Hold that typed refusal at this claim reply boundary.
+    const claim = nativeAttemptOwners.createSchedulerExecutionAttempt;
+    const captured = Promise.withResolvers<() => void>();
+    let heldReply = false;
+    const claims = vi
+      .spyOn(nativeAttemptOwners, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (...args) => {
+        try {
+          return await claim(...args);
+        } catch (error) {
+          if (
+            !heldReply &&
+            error instanceof nativeAttemptOwners.ExecutionAttemptRefusal &&
+            error.message === 'Execution placement has an unresolved writer.'
+          ) {
+            heldReply = true;
+            const read = Promise.withResolvers<void>();
+            captured.resolve(read.resolve);
+            await read.promise;
+          }
+          throw error;
+        }
+      });
+    let deliver: (() => void) | undefined;
+    let secondResponse: ReturnType<typeof post> | undefined;
+    try {
+      const firstResponse = await post(0);
+      expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
+      const first = (await firstResponse.json()).turn as ReturnType<FsStore['getTurnById']>;
+      const firstWork = native.executionFor(first.id);
+      const firstCloseout = admissions.mock.results.find((result) => result.type === 'return')!
+        .value.closeout;
+      await Promise.race([firstWork.launched.promise, firstCloseout]);
+      const firstAttempt = await vi.waitFor(() => {
+        const attempt = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId,
+          threadId: first.threadId,
+          turnId: first.id,
+        })[0]!;
+        expect(attempt).toMatchObject({ phase: 'open', disposition: 'accepted' });
+        return attempt;
+      });
+      const workspaceHeld = () =>
+        journalOwners.kernelSchedulerScopeIsHeld(coreDb, [`workspace:${workspaceId}`]);
+      expect(workspaceHeld()).toBe(true);
+      secondResponse = post(1);
+      deliver = await captured.promise;
+      const entry = attemptActionOwners
+        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .find((candidate) => candidate.threadId === threadIds[1])!;
+      expect(entry).toMatchObject({ status: 'queued', workspaceId, threadId: threadIds[1] });
+      const secondScope = { workspaceId, threadId: entry.threadId, turnId: entry.turnId };
+      // The first Task's exact release commits before dispatch handles the held refusal.
+      firstWork.completion.resolve();
+      await firstWork.execution;
+      await firstCloseout;
+      await vi.waitFor(
+        () =>
+          expect(
+            attempts.requireSchedulerExecutionAttempt(coreDb, firstAttempt.attemptId)
+          ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) }),
+        { timeout: 30_000 }
+      );
+      expect(workspaceHeld()).toBe(false);
+      const effectsBefore = native.effects.length;
+      deliver();
+      deliver = undefined;
+      const { execution } = await vi.waitFor(() => {
+        const index = dispatches.mock.calls.findIndex(
+          ([input]) => input.callerQueueEntryId === entry.queueEntryId
+        );
+        const result = dispatches.mock.results[index];
+        if (result?.type !== 'return') throw new Error('Original Task dispatch has not entered.');
+        return { execution: result.value };
+      });
+      // The deciding Core refusal named the held placement. Dispatch defers it although a later
+      // read of the placement is false. The second Task keeps its original durable admission.
+      await expect(execution).resolves.toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'thread-busy' },
+      });
+      expect((await secondResponse).status).toBe(202);
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+      ).toEqual(entry);
+      expect(native.effects).toHaveLength(effectsBefore);
+    } finally {
+      deliver?.();
+      claims.mockRestore();
+      for (const threadId of threadIds)
+        for (const turn of store.listThreadTurns(workspaceId, threadId))
+          native.executionFor(turn.id).completion.resolve();
+      await secondResponse?.catch(() => undefined);
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      for (const entry of attemptActionOwners
+        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .filter((entry) => threadIds.includes(entry.threadId))) {
+        await app.request(
+          ...operationRequest('scheduler.cancel', {
+            workspaceId,
+            queueEntryId: entry.queueEntryId,
+          })
+        );
+      }
+      await Promise.allSettled(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      await Promise.allSettled(
+        vi
+          .mocked(executor.startTurn)
+          .mock.results.filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      admissions.mockRestore();
+      dispatches.mockRestore();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    }
+  }, 60_000);
 
   // One completed proof per group. Later cases copy that data root and run only their own fault.
   beforeAll(async () => {
