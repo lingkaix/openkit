@@ -57,6 +57,10 @@ import {
   existingWorkspaceExportRoot,
 } from '../storage/workspace-transfer-routes.js';
 import {
+  currentAdmittedTestNanoHostOwner,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
+import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
@@ -1342,9 +1346,13 @@ describe('credential carrier slice 1: Core acceptance', () => {
       // This peer models lost Core result delivery, not physical H2/Epoch invalidation.
       // Read the existing affected-domain owners and exercise actual next admission.
       const actorId = ensureLocalUser(f.coreDb);
+      // The App passes its admitted NanoHost owner for every physical observation.
+      const nanoHostCleanupOwner = currentAdmittedTestNanoHostOwner(f.coreDb);
+      if (!nanoHostCleanupOwner) throw new Error('Fixture has no admitted NanoHost owner.');
       const view = () =>
         readRuntimeCleanupView({
           coreDb: f.coreDb,
+          nanoHostCleanupOwner: { state: 'ready', value: nanoHostCleanupOwner },
           actor: { kind: 'local', userId: actorId },
           now: new Date(),
           maxEntries: 64,
@@ -1360,10 +1368,17 @@ describe('credential carrier slice 1: Core acceptance', () => {
         reasons: [],
       });
       const sandboxes = affected.items.filter((item) => item.source === 'sandbox-runtime');
-      const anchored = getWorkerBackendSession(f.coreDb, f.attemptId)!;
-      const storage = getWorkerStorageBindingForSandbox(f.coreDb, {
-        sandboxBindingRef: anchored.sandboxBindingRef,
-      });
+      const anchored = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, f.attemptId)
+      )!;
+      const readStorage = () =>
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerStorageBindingForSandbox(
+            { sqlite },
+            { sandboxBindingRef: anchored.sandboxBindingRef }
+          )
+        );
+      const storage = readStorage();
       const priorAttempt = requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
       if (fails) {
         expect(sandboxes).toHaveLength(1);
@@ -1451,11 +1466,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
       if (fails) {
         await expect(preparation).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
         expect(requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toEqual(priorAttempt);
-        expect(
-          getWorkerStorageBindingForSandbox(f.coreDb, {
-            sandboxBindingRef: anchored.sandboxBindingRef,
-          })
-        ).toEqual(storage);
+        expect(readStorage()).toEqual(storage);
         expect(
           view()
             .items.filter((item) => item.source === 'sandbox-runtime')
