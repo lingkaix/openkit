@@ -342,7 +342,7 @@ describe('Worker storage bindings', () => {
       );
       // The baseline fixture admitted the owner before the race fault was armed.
       await shutdownControlStoreWorkerClient();
-      await openAdmittedTestNanoHost(coreDb);
+      const nativeOwner = (await openAdmittedTestNanoHost(coreDb)).value.owner;
       blocker = openCoreDb(coreDb.dataRoot);
       blocker.sqlite.exec('BEGIN IMMEDIATE');
       const posted = new Promise<void>((resolve) => {
@@ -380,38 +380,42 @@ describe('Worker storage bindings', () => {
       ]);
       let referenceChecks = 0;
       const actor = { kind: 'local' as const, userId };
-      const disposition = await markWorkerStoragePurgePending(coreDb, {
-        authorizePurge: () => {
-          requireCurrentDeploymentAdmin(coreDb, actor);
-          return isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-            authentication: 'deployment-admin',
-            mutating: true,
-            policyOperation: 'workspace.configure',
-          });
+      const disposition = await markWorkerStoragePurgePending(
+        coreDb,
+        {
+          authorizePurge: () => {
+            requireCurrentDeploymentAdmin(coreDb, actor);
+            return isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+              authentication: 'deployment-admin',
+              mutating: true,
+              policyOperation: 'workspace.configure',
+            });
+          },
+          expectedRevision: idle.revision,
+          hasSurvivingReferences: () => {
+            referenceChecks += 1;
+            const hasReference = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              workspaceId,
+              statuses: ['queued', 'denied', 'admitted'],
+            }).some(
+              (entry) =>
+                entry.workerStorageChoice?.kind === 'selected' &&
+                entry.workerStorageChoice.storageRef === idle.storageRef
+            );
+            expect(hasReference).toBe(false);
+            blocker!.sqlite.exec('COMMIT');
+            // Main must wait synchronously here so the callback returns its genuine
+            // earlier observation only after the actual native admission commits.
+            const waited = Atomics.wait(signal, 0, 0, 10_000);
+            if (waited === 'timed-out')
+              throw new Error('The genuine Scheduler FULL reply was not observed.');
+            expect(Atomics.load(signal, 0)).toBe(1);
+            return hasReference;
+          },
+          storageRef: idle.storageRef,
         },
-        expectedRevision: idle.revision,
-        hasSurvivingReferences: () => {
-          referenceChecks += 1;
-          const hasReference = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-            workspaceId,
-            statuses: ['queued', 'denied', 'admitted'],
-          }).some(
-            (entry) =>
-              entry.workerStorageChoice?.kind === 'selected' &&
-              entry.workerStorageChoice.storageRef === idle.storageRef
-          );
-          expect(hasReference).toBe(false);
-          blocker!.sqlite.exec('COMMIT');
-          // Main must wait synchronously here so the callback returns its genuine
-          // earlier observation only after the actual native admission commits.
-          const waited = Atomics.wait(signal, 0, 0, 10_000);
-          if (waited === 'timed-out')
-            throw new Error('The genuine Scheduler FULL reply was not observed.');
-          expect(Atomics.load(signal, 0)).toBe(1);
-          return hasReference;
-        },
-        storageRef: idle.storageRef,
-      }).then(
+        nativeOwner.reserveStoragePurge
+      ).then(
         (binding) => ({ kind: 'fulfilled' as const, binding }),
         (error: unknown) => ({ kind: 'rejected' as const, error })
       );
@@ -1124,55 +1128,82 @@ describe('Worker storage bindings', () => {
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      const unknown = await markWorkerStorageAttachmentUnknown(coreDb, {
-        attachmentGeneration: reserved.attachmentGeneration,
-        expectedRevision: reserved.revision,
-        storageRef: binding.storageRef,
-      });
+      const owner = requireTestNanoHostOwner(coreDb);
+      const unknown = await markWorkerStorageAttachmentUnknown(
+        coreDb,
+        {
+          attachmentGeneration: reserved.attachmentGeneration,
+          expectedRevision: reserved.revision,
+          storageRef: binding.storageRef,
+        },
+        owner.workerStorageBinding
+      );
       expect(unknown.state).toBe('unknown');
       expect(() =>
         selectWorkerStorageBinding(bindingDb(coreDb), { ...selection(unknown) })
       ).toThrow('storage is fenced');
       expect(
+        // A fenced association has no current Sandbox. Its proved release posts through the
+        // owner's post-decision transition writer, as the factory cleanup does.
         (
-          await attachment.release({
-            attachmentGeneration: unknown.attachmentGeneration,
-            cleanupProved: true,
-            expectedRevision: unknown.revision,
-            storageRef: unknown.storageRef,
-          })
+          await releaseWorkerStorageAttachment(
+            coreDb,
+            {
+              attachmentGeneration: unknown.attachmentGeneration,
+              cleanupProved: true,
+              expectedRevision: unknown.revision,
+              storageRef: unknown.storageRef,
+            },
+            owner.workerStorageBinding
+          )
         ).state
       ).toBe('idle');
 
       await expect(
-        markWorkerStoragePurgePending(coreDb, {
-          authorizePurge: () => false,
+        markWorkerStoragePurgePending(
+          coreDb,
+          {
+            authorizePurge: () => false,
+            expectedRevision: purgeable.revision,
+            hasSurvivingReferences: () => false,
+            storageRef: purgeable.storageRef,
+          },
+          owner.reserveStoragePurge
+        )
+      ).rejects.toThrow('purge is not authorized');
+      const pending = await markWorkerStoragePurgePending(
+        coreDb,
+        {
+          authorizePurge: () => true,
           expectedRevision: purgeable.revision,
           hasSurvivingReferences: () => false,
           storageRef: purgeable.storageRef,
-        })
-      ).rejects.toThrow('purge is not authorized');
-      const pending = await markWorkerStoragePurgePending(coreDb, {
-        authorizePurge: () => true,
-        expectedRevision: purgeable.revision,
-        hasSurvivingReferences: () => false,
-        storageRef: purgeable.storageRef,
-      });
-      const settled = await settleWorkerStoragePurge(coreDb, {
-        expectedRevision: pending.revision,
-        outcome: 'unknown',
-        storageRef: purgeable.storageRef,
-      });
+        },
+        owner.reserveStoragePurge
+      );
+      const settled = await settleWorkerStoragePurge(
+        coreDb,
+        {
+          expectedRevision: pending.revision,
+          outcome: 'unknown',
+          storageRef: purgeable.storageRef,
+        },
+        owner.workerStorageBinding
+      );
       expect(settled.state).toBe('unknown');
       expect(
         getWorkerStorageBinding(bindingDb(coreDb), { storageRef: purgeable.storageRef })
       ).toEqual(settled);
       await expect(
-        settleWorkerStoragePurge(coreDb, {
-          expectedRevision: pending.revision,
-          outcome: 'purged',
-          storageRef: purgeable.storageRef,
-        })
+        settleWorkerStoragePurge(
+          coreDb,
+          {
+            expectedRevision: pending.revision,
+            outcome: 'purged',
+            storageRef: purgeable.storageRef,
+          },
+          owner.workerStorageBinding
+        )
       ).rejects.toThrow('revision changed');
       expect(
         getWorkerStorageBinding(bindingDb(coreDb), { storageRef: purgeable.storageRef })

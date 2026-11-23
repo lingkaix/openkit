@@ -455,13 +455,17 @@ it.each(['harness', 'sandbox', 'epoch', 'state'] as const)(
       });
     const before = tuple(f.db);
     await expect(
-      claimNanoHostIdleCaptureDrain(f.db, {
-        ...f.idleClaim,
-        harnessBindingRef:
-          changed === 'harness' ? 'other-harness-binding' : 'restore-harness-binding',
-        sandboxBindingRef: changed === 'sandbox' ? 'other-sandbox-binding' : sandboxBindingRef,
-        originPhysicalEpoch: changed === 'epoch' ? 'c'.repeat(64) : physicalEpoch,
-      })
+      claimNanoHostIdleCaptureDrain(
+        f.db,
+        {
+          ...f.idleClaim,
+          harnessBindingRef:
+            changed === 'harness' ? 'other-harness-binding' : 'restore-harness-binding',
+          sandboxBindingRef: changed === 'sandbox' ? 'other-sandbox-binding' : sandboxBindingRef,
+          originPhysicalEpoch: changed === 'epoch' ? 'c'.repeat(64) : physicalEpoch,
+        },
+        f.owner.harnessTurnLifecycle
+      )
     ).rejects.toThrow('Idle capture drain ownership changed.');
     expect(tuple(f.db)).toEqual(before);
     expect(await coldTuple(f)).toEqual(before);
@@ -471,12 +475,16 @@ it.each(['harness', 'sandbox', 'epoch', 'state'] as const)(
 it('claims only the exact idle-capture Harness and persists its drain after reopen', async () => {
   const f = await fixture(false, false, true);
   const before = tuple(f.db);
-  await claimNanoHostIdleCaptureDrain(f.db, {
-    ...f.idleClaim,
-    harnessBindingRef: 'restore-harness-binding',
-    sandboxBindingRef,
-    originPhysicalEpoch: physicalEpoch,
-  });
+  await claimNanoHostIdleCaptureDrain(
+    f.db,
+    {
+      ...f.idleClaim,
+      harnessBindingRef: 'restore-harness-binding',
+      sandboxBindingRef,
+      originPhysicalEpoch: physicalEpoch,
+    },
+    f.owner.harnessTurnLifecycle
+  );
   const expected = {
     sandbox: before.sandbox,
     harness: before.harness.map((row) => ({ ...(row as object), drain_state: 'draining' })),

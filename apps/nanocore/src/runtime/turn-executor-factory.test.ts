@@ -5902,7 +5902,10 @@ describe('createConfiguredTurnExecutor', () => {
       const cleanupAnchor = readAdmittedTestNanoHost(resident.coreDb, (sqlite) => getWorkerBackendSession({ sqlite },
         String(created.input.leaseId)
       ))!;
-      await harnessRecords.drainNanoHostSandboxAdmission(resident.coreDb, {
+      // Production posts this drain through the admitted owner (`harnessWriter()`), never Core.
+      const drainOwner = currentAdmittedTestNanoHostOwner(resident.coreDb);
+      if (!drainOwner) throw new Error('Fixture drain has no admitted NanoHost owner.');
+      await harnessRecords.drainNanoHostSandboxAdmission(drainOwner, {
         sandboxBindingRef: cleanupAnchor.sandboxBindingRef,
         originPhysicalEpoch: cleanupAnchor.originPhysicalEpoch,
       });
@@ -6082,10 +6085,19 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const fixture = [];
       for (const { producer, request } of captured) {
+        // Same image deciding storage as the App dispatch (`app.ts`); image effects need it.
+        const nativeStorage = currentAdmittedTestNanoHostStorage(coreDb);
         const dispatch = createNanoHostSessionDispatch({
           coreDb,
           sessionAuthority: authority,
           fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          ...(nativeStorage
+            ? {
+                nativeStorage,
+                settlePreparedImage: (input) =>
+                  appOwner.settlePreparedNanoHostImage(coreDb, nativeStorage, input),
+              }
+            : {}),
         });
         await dispatch.readiness!(
           physical,
@@ -10754,7 +10766,7 @@ describe('createConfiguredTurnExecutor', () => {
                 expectedRevision: before.revision,
                 storageRef: before.storageRef,
               },
-              currentAdmittedTestNanoHostOwner(coreDb)?.releaseIdleSandboxStorage
+              currentAdmittedTestNanoHostOwner(coreDb)?.workerStorageBinding
             );
             expectedAfterFailure = await reserveWorkerStorageAttachment(
               coreDb,
@@ -12090,6 +12102,8 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxes: [{ ...exposed, drainState: 'draining' }],
               attemptPhase: 'open',
               cancelledOrClosed: false,
+              // The one outside session is still live. It is open or running, by when the held
+              // Turn start returned; it is never interrupted or closed before this drain.
               sessions: [expect.stringMatching(/^(open|running)$/)],
             });
             if (response.ok) {
@@ -12190,9 +12204,12 @@ describe('createConfiguredTurnExecutor', () => {
             createAttemptId: () => siblingAttemptId,
             createAgentSessionId: () => siblingAgentSessionId,
           });
+          // The original's unresolved writer holds the Workspace and the selected storage. The
+          // sibling stays queued in FIFO order without an attempt (durable Scheduler design, Queue
+          // And Bounds: queued receipts and capacity deferral).
           expect(deferred).toMatchObject({
             startedTurns: [],
-            terminalResult: { status: 'queued', reason: 'backend-busy' },
+            terminalResult: { status: 'queued', reason: 'thread-busy' },
           });
           expect(native.effects).toHaveLength(beforeAdmissionEffects);
           expect(
@@ -12287,11 +12304,14 @@ describe('createConfiguredTurnExecutor', () => {
             );
             await Promise.race([firstCloseoutPaused.promise, firstCloseout]);
             expect(firstSettled).toBe(false);
+            // Worker control records are Native-owned; read them on the admitted generation.
             const finalFor = (pkg: AgentEnvironmentPackage) =>
-              getWorkerControlAcceptedFinalStatus(coreDb, {
-                ...pkg.scope,
-                packageSnapshotId: pkg.snapshotId,
-              });
+              readAdmittedTestNanoHost(coreDb, (sqlite) =>
+                getWorkerControlAcceptedFinalStatus(
+                  { sqlite },
+                  { ...pkg.scope, packageSnapshotId: pkg.snapshotId }
+                )
+              );
             expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
             const effectsBefore = native.effects.length;
             revocation = app
