@@ -920,7 +920,7 @@ interface Opening {
   readonly promise: Promise<void>;
   readonly policyReads: Set<PolicyReadResource>;
   /** A second NanoHost tuple cannot rely on a write whose FULL ACK is outstanding. */
-  nanoHostWritePending?: true | 'core-owner-read' | 'target-stable-write';
+  nanoHostWritePending?: true | 'core-owner-read' | 'core-recovery-close' | 'target-stable-write';
   nanoHostWriteAcknowledgement?: Promise<void>;
   communicationRelayWake?: () => void;
   communicationBindingPending?: boolean;
@@ -3396,8 +3396,12 @@ class ControlStoreWorkerClient {
           if (!gate.enabled()) return disabled;
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
-          // An owner write in flight leaves the completion unsettled. Wait for its acknowledgement.
-          if (opening.nanoHostWritePending) {
+          // These pending writes leave the Native completion unchanged. Wait for their acknowledgement.
+          if (
+            opening.nanoHostWritePending === 'target-stable-write' ||
+            opening.nanoHostWritePending === 'core-owner-read' ||
+            opening.nanoHostWritePending === 'core-recovery-close'
+          ) {
             readCurrent(() => undefined, true);
             return { state: 'pending' };
           }
@@ -4319,7 +4323,8 @@ class ControlStoreWorkerClient {
               const workspaceId = lease.attempt.workspaceId;
               const release = this.enterScope(scope, workspaceId, 'capture');
               if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
-              opening.nanoHostWritePending = true;
+              // The Core close leaves Native rows unchanged. A completion read waits for its ACK.
+              opening.nanoHostWritePending = 'core-recovery-close';
               nativeHeld = true;
               try {
                 return await this.runOperation(
@@ -4440,10 +4445,16 @@ class ControlStoreWorkerClient {
                 .value;
             });
           },
-          prepareRuntimeTarget: async (input, occurrenceId) =>
-            read((handle) =>
-              readers.prepareNanoHostRuntimeTargetTransition(handle, input, occurrenceId)
-            ),
+          // A RuntimeTarget refusal holds the target transition, as `transitionRuntimeTarget` does.
+          prepareRuntimeTarget: async (input, occurrenceId) => {
+            try {
+              return read((handle) =>
+                readers.prepareNanoHostRuntimeTargetTransition(handle, input, occurrenceId)
+              );
+            } catch (error) {
+              return serverOwnerUnavailable(owner, error);
+            }
+          },
           transitionRuntimeTarget: async (kernel, original) => {
             if (!gate.enabled()) return disabled;
             if (this.backupHold || opening.nanoHostTargetTransition)

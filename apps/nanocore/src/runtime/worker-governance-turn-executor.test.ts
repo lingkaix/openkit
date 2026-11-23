@@ -3968,20 +3968,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const emit = NativeWorker.prototype.emit;
     let closeId: unknown;
     const closeHeld = Promise.withResolvers<() => void>();
-    const requests = vi
-      .spyOn(NativeWorker.prototype, 'postMessage')
-      .mockImplementation(function (this: NativeWorker, ...args: Parameters<NativeWorker['postMessage']>) {
-        const message = args[0] as
-          | { id?: unknown; operation?: string; nanoHostRecoveryClose?: unknown }
-          | undefined;
-        if (
-          closeId === undefined &&
-          message?.operation === 'execution-attempt' &&
-          message.nanoHostRecoveryClose !== undefined
-        )
-          closeId = message.id;
-        return post.apply(this, args);
-      });
+    const requests = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['postMessage']>
+    ) {
+      const message = args[0] as
+        | { id?: unknown; operation?: string; nanoHostRecoveryClose?: unknown }
+        | undefined;
+      if (
+        closeId === undefined &&
+        message?.operation === 'execution-attempt' &&
+        message.nanoHostRecoveryClose !== undefined
+      )
+        closeId = message.id;
+      return post.apply(this, args);
+    });
     const replies = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
       this: NativeWorker,
       event: string | symbol,
