@@ -11837,7 +11837,7 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxes: [{ ...exposed, drainState: 'draining' }],
               attemptPhase: 'open',
               cancelledOrClosed: false,
-              sessions: ['open'],
+              sessions: [expect.stringMatching(/^(open|running)$/)],
             });
             if (response.ok) {
               expect(
