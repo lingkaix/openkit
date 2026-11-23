@@ -54,6 +54,7 @@ import {
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
+  schedulerClaimScopes,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import {
@@ -192,6 +193,9 @@ export async function runSchedulerDispatchLoop(
   const unpublishedQueueEntryIds = new Set<string>();
   // Admissions whose placement an unresolved writer holds stay queued in FIFO order for this pass.
   const heldQueueEntryIds = new Set<string>();
+  // A deferred admission keeps its FIFO priority for its placement. The holder can release before
+  // dispatch reads the refusal, so a younger admission that shares a scope waits for a later pass.
+  const deferredScopes = new Set<string>();
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     if (input.agentWorkPaused?.())
@@ -214,6 +218,11 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
+    if (schedulerClaimScopes(entry).some((scope) => deferredScopes.has(scope))) {
+      heldQueueEntryIds.add(entry.queueEntryId);
+      count--;
+      continue;
+    }
     if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
       // Retain the admission and all exclusion; only this process-local selection is skipped.
       unpublishedQueueEntryIds.add(entry.queueEntryId);
@@ -312,6 +321,7 @@ export async function runSchedulerDispatchLoop(
         // The Core claim refused a held placement. Keep the admission queued and select the next
         // eligible entry; the release wake or a later pass dispatches it in FIFO order.
         heldQueueEntryIds.add(entry.queueEntryId);
+        for (const scope of schedulerClaimScopes(entry)) deferredScopes.add(scope);
         count--;
         continue;
       }
