@@ -115,7 +115,7 @@ import {
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { ensureLayout } from '../storage/fs-layout.js';
+import { ensureLayout, readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
@@ -155,13 +155,17 @@ import {
   currentAdmittedTestNanoHostStorage,
   mutateAdmittedTestNanoHost,
   mutateStoppedTestNanoHost,
+  openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
   readAdmittedTestNanoHostSettled,
   readStoppedTestNanoHost,
   reopenAdmittedTestNanoHost,
   testNanoHostRecoveryJoins,
 } from '../test-support/admitted-nanohost.js';
-import { retainPreparedTestNanoHostSubmission } from '../test-support/nanohost-worker-lease.js';
+import {
+  retainPreparedTestNanoHostSubmission,
+  seedTestWorkerControlReceipt,
+} from '../test-support/nanohost-worker-lease.js';
 import {
   queueTestPreparedHarnessOperation,
   recordTestExecutionAttempt,
@@ -275,7 +279,7 @@ import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
-  recordWorkerControlAcceptedRecord,
+  prepareWorkerControlObservation,
 } from './worker-control-records.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
@@ -494,6 +498,39 @@ function insertFactoryUser(coreDb: Awaited<ReturnType<typeof createFactoryCoreDb
     .run(userId, userId, `${userId}@worker-fixture.openkit.invalid`);
 }
 
+/** Imports the fixture Workspace once, owned by the given user, before any Turn runs in it. */
+async function ensureFactoryWorkspace(
+  coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
+  workspaceId: string,
+  ownerUserId: string
+): Promise<FsStore> {
+  const store = new FsStore({ dataRoot: coreDb.dataRoot });
+  try {
+    store.getWorkspace(workspaceId);
+  } catch {
+    const fixture = createDemoWorkspaceForUser(ownerUserId);
+    await store.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId,
+        knowledge: [],
+      }),
+      agentSessions: [],
+      artifacts: [],
+      itemRevisions: [],
+      knowledge: [],
+      threads: [],
+      turnEvents: [],
+      turns: [],
+      workspace: {
+        ...fixture.workspace,
+        counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
+        id: workspaceId,
+      },
+    });
+  }
+  return store;
+}
+
 /** Creates the current user, Workspace registry, and Thread facts required by storage admission. */
 async function authorizeNanoHostPackage(
   coreDb: Awaited<ReturnType<typeof createFactoryCoreDb>>,
@@ -509,30 +546,7 @@ async function authorizeNanoHostPackage(
   const ownerUserId = options.ownerUserId ?? userId;
   insertFactoryUser(coreDb, userId);
   insertFactoryUser(coreDb, ownerUserId);
-  const store = new FsStore({ dataRoot: coreDb.dataRoot });
-  try {
-    store.getWorkspace(environmentPackage.scope.workspaceId);
-  } catch {
-    const fixture = createDemoWorkspaceForUser(ownerUserId);
-    await store.importWorkspaceSnapshot({
-      ...notebookImportFixture({
-        workspaceId: environmentPackage.scope.workspaceId,
-        knowledge: [],
-      }),
-      agentSessions: [],
-      artifacts: [],
-      itemRevisions: [],
-      knowledge: [],
-      threads: [],
-      turnEvents: [],
-      turns: [],
-      workspace: {
-        ...fixture.workspace,
-        counts: { artifactCount: 0, knowledgeEntryCount: 0, threadCount: 0 },
-        id: environmentPackage.scope.workspaceId,
-      },
-    });
-  }
+  const store = await ensureFactoryWorkspace(coreDb, environmentPackage.scope.workspaceId, ownerUserId);
   try {
     store.getThread(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId);
   } catch {
@@ -1008,49 +1022,132 @@ async function attachNanoHostStorageFixture(
     )
     .pluck()
     .get(input.threadId) as string | undefined;
-  const nanoHost = attemptId
-    ? (currentAdmittedTestNanoHostOwner(coreDb) ?? (await reopenAdmittedTestNanoHost(coreDb)).value.owner)
-    : undefined;
-  const target = nanoHost?.readRuntimeTarget(input.runtimeTargetId);
-  // Without an open attempt on a ready target the fixture keeps the unowned call, which production refuses.
-  const owner: AdmittedWorkerStorageAttachment | undefined =
-    attemptId && nanoHost && target?.state === 'ready' && target.value
+  const reserveAndActivate = async (owner: AdmittedWorkerStorageAttachment | undefined) => {
+    const reserved = await createAndReserveWorkerStorageAttachment(
+      coreDb,
+      {
+        agentSessionId: input.agentSessionId,
+        authorizeContributor: () => true,
+        deploymentId: input.deploymentId,
+        layout,
+        purpose: 'work',
+        responsibleUserId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
+        runtimeTargetId: input.runtimeTargetId,
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+      },
+      owner
+    );
+    return await activateWorkerStorageAttachment(
+      coreDb,
+      {
+        attachmentGeneration: reserved.attachmentGeneration,
+        expectedRevision: reserved.revision,
+        sandboxBindingRef: input.sandboxBindingRef,
+        storageRef: reserved.storageRef,
+        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+      },
+      owner
+    );
+  };
+  // A Thread without an open attempt got its attached storage from an earlier attempt, as in production.
+  if (!attemptId)
+    return withHistoryStorageAttempt(
+      coreDb,
+      {
+        label: `attach_${input.sandboxBindingRef}`,
+        runtimeTargetId: input.runtimeTargetId,
+        threadId: input.threadId,
+        workspaceId: input.workspaceId,
+      },
+      reserveAndActivate
+    );
+  const nanoHost =
+    currentAdmittedTestNanoHostOwner(coreDb) ?? (await reopenAdmittedTestNanoHost(coreDb)).value.owner;
+  const target = nanoHost.readRuntimeTarget(input.runtimeTargetId);
+  // Without a ready target the fixture keeps the unowned call, which production refuses.
+  return reserveAndActivate(
+    target.state === 'ready' && target.value
       ? {
-    attemptId,
-    target: target.value,
-    read: nanoHost.read,
-    write: nanoHost.writeStorageAttachment,
-    authorizeContributor: () => true,
-    isCurrentAttempt: () =>
-      attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
+          attemptId,
+          target: target.value,
+          read: nanoHost.read,
+          write: nanoHost.writeStorageAttachment,
+          authorizeContributor: () => true,
+          isCurrentAttempt: () =>
+            attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
         }
-      : undefined;
-  const reserved = await createAndReserveWorkerStorageAttachment(
-    coreDb,
-    {
-      agentSessionId: input.agentSessionId,
+      : undefined
+  );
+}
+
+/**
+ * Runs storage history seeds inside one earlier attempt of the Thread, as production does: its queued
+ * admission, an open attempt through the attempt owner, the storage writes bound to that attempt on the
+ * admitted NanoHost owner, then a close without effects. Production refuses a storage write without an
+ * attempt (the attempt-less owner gate is not wired), so history storage cannot be seeded outside one.
+ */
+async function withHistoryStorageAttempt<Value>(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: {
+    readonly label: string;
+    readonly runtimeTargetId: string;
+    readonly threadId: string;
+    readonly workspaceId: string;
+    /** A live sibling keeps its attempt open after the storage writes. */
+    readonly keepOpen?: boolean;
+  },
+  run: (owner: AdmittedWorkerStorageAttachment) => Promise<Value>
+): Promise<Value> {
+  let ownerUserId = coreDb.sqlite
+    .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+    .pluck()
+    .get(input.workspaceId) as string | undefined;
+  if (!ownerUserId) {
+    // A Workspace that does not exist yet is owned by the factory packages' default trigger user,
+    // as `authorizeNanoHostPackage` later records it.
+    ownerUserId = 'usr_00000000-0000-7353-b5d8-71f1d581a738';
+    insertFactoryUser(coreDb, ownerUserId);
+    await ensureFactoryWorkspace(coreDb, input.workspaceId, ownerUserId);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: input.workspaceId });
+  }
+  const entry = await createTestQueueEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue:history_${input.label}`,
+    requestedAgentId: 'agent_worker',
+    text: 'Earlier Turn that prepared the retained storage.',
+    threadId: input.threadId,
+    triggerActor: { kind: 'user', id: ownerUserId },
+    turnId: testEntityId('tu', `history_${input.label}`),
+    workspaceId: input.workspaceId,
+  });
+  const { attemptId } = await nativeAttemptOwners.createSchedulerExecutionAttempt(coreDb, {
+    entry,
+    preparationInput: { admission: entry },
+  });
+  const nanoHost =
+    currentAdmittedTestNanoHostOwner(coreDb) ?? (await reopenAdmittedTestNanoHost(coreDb)).value.owner;
+  const target = nanoHost.readRuntimeTarget(input.runtimeTargetId);
+  if (target.state !== 'ready' || !target.value)
+    throw new Error('History storage fixture target is not ready.');
+  try {
+    return await run({
+      attemptId,
+      target: target.value,
+      read: nanoHost.read,
+      write: nanoHost.writeStorageAttachment,
       authorizeContributor: () => true,
-      deploymentId: input.deploymentId,
-      layout,
-      purpose: 'work',
-      responsibleUserId: 'usr_00000000-0000-7696-8ea8-dab52c9a8217',
-      runtimeTargetId: input.runtimeTargetId,
-      threadId: input.threadId,
-      workspaceId: input.workspaceId,
-    },
-    owner
-  );
-  return await activateWorkerStorageAttachment(
-    coreDb,
-    {
-      attachmentGeneration: reserved.attachmentGeneration,
-      expectedRevision: reserved.revision,
-      sandboxBindingRef: input.sandboxBindingRef,
-      storageRef: reserved.storageRef,
-      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-    },
-    owner
-  );
+      isCurrentAttempt: () =>
+        attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
+    });
+  } finally {
+    if (!input.keepOpen)
+      await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId,
+        cause: 'worker-final-phase',
+        noOutstandingEffects: true,
+      });
+  }
 }
 
 /** Completes the compatibility inputs omitted by narrow backend test fixtures. */
@@ -1881,6 +1978,8 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('rechecks the anchored physical Epoch immediately before effect dispatch', async () => {
     const coreDb = await createFactoryCoreDb();
+    // A production placement carries the Data Root layout marker's deployment (the Epoch fence reserves it).
+    const deploymentId = readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
     const effect = vi.fn(async () => ({}));
     const sessionDispatch = {
       effect,
@@ -1894,7 +1993,7 @@ describe('createConfiguredTurnExecutor', () => {
     } satisfies NanoHostSessionDispatch;
     try {
       const first = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
-        deploymentId: 'deployment_epoch_race',
+        deploymentId,
         identityId: 'identity_epoch_race',
         observedAt: '2026-08-21T00:00:00.000Z',
         targetId: 'target_epoch_race',
@@ -1911,7 +2010,7 @@ describe('createConfiguredTurnExecutor', () => {
         agentSessionId: testEntityId('as', 'as_epoch_race'),
         backendKind: 'openshell',
         backendSessionId: 'backend-epoch-race',
-        deploymentId: 'deployment_epoch_race',
+        deploymentId,
         packageSnapshotId: 'aepsnap_epoch_race',
         runtimeTargetId: 'target_epoch_race',
         stagingDirectoryRef: 'runtime-staging/epoch-race',
@@ -2056,8 +2155,10 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('does not close a predecessor or acquire a lease while RuntimeTarget is unready', async () => {
     const coreDb = await createFactoryCoreDb();
+    // A production placement carries the Data Root layout marker's deployment (the Epoch fence reserves it).
+    const deploymentId = readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
     const firstGeneration = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
-      deploymentId: 'deployment-unready-admission',
+      deploymentId,
       identityId: 'identity-unready-admission',
       observedAt: '2026-08-21T00:00:00.000Z',
       targetId: 'target-unready-admission',
@@ -2096,7 +2197,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
-      deploymentId: 'deployment-unready-admission',
+      deploymentId,
       identityId: 'identity-unready-admission',
       observedAt: '2026-08-21T00:00:02.000Z',
       targetId: 'target-unready-admission',
@@ -4399,6 +4500,8 @@ describe('createConfiguredTurnExecutor', () => {
       try {
         applyMigrations(seedDb);
         ensureLocalUser(seedDb);
+        // The earlier boot that created this Core also provisioned its NanoHost owner (index.ts fresh initialization).
+        await openAdmittedTestNanoHost(seedDb);
         await authorizeNanoHostPackage(seedDb, previousPackage);
         await authorizeNanoHostPackage(seedDb, currentPackage);
       } finally {
@@ -6124,11 +6227,16 @@ describe('createConfiguredTurnExecutor', () => {
         if (mode === 'missing-lease')
           fixture.coreDb.sqlite.prepare('DELETE FROM scheduler_execution_attempts').run();
         else
-          fixture.coreDb.sqlite
-            .prepare(
-              'UPDATE scheduler_execution_attempts SET worker_capability_token_hash = ? WHERE attempt_id = ?'
-            )
-            .run('f'.repeat(64), testEntityId('attempt', `lease_live_evidence_${mode}`));
+          // The route-token family hashes live in the NanoHost backend session's route binding (K8).
+          mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `UPDATE worker_backend_sessions
+                 SET worker_route_binding_json = json_set(worker_route_binding_json, '$.capability', ?)
+                 WHERE attempt_id = ?`
+              )
+              .run('f'.repeat(64), testEntityId('attempt', `lease_live_evidence_${mode}`))
+          );
         const before = fixture.effects.filter((effect) => effect.kind === 'file.export').length;
         const capture = (fixture.backend as unknown as { captureArtifact: WorkerArtifactCapture })
           .captureArtifact;
@@ -6237,8 +6345,10 @@ describe('createConfiguredTurnExecutor', () => {
               },
             },
           });
-          for (const record of mode === 'committed' ? [metadata, chunk] : [metadata])
-            await recordWorkerControlAcceptedRecord(coreDb, {
+          // The accepted Worker records live in the NanoHost file (K8); production prepares each observation first.
+          for (const record of mode === 'committed' ? [metadata, chunk] : [metadata]) {
+            await prepareWorkerControlObservation(coreDb, record);
+            seedTestWorkerControlReceipt(coreDb, {
               acceptedAt: pkg.createdAt,
               lineage,
               operation: 'event_append',
@@ -6246,6 +6356,7 @@ describe('createConfiguredTurnExecutor', () => {
               recordKey: String(record.sequence),
               sequence: record.sequence,
             });
+          }
           source = Buffer.from(`${JSON.stringify(metadata)}\n${JSON.stringify(chunk)}\n`);
         },
         onExport: async (request) => {
@@ -9470,31 +9581,56 @@ describe('createConfiguredTurnExecutor', () => {
         version: '1',
         workingDirectory: '/tmp/openkit-bootstrap',
       };
-      const predecessor = await createAndReserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: testEntityId('as', 'as_restart_same_epoch_predecessor'),
-        authorizeContributor: () => true,
-        deploymentId: 'deployment_restart_same_epoch',
-        layout,
-        purpose: 'work',
-        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
-        runtimeTargetId: 'target_restart_same_epoch',
-        threadId: 'th_00000000-0000-7980-ad21-84518466e2ab',
-        workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
-      });
-      const predecessorAttached = await activateWorkerStorageAttachment(coreDb, {
-        attachmentGeneration: predecessor.attachmentGeneration,
-        expectedRevision: predecessor.revision,
-        sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
-        storageRef: predecessor.storageRef,
-        targets: predecessor.targets.map((target) => ({ ...target, initialized: true })),
-      });
-      const idleStorage = await releaseWorkerStorageAttachment(coreDb, {
-        attachmentGeneration: predecessorAttached.attachmentGeneration,
-        cleanupProved: true,
-        expectedRevision: predecessorAttached.revision,
-        sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
-        storageRef: predecessorAttached.storageRef,
-      });
+      // The predecessor Turn reserved, attached and (after proved Sandbox cleanup) released the storage.
+      const { predecessor, idleStorage } = await withHistoryStorageAttempt(
+        coreDb,
+        {
+          label: 'restart_same_epoch_predecessor',
+          runtimeTargetId: 'target_restart_same_epoch',
+          threadId: 'th_00000000-0000-7980-ad21-84518466e2ab',
+          workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
+        },
+        async (owner) => {
+          const predecessor = await createAndReserveWorkerStorageAttachment(
+            coreDb,
+            {
+              agentSessionId: testEntityId('as', 'as_restart_same_epoch_predecessor'),
+              authorizeContributor: () => true,
+              deploymentId: 'deployment_restart_same_epoch',
+              layout,
+              purpose: 'work',
+              responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+              runtimeTargetId: 'target_restart_same_epoch',
+              threadId: 'th_00000000-0000-7980-ad21-84518466e2ab',
+              workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
+            },
+            owner
+          );
+          const predecessorAttached = await activateWorkerStorageAttachment(
+            coreDb,
+            {
+              attachmentGeneration: predecessor.attachmentGeneration,
+              expectedRevision: predecessor.revision,
+              sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
+              storageRef: predecessor.storageRef,
+              targets: predecessor.targets.map((target) => ({ ...target, initialized: true })),
+            },
+            owner
+          );
+          const idleStorage = await releaseWorkerStorageAttachment(
+            coreDb,
+            {
+              attachmentGeneration: predecessorAttached.attachmentGeneration,
+              cleanupProved: true,
+              expectedRevision: predecessorAttached.revision,
+              sandboxBindingRef: 'sandbox_restart_same_epoch_predecessor',
+              storageRef: predecessorAttached.storageRef,
+            },
+            currentAdmittedTestNanoHostOwner(coreDb)!.releaseIdleSandboxStorage
+          );
+          return { predecessor, idleStorage };
+        }
+      );
       const retainedWorkSlotRef = predecessor.currentWorkSlotRef;
       if (!retainedWorkSlotRef) throw new Error('Expected predecessor retained work slot.');
       expect(retainedWorkSlotRef).not.toBe(
@@ -10681,6 +10817,54 @@ describe('createConfiguredTurnExecutor', () => {
         },
         now: () => failureAt,
       });
+      const layout = {
+        family: 'openkit-worker',
+        gid: 1000,
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        uid: 1000,
+        version: '1',
+        workingDirectory: '/tmp/openkit-bootstrap',
+      };
+      // Production reserves storage during materialization, inside the open attempt on the admitted owner.
+      const reservation = admittedTestStorageAttachment(coreDb, attemptId, identity.runtimeTargetId);
+      const reserved = await createAndReserveWorkerStorageAttachment(
+        coreDb,
+        {
+          agentSessionId: identity.agentSessionId,
+          authorizeContributor: () => true,
+          deploymentId: identity.deploymentId,
+          layout,
+          purpose: 'work',
+          responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+          runtimeTargetId: identity.runtimeTargetId,
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        },
+        reservation
+      );
+      expect(reserved).toMatchObject({
+        attachmentGeneration: 1,
+        currentAgentSessionId: identity.agentSessionId,
+        currentSandboxBindingRef: null,
+        revision: 2,
+        state: 'reserved',
+      });
+      const duplicateReserved = await createAndReserveWorkerStorageAttachment(
+        coreDb,
+        {
+          agentSessionId: identity.agentSessionId,
+          authorizeContributor: () => true,
+          deploymentId: identity.deploymentId,
+          layout,
+          purpose: 'work',
+          responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+          runtimeTargetId: identity.runtimeTargetId,
+          threadId: environmentPackage.scope.threadId,
+          workspaceId: environmentPackage.scope.workspaceId,
+        },
+        reservation
+      );
       await transitionWorkerBackendSessionState(coreDb, {
         attemptId,
         fromState: 'materializing',
@@ -10697,44 +10881,6 @@ describe('createConfiguredTurnExecutor', () => {
         attemptId,
         cause: 'turn-start-failed',
         now: () => failureAt,
-      });
-      const layout = {
-        family: 'openkit-worker',
-        gid: 1000,
-        platform: { architecture: 'amd64', os: 'linux' },
-        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
-        uid: 1000,
-        version: '1',
-        workingDirectory: '/tmp/openkit-bootstrap',
-      };
-      const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: identity.agentSessionId,
-        authorizeContributor: () => true,
-        deploymentId: identity.deploymentId,
-        layout,
-        purpose: 'work',
-        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
-        runtimeTargetId: identity.runtimeTargetId,
-        threadId: environmentPackage.scope.threadId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      });
-      expect(reserved).toMatchObject({
-        attachmentGeneration: 1,
-        currentAgentSessionId: identity.agentSessionId,
-        currentSandboxBindingRef: null,
-        revision: 2,
-        state: 'reserved',
-      });
-      const duplicateReserved = await createAndReserveWorkerStorageAttachment(coreDb, {
-        agentSessionId: identity.agentSessionId,
-        authorizeContributor: () => true,
-        deploymentId: identity.deploymentId,
-        layout,
-        purpose: 'work',
-        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
-        runtimeTargetId: identity.runtimeTargetId,
-        threadId: environmentPackage.scope.threadId,
-        workspaceId: environmentPackage.scope.workspaceId,
       });
 
       await expect(runtime.cleanupBackendSession(identity)).rejects.toThrow(
@@ -13740,17 +13886,33 @@ describe('createConfiguredTurnExecutor', () => {
       const contributors = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) => sqlite
         .prepare('SELECT COUNT(*) AS count FROM worker_storage_contributors WHERE storage_ref = ?')
         .get(fixture.storageRef)) as { readonly count: number };
-      const siblingReserved = await createAndReserveWorkerStorageAttachment(fixture.coreDb, {
-        agentSessionId: testEntityId('as', 'as_live_partial_sibling'),
-        authorizeContributor: () => true,
-        deploymentId: fixture.identity.deploymentId,
-        layout: before.layout,
-        purpose: 'work',
-        responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
-        runtimeTargetId: fixture.identity.runtimeTargetId,
-        threadId: 'th_00000000-0000-79ee-8305-d2c3357bd6fa',
-        workspaceId: fixture.environmentPackage.scope.workspaceId,
-      });
+      // The live sibling Thread reserves inside its own open attempt, as production does.
+      const siblingReserved = await withHistoryStorageAttempt(
+        fixture.coreDb,
+        {
+          keepOpen: true,
+          label: 'live_partial_sibling',
+          runtimeTargetId: fixture.identity.runtimeTargetId,
+          threadId: 'th_00000000-0000-79ee-8305-d2c3357bd6fa',
+          workspaceId: fixture.environmentPackage.scope.workspaceId,
+        },
+        (owner) =>
+          createAndReserveWorkerStorageAttachment(
+            fixture.coreDb,
+            {
+              agentSessionId: testEntityId('as', 'as_live_partial_sibling'),
+              authorizeContributor: () => true,
+              deploymentId: fixture.identity.deploymentId,
+              layout: before.layout,
+              purpose: 'work',
+              responsibleUserId: 'usr_00000000-0000-7353-b5d8-71f1d581a738',
+              runtimeTargetId: fixture.identity.runtimeTargetId,
+              threadId: 'th_00000000-0000-79ee-8305-d2c3357bd6fa',
+              workspaceId: fixture.environmentPackage.scope.workspaceId,
+            },
+            owner
+          )
+      );
       await transitionWorkerBackendSessionState(fixture.coreDb, {
         fromState: 'materializing',
         attemptId: fixture.leaseId,
@@ -18867,11 +19029,13 @@ describe('createConfiguredTurnExecutor', () => {
   }, { signal }) => {
     const coreDb = await createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
+    // A production placement carries the Data Root layout marker's deployment (the Epoch fence reserves it).
+    const deploymentId = readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
     try {
       mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`INSERT INTO nanohost_runtime_targets (
         target_id, identity_id, deployment_id, connection_generation,
         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-      ) VALUES ('target_capacity_guard', 'identity_capacity_guard', 'deployment_capacity_guard',
+      ) VALUES ('target_capacity_guard', 'identity_capacity_guard', '${deploymentId}',
         83, 1, 1, 1, '${'a'.repeat(64)}', '2026-10-02T10:09:16.893Z', 1)`));
       await createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
@@ -18950,7 +19114,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
       const retainedStorage = await attachNanoHostStorageFixture(coreDb, {
         agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
-        deploymentId: 'deployment_capacity_guard',
+        deploymentId,
         runtimeTargetId: 'target_capacity_guard',
         sandboxBindingRef: 'sandbox-binding-capacity-guard',
         threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
@@ -18958,11 +19122,20 @@ describe('createConfiguredTurnExecutor', () => {
       });
       // The native writer uses its own connection, so the retirement witness must share the
       // fixture database rather than a Main-connection TEMP schema.
-      coreDb.sqlite.exec(`CREATE TABLE retired_harness_operations (operation_state TEXT);
+      // The Harness rows live in the NanoHost file (K8), so the witness shares that file.
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.exec(`CREATE TABLE retired_harness_operations (operation_state TEXT);
         CREATE TRIGGER observe_harness_retirement BEFORE DELETE ON harness_instance_records
         WHEN OLD.harness_instance_id = 'harness-capacity-guard'
-        BEGIN INSERT INTO retired_harness_operations VALUES (OLD.operation_state); END;`);
-      const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+        BEGIN INSERT INTO retired_harness_operations VALUES (OLD.operation_state); END;`)
+      );
+      // Production composes the gateway on the acknowledged NanoHost owner it shares with boot (index.ts).
+      const nanoHostStorage = currentAdmittedTestNanoHostStorage(coreDb);
+      if (!nanoHostStorage) throw new Error('Fixture has no admitted NanoHost storage.');
+      const workerControlGateway = createDefaultWorkerControlGateway(coreDb, undefined, {
+        state: 'ready',
+        value: nanoHostStorage,
+      });
       let transcriptEvent: unknown;
       const nativeDispatch = createFactoryNanoHostDispatch(effects, {
         onExport: async (request) => {
@@ -19026,11 +19199,8 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           .prepare('SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE input_ref=?')
           .get(residentPackage.snapshotId) as { id: string }
       ).id;
-      attempts.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: residentAttemptId,
-        operationId: `fixture:${residentAttemptId}`,
-        submission: true,
-      });
+      // The resident anchor never launched a Native lease, so it closes without effects (the
+      // retired operation-id submission record is refused by production).
       await closeFactoryAttempt(coreDb, residentAttemptId);
       coreDb.sqlite
         .prepare(`UPDATE scheduler_execution_attempts
@@ -19061,6 +19231,11 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         (attempt) => attempt.agent_session_id === testEntityId('as', 'as_capacity_guard_resident')
       );
       expect(oldAttempt).toBeDefined();
+      // The outcome reference is read through the production attempt reader (step refs), not a retired column.
+      const oldOutcomeRef = attempts.requireSchedulerExecutionAttempt(
+        coreDb,
+        oldAttempt!.attempt_id as string
+      ).outcomeRef;
       if (operation === 'unknown')
         expect(oldAttempt!.phase, 'A must already be a positively closed Core attempt.').toBe(
           'closed'
@@ -19277,14 +19452,17 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             ).toMatchObject({
               phase: 'closed',
               terminal_cause: oldAttempt!.terminal_cause,
-              outcome_ref: oldAttempt!.outcome_ref,
             });
+            expect(
+              attempts.requireSchedulerExecutionAttempt(coreDb, oldAttempt!.attempt_id as string)
+                .outcomeRef
+            ).toBe(oldOutcomeRef);
           }
         };
         await refuseUnproved();
         const unfenced = (await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
           targetId: 'target_capacity_guard',
-          deploymentId: 'deployment_capacity_guard',
+          deploymentId,
           identityId: 'identity_capacity_guard',
           observedAt: '2026-10-02T10:10:00.000Z',
         }));
@@ -19297,10 +19475,11 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         // Fresh readiness is insufficient while this successor has not fenced its exact predecessor.
         await refuseUnproved();
         const successor = unfenced;
-        // Keep the exact successor, with its predecessor fence proved but readiness still absent.
+        // Keep the exact successor, with its predecessor fence proved but readiness still absent
+        // (a target that is not ready has no physical Epoch; the target codec refuses that mix).
         mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
           .prepare(
-            'UPDATE nanohost_runtime_targets SET predecessor_fenced = 1, ready = 0, fresh_empty = 0 WHERE target_id = ? AND connection_generation = ?'
+            'UPDATE nanohost_runtime_targets SET predecessor_fenced = 1, ready = 0, fresh_empty = 0, physical_epoch = NULL WHERE target_id = ? AND connection_generation = ?'
           )
           .run(successor.targetId, successor.connectionGeneration));
         await refuseUnproved();
@@ -19330,12 +19509,13 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         // Serve the outside worker until the original dispatch and full closeout settle.
         while (!finished && !signal.aborted) {
           // The peer polls pending commands, not retired or unknown predecessors that Core may remove.
-          const integrations = readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+          // It reads beside the live dispatch, so it waits out each pending owner write.
+          const integrations = (await readAdmittedTestNanoHostSettled(coreDb, (sqlite) => sqlite
             .prepare(`SELECT DISTINCT s.sandbox_integration_binding_ref AS ref
               FROM sandbox_runtime_records s JOIN harness_instance_records h
                 ON h.sandbox_runtime_id = s.sandbox_runtime_id
               WHERE h.operation_state = 'queued'`)
-            .all()) as { ref: string }[];
+            .all())) as { ref: string }[];
           for (const integration of integrations) {
             const exact = await dispatchNanoHostHarnessOperation(coreDb, {
               sandboxIntegrationBindingRef: integration.ref,
@@ -19351,7 +19531,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             if (exact.operation === 'turn.start') {
               expect(exact.body.turnId).toBe(accepted.id);
               expect(
-                readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+                await readAdmittedTestNanoHostSettled(coreDb, (sqlite) => sqlite
                   .prepare(
                     'SELECT adapter_id FROM harness_instance_records WHERE harness_instance_id = ?'
                   )
@@ -19370,8 +19550,10 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
                 )
               ).toHaveLength(1);
               expect(own!.terminal_cause).toBeNull();
-              expect(own!.outcome_ref).toBeNull();
-              expect(own!.fence_ref).toBeNull();
+              // Outcome and fence references are read through the production attempt reader (step refs).
+              const ownRecord = attempts.requireSchedulerExecutionAttempt(coreDb, own!.attempt_id as string);
+              expect(ownRecord.outcomeRef).toBeNull();
+              expect(ownRecord.fenceRef).toBeNull();
               const agentSession = store.getAgentSession(String(exact.body.agentSessionId));
               const packageSnapshotId = agentSession.environmentPackageSnapshotId!;
               expect(packageSnapshotId).toEqual(expect.any(String));
@@ -19411,11 +19593,11 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               } finally {
                 workspaceDb.sqlite.close();
               }
-              const events = readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
+              const events = (await readAdmittedTestNanoHostSettled(coreDb, (sqlite) => sqlite
                 .prepare(
                   "SELECT record_json FROM worker_control_records WHERE turn_id = ? AND operation = 'event_append'"
                 )
-                .all(accepted.id)) as { record_json: string }[];
+                .all(accepted.id))) as { record_json: string }[];
               transcriptEvent = events.length ? JSON.parse(events[0]!.record_json) : undefined;
             }
             const result = {
@@ -19482,7 +19664,9 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           .all()))
           expect(retained).toEqual({ adapter_id: 'pi' });
         expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
-        expect(coreDb.sqlite.prepare('SELECT * FROM retired_harness_operations').all()).toEqual([
+        expect(readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT * FROM retired_harness_operations').all()
+        )).toEqual([
           { operation_state: 'unknown' },
         ]);
         expect(
@@ -19490,14 +19674,19 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         ).toMatchObject({
           phase: 'closed',
           terminal_cause: oldAttempt!.terminal_cause,
-          outcome_ref: oldAttempt!.outcome_ref,
         });
+        expect(
+          attempts.requireSchedulerExecutionAttempt(coreDb, oldAttempt!.attempt_id as string).outcomeRef
+        ).toBe(oldOutcomeRef);
         const ownClosed = observeExecutionAttempts(coreDb).filter(
           (row) => row.turn_id === accepted.id
         );
         expect(ownClosed.length).toBeGreaterThan(0);
         expect(ownClosed.every((row) => row.phase === 'closed')).toBe(true);
-        expect(ownClosed.at(-1)).toMatchObject({ outcome_ref: `turn:${accepted.id}:completed` });
+        expect(
+          attempts.requireSchedulerExecutionAttempt(coreDb, ownClosed.at(-1)!.attempt_id as string)
+            .outcomeRef
+        ).toBe(`turn:${accepted.id}:completed`);
         expect(String(ownClosed.at(-1)!.terminal_cause)).not.toContain('session.close');
         return;
       }
@@ -19572,7 +19761,9 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         'image.inspect',
         'sandbox.create',
       ]);
-      expect(coreDb.sqlite.prepare('SELECT * FROM retired_harness_operations').all()).toEqual([
+      expect(readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT * FROM retired_harness_operations').all()
+        )).toEqual([
         { operation_state: 'unknown' },
       ]);
       expect(
@@ -19732,11 +19923,14 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             })
           : null;
         for (const readinessField of ['ready', 'fresh_empty', 'predecessor_fenced']) {
-          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 0`));
+          // A target that is not ready has no physical Epoch; the target codec refuses that mix.
+          const unset = readinessField === 'ready' ? 'ready = 0, physical_epoch = NULL' : `${readinessField} = 0`;
+          const reset = readinessField === 'ready' ? `ready = 1, physical_epoch = '${'a'.repeat(64)}'` : `${readinessField} = 1`;
+          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`UPDATE nanohost_runtime_targets SET ${unset}`));
           expect(await backend.inspectMaterializationCapacity?.(desiredPackage)).toBe(
             'capacity-saturated'
           );
-          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`UPDATE nanohost_runtime_targets SET ${readinessField} = 1`));
+          mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`UPDATE nanohost_runtime_targets SET ${reset}`));
         }
         mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
           .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
@@ -19782,11 +19976,12 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get())
         ).toEqual({ count: 1 });
         await anchorNanoHostMaterialization(coreDb, backend, desiredPackage);
+        // The storage history seed leaves its own closed attempt; select the desired package's lease.
         const lease = coreDb.sqlite
           .prepare(
-            'SELECT attempt_id AS leaseId, binding_ref AS bindingRef FROM scheduler_execution_attempts'
+            'SELECT attempt_id AS leaseId, binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE input_ref = ?'
           )
-          .get() as { leaseId: string; bindingRef: string };
+          .get(desiredPackage.snapshotId) as { leaseId: string; bindingRef: string };
         coreDb.sqlite
           .prepare('UPDATE scheduler_execution_attempts SET binding_ref = ? WHERE attempt_id = ?')
           .run('sandbox-binding-capacity-guard', lease.leaseId);
@@ -21461,31 +21656,55 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         version: '1',
         workingDirectory: '/tmp/openkit-bootstrap',
       };
-      const reserved = await createAndReserveWorkerStorageAttachment(fixture.coreDb, {
-        agentSessionId: testEntityId('as', 'as_00000000-0000-7a52-acda-ab0e51b27751'),
-        authorizeContributor: () => true,
-        deploymentId: `deployment_admin_foreign`,
-        layout,
-        purpose: 'work',
-        responsibleUserId: fixture.adminUserId,
-        runtimeTargetId: 'target_admin_foreign',
-        threadId: privateThread.id,
-        workspaceId: fixture.workspaceId,
-      });
-      const attached = await activateWorkerStorageAttachment(fixture.coreDb, {
-        attachmentGeneration: reserved.attachmentGeneration,
-        expectedRevision: reserved.revision,
-        sandboxBindingRef: 'sandbox-binding:foreign-private',
-        storageRef: reserved.storageRef,
-        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-      });
-      const idle = await releaseWorkerStorageAttachment(fixture.coreDb, {
-        attachmentGeneration: attached.attachmentGeneration,
-        cleanupProved: true,
-        expectedRevision: attached.revision,
-        sandboxBindingRef: 'sandbox-binding:foreign-private',
-        storageRef: attached.storageRef,
-      });
+      // An earlier Turn on the private Thread reserved, attached and released the retained storage.
+      const idle = await withHistoryStorageAttempt(
+        fixture.coreDb,
+        {
+          label: 'admin_foreign_private',
+          runtimeTargetId: 'target_admin_foreign',
+          threadId: privateThread.id,
+          workspaceId: fixture.workspaceId,
+        },
+        async (owner) => {
+          const reserved = await createAndReserveWorkerStorageAttachment(
+            fixture.coreDb,
+            {
+              agentSessionId: testEntityId('as', 'as_00000000-0000-7a52-acda-ab0e51b27751'),
+              authorizeContributor: () => true,
+              deploymentId: `deployment_admin_foreign`,
+              layout,
+              purpose: 'work',
+              responsibleUserId: fixture.adminUserId,
+              runtimeTargetId: 'target_admin_foreign',
+              threadId: privateThread.id,
+              workspaceId: fixture.workspaceId,
+            },
+            owner
+          );
+          const attached = await activateWorkerStorageAttachment(
+            fixture.coreDb,
+            {
+              attachmentGeneration: reserved.attachmentGeneration,
+              expectedRevision: reserved.revision,
+              sandboxBindingRef: 'sandbox-binding:foreign-private',
+              storageRef: reserved.storageRef,
+              targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+            },
+            owner
+          );
+          return await releaseWorkerStorageAttachment(
+            fixture.coreDb,
+            {
+              attachmentGeneration: attached.attachmentGeneration,
+              cleanupProved: true,
+              expectedRevision: attached.revision,
+              sandboxBindingRef: 'sandbox-binding:foreign-private',
+              storageRef: attached.storageRef,
+            },
+            currentAdmittedTestNanoHostOwner(fixture.coreDb)!.releaseIdleSandboxStorage
+          );
+        }
+      );
       await expect(
         fixture.backend.materialize(fixture.environmentPackage, {
           sandboxBindingRef: factoryPackageBinding(fixture.coreDb, fixture.environmentPackage),
@@ -21501,7 +21720,8 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         })
       ).rejects.toMatchObject({
         code: 'authorization_denied',
-        message: 'Worker storage contributor audience is no longer authorized.',
+        // The admitted reservation refuses the foreign audience before its Native post (nothing commits).
+        message: 'Worker storage contributor is not currently authorized.',
       });
       expect(
         readAdmittedTestNanoHost(fixture.coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef: idle.storageRef }))
@@ -23843,11 +24063,12 @@ async function closeAdmittedFactoryAttempt(
           cause: 'worker-final-phase',
           outcomeRef,
         });
-  const original = readRetainedNanoHostSubmission(db, attemptId);
-  if (!original) throw new Error('Fixture closeout has no original Core grant.');
   const advance = async (
     stage: 'cleanup-pending' | 'physical-cleaned' | 'workspace-handoff' | 'cleaned'
   ) => {
+    // Only a Native stage advance needs the original submission; a refused-before-submit attempt has none.
+    const original = readRetainedNanoHostSubmission(db, attemptId);
+    if (!original) throw new Error('Fixture closeout has no original Core grant.');
     const { session, proof, target } = await readAdmittedTestNanoHostSettled(db, (sqlite) => {
       const current = readNanoHostRecoveryLease(sqlite, original.lease);
       return {
