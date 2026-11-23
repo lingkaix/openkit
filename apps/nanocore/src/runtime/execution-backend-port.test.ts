@@ -382,7 +382,8 @@ describe('execution backend port through real Core coordination', () => {
       outcomeRef: null,
     }));
     const post = Worker.prototype.postMessage;
-    let revoked: unknown = false;
+    let revoked = false;
+    let revocationFault: unknown;
     const requests = vi.spyOn(Worker.prototype, 'postMessage');
     try {
       // A's submitted attempt holds the Workspace. Its unknown submit response keeps that hold.
@@ -399,6 +400,24 @@ describe('execution backend port through real Core coordination', () => {
       const admission = requireSchedulerAdmissionEntry(f.db, b.queueEntryId);
       // Main selected B under its current authority. The responsible User is disabled before Core
       // decides B's claim, so Core refuses B for lost authority while A still holds the Workspace.
+      // The claim request is posted after that commit. The Worker can hold the Core write lock, so
+      // the revocation retries a busy lock without blocking Main.
+      const revoke = async () => {
+        for (;;) {
+          try {
+            f.db.sqlite
+              .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+              .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+            return;
+          } catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'SQLITE_BUSY')) {
+              revocationFault = error;
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        }
+      };
       requests.mockImplementation(function (
         this: Worker,
         ...args: Parameters<Worker['postMessage']>
@@ -416,14 +435,9 @@ describe('execution backend port through real Core coordination', () => {
           'kind' in message.input &&
           message.input.kind === 'create'
         ) {
-          try {
-            f.db.sqlite
-              .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-              .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
-            revoked = true;
-          } catch (error) {
-            revoked = error;
-          }
+          revoked = true;
+          void revoke().then(() => post.apply(this, args));
+          return;
         }
         return post.apply(this, args);
       });
@@ -432,7 +446,8 @@ describe('execution backend port through real Core coordination', () => {
         (error: unknown) => error
       );
       const outcome = await dispatched;
-      expect(revoked, String(revoked)).toBe(true);
+      expect(revoked).toBe(true);
+      expect(revocationFault).toBeUndefined();
       expect(outcome).toBeInstanceOf(Error);
       expect((outcome as Error).message).toBe(
         'The exact queued admission is no longer dispatchable.'
