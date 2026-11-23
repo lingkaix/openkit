@@ -35,6 +35,12 @@ afterEach(async () => {
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */
 async function fixture(explicitSetupVersion = true) {
+  // The simulated executor is the packaged self-check path: the env selects, before the Control
+  // worker starts, the Native writer that publishes its final through the admitted owner.
+  process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+  cleanup.push(async () => {
+    delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+  });
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-run-'));
   const databases: (ReturnType<typeof openCoreDb> | ReturnType<typeof openWorkspaceDb>)[] = [];
   cleanup.push(() => disposeTestStore(dataRoot, ...databases.reverse()));

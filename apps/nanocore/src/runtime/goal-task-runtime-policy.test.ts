@@ -2070,6 +2070,14 @@ it.each([
   'provider-deadline',
 ] as const)('retains native Coordinator outcomes across %s', async (mode) => {
   const activates = mode === 'activation' || mode === 'publication-retry';
+  if (mode === 'activation') {
+    // The simulated executor is the packaged self-check path: the env selects, before the Control
+    // worker starts, the Native writer that publishes its final through the admitted owner.
+    process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+    cleanup.push(() => {
+      delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    });
+  }
   const f = await fixture(activates ? { activation: 'granted' } : {});
   const { store, coreDb, db, scope } = f;
   const gatewayConfig = createTestGatewayConfig();

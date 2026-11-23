@@ -8,16 +8,21 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
+import { submitPreparedTestNanoHostLease } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
-import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
-import { hashWorkerRouteToken } from './worker-control-gateway.js';
+import { hashWorkerRouteToken, type WorkerControlLineage } from './worker-control-gateway.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import {
   initializeWorkerRawOutput,
@@ -48,15 +53,29 @@ function handoffBytes(db: WorkspaceDb): string {
   );
 }
 
-/** Captures every durable Core member of the final-status atomic tuple. */
+/** Reads the accepted Worker control receipts from the admitted NanoHost file, where K8 keeps them. */
+function receiptRows(db: ReturnType<typeof openCoreDb>): unknown[] {
+  return readAdmittedTestNanoHost(db, (sqlite) =>
+    sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
+  );
+}
+
+/** Captures the Core attempt and the Native receipt members of the final-status atomic tuple. */
 function finalTupleBytes(db: ReturnType<typeof openCoreDb>, attemptId: string): string {
   return JSON.stringify({
     attempt: requireSchedulerExecutionAttempt(db, attemptId),
-    fingerprints: db.sqlite
-      .prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid')
-      .all(),
-    receipts: db.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all(),
+    fingerprints: readAdmittedTestNanoHost(db, (sqlite) =>
+      sqlite.prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid').all()
+    ),
+    receipts: receiptRows(db),
   });
+}
+
+/** Reads the exact accepted final status from the same admitted generation as production. */
+function acceptedFinal(db: ReturnType<typeof openCoreDb>, lineage: WorkerControlLineage) {
+  return readAdmittedTestNanoHost(db, (sqlite) =>
+    getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+  );
 }
 
 it('accepts the original Core final under a Workspace write lock without claiming handoff cleanup', async () => {
@@ -67,6 +86,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
   const competingWriter = openWorkspaceDb(dataRoot, workspaceId);
   try {
     applyMigrations(coreDb);
+    const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
     applyScopedMigrations(workspaceDb);
     const userId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
@@ -106,7 +126,6 @@ it('accepts the original Core final under a Workspace write lock without claimin
       inputRef: environmentPackage.snapshotId,
       bindingRef: sandboxBindingRef,
       sessionCompatibilityKey: 'final-handoff',
-      operationId: 'submit:final-handoff',
       now: () => timestamp,
     });
     const tokens = {
@@ -114,13 +133,16 @@ it('accepts the original Core final under a Workspace write lock without claimin
       workerInferenceToken: 'B'.repeat(43),
       workerCapabilityToken: 'C'.repeat(43),
     };
-    bindNanoHostAttemptRouteTokenHashes(coreDb, {
+    // The original submission and its route-token hashes are decided with the admitted NanoHost grant.
+    submitPreparedTestNanoHostLease(coreDb, {
+      admission: entry,
       attemptId,
-      sandboxBindingRef,
-      workerControlTokenHash: hashWorkerRouteToken(tokens.workerControlToken),
-      workerInferenceTokenHash: hashWorkerRouteToken(tokens.workerInferenceToken),
-      workerCapabilityTokenHash: hashWorkerRouteToken(tokens.workerCapabilityToken),
-      now: () => timestamp,
+      tokens: {
+        control: hashWorkerRouteToken(tokens.workerControlToken),
+        inference: hashWorkerRouteToken(tokens.workerInferenceToken),
+        capability: hashWorkerRouteToken(tokens.workerCapabilityToken),
+      },
+      observedAt: timestamp,
     });
     const backendIdentity = {
       backendKind: 'openshell',
@@ -184,11 +206,15 @@ it('accepts the original Core final under a Workspace write lock without claimin
     await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded' });
     const before = handoffBytes(workspaceDb);
     const notifications: unknown[] = [];
-    const gateway = createDefaultWorkerControlGateway(coreDb, (notification) => {
-      expect(coreDb.sqlite.inTransaction).toBe(false);
-      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).not.toBeNull();
-      notifications.push(notification);
-    });
+    const gateway = createDefaultWorkerControlGateway(
+      coreDb,
+      (notification) => {
+        expect(coreDb.sqlite.inTransaction).toBe(false);
+        expect(acceptedFinal(coreDb, lineage)).not.toBeNull();
+        notifications.push(notification);
+      },
+      nanoHostStorage
+    );
     gateway.registerSession(environmentPackage, { ...tokens, sandboxBindingRef });
     const request = {
       authorization: `Bearer ${tokens.workerControlToken}`,
@@ -229,13 +255,17 @@ it('accepts the original Core final under a Workspace write lock without claimin
     const response = await gateway.recordFinalStatus(request);
     expect(response).toMatchObject({ accepted: true, nextExpectedSequence: 2 });
     expect(notifications).toHaveLength(1);
-    const originalFinal = getWorkerControlAcceptedFinalStatus(coreDb, lineage);
+    const originalFinal = acceptedFinal(coreDb, lineage);
     expect(originalFinal).toMatchObject({ status: 'completed', stopReason: 'completed' });
-    const finalRow = coreDb.sqlite
-      .prepare(
-        "SELECT record_json, accepted_at FROM worker_control_records WHERE operation = 'final_status'"
-      )
-      .get() as { record_json: string; accepted_at: string };
+    const finalRow = readAdmittedTestNanoHost(
+      coreDb,
+      (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT record_json, accepted_at FROM worker_control_records WHERE operation = 'final_status'"
+          )
+          .get() as { record_json: string; accepted_at: string }
+    );
     expect(JSON.parse(finalRow.record_json)).toEqual({
       acceptedAt: originalFinal!.acceptedAt,
       sequence: 1,
@@ -244,19 +274,13 @@ it('accepts the original Core final under a Workspace write lock without claimin
       evidenceManifestDigests: request.evidenceManifestDigests,
     });
     expect(finalRow.accepted_at).toBe(originalFinal!.acceptedAt);
-    const coreRows = JSON.stringify(
-      coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
-    );
+    const coreRows = JSON.stringify(receiptRows(coreDb));
     expect(await gateway.recordFinalStatus(request)).toEqual(response);
-    expect(
-      JSON.stringify(
-        coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
-      )
-    ).toBe(coreRows);
+    expect(JSON.stringify(receiptRows(coreDb))).toBe(coreRows);
     const expectedEvents = gateway.getSessionSnapshot(lineage.packageSnapshotId).events;
     expect(expectedEvents).toHaveLength(1);
     const coreTuple = finalTupleBytes(coreDb, attemptId);
-    const replayGateway = createDefaultWorkerControlGateway(coreDb);
+    const replayGateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
     replayGateway.registerSession(environmentPackage, { ...tokens, sandboxBindingRef });
     expect(replayGateway.getSessionSnapshot(lineage.packageSnapshotId).events).toEqual([]);
     const concurrentReplay = await Promise.all([
@@ -265,16 +289,14 @@ it('accepts the original Core final under a Workspace write lock without claimin
     ]);
     expect(concurrentReplay).toEqual([response, response]);
     expect(finalTupleBytes(coreDb, attemptId)).toBe(coreTuple);
-    expect(
-      JSON.stringify(
-        coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
-      )
-    ).toBe(coreRows);
+    expect(JSON.stringify(receiptRows(coreDb))).toBe(coreRows);
     expect(replayGateway.getSessionSnapshot(lineage.packageSnapshotId).events).toEqual(
       expectedEvents
     );
     expect(
-      coreDb.sqlite.prepare('SELECT operation FROM worker_control_records ORDER BY operation').all()
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('SELECT operation FROM worker_control_records ORDER BY operation').all()
+      )
     ).toEqual([{ operation: 'event_append' }, { operation: 'final_status' }]);
     expect(requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
       phase: 'closing',
@@ -290,13 +312,10 @@ it('accepts the original Core final under a Workspace write lock without claimin
     coreDb.sqlite.close();
     workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     coreDb = openCoreDb(dataRoot);
+    await reopenAdmittedTestNanoHost(coreDb);
     expect(handoffBytes(workspaceDb)).toBe(before);
-    expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toEqual(originalFinal);
-    expect(
-      JSON.stringify(
-        coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
-      )
-    ).toBe(coreRows);
+    expect(acceptedFinal(coreDb, lineage)).toEqual(originalFinal);
+    expect(JSON.stringify(receiptRows(coreDb))).toBe(coreRows);
     expect(
       requireCompleteBackendWorkspaceHandleHandoff(workspaceDb, environmentPackage, backendIdentity)
     ).toHaveLength(1);

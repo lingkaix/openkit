@@ -37,6 +37,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { transitionBackendSessionThroughOwner } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readRuntimeCleanupView } from './administrator-cleanup-view.js';
 import {
@@ -46,7 +47,6 @@ import {
 import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
 import {
   createWorkerStorageBinding,
@@ -78,7 +78,8 @@ vi.mock('node:worker_threads', async (load) => {
             const gate = workerData.snapshotGate;
             let crossing = false;
             parentPort.on('message', value => {
-              if (value.operation === 'backend-session' && value.input.kind === 'transition' &&
+              if (value.operation === 'nanohost-owner' && value.mutation?.kind === 'backend-session' &&
+                  value.mutation.input.kind === 'transition' &&
                   Atomics.compareExchange(gate, 0, 1, 0) === 1) {
                 crossing = true;
                 Atomics.store(gate, 1, 1);
@@ -1096,16 +1097,14 @@ describe('administrator runtime cleanup view', () => {
     snapshotNativeInterception.gate = gate.buffer as SharedArrayBuffer;
     const input = await fixture();
     const { execution } = await populate(input.coreDb);
-    const concurrent = openCoreDb(input.dataRoot);
-    concurrent.sqlite.pragma('query_only = ON');
     input.coreDb.sqlite.pragma('query_only = ON');
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     let changed = false;
     let committedBeforeReaderResumed = false;
-    let transition: ReturnType<typeof transitionWorkerBackendSessionState> | undefined;
+    let transition: ReturnType<typeof transitionBackendSessionThroughOwner> | undefined;
     try {
       Atomics.store(gate, 0, 1);
-      transition = transitionWorkerBackendSessionState(concurrent, {
+      transition = transitionBackendSessionThroughOwner(input.coreDb, {
         attemptId: execution.attemptId,
         fromState: 'materializing',
         toState: 'cleanup-pending',
@@ -1123,7 +1122,10 @@ describe('administrator runtime cleanup view', () => {
           Atomics.store(gate, 2, 1);
           Atomics.notify(gate, 2);
           const wait = Atomics.wait(gate, 3, 0, 5000);
-          const committed = getWorkerBackendSession(nativeFixture(concurrent), execution.attemptId);
+          const committed = getWorkerBackendSession(
+            nativeFixture(input.coreDb),
+            execution.attemptId
+          );
           committedBeforeReaderResumed =
             wait !== 'timed-out' &&
             Atomics.load(gate, 3) === 1 &&
@@ -1140,12 +1142,15 @@ describe('administrator runtime cleanup view', () => {
       const during = await read(input);
       expect(changed).toBe(true);
       expect(committedBeforeReaderResumed).toBe(true);
-      const backend = during.items.find((item) => item.source === 'backend-session');
-      expect(backend).toBeDefined();
-      expect([
-        { sourceUpdatedAt: CREATED, state: 'materializing' },
-        { sourceUpdatedAt: NOW, state: 'cleanup-pending' },
-      ]).toContainEqual({ sourceUpdatedAt: backend?.sourceUpdatedAt, state: backend?.state.state });
+      // The Main thread cannot acknowledge the owner write while this synchronous reader runs, so the
+      // admitted reader holds the Native snapshot: the source is withheld, never a torn tuple.
+      expect(during.items.some((item) => item.source === 'backend-session')).toBe(false);
+      expect(during.sources.find((entry) => entry.source === 'backend-session')).toEqual({
+        source: 'backend-session',
+        availability: 'unavailable',
+        incomplete: true,
+        reasons: ['source_unavailable'],
+      });
       probe.mockRestore();
       await transition;
       expect(
@@ -1157,11 +1162,7 @@ describe('administrator runtime cleanup view', () => {
     } finally {
       Atomics.store(gate, 2, 1);
       Atomics.notify(gate, 2);
-      try {
-        await transition;
-      } finally {
-        concurrent.sqlite.close();
-      }
+      await transition;
     }
   });
 });

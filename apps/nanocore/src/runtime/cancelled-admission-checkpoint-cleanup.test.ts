@@ -567,15 +567,16 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
         .run(testEntityId('attempt', `lease_${turnId}`));
     }
     if (mutate === 'multiple-leases') {
+      // Copy the complete current row; a partial copy is an undecodable attempt, not a second lease.
+      const columns = (
+        fixture.coreDb.sqlite
+          .prepare("SELECT name FROM pragma_table_info('scheduler_execution_attempts')")
+          .all() as { name: string }[]
+      ).map((column) => column.name);
       fixture.coreDb.sqlite
         .prepare(
-          // K8 retired backend_id, preparation_input_json and updated_at from the Core attempt row.
-          `INSERT INTO scheduler_execution_attempts (
-             attempt_id, queue_entry_id, workspace_id, thread_id, turn_id,
-             phase, disposition, terminal_cause, created_at
-           )
-           SELECT ?, queue_entry_id, workspace_id, thread_id,
-                  turn_id, phase, disposition, terminal_cause, created_at
+          `INSERT INTO scheduler_execution_attempts (${columns.join(', ')})
+           SELECT ${columns.map((name) => (name === 'attempt_id' ? '?' : name)).join(', ')}
            FROM scheduler_execution_attempts WHERE attempt_id = ?`
         )
         .run(

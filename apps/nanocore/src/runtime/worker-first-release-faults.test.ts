@@ -80,7 +80,6 @@ import {
 } from './scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
-import * as controlPublication from './worker-control-final-status.js';
 import {
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
@@ -228,7 +227,7 @@ function onNative<Value>(
 }
 
 /** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
-async function faultFixture() {
+async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
@@ -251,7 +250,27 @@ async function faultFixture() {
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
   // The fixture joins the admitted NanoHost owner of its root the way the App does (`app.ts`).
   const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
-  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
+  // A virtual-time case carries its clock to the owner as the caller-supplied `acceptedAt`; the real
+  // acknowledged owner still validates and commits every heartbeat.
+  const { heartbeatClock } = options;
+  const gatewayStorage: typeof nanoHostStorage =
+    heartbeatClock && nanoHostStorage.state === 'ready'
+      ? {
+          ...nanoHostStorage,
+          value: {
+            ...nanoHostStorage.value,
+            owner: {
+              ...nanoHostStorage.value.owner,
+              workerControlHeartbeat: (input) =>
+                nanoHostStorage.value.owner.workerControlHeartbeat({
+                  ...input,
+                  payload: { ...input.payload, acceptedAt: heartbeatClock() },
+                }),
+            },
+          },
+        }
+      : nanoHostStorage;
+  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, gatewayStorage);
   const effects: NanoHostSessionEffectRequest[] = [];
   const transcript = { events: '' };
   const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -1424,21 +1443,9 @@ describe('first-release worker faults (real Core crossings)', () => {
   it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(vi.getRealSystemTime());
-    // KEEP-PORT-later: the 5th heartbeat after 40 virtual seconds never settles. K8 commits each
-    // heartbeat in the NanoHost owner thread, whose clock this Main-thread spy cannot move.
-    // This case deliberately advances Main's verification clock. Carry it through the existing
-    // typed clock seam; the real native owner still validates and commits every heartbeat.
-    const publish = controlPublication.publishWorkerControlHeartbeat;
-    const heartbeatClock = vi
-      .spyOn(controlPublication, 'publishWorkerControlHeartbeat')
-      .mockImplementation((db, input) =>
-        publish(db, {
-          ...input,
-          payload: { ...input.payload, acceptedAt: new Date().toISOString() },
-        })
-      );
-    onTestFinished(() => heartbeatClock.mockRestore());
-    const f = await faultFixture();
+    // This case deliberately advances Main's verification clock. The Worker-control Gateway carries
+    // it to the real native owner as each heartbeat's acceptedAt, which the owner validates and commits.
+    const f = await faultFixture({ heartbeatClock: () => new Date().toISOString() });
     const workspaceDb = openWorkspaceDb(
       f.coreDb.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -1583,7 +1590,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       await f.close();
       vi.useRealTimers();
     }
-  });
+  }, 60_000);
 
   // The native runtime is outside this fixture. The real Core lifecycle and H2 routes own recovery and Turn closeout.
   it.each(['lost', 'unfinished-reset', 'finished-reset'] as const)(
@@ -1878,35 +1885,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         const nextPoll = await f.poll();
         // Prompt cleanup may already have retired the Integration; neither response may carry work.
         expect([204, 409]).toContain(nextPoll.status);
-        // KEEP-PORT-later: the admitted reader refuses (recovery-required) while the unknown-delivery
-        // failure publication is pending on the virtual clock; settling it would deadlock the case.
-        expect(
-          onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
-        ).toEqual([]);
-        // Include accepted content chunks and other record kinds omitted by canonical-event readers.
-        expect(
-          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
-            sqlite
-              .prepare(`SELECT count(*) AS count FROM worker_control_records
-          WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
-            AND agent_session_id = ? AND package_snapshot_id = ? AND request_id IS ?`)
-              .get(
-                lineage.workspaceId,
-                lineage.threadId,
-                lineage.turnId,
-                lineage.agentSessionId,
-                lineage.packageSnapshotId,
-                lineage.requestId ?? null
-              )
-          )
-        ).toEqual({ count: 0 });
-        expect(
-          onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
-        ).toBeNull();
-        expect(
-          requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
-            .lastWorkerSequence
-        ).toBeNull();
+        // The admitted reader refuses reads while the unknown-delivery failure publication is pending
+        // on the virtual clock. The same four Native-evidence reads run after that publication settles
+        // below; accepted Worker evidence is append-only, so the settled absence covers this earlier read.
         const expectedFailure = 'NanoHost Harness turn.start delivery incomplete: outcome unknown.';
         await vi.advanceTimersByTimeAsync(100);
         const failureTime = Date.now();

@@ -36,6 +36,7 @@ import {
 } from '../test-support/nanohost-worker-lease.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { admittedRootNanoHostFixture } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
@@ -668,13 +669,19 @@ it.each([
 async function nativeReceiver(
   captureValue: 'on' | 'off' = 'on',
   bound: number | null = 8,
-  split?: (db: ReturnType<typeof openCoreDb>) => WorkerControlGatewayOptions
+  split?: (db: ReturnType<typeof openCoreDb>) => WorkerControlGatewayOptions,
+  /** Joins the admitted NanoHost file of this Core root, for subjects that read it by `dataRoot`. */
+  admittedRoot = false
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-ret2-receiver-'));
   // Without a caller split, the receiver journals through the admitted Native owner, as production does.
-  const native = split ? undefined : openNanoHostTestOwner();
+  let native = split || admittedRoot ? undefined : openNanoHostTestOwner();
   let coreDb = openCoreDb(root);
   applyMigrations(coreDb);
+  if (admittedRoot)
+    native = (await admittedRootNanoHostFixture(coreDb)) as unknown as ReturnType<
+      typeof openNanoHostTestOwner
+    >;
   const store = await createDemoStore({ dataRoot: root });
   store.setLiveCaptureCoverage({ scope: 'server', value: captureValue });
   const turn = await store.createTurn(
@@ -1784,7 +1791,7 @@ function retainedObservationSource(
 
 // SOURCE-RETENTION and RET Incremental Runtime And Model Content: exact evidence, no control replay.
 it('recovers an admitted body after a lost chunk ACK without filling the live control stream', async () => {
-  const f = await nativeReceiver();
+  const f = await nativeReceiver('on', 8, undefined, true);
   // The admitted 48-KiB wire boundary splits the UTF-8 snow character between real chunks.
   const bytes = Buffer.concat([
     Buffer.alloc(48 * 1024 - 1, 0x61),
@@ -1894,7 +1901,7 @@ it('recovers an admitted body after a lost chunk ACK without filling the live co
 
 // The caller owns current Policy; the evidence owner must propagate its submission refusal.
 it('refuses recovered body publication when the current caller authority check fails', async () => {
-  const f = await nativeReceiver();
+  const f = await nativeReceiver('on', 8, undefined, true);
   const bytes = Buffer.from('hold');
   const data = nativeMetadata(f, 'authority-refused', bytes, { chunkCount: 2 });
   const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);

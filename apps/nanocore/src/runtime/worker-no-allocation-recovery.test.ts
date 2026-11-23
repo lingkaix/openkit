@@ -33,6 +33,7 @@ import {
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestStore } from '../test-support/store.js';
+import { patchTestNanoHostRecoveryProof } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
@@ -480,23 +481,17 @@ describe('original native Worker restart before allocation', () => {
         if (fault === 'unknown-materialize') {
           await endWorkerTurnMaterialization(f.store, f.workspaceDb, f.turnId, 'unknown');
         } else {
-          const sql = {
+          const sql: Partial<Record<typeof fault, string>> = {
             'missing-release':
               "DELETE FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json, '$.kind')='release'",
             'worker-sequence':
               'UPDATE scheduler_execution_attempts SET last_worker_sequence=1 WHERE attempt_id=?',
-            // KEEP-PORT-later: K8 retired recovery_state/recovery_deadline from the Core attempt row; the
-            // Native recovery lease that now carries them needs an admitted-owner fixture.
-            'recovery-owner':
-              "UPDATE scheduler_execution_attempts SET recovery_state='awaiting-reconnect' WHERE attempt_id=?",
-            'recovery-deadline':
-              "UPDATE scheduler_execution_attempts SET recovery_deadline='2999-01-01T00:00:00.000Z' WHERE attempt_id=?",
             'descriptor-authority':
               "UPDATE control_execution_steps SET control_json=json_set(control_json, '$.permittingDecisionRef', 'unrelated-permission') WHERE execution_id=? AND json_extract(control_json, '$.kind')='materialize'",
             'descriptor-backend':
               "UPDATE control_execution_steps SET control_json=json_set(control_json, '$.target.backendKind', 'unadmitted-backend') WHERE execution_id=? AND json_extract(control_json, '$.kind') IN ('materialize','release')",
             'missing-native-target': 'DELETE FROM nanohost_runtime_targets WHERE target_id=?',
-          }[fault];
+          };
           const native = !fault.startsWith('descriptor') && fault !== 'missing-release';
           const identity =
             fault === 'missing-native-target'
@@ -522,9 +517,20 @@ describe('original native Worker restart before allocation', () => {
                     f.originalAttempt.inputRef
                   )
               );
+            } else if (fault === 'recovery-owner') {
+              // K8 keeps recovery facts in the Native recovery proof, not in the Core attempt row.
+              patchTestNanoHostRecoveryProof(f.coreDb, f.attemptId, {
+                recoveryState: 'awaiting-reconnect',
+              });
+            } else if (fault === 'recovery-deadline') {
+              patchTestNanoHostRecoveryProof(f.coreDb, f.attemptId, {
+                recoveryDeadline: '2999-01-01T00:00:00.000Z',
+              });
             } else if (fault === 'missing-native-target') {
-              mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => sqlite.prepare(sql).run(identity));
-            } else (native ? f.coreDb : f.workspaceDb).sqlite.prepare(sql).run(identity);
+              mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+                sqlite.prepare(sql['missing-native-target']!).run(identity)
+              );
+            } else (native ? f.coreDb : f.workspaceDb).sqlite.prepare(sql[fault]!).run(identity);
           } catch (error) {
             mutationError = error;
             throw error;
@@ -541,7 +547,11 @@ describe('original native Worker restart before allocation', () => {
         message: 'Execution step identity is immutable and an outcome settles once.',
       });
     else expect(mutationError).toBeUndefined();
-    expect(preEffectProof(f)).toBe(fault !== 'worker-sequence');
+    // K8 keeps recovery facts in a Native session anchor, which is Worker evidence like a sequence
+    // fingerprint: the pre-effect proof is absent for those three, present for every other fault.
+    expect(preEffectProof(f)).toBe(
+      fault !== 'worker-sequence' && fault !== 'recovery-owner' && fault !== 'recovery-deadline'
+    );
     expect(f.checkpoint()).not.toBeNull();
     expect(f.roots()[0]!.phase).not.toBe('closed');
     expect(

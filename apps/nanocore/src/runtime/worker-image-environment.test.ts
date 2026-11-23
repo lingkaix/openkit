@@ -3,26 +3,40 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
+import {
+  canonicalNativeEnvironment,
+  NativeEnvironmentRecordSchema,
+} from '@openkit/worker-protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { disposeTestStore } from '../test-support/store.js';
 import {
-  admitWorkerImageEnvironment,
+  readAdmittedTestNanoHostRefusing,
+  requireTestNanoHostOwner,
+} from '../test-support/tail-port-a.js';
+import {
   readAdmittedWorkerImageEnvironment,
   WorkerImageSettlementConflict,
-  writeWorkerImageSettlement,
+  WorkerImageSettlementIdentitySchema,
+  WorkerImageSettlementSchema,
 } from './worker-image-settlements.js';
 import {
   admitWorkerImageEnvironment as admitNativeWorkerImageEnvironment,
   insertWorkerImageSettlementInTransaction,
   readWorkerImageSettlement,
   type WorkerImageSettlement,
+  type WorkerImageSettlementIdentity,
 } from './worker-image-settlements-records.js';
 
 const imageDigest = `sha256:${'d'.repeat(64)}`;
@@ -34,13 +48,41 @@ const candidate = {
   inputDigest: `sha256:${'b'.repeat(64)}`,
 };
 
+/**
+ * The Core-frame image writers have no production caller after K8. The App confirms defaults through the
+ * acknowledged NanoHost owner (`owner.workerImage`), used by `admitWorkerImageEnvironment` below. It
+ * settles an image receipt only after its dispatch wrote the Core image-intent journal and a peer answered,
+ * so a receipt is seeded through the same record insert the settle step uses.
+ */
+const writeWorkerImageSettlement = (db: CoreDb, input: WorkerImageSettlement) =>
+  mutateAdmittedTestNanoHost(db, (sqlite) =>
+    insertWorkerImageSettlementInTransaction({ sqlite }, WorkerImageSettlementSchema.parse(input))
+  );
+const admitWorkerImageEnvironment = (
+  db: CoreDb,
+  candidate: WorkerImageSettlementIdentity,
+  input: unknown
+) =>
+  requireTestNanoHostOwner(db).workerImage({
+    kind: 'environment',
+    candidate: WorkerImageSettlementIdentitySchema.parse(candidate),
+    environment: NativeEnvironmentRecordSchema.parse(input),
+  });
+
+/** The Core-frame reader is retired; admitted image defaults are read from the NanoHost file. */
+const readAdmitted = (db: CoreDb, digest: string) =>
+  readAdmittedTestNanoHostRefusing(db, (sqlite) =>
+    readAdmittedWorkerImageEnvironment({ sqlite }, digest)
+  );
+
 describe('confirmed image environment settlement', () => {
   it('withholds defaults until exact confirmation and carries admission across restart', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-native-env-'));
     let db = openCoreDb(root);
     try {
       applyMigrations(db);
-      expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
+      await openAdmittedTestNanoHost(db);
+      expect(readAdmitted(db, imageDigest)).toBeNull();
       await expect(
         async () =>
           await admitWorkerImageEnvironment(db, candidate, {
@@ -55,7 +97,7 @@ describe('confirmed image environment settlement', () => {
         operation: 'image.acquire',
         outcome: { kind: 'success', imageDigest },
       });
-      expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
+      expect(readAdmitted(db, imageDigest)).toBeNull();
       await expect(
         async () =>
           await admitWorkerImageEnvironment(
@@ -72,11 +114,12 @@ describe('confirmed image environment settlement', () => {
             values: { CHANGED: 'x' },
           })
       ).rejects.toThrow();
-      expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
+      expect(readAdmitted(db, imageDigest)).toBeNull();
       await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
       db.sqlite.close();
       db = openCoreDb(root);
-      expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual({
+      await reopenAdmittedTestNanoHost(db);
+      expect(readAdmitted(db, imageDigest)).toEqual({
         imageDigest,
         defaultsDigest,
         values: {},
@@ -94,18 +137,22 @@ describe('confirmed image environment settlement', () => {
         null,
         2
       );
-      db.sqlite
-        .prepare(
-          'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
-        )
-        .run(extended, '1'.repeat(64));
+      mutateAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite
+          .prepare(
+            'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
+          )
+          .run(extended, '1'.repeat(64))
+      );
       await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
       expect(
-        db.sqlite
-          .prepare(
-            'SELECT native_environment_json AS bytes FROM worker_image_settlements WHERE request_id = ?'
-          )
-          .get('1'.repeat(64))
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT native_environment_json AS bytes FROM worker_image_settlements WHERE request_id = ?'
+            )
+            .get('1'.repeat(64))
+        )
       ).toEqual({ bytes: extended });
     } finally {
       await disposeTestStore(root, db);
@@ -116,6 +163,7 @@ describe('confirmed image environment settlement', () => {
     const db = openCoreDb(root);
     try {
       applyMigrations(db);
+      await openAdmittedTestNanoHost(db);
       const second = {
         ...candidate,
         authoredArtifactId: 'ar_00000000-0000-7715-a7ab-a9e022886a62',
@@ -144,30 +192,36 @@ describe('confirmed image environment settlement', () => {
           })
       ).rejects.toThrow();
       expect(
-        db.sqlite
-          .prepare(
-            'SELECT native_environment_json AS environment FROM worker_image_settlements WHERE request_id = ?'
-          )
-          .get('2'.repeat(64))
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT native_environment_json AS environment FROM worker_image_settlements WHERE request_id = ?'
+            )
+            .get('2'.repeat(64))
+        )
       ).toEqual({ environment: null });
-      db.sqlite
-        .prepare(
-          'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
-        )
-        .run(
-          JSON.stringify({ imageDigest: `sha256:${'e'.repeat(64)}`, defaultsDigest, values: {} }),
-          '1'.repeat(64)
-        );
-      expect(() => readAdmittedWorkerImageEnvironment(db, imageDigest)).toThrow();
-      db.sqlite
-        .prepare(
-          'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
-        )
-        .run(
-          JSON.stringify({ imageDigest, defaultsDigest, values: { CHANGED: 'x' } }),
-          '1'.repeat(64)
-        );
-      expect(() => readAdmittedWorkerImageEnvironment(db, imageDigest)).toThrow();
+      mutateAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite
+          .prepare(
+            'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
+          )
+          .run(
+            JSON.stringify({ imageDigest: `sha256:${'e'.repeat(64)}`, defaultsDigest, values: {} }),
+            '1'.repeat(64)
+          )
+      );
+      expect(() => readAdmitted(db, imageDigest)).toThrow();
+      mutateAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite
+          .prepare(
+            'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
+          )
+          .run(
+            JSON.stringify({ imageDigest, defaultsDigest, values: { CHANGED: 'x' } }),
+            '1'.repeat(64)
+          )
+      );
+      expect(() => readAdmitted(db, imageDigest)).toThrow();
     } finally {
       await disposeTestStore(root, db);
     }
