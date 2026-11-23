@@ -1659,6 +1659,8 @@ export type ControlWorkerCommand =
           readonly operation: 'schema-application';
           readonly input: ControlSchemaApplicationWire;
           readonly content: ArrayBuffer;
+          /** The acknowledged NanoHost opening that the deciding census may read query-only. */
+          readonly nanoHostOwnerIdentity?: string;
         }
       | {
           readonly operation: 'material';
@@ -3467,7 +3469,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     const parsed = ControlSchemaApplicationWireSchema.safeParse(value.input);
     return (
       parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
+      exactFields(value, [...scoped, 'input', 'content'], ['nanoHostOwnerIdentity']) &&
+      (value.nanoHostOwnerIdentity === undefined ||
+        nanoHostCoreReadPeer.shape.ownerIdentity.safeParse(value.nanoHostOwnerIdentity).success) &&
       parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
