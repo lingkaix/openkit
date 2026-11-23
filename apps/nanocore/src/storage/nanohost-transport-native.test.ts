@@ -44,6 +44,7 @@ import {
 } from './control-store-worker-client.js';
 import type { ControlWorkerReply } from './control-store-worker-protocol.js';
 import { openCoreDb, serverStoragePath } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from './nanohost-transport-owner.js';
 import type { ControlRuntimeTargetInput } from './runtime-target-codecs.js';
@@ -102,11 +103,6 @@ vi.mock('node:worker_threads', async (load) => {
                 (value.operation === 'nanohost-owner' && value.mutation && value.mutation.kind === 'transport'))
               Atomics.add(gate, 6, 1);
           });
-          const originalPost = parentPort.postMessage.bind(parentPort);
-          parentPort.postMessage = function(value, ...args) {
-            if (value.operation === 'open' && value.status === 'ok') hold(4, 0);
-            return originalPost(value, ...args);
-          };
           Database.prototype.exec = function(sql) {
             const ordinal = Atomics.load(gate, 2) + 1;
             if (/^BEGIN(?:\\s|$)/i.test(sql)) hold(3, ordinal);
@@ -153,10 +149,15 @@ const clock = new Date('2026-08-08T00:00:00.000Z');
 const expiresAt = '2999-01-01T00:00:00.000Z';
 
 /** Real Core owner with retained synthetic setup before Main mutation denial. */
-async function fixture(options: { enrolled?: boolean; open?: boolean; authority?: boolean } = {}) {
+async function fixture(
+  options: { enrolled?: boolean; authority?: boolean; useLayoutDeployment?: boolean } = {}
+) {
   const root = mkdtempSync(join(tmpdir(), 'nanohost-native-'));
   const db = openCoreDb(root);
   applyMigrations(db);
+  const fixtureDeploymentId = options.useLayoutDeployment
+    ? readDataRootLayoutMarker(root).deploymentId
+    : deploymentId;
   interception.gate = new SharedArrayBuffer(28);
   const gate = new Int32Array(interception.gate);
   db.sqlite
@@ -180,7 +181,7 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
         `INSERT INTO nanohost_integration_identities
        (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`
       )
-      .run(identityId, deploymentId, clock.toISOString());
+      .run(identityId, fixtureDeploymentId, clock.toISOString());
   const actor: Actor = {
     kind: 'token',
     userId: administratorId,
@@ -195,7 +196,7 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
   };
   const config = {
     identityId,
-    deploymentId,
+    deploymentId: fixtureDeploymentId,
     credentialRef: 'nanohost-transport:primary',
     credentialSlots: slots,
     bind: { host: '127.0.0.1', port: 4318 },
@@ -386,12 +387,12 @@ afterEach(async () => {
 });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-/** Arms actual SQL, open reply, or Main ACK delivery without a product callback. */
-function arm(f: Fixture, point: 1 | 2 | 3 | 4 | 5, ordinal = f.commits() + 1): void {
+/** Arms actual SQL or Main ACK delivery without a product callback. */
+function arm(f: Fixture, point: 1 | 2 | 3 | 5, ordinal = f.commits() + 1): void {
   Atomics.store(f.gate, 0, 0);
   Atomics.store(f.gate, 1, 0);
   Atomics.store(f.gate, 3, point);
-  Atomics.store(f.gate, 4, point === 4 ? 0 : ordinal);
+  Atomics.store(f.gate, 4, ordinal);
 }
 async function held<T>(f: Fixture, work: () => Promise<T>) {
   let settled = false;
@@ -413,8 +414,7 @@ async function held<T>(f: Fixture, work: () => Promise<T>) {
   expect(settled).toBe(false);
   return { result, settled: () => settled };
 }
-async function loseReply(): Promise<void> {
-  const worker = interception.workers.at(-1);
+async function loseReply(worker = interception.workers.at(-1)): Promise<void> {
   expect(worker).toBeDefined();
   interception.lostReply = true;
   await worker!.terminate();
@@ -458,7 +458,7 @@ function fault(f: Fixture, table: string, event: string, condition = ''): void {
 }
 async function issue(f: Fixture) {
   return await createNanoHostTransportTokenRecord(f.storage.value, {
-    deploymentId,
+    deploymentId: f.config.deploymentId,
     expiresAt,
     now: clock,
     ownerNanoHostIdentityId: identityId,
@@ -621,14 +621,19 @@ describe('NanoHost native credential ownership', () => {
         expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
         await loseReply();
         const outcome = await pending.result;
-        expect(outcome.ok).toBe(false);
-        if (!outcome.ok) expect(outcome.error).toMatchObject({ commit: 'unknown' });
+        expect(outcome).toEqual({
+          ok: true,
+          value: { ok: false, reason: 'storage_unavailable' },
+        });
         release(f.gate);
         // The native writer owner requires explicit shutdown after host loss; this is no request replay.
         await shutdownControlStoreWorkerClient();
         await f.reopen();
       } else {
-        await failed(f.track(admit(physical)));
+        expect(await f.track(admit(physical))).toEqual({
+          ok: false,
+          reason: 'storage_unavailable',
+        });
         expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
         f.nativeSql('DROP TRIGGER native_failure').run();
       }
@@ -636,6 +641,7 @@ describe('NanoHost native credential ownership', () => {
       expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
       expect(f.authority.mayCarryWork(physical)).toBe(false);
       const beforeReplay = getNanoHostRuntimeTarget(f.nativeDb, identityId);
+      expect(beforeReplay?.connectionGeneration).toBe(kind === 'unknown' ? 1 : undefined);
       expect(await f.track(admit(physical))).toEqual({ ok: false, reason: 'rejected' });
       expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toEqual(beforeReplay);
       const fresh = await f.physical();
@@ -652,13 +658,14 @@ describe('NanoHost native credential ownership', () => {
   );
 
   it('joins the physical close native acknowledgement before shutting down its worker', async () => {
-    const f = await fixture();
+    // Epoch retirement uses the installed deployment, not a synthetic credential-only identity.
+    const f = await fixture({ useLayoutDeployment: true });
     const issued = await issue(f);
     const physical = await admitted(f, issued.secret);
     await upsertTarget(f, {
       targetId: identityId,
       identityId,
-      deploymentId,
+      deploymentId: f.config.deploymentId,
       connectionGeneration: 1,
       predecessorFenced: true,
       ready: true,
@@ -680,10 +687,16 @@ describe('NanoHost native credential ownership', () => {
     const completions: string[] = [];
     void close.result.then(() => completions.push('close'));
     let stopped = false;
-    const shutdown = f.track(shutdownControlStoreWorkerClient()).then(() => {
-      stopped = true;
-      completions.push('shutdown');
-    });
+    // Match the process shutdown in index.ts: drain the authority's bound physical
+    // closes before handing shutdown to the writer. This must join the original close.
+    const shutdown = f
+      .track(
+        f.authority.closeAllPhysicalConnections().then(() => shutdownControlStoreWorkerClient())
+      )
+      .then(() => {
+        stopped = true;
+        completions.push('shutdown');
+      });
     // The accepted close producer must join before shutdown is posted, not merely before its reply.
     expect(
       posted.mock.calls.some(
@@ -1206,19 +1219,28 @@ describe('NanoHost native credential ownership', () => {
     expect(count(f)).toBe(0);
   });
 
-  it('clears only its enrollment slot when the real open ACK is lost before credential submission', async () => {
-    const f = await fixture({ enrolled: false, open: false });
-    arm(f, 4);
+  it('clears only its enrollment slot after the admitted credential transaction rolls back', async () => {
+    const f = await fixture({ enrolled: false });
+    fault(f, 'nanohost_transport_tokens', 'INSERT');
+    // The owner is already open. Hold the original enrollment just before its SQL runs,
+    // then refuse the later Token insert inside the real identity-and-Token transaction.
+    arm(f, 3);
     const pending = await held(f, () => f.op('nanohost.enroll', { targetSlot: 'A', expiresAt }));
     expect(slotPresent(f, 'A')).toBe(true);
-    expect(Atomics.load(f.gate, 6)).toBe(0);
-    await loseReply();
-    expect((await pending.result).ok).toBe(false);
-    expect(Atomics.load(f.gate, 6)).toBe(0);
     expect(count(f)).toBe(0);
     expect(identities(f)).toEqual([]);
     expect(audits(f)).toBe(0);
-    expect(slotPresent(f, 'A')).toBe(false);
+    release(f.gate);
+    expect(await pending.result).toMatchObject({
+      ok: false,
+      error: { code: 'nanohost_enroll_failed', status: 400 },
+    });
+    expect(count(f)).toBe(0);
+    expect(identities(f)).toEqual([]);
+    expect(audits(f)).toBe(0);
+    expect(existsSync(f.slots.A.secretPath)).toBe(false);
+    expect(existsSync(f.slots.A.companionPath)).toBe(false);
+    expect(slotPresent(f, 'B')).toBe(false);
   });
 
   it('keeps live authority and readiness when revocation definitely rolls back', async () => {
@@ -1605,6 +1627,13 @@ describe('NanoHost native credential ownership', () => {
         live = await admitted(f, slotSecret(f, 'A'));
       }
       const before = { audit: audits(f), commits: f.commits() };
+      const auditOwners =
+        kind === 'enroll'
+          ? interception.workers.map((worker) => ({
+              worker,
+              posts: vi.spyOn(worker, 'postMessage'),
+            }))
+          : [];
       // Decommission now awaits its original physical-close write on the native owner too.
       // Hold the later Audit itself, after that separate close stage, rather than an ordinal on Main.
       const coveringCommits = kind === 'decommission' ? 3 : 2;
@@ -1617,7 +1646,25 @@ describe('NanoHost native credential ownership', () => {
       expect(audits(f)).toBe(before.audit + 1);
       expect(slotPresent(f, 'A')).toBe(kind === 'enroll');
       if (live) expect(f.authority.mayCarryWork(live)).toBe(false);
-      await loseReply();
+      if (kind === 'enroll') {
+        // The acknowledged Native writer owns enrollment, not its later Core Audit.
+        // Kill exactly the actual worker held after the Audit FULL commit.
+        const audit = auditOwners.filter(({ posts }) =>
+          posts.mock.calls.some(([value]) => {
+            const message = value as {
+              operation?: string;
+              input?: { kind?: string; action?: string };
+            };
+            return (
+              message.operation === 'nanohost-transport' &&
+              message.input?.kind === 'lifecycle-audit' &&
+              message.input.action === 'nanohost.transport.enroll'
+            );
+          })
+        );
+        expect(audit).toHaveLength(1);
+        await loseReply(audit[0]!.worker);
+      } else await loseReply();
       expect((await pending.result).ok).toBe(false);
       expect(f.commits()).toBe(before.commits + coveringCommits);
       expect(identities(f)).toMatchObject([
