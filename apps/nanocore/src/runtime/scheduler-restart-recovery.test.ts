@@ -6966,7 +6966,7 @@ describe('minimal scheduler reconnect contract', () => {
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
     const coreDb = await createMigratedCoreDb(false);
     const suffix = 'graceful_same_epoch_reconnect';
-    const epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
+    let epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
     const at = (value: string) => new Date(Date.parse(value) + epochShift).toISOString();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -7194,8 +7194,13 @@ describe('minimal scheduler reconnect contract', () => {
         workspaceRoots: [],
         sandboxBindingRef,
       });
+      // Core stamps the retained preparation clock during its ACK, after the attempt projection's
+      // updatedAt. Order the replay timeline from the completed preparation, not updatedAt + 1 ms.
+      const submissionInstant = '2026-07-05T00:00:07.000Z';
+      epochShift = Date.now() - Date.parse(submissionInstant);
+      const submittedAt = at(submissionInstant);
       vi.useFakeTimers({ toFake: ['Date'] });
-      vi.setSystemTime(new Date(at('2026-07-05T00:00:07.000Z')));
+      vi.setSystemTime(new Date(submittedAt));
       try {
         // The owner launches only a submitted anchor whose Native Workspace handoff is complete.
         const { value: native } = await openAdmittedTestNanoHost(coreDb);
@@ -7204,17 +7209,12 @@ describe('minimal scheduler reconnect contract', () => {
           fromState: 'materializing',
           attemptId: leaseId,
           toState: 'materialized',
-          observedAt: '2026-07-05T00:00:07.000Z',
+          observedAt: submittedAt,
         });
         seedTestNanoHostCompletedWorkspaceHandoff(coreDb, leaseId);
         // The real materialization already holds the preparation grant: the submit grant joins it through
         // the owner's first submission on the materialized, handed-off anchor, as the Worker executor does.
-        await native.owner.firstSubmission({
-          attemptId: leaseId,
-          observedAt: new Date(
-            Date.parse(attempts.requireSchedulerExecutionAttempt(coreDb, leaseId).updatedAt) + 1
-          ).toISOString(),
-        });
+        await native.owner.firstSubmission({ attemptId: leaseId, observedAt: submittedAt });
         seedTestNanoHostWorkerLaunch(
           coreDb,
           leaseId,
@@ -7225,7 +7225,7 @@ describe('minimal scheduler reconnect contract', () => {
             workerInferenceTokenHash: 'b'.repeat(64),
             workerCapabilityTokenHash: 'c'.repeat(64),
           },
-          '2026-07-05T00:00:07.000Z'
+          submittedAt
         );
         const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, leaseId);
         attempts.acceptSchedulerExecutionObservation(

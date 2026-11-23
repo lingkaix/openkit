@@ -11047,12 +11047,16 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef: duplicateReserved.storageRef }))
       ).toMatchObject({ revision: 2, state: 'reserved' });
-      await releaseWorkerStorageAttachment(coreDb, {
-        attachmentGeneration: duplicateReserved.attachmentGeneration,
-        cleanupProved: true,
-        expectedRevision: duplicateReserved.revision,
-        storageRef: duplicateReserved.storageRef,
-      });
+      await releaseWorkerStorageAttachment(
+        coreDb,
+        {
+          attachmentGeneration: duplicateReserved.attachmentGeneration,
+          cleanupProved: true,
+          expectedRevision: duplicateReserved.revision,
+          storageRef: duplicateReserved.storageRef,
+        },
+        currentAdmittedTestNanoHostOwner(coreDb)?.workerStorageBinding
+      );
       await expect(runtime.cleanupBackendSession(identity)).resolves.toBeUndefined();
 
       expect(readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef: reserved.storageRef }))).toMatchObject({
