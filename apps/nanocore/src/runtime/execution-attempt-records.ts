@@ -13,6 +13,7 @@ import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-a
 import { revokeRunBoundAccessTokensInDb } from '../auth/run-bound-access-token-native.js';
 import {
   type CoreSchedulerQueueEntry,
+  listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
@@ -316,7 +317,7 @@ export function listOpenSchedulerExecutionAttempts(
 }
 
 /** Lists the Core scopes that an unresolved writer can hold against one scheduler claim. */
-export function schedulerClaimScopes(entry: CoreSchedulerQueueEntry): string[] {
+function schedulerClaimScopes(entry: CoreSchedulerQueueEntry): string[] {
   const storage = entry.workerStorageChoice;
   return [
     `workspace:${entry.workspaceId}`,
@@ -333,6 +334,8 @@ export function createSchedulerExecutionAttempt(
     readonly entry: CoreSchedulerQueueEntry;
     readonly attemptId?: string;
     readonly preparationInput: unknown;
+    /** Admissions that this dispatch pass deferred on a placement-held claim refusal. */
+    readonly deferredQueueEntryIds?: readonly string[];
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
@@ -349,7 +352,22 @@ export function createSchedulerExecutionAttempt(
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
-      if (kernelSchedulerScopeIsHeld(coreDb, schedulerClaimScopes(entry)))
+      const scopes = schedulerClaimScopes(entry);
+      // A deferred older admission keeps its FIFO priority over this claim once its placement is
+      // free. Decide it in this claim's transaction, so a release cannot commit between the two.
+      const deferred = new Set(input.deferredQueueEntryIds);
+      if (
+        (deferred.size > 0 &&
+          listQueuedSchedulerAdmissionEntries(coreDb).some((queued) => {
+            if (!deferred.has(queued.queueEntryId)) return false;
+            const deferredScopes = schedulerClaimScopes(queued);
+            return (
+              deferredScopes.some((scope) => scopes.includes(scope)) &&
+              !kernelSchedulerScopeIsHeld(coreDb, deferredScopes)
+            );
+          })) ||
+        kernelSchedulerScopeIsHeld(coreDb, scopes)
+      )
         throw new ExecutionAttemptRefusal(
           'Execution placement has an unresolved writer.',
           'placement-held'

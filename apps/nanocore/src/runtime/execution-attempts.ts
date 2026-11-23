@@ -16,7 +16,6 @@ export {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
-  schedulerClaimScopes,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 
@@ -78,6 +77,9 @@ export async function createSchedulerExecutionAttempt(
       backendId: input.entry.backendId,
       preparationJson: JSON.stringify(input.preparationInput),
       ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
+      ...(input.deferredQueueEntryIds?.length
+        ? { deferredQueueEntryIds: [...input.deferredQueueEntryIds] }
+        : {}),
     },
     input.now
   ))!;
