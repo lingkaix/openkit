@@ -27,6 +27,7 @@ import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-st
 import {
   mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
@@ -43,10 +44,15 @@ import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   markSchedulerExecutionAttemptClosing,
+  requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
-import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  hashWorkerRouteToken,
+  WorkerControlGateway,
+  type WorkerControlLineage,
+} from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
 import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
@@ -461,20 +467,47 @@ describe('worker control gateway restart hydration', () => {
   });
 });
 
-type ClosedPredecessorFault = 'none' | 'retired' | 'package-unreadable' | 'shared-final-record';
+type ClosedPredecessorFault =
+  | 'none'
+  | 'retired'
+  | 'package-unreadable'
+  | 'shared-final-record'
+  | 'retired+shared-event-record'
+  | 'package-unreadable+shared-event-record';
 
 const ISOLATION_USER_ID = 'usr_00000000-0000-7000-8000-000000000001';
 
+/** The predecessor's original cancellation final on its own control route. */
+function predecessorFinal(controlToken: string, lineage: WorkerControlLineage) {
+  return {
+    authorization: `Bearer ${controlToken}`,
+    lineage,
+    sequence: 8,
+    status: 'cancelled' as const,
+    stopReason: 'aborted',
+    evidenceManifestDigests: { transcript: `sha256:${'c'.repeat(64)}` },
+  };
+}
+
 /**
- * A closed predecessor with an accepted final in Workspace A and a live Turn in a healthy Workspace B,
- * hydrated through the App's own gateway factory on the admitted NanoHost owner.
+ * A predecessor in Workspace A and a live Turn in a healthy Workspace B, hydrated through the App's
+ * own gateway factory on the admitted NanoHost owner. The predecessor appends one event and is
+ * cancelled through the admitted gateway. By default its cancellation final is then accepted
+ * through that gateway and Core closes it with its fence: a closed exact-replay predecessor.
  *
- * @param fault Deliberate fault applied after the predecessor's real final was accepted.
+ * @param fault Deliberate fault applied after the predecessor's real history.
+ * @param stage `closing` stops before the final: a closing first-final candidate.
  * @returns Both owners, the new healthy Session's package and the predecessor's retained AEP path.
  */
-async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
+async function createClosedPredecessorFixture(
+  fault: ClosedPredecessorFault,
+  stage: 'closed' | 'closing' = 'closed'
+) {
+  // Native storage keeps its real clock; align Core's clock with it, as the cancellation tests do.
+  const now = vi.getRealSystemTime();
+  const at = (offsetMs: number) => new Date(now + offsetMs).toISOString();
   vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
+  vi.setSystemTime(new Date(now));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-isolation-'));
   const coreDb = openCoreDb(dataRoot);
   const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-isolation-source-'));
@@ -533,7 +566,7 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
         readNanoHostEnvironment: storage.value.owner.read,
         agentSessionId,
         backend: { kind: 'openshell' },
-        createdAt: '2026-07-13T00:00:00.000Z',
+        createdAt: at(-6_000),
         requestId,
         triggerActor: { kind: 'user', id: ISOLATION_USER_ID },
         turn,
@@ -588,7 +621,7 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
     const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, environmentPackage.scope.workspaceId);
     try {
       await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-        createdAt: '2026-07-13T00:00:01.000Z',
+        createdAt: at(-5_000),
         environmentPackage,
       });
     } finally {
@@ -597,7 +630,7 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
     const entry = await createTestQueueEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: environmentPackage.scope.triggerActor,
-      now: () => '2026-07-13T00:00:02.000Z',
+      now: () => at(-4_000),
       profileRef: 'default',
       queueEntryId: `queue_restore_isolation_${owner.name}`,
       requestId: environmentPackage.scope.requestId!,
@@ -623,36 +656,46 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
     );
   }
   const [predecessor, healthy] = owners as [(typeof owners)[0], (typeof owners)[0]];
-  // The predecessor's Turn really ended: Core closed it with its proof, NanoHost kept its final.
-  const closing = markSchedulerExecutionAttemptClosing(coreDb, {
-    attemptId: predecessor.attemptId,
-    cause: 'turn-completed',
-  });
-  closeSchedulerExecutionAttemptWithFence(coreDb, {
-    correlation: schedulerExecutionCorrelation(closing),
-    fenceRef: 'restore-isolation-original-fence',
-    proof: {
-      terminalHandoff: true,
-      output: true,
-      evidence: true,
-      outsideWorkspaceCollection: true,
-      integrationDrain: true,
-      routesRevoked: true,
+  // The predecessor's real history, through the admitted gateway: one event, then cancellation.
+  const live = createDefaultWorkerControlGateway(coreDb, undefined, storage);
+  await live.appendEvent({
+    authorization: `Bearer ${predecessor.tokens[0]}`,
+    lineage: predecessor.lineage,
+    record: {
+      schemaVersion: 1,
+      kind: 'event',
+      lineage: predecessor.lineage,
+      sequence: 7,
+      event: {
+        type: 'item.delta',
+        data: { itemId: testEntityId('it', 'restore-isolation'), delta: 'predecessor output' },
+      },
     },
   });
-  mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
-    writeWorkerControlAcceptedRecord(
-      { sqlite },
-      {
-        acceptedAt: '2026-07-13T00:00:05.000Z',
-        lineage: predecessor.lineage,
-        operation: 'final_status',
-        record: { status: 'completed', stopReason: 'completed' },
-        recordKey: '0',
-        sequence: 0,
-      }
-    )
-  );
+  markSchedulerExecutionAttemptClosing(coreDb, {
+    attemptId: predecessor.attemptId,
+    cause: 'turn-cancelled',
+  });
+  if (stage === 'closed') {
+    // Its first final is accepted, then only Core's release proof closes the attempt.
+    expect(
+      await live.recordFinalStatus(predecessorFinal(predecessor.tokens[0]!, predecessor.lineage))
+    ).toMatchObject({ accepted: true });
+    closeSchedulerExecutionAttemptWithFence(coreDb, {
+      correlation: schedulerExecutionCorrelation(
+        requireSchedulerExecutionAttempt(coreDb, predecessor.attemptId)
+      ),
+      fenceRef: 'restore-isolation-original-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
+  }
   const predecessorPackagePath = join(
     dataRoot,
     'workspaces',
@@ -663,10 +706,23 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
     `${predecessor.lineage.packageSnapshotId}.json`
   );
   const acceptedPackageBytes = readFileSync(predecessorPackagePath, 'utf8');
-  // Faults follow the real final. None of them can be produced by the replay path itself.
-  if (fault === 'retired')
+  const durableReceipts = () => ({
+    attempts: coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+      .all(),
+    steps: coreDb.sqlite.prepare('SELECT * FROM control_execution_steps ORDER BY rowid').all(),
+    ...readAdmittedTestNanoHost(coreDb, (sqlite) => ({
+      records: sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all(),
+      sequences: sqlite
+        .prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid')
+        .all(),
+    })),
+  });
+  const acceptedReceipts = durableReceipts();
+  // Faults follow the real history. None of them can be produced by the replay path itself.
+  if (fault.startsWith('retired'))
     refuseScope(dataRoot, { scope: 'workspace', id: DEMO_WORKSPACE_ID, check: 'retired' });
-  if (fault === 'package-unreadable')
+  if (fault.startsWith('package-unreadable'))
     // A historical retained format this build cannot decode; the record is otherwise intact.
     writeFileSync(
       predecessorPackagePath,
@@ -677,6 +733,15 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
       sqlite
         .prepare(
           "UPDATE worker_control_records SET record_json = '{' WHERE operation = 'final_status'"
+        )
+        .run()
+    );
+  if (fault.endsWith('+shared-event-record'))
+    // The final row stays valid; only the shared accepted event becomes undecodable.
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          "UPDATE worker_control_records SET record_json = '{' WHERE operation = 'event_append'"
         )
         .run()
     );
@@ -693,6 +758,8 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
     newSession,
     predecessorPackagePath,
     acceptedPackageBytes,
+    acceptedReceipts,
+    durableReceipts,
     hydrate: () => {
       const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
@@ -716,18 +783,38 @@ async function createClosedPredecessorFixture(fault: ClosedPredecessorFault) {
 describe('closed predecessor restore isolation', () => {
   afterEach(() => vi.useRealTimers());
 
-  /** The predecessor's own old route: its exact final replay with its original control token. */
-  const replayPredecessorFinal = (
-    gateway: WorkerControlGateway,
-    predecessor: Awaited<ReturnType<typeof createClosedPredecessorFixture>>['predecessor']
-  ) =>
-    gateway.recordFinalStatus({
-      authorization: `Bearer ${predecessor.tokens[0]}`,
-      lineage: predecessor.lineage,
-      sequence: 0,
-      status: 'completed',
-      stopReason: 'completed',
+  type Fixture = Awaited<ReturnType<typeof createClosedPredecessorFixture>>;
+
+  /** The predecessor's own old route: its original final with its original control token. */
+  const predecessorFinalFor = (f: Fixture) =>
+    predecessorFinal(f.predecessor.tokens[0]!, f.predecessor.lineage);
+
+  /** Exact replay is acknowledged with unchanged durable receipts; a changed replay is refused. */
+  const expectExactReplay = async (f: Fixture, gateway: WorkerControlGateway) => {
+    expect(await gateway.recordFinalStatus(predecessorFinalFor(f))).toMatchObject({
+      accepted: true,
     });
+    expect(f.durableReceipts()).toEqual(f.acceptedReceipts);
+    await expect(
+      gateway.recordFinalStatus({ ...predecessorFinalFor(f), stopReason: 'error' })
+    ).rejects.toThrow();
+    await expect(
+      gateway.recordFinalStatus({ ...predecessorFinalFor(f), sequence: 9 })
+    ).rejects.toThrow();
+    expect(f.durableReceipts()).toEqual(f.acceptedReceipts);
+  };
+
+  /** Every owner is held: no new Session registers and no live Turn authenticates. */
+  const expectSharedHold = (f: Fixture, hydrated: ReturnType<Fixture['hydrate']>) => {
+    expect(hydrated.holds).toEqual([]);
+    expect(() => hydrated.gateway.registerSession(f.newSession)).toThrow(
+      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
+    );
+    expect(() =>
+      hydrated.gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)
+    ).toThrow();
+    expect(hydrated.gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
+  };
 
   it('restores the closed predecessor with the healthy owner when its own evidence qualifies', async () => {
     const f = await createClosedPredecessorFixture('none');
@@ -737,6 +824,7 @@ describe('closed predecessor restore isolation', () => {
     expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toMatchObject({
       packageSnapshotId: f.predecessor.lineage.packageSnapshotId,
     });
+    await expectExactReplay(f, gateway);
     expect(gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toEqual(
       redactAgentEnvironmentPackageSnapshot(f.healthy.environmentPackage)
     );
@@ -753,7 +841,7 @@ describe('closed predecessor restore isolation', () => {
 
       // The old route is not restored, so its exact replay stays refused.
       expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
-      await expect(replayPredecessorFinal(gateway, f.predecessor)).rejects.toMatchObject({
+      await expect(gateway.recordFinalStatus(predecessorFinalFor(f))).rejects.toMatchObject({
         code: 'worker_control_unauthorized',
         status: 401,
       });
@@ -776,7 +864,7 @@ describe('closed predecessor restore isolation', () => {
       ]);
       if (fault === 'package-unreadable') {
         // Hydration never rewrites the retained record. Its exit is same-owner repair: the next
-        // hydration of the repaired record restores the exact replay.
+        // hydration of the repaired record serves the exact replay again.
         expect(JSON.parse(readFileSync(f.predecessorPackagePath, 'utf8')).schemaVersion).toBe(2);
         writeFileSync(f.predecessorPackagePath, f.acceptedPackageBytes);
         const repaired = f.hydrate();
@@ -784,19 +872,47 @@ describe('closed predecessor restore isolation', () => {
         expect(
           repaired.gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)
         ).toMatchObject({ packageSnapshotId: f.predecessor.lineage.packageSnapshotId });
+        await expectExactReplay(f, repaired.gateway);
       }
+    }
+  );
+
+  it('restores a closing first-final candidate and serves its first final when its evidence qualifies', async () => {
+    const f = await createClosedPredecessorFixture('none', 'closing');
+    const { gateway, holds } = f.hydrate();
+
+    expect(holds).toEqual([]);
+    expect(await gateway.recordFinalStatus(predecessorFinalFor(f))).toMatchObject({
+      accepted: true,
+    });
+    expect(gateway.registerSession(f.newSession)).toMatchObject({
+      packageSnapshotId: f.newSession.snapshotId,
+    });
+  });
+
+  it.each(['retired', 'package-unreadable'] as const)(
+    'keeps the shared hold for a closing first-final candidate under its own Workspace fault: %s',
+    async (fault) => {
+      const f = await createClosedPredecessorFixture(fault, 'closing');
+
+      // Its still-eligible first final must not become a terminal 401.
+      expectSharedHold(f, f.hydrate());
+    }
+  );
+
+  it.each(['retired+shared-event-record', 'package-unreadable+shared-event-record'] as const)(
+    'still holds every owner when a shared accepted record is unreadable beside an owner fault: %s',
+    async (fault) => {
+      const f = await createClosedPredecessorFixture(fault);
+
+      // The valid final qualifies the replay; the shared Native read must still decide first.
+      expectSharedHold(f, f.hydrate());
     }
   );
 
   it('still holds every owner when the shared replay authority itself is untrustworthy', async () => {
     const f = await createClosedPredecessorFixture('shared-final-record');
-    const { gateway, holds } = f.hydrate();
 
-    expect(holds).toEqual([]);
-    expect(() => gateway.registerSession(f.newSession)).toThrow(
-      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
-    );
-    expect(() => gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toThrow();
-    expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
+    expectSharedHold(f, f.hydrate());
   });
 });
