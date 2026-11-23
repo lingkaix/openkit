@@ -57,6 +57,7 @@ import {
   admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -66,6 +67,7 @@ import { DeterministicAgentPreparationError } from './agent-preparation-error.js
 import * as attemptRecords from './execution-attempt-records.js';
 import * as attemptCommands from './execution-attempts.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
+import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -1739,111 +1741,143 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('excludes a second FIFO preparation after image operation intent until submission', async () => {
+  it('excludes a second FIFO preparation while the original image acquisition is held', async () => {
     const coreDb = createMigratedCoreDb(false);
-    await seedLocalSchedulerTarget(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
     });
-    const executor = await NativeCompletingTurnExecutor.create(coreDb);
-    const manifest = agentManifest();
-    const gate = Promise.withResolvers<void>();
-    const entered = Promise.withResolvers<void>();
-    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
-    executor.prepareAgentSessionForTurn = async (owner, input) => {
-      if (
-        coreDb.sqlite
-          .prepare(
-            "SELECT 1 FROM scheduler_execution_attempts WHERE phase = 'open' AND deadline IS NOT NULL"
-          )
-          .get()
-      )
-        throw new WorkerGovernanceCapacityUnavailableError();
-      return prepare(owner, input);
-    };
-    const start = executor.startTurn.bind(executor);
-    executor.startTurn = async (owner, turnId, input, context) => {
-      if (turnId === testEntityId('tu', 'turn_image_first')) {
-        const intent = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
-          attemptId: context!.attemptId!,
-          operationId: 'image:first',
-        });
-        entered.resolve();
-        await gate.promise;
-        attemptRecords.acceptSchedulerExecutionObservation(coreDb, {
-          ...attemptRecords.schedulerExecutionCorrelation(intent),
-          disposition: 'accepted',
-          execution: 'pending',
-          fenceRef: null,
-          outcomeRef: null,
-        });
-      }
-      await start(owner, turnId, input, context);
-    };
-    const dispatch = {
-      coreDb,
-      store,
-      turnExecutor: executor,
-      executionBackend: executor.executionBackend,
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: coreDb.dataRoot,
       agentManifests: [manifest],
       providerRegistry: localProviderRegistry(),
       gatewayConfig: createTestGatewayConfig(),
-      maxDispatches: 1,
-    };
+      workspaceConfigs: [
+        {
+          workspaceId: DEMO_WORKSPACE_ID,
+          path: join(coreDb.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'config/workspace.jsonc'),
+          config: {
+            schemaVersion: 1,
+            workspace: { name: 'Demo Workspace', defaultAgentId: manifest.id },
+          },
+        },
+      ],
+    });
+    const entries = [];
     for (const suffix of ['first', 'second']) {
-      const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
-      await publishTestAdmission(
-        store,
-        await createTestQueueEntry(coreDb, {
-          backendId: 'nanohost',
-          queueEntryId: `queue_image_${suffix}`,
-          requestId: fixtureRequestId(`request_image_${suffix}`),
-          turnId: testEntityId('tu', `turn_image_${suffix}`),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: thread.id,
-          text: suffix,
-          requestedAgentId: manifest.id,
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        })
-      );
-    }
-    const first = runSchedulerDispatchLoop(dispatch);
-    try {
-      await entered.promise;
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { operation_id: 'image:first', deadline: null },
-      ]);
-      const overlap = await runSchedulerDispatchLoop(dispatch);
-      expect(overlap.startedTurns).toEqual([]);
-      expect(executor.prepareCalls).toHaveLength(1);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
-      expect(
-        store.getTurnById(testEntityId('tu', 'turn_image_second')).agentSessionId
-      ).toBeUndefined();
-      expect(executionAttempts(coreDb)).toHaveLength(1);
-      gate.resolve();
-      const admitted = await first;
-      expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
-      expect(executor.prepareCalls).toHaveLength(1);
-      await closeOwnedExecutionAttempt(coreDb, {
-        attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
+      const thread = await store.createThread(DEMO_WORKSPACE_ID, suffix);
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_image_${suffix}`,
+        requestId: fixtureRequestId(`request_image_${suffix}`),
+        turnId: testEntityId('tu', `turn_image_${suffix}`),
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        text: suffix,
+        requestedAgentId: manifest.id,
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
       });
-      expect(
-        (await runSchedulerDispatchLoop(dispatch)).startedTurns[0]?.dispatch.entry.queueEntryId
-      ).toBe('queue_image_second');
-      expect(executor.calls.map((call) => call.turnId)).toEqual([
-        testEntityId('tu', 'turn_image_first'),
-        testEntityId('tu', 'turn_image_second'),
+      await publishTestAdmission(store, entry);
+      entries.push(entry);
+    }
+    const [firstEntry, secondEntry] = entries as [
+      (typeof entries)[number],
+      (typeof entries)[number],
+    ];
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    const releaseImage = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<string>();
+    let held = false;
+    const effect = native.sessionDispatch.effect.bind(native.sessionDispatch);
+    const image = vi
+      .spyOn(native.sessionDispatch, 'effect')
+      .mockImplementation(
+        async (requestOrConnection: object, carried?: NanoHostSessionEffectRequest) => {
+          const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          if (!held && request.kind === 'image.acquire') {
+            held = true;
+            if (!request.requestId) throw new Error('Image acquisition has no original intent.');
+            entered.resolve(request.requestId);
+            await releaseImage.promise;
+          }
+          return carried ? effect(requestOrConnection, carried) : effect(request);
+        }
+      );
+    const prepare = vi.spyOn(native.executor, 'prepareAgentSessionForTurn');
+    const admit = (entry: typeof firstEntry, label: string) => {
+      const agentSessionId = testEntityId('as', `image_fifo_${label}`);
+      return native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', `image_fifo_${label}`),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+    };
+    const first = admit(firstEntry, 'first');
+    void first.catch(() => undefined);
+    let second: Awaited<typeof first> | undefined;
+    try {
+      const operationId = await Promise.race([
+        entered.promise,
+        first.then(() => {
+          throw new Error('Submission occurred before the image acquisition gate.');
+        }),
       ]);
+      expect(executionAttempts(coreDb)).toMatchObject([
+        { turn_id: firstEntry.turnId, phase: 'open', operation_id: operationId, deadline: null },
+      ]);
+      const overlap = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: native.executor,
+        executionBackend: native.executor.executionBackend,
+        agentManifests: configuration.agentManifests,
+        providerRegistry: configuration.providerRegistry,
+        gatewayConfig: configuration.gatewayConfig,
+        maxDispatches: 1,
+      });
+      expect(overlap.startedTurns).toEqual([]);
+      expect(overlap.terminalResult).toMatchObject({ status: 'queued', reason: 'thread-busy' });
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(store.getTurnById(secondEntry.turnId).status).toBe('pending');
+      expect(store.getTurnById(secondEntry.turnId).agentSessionId).toBeUndefined();
+      expect(executionAttempts(coreDb)).toHaveLength(1);
+      releaseImage.resolve();
+      const admitted = await first;
+      expect(admitted.attempt).toMatchObject({
+        turnId: firstEntry.turnId,
+        disposition: 'accepted',
+      });
+      expect(admitted.attempt.deadline).not.toBeNull();
+      await admitted.complete();
+      expect(
+        attemptRecords.requireSchedulerExecutionAttempt(coreDb, admitted.attempt.attemptId).phase
+      ).toBe('closed');
+      second = await admit(secondEntry, 'second');
+      expect(second.attempt).toMatchObject({ turnId: secondEntry.turnId, disposition: 'accepted' });
+      expect(prepare.mock.calls.map(([, input]) => input.turn.id)).toEqual([
+        firstEntry.turnId,
+        secondEntry.turnId,
+      ]);
+      await second.complete();
     } finally {
-      gate.resolve();
-      await first;
-      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
-      await drainNativeCompletions(coreDb);
+      releaseImage.resolve();
+      image.mockRestore();
+      prepare.mockRestore();
+      await first.then(
+        (admission) => admission.cleanup(),
+        () => undefined
+      );
+      await second?.cleanup();
+      await native.restore();
       coreDb.sqlite.close();
     }
   });
