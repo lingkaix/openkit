@@ -4054,7 +4054,7 @@ class ControlStoreWorkerClient {
         return settled;
       };
       const harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle = {
-        queue: async ({ prepared, body, harnessInstanceId, operation, timestamp }) => {
+        queue: async ({ prepared, body, harnessInstanceId, operation, timestamp, replacement }) => {
           const result = await writeHarnessTurn({
             kind: 'operation.queue',
             prepared,
@@ -4062,6 +4062,7 @@ class ControlStoreWorkerClient {
             harnessInstanceId,
             operation,
             timestamp,
+            ...(replacement ? { replacement } : {}),
           });
           if (typeof result !== 'number') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;

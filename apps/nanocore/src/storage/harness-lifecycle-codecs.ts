@@ -192,6 +192,22 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
       harnessInstanceId: identity,
       operation,
       timestamp,
+      replacement: z
+        .object({
+          target: z
+            .object({
+              targetId: identity,
+              identityId: identity,
+              deploymentId: identity,
+              connectionGeneration: z.number().int().nonnegative().safe(),
+              physicalEpoch: identity.nullable(),
+            })
+            .strict(),
+          bindingRevision: timestamp,
+          bindingLifecycleState: identity,
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z

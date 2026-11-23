@@ -22,11 +22,13 @@ export {
   type MarkNanoHostHarnessOperationUnknownInput,
   NANO_HOST_HARNESS_OPERATIONS,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
+  NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
   type NanoHostHarnessResultSettlement,
+  type NanoHostReplacementCloseSelection,
   type OpenNanoHostAgentSessionBindingInput,
   type PreparedNanoHostHarnessOperation,
   type PrepareNanoHostHarnessOperationInput,
@@ -179,6 +181,7 @@ export async function queueNanoHostHarnessOperation(
       harnessInstanceId: input.harnessInstanceId,
       operation: input.operation,
       timestamp: input.timestamp,
+      ...(input.replacement ? { replacement: input.replacement } : {}),
     })) as number;
   } finally {
     try {
