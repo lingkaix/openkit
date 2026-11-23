@@ -567,22 +567,49 @@ describe('cancelled-admission Task checkpoint cleanup', () => {
         .run(testEntityId('attempt', `lease_${turnId}`));
     }
     if (mutate === 'multiple-leases') {
-      // Copy the complete current row; a partial copy is an undecodable attempt, not a second lease.
-      const columns = (
-        fixture.coreDb.sqlite
-          .prepare("SELECT name FROM pragma_table_info('scheduler_execution_attempts')")
-          .all() as { name: string }[]
-      ).map((column) => column.name);
-      fixture.coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_execution_attempts (${columns.join(', ')})
-           SELECT ${columns.map((name) => (name === 'attempt_id' ? '?' : name)).join(', ')}
-           FROM scheduler_execution_attempts WHERE attempt_id = ?`
-        )
-        .run(
-          testEntityId('attempt', `lease_extra_${turnId}`),
-          testEntityId('attempt', `lease_${turnId}`)
-        );
+      // Production admits one attempt per Turn admission, so a second lease is corrupt retained
+      // history. It must still decode: clone the attempt with its lifecycle execution and steps.
+      const sqlite = fixture.coreDb.sqlite;
+      const columnsOf = (table: string) =>
+        (
+          sqlite.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as {
+            name: string;
+          }[]
+        ).map((column) => column.name);
+      const sourceId = testEntityId('attempt', `lease_${turnId}`);
+      const extraId = testEntityId('attempt', `lease_extra_${turnId}`);
+      const clone = (
+        table: string,
+        replace: Record<string, string>,
+        where: string,
+        arg: string
+      ) => {
+        const columns = columnsOf(table);
+        sqlite
+          .prepare(
+            `INSERT INTO ${table} (${columns.join(', ')})
+             SELECT ${columns.map((name) => replace[name] ?? name).join(', ')}
+             FROM ${table} WHERE ${where} = ?`
+          )
+          .run(arg);
+      };
+      clone('scheduler_execution_attempts', { attempt_id: `'${extraId}'` }, 'attempt_id', sourceId);
+      clone(
+        'control_executions',
+        { id: `'scheduler-lifecycle:${extraId}'` },
+        'id',
+        `scheduler-lifecycle:${sourceId}`
+      );
+      clone(
+        'control_execution_steps',
+        {
+          execution_id: `'scheduler-lifecycle:${extraId}'`,
+          invocation_id: "invocation_id || ':extra'",
+          control_json: `json_set(control_json, '$.attemptId', '${extraId}', '$.invocationId', invocation_id || ':extra')`,
+        },
+        'execution_id',
+        `scheduler-lifecycle:${sourceId}`
+      );
     }
     await writeFailedCheckpoint(fixture.workspaceDb, {
       contextDigest: mutate === 'runtime' ? 'sha256:context' : null,

@@ -20,7 +20,10 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -107,6 +110,8 @@ async function fixture(explicitSetupVersion = true) {
       models: ['openai/gpt-5.2'],
     })
   );
+  // K8: verified image defaults live in the admitted NanoHost file, not in Core.
+  await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   await recordTestNativeRuntimeTarget(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
   const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
