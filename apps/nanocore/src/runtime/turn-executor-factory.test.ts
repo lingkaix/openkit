@@ -72,6 +72,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import * as lockOwner from '../bootstrap/lock.js';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import {
   createMcpConfig,
   importWorkspaceSkill,
@@ -24078,7 +24079,21 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         agentSessionId,
         candidateAgentSessionId: agentSessionId,
       });
-      await original.complete();
+      // Cut the original Core close before it publishes the lifecycle release step. The accepted
+      // final, Workspace handoff and Native cleanup must all come from the real live Turn.
+      coreDb.sqlite.exec(`CREATE TRIGGER refuse_original_attempt_close
+        BEFORE UPDATE OF phase ON scheduler_execution_attempts
+        WHEN OLD.attempt_id = '${attemptId}' AND NEW.phase = 'closed'
+        BEGIN SELECT RAISE(ABORT, 'injected Core scheduler close refusal'); END`);
+      try {
+        await expect(original.complete()).rejects.toMatchObject({
+          name: ControlStoreWorkerError.name,
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+      } finally {
+        coreDb.sqlite.exec('DROP TRIGGER refuse_original_attempt_close');
+      }
       const pkg = original.pkg;
       const completed = store.getTurnById(pkg.scope.turnId);
       expect(completed.status).toBe('completed');
@@ -24093,13 +24108,19 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       const target = readAdmittedTestNanoHost(coreDb, (sqlite) => getNanoHostRuntimeTarget({ sqlite }, anchor.runtimeTargetId));
       if (!target) throw new Error('The original native runtime target is missing.');
       expect(anchor.state).toBe('cleaned');
-      coreDb.sqlite
-        .prepare(
-          `UPDATE scheduler_execution_attempts SET phase = 'closing', fence_ref = NULL, terminal_cause = 'worker-final-status', outcome_ref = ? WHERE attempt_id = ?`
-        )
-        .run(`turn:${pkg.scope.turnId}:completed`, attemptId);
-      mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec(`UPDATE sandbox_runtime_records SET lifecycle_state = 'failed', health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown';
-      UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'`));
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        phase: 'closing',
+        disposition: 'accepted',
+        terminalCause: 'worker-final-status',
+        outcomeRef: `turn:${pkg.scope.turnId}:completed`,
+        fenceRef: null,
+      });
+      const owner = currentAdmittedTestNanoHostOwner(coreDb);
+      if (!owner) throw new Error('The original NanoHost opening is not admitted.');
+      await harnessRecords.fenceNanoHostSandboxRuntime(owner, {
+        sandboxBindingRef: anchor.sandboxBindingRef,
+        timestamp: new Date().toISOString(),
+      });
       const storage = readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerStorageBindingForSandbox({ sqlite }, {
         sandboxBindingRef: anchor.sandboxBindingRef,
       }))!;
@@ -24107,11 +24128,16 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       const recovery = {
         executionBackend: backend,
         store,
+        admittedNanoHostRecovery: {
+          state: 'ready' as const,
+          value: bindBootNanoHostAttemptRecovery(owner),
+        },
         cleanupBackendSession: runtime.cleanupBackendSession,
         reconcileExecutions: () => runtime.executionReconciler.runOnce(),
         prepareBackendCleanup: runtime.prepareBackendCleanup,
         restoreBackendSession: runtime.restoreBackendSession,
         reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+        isTurnExecutionActive: runtime.isTurnExecutionActive,
         projectRecoveredTurn: async () => ({ status: 'completed' as const }),
       };
       const assertFence = () => {
@@ -24161,56 +24187,86 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           expect(nativeMaintenance).toHaveBeenCalledTimes(pass + 1);
           expect(checkpoints).toHaveBeenCalledTimes(pass + 1);
           expect(warn.mock.calls.map(([text]) => JSON.parse(String(text)).attributes)).toEqual(
-            Array.from({ length: pass + 1 }, () =>
+            Array.from({ length: pass + 1 }, () => [
               expect.objectContaining({
                 'openkit.error.code': 'scheduler.native_attempt_recovery_failed',
                 'openkit.attempt.id': attemptId,
                 'openkit.turn.id': pkg.scope.turnId,
-              })
-            )
+              }),
+              { 'openkit.error.code': 'scheduler.native_recovery_stage_failed' },
+              { 'openkit.error.code': 'scheduler.attempt_maintenance_failed' },
+            ]).flat()
           );
         }
+        expect(target).toMatchObject({
+          predecessorFenced: true,
+          ready: true,
+          freshEmpty: true,
+          physicalEpoch: anchor.originPhysicalEpoch,
+        });
+        await keepFence();
+        // The former physical Epoch's peer is gone before its retained Integration is retired.
+        await f.restore();
+        const nextObservationMs = Math.max(Date.now(), Date.parse(target.observedAt) + 1);
         const successor = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
           targetId: anchor.runtimeTargetId,
           identityId: target.identityId,
           deploymentId: anchor.deploymentId,
-          observedAt: '2026-10-08T00:01:00.000Z',
+          observedAt: new Date(nextObservationMs).toISOString(),
         });
+        const laterEpoch =
+          anchor.originPhysicalEpoch === 'b'.repeat(64) ? 'c'.repeat(64) : 'b'.repeat(64);
+        const setReadinessFault = (
+          epoch: string | null,
+          ready: boolean,
+          freshEmpty: boolean,
+          predecessorFenced: boolean
+        ) =>
+          mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(`UPDATE nanohost_runtime_targets
+                SET physical_epoch = ?, ready = ?, fresh_empty = ?, predecessor_fenced = ?
+                WHERE target_id = ? AND connection_generation = ?`)
+              .run(epoch, Number(ready), Number(freshEmpty), Number(predecessorFenced),
+                target.targetId, successor.connectionGeneration)
+          );
+        try {
+          expect(setReadinessFault(laterEpoch, false, false, false).changes).toBe(1);
+          const beforeContradictoryWarnings = warn.mock.calls.length;
+          ticks[0]!();
+          await expect(service.runOnce()).rejects.toThrow('Scheduler recovery maintenance failed');
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assertFence();
+          expect(nativeMaintenance).toHaveBeenCalledTimes(3);
+          expect(checkpoints).toHaveBeenCalledTimes(3);
+          expect(
+            warn.mock.calls
+              .slice(beforeContradictoryWarnings)
+              .map(([text]) => JSON.parse(String(text)).attributes['openkit.error.code'])
+          ).toEqual([
+            'scheduler.native_attempt_recovery_failed',
+            'scheduler.native_recovery_stage_failed',
+            'scheduler.attempt_maintenance_failed',
+          ]);
+          expect(setReadinessFault(laterEpoch, true, true, false).changes).toBe(1);
+          await keepFence();
+        } finally {
+          setReadinessFault(
+            successor.physicalEpoch,
+            successor.ready,
+            successor.freshEmpty,
+            successor.predecessorFenced
+          );
+        }
+        // Restore the acknowledged allocation before the same generation publishes actual readiness.
         await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
           ...successor,
           predecessorFenced: true,
           ready: true,
           freshEmpty: true,
-          physicalEpoch: 'a'.repeat(64),
-          observedAt: '2026-10-08T00:01:01.000Z',
+          physicalEpoch: laterEpoch,
+          observedAt: new Date(Math.max(Date.now(), nextObservationMs + 1)).toISOString(),
         });
-        await keepFence();
-        // The former physical Epoch's peer is gone before its retained Integration is retired.
-        await f.restore();
-        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
-          .prepare(
-            'UPDATE nanohost_runtime_targets SET physical_epoch = ?, ready = 0, fresh_empty = 0, predecessor_fenced = 0'
-          )
-          .run('b'.repeat(64)));
-        const beforeContradictoryWarnings = warn.mock.calls.length;
-        ticks[0]!();
-        await expect(service.runOnce()).rejects.toThrow('Scheduler recovery maintenance failed');
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        assertFence();
-        expect(nativeMaintenance).toHaveBeenCalledTimes(3);
-        expect(checkpoints).toHaveBeenCalledTimes(3);
-        expect(
-          warn.mock.calls
-            .slice(beforeContradictoryWarnings)
-            .map(([text]) => JSON.parse(String(text)).attributes['openkit.error.code'])
-        ).toEqual([
-          'scheduler.native_attempt_recovery_failed',
-          'scheduler.native_recovery_stage_failed',
-          'scheduler.attempt_maintenance_failed',
-        ]);
-        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec('UPDATE nanohost_runtime_targets SET ready = 1, fresh_empty = 1'));
-        await keepFence();
-        mutateAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.exec('UPDATE nanohost_runtime_targets SET predecessor_fenced = 1'));
         const actualRelease = backend.release.bind(backend);
         vi.spyOn(backend, 'release').mockImplementation(async (input) => {
           const result = await actualRelease(input);
