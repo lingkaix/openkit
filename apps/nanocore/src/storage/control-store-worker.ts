@@ -1207,7 +1207,13 @@ function domainRefusal(
     (operation === 'execution-attempt' || operation === 'nanohost-first-submission') &&
     error instanceof ExecutionAttemptRefusal
   )
-    return { operation, code: 'attempt_refused', message: error.message, status: 409 };
+    return {
+      operation,
+      code: 'attempt_refused',
+      message: error.message,
+      status: 409,
+      ...(error.reason ? { reason: error.reason } : {}),
+    };
   if (operation === 'harness-lifecycle' && error instanceof HarnessLifecycleRefusal)
     return {
       operation,
