@@ -15312,10 +15312,11 @@ describe('createConfiguredTurnExecutor', () => {
         expect(native.effects.slice(effectsBefore)).toEqual([]);
         const finalGuard = scenario === 'materialization-forced-retirement-guard';
         if (delayedGuard) {
-          // Replaced per A8 P10 r1 review. The Core hold now refuses before these backend guards, so
-          // each decision is witnessed at the backend owner. The probe is the first Task's real
-          // package. It has the resident's compatibility key, so it passes the incompatible-resident
-          // refusal and reaches the capacity and retirement decisions. Capacity counts held attempts.
+          // Replaced per A8 P10 r1 review. The Core hold now refuses before these backend guards,
+          // so each decision is witnessed at the backend owner. The probe is the first Task's real
+          // package. It has the resident's compatibility key, so it passes the incompatible
+          // resident refusal and reaches the capacity and retirement decisions. Capacity counts
+          // held attempts.
           const [probe, firstContext] = materialization.mock.calls.find(
             ([pkg]) => pkg.scope.threadId === first.threadId
           )!;
@@ -15610,7 +15611,9 @@ describe('createConfiguredTurnExecutor', () => {
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
-    const threadIds = ['first', 'second', 'third'].map((label) => testEntityId('th', `th_reply_${label}`));
+    const threadIds = ['first', 'second', 'third'].map((label) =>
+      testEntityId('th', `th_reply_${label}`)
+    );
     for (const threadId of threadIds)
       await store.createThread(workspaceId, 'Independent Task', threadId);
     const setup = createTestAgentSetup({
