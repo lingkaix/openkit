@@ -1143,13 +1143,19 @@ describe('Worker storage bindings', () => {
         selectWorkerStorageBinding(bindingDb(coreDb), { ...selection(unknown) })
       ).toThrow('storage is fenced');
       expect(
+        // A fenced association has no current Sandbox. Its proved release posts through the
+        // owner's post-decision transition writer, as the factory cleanup does.
         (
-          await attachment.release({
-            attachmentGeneration: unknown.attachmentGeneration,
-            cleanupProved: true,
-            expectedRevision: unknown.revision,
-            storageRef: unknown.storageRef,
-          })
+          await releaseWorkerStorageAttachment(
+            coreDb,
+            {
+              attachmentGeneration: unknown.attachmentGeneration,
+              cleanupProved: true,
+              expectedRevision: unknown.revision,
+              storageRef: unknown.storageRef,
+            },
+            owner.workerStorageBinding
+          )
         ).state
       ).toBe('idle');
 

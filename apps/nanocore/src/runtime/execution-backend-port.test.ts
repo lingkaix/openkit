@@ -272,11 +272,15 @@ async function fixture(
       status: store.getTurnById(subject.turnId).status as 'failed',
     }),
   };
-  const queue = async (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
+  const queue = async (
+    suffix: string,
+    threadId = 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
+  ) => {
     const turnId = testEntityId('tu', `turn_port_${suffix}`);
     const input = {
       requestId: testEntityId('tu', `request_port_${suffix}`).slice(3),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
       threadId,
       input: 'Execute exactly once.',
       agentId: setup.manifest.id,
@@ -288,7 +292,7 @@ async function fixture(
     };
     const createdAt = new Date().toISOString();
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
-      await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
+      await store.createThread(workspaceId, suffix, threadId);
     await store.createTurn(
       input.workspaceId,
       threadId,
@@ -593,13 +597,52 @@ describe('execution backend port through real Core coordination', () => {
         expect(acquire, 'The record owner must expose conditional attempt acquisition.').toBeTypeOf(
           'function'
         );
-        // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
-        const control = await f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
-        const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
+        const candidateFor = (
+          entry: ReturnType<typeof createSchedulerAdmissionEntry>,
+          attemptId: string,
+          sessionId: string
+        ) => ({
           entry,
           attemptId,
           agentSessionId: sessionId,
         });
+        // Direct acquisition under A's genuine Workspace hold stays refused for an independent Thread.
+        const sameWorkspace = await f.queue(
+          'same-workspace',
+          'th_00000000-0000-7a11-83a9-10eb8b400194'
+        );
+        const beforeHeld = attempts(f.db);
+        expect(() =>
+          acquire(
+            f.db,
+            candidateFor(
+              sameWorkspace,
+              testEntityId('attempt', 'same-workspace-attempt'),
+              testEntityId('as', 'same-workspace-session')
+            )
+          )
+        ).toThrow(/Execution placement has an unresolved writer/);
+        expect(attempts(f.db)).toEqual(beforeHeld);
+        expect(requireSchedulerAdmissionEntry(f.db, sameWorkspace.queueEntryId).status).toBe(
+          'queued'
+        );
+        cancelSchedulerAdmissionEntry(f.db, {
+          queueEntryId: sameWorkspace.queueEntryId,
+          workspaceId: sameWorkspace.workspaceId,
+        });
+        // Positive control in another Workspace prevents a missing prerequisite or unconditional
+        // refusal from proving exclusion.
+        const other = await f.store.createWorkspace('Independent placement');
+        recordWorkspaceOwnerMembership({
+          coreDb: f.db,
+          workspaceId: other.id,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        });
+        const control = await f.queue(
+          'control',
+          'th_00000000-0000-7a11-83a9-10eb8b400195',
+          other.id
+        );
         await acquire(
           f.db,
           candidateFor(
@@ -630,7 +673,8 @@ describe('execution backend port through real Core coordination', () => {
                   })
                 : await f.queue(
                     `collision-${collision}`,
-                    'th_00000000-0000-751d-bedc-6ab13a59afef'
+                    'th_00000000-0000-751d-bedc-6ab13a59afef',
+                    other.id
                   );
           const candidate = candidateFor(
             entry,
@@ -641,7 +685,11 @@ describe('execution backend port through real Core coordination', () => {
           );
           const before = attempts(f.db);
           expect(() => acquire(f.db, candidate)).toThrow(
-            collision === 'turn' ? /queued admission/ : /UNIQUE constraint/
+            collision === 'turn'
+              ? /queued admission/
+              : collision === 'thread'
+                ? /Execution placement has an unresolved writer/
+                : /Selected AgentSession has an unresolved writer|UNIQUE constraint/
           );
           expect(
             attempts(f.db),
@@ -736,34 +784,32 @@ describe('execution backend port through real Core coordination', () => {
               'closing'
             )
           );
+          // FIFO under the hold: capacity is available, but A's unresolved writer still holds the
+          // Workspace. B stays queued in its FIFO position with no attempt and no backend call.
+          f.setPhysicalCapacityAvailable(true);
           await f.dispatch();
-          await vi.waitFor(() =>
-            expect(attempts(f.db)).toContainEqual(
-              expect.objectContaining({
-                turn_id: b.id,
-                phase: 'closed',
-                terminal_cause: 'backend-busy',
-                disposition: 'not_accepted',
-                operation_id: null,
-              })
-            )
-          );
           expect(f.port.submit).toHaveBeenCalledOnce();
-          expect(f.nativeStarts).toHaveLength(1);
+          expect(attempts(f.db).filter((row) => row.turn_id === b.id)).toEqual([]);
           expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
             expect.objectContaining({ turnId: b.id })
           );
-          const busy = attempts(f.db).find(
-            (row) => row.turn_id === b.id && row.terminal_cause === 'backend-busy'
-          )!;
-          expect(busy.phase).toBe('closed');
-          // Only this backend's capacity proof changes; A's original unresolved execution stays fenced.
-          f.setPhysicalCapacityAvailable(true);
+          // Cross-Workspace: the dispatch pass skips held B and selects the next eligible FIFO
+          // entry, a later admission in another Workspace. A's exclusion stays local.
+          const c = await f.queue(
+            'cross-workspace',
+            'th_00000000-0000-7a11-83a9-10eb8b400196',
+            other.id
+          );
           await f.dispatch();
           await vi.waitFor(() => expect(f.nativeStarts).toHaveLength(2));
           expect(f.port.submit).toHaveBeenCalledTimes(2);
-          expect(f.effectCalls[1]!.attemptId).not.toBe(original.attemptId);
-          expect(f.effectCalls[1]!.attemptId).not.toBe(busy.attempt_id);
+          expect(f.effectCalls[1]!.attemptId).toBe(
+            attempts(f.db).find((row) => row.turn_id === c.turnId)?.attempt_id
+          );
+          expect(attempts(f.db).filter((row) => row.turn_id === b.id)).toEqual([]);
+          expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
+            expect.objectContaining({ turnId: b.id })
+          );
           expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
             'closing'
           );
@@ -780,9 +826,14 @@ describe('execution backend port through real Core coordination', () => {
               coreDb: reloaded,
               store: recovery.store,
             });
+            // The hold and B's FIFO position survive restart; no backend call repeats.
             expect(
               attempts(reloaded).find((row) => row.attempt_id === original.attemptId)?.phase
             ).toBe('closing');
+            expect(attempts(reloaded).filter((row) => row.turn_id === b.id)).toEqual([]);
+            expect(listQueuedSchedulerAdmissionEntries(reloaded)).toContainEqual(
+              expect.objectContaining({ turnId: b.id })
+            );
             expect(f.port.submit).toHaveBeenCalledTimes(2);
             expect(f.nativeStarts).toHaveLength(2);
           } finally {
@@ -1169,8 +1220,15 @@ describe('execution backend port through real Core coordination', () => {
       });
       expect(afterKill.disposition).not.toBe('not_accepted');
       expect(afterKill.phase).not.toBe('closed');
+      // The lost original still holds its Workspace, so the late create runs in another Workspace.
+      const siblingWorkspace = await f.store.createWorkspace('Late create placement');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.db,
+        workspaceId: siblingWorkspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      });
       const siblingThread = 'th_00000000-0000-7c17-8000-000000000171';
-      const sibling = await f.queue('late-create', siblingThread);
+      const sibling = await f.queue('late-create', siblingThread, siblingWorkspace.id);
       await f.dispatch();
       await vi.waitFor(() =>
         expect(f.effectCalls.some((call) => call.attemptId !== original.attemptId)).toBe(true)

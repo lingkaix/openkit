@@ -10511,7 +10511,7 @@ describe('createConfiguredTurnExecutor', () => {
                 expectedRevision: before.revision,
                 storageRef: before.storageRef,
               },
-              currentAdmittedTestNanoHostOwner(coreDb)?.releaseIdleSandboxStorage
+              currentAdmittedTestNanoHostOwner(coreDb)?.workerStorageBinding
             );
             expectedAfterFailure = await reserveWorkerStorageAttachment(
               coreDb,
@@ -11837,7 +11837,9 @@ describe('createConfiguredTurnExecutor', () => {
               sandboxes: [{ ...exposed, drainState: 'draining' }],
               attemptPhase: 'open',
               cancelledOrClosed: false,
-              sessions: ['open'],
+              // The one outside session is still live. It is open or running, by when the held
+              // Turn start returned; it is never interrupted or closed before this drain.
+              sessions: [expect.stringMatching(/^(open|running)$/)],
             });
             if (response.ok) {
               expect(
@@ -11937,9 +11939,12 @@ describe('createConfiguredTurnExecutor', () => {
             createAttemptId: () => siblingAttemptId,
             createAgentSessionId: () => siblingAgentSessionId,
           });
+          // The original's unresolved writer holds the Workspace and the selected storage. The
+          // sibling stays queued in FIFO order without an attempt (durable Scheduler design, Queue
+          // And Bounds: queued receipts and capacity deferral).
           expect(deferred).toMatchObject({
             startedTurns: [],
-            terminalResult: { status: 'queued', reason: 'backend-busy' },
+            terminalResult: { status: 'queued', reason: 'thread-busy' },
           });
           expect(native.effects).toHaveLength(beforeAdmissionEffects);
           expect(
