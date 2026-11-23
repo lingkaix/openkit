@@ -1125,6 +1125,119 @@ describe('NanoHost transport App API safe-sink routes', () => {
     }
   });
 
+  it('records the failed rotation Audit when abort finds the predecessor already revoked', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-abort-audit-'));
+    const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-abort-audit-slots-'));
+    const coreDb = openCoreDb(dataRoot);
+
+    try {
+      applyMigrations(coreDb);
+      const nanoHostStorage = await admitTransportFixture(coreDb);
+      insertTokenOwnerUser(coreDb);
+      const config = configuredNanoHost(slotRoot);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({
+        auth: ownerSessionAuth(),
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
+        nanoHostStorage,
+        enableNanoHostEnrollment: true,
+        openKitConfig: { nanohost: config },
+      });
+      const headers = {
+        authorization: `Bearer ${admin.secret}`,
+        'content-type': 'application/json',
+      };
+      const enrolled = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ targetSlot: 'A', expiresAt: '2999-01-01T00:00:00.000Z' }),
+          }
+        )
+      );
+      expect(enrolled.status).toBe(201);
+      const predecessorId = ((await enrolled.json()) as { record: { tokenId: string } }).record
+        .tokenId;
+      const rotated = await app.request(
+        ...operationRequest(
+          'nanohost.token-rotate',
+          { tokenId: predecessorId },
+          { method: 'POST', headers, body: JSON.stringify({ overlapSeconds: 60 }) }
+        )
+      );
+      expect(rotated.status).toBe(200);
+      const successorId = ((await rotated.json()) as { record: { tokenId: string } }).record
+        .tokenId;
+      const successorSecret = readFileSync(config.credentialSlots.B.secretPath, 'utf8');
+      const revokePredecessor = await app.request(
+        ...operationRequest(
+          'credential.revoke',
+          { kind: 'nanohost-transport', id: predecessorId },
+          { method: 'POST', headers: { authorization: `Bearer ${admin.secret}` } }
+        )
+      );
+      expect(revokePredecessor.status).toBe(200);
+
+      const abort = await app.request(
+        ...operationRequest(
+          'nanohost.token-rotation-abort',
+          { tokenId: successorId },
+          { method: 'POST', headers: { authorization: `Bearer ${admin.secret}` } }
+        )
+      );
+      // The mandatory failed-rotation Audit is the oracle, so it is checked first.
+      const failed = listServerAuditEvents(coreDb).filter(
+        (event) => event.action === 'nanohost.transport.rotate' && event.outcome === 'failed'
+      );
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({
+        actor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
+        category: 'system',
+        errorCode: 'nanohost_transport_rotate_failed',
+        resource: `nanohost-transport-token:${successorId}`,
+        severity: 'warning',
+      });
+      expect(failed[0]?.summary).toContain(
+        `predecessor ${predecessorId} status=revoked; successor ${successorId} status=revoked.`
+      );
+      const auditJson = JSON.stringify(failed);
+      expect(auditJson).not.toContain(successorSecret);
+      expect(auditJson).not.toContain(admin.secret);
+      expect(auditJson).not.toContain(slotRoot);
+      expect(abort.status).toBe(200);
+      expect(await abort.json()).toMatchObject({
+        predecessor: { tokenId: predecessorId, status: 'revoked' },
+        successor: { tokenId: successorId, status: 'revoked' },
+      });
+      // Abort does not restore a terminal predecessor.
+      const statuses = nativeFixtures
+        .get(coreDb)!
+        .sqlite.prepare(
+          'SELECT token_id, status FROM nanohost_transport_tokens WHERE token_id IN (?, ?)'
+        )
+        .all(predecessorId, successorId) as Array<{ token_id: string; status: string }>;
+      expect(Object.fromEntries(statuses.map((row) => [row.token_id, row.status]))).toEqual({
+        [predecessorId]: 'revoked',
+        [successorId]: 'revoked',
+      });
+      expect(existsSync(config.credentialSlots.B.secretPath)).toBe(false);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('does not revoke an orphan Token when the configured identity is missing', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-decommission-orphan-'));
     const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-decommission-orphan-slots-'));
