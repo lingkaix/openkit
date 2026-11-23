@@ -98,8 +98,14 @@ function isolationAdmission(
   });
 }
 
-function attempt(db: CoreDb, suffix: string, submitted = false, backendId = 'nanohost') {
-  const entry = isolationAdmission(db, suffix, backendId);
+function attempt(
+  db: CoreDb,
+  suffix: string,
+  submitted = false,
+  backendId = 'nanohost',
+  workspace = workspaceId
+) {
+  const entry = isolationAdmission(db, suffix, backendId, workspace);
   return recordTestExecutionAttempt(db, {
     entry,
     attemptId: testEntityId('attempt', suffix),
@@ -137,11 +143,31 @@ function retainedLease(
   );
 }
 
+/**
+ * A claim that has not submitted holds its Workspace. A live pre-effect sibling therefore claims
+ * in a second Workspace with the same owner.
+ */
+async function siblingWorkspace(db: CoreDb, store: Awaited<ReturnType<typeof fixture>>['store']) {
+  const workspace = await store.createWorkspace('Recovery sibling');
+  recordWorkspaceOwnerMembership({
+    coreDb: db,
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    workspaceId: workspace.id,
+  });
+  return workspace.id;
+}
+
 describe('restart classification fault isolation (T4)', () => {
   it('continues after failed Turn publication and retries the original no-effect proof after listen', async () => {
     const { db, store, input } = await fixture();
     const bad = attempt(db, 'projection-fault');
-    const healthy = attempt(db, 'projection-healthy');
+    const healthy = attempt(
+      db,
+      'projection-healthy',
+      false,
+      'nanohost',
+      await siblingWorkspace(db, store)
+    );
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const project = vi.fn(async (subject: PreAnchorRecoveryContext) => {
       if (subject.attemptId === bad.attemptId) throw new Error('private injected fault');
@@ -217,10 +243,16 @@ describe('restart classification fault isolation (T4)', () => {
   });
 
   it('skips a changed backend without changing its attempt and still classifies its sibling', async () => {
-    const { db, input } = await fixture();
+    const { db, store, input } = await fixture();
     // Boot has only the new backend; the foreign attempt keeps its original admitted backend.
     const foreign = attempt(db, 'foreign-backend', false, 'unavailable-backend');
-    const healthy = attempt(db, 'backend-healthy');
+    const healthy = attempt(
+      db,
+      'backend-healthy',
+      false,
+      'nanohost',
+      await siblingWorkspace(db, store)
+    );
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
     const recovery = await runSchedulerRestartRecovery(db, input);
     expect(recovery).toMatchObject({ failedAttemptIds: [foreign.attemptId] });

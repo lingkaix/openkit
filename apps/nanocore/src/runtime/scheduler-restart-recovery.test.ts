@@ -8133,8 +8133,32 @@ describe('minimal scheduler reconnect contract', () => {
         'failed-preparation'
       );
       const original = f.store.getTurnById(f.turnId);
-      dispatchLease(f.coreDb, 'early_image_sibling', undefined, false);
-      await recordBackendSession(f.coreDb, 'early_image_sibling', undefined, undefined, true);
+      // The failed preparation has not submitted, so it holds its Workspace until recovery proves
+      // its close. The live sibling therefore runs in another Workspace.
+      const siblingWorkspaceId = 'ws_00000000-0000-7000-8000-000000000002';
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: siblingWorkspaceId,
+      });
+      dispatchLease(
+        f.coreDb,
+        'early_image_sibling',
+        undefined,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        siblingWorkspaceId
+      );
+      await recordBackendSession(
+        f.coreDb,
+        'early_image_sibling',
+        undefined,
+        undefined,
+        true
+      );
       const sibling = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
         getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_early_image_sibling'))
       );

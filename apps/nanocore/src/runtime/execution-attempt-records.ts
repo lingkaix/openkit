@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentEnvironmentCredentialDeclarationSchema } from '@openkit/config-schema';
 import {
@@ -13,7 +14,7 @@ import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-a
 import { revokeRunBoundAccessTokensInDb } from '../auth/run-bound-access-token-native.js';
 import {
   type CoreSchedulerQueueEntry,
-  listQueuedSchedulerAdmissionEntries,
+  readQueuedSchedulerAdmissionEntriesInOrder,
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
@@ -327,6 +328,88 @@ function schedulerClaimScopes(entry: CoreSchedulerQueueEntry): string[] {
   ];
 }
 
+/**
+ * The shared Core selector predicate for one queued admission. Main's proposal and the claim
+ * transaction use it with the same queue order. The admission is blocked when:
+ * - a nonclosed attempt owns its Turn or Thread;
+ * - a claimed attempt that has not submitted (`deadline IS NULL`) prepares on one of its claim
+ *   scopes, derived from that attempt's original admission (the preparation exclusion);
+ * - a scheduler exclusion holds one of its claim scopes.
+ */
+export function schedulerClaimBlocked(coreDb: CoreDb, entry: CoreSchedulerQueueEntry): boolean {
+  if (
+    coreDb.sqlite
+      .prepare(
+        "SELECT 1 FROM scheduler_execution_attempts WHERE phase <> 'closed' AND (turn_id = ? OR (workspace_id = ? AND thread_id = ?)) LIMIT 1"
+      )
+      .get(entry.turnId, entry.workspaceId, entry.threadId)
+  )
+    return true;
+  const scopes = schedulerClaimScopes(entry);
+  // Submission installs the grant and its exclusions in the same transaction that fixes the
+  // deadline. Until then the claim itself holds the original preparation scopes. Closing, a lost
+  // ACK or expiry alone does not release them; only a proved close does.
+  const preparing = coreDb.sqlite
+    .prepare(
+      "SELECT queue_entry_id AS queueEntryId FROM scheduler_execution_attempts WHERE phase <> 'closed' AND deadline IS NULL"
+    )
+    .all() as { readonly queueEntryId: string }[];
+  return (
+    preparing.some(({ queueEntryId }) =>
+      schedulerClaimScopes(requireSchedulerAdmissionEntry(coreDb, queueEntryId)).some((scope) =>
+        scopes.includes(scope)
+      )
+    ) || kernelSchedulerScopeIsHeld(coreDb, scopes)
+  );
+}
+
+/**
+ * Core's own qualification of one queued admission: its backend can take effects and its actor
+ * has current Workspace authority. Main's walk and the claim transaction apply it to every
+ * predecessor, so an admission with a definite denial is never a satisfiable predecessor.
+ */
+export function schedulerAdmissionQualified(
+  coreDb: CoreDb,
+  entry: CoreSchedulerQueueEntry
+): boolean {
+  return (
+    !heldExternalBackends.has(entry.backendId) &&
+    currentSchedulerAdmissionWorkspaceAuthority(coreDb, entry, 'runtime.launch', true) !== null
+  );
+}
+
+/**
+ * Streams the selection prefix of one proposal: the ordered (queue entry, input hash) pairs of
+ * the satisfiable admissions before it. The digest is the same SHA-256 on both sides; the empty
+ * prefix has one value.
+ */
+export function createSchedulerSelectionPrefix(): {
+  readonly add: (entry: CoreSchedulerQueueEntry) => void;
+  readonly digest: () => string;
+} {
+  const hash = createHash('sha256');
+  return {
+    add: (entry) => {
+      hash.update(`${JSON.stringify([entry.queueEntryId, entry.inputHash])}\n`);
+    },
+    digest: () => hash.copy().digest('hex'),
+  };
+}
+
+/** Computes the current selection prefix of one queued admission: its satisfiable predecessors. */
+export function readSchedulerSelectionPrefixDigest(
+  coreDb: CoreDb,
+  entry: CoreSchedulerQueueEntry
+): string {
+  const prefix = createSchedulerSelectionPrefix();
+  for (const queued of readQueuedSchedulerAdmissionEntriesInOrder(coreDb)) {
+    if (queued.queueEntryId === entry.queueEntryId) break;
+    if (schedulerAdmissionQualified(coreDb, queued) && !schedulerClaimBlocked(coreDb, queued))
+      prefix.add(queued);
+  }
+  return prefix.digest();
+}
+
 /** Acquires only the selected entry's product boundaries, before any preparation effect. */
 export function createSchedulerExecutionAttempt(
   coreDb: CoreDb,
@@ -334,8 +417,11 @@ export function createSchedulerExecutionAttempt(
     readonly entry: CoreSchedulerQueueEntry;
     readonly attemptId?: string;
     readonly preparationInput: unknown;
-    /** Admissions that this dispatch pass deferred on a placement-held claim refusal. */
-    readonly deferredQueueEntryIds?: readonly string[];
+    /**
+     * The selection prefix that Main observed for this proposal. A create without Main's
+     * selection attests the empty prefix.
+     */
+    readonly selectionPrefixDigest?: string;
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
@@ -344,33 +430,61 @@ export function createSchedulerExecutionAttempt(
   return coreDb.sqlite
     .transaction(() => {
       const entry = requireSchedulerAdmissionEntry(coreDb, input.entry.queueEntryId);
+      // An exact replay after an ambiguous claim reply inspects the original claim under this
+      // write lock. The original attempt ID, entry and preparation claim (with the input hash)
+      // return the original record and write nothing.
+      const original =
+        input.attemptId === undefined
+          ? undefined
+          : (coreDb.sqlite
+              .prepare(`SELECT attempt.queue_entry_id AS queueEntryId,
+                json_extract(claim.invocation_json, '$.carriage.schedulerPreparation') AS claim
+              FROM scheduler_execution_attempts AS attempt
+              LEFT JOIN control_execution_steps AS claim
+                ON claim.execution_id = 'scheduler-lifecycle:' || attempt.attempt_id
+                AND claim.step_id = 'claim' AND claim.state = 'completed'
+              WHERE attempt.attempt_id = ?`)
+              .get(attemptId) as { queueEntryId: string; claim: string | null } | undefined);
+      if (original) {
+        if (
+          original.queueEntryId !== entry.queueEntryId ||
+          original.claim === null ||
+          !isDeepStrictEqual(
+            SchedulerPreparationClaimSchema.parse(JSON.parse(original.claim)),
+            preparationClaim(entry, input.preparationInput)
+          )
+        )
+          throw new ExecutionAttemptRefusal('The attempt identity belongs to another claim.');
+        return requireSchedulerExecutionAttempt(coreDb, attemptId);
+      }
       requireQualifiedSchedulerBackend(entry.backendId);
+      // Another claim, a cancellation or a denial took the proposed admission after selection.
+      if (entry.status !== 'queued')
+        throw new ExecutionAttemptRefusal(
+          'The exact queued admission is no longer dispatchable.',
+          'selection-changed'
+        );
       if (
-        entry.status !== 'queued' ||
         entry.backendId !== input.entry.backendId ||
         !currentSchedulerAdmissionWorkspaceAuthority(coreDb, entry, 'runtime.launch', true)
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
-      const scopes = schedulerClaimScopes(entry);
-      // A deferred older admission keeps its FIFO priority over this claim once its placement is
-      // free. Decide it in this claim's transaction, so a release cannot commit between the two.
-      const deferred = new Set(input.deferredQueueEntryIds);
-      if (
-        (deferred.size > 0 &&
-          listQueuedSchedulerAdmissionEntries(coreDb).some((queued) => {
-            if (!deferred.has(queued.queueEntryId)) return false;
-            const deferredScopes = schedulerClaimScopes(queued);
-            return (
-              deferredScopes.some((scope) => scopes.includes(scope)) &&
-              !kernelSchedulerScopeIsHeld(coreDb, deferredScopes)
-            );
-          })) ||
-        kernelSchedulerScopeIsHeld(coreDb, scopes)
-      )
+      if (schedulerClaimBlocked(coreDb, entry))
         throw new ExecutionAttemptRefusal(
           'Execution placement has an unresolved writer.',
           'placement-held'
+        );
+      // FIFO: the proposal claims only if it is still the oldest satisfiable admission apart from
+      // the predecessors that Main examined and skipped. Recompute that prefix under this write
+      // lock. A release, retry, cancellation or new admission that changes it commits nothing.
+      if (
+        readSchedulerSelectionPrefixDigest(coreDb, entry) !==
+        (input.selectionPrefixDigest ?? createSchedulerSelectionPrefix().digest())
+      )
+        throw new ExecutionAttemptRefusal(
+          'The scheduler selection changed before the claim.',
+          'selection-changed'
         );
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts

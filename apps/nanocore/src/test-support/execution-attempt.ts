@@ -2,6 +2,7 @@ import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
+  readSchedulerSelectionPrefixDigest,
   recordSchedulerExecutionOperation,
 } from '../runtime/execution-attempt-records.js';
 import {
@@ -41,6 +42,8 @@ export function recordTestExecutionAttempt(
     entry: input.entry,
     attemptId: input.attemptId,
     preparationInput: { admission: input.entry },
+    // A fixture claim stands in for Main's selection, which skips every satisfiable predecessor.
+    selectionPrefixDigest: readSchedulerSelectionPrefixDigest(coreDb, input.entry),
     now: input.now,
   });
   bindSchedulerExecutionAttemptSession(coreDb, {

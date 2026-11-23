@@ -793,7 +793,15 @@ describe('admitted NanoHost watch replacements', () => {
   it('R21 closes proven pre-effect startup work while expired submitted heartbeat authority retains exclusion', async () => {
     const f = await fixture();
     try {
-      const startup = await f.seed('startup', false);
+      // The startup claim has not submitted, so it holds its Workspace. The heartbeat lease
+      // therefore claims in a second Workspace with the same owner.
+      const startupWorkspace = await f.store.createWorkspace('Pre-effect startup');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: startupWorkspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      const startup = await f.seed('startup', false, false, false, startupWorkspace.id);
       const heartbeat = await f.seed('heartbeat', true, false, true);
       const input = {
         ...heartbeat,

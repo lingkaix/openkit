@@ -773,6 +773,14 @@ it.each(['authority', 'thread-projection'] as const)(
       if (index === 128) {
         selected = requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId);
         attemptId = attempt.attemptId;
+      } else {
+        // A filler only adds an admitted row to the cut. Its pre-submit attempt would hold the
+        // Workspace, so its real no-effect close releases it before the next claim.
+        closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          attemptId: attempt.attemptId,
+          noOutstandingEffects: true,
+          cause: 'fixture-filler',
+        });
       }
     }
     const expected = selected!;

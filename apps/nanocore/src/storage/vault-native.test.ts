@@ -726,6 +726,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     storeDir: join(f.db.dataRoot, 'vault-generation'),
   });
   const workspaceDb = openWorkspaceDb(f.db.dataRoot, DEMO_WORKSPACE_ID);
+  let secondWorkspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
   let ownerStage = 'primary-preparation';
   try {
     unlock.unlock({ masterKey: Buffer.alloc(32, 37) });
@@ -962,9 +963,19 @@ it('joins Provider receipt generations at the actual sequential native decision'
     expect(attempt.operationId).toBeNull();
 
     // Independent actual Thread/Session: never fake termination of the still-running first Turn.
+    // The first claim has not submitted, so it holds its own Workspace. The independent Turn
+    // runs in a separately admitted Workspace of the same owner.
+    ownerStage = 'independent-workspace-create';
+    const secondWorkspace = await store.createWorkspace('Native independent Workspace');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      ownerUserId: localUserId,
+      workspaceId: secondWorkspace.id,
+    });
+    secondWorkspaceDb = openWorkspaceDb(f.db.dataRoot, secondWorkspace.id);
     ownerStage = 'independent-thread-create';
     const secondThread = await store.createThread(
-      DEMO_WORKSPACE_ID,
+      secondWorkspace.id,
       'Native independent mixed credentials'
     );
     const secondTimestamp = new Date().toISOString();
@@ -973,7 +984,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     await store.createAgentSession({
       id: secondSessionId,
       agentId: setup.manifest.id,
-      workspaceId: DEMO_WORKSPACE_ID,
+      workspaceId: secondWorkspace.id,
       threadId: secondThread.id,
       status: 'idle',
       message: null,
@@ -1033,7 +1044,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     });
     ownerStage = 'independent-turn-create';
     const createdSecondTurn = await store.createTurn(
-      DEMO_WORKSPACE_ID,
+      secondWorkspace.id,
       secondThread.id,
       'Native independent current generation',
       { kind: 'user', id: localUserId },
@@ -1055,11 +1066,11 @@ it('joins Provider receipt generations at the actual sequential native decision'
       threadId: secondThread.id,
       turnId: secondTurn.id,
       inputRef: schedulerFixtureInput(
-        DEMO_WORKSPACE_ID,
+        secondWorkspace.id,
         secondTurn.id,
         'Native independent current generation'
       ),
-      workspaceId: DEMO_WORKSPACE_ID,
+      workspaceId: secondWorkspace.id,
       now: () => secondTimestamp,
     });
     const secondResolverInput = {
@@ -1114,7 +1125,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     expect(Object.hasOwn(secondBinding, 'credentialValue')).toBe(false);
     expect(Object.hasOwn(fileBinding, 'credentialValue')).toBe(false);
     ownerStage = 'independent-ledger';
-    const secondLedger = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    const secondLedger = recordAgentEnvironmentPackageSnapshot(secondWorkspaceDb, {
       environmentPackage: secondPackage,
       createdAt: secondTimestamp,
     });
@@ -1302,6 +1313,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
   } finally {
     unlock.lock();
     workspaceDb.sqlite.close();
+    secondWorkspaceDb?.sqlite.close();
   }
 }, 30_000);
 
