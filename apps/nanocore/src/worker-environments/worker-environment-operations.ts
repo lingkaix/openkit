@@ -33,11 +33,13 @@ import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environm
 import {
   getWorkerStorageBinding,
   listWorkerStorageBindings,
-  type markWorkerStoragePurgePending,
+  markWorkerStoragePurgePending,
   selectWorkerStorageBinding,
-  type settleWorkerStoragePurge,
+  settleWorkerStoragePurge,
   type WorkerStorageBinding,
   type WorkerStorageContributor,
+  type WriteNanoHostStoragePurge,
+  type WriteNanoHostStorageTransition,
 } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
@@ -114,6 +116,20 @@ export interface CreateWorkerEnvironmentOperationsInput {
   readonly store: FsStore;
   /** Process-local duplicate-collapse owner shared by public commands. */
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+}
+
+/** Joins purge to the admitted owner: the reservation rechecks Core in its commit, then the outcome settles. */
+export function admittedWorkerStoragePurgeDecisions(
+  coreDb: CoreDb,
+  owner: {
+    readonly reserveStoragePurge: WriteNanoHostStoragePurge;
+    readonly workerStorageBinding: WriteNanoHostStorageTransition;
+  }
+): NonNullable<CreateWorkerEnvironmentOperationsInput['purgeDecisions']> {
+  return {
+    markPending: (input) => markWorkerStoragePurgePending(coreDb, input, owner.reserveStoragePurge),
+    settle: (input) => settleWorkerStoragePurge(coreDb, input, owner.workerStorageBinding),
+  };
 }
 
 /** Creates the shared bounded Worker environment operation owner. */

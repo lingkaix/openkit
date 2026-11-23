@@ -976,6 +976,11 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     kind: z.literal('worker-storage-binding'),
     input: ControlWorkerStorageInputSchema.refine((input) => input.kind !== 'purge-pending'),
   }),
+  z.strictObject({
+    kind: z.literal('worker-storage-purge'),
+    input: ControlWorkerStorageInputSchema.refine((input) => input.kind === 'purge-pending'),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
 ]);
 
 /** Original local tuples posted only on a specific acknowledged NanoHost opening. */
@@ -1015,7 +1020,12 @@ export type NanoHostOwnerMutation =
       readonly kind: 'recovery-classification';
       readonly input: z.infer<typeof nanoHostRecoveryClassificationInput>;
     }
-  | { readonly kind: 'worker-storage-binding'; readonly input: NanoHostLocalWorkerStorageInput };
+  | { readonly kind: 'worker-storage-binding'; readonly input: NanoHostLocalWorkerStorageInput }
+  | {
+      readonly kind: 'worker-storage-purge';
+      readonly input: Extract<ControlWorkerStorageInput, { kind: 'purge-pending' }>;
+      readonly coreIdentity: string;
+    };
 
 const nanoHostTargetResultSchema = z.discriminatedUnion('state', [
   z.strictObject({ state: z.literal('ready'), value: ControlRuntimeTargetResultSchema }),
@@ -1061,13 +1071,24 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('worker-storage-binding'),
     value: ControlWorkerStorageResultSchema,
   }),
+  z.strictObject({
+    kind: z.literal('worker-storage-purge'),
+    value: ControlWorkerStorageResultSchema,
+  }),
 ]);
 
 /** Correlates the original tuple's local result with the covering FULL acknowledgement. */
 export type NanoHostOwnerMutationResult =
-  | Exclude<z.infer<typeof nanoHostOwnerResultSchema>, { kind: 'worker-storage-binding' }>
+  | Exclude<
+      z.infer<typeof nanoHostOwnerResultSchema>,
+      { kind: 'worker-storage-binding' | 'worker-storage-purge' }
+    >
   | {
       readonly kind: 'worker-storage-binding';
+      readonly value: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
+    }
+  | {
+      readonly kind: 'worker-storage-purge';
       readonly value: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
     };
 

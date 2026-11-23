@@ -338,15 +338,7 @@ export function createSchedulerExecutionAttempt(
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
-      const storage = entry.workerStorageChoice;
-      if (
-        kernelSchedulerScopeIsHeld(coreDb, [
-          `workspace:${entry.workspaceId}`,
-          `thread:${entry.threadId}`,
-          `turn:${entry.turnId}`,
-          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
-        ])
-      )
+      if (schedulerPlacementIsHeld(coreDb, entry))
         throw new ExecutionAttemptRefusal('Execution placement has an unresolved writer.');
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts
@@ -381,6 +373,23 @@ export function createSchedulerExecutionAttempt(
       return requireSchedulerExecutionAttempt(coreDb, attemptId);
     })
     .immediate();
+}
+
+/** An unresolved Core Scheduler writer still holds the original placement of this admission. */
+export function schedulerPlacementIsHeld(
+  coreDb: CoreDb,
+  entry: Pick<
+    CoreSchedulerQueueEntry,
+    'workspaceId' | 'threadId' | 'turnId' | 'workerStorageChoice'
+  >
+): boolean {
+  const storage = entry.workerStorageChoice;
+  return kernelSchedulerScopeIsHeld(coreDb, [
+    `workspace:${entry.workspaceId}`,
+    `thread:${entry.threadId}`,
+    `turn:${entry.turnId}`,
+    ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+  ]);
 }
 
 /** Binds the selected AgentSession conditionally under its unique live-attempt constraint. */

@@ -311,6 +311,22 @@ export type WriteNanoHostStorageRelease = (
   >
 ) => Promise<WorkerStorageBinding>;
 
+/** Existing Native CAS for one transition after the caller's cleanup, fence or purge decision. */
+export type WriteNanoHostStorageTransition = (
+  input: Extract<
+    Parameters<ReturnType<typeof getControlStoreWorkerClient>['workerStorageBinding']>[1],
+    { kind: 'release' | 'mark-unknown' | 'purge-settle' }
+  >
+) => Promise<WorkerStorageBinding>;
+
+/** Existing Native purge reservation; the owner rechecks the Core Scheduler census in its commit. */
+export type WriteNanoHostStoragePurge = (
+  input: Extract<
+    Parameters<ReturnType<typeof getControlStoreWorkerClient>['workerStorageBinding']>[1],
+    { kind: 'purge-pending' }
+  >
+) => Promise<WorkerStorageBinding>;
+
 /** Publishes the existing exact releaseWorkerStorageAttachment transition after its covering FULL acknowledgement. */
 export async function releaseWorkerStorageAttachment(
   coreDb: CoreDb,
@@ -338,9 +354,11 @@ export async function markWorkerStorageAttachmentUnknown(
     readonly expectedRevision: number;
     readonly now?: string;
     readonly storageRef: string;
-  }
+  },
+  admitted?: WriteNanoHostStorageTransition
 ): Promise<WorkerStorageBinding> {
   const snapshot = structuredClone(input);
+  if (admitted) return admitted({ ...snapshot, kind: 'mark-unknown' });
   const { client, database } = await bindingWriter(coreDb);
   return client.workerStorageBinding(database, { ...snapshot, kind: 'mark-unknown' });
 }
@@ -354,11 +372,12 @@ export async function markWorkerStoragePurgePending(
     readonly hasSurvivingReferences: () => boolean;
     readonly now?: string;
     readonly storageRef: string;
-  }
+  },
+  admitted?: WriteNanoHostStoragePurge
 ): Promise<WorkerStorageBinding> {
   const { authorizePurge, hasSurvivingReferences, ...retained } = input;
   const snapshot = { ...structuredClone(retained), authorizePurge, hasSurvivingReferences };
-  const { client, database } = await bindingWriter(coreDb);
+  const writer = admitted ?? (await bindingWriter(coreDb));
   if (!snapshot.authorizePurge())
     throw new WorkerStorageBindingError(
       'authorization_denied',
@@ -382,11 +401,10 @@ export async function markWorkerStoragePurgePending(
       'Worker storage still has an attachment or surviving reference.'
     );
   const { authorizePurge: _authorize, hasSurvivingReferences: _references, ...facts } = snapshot;
-  return client.workerStorageBinding(database, {
-    ...facts,
-    kind: 'purge-pending',
-    schedulerRows,
-  });
+  const command = { ...facts, kind: 'purge-pending' as const, schedulerRows };
+  return typeof writer === 'function'
+    ? writer(command)
+    : writer.client.workerStorageBinding(writer.database, command);
 }
 
 /** Publishes the existing exact settleWorkerStoragePurge transition after its covering FULL acknowledgement. */
@@ -397,9 +415,11 @@ export async function settleWorkerStoragePurge(
     readonly now?: string;
     readonly outcome: 'purged' | 'retained' | 'unknown';
     readonly storageRef: string;
-  }
+  },
+  admitted?: WriteNanoHostStorageTransition
 ): Promise<WorkerStorageBinding> {
   const snapshot = structuredClone(input);
+  if (admitted) return admitted({ ...snapshot, kind: 'purge-settle' });
   const { client, database } = await bindingWriter(coreDb);
   return client.workerStorageBinding(database, { ...snapshot, kind: 'purge-settle' });
 }
