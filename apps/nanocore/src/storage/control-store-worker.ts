@@ -983,7 +983,8 @@ function domainRefusal(
         ? 'backend-session'
         : request.mutation.kind === 'prepared-image-result'
           ? 'worker-image'
-          : request.mutation.kind === 'harness-turn-lifecycle'
+          : request.mutation.kind === 'harness-turn-lifecycle' ||
+              request.mutation.kind === 'harness-idle-sandbox'
             ? 'harness-lifecycle'
             : request.mutation.kind === 'worker-storage-purge'
               ? 'worker-storage-binding'
@@ -1628,6 +1629,16 @@ function withCurrentPeerRead<Value>(
   ownerIdentity: string,
   read: (sqlite: Database.Database) => Value
 ): Value {
+  const sqlite = openCurrentPeerRead(path, ownerIdentity);
+  try {
+    return read(sqlite);
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Opens an exact query-only file reserved by the acknowledged peer writer. The caller closes it. */
+function openCurrentPeerRead(path: string, ownerIdentity: string): Database.Database {
   const assertCurrent = () => {
     const file = lstatSync(path, { throwIfNoEntry: false });
     if (
@@ -1643,9 +1654,10 @@ function withCurrentPeerRead<Value>(
   try {
     sqlite.pragma('query_only = ON');
     assertCurrent();
-    return read(sqlite);
-  } finally {
+    return sqlite;
+  } catch (error) {
     sqlite.close();
+    throw error;
   }
 }
 
@@ -1702,7 +1714,26 @@ function requireNanoHostMaterialization(
       input.identity.packageSnapshotId,
       input.sandboxBindingRef
     ) as { attemptId: string } | undefined;
-  if (!row) throw new ServerOwnerAdmissionError('recovery-required');
+  if (!row)
+    // The Core census decided this refusal. It is the same domain answer as the Core path.
+    throw new BackendSessionRefusal(
+      coreDb.sqlite
+        .prepare(
+          `SELECT 1 FROM scheduler_execution_attempts
+          WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+            AND input_ref=? AND binding_ref=?`
+        )
+        .get(
+          workspaceId,
+          threadId,
+          turnId,
+          input.identity.agentSessionId,
+          input.identity.packageSnapshotId,
+          input.sandboxBindingRef
+        )
+        ? 'execution attempt is not live for worker backend materialization.'
+        : 'execution attempt binding does not match worker backend session lineage.'
+    );
   return { coreDb, attempt: requireSchedulerExecutionAttempt(coreDb, row.attemptId) };
 }
 
@@ -5866,9 +5897,19 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               )
                 throw new ControlProductPreconditionError();
               await prepareAfterPredecessors(owner, queued, earlier);
+              const { nanoHostOwnerIdentity } = value;
+              const scopeDb = owner.scopeDb;
               const preparedSchemaApplication = await prepareNativeSchemaApplication(
-                owner.scopeDb,
-                input
+                scopeDb,
+                input,
+                // The census reads Native backend sessions only from the acknowledged opening.
+                nanoHostOwnerIdentity === undefined
+                  ? undefined
+                  : () =>
+                      openCurrentPeerRead(
+                        serverStoragePath(scopeDb.dataRoot, 'nanohost'),
+                        nanoHostOwnerIdentity
+                      )
               );
               // The same slot owns cleanup before its monotonic final-barrier promotion.
               Object.assign(queued, { preparedSchemaApplication });
