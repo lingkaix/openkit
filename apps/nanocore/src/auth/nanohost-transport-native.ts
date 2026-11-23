@@ -40,7 +40,8 @@ export function applyControlNanoHostTransport(
         input.action,
         input.record,
         input.actorUserId,
-        native
+        native,
+        input.predecessor
       );
       return { kind: 'audit' };
     case 'decommission-audit': {
@@ -534,19 +535,29 @@ function recordNanoHostTransportLifecycleAuditEvent(
     | 'nanohost.transport.rotate',
   record: NanoHostTransportTokenRecord,
   actorUserId: string | null,
-  native?: { readonly sqlite: Database.Database }
+  native?: { readonly sqlite: Database.Database },
+  carried?: NanoHostTransportTokenRecord
 ): void {
   if (action === 'nanohost.transport.rotate' && record.status === 'revoked') {
-    if (record.predecessorTokenId && !native)
+    // The Native abort stage returns the exact predecessor of this successor's lineage.
+    const abortPredecessor =
+      carried &&
+      carried.tokenId === record.predecessorTokenId &&
+      carried.ownerNanoHostIdentityId === record.ownerNanoHostIdentityId &&
+      carried.deploymentId === record.deploymentId
+        ? carried
+        : undefined;
+    if (record.predecessorTokenId && !native && !abortPredecessor)
       throw new OperationError(
         'nanohost_transport_storage_unavailable',
         'NanoHost transport storage is unavailable.',
         503
       );
-    const predecessor =
-      record.predecessorTokenId && native
+    const predecessor = record.predecessorTokenId
+      ? native
         ? getNanoHostTransportTokenRecord(native.sqlite, record.predecessorTokenId)
-        : null;
+        : abortPredecessor
+      : null;
     recordServerAuditEvent({
       action,
       category: 'system',

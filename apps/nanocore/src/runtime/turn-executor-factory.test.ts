@@ -11679,9 +11679,35 @@ describe('createConfiguredTurnExecutor', () => {
       const nativeOwner = currentAdmittedTestNanoHostOwner(coreDb)!;
       const harnessLifecycle = nativeOwner.harnessLifecycle.bind(nativeOwner);
       const committedDrains: string[] = [];
+      const sandboxDrains = () =>
+        readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT sandbox_binding_ref AS sandboxBindingRef,
+                      origin_physical_epoch AS originPhysicalEpoch, drain_state AS drainState
+               FROM sandbox_runtime_records ORDER BY sandbox_runtime_id`
+            )
+            .all()
+        );
+      // The durable Native rows right after each admitted drain ACK. A zero-row UPDATE also returns.
+      const drainReadbacks: unknown[] = [];
       const drains = vi.spyOn(nativeOwner, 'harnessLifecycle').mockImplementation(async (input) => {
         await harnessLifecycle(input);
-        if (input.kind === 'sandbox.drain') committedDrains.push(input.sandboxBindingRef);
+        if (input.kind !== 'sandbox.drain') return;
+        committedDrains.push(input.sandboxBindingRef);
+        drainReadbacks.push({
+          sandboxBindingRef: input.sandboxBindingRef,
+          originPhysicalEpoch: input.originPhysicalEpoch,
+          sandboxes: await sandboxDrains(),
+          attemptPhase: attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase,
+          cancelledOrClosed: commands.mock.calls.some(
+            ([command]) =>
+              command.operation === 'turn.interrupt' || command.operation === 'session.close'
+          ),
+          sessions: [...native.outside.bindings.values()].flatMap((sessions) =>
+            [...sessions.values()].map((session) => session.state)
+          ),
+        });
       });
       const acceptCommand = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
       const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
@@ -11749,6 +11775,14 @@ describe('createConfiguredTurnExecutor', () => {
             expect(
               [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
             ).toEqual([expect.objectContaining({ state: 'open' })]);
+            // The exact original Sandbox that holds the exposed environment, still accepting.
+            const [exposed, ...otherSandboxes] = (await sandboxDrains()) as {
+              sandboxBindingRef: string;
+              originPhysicalEpoch: string;
+              drainState: string;
+            }[];
+            expect(otherSandboxes).toEqual([]);
+            expect(exposed).toMatchObject({ drainState: 'accepting' });
             expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
             const plans = listVaultInjectionPlans(coreDb);
             expect(plans).toEqual([
@@ -11795,8 +11829,17 @@ describe('createConfiguredTurnExecutor', () => {
               expect(listVaultInjectionPlans(coreDb)).toEqual(
                 expect.arrayContaining([expect.objectContaining(original)])
               );
+            // On both outcomes the exact original Sandbox and Epoch are durably draining after the
+            // admitted ACK, before attempt cancellation, session close or physical cleanup.
+            expect(drainReadbacks).toContainEqual({
+              sandboxBindingRef: exposed!.sandboxBindingRef,
+              originPhysicalEpoch: exposed!.originPhysicalEpoch,
+              sandboxes: [{ ...exposed, drainState: 'draining' }],
+              attemptPhase: 'open',
+              cancelledOrClosed: false,
+              sessions: ['open'],
+            });
             if (response.ok) {
-              expect(committedDrains).not.toEqual([]);
               expect(
                 [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
               ).toEqual([expect.objectContaining({ state: 'closed' })]);
