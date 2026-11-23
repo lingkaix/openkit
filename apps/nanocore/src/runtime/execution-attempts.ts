@@ -17,7 +17,6 @@ export {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
-  schedulerPlacementIsHeld,
 } from './execution-attempt-records.js';
 
 const preparationPublicationTails = new Map<string, Promise<void>>();

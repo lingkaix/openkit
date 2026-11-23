@@ -319,12 +319,16 @@ export type WriteNanoHostStorageTransition = (
   >
 ) => Promise<WorkerStorageBinding>;
 
-/** Existing Native purge reservation; the owner rechecks the Core Scheduler census in its commit. */
+/**
+ * Existing Native purge reservation. Under the acquired Core hold it rechecks the caller's
+ * original authority, and the owner rechecks the Core Scheduler census in its commit.
+ */
 export type WriteNanoHostStoragePurge = (
   input: Extract<
     Parameters<ReturnType<typeof getControlStoreWorkerClient>['workerStorageBinding']>[1],
     { kind: 'purge-pending' }
-  >
+  >,
+  authorizePurge: () => boolean
 ) => Promise<WorkerStorageBinding>;
 
 /** Publishes the existing exact releaseWorkerStorageAttachment transition after its covering FULL acknowledgement. */
@@ -403,7 +407,7 @@ export async function markWorkerStoragePurgePending(
   const { authorizePurge: _authorize, hasSurvivingReferences: _references, ...facts } = snapshot;
   const command = { ...facts, kind: 'purge-pending' as const, schedulerRows };
   return typeof writer === 'function'
-    ? writer(command)
+    ? writer(command, snapshot.authorizePurge)
     : writer.client.workerStorageBinding(writer.database, command);
 }
 

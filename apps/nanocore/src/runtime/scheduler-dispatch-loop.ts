@@ -54,7 +54,6 @@ import {
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
-  schedulerPlacementIsHeld,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import {
@@ -530,8 +529,9 @@ async function dispatchSchedulerAdmission(
       ...(input.now ? { now: input.now } : {}),
     });
   } catch (error) {
-    // Only a refusal under a still-held placement defers. Its claim committed nothing.
-    if (error instanceof ExecutionAttemptRefusal && schedulerPlacementIsHeld(input.coreDb, entry))
+    // Only the deciding claim's held-placement refusal defers. That claim committed nothing.
+    // Every other refusal keeps its own answer.
+    if (error instanceof ExecutionAttemptRefusal && error.reason === 'placement-held')
       return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
     throw error;
   }
