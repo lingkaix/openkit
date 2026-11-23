@@ -7153,12 +7153,19 @@ describe('createConfiguredTurnExecutor', () => {
     // Every Harness command the peer accepts, in order; a close names its AgentSession.
     const commands: { operation: string; agentSessionId: unknown; operationId: string }[] = [];
     let loseClose = false;
+    let beforeCloseDispatch: (() => Promise<unknown>) | undefined;
     let gated = false;
     const entered = Promise.withResolvers<void>();
     const observe = () => {
       const accept = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
       vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand').mockImplementation(
         async (command) => {
+          // One production writer runs after the close is queued and before Core accepts its dispatch.
+          if (beforeCloseDispatch && command.operation === 'session.close') {
+            const change = beforeCloseDispatch;
+            beforeCloseDispatch = undefined;
+            await change();
+          }
           const wire = await accept(command);
           if (wire)
             commands.push({
@@ -7259,6 +7266,9 @@ describe('createConfiguredTurnExecutor', () => {
       release: () => capture.resolve(),
       loseClose() {
         loseClose = true;
+      },
+      onCloseDispatch(change: () => Promise<unknown>) {
+        beforeCloseDispatch = change;
       },
       close: () =>
         backend.prepareAgentSessionContinuity!({
@@ -7455,6 +7465,37 @@ describe('createConfiguredTurnExecutor', () => {
       )
     ).toEqual([{ drain: 'accepting', sandboxDrain: 'accepting', sandbox: 'open' }]);
   }, 120_000);
+
+  it('refuses a replacement close whose request is requeued between queue and dispatch', async () => {
+    const f = await admitNativeReplacementClose('p23_dispatch_requeued');
+    const before = f.readRows(f.predecessor.agentSessionId);
+    f.onCloseDispatch(() =>
+      nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: f.successor.attemptId,
+        noOutstandingEffects: true,
+        cause: 'backend-busy',
+        requeue: true,
+      })
+    );
+    await expect(f.close()).rejects.toThrow(
+      'NanoHost Harness session.close delivery incomplete: outcome unknown.'
+    );
+    // The dispatch recheck refuses before the peer contacts the Harness.
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    // The queued close keeps its fence as an unknown outcome; the resume pair is intact.
+    expect(
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT operation, operation_state AS state FROM harness_instance_records`)
+          .all()
+      )
+    ).toEqual([{ operation: 'session.close', state: 'unknown' }]);
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before!.binding,
+      digest: before!.digest,
+      revision: before!.revision,
+    });
+  }, 90_000);
 
   it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
     const f = await admitNativeReplacementClose('p23_lost_ack');

@@ -9785,13 +9785,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       await restoreNanoHostSandboxAdmissionIfSafe(this.coreDb, { sandboxRuntimeId });
       return;
     }
-    // The latch is Harness-wide: another binding's close owner keeps it.
-    for (const owner of this.agentSessionCloseOwners.values())
-      if (
-        owner.inspection.harnessInstanceId === session.harnessInstanceId &&
-        owner.inspection.agentSessionRuntimeBindingId !== session.agentSessionRuntimeBindingId
-      )
-        return;
     const target = this.readIdleSandboxTarget(session.sharedHarness.sandbox.runtimeTargetId);
     if (target)
       await restoreNanoHostSandboxAdmissionIfSafe(
@@ -9986,7 +9979,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const drain = closeOwner?.drain;
       const replacement = closeOwner?.replacement;
       if (drain) this.requireIdleSandboxCloseDrain(session, drain);
-      if (replacement) this.requireAgentSessionReplacementClose(session, replacement);
       const identity = {
         harnessInstanceId: session.harnessInstanceId,
         harnessBindingRef: session.harnessBindingRef,
@@ -10015,6 +10007,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
         return await this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
           if (drain) this.requireIdleSandboxCloseDrain(session, drain);
+          // Slot CAS: the request and its selected binding are compared before any queue write.
           if (replacement) this.requireAgentSessionReplacementClose(session, replacement);
           if (
             session.pendingHarnessOperation !== pending ||
