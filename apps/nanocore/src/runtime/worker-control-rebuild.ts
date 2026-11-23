@@ -136,10 +136,14 @@ function planWorkerControlRestore(
       )
     )
       continue;
-    // Closed-terminal branch: the replay's own Workspace is checked before executable admission.
-    // A quarantined or retired owner holds only this replay; its exit is that owner's repair and
-    // re-admission at the next hydration, or its proved retirement. Old routes stay unrestored.
-    const closed = lease.phase !== 'open';
+    // Native accepted records are shared authority: an unreadable one holds the whole plan, so it is
+    // read before any owner-local hold can skip this lease.
+    const records = readAcceptedRecords(owner, lineage);
+    // Closed exact-replay branch only (a closed lease qualifies only through its accepted final). A
+    // closing first-final candidate keeps the shared hold. The replay's own Workspace is checked
+    // before executable admission: a quarantined or retired owner holds only this replay; its exit
+    // is that owner's repair and re-admission at the next hydration, or its proved retirement.
+    const closed = lease.phase === 'closed';
     if (closed && !isScopeAdmitted(coreDb.dataRoot, 'workspace', lease.workspaceId)) {
       held.push({ ...ownerOf(lease), causeCode: 'workspace-not-admitted' });
       continue;
@@ -163,7 +167,6 @@ function planWorkerControlRestore(
       workspaceDb.sqlite.close();
     }
     assertRestoredPackageLineage(environmentPackage, lease, admission);
-    const records = readAcceptedRecords(owner, lineage);
 
     planned.push({
       ...records,
