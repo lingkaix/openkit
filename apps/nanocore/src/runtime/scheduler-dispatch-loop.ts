@@ -43,6 +43,7 @@ import {
   openAdmittedWorkspaceReadDb,
   openWorkspaceReadDb,
 } from '../storage/db.js';
+import { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
@@ -53,6 +54,7 @@ import {
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
+  schedulerPlacementIsHeld,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import {
@@ -189,13 +191,15 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
+  // Admissions whose placement an unresolved writer holds stay queued in FIFO order for this pass.
+  const heldQueueEntryIds = new Set<string>();
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     if (input.agentWorkPaused?.())
       return { startedTurns, terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
-      unpublishedQueueEntryIds
+      new Set([...unpublishedQueueEntryIds, ...heldQueueEntryIds])
     );
     if (!entry)
       return {
@@ -211,6 +215,13 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
+    if (schedulerPlacementIsHeld(input.coreDb, entry)) {
+      // The Core claim refuses this placement. Keep the admission queued and select the next
+      // eligible entry; the release wake or a later pass dispatches it in FIFO order.
+      heldQueueEntryIds.add(entry.queueEntryId);
+      count--;
+      continue;
+    }
     if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
       // Retain the admission and all exclusion; only this process-local selection is skipped.
       unpublishedQueueEntryIds.add(entry.queueEntryId);
@@ -302,6 +313,15 @@ export async function runSchedulerDispatchLoop(
           )
         );
       startedTurns.push(...result.startedTurns);
+      if (
+        result.terminalResult.status === 'queued' &&
+        result.terminalResult.reason === 'thread-busy'
+      ) {
+        // A hold committed after selection, and the Core claim refused it. The admission stays queued.
+        heldQueueEntryIds.add(entry.queueEntryId);
+        count--;
+        continue;
+      }
       if (
         result.terminalResult.status === 'queued' &&
         result.terminalResult.reason === 'recovery-required'
@@ -499,20 +519,28 @@ async function dispatchSchedulerAdmission(
   const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
     (candidate) => candidate.workspaceId === entry.workspaceId
   )?.catalog;
-  const attempt = await createSchedulerExecutionAttempt(input.coreDb, {
-    entry,
-    attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
-    preparationInput: {
-      admission: entry,
-      configVersion: input.configVersion ?? null,
-      manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
-      workspaceConfig,
-      userConfig,
-      workspaceDataSourceCatalog,
-      workspaceMcpServerCatalog,
-    },
-    ...(input.now ? { now: input.now } : {}),
-  });
+  let attempt: SchedulerExecutionAttemptRecord;
+  try {
+    attempt = await createSchedulerExecutionAttempt(input.coreDb, {
+      entry,
+      attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
+      preparationInput: {
+        admission: entry,
+        configVersion: input.configVersion ?? null,
+        manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
+        workspaceConfig,
+        userConfig,
+        workspaceDataSourceCatalog,
+        workspaceMcpServerCatalog,
+      },
+      ...(input.now ? { now: input.now } : {}),
+    });
+  } catch (error) {
+    // Only a refusal under a still-held placement defers. Its claim committed nothing.
+    if (error instanceof ExecutionAttemptRefusal && schedulerPlacementIsHeld(input.coreDb, entry))
+      return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
+    throw error;
+  }
   const expiration = Promise.withResolvers<never>();
   const expirationKey = JSON.stringify([input.coreDb.dataRoot, attempt.attemptId]);
   preparationExpirations.set(expirationKey, expiration.reject);
