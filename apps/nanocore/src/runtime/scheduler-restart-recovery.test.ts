@@ -2634,7 +2634,15 @@ describe('terminal failed-start product recovery', () => {
   it('preserves a live sibling and its exact awaiting-reconnect attempt', async () => {
     const f = await createFailedStartFixture('beside_live');
     f.input.now = () => '2026-07-05T00:01:00.000Z';
-    await prepareReconnectLease(f.coreDb, 'surviving_sibling');
+    const workspaceId = await createIndependentRecoveryWorkspace(f.coreDb, f.store);
+    await prepareReconnectLease(
+      f.coreDb,
+      'surviving_sibling',
+      true,
+      undefined,
+      undefined,
+      workspaceId
+    );
     const live = requireNanoHostExecutionAttempt(
       f.coreDb,
       testEntityId('attempt', 'lease_surviving_sibling')
@@ -2863,6 +2871,16 @@ async function recordTestAgentEnvironmentPackage(
   }
 }
 
+/** An independent writer must not share the held Workspace scope of the original attempt. */
+async function createIndependentRecoveryWorkspace(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  store: FsStore
+): Promise<string> {
+  const workspace = await store.createWorkspace('Independent recovery');
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
+  return workspace.id;
+}
+
 /** Persists the exact Generic and Native preparation boundary before any acknowledgement. */
 function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
@@ -2872,7 +2890,8 @@ function dispatchLease(
   nativePrepared = true,
   threadId = testEntityId('th', `th_${suffix}`),
   admittedAt = '2026-07-05T00:00:01.000Z',
-  admittedSubmission = false
+  admittedSubmission = false,
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2885,16 +2904,16 @@ function dispatchLease(
       .run(responsible, responsible, `${responsible}@restart.invalid`, at, at);
     coreDb.sqlite
       .prepare(
-        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(
+        workspaceId,
         responsible,
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z'
       );
   }
-  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -3023,9 +3042,10 @@ async function prepareReconnectLease(
   suffix: string,
   postLaunch = true,
   reconnectKey = reconnectKeyFor(suffix),
-  threadId = testEntityId('th', `th_${suffix}`)
+  threadId = testEntityId('th', `th_${suffix}`),
+  workspaceId?: string
 ): Promise<{ readonly lineage: WorkerControlLineage; readonly reconnectKey: string }> {
-  dispatchLease(coreDb, suffix, undefined, false, true, threadId);
+  dispatchLease(coreDb, suffix, undefined, false, true, threadId, undefined, false, workspaceId);
   await recordBackendSession(coreDb, suffix, 'launching', threadId, true);
   const attemptId = testEntityId('attempt', `lease_${suffix}`);
   const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
@@ -3059,10 +3079,42 @@ async function prepareReconnectLease(
       requestId: fixtureRequestId(`request_${suffix}`),
       threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: submitted.workspaceId,
     },
     reconnectKey,
   };
+}
+
+/** Retains the exact Core submit and then loses only its acknowledged Native backend anchor. */
+async function loseOriginalBackendAnchor(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  suffix: string,
+  disposition: 'accepted' | 'unknown' = 'unknown'
+) {
+  dispatchLease(coreDb, suffix, undefined, false);
+  await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+  expect(submitted.operationId).toBe(fixtureSubmitOperationId(suffix));
+  const retained =
+    disposition === 'accepted'
+      ? attempts.acceptSchedulerExecutionObservation(
+          coreDb,
+          await new SimulatedTurnExecutor({ coreDb }).submit({
+            ...attempts.schedulerExecutionCorrelation(submitted),
+            deadline: submitted.deadline!,
+          })
+        )
+      : submitted;
+  expect(retained.disposition).toBe(disposition);
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+  ).toMatchObject({ attemptId, state: 'launching' });
+  removeTestNativeWorkerAnchor(coreDb, attemptId);
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+  ).toBeNull();
+  return retained;
 }
 
 /** The original submit operationId the production grant writer derives for one fixture suffix. */
@@ -3121,14 +3173,13 @@ async function recordBackendSession(
     allocationAt: '2026-07-05T00:00:00.000Z',
     readyAt: '2026-07-05T00:00:01.000Z',
   });
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const { workspaceId } = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
     if (
-      !listExportableAgentEnvironmentPackageSnapshots(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001'
-      ).some(
+      !listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId).some(
         (record) =>
           record.snapshotId ===
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
@@ -3143,7 +3194,6 @@ async function recordBackendSession(
   } finally {
     workspaceDb.sqlite.close();
   }
-  const attemptId = testEntityId('attempt', `lease_${suffix}`);
   await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.99',
@@ -3160,7 +3210,7 @@ async function recordBackendSession(
     lineage: {
       threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     },
     now: () => '2026-07-05T00:00:03.000Z',
     sandboxBindingRef: `lease-binding:lease_${suffix}`,
@@ -5847,26 +5897,14 @@ describe('scheduler restart recovery', () => {
     ['closing', 'unknown'],
     ['closing', 'accepted'],
   ] as const)(
-    'retains the original %s/%s operation without a durable backend anchor',
+    'reports a lost Native anchor and retains the original %s/%s operation',
     async (phase, disposition) => {
       const coreDb = await createMigratedCoreDb();
       const suffix = `restart_missing_anchor_${phase}_${disposition}`;
       const cleanup = vi.fn(async () => {});
       const project = vi.fn(async () => ({ status: 'failed' as const }));
       try {
-        dispatchLease(coreDb, suffix);
-        let row = attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        );
-        if (disposition === 'accepted')
-          row = attempts.acceptSchedulerExecutionObservation(coreDb, {
-            ...attempts.schedulerExecutionCorrelation(row),
-            disposition: 'accepted',
-            execution: 'pending',
-            fenceRef: null,
-            outcomeRef: null,
-          });
+        let row = await loseOriginalBackendAnchor(coreDb, suffix, disposition);
         if (phase === 'closing')
           row = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
             attemptId: row.attemptId,
@@ -5880,9 +5918,25 @@ describe('scheduler restart recovery', () => {
         };
         expect(await recoverTestStartup(coreDb, input)).toEqual({
           preparationFailedAttemptIds: [],
-          failedAttemptIds: [],
+          failedAttemptIds: [row.attemptId],
         });
-        await drainTestRecovery(coreDb, input);
+        const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          await expect(drainTestRecovery(coreDb, input)).rejects.toSatisfy((error: unknown) =>
+            hasRecoveryFailure(error, 'NanoHost recovery owner is unavailable.')
+          );
+          expect(log.mock.calls.map(([line]) => JSON.parse(line))).toContainEqual(
+            expect.objectContaining({
+              attributes: expect.objectContaining({
+                'openkit.error.code': 'scheduler.native_attempt_recovery_failed',
+                'openkit.attempt.id': row.attemptId,
+                'openkit.turn.id': row.turnId,
+              }),
+            })
+          );
+        } finally {
+          log.mockRestore();
+        }
         expect(attempts.requireSchedulerExecutionAttempt(coreDb, row.attemptId)).toEqual({
           ...row,
           updatedAt: expect.any(String),
@@ -5995,25 +6049,23 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_missing_anchor_stale_starting';
 
     try {
-      dispatchLease(coreDb, suffix);
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'heartbeat-timeout' WHERE attempt_id = ?"
-        )
-        .run(testEntityId('attempt', `lease_${suffix}`));
+      const original = await loseOriginalBackendAnchor(coreDb, suffix);
+      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: original.attemptId,
+        cause: 'heartbeat-timeout',
+        now: () => '2026-07-05T00:02:00.000Z',
+      });
 
       const recovery = await recoverTestStartup(coreDb, {
         now: () => '2026-07-05T00:01:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
+      expect(recovery).toEqual({
+        preparationFailedAttemptIds: [],
+        failedAttemptIds: [original.attemptId],
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, original.attemptId)).toMatchObject({
+        operationId: original.operationId,
         fenceRef: null,
       });
       expect(['open', 'closing']).toContain(
@@ -6031,9 +6083,9 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_missing_anchor_expired_releasing';
 
     try {
-      dispatchLease(coreDb, suffix);
+      const original = await loseOriginalBackendAnchor(coreDb, suffix);
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        attemptId: original.attemptId,
         now: () => '2026-07-05T00:00:10.000Z',
         firstTerminalCause: 'worker-final-status',
       });
@@ -6042,14 +6094,12 @@ describe('scheduler restart recovery', () => {
         now: () => '2026-07-05T00:06:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
+      expect(recovery).toEqual({
+        preparationFailedAttemptIds: [],
+        failedAttemptIds: [original.attemptId],
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, original.attemptId)).toMatchObject({
+        operationId: original.operationId,
         fenceRef: null,
       });
       expect(
