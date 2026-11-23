@@ -602,6 +602,85 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
+  it.each(['timer', 'expired-poll', 'dispatched'] as const)(
+    'orders queued inspection expiry against %s in the admitted writer',
+    async (winner) => {
+      const core = await openActiveTurnDb('openkit-harness-inspection-expiry-');
+      try {
+        const receiver = { sandboxIntegrationBindingRef: 'integration-binding-1' };
+        await queueNanoHostHarnessOperation(core, {
+          body: { ...interruptBody(), purpose: 'interrupt' },
+          harnessInstanceId: 'harness-1',
+          operation: 'turn.interrupt',
+          timestamp: now,
+        });
+        const command = (await dispatchNanoHostHarnessOperation(core, receiver))!;
+        const predecessor = {
+          ...receiver,
+          result: {
+            body: { childState: 'running', state: 'interrupted' },
+            disposition: 'succeeded' as const,
+            harnessInstanceId: 'harness-1',
+            operationId: command.operationId,
+            schemaVersion: 2 as const,
+            sequence: command.sequence,
+          },
+          timestamp: now,
+        };
+        expect(await settleNanoHostHarnessOperation(core, predecessor)).toBe('settled');
+        await consumeFixtureWorkspaceResult(core);
+        const inspection = {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.inspect' as const,
+          timestamp: now,
+        };
+        const { operationId, sequence } = prepareNanoHostHarnessOperation(core, inspection).command;
+        expect(await queueNanoHostHarnessOperation(core, inspection)).toBe(sequence);
+        const expiry = new Date(Date.parse(now) + 300_000).toISOString();
+        const expire = async (expectedSequence: number) =>
+          expireNanoHostHarnessQueuedOperation(await fixtureHarnessWriter(core), {
+            harnessBindingRef: 'harness-binding-1',
+            timestamp: expiry,
+            expectedInspection: { operationId, sequence: expectedSequence },
+          });
+        if (winner === 'dispatched') {
+          expect(await dispatchNanoHostHarnessOperation(core, receiver)).toMatchObject({
+            operationId,
+            sequence,
+          });
+          await expect(expire(sequence)).rejects.toThrow('does not match a queued operation');
+          expect(harnessOperation(core)).toEqual({
+            operation: 'session.inspect',
+            state: 'dispatched',
+          });
+          return;
+        }
+        const before = serializeFixtureAuthority(core);
+        await expect(expire(sequence + 1)).rejects.toThrow('queued inspection changed');
+        expect(serializeFixtureAuthority(core).equals(before)).toBe(true);
+        if (winner === 'timer') await expire(sequence);
+        else
+          expect(
+            await dispatchNanoHostHarnessOperation(core, { ...receiver, now: () => expiry })
+          ).toBeNull();
+        expect(harnessOperation(core)).toEqual({ operation: null, state: 'idle' });
+        expect(await settleNanoHostHarnessOperation(core, predecessor)).toBe('replayed');
+        expect(
+          await queueNanoHostHarnessOperation(core, { ...inspection, timestamp: expiry })
+        ).toBe(sequence);
+        expect(
+          await dispatchNanoHostHarnessOperation(core, { ...receiver, now: () => expiry })
+        ).toMatchObject({ operationId, sequence });
+      } finally {
+        core.sqlite.close();
+      }
+    }
+  );
+
   it('replays one committed settlement after its native acknowledgement is lost', async () => {
     const coreDb = await openActiveTurnDb('openkit-harness-native-settlement-loss-');
     const result = {

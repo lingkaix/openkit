@@ -197,6 +197,7 @@ import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
 import {
   getNanoHostRuntimeTarget,
+  NanoHostHarnessOutageError,
   NanoHostPhysicalAuthorityUnavailableError,
 } from './nanohost-runtime-target-records.js';
 import type { NanoHostEnvironmentRead } from './native-environment.js';
@@ -4693,7 +4694,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         } catch (error) {
           // K8b: while the original peer is away, no current physical Epoch authorizes collection.
           // That holds the last durable Turn state. Peer readmission lets this same closeout finish.
-          if (hasCause(error, NanoHostPhysicalAuthorityUnavailableError)) throw error;
+          // A transport timeout is no outcome proof either; only proved outcome evidence terminalizes.
+          if (
+            hasCause(error, NanoHostPhysicalAuthorityUnavailableError) ||
+            hasCause(error, NanoHostHarnessOutageError)
+          )
+            throw error;
           try {
             await terminalizeGovernedWorkerTurn(restartFailure);
           } catch (terminalError) {

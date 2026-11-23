@@ -196,6 +196,7 @@ import {
 import {
   getNanoHostRuntimeTarget,
   NanoHostCleanupFencePendingError,
+  NanoHostHarnessOutageError,
   NanoHostPhysicalAuthorityUnavailableError,
   requireStoredNanoHostPhysicalEpoch,
 } from './nanohost-runtime-target.js';
@@ -784,7 +785,8 @@ function createNanoHostWorkerLifecycleRuntime(
         let collected = false;
         const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
         try {
-          // The capture helper repeats the guarded read just before each publication it writes.
+          // The capture helper repeats the guarded read just before each publication it writes. Each
+          // publication's Workspace commit rechecks the same commitment under the proof hold (K8b).
           if (
             await hasPendingWorkspaceCapture(
               coreDb,
@@ -792,7 +794,8 @@ function createNanoHostWorkerLifecycleRuntime(
               session,
               environmentPackage,
               store,
-              guardedRead
+              guardedRead,
+              { attemptId: session.attemptId, commitment }
             )
           ) {
             const turn = store.getTurnById(session.turnId);
@@ -10144,7 +10147,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           : pending.operationId
             ? 'dispatched-awaiting-result'
             : 'never-dispatched';
-        let timeoutError = new Error(
+        let timeoutError: Error = new NanoHostHarnessOutageError(
           `NanoHost Harness ${pending.operation} result outage budget expired: ${phase}.`
         );
         try {
@@ -10158,13 +10161,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               timestamp: new Date().toISOString(),
             });
           } else if (pending.sequence !== null) {
+            const prepared = pending.journal?.prepared?.command;
             await expireNanoHostHarnessQueuedOperation(this.harnessWriter(), {
               harnessBindingRef,
               timestamp: new Date().toISOString(),
+              ...(prepared?.operation === 'session.inspect'
+                ? {
+                    expectedInspection: {
+                      operationId: prepared.operationId,
+                      sequence: prepared.sequence,
+                    },
+                  }
+                : {}),
             });
           }
         } catch (error) {
-          timeoutError = new Error(
+          timeoutError = new NanoHostHarnessOutageError(
             `NanoHost Harness ${pending.operation} result outage cleanup failed: ${phase}.`,
             { cause: error }
           );
@@ -10202,9 +10214,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
     }
     await session.turnStopSettlement;
+    // K8b: only the original peer's current Epoch authority may receive this inspection. Without it,
+    // the inspection is not queued and the caller keeps the durable Turn. The export rechecks it.
+    this.requireCurrentBackendPhysicalEpoch(session.identity);
     const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+    }).catch((cause: unknown) => {
+      // A dispatched or unknown predecessor can still own the slot on a later pass.
+      // Failure to obtain this observation supplies no outcome for the accepted Worker final.
+      throw new NanoHostHarnessOutageError('NanoHost terminal inspection is unavailable.', {
+        cause,
+      });
     });
     const binding = session.sharedHarness.bindings.get(
       session.environmentPackage.scope.agentSessionId

@@ -275,6 +275,7 @@ import {
   type ControlWorkerRequest,
   controlWorkerInputBytes,
   hasControlSqlRollback,
+  hashNanoHostFinalDecision,
   hashNanoHostRecoveryObservation,
   isControlProductCohort,
   isControlWorkerReply,
@@ -300,8 +301,11 @@ import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreJournal,
+  inspectAcceptedNanoHostFinalInDb,
   observeAcceptedNanoHostFinalInDb,
+  readNanoHostFinalCloseDecision,
   releaseCoreNanoHostTerminalInDb,
+  verifyNanoHostCleanupSubmitPlacement,
 } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import {
@@ -1649,6 +1653,60 @@ function withCurrentPeerRead<Value>(
   }
 }
 
+/**
+ * K8b: the deciding capture write rechecks the accepted-final commitment that it consumes. It reads the
+ * pinned Core and Native files query-only. Their writers are held by the caller through this commit.
+ */
+function requireNanoHostFinalCommitment(
+  dataRoot: string,
+  request: Extract<WriteRequest, { operation: 'workspace-capture' }>,
+  guard: NonNullable<
+    Extract<WriteRequest, { operation: 'workspace-capture' }>['nanoHostFinalGuard']
+  >
+): void {
+  let current: string | undefined;
+  try {
+    const root = realpathSync(dataRoot);
+    current = withCurrentPeerRead(coreDbPath(root), guard.coreIdentity, (core) =>
+      core
+        .transaction(() =>
+          withCurrentPeerRead(
+            serverStoragePath(root, 'nanohost'),
+            guard.nanoHostIdentity,
+            (nanoHost) =>
+              nanoHost
+                .transaction(() => {
+                  const proof = inspectAcceptedNanoHostFinalInDb(
+                    bindCoreSqlite(core, root),
+                    nanoHost,
+                    guard.attemptId
+                  );
+                  const { identity } = request.input;
+                  if (
+                    proof.state !== 'settled' ||
+                    proof.lineage.workspaceId !== identity.workspaceId ||
+                    proof.lineage.threadId !== identity.threadId ||
+                    proof.lineage.turnId !== identity.turnId ||
+                    proof.lineage.agentSessionId !== identity.agentSessionId ||
+                    proof.lineage.packageSnapshotId !== identity.packageSnapshotId
+                  )
+                    return undefined;
+                  return hashNanoHostFinalDecision(proof);
+                })
+                .deferred()
+          )
+        )
+        .deferred()
+    );
+  } catch {
+    current = undefined;
+  }
+  if (current !== guard.commitmentHash)
+    throw new WorkspaceCaptureRecoveryRequired(
+      'Workspace capture final proof changed before publication.'
+    );
+}
+
 /** Reads the matching Core file without changing the selected Native opening. */
 function withNanoHostCore<Value>(
   owner: OwnedDatabase,
@@ -1741,6 +1799,18 @@ function applyNanoHostRecoveryClose(
         const { session, proof } = readNanoHostRecoveryLease(sqlite, lease);
         if (hashNanoHostRecoveryObservation({ lease, session, proof }) !== captured.observationHash)
           throw new ServerOwnerAdmissionError('recovery-required');
+        // K8b: the proved Native-only final or absence that this close consumes, in this same snapshot,
+        // before its revocation. A newly settled receipt or changed evidence holds for the next pass.
+        if (captured.finalHash !== undefined) {
+          const final = readNanoHostFinalCloseDecision(core, sqlite, input.attemptId, session);
+          if (
+            final.state === 'held' ||
+            (final.state === 'native-only' &&
+              (input.observedAt === undefined || input.observedAt < lease.grant.deadline)) ||
+            hashNanoHostFinalDecision(final) !== captured.finalHash
+          )
+            throw new ServerOwnerAdmissionError('recovery-required');
+        }
         if (
           attempt.phase !== 'open' &&
           attempt.terminalCause === input.cause &&
@@ -2021,13 +2091,17 @@ function applyNanoHostOwnerMutation(
             throw new ServerOwnerAdmissionError('recovery-required');
           return {
             kind: mutation.kind,
-            value: applyNanoHostRecoveryMutation(sqlite, {
-              ...input.classification,
-              lease,
-              expectedSession: input.expectedSession,
-              expectedRecovery: input.expectedRecovery,
-              observedAt: input.observedAt,
-            }),
+            value: applyNanoHostRecoveryMutation(
+              sqlite,
+              {
+                ...input.classification,
+                lease,
+                expectedSession: input.expectedSession,
+                expectedRecovery: input.expectedRecovery,
+                observedAt: input.observedAt,
+              },
+              (session) => verifyNanoHostCleanupSubmitPlacement(core, sqlite, lease, session)
+            ),
           };
         })()
       );
@@ -3847,6 +3921,13 @@ function flush(owner: OwnedDatabase): void {
               owner.scopeDb.workspaceId !== request.input.identity.workspaceId
             )
               throw new ControlProductPreconditionError();
+            // K8b: after preparation, at the deciding commit.
+            if (request.nanoHostFinalGuard)
+              requireNanoHostFinalCommitment(
+                owner.scopeDb.dataRoot,
+                request,
+                request.nanoHostFinalGuard
+              );
             const result = applyWorkspaceCaptureInDb(
               owner.scopeDb,
               request.input,

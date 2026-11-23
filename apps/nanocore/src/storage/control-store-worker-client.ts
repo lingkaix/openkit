@@ -313,6 +313,7 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  type NanoHostFinalGuard,
   type NanoHostLocalBackendSessionInput,
   type NanoHostLocalWorkerImageInput,
   type NanoHostLocalWorkerStorageInput,
@@ -929,6 +930,13 @@ interface Opening {
   nanoHostTargetTransition?: Promise<void>;
   nanoHostReader?: Promise<Database.Database>;
   readNanoHost?: NanoHostOwnerBinding['read'];
+  /** K8b: pins both admitted openings and holds Core postings and other Native writers through `submit`. */
+  withNanoHostProofHold?: <Value>(
+    submit: (pins: {
+      readonly coreIdentity: string;
+      readonly nanoHostIdentity: string;
+    }) => Promise<Value>
+  ) => Promise<Value>;
   verifyRunBoundAccessToken?(
     input: ControlAccessTokenVerification
   ): Promise<ControlAccessTokenVerificationResult>;
@@ -3624,6 +3632,21 @@ class ControlStoreWorkerClient {
           }
         });
 
+      // K8b: a guarded capture publication consumes Core and Native proof. Its Workspace commit rechecks
+      // that proof in these pinned files, while Core postings and other Native writers wait.
+      opening.withNanoHostProofHold = (submit) =>
+        withCoreHold(async (coreIdentity) => {
+          const nanoHostIdentity = opening.identity;
+          if (!nanoHostIdentity || opening.nanoHostWritePending || opening.nanoHostTargetTransition)
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          opening.nanoHostWritePending = 'core-owner-read';
+          try {
+            return await submit({ coreIdentity, nanoHostIdentity });
+          } finally {
+            delete opening.nanoHostWritePending;
+          }
+        });
+
       /** Rechecks the current Core administrator under the Core hold before the Native Token tuple. */
       const asTransportAdministrator = <Value>(
         actorFacts: Parameters<typeof nanoHostTransportAdminFacts>[0],
@@ -4275,7 +4298,15 @@ class ControlStoreWorkerClient {
             await write({ kind: 'prepared-image-result', input });
           },
           backendSession: async (input) => (await write({ kind: 'backend-session', input })).value,
-          closeRecovery: async ({ lease, session, proof, cause, observedAt, outcomeRef }) => {
+          closeRecovery: async ({
+            lease,
+            session,
+            proof,
+            cause,
+            observedAt,
+            outcomeRef,
+            finalHash,
+          }) => {
             let nativeHeld = false;
             try {
               readCurrent(() => undefined);
@@ -4311,6 +4342,7 @@ class ControlStoreWorkerClient {
                         ownerIdentity: identity,
                         expectedPhase: lease.attempt.phase,
                         observationHash: hashNanoHostRecoveryObservation({ lease, session, proof }),
+                        ...(finalHash === undefined ? {} : { finalHash }),
                       },
                     });
                     const value = (reply as Extract<Success, { operation: 'execution-attempt' }>)
@@ -4331,7 +4363,16 @@ class ControlStoreWorkerClient {
                   { owner: scope, workspaceId, release },
                   core.command
                 );
+              } catch (error) {
+                if (
+                  finalHash !== undefined &&
+                  error instanceof ControlStoreWorkerError &&
+                  error.commit === 'unknown'
+                )
+                  this.fail(core.host);
+                throw error;
               } finally {
+                if (core.host.failed) await core.host.exited.promise;
                 release();
               }
             } catch (error) {
@@ -8077,13 +8118,53 @@ class ControlStoreWorkerClient {
     }
   }
 
-  /** Acknowledges only the exact original capture/recovery tuple; unknown replies remain unknown. */
+  /**
+   * Acknowledges only the exact original capture/recovery tuple; unknown replies remain unknown.
+   * With `guard`, the Workspace commit rechecks that accepted-final commitment in the pinned Core and
+   * Native files. Their competing writers wait through that commit.
+   */
   async workspaceCapture(
     database: string,
-    input: ControlWorkspaceCapture
+    input: ControlWorkspaceCapture,
+    guard?: {
+      readonly dataRoot: string;
+      readonly attemptId: string;
+      readonly commitmentHash: string;
+    }
   ): Promise<ControlWorkspaceCaptureResult> {
     try {
-      const reply = await this.request({ operation: 'workspace-capture', database, input });
+      const post = (nanoHostFinalGuard?: NanoHostFinalGuard) =>
+        this.request({
+          operation: 'workspace-capture',
+          database,
+          input,
+          ...(nanoHostFinalGuard ? { nanoHostFinalGuard } : {}),
+        });
+      let reply: Success;
+      if (guard) {
+        const hold = this.openings.get(
+          `server-owner:${serverStoragePath(guard.dataRoot, 'nanohost')}`
+        )?.withNanoHostProofHold;
+        if (!hold) throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+        reply = await hold(async (pins) => {
+          const workspace = this.openings.get(database);
+          if (!workspace?.acknowledged || workspace.host.failed || workspace.retirement)
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          try {
+            return await post({
+              ...pins,
+              attemptId: guard.attemptId,
+              commitmentHash: guard.commitmentHash,
+            });
+          } catch (error) {
+            if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+              this.fail(workspace.host);
+            throw error;
+          } finally {
+            if (workspace.host.failed) await workspace.host.exited.promise;
+          }
+        });
+      } else reply = await post();
       return (reply as Extract<Success, { operation: 'workspace-capture' }>).result;
     } catch (error) {
       if (

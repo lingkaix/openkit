@@ -29,6 +29,12 @@ export class NanoHostPhysicalAuthorityUnavailableError extends Error {
   }
 }
 
+/**
+ * Expected hold when a queued NanoHost Harness operation outlives its result outage budget. A transport
+ * timeout proves neither execution nor non-execution, so it carries no terminal outcome (K8b).
+ */
+export class NanoHostHarnessOutageError extends Error {}
+
 /** Durable configured NanoHost target projection returned to scheduler consumers. */
 export interface NanoHostRuntimeTargetRecord {
   /** Scheduler target id. */

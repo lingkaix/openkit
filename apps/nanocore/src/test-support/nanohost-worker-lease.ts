@@ -144,7 +144,7 @@ export function submitTestNanoHostWorkerLease(
     readonly exclusionRefs?: readonly string[];
     /** Reuse a target opened by the real placement producer so its epoch can later retire. */
     readonly readyTarget?: NanoHostRuntimeTargetRecord;
-    /** Opt-in production placement: this deployment, with the submit placement digest. */
+    /** Deployment of the production placement. The submit always carries its placement digest. */
     readonly placementDeploymentId?: string;
   } = {}
 ) {
@@ -202,9 +202,8 @@ export function submitTestNanoHostWorkerLease(
     generation: String(generation),
     observedAt: createdAt,
     ...(fixture.exclusionRefs === undefined ? {} : { exclusionRefs: fixture.exclusionRefs }),
-    ...(fixture.placementDeploymentId === undefined
-      ? {}
-      : { authorityRefs: [admission.queueEntryId, commandInputHash(placement)] }),
+    // K8b: a missing-final absence derives its receipt key only from this verified placement.
+    authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
   });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 

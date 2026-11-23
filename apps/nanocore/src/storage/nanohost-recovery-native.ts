@@ -171,11 +171,12 @@ export function applyNanoHostWorkerSubmission(
   })();
 }
 
-/** Read the original physical result only while its exact admitted target remains current. */
+/** Reads the original receipt under the current target pin. Historical carriage also needs the Core submit proof. */
 export function readNanoHostPhysicalCleanupReceipt(
   sqlite: Database.Database,
   lease: NanoHostRecoveryLease,
-  expectedTarget: NanoHostRuntimeTargetRecord
+  expectedTarget: NanoHostRuntimeTargetRecord,
+  verifyOriginalPlacement?: (session: WorkerBackendSessionRecord) => boolean
 ) {
   const { session, proof, attempt } = readNanoHostRecoveryLease(sqlite, lease);
   const target = getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
@@ -189,7 +190,26 @@ export function readNanoHostPhysicalCleanupReceipt(
     !target.freshEmpty ||
     !target.predecessorFenced ||
     target.deploymentId !== session.deploymentId ||
-    !isDeepStrictEqual(target, expectedTarget) ||
+    !isDeepStrictEqual(target, expectedTarget)
+  )
+    return null;
+  if (verifyOriginalPlacement) {
+    const generation = Number(lease.grant.generation);
+    if (
+      !Number.isSafeInteger(generation) ||
+      generation < 1 ||
+      String(generation) !== lease.grant.generation ||
+      !target.physicalEpoch ||
+      generation > receipt.connectionGeneration ||
+      receipt.connectionGeneration > target.connectionGeneration ||
+      (generation === receipt.connectionGeneration &&
+        receipt.physicalEpoch !== session.originPhysicalEpoch) ||
+      (receipt.connectionGeneration === target.connectionGeneration &&
+        receipt.physicalEpoch !== target.physicalEpoch) ||
+      !verifyOriginalPlacement(session)
+    )
+      return null;
+  } else if (
     receipt.connectionGeneration !== target.connectionGeneration ||
     receipt.physicalEpoch !== target.physicalEpoch
   )
@@ -307,7 +327,8 @@ export function initializeNanoHostRecoveryLease(
 /** Call only after the original Core decision. The admitted Native writer rechecks all local facts. */
 export function applyNanoHostRecoveryMutation(
   sqlite: Database.Database,
-  input: NanoHostRecoveryMutation
+  input: NanoHostRecoveryMutation,
+  verifyOriginalPlacement?: (session: WorkerBackendSessionRecord) => boolean
 ): WorkerBackendSessionRecord {
   assertControlProductWriter(sqlite);
   const observedAt = clock.parse(input.observedAt);
@@ -329,7 +350,10 @@ export function applyNanoHostRecoveryMutation(
     if (session.workspaceHandoffState !== 'complete')
       throw new Error('NanoHost recovery Workspace handoff is incomplete.');
     const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
-    if (!target || !readNanoHostPhysicalCleanupReceipt(sqlite, input.lease, target))
+    if (
+      !target ||
+      !readNanoHostPhysicalCleanupReceipt(sqlite, input.lease, target, verifyOriginalPlacement)
+    )
       throw new Error('NanoHost recovery physical cleanup receipt is unavailable.');
     return transitionWorkerBackendSessionState(owner, {
       ...key,

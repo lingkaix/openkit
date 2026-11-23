@@ -464,6 +464,9 @@ export interface MarkNanoHostHarnessOperationUnknownInput {
 export interface ExpireNanoHostHarnessQueuedOperationInput {
   readonly harnessBindingRef: string;
   readonly timestamp: string;
+  readonly expectedInspection?:
+    | { readonly operationId: string; readonly sequence: number }
+    | undefined;
 }
 
 /** Input for fencing one Sandbox after destructive cleanup becomes uncertain. */
@@ -1443,8 +1446,19 @@ export function dispatchNanoHostHarnessOperation(
     requireConsumedHarnessResult(coreDb, harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
-      setHarnessUnknown(owner, harness.harness_instance_id, now, 'queued');
-
+      if (
+        harness.operation === 'session.inspect' &&
+        harness.operation_id &&
+        harness.operation_sequence !== null
+      )
+        withdrawUndispatchedInspection(
+          owner,
+          harness,
+          harness.operation_id,
+          harness.operation_sequence,
+          now
+        );
+      else setHarnessUnknown(owner, harness.harness_instance_id, now, 'queued');
       return null;
     }
     if (
@@ -1591,10 +1605,40 @@ export function expireNanoHostHarnessQueuedOperation(
     if (harness.operation_state !== 'queued') {
       throw new Error('NanoHost Harness enqueue expiry does not match a queued operation.');
     }
+    const expected = input.expectedInspection;
+    if (expected) {
+      withdrawUndispatchedInspection(
+        owner,
+        harness,
+        expected.operationId,
+        expected.sequence,
+        input.timestamp
+      );
+      return;
+    }
     setHarnessUnknown(owner, harness.harness_instance_id, input.timestamp, 'queued');
   } catch (error) {
     throw error;
   }
+}
+
+/** Dispatch and expiry contend for one slot. Only a still-queued original inspection proved no carriage. */
+function withdrawUndispatchedInspection(
+  owner: NanoHostHarnessDb,
+  harness: HarnessRow,
+  operationId: string,
+  sequence: number,
+  timestamp: string
+): void {
+  const removed = owner.sqlite
+    .prepare(`UPDATE harness_instance_records
+      SET operation_state='idle', operation=NULL, operation_id=NULL, operation_sequence=NULL,
+          command_body_json=NULL, command_fingerprint=NULL, updated_at=?
+      WHERE harness_instance_id=? AND operation_state='queued' AND operation='session.inspect'
+        AND operation_id=? AND operation_sequence=? AND next_sequence=?`)
+    .run(timestamp, harness.harness_instance_id, operationId, sequence, sequence);
+  if (removed.changes !== 1) throw new Error('NanoHost queued inspection changed before expiry.');
+  // The predecessor's settled result and sequence stay available for exact readback.
 }
 
 /**
@@ -1625,13 +1669,14 @@ export function settleNanoHostHarnessOperation(
       throw new Error('NanoHost Harness retained result fingerprint conflicts.');
     const retained = harness.result_json ? readJsonObject(harness.result_json) : null;
     const isPriorReceipt =
-      ['settled', 'queued', 'unknown'].includes(harness.operation_state) &&
+      ['idle', 'settled', 'queued', 'unknown'].includes(harness.operation_state) &&
       retained?.operationId === input.result.operationId;
     if (isPriorReceipt && retained) {
       const receipt = HarnessResultEnvelopeReaderSchema.parse(retained);
-      // A queued successor overwrote operation provenance. Every plausible reader must see an unchanged core; shared refusal grammar needs no unique operation name, and a collision cannot hide a change seen by another reader.
+      // A queued or withdrawn successor leaves the predecessor's receipt without operation provenance.
+      // Every plausible reader must see an unchanged core.
       const candidates =
-        harness.operation_state === 'queued'
+        harness.operation_state === 'queued' || harness.operation_state === 'idle'
           ? NANO_HOST_HARNESS_OPERATIONS.filter((candidate) => {
               try {
                 requireHarnessResult(candidate, receipt, harness.max_active_turns);

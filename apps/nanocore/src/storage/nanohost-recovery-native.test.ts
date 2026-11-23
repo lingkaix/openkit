@@ -862,7 +862,19 @@ async function admitOriginal(prepareWorkspace = false) {
       outputRefs: [],
       fingerprint: 'b'.repeat(64),
       permittingDecisionRef: null,
-      authorityRefs: [],
+      authorityRefs: [
+        entry.queueEntryId,
+        commandInputHash({
+          runtimeTargetId: targetId,
+          identityId: getNanoHostRuntimeTarget(f.owner, targetId)!.identityId,
+          deploymentId,
+          physicalEpoch,
+          connectionGeneration: 1,
+          workspaceId,
+          threadId,
+          agentSessionId,
+        }),
+      ],
       retryDeclarationRef: null,
       retryPermitted: false,
       deadlineUnixNano: null,
@@ -2218,7 +2230,7 @@ it('retries the exact terminal release after Workspace ACK and admits only the q
     )()
   ).toMatchObject({ state: 'applied' });
   const closing = readRetainedNanoHostSubmission(core, attemptId)!.lease;
-  const target = getNanoHostRuntimeTarget(f.owner, targetId)!;
+  let target = getNanoHostRuntimeTarget(f.owner, targetId)!;
   const cleanedAt = new Date().toISOString();
   const originalFence = `worker-backend:${attemptId}:${cleanedAt}`;
   const coveredScopeRefs = [...readExecutionJournalRoot(core, grant.execution).exclusionRefs];
@@ -2355,7 +2367,21 @@ it('retries the exact terminal release after Workspace ACK and admits only the q
   f.owner.setup((sqlite) =>
     sqlite.prepare('UPDATE agent_session_runtime_bindings SET current_attempt_id=NULL').run()
   );
+  // The original receipt stays at generation 1 when the same peer reconnects before the retry.
+  const physicalReceipt = readNanoHostRecoveryLease(f.owner.sqlite, original).proof.physicalCleanup;
+  expect(physicalReceipt).toMatchObject({ connectionGeneration: target.connectionGeneration });
+  f.owner.setup((sqlite) =>
+    sqlite
+      .prepare(
+        'UPDATE nanohost_runtime_targets SET connection_generation = connection_generation + 1'
+      )
+      .run()
+  );
+  target = getNanoHostRuntimeTarget(f.owner, targetId)!;
   await expect(close()).resolves.toBeUndefined();
+  expect(readNanoHostRecoveryLease(f.owner.sqlite, original).proof.physicalCleanup).toEqual(
+    physicalReceipt
+  );
   expect(place()).toMatchObject({ turnId: successorTurn, phase: 'open' });
   await expect(close()).resolves.toBeUndefined();
   expect(backendRelease).toHaveBeenCalledTimes(1);

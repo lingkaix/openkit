@@ -202,7 +202,17 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z
-    .object({ kind: z.literal('operation.expire'), harnessBindingRef: identity, timestamp })
+    .object({
+      kind: z.literal('operation.expire'),
+      harnessBindingRef: identity,
+      timestamp,
+      expectedInspection: z
+        .strictObject({
+          operationId: z.string().regex(/^[a-f0-9]{64}$/),
+          sequence: z.number().int().nonnegative().safe(),
+        })
+        .optional(),
+    })
     .strict(),
   z
     .object({

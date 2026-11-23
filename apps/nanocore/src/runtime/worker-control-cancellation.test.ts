@@ -138,6 +138,7 @@ async function createFixture() {
     text: 'Cancel one exact worker Turn',
     workspaceId: workspaceIdForOwner(turn.owner),
   });
+  const { deploymentId } = readDataRootLayoutMarker(dataRoot);
   submitTestNanoHostWorkerLease(
     coreDb,
     entry,
@@ -149,9 +150,8 @@ async function createFixture() {
       workerControlTokenHash: hashWorkerRouteToken(CONTROL_TOKEN),
       workerInferenceTokenHash: hashWorkerRouteToken(INFERENCE_TOKEN),
     },
-    { attemptId: ATTEMPT_ID }
+    { attemptId: ATTEMPT_ID, placementDeploymentId: deploymentId }
   );
-  const { deploymentId } = readDataRootLayoutMarker(dataRoot);
   const { image } = environmentPackage.runtime;
   if (image.kind !== 'reference')
     throw new Error('Cancellation fixture expects a reference image.');

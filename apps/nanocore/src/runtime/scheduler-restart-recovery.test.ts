@@ -3143,19 +3143,30 @@ function retainFixtureSubmission(
   attemptId: string
 ): void {
   const prepared = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
-  const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
-    sqlite
-      .prepare(
-        'SELECT connection_generation AS generation FROM nanohost_runtime_targets WHERE target_id = ?'
-      )
-      .get('runtime-target-test')
-  ) as { readonly generation: number };
+  const admission = requireSchedulerAdmissionEntry(coreDb, prepared.queueEntryId);
+  const placement = readAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const session = getWorkerBackendSession({ sqlite }, attemptId);
+    const target = session && getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+    if (!session || !target || session.originPhysicalEpoch !== target.physicalEpoch)
+      throw new Error('Fixture submission has no original Native placement.');
+    return {
+      runtimeTargetId: target.targetId,
+      identityId: target.identityId,
+      deploymentId: session.deploymentId,
+      physicalEpoch: session.originPhysicalEpoch,
+      connectionGeneration: target.connectionGeneration,
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      agentSessionId: session.agentSessionId,
+    };
+  });
   retainPreparedTestNanoHostSubmission(coreDb, {
-    admission: requireSchedulerAdmissionEntry(coreDb, prepared.queueEntryId),
+    admission,
     attemptId,
-    targetId: 'runtime-target-test',
-    generation: String(target.generation),
+    targetId: placement.runtimeTargetId,
+    generation: String(placement.connectionGeneration),
     observedAt: prepared.createdAt,
+    authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
   });
 }
 

@@ -571,12 +571,24 @@ async function createAdmittedModeledWorkerExecutor(
         const decision = await owner.firstSubmission({ attemptId, observedAt });
         if (decision.state !== 'admitted-now') return decision;
       } else {
+        const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
+        const placement = {
+          runtimeTargetId: target.value.targetId,
+          identityId: target.value.identityId,
+          deploymentId: anchor.deploymentId,
+          physicalEpoch: anchor.originPhysicalEpoch,
+          connectionGeneration: target.value.connectionGeneration,
+          workspaceId: anchor.workspaceId,
+          threadId: anchor.threadId,
+          agentSessionId: anchor.agentSessionId,
+        };
         retainPreparedTestNanoHostSubmission(coreDb, {
-          admission: requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId),
+          admission: entry,
           attemptId,
           targetId: target.value.targetId,
           generation: String(target.value.connectionGeneration),
           observedAt,
+          authorityRefs: [entry.queueEntryId, commandInputHash(placement)],
         });
       }
       seedTestNanoHostWorkerLaunch(

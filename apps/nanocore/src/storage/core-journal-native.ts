@@ -1290,6 +1290,28 @@ function hasOriginalSubmissionPlacement(
   );
 }
 
+/** Verifies that a retained physical result belongs to the original submitted operation. */
+export function verifyNanoHostCleanupSubmitPlacement(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  lease: NanoHostRecoveryLease,
+  session: NanoHostAcceptedFinalProof['session']
+): boolean {
+  const original = readRetainedNanoHostSubmission(db, lease.grant.attemptId);
+  return (
+    original !== null &&
+    isDeepStrictEqual(original.lease, lease) &&
+    hasCompleteExecutionHistory(db, lease.grant.execution) &&
+    hasOriginalSubmissionPlacement(
+      db,
+      sqlite,
+      lease.grant,
+      nanoHostWorkerLineage(original),
+      session
+    )
+  );
+}
+
 /** The verified commitment that K8b hands to the guarded closeout read. */
 export type NanoHostAcceptedFinalCommitment = NanoHostAcceptedFinalProof & {
   readonly state: 'settled';
@@ -1484,22 +1506,25 @@ export function inspectAcceptedNanoHostFinalInDb(
  * K8b: a missing Native final counts as absent only when no other accepted-final evidence survives.
  * That evidence is a canonical terminal event, its sequence receipt, or the original Core
  * `worker-final-accepted` receipt. A Core intake alone is a genuine crash before Native FULL.
+ * The receipt key uses the session deployment, so the original submit placement and complete Core
+ * history come first. Without them the receipt absence is not proved, and this returns true.
  *
  * @param db Core snapshot that holds the original submitted grant and its receipt steps.
  * @param sqlite Admitted NanoHost snapshot of the original session.
  * @param attemptId Original submitted attempt.
- * @param deploymentId Deployment of the original Native session, which keys the receipt.
- * @returns Whether accepted-final evidence survives without its Native final.
+ * @param session Candidate Native coordinates of the original session.
+ * @returns Whether accepted-final evidence survives, or its absence is unproved, without its Native final.
  */
 export function hasSurvivingNanoHostFinalEvidence(
   db: CoreDb,
   sqlite: FinalNativeReader,
   attemptId: string,
-  deploymentId: string
+  session: NanoHostAcceptedFinalProof['session']
 ): boolean {
   const original = readRetainedNanoHostSubmission(db, attemptId);
-  if (!original) return false;
-  const { agentSessionId, packageSnapshotId } = nanoHostWorkerLineage(original);
+  if (!original) return true;
+  const lineage = nanoHostWorkerLineage(original);
+  const { agentSessionId, packageSnapshotId } = lineage;
   const terminal = (column: string) => `CASE WHEN json_valid(${column})
     THEN json_extract(${column}, '$.event.type') END IN ('turn.completed', 'turn.failed')`;
   if (
@@ -1514,12 +1539,60 @@ export function hasSurvivingNanoHostFinalEvidence(
   )
     return true;
   const { grant } = original.lease;
+  if (
+    !hasOriginalSubmissionPlacement(db, sqlite, grant, lineage, session) ||
+    !hasCompleteExecutionHistory(db, grant.execution)
+  )
+    return true;
   return !!db.sqlite
     .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
     .get(
       grant.execution.executionId,
-      storageRequestId(acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId))
+      storageRequestId(
+        acceptedNanoHostFinalReceiptOccurrence(session.deploymentId, grant.operationId)
+      )
     );
+}
+
+/**
+ * K8b: the final decision that one recovery close consumes. `native-only` is the proved Native-only final.
+ * `absent` is a proved absence: no final record or final receipt of the original session survives, and
+ * no other accepted-final evidence survives under the original placement and complete Core history.
+ */
+export type NanoHostFinalCloseDecision =
+  | Extract<NanoHostAcceptedFinalReadback, { readonly state: 'native-only' }>
+  | { readonly state: 'absent' };
+
+/**
+ * Recomputes the close decision from one Core snapshot and one admitted Native snapshot.
+ * Settled, contradictory or unreadable proof returns `held`.
+ *
+ * @param db Core snapshot that holds the original submitted grant, intake and receipt.
+ * @param sqlite Admitted read-only NanoHost snapshot.
+ * @param attemptId Original submitted attempt.
+ * @param session Native coordinates of the original session.
+ */
+export function readNanoHostFinalCloseDecision(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string,
+  session: NanoHostAcceptedFinalProof['session']
+): NanoHostFinalCloseDecision | { readonly state: 'held' } {
+  const readback = inspectAcceptedNanoHostFinalInDb(db, sqlite, attemptId);
+  if (readback.state === 'native-only') return readback;
+  if (readback.state !== 'held' || readback.reason !== 'missing') return { state: 'held' };
+  const original = readRetainedNanoHostSubmission(db, attemptId);
+  if (!original) return { state: 'held' };
+  const { agentSessionId, packageSnapshotId } = nanoHostWorkerLineage(original);
+  const final = sqlite
+    .prepare(`SELECT 1 FROM worker_control_records
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='final_status'
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='final_status'`)
+    .get(agentSessionId, packageSnapshotId, agentSessionId, packageSnapshotId);
+  return final || hasSurvivingNanoHostFinalEvidence(db, sqlite, attemptId, session)
+    ? { state: 'held' }
+    : { state: 'absent' };
 }
 
 /** Reads the exact currently live route under the admitted Core and Native snapshots. */
@@ -1890,7 +1963,11 @@ export function releaseCoreNanoHostTerminalInDb(
     return { state: 'conflict' };
   return db.sqlite.transaction((): StorageDecision<ExecutionStepRef> => {
     const target = getNanoHostRuntimeTarget({ sqlite: readers.native }, input.target.targetId);
-    const physical = target && readNanoHostPhysicalCleanupReceipt(readers.native, lease, target);
+    const physical =
+      target &&
+      readNanoHostPhysicalCleanupReceipt(readers.native, lease, target, (session) =>
+        verifyNanoHostCleanupSubmitPlacement(db, readers.native, lease, session)
+      );
     if (
       !target ||
       !physical ||

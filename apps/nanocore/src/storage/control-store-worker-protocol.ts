@@ -1105,7 +1105,23 @@ const nanoHostRecoveryClose = z.strictObject({
   ownerIdentity: z.string().regex(/^\d+:\d+$/),
   expectedPhase: z.enum(['open', 'closing', 'closed']),
   observationHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  /** K8b: the final decision this close consumes, rechecked in the same Core transaction. */
+  finalHash: z
+    .string()
+    .regex(/^sha256:[a-f0-9]{64}$/)
+    .optional(),
 });
+
+/** K8b: a capture publication may carry the accepted-final commitment it consumes, with both pinned peers. */
+const nanoHostFinalGuard = z.strictObject({
+  coreIdentity: z.string().regex(/^\d+:\d+$/),
+  nanoHostIdentity: z.string().regex(/^\d+:\d+$/),
+  attemptId: z.string().min(1).max(256),
+  commitmentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+
+/** The pinned peers and the commitment that one guarded capture publication consumes. */
+export type NanoHostFinalGuard = z.infer<typeof nanoHostFinalGuard>;
 
 const nanoHostDecisionPeers = z.strictObject({
   nanoHostIdentity: z.string().regex(/^\d+:\d+$/),
@@ -1148,6 +1164,14 @@ const nanoHostFinalCoreResult = z.discriminatedUnion('kind', [
     value: ControlCoreNanoHostAcceptedFinalResultSchema,
   }),
 ]);
+
+/**
+ * K8b: one hash of the final decision that a recovery mutation consumes. Its writer recomputes the same
+ * decision from its pinned snapshots and compares this hash before it commits.
+ */
+export function hashNanoHostFinalDecision(decision: unknown): string {
+  return commandInputHash(decision);
+}
 
 /** A close replay compares the original placement and Native observation across Core phase changes. */
 export function hashNanoHostRecoveryObservation({
@@ -1688,7 +1712,11 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'private-workspace'; readonly input: ControlPrivateWorkspaceInput }
       | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
-      | { readonly operation: 'workspace-capture'; readonly input: ControlWorkspaceCapture }
+      | {
+          readonly operation: 'workspace-capture';
+          readonly input: ControlWorkspaceCapture;
+          readonly nanoHostFinalGuard?: NanoHostFinalGuard;
+        }
       | { readonly operation: 'workspace-takeover'; readonly input: ControlWorkspaceTakeover }
       | {
           readonly operation: 'workspace-recovery-decision';
@@ -3674,7 +3702,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'workspace-capture')
     return (
-      exactFields(value, [...scoped, 'input']) &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostFinalGuard']) &&
+      (value.nanoHostFinalGuard === undefined ||
+        nanoHostFinalGuard.safeParse(value.nanoHostFinalGuard).success) &&
       ControlWorkspaceCaptureSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );

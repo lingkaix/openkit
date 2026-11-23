@@ -1,4 +1,5 @@
 import {
+  type NanoHostFinalPublicationGuard,
   publishWorkspaceCaptureCompletion,
   publishWorkspaceCaptureRecovery,
 } from './workspace-capture-publication.js';
@@ -117,6 +118,7 @@ function originalCaptureIdentity(
  * @param environmentPackage Already verified original snapshot; absent callers defer its owning read until a source or preclaim exists.
  * @param store Optional current Store; absent callers read the same admitted native database.
  * @param beforePublication Optional synchronous guard run just before each capture publication; it throws to hold.
+ * @param publicationGuard Optional K8b commitment that each capture publication's Workspace commit rechecks.
  * @returns Whether any of the three original boundaries lacks its exact durable abandon.
  * @throws For unavailable or contradictory original proof, source, evidence, or recovery authority.
  */
@@ -139,7 +141,8 @@ export async function hasPendingWorkspaceCapture(
     >,
   environmentPackage?: AgentEnvironmentPackage,
   store?: FsStore,
-  beforePublication?: () => void
+  beforePublication?: () => void,
+  publicationGuard?: NanoHostFinalPublicationGuard
 ): Promise<boolean> {
   if (
     coreDb.dataRoot !== db.dataRoot ||
@@ -224,11 +227,17 @@ export async function hasPendingWorkspaceCapture(
       (prior.stateAfter === 'requires-human' || prior.stateAfter === 'recovered')
     ) {
       beforePublication?.();
-      await publishWorkspaceCaptureCompletion(db, fullOwner!, identity, source);
+      await publishWorkspaceCaptureCompletion(db, fullOwner!, identity, source, publicationGuard);
       continue;
     }
     beforePublication?.();
-    const record = await publishWorkspaceCaptureRecovery(db, fullOwner!, identity, source);
+    const record = await publishWorkspaceCaptureRecovery(
+      db,
+      fullOwner!,
+      identity,
+      source,
+      publicationGuard
+    );
     const digest = record.backendHandleSummary.candidateDigest;
     if (digest !== null) {
       const bundle = listStoredWorkspaceEvidenceBundles(db, db.workspaceId).find(

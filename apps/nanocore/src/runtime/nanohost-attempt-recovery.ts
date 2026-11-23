@@ -13,7 +13,12 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
-import { hasSurvivingNanoHostFinalEvidence } from '../storage/core-journal-native.js';
+import { hashNanoHostFinalDecision } from '../storage/control-store-worker-protocol.js';
+import {
+  hasSurvivingNanoHostFinalEvidence,
+  type NanoHostFinalCloseDecision,
+  verifyNanoHostCleanupSubmitPlacement,
+} from '../storage/core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
@@ -84,17 +89,20 @@ export interface AdmittedNanoHostAttemptRecovery {
     readonly cause: string;
     readonly observedAt: string;
     readonly outcomeRef?: string;
+    /** K8b: hash of the final decision this close consumes. The Core close transaction recomputes it. */
+    readonly finalHash?: string;
   }): Promise<StorageResult<'nanohost' | 'control-kernel', SchedulerExecutionAttemptRecord>>;
   /**
    * Verifies the original accepted Native final against its Core observation receipt (K8b).
-   * An exact settled match goes to guarded closeout and returns `closed`. `native-only` means that the Native
-   * pair matches the original intake and that complete Core history proves the receipt absent. Any other proof holds by throwing.
+   * An exact settled match goes to guarded closeout and returns `closed`. A `native-only` readback means that the
+   * Native pair matches the original intake and that complete Core history proves the receipt absent.
+   * Any other proof holds by throwing.
    */
   reconcileFinal(
     lease: NanoHostRecoveryLease,
     session: WorkerBackendSessionRecord,
     final: AcceptedWorkerFinalStatus
-  ): Promise<'closed' | 'native-only'>;
+  ): Promise<'closed' | Extract<NanoHostFinalCloseDecision, { readonly state: 'native-only' }>>;
   commit(
     input: NanoHostRecoveryMutation
   ): Promise<StorageResult<'nanohost' | 'control-kernel', WorkerBackendSessionRecord>>;
@@ -191,7 +199,8 @@ async function closeAdmittedAttempt(
   current: ReturnType<typeof readNanoHostRecoveryLease>,
   cause: string,
   observedAt: string,
-  outcomeRef?: string
+  outcomeRef?: string,
+  finalDecision?: NanoHostFinalCloseDecision
 ): Promise<SchedulerExecutionAttemptRecord> {
   const lease = retainedLease(coreDb, current.session.attemptId);
   const result = await recovery.close({
@@ -201,6 +210,7 @@ async function closeAdmittedAttempt(
     cause,
     observedAt,
     ...(outcomeRef ? { outcomeRef } : {}),
+    ...(finalDecision ? { finalHash: hashNanoHostFinalDecision(finalDecision) } : {}),
   });
   if (
     result.state !== 'ready' ||
@@ -331,12 +341,8 @@ export async function runNanoHostAttemptRecoveryMaintenance(
               .prepare(`SELECT 1 FROM worker_control_sequence_fingerprints
               WHERE agent_session_id = ? AND package_snapshot_id = ? AND operation = 'final_status'`)
               .get(native.agentSessionId, native.inputRef),
-            evidence: hasSurvivingNanoHostFinalEvidence(
-              coreDb,
-              sqlite,
-              attempt.attemptId,
-              session.deploymentId
-            ),
+            // The receipt key derives only from the original submit placement (K8b).
+            evidence: hasSurvivingNanoHostFinalEvidence(coreDb, sqlite, attempt.attemptId, session),
           }))
           .deferred()
       );
@@ -348,59 +354,72 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         throw new Error(
           'Native final record is missing for its surviving accepted final evidence.'
         );
+      // K8b: the close below consumes this proved absence or Native-only final. Core recomputes it.
+      let finalDecision: NanoHostFinalCloseDecision = { state: 'absent' };
       if (final) {
         if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
         const lease = retainedLease(coreDb, session.attemptId);
         const readback = await recovery.reconcileFinal(lease, session, final);
         // K8b: a Native-only final waits only until the original absolute deadline. The first pass at or
-        // after it takes the expiry path below: closing ACK with the first cause, then first cleanup.
-        if (readback !== 'native-only' || lease.grant.deadline > timestamp) continue;
-      }
-      // K8b: publication-capable capture recovery runs only after a final has passed inspection.
-      // A settled final reaches it through the guarded restart closeout above.
-      const captureWorkspace = openRecoveryWorkspace(coreDb, native);
-      try {
-        if (
-          await hasPendingWorkspaceCapture(
-            coreDb,
-            captureWorkspace.db,
-            session,
-            captureWorkspace.environmentPackage,
-            input.store
+        // after it owns the next decision: closing ACK with the first cause, then first cleanup. It
+        // bypasses capture publication, so pending capture sources stay preserved for the cleanup owner.
+        if (readback === 'closed' || lease.grant.deadline > timestamp) continue;
+        finalDecision = readback;
+      } else {
+        // A settled final reaches capture recovery through the guarded restart closeout above.
+        const captureWorkspace = openRecoveryWorkspace(coreDb, native);
+        try {
+          if (
+            await hasPendingWorkspaceCapture(
+              coreDb,
+              captureWorkspace.db,
+              session,
+              captureWorkspace.environmentPackage,
+              input.store
+            )
           )
-        )
-          continue;
-      } finally {
-        captureWorkspace.db.sqlite.close();
+            continue;
+        } finally {
+          captureWorkspace.db.sqlite.close();
+        }
       }
-      // The original Native and absolute deadlines bound this wait; cleanup resumes on expiry.
-      if (
-        session.state === 'launching' &&
-        session.workspaceHandoffState === 'complete' &&
-        hasPendingWorkerCancellationFinal(native, timestamp)
-      )
-        continue;
-      if (
-        native.phase === 'open' &&
-        native.recoveryState === 'awaiting-reconnect' &&
-        native.recoveryDeadline !== null &&
-        native.recoveryDeadline > timestamp &&
-        native.deadline !== null &&
-        native.deadline > timestamp
-      )
-        continue;
       const livenessExpired =
         native.lastAcceptedHeartbeatAt === null
           ? native.startupDeadline <= timestamp
           : native.heartbeatDeadline <= timestamp;
-      if (native.phase === 'open' && !livenessExpired && native.recoveryState !== 'needs-evidence')
-        continue;
+      if (finalDecision.state === 'absent') {
+        // The live Native clock controls the no-final branch. A proved Native-only final above uses
+        // its absolute deadline, even if a shorter liveness gate would still permit a reconnect.
+        if (
+          session.state === 'launching' &&
+          session.workspaceHandoffState === 'complete' &&
+          hasPendingWorkerCancellationFinal(native, timestamp)
+        )
+          continue;
+        if (
+          native.phase === 'open' &&
+          native.recoveryState === 'awaiting-reconnect' &&
+          native.recoveryDeadline !== null &&
+          native.recoveryDeadline > timestamp &&
+          native.deadline !== null &&
+          native.deadline > timestamp
+        )
+          continue;
+        if (
+          native.phase === 'open' &&
+          !livenessExpired &&
+          native.recoveryState !== 'needs-evidence'
+        )
+          continue;
+      }
       await closeAdmittedAttempt(
         coreDb,
         recovery,
         observation,
         livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
-        now()
+        now(),
+        undefined,
+        finalDecision
       );
       // Revoke stale native authority before deferring to a live completion waiter. Its phase
       // observation wakes that owner; the guard prevents a second physical cleanup takeover.
@@ -732,7 +751,9 @@ async function cleanupPhysicalSession(
   if (['physical-cleaned', 'cleaned'].includes(originalSession.state)) {
     const original = retainedLease(coreDb, originalSession.attemptId);
     const receipt = readRecovery(recovery, (sqlite) =>
-      readNanoHostPhysicalCleanupReceipt(sqlite, original, target)
+      readNanoHostPhysicalCleanupReceipt(sqlite, original, target, (session) =>
+        verifyNanoHostCleanupSubmitPlacement(coreDb, sqlite, original, session)
+      )
     );
     if (!receipt) throw new Error('NanoHost recovery has no exact physical cleanup receipt.');
     return receipt.session;
