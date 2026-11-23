@@ -3396,10 +3396,8 @@ class ControlStoreWorkerClient {
           if (!gate.enabled()) return disabled;
           if (opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('busy', 'not-committed');
-          if (
-            opening.nanoHostWritePending === 'target-stable-write' ||
-            opening.nanoHostWritePending === 'core-owner-read'
-          ) {
+          // An owner write in flight leaves the completion unsettled. Wait for its acknowledgement.
+          if (opening.nanoHostWritePending) {
             readCurrent(() => undefined, true);
             return { state: 'pending' };
           }
