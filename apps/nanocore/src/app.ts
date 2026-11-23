@@ -654,8 +654,31 @@ export function createDefaultWorkerControlGateway(
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });
 
-  rebuildWorkerControlGatewaySessions(coreDb, gateway);
+  try {
+    rebuildWorkerControlGatewaySessions(coreDb, gateway);
+  } catch {
+    // One lease whose owner cannot be restored must not stop every Workspace from booting.
+    return new HeldWorkerControlGateway();
+  }
   return gateway;
+}
+
+/**
+ * Serves nothing while the Worker Control restore plan is held: every old route token is
+ * unauthorized and no new Session can register. Healthy Workspaces still boot and serve.
+ */
+class HeldWorkerControlGateway extends WorkerControlGateway {
+  public override restoreHeld(): boolean {
+    return true;
+  }
+
+  public override registerSession(): never {
+    throw new WorkerControlGatewayError(
+      'worker_observation_storage_unavailable',
+      'Worker Control restore is held.',
+      503
+    );
+  }
 }
 
 /** Input used to create the default process vault backend for an app instance. */

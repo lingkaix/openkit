@@ -7,21 +7,26 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import type { StorageResult } from '../storage/storage-owner.js';
-import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  AgentEnvironmentSnapshotReadError,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
 import {
   listRestorableNanoHostExecutionAttempts,
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
-import type {
-  WorkerControlArtifactNotice,
-  WorkerControlGateway,
-  WorkerControlLineage,
-  WorkerControlSessionRestoreInput,
-  WorkerControlSupplyRefreshAck,
+import {
+  assertWorkerControlRestoreRecords,
+  type WorkerControlArtifactNotice,
+  type WorkerControlGateway,
+  type WorkerControlLineage,
+  type WorkerControlSessionRestoreInput,
+  type WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
@@ -96,6 +101,16 @@ function planWorkerControlRestore(
       !hasPendingWorkerCancellationFinal(lease, now)
     )
       continue;
+    // Accepted records are shared Core authority: an unreadable or schema-invalid one holds the
+    // whole plan, so it is read and validated before any owner-local hold can skip this lease.
+    const records = readAcceptedRecords(owner, lineage);
+    assertWorkerControlRestoreRecords(records);
+    // Closed exact-replay branch only. A closing first-final candidate and an open lease keep the
+    // shared hold. A closed predecessor whose own Workspace is not admitted, or whose retained AEP
+    // its own decoder refuses, holds only this replay: its old routes stay unrestored (401) and its
+    // exit is that owner's repair or proved retirement at the next boot.
+    const closed = lease.phase === 'closed';
+    if (closed && !isScopeAdmitted(coreDb.dataRoot, 'workspace', lease.workspaceId)) continue;
     const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
@@ -105,11 +120,13 @@ function planWorkerControlRestore(
         lease.workspaceId,
         lease.inputRef
       ).snapshot;
+    } catch (error) {
+      if (closed && error instanceof AgentEnvironmentSnapshotReadError) continue;
+      throw error;
     } finally {
       workspaceDb.sqlite.close();
     }
     assertRestoredPackageLineage(environmentPackage, lease, admission);
-    const records = readAcceptedRecords(owner, lineage);
 
     planned.push({
       ...records,

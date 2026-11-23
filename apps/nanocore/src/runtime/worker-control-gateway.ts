@@ -43,6 +43,22 @@ const WorkerControlSupplyRefreshAckSnapshotReaderSchema =
     sequence: WorkerSequenceSchema,
   });
 
+/**
+ * Applies the canonical shared-record schemas the gateway enforces when it hydrates a restored
+ * session, so a restore plan can reject a bad record before it decides which leases to skip.
+ */
+export function assertWorkerControlRestoreRecords(records: {
+  readonly capabilitySummaries?: readonly WorkerCapabilityCallSummary[];
+  readonly events?: readonly WorkerCanonicalEventRecord[];
+  readonly supplyRefreshAcks?: readonly WorkerControlSupplyRefreshAck[];
+}): void {
+  for (const event of records.events ?? []) WorkerCanonicalEventRecordReaderSchema.parse(event);
+  for (const summary of records.capabilitySummaries ?? [])
+    WorkerCapabilityCallSummaryReaderSchema.parse(summary);
+  for (const ack of records.supplyRefreshAcks ?? [])
+    WorkerControlSupplyRefreshAckSnapshotReaderSchema.parse(ack);
+}
+
 /** Sanitizes restricted transport frames before any server fingerprint, receipt or snapshot. */
 export function workerControlEventReceipt(record: WorkerCanonicalEventRecord): unknown {
   if (record.event.type !== 'observation.content.chunk') return record;
@@ -672,6 +688,11 @@ export class WorkerControlGateway {
    */
   public restoreSession(input: WorkerControlSessionRestoreInput): void {
     this.restoreSessions([input]);
+  }
+
+  /** True only while boot holds Worker Control restore: new Worker admission must refuse early. */
+  public restoreHeld(): boolean {
+    return false;
   }
 
   /** Checks every planned restore before changing the live session registry. */

@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createDefaultWorkerControlGateway } from '../app.js';
 import { runBootPhases } from '../bootstrap/phases.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -21,6 +22,8 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attempts from './execution-attempt-records.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempts.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
+import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
@@ -39,6 +42,7 @@ import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
 } from './worker-backend-sessions.js';
+import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const now = () => '2026-07-05T00:01:00.000Z';
@@ -240,6 +244,68 @@ describe('restart classification fault isolation (T4)', () => {
     await runSchedulerRestartRecovery(db, input);
     expect(attempts.requireSchedulerExecutionAttempt(db, preEffect.attemptId)).toEqual(preEffect);
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
+  });
+
+  it('boots past an open lease in a quarantined Workspace through a Worker Control hold (#987)', async () => {
+    const { db, input } = await fixture();
+    const lease = attempt(db, 'held-open', true);
+    const token = 'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG';
+    bindNanoHostAttemptRouteTokenHashes(db, {
+      attemptId: lease.attemptId,
+      now,
+      sandboxBindingRef: lease.bindingRef!,
+      workerCapabilityTokenHash: hashWorkerRouteToken(
+        'HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH'
+      ),
+      workerControlTokenHash: hashWorkerRouteToken(token),
+      workerInferenceTokenHash: hashWorkerRouteToken('IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'),
+    });
+    refuseScope(db.dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
+    let gateway: WorkerControlGateway | undefined;
+    const listenAdmission = vi.fn();
+    const boot = await runBootPhases({
+      bootId: 'boot-held-open-lease',
+      phases: [
+        {
+          name: 'scheduler-restart-recovery',
+          subsystem: 'scheduler',
+          critical: true,
+          run: async () => {
+            gateway = createDefaultWorkerControlGateway(db);
+            await runSchedulerRestartRecovery(db, input);
+            // The reconciler pass of the same boot reads idle-cleanup residents, not Worker Control sessions.
+            await new ExecutionReconciler({
+              coreDb: db,
+              advanceIdleCleanup: vi.fn(async () => {}),
+            }).runOnce();
+            return { status: 'ok' };
+          },
+        },
+        {
+          name: 'listen-admission',
+          subsystem: 'config',
+          critical: true,
+          run: () => {
+            listenAdmission();
+            return { status: 'ok' };
+          },
+        },
+      ],
+    });
+    expect(boot.outcomes.map(({ name, outcome }) => [name, outcome.status])).toEqual([
+      ['scheduler-restart-recovery', 'ok'],
+      ['listen-admission', 'ok'],
+    ]);
+    expect(listenAdmission).toHaveBeenCalledOnce();
+    expect(() => gateway!.registerSession({} as never)).toThrow(
+      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
+    );
+    expect(() => gateway!.authenticatePackageToken(`Bearer ${token}`)).toThrow(
+      expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+    );
+    expect(attempts.requireSchedulerExecutionAttempt(db, lease.attemptId)).toMatchObject({
+      phase: 'open',
+    });
   });
 
   it('skips product publication for a closed no-effect attempt belonging to a different backend', async () => {

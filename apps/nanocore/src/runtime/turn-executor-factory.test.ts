@@ -1828,6 +1828,177 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  describe.each([
+    { held: false, label: 'unheld control proceeds' },
+    { held: true, label: 'held Worker Control requeues without effects' },
+  ])('scheduler admission of a queued Worker ($label)', ({ held }) => {
+    it('goes through the normal pre-submit attempt on a ready RuntimeTarget', async () => {
+      const coreDb = createFactoryCoreDb();
+      const dataRoot = coreDb.dataRoot;
+      const store = await createDemoStore({ dataRoot });
+      const ownerUserId = ensureLocalUser(coreDb);
+      const workspaceId = DEMO_WORKSPACE_ID;
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+      const threadId = testEntityId('th', `held-restore-${held}`);
+      await store.createThread(workspaceId, 'Held restore admission', threadId);
+      const manifest = createTestAgentSetup({
+        imageRef: `sha256:${'a'.repeat(64)}`,
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }).manifest;
+      admitTestNativeEnvironment(coreDb, manifest);
+      const config = loadRuntimeConfig(dataRoot);
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        ...config,
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Held restore admission',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+      // The same Hunk B owner that boot uses: a Core DB whose restore plan cannot be read.
+      let bootHeld: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
+      if (held) {
+        const unreadable = createFactoryCoreDb();
+        unreadable.sqlite.exec(
+          'ALTER TABLE scheduler_execution_attempts RENAME COLUMN binding_ref TO binding_ref_unreadable'
+        );
+        bootHeld = createDefaultWorkerControlGateway(unreadable);
+        unreadable.sqlite.close();
+        expect(bootHeld.restoreHeld()).toBe(true);
+      }
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => configuration,
+        ...(bootHeld ? { workerControlGateway: bootHeld } : {}),
+      });
+      const registration = vi.spyOn(native.workerControlGateway, 'registerSession');
+      const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+      const turnId = testEntityId('tu', `held-restore-${held}`);
+      const attemptId = testEntityId('attempt', `held-restore-${held}`);
+      const sessionId = testEntityId('as', `held-restore-${held}`);
+      let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+      try {
+        const entry = await createTestQueueEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:held-restore-${held}`,
+          requestId: testEntityId('tu', `held-restore-request-${held}`).slice(3),
+          requestedAgentId: manifest.id,
+          workspaceId,
+          threadId,
+          turnId,
+          text: 'Admit a new Worker.',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await publishFactoryAdmission(store, entry);
+        const backend = native.executor.executionBackend as WorkerGovernanceBackend;
+        if (!held) {
+          admitted = await native.admitTurn(entry, {
+            attemptId,
+            agentSessionId: sessionId,
+            candidateAgentSessionId: sessionId,
+          });
+          expect(native.effects.length).toBeGreaterThan(0);
+          expect(registration).toHaveBeenCalled();
+          expect(store.getTurnById(turnId).status).toBe('running');
+          // The exact capacity guard: the same healthy package is refused once the hold is set.
+          expect(await backend.inspectMaterializationCapacity?.(admitted.pkg)).toBe('available');
+          const hold = vi.spyOn(native.workerControlGateway, 'restoreHeld').mockReturnValue(true);
+          try {
+            expect(await backend.inspectMaterializationCapacity?.(admitted.pkg)).toBe(
+              'capacity-saturated'
+            );
+          } finally {
+            hold.mockRestore();
+          }
+          return;
+        }
+        // A regression surfaces as the rejected dispatch, captured here rather than thrown. The
+        // zero-effect checks come first so a leaked Native effect, Harness call or Sandbox row is
+        // reported even when the dispatch result differs.
+        const dispatch = await runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend: backend,
+          agentManifests: configuration.agentManifests,
+          gatewayConfig: configuration.gatewayConfig,
+          providerRegistry: configuration.providerRegistry,
+          workspaceConfigs: configuration.workspaceConfigs,
+          workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+          maxDispatches: 1,
+          createAttemptId: () => attemptId,
+          createAgentSessionId: () => sessionId,
+        }).catch((error: unknown) => error);
+        expect(native.effects).toHaveLength(0);
+        expect(commands).not.toHaveBeenCalled();
+        expect(registration).not.toHaveBeenCalled();
+        for (const table of [
+          'sandbox_runtime_records',
+          'harness_instance_records',
+          'agent_session_runtime_bindings',
+        ])
+          expect(
+            coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(),
+            table
+          ).toEqual({ count: 0 });
+        expect(dispatch).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'backend-busy' },
+        });
+        expect(store.getTurnById(turnId).status).toBe('pending');
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+          phase: 'closed',
+          terminalCause: 'backend-busy',
+        });
+      } finally {
+        await admitted?.cleanup();
+        // A launched Worker's peer failure must not replace the held-case assertions above.
+        const peer = native.restore();
+        await (held ? Promise.resolve(peer).catch(() => undefined) : peer);
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
+    });
+  });
+
+  it('refuses AgentSession continuity admission itself while Worker Control restore is held', async () => {
+    const coreDb = createFactoryCoreDb();
+    class HeldGateway extends WorkerControlGateway {
+      public override restoreHeld(): boolean {
+        return true;
+      }
+    }
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      coreDb,
+      env: {},
+      workerControlGateway: new HeldGateway(),
+    });
+    const backend = (
+      runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
+    ).backend;
+    try {
+      await expect(
+        backend.prepareAgentSessionContinuity?.({
+          agentSessionCompatibilityKey: `sha256:${'f'.repeat(64)}`,
+          agentSessionId: 'as_00000000-0000-75cf-8a90-5e33ce6f37f4',
+          reuseAllowed: true,
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).rejects.toMatchObject({
+        message: 'Worker Control restore is held.',
+        name: 'WorkerGovernanceCapacityUnavailableError',
+      });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('does not close a predecessor or acquire a lease while RuntimeTarget is unready', async () => {
     const coreDb = createFactoryCoreDb();
     const firstGeneration = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {

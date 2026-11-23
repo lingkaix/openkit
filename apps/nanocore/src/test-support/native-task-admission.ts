@@ -57,6 +57,7 @@ export async function createNativeTaskAdmissionFixture(
     | 'policyInterception'
     | 'goalTaskPolicy'
     | 'nanoHostSessionDispatch'
+    | 'workerControlGateway'
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
@@ -104,7 +105,8 @@ export async function createNativeTaskAdmissionFixture(
     getControlStoreWorkerClient().getFileStorageAdmission(coreDb.dataRoot) ??
     configuredFileStorageAdmission(coreDb.dataRoot);
   const startup = observeNativeTaskStartup(store);
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+  const workerControlGateway =
+    options.workerControlGateway ?? createDefaultWorkerControlGateway(coreDb);
   const steerCalls: import('../runtime/nanohost-harness.js').NanoHostHarnessCommand[] = [];
   const completion = Promise.withResolvers<void>();
   const launched = Promise.withResolvers<void>();

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,8 @@ import {
 } from '@openkit/config-schema';
 import { type ActorRef, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { createDefaultWorkerControlGateway } from '../app.js';
+import { refuseScope } from '../bootstrap/readiness.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import {
@@ -29,6 +31,7 @@ import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import { hashWorkerRouteToken, WorkerControlGateway } from './worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './worker-control-rebuild.js';
@@ -326,5 +329,297 @@ describe('worker control gateway restart hydration', () => {
         fixture.coreDb.sqlite.close();
       }
     }
+  });
+});
+
+describe('closed predecessor restore isolation (#987)', () => {
+  const predecessorWorkspaceId = 'ws_00000000-0000-7000-8000-000000000002';
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * Adds a second Workspace whose attempt is restorable, beside the fixture's healthy open lease.
+   * The AEP is the fixture's package re-addressed to the second Workspace, so no unrelated seam moves.
+   */
+  async function addPredecessor(
+    fixture: RestorableWorkerControlFixture,
+    phase: 'open' | 'closing' | 'closed'
+  ) {
+    const coreDb = fixture.coreDb;
+    const dataRoot = coreDb.dataRoot;
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: predecessorWorkspaceId,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
+    const agentSessionId = 'as_00000000-0000-71b5-9df2-90c10d27f2a2';
+    const environmentPackage = AgentEnvironmentPackageSchema.parse({
+      ...fixture.environmentPackage,
+      snapshotId: 'aepsnap_predecessor',
+      scope: {
+        ...fixture.environmentPackage.scope,
+        workspaceId: predecessorWorkspaceId,
+        threadId: 'th_00000000-0000-7000-8000-000000000002',
+        turnId: testEntityId('tu', 'predecessor'),
+        agentSessionId,
+        requestId: 'req_restore_predecessor',
+      },
+    });
+    const predecessorDb = openWorkspaceDb(dataRoot, predecessorWorkspaceId);
+    applyScopedMigrations(predecessorDb);
+    predecessorDb.sqlite.close();
+    initializeWorkspaceKnowledgePredecessor(dataRoot, predecessorWorkspaceId);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
+    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, predecessorWorkspaceId);
+    try {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const entry = await createTestQueueEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: environmentPackage.scope.triggerActor,
+      now: () => '2026-07-13T00:00:02.000Z',
+      profileRef: 'default',
+      queueEntryId: 'queue_restore_predecessor',
+      requestId: environmentPackage.scope.requestId!,
+      requestedAgentId: environmentPackage.agent.agentId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      text: 'Restore the predecessor',
+      workspaceId: predecessorWorkspaceId,
+    });
+    const attemptId = testEntityId('attempt', 'lease_restore_predecessor');
+    const tokens = {
+      control: 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD',
+      inference: 'EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE',
+      capability: 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
+    };
+    recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId,
+      agentSessionId,
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: 'lease-binding:restore_predecessor',
+      sessionCompatibilityKey: 'sha256:restore-predecessor',
+      operationId: 'submit_restore_predecessor',
+      now: () => '2026-07-13T00:00:04.000Z',
+    });
+    bindNanoHostAttemptRouteTokenHashes(coreDb, {
+      attemptId,
+      now: () => '2026-07-13T00:00:05.000Z',
+      sandboxBindingRef: 'lease-binding:restore_predecessor',
+      workerCapabilityTokenHash: hashWorkerRouteToken(tokens.capability),
+      workerControlTokenHash: hashWorkerRouteToken(tokens.control),
+      workerInferenceTokenHash: hashWorkerRouteToken(tokens.inference),
+    });
+    const lineage = {
+      agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: environmentPackage.scope.requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: predecessorWorkspaceId,
+    };
+    if (phase === 'closed') {
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-13T00:00:05.500Z',
+        lineage,
+        operation: 'final_status',
+        record: { status: 'completed', stopReason: 'completed' },
+        recordKey: 'final',
+        sequence: 1,
+      });
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'accepted', fence_ref = 'fence:predecessor' WHERE attempt_id = ?"
+        )
+        .run(attemptId);
+    } else if (phase === 'closing') {
+      // A cancellation first final is still servable: only the closed exact replay may be held locally.
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'turn-cancelled', startup_deadline = '2026-07-13T01:00:00.000Z' WHERE attempt_id = ?"
+        )
+        .run(attemptId);
+    }
+    return {
+      attemptId,
+      environmentPackage,
+      lineage,
+      tokens,
+      snapshotPath: join(
+        dataRoot,
+        'workspaces',
+        predecessorWorkspaceId,
+        'runtime',
+        'agent-sessions',
+        agentSessionId,
+        'aep-snapshots',
+        `${environmentPackage.snapshotId}.json`
+      ),
+    };
+  }
+
+  const faults = {
+    retired: (fixture: RestorableWorkerControlFixture) =>
+      refuseScope(fixture.coreDb.dataRoot, {
+        scope: 'workspace',
+        id: predecessorWorkspaceId,
+        check: 'retired',
+      }),
+    quarantined: (fixture: RestorableWorkerControlFixture) =>
+      refuseScope(fixture.coreDb.dataRoot, {
+        scope: 'workspace',
+        id: predecessorWorkspaceId,
+        check: 'database',
+      }),
+    unreadableAep: (_fixture: RestorableWorkerControlFixture, snapshotPath?: string) =>
+      writeFileSync(snapshotPath!, '{'),
+  } as const;
+
+  const restored = (fixture: RestorableWorkerControlFixture) => {
+    const gateway = new WorkerControlGateway({
+      resolveTokenBinding: () => ({ status: 'accepted' }),
+    });
+    rebuildWorkerControlGatewaySessions(fixture.coreDb, gateway);
+    return gateway;
+  };
+
+  it('restores the healthy lease and the closed replay when no fault is present (control)', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    const predecessor = await addPredecessor(fixture, 'closed');
+    const gateway = restored(fixture);
+    expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toBeTruthy();
+    expect(gateway.authenticatePackageToken(`Bearer ${predecessor.tokens.control}`)).toBeTruthy();
+    expect(gateway.getSessionSnapshot(predecessor.lineage.packageSnapshotId)).not.toBeNull();
+  });
+
+  for (const fault of ['retired', 'quarantined', 'unreadableAep'] as const) {
+    it(`holds only the closed predecessor replay for ${fault} and restores the healthy Workspace`, async () => {
+      const fixture = await createRestorableWorkerControlFixture();
+      const predecessor = await addPredecessor(fixture, 'closed');
+      const original = readFileSync(predecessor.snapshotPath, 'utf8');
+      faults[fault](fixture, predecessor.snapshotPath);
+      const gateway = restored(fixture);
+      expect(gateway.authenticatePackageToken(`Bearer ${fixture.workerControlToken}`)).toEqual(
+        redactAgentEnvironmentPackageSnapshot(fixture.environmentPackage)
+      );
+      expect(gateway.getSessionSnapshot(predecessor.lineage.packageSnapshotId)).toBeNull();
+      expect(() =>
+        gateway.authenticatePackageToken(`Bearer ${predecessor.tokens.control}`)
+      ).toThrow(expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 }));
+      if (fault === 'unreadableAep') {
+        // The exit: repaired retained bytes restore the replay at the next hydration, nothing else changed.
+        writeFileSync(predecessor.snapshotPath, original);
+        const repaired = restored(fixture);
+        expect(repaired.getSessionSnapshot(predecessor.lineage.packageSnapshotId)).not.toBeNull();
+      }
+    });
+  }
+
+  it('keeps the shared hold for a closing first-final candidate whose Workspace is retired', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    await addPredecessor(fixture, 'closing');
+    faults.retired(fixture);
+    expect(() => restored(fixture)).toThrow(/quarantined; check=retired/);
+  });
+
+  it('keeps the shared hold for a closed predecessor whose accepted record is unreadable', async () => {
+    for (const fault of ['retired', 'unreadableAep'] as const) {
+      const fixture = await createRestorableWorkerControlFixture();
+      const predecessor = await addPredecessor(fixture, 'closed');
+      recordWorkerControlAcceptedRecord(fixture.coreDb, {
+        acceptedAt: '2026-07-13T00:00:05.600Z',
+        lineage: predecessor.lineage,
+        operation: 'artifact_notice',
+        record: { artifactId: 'artifact_predecessor' },
+        recordKey: 'artifact_predecessor',
+        sequence: null,
+      });
+      fixture.coreDb.sqlite
+        .prepare(
+          "UPDATE worker_control_records SET record_json = '{' WHERE operation = 'artifact_notice'"
+        )
+        .run();
+      faults[fault](fixture, predecessor.snapshotPath);
+      expect(() => restored(fixture)).toThrow();
+    }
+  });
+
+  it('keeps the shared hold for a closed predecessor beside a valid-JSON record that fails the canonical schema', async () => {
+    const invalid = {
+      capability_summary: '{}',
+      event_append: '{"event":{"type":"turn.completed"}}',
+      supply_refresh_ack: '{}',
+    } as const;
+    const cases = [
+      ['event_append', 'retired'],
+      ['event_append', 'unreadableAep'],
+      ['capability_summary', 'retired'],
+      ['supply_refresh_ack', 'retired'],
+    ] as const;
+    for (const [operation, fault] of cases) {
+      const fixture = await createRestorableWorkerControlFixture();
+      const predecessor = await addPredecessor(fixture, 'closed');
+      recordWorkerControlAcceptedRecord(fixture.coreDb, {
+        acceptedAt: '2026-07-13T00:00:05.600Z',
+        lineage: predecessor.lineage,
+        operation: 'artifact_notice',
+        record: { artifactId: 'artifact_predecessor' },
+        recordKey: 'artifact_predecessor',
+        sequence: null,
+      });
+      fixture.coreDb.sqlite
+        .prepare(
+          'UPDATE worker_control_records SET operation = ?, record_json = ? WHERE operation = ?'
+        )
+        .run(operation, invalid[operation], 'artifact_notice');
+      faults[fault](fixture, predecessor.snapshotPath);
+      // The same record fails the gateway schema when its lease hydrates; the plan must not
+      // let an owner-local skip hide it and publish the healthy lease.
+      expect(() => restored(fixture), `${operation} + ${fault}`).toThrow();
+    }
+  }, 120_000);
+
+  it('does not make boot fatal for an open lease in a retired Workspace: global hold, 503, no route served', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    const predecessor = await addPredecessor(fixture, 'open');
+    faults.retired(fixture);
+    // The plan contract is unchanged: the open lease still throws out of the rebuild itself.
+    expect(() => restored(fixture)).toThrow(/quarantined; check=retired/);
+    const gateway = createDefaultWorkerControlGateway(fixture.coreDb);
+    expect(() => gateway.registerSession(fixture.environmentPackage)).toThrow(
+      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
+    );
+    for (const token of [fixture.workerControlToken, predecessor.tokens.control])
+      expect(() => gateway.authenticatePackageToken(`Bearer ${token}`)).toThrow(
+        expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+      );
+    // The same boot's reconciliation pass reads idle-cleanup residents only; it must not throw
+    // on an unrestored open lease in the refused Workspace.
+    const advanceIdleCleanup = vi.fn(async () => {});
+    await expect(
+      new ExecutionReconciler({ coreDb: fixture.coreDb, advanceIdleCleanup }).runOnce()
+    ).resolves.toBeUndefined();
+    expect(advanceIdleCleanup).not.toHaveBeenCalled();
+  });
+
+  it('marks the default gateway held only when the restore plan is held', async () => {
+    const heldFixture = await createRestorableWorkerControlFixture();
+    await addPredecessor(heldFixture, 'open');
+    faults.retired(heldFixture);
+    expect(createDefaultWorkerControlGateway(heldFixture.coreDb).restoreHeld()).toBe(true);
+    const healthyFixture = await createRestorableWorkerControlFixture();
+    expect(createDefaultWorkerControlGateway(healthyFixture.coreDb).restoreHeld()).toBe(false);
+  });
+
+  it('keeps the default gateway unheld when every lease restores', async () => {
+    const fixture = await createRestorableWorkerControlFixture();
+    await addPredecessor(fixture, 'closed');
+    const gateway = createDefaultWorkerControlGateway(fixture.coreDb);
+    expect(gateway.registerSession(fixture.environmentPackage)).toBeTruthy();
   });
 });
