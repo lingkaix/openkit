@@ -80,9 +80,11 @@ export const ControlExecutionAttemptInputSchema = z.discriminatedUnion('kind', [
       backendId: identity,
       byteLength: z.number().int().nonnegative().safe(),
       attemptId: ExecutionAttemptIdSchema.optional(),
-      // Main-internal: the admissions that this dispatch pass deferred on a placement-held claim
-      // refusal, at most the fixed queued bound.
-      deferredQueueEntryIds: z.array(identity).max(20).optional(),
+      // Main-internal: the SHA-256 selection prefix that Main observed for this proposal.
+      selectionPrefixDigest: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       ...clock,
     })
     .strict(),
@@ -171,8 +173,11 @@ export type ControlExecutionAttemptResult = z.infer<typeof ControlExecutionAttem
 export class ExecutionAttemptRefusal extends Error {
   constructor(
     message: string,
-    /** The deciding claim refused because an unresolved writer holds the placement. */
-    readonly reason?: 'placement-held'
+    /**
+     * The deciding claim refused because an unresolved writer holds the placement, or because the
+     * FIFO selection changed after Main proposed it. Both commit nothing.
+     */
+    readonly reason?: 'placement-held' | 'selection-changed'
   ) {
     super(message);
   }
@@ -184,6 +189,6 @@ export const ControlExecutionAttemptRefusalSchema = z
     code: z.literal('attempt_refused'),
     message: z.string(),
     status: z.literal(409),
-    reason: z.literal('placement-held').optional(),
+    reason: z.enum(['placement-held', 'selection-changed']).optional(),
   })
   .strict();

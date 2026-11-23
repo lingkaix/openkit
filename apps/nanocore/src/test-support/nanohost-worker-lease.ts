@@ -4,6 +4,7 @@ import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
+  readSchedulerSelectionPrefixDigest,
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
@@ -149,6 +150,8 @@ export function submitTestNanoHostWorkerLease(
     entry: admission,
     attemptId,
     preparationInput: {},
+    // A fixture claim stands in for Main's selection, which skips every satisfiable predecessor.
+    selectionPrefixDigest: readSchedulerSelectionPrefixDigest(coreDb, admission),
     now,
   });
   bindSchedulerExecutionAttemptSession(coreDb, { attemptId, agentSessionId, now });

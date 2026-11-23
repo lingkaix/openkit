@@ -511,6 +511,31 @@ export function listQueuedSchedulerAdmissionEntries(coreDb: CoreDb): CoreSchedul
 }
 
 /**
+ * Reads the queued admissions in insertion order, in batches of at most 20 rows. The caller's
+ * transaction supplies the snapshot.
+ */
+export function* readQueuedSchedulerAdmissionEntriesInOrder(
+  coreDb: CoreDb
+): Generator<CoreSchedulerQueueEntry, void, void> {
+  let after = 0;
+  for (;;) {
+    const rows = coreDb.sqlite
+      .prepare(
+        `${schedulerAdmissionSelectSql(true)}
+        WHERE status = 'queued' AND rowid > ?
+        ORDER BY rowid ASC LIMIT 20`
+      )
+      .all(after) as (SchedulerAdmissionEntryRow & { readonly queueRowid: number })[];
+    for (const row of rows) {
+      after = row.queueRowid;
+      const { queueRowid: _rowid, ...admission } = row;
+      yield mapSchedulerAdmissionEntryRow(admission);
+    }
+    if (rows.length < 20) return;
+  }
+}
+
+/**
  * Lists scheduler admission entries for one workspace read model.
  *
  * @param coreDb Open Core database handle.
@@ -608,9 +633,10 @@ export function requireSchedulerAdmissionEntry(
 /**
  * Returns the shared scheduler admission SELECT list.
  *
+ * @param rowOrder Also selects the insertion order as `queueRowid`.
  * @returns SQL select fragment.
  */
-function schedulerAdmissionSelectSql(): string {
+function schedulerAdmissionSelectSql(rowOrder = false): string {
   return `SELECT
     schema_version AS schemaVersion,
     queue_entry_id,
@@ -634,7 +660,7 @@ function schedulerAdmissionSelectSql(): string {
     reasoning_effort,
     enqueued_at,
     status,
-    denial_reason
+    denial_reason${rowOrder ? ',\n    rowid AS queueRowid' : ''}
   FROM scheduler_admission_entries`;
 }
 

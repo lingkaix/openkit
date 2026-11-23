@@ -50,6 +50,7 @@ import {
   transferWorkspaceOwnership,
 } from '../workspace-sharing.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { recordSchedulerExecutionOperation } from './execution-attempt-records.js';
 import {
   admitExternalTriggerEvent,
   type ExternalTriggerServiceInput,
@@ -205,6 +206,14 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     } finally {
       ws.sqlite.close();
     }
+    // The running source Turn has submitted its Worker. Until submission the claim would hold
+    // the Workspace against the next scheduled poll and the admitted event work.
+    recordSchedulerExecutionOperation(db, {
+      attemptId: attempt.attemptId,
+      operationId: `fixture-submit:${attempt.attemptId}`,
+      submission: true,
+      now: () => instant,
+    });
     return {
       workspaceId: workspace.id,
       threadId: thread.id,

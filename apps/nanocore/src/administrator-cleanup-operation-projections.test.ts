@@ -221,18 +221,26 @@ function deletion(f: Fixture, requestId = REQUEST) {
 /** Creates a real prepared Scheduler attempt with no execution or Host contact. */
 function attempt(coreDb: CoreDb, label = 'attempt_cleanup_operation') {
   const id = testEntityId('attempt', label);
+  // A prepared attempt has not submitted, so it holds its Workspace. Each labeled attempt
+  // therefore claims in its own Workspace with the same owner.
+  const workspaceId =
+    label === 'attempt_cleanup_operation'
+      ? 'ws_00000000-0000-7000-8000-000000000001'
+      : testEntityId('ws', `cleanup_operation_${label}`);
+  if (label !== 'attempt_cleanup_operation')
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${id}`,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    workspaceId,
     threadId: testEntityId('th', `thread_${id}`),
     turnId: testEntityId('tu', `turn_${id}`),
-    inputRef: schedulerFixtureInput(
-      'ws_00000000-0000-7000-8000-000000000001',
-      testEntityId('tu', `turn_${id}`),
-      PRIVATE
-    ),
+    inputRef: schedulerFixtureInput(workspaceId, testEntityId('tu', `turn_${id}`), PRIVATE),
     requestedAgentId: 'agent_cleanup',
     now: () => CREATED,
   });

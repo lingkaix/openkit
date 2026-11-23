@@ -6,6 +6,7 @@ import type { FsStore } from '../lib/store.js';
 import {
   createSchedulerExecutionAttempt,
   markSchedulerExecutionAttemptClosing,
+  readSchedulerSelectionPrefixDigest,
 } from '../runtime/execution-attempt-records.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import {
@@ -66,21 +67,32 @@ describe('content-free deployment maintenance preflight', () => {
       store,
       new Map([['private-key', { inputHash: 'private-hash', promise: new Promise(() => {}) }]])
     );
+    // The open attempt has not submitted, so it holds its Workspace. The closing attempt
+    // therefore claims in a second Core Workspace with the same owner.
+    const closingWorkspaceId = testEntityId('ws', 'preflight_closing');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: closingWorkspaceId,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     for (const phase of ['queued', 'open', 'closing', 'denied'] as const) {
       const executionThread = await store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         `Private queue ${phase}`
       );
+      const workspaceId =
+        phase === 'closing' ? closingWorkspaceId : 'ws_00000000-0000-7000-8000-000000000001';
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue_${phase}`,
         requestId: `req_${phase}`,
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: executionThread.id,
+        workspaceId,
+        threadId:
+          phase === 'closing' ? testEntityId('th', 'thread_preflight_closing') : executionThread.id,
         turnId: testEntityId('tu', `turn_${phase}`),
         inputRef: schedulerFixtureInput(
-          'ws_00000000-0000-7000-8000-000000000001',
+          workspaceId,
           testEntityId('tu', `turn_${phase}`),
           'Private admitted input'
         ),
@@ -96,6 +108,9 @@ describe('content-free deployment maintenance preflight', () => {
         const attempt = createSchedulerExecutionAttempt(coreDb, {
           entry,
           preparationInput: { private: 'preparation' },
+          // The claim stands in for Main's selection, which examined and skipped the older
+          // queued entry.
+          selectionPrefixDigest: readSchedulerSelectionPrefixDigest(coreDb, entry),
         });
         if (phase === 'closing')
           markSchedulerExecutionAttemptClosing(coreDb, {

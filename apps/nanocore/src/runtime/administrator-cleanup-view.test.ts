@@ -245,18 +245,26 @@ async function sandbox(coreDb: CoreDb, sandboxId: string): Promise<void> {
 /** Creates an exact prepared attempt without launching a Worker or opening Workspace content. */
 function attempt(coreDb: CoreDb, label = 'attempt_001') {
   const id = testEntityId('attempt', label);
+  // A prepared attempt has not submitted, so it holds its Workspace. Each later attempt
+  // therefore claims in its own Workspace with the same owner.
+  const workspaceId =
+    label === 'attempt_001'
+      ? 'ws_00000000-0000-740d-a2ee-b63efda55617'
+      : testEntityId('ws', `cleanup_${label}`);
+  if (label !== 'attempt_001')
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue_${id}`,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+    workspaceId,
     threadId: testEntityId('th', `thread_${id}`),
     turnId: testEntityId('tu', `turn_${id}`),
-    inputRef: schedulerFixtureInput(
-      'ws_00000000-0000-740d-a2ee-b63efda55617',
-      testEntityId('tu', `turn_${id}`),
-      PRIVATE
-    ),
+    inputRef: schedulerFixtureInput(workspaceId, testEntityId('tu', `turn_${id}`), PRIVATE),
     requestedAgentId: 'agent_cleanup',
     now: () => CREATED,
   });

@@ -9,18 +9,21 @@ import { runSchedulerRecoveryMaintenance } from './runtime/scheduler-restart-rec
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import { recordWorkerBackendSessionMaterializing } from './runtime/worker-backend-sessions.js';
 import {
+  type CoreSchedulerQueueEntry,
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
+  readQueuedSchedulerAdmissionEntriesInOrder,
   readSchedulerAdmissionPagesForWorkspace,
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db';
+import { ExecutionAttemptRefusal } from './storage/execution-attempt-codecs.js';
 import { applyMigrations } from './storage/migrate';
 import { readNanoHostRecoveryLease } from './storage/nanohost-recovery-native.js';
 import { readRetainedNanoHostSubmission } from './storage/nanohost-submitted-lease.js';
@@ -1141,15 +1144,21 @@ describe('scheduler records', () => {
 
       const second = findNextDispatchableSchedulerAdmissionEntry(coreDb)!;
       expect(second.queueEntryId).toBe('queue_thread_other');
-      attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
-        entry: second,
-        attemptId: 'attempt_00000000-0000-7513-9184-4604f787d87e',
-        preparationInput: { admission: second },
-      });
+      // The first claim has not submitted, so it holds its original Workspace (preparation
+      // exclusion). The other Thread's claim commits nothing until a proved close releases it.
+      expect(() =>
+        attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+          entry: second,
+          attemptId: 'attempt_00000000-0000-7513-9184-4604f787d87e',
+          preparationInput: { admission: second },
+        })
+      ).toThrow('Execution placement has an unresolved writer.');
       expect(
         listQueuedSchedulerAdmissionEntries(coreDb).map((entry) => entry.queueEntryId)
-      ).toEqual(['queue_thread_second']);
-      expect(findNextDispatchableSchedulerAdmissionEntry(coreDb)).toBeNull();
+      ).toEqual(['queue_thread_second', 'queue_thread_other']);
+      expect(findNextDispatchableSchedulerAdmissionEntry(coreDb)?.queueEntryId).toBe(
+        'queue_thread_other'
+      );
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_thread_second').status).toBe('queued');
     } finally {
       coreDb.sqlite.close();
@@ -1268,6 +1277,13 @@ describe('bounded original scheduler authority readers', () => {
         entry,
         attemptId: testEntityId('attempt', `snapshot-filler-${index}`),
         preparationInput: { admission: entry },
+      });
+      // The claim holds its Workspace until a proved close. The real no-effect close releases
+      // that preparation exclusion and keeps the admission admitted.
+      attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId: testEntityId('attempt', `snapshot-filler-${index}`),
+        noOutstandingEffects: true,
+        cause: 'fixture-filler',
       });
       fillers.push(requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId));
     }
@@ -1402,6 +1418,13 @@ describe('bounded original scheduler authority readers', () => {
         entry,
         attemptId: testEntityId('attempt', `page-attempt-${index}`),
         preparationInput: { admission: entry },
+      });
+      // The claim holds its Workspace until a proved close. The real no-effect close releases
+      // that preparation exclusion and keeps the admission admitted.
+      attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId: testEntityId('attempt', `page-attempt-${index}`),
+        noOutstandingEffects: true,
+        cause: 'fixture-filler',
       });
       expected.push(requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId));
     }
@@ -1822,3 +1845,380 @@ describe('admitted NanoHost scheduler replacements', () => {
     });
   });
 });
+
+/** FIFO class closure: the Core claim transaction decides order, preparation and exclusion. */
+describe('scheduler FIFO class closure at the Core claim', () => {
+  const owner = 'usr_00000000-0000-7000-8000-000000000001';
+  const workspace = (index: number) =>
+    `ws_00000000-0000-7000-8000-00000000f${String(index).padStart(3, '0')}`;
+  /** Admits one Core-satisfiable entry with its own Thread and Turn in a Workspace it owns. */
+  const admit = (
+    coreDb: ReturnType<typeof createMigratedCoreDb>,
+    label: string,
+    workspaceId: string,
+    storageRef?: string
+  ) => {
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: owner });
+    const turnId = testEntityId('tu', `turn_fifo_${label}`);
+    return createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: { kind: 'user', id: owner },
+      queueEntryId: `queue_fifo_${label}`,
+      workspaceId,
+      threadId: testEntityId('th', `thread_fifo_${label}`),
+      turnId,
+      inputRef: fixtureSchedulerInput(workspaceId, turnId, `Run FIFO ${label}`),
+      requestedAgentId: 'agent_worker',
+      ...(storageRef
+        ? {
+            workerStorageChoice: {
+              expectedRevision: 1,
+              goalId: null,
+              kind: 'selected' as const,
+              purpose: 'work' as const,
+              storageRef,
+              taskId: null,
+            },
+          }
+        : {}),
+      now: () => '2026-07-05T00:00:00.000Z',
+    });
+  };
+  /** Claims through the real create transaction with the prefix that the caller observed. */
+  const claim = (
+    coreDb: ReturnType<typeof createMigratedCoreDb>,
+    entry: ReturnType<typeof admit>,
+    selectionPrefixDigest = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, entry)
+  ) =>
+    attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', `attempt_${entry.queueEntryId}`),
+      preparationInput: { admission: entry },
+      selectionPrefixDigest,
+    });
+  const refusal = (action: () => unknown) => {
+    try {
+      action();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionAttemptRefusal);
+      return {
+        message: (error as Error).message,
+        reason: (error as InstanceType<typeof ExecutionAttemptRefusal>).reason,
+      };
+    }
+    throw new Error('The claim was not refused.');
+  };
+  const attemptsFor = (
+    coreDb: ReturnType<typeof createMigratedCoreDb>,
+    entry: ReturnType<typeof admit>
+  ) => attemptActionOwners.listSchedulerExecutionAttemptsForTurn(coreDb, entry);
+  const releaseWithoutEffects = (
+    coreDb: ReturnType<typeof createMigratedCoreDb>,
+    entry: ReturnType<typeof admit>,
+    requeue = false
+  ) =>
+    attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+      attemptId: testEntityId('attempt', `attempt_${entry.queueEntryId}`),
+      noOutstandingEffects: true,
+      cause: 'fixture-no-effect',
+      requeue,
+    });
+  const selectionChanged = {
+    message: 'The scheduler selection changed before the claim.',
+    reason: 'selection-changed',
+  };
+  const placementHeld = {
+    message: 'Execution placement has an unresolved writer.',
+    reason: 'placement-held',
+  };
+
+  it('refuses a younger claim when an older skipped Task becomes satisfiable before the commit, and keeps a committed claim', () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      // A prepares in Workspace 1. B shares that Workspace, so the selector skips B. C is disjoint.
+      const a = admit(coreDb, 'release-a', workspace(1));
+      claim(coreDb, a);
+      const b = admit(coreDb, 'release-b', workspace(1));
+      const c = admit(coreDb, 'release-c', workspace(2));
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, b)).toBe(true);
+      const observed = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, c);
+      expect(observed).toBe(attemptActionOwners.createSchedulerSelectionPrefix().digest());
+      // A's proved no-effect close commits after C's selection and before C's claim.
+      releaseWithoutEffects(coreDb, a);
+      expect(refusal(() => claim(coreDb, c, observed))).toEqual(selectionChanged);
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(coreDb, c.queueEntryId).status).toBe('queued');
+      // The fresh scan gives B the first claim.
+      expect(claim(coreDb, b)).toMatchObject({ turnId: b.turnId, phase: 'open', deadline: null });
+      // After the commit a later release cannot undo it: D commits, then E's holder releases.
+      const holder = admit(coreDb, 'release-holder', workspace(3));
+      claim(coreDb, holder);
+      const e = admit(coreDb, 'release-e', workspace(3));
+      const d = admit(coreDb, 'release-d', workspace(4));
+      const committed = claim(coreDb, d);
+      releaseWithoutEffects(coreDb, holder);
+      expect(
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, committed.attemptId)
+      ).toMatchObject({ turnId: d.turnId, phase: 'open' });
+      expect(requireSchedulerAdmissionEntry(coreDb, e.queueEntryId).status).toBe('queued');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses a younger claim on another Thread when the older Task on the submitted holder Thread becomes satisfiable before the commit', () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      // A is submitted on Thread 1, so its preparation exclusion is gone and only its Thread is held.
+      const a = admit(coreDb, 'thread-a', workspace(5));
+      const submitted = recordTestExecutionAttempt(coreDb, {
+        entry: a,
+        attemptId: testEntityId('attempt', `attempt_${a.queueEntryId}`),
+        agentSessionId: testEntityId('as', 'session_fifo_thread_a'),
+        inputRef: 'pkg_demo',
+        bindingRef: 'lease-binding:fifo-thread-a',
+        now: () => '2026-07-05T00:00:02.000Z',
+        operationId: 'fixture-submit:fifo-thread-a',
+      });
+      expect(submitted.deadline).not.toBeNull();
+      // B is the next Turn on A's Thread. C is on another Thread in the same Workspace.
+      const bTurnId = testEntityId('tu', 'turn_fifo_thread-b');
+      const b = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: owner },
+        queueEntryId: 'queue_fifo_thread-b',
+        workspaceId: a.workspaceId,
+        threadId: a.threadId,
+        turnId: bTurnId,
+        inputRef: fixtureSchedulerInput(a.workspaceId, bTurnId, 'Run FIFO thread-b'),
+        requestedAgentId: 'agent_worker',
+        now: () => '2026-07-05T00:00:00.000Z',
+      });
+      const c = admit(coreDb, 'thread-c', workspace(5));
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, b)).toBe(true);
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, c)).toBe(false);
+      const observed = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, c);
+      expect(observed).toBe(attemptActionOwners.createSchedulerSelectionPrefix().digest());
+      // A's exact release commits after C's selection and before C's claim.
+      releaseWithoutEffects(coreDb, a);
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, b)).toBe(false);
+      expect(refusal(() => claim(coreDb, c, observed))).toEqual(selectionChanged);
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(coreDb, c.queueEntryId).status).toBe('queued');
+      // The fresh scan gives B the first claim, and C then waits behind B's preparation.
+      expect(claim(coreDb, b)).toMatchObject({ turnId: b.turnId, phase: 'open', deadline: null });
+      expect(refusal(() => claim(coreDb, c))).toEqual(placementHeld);
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps an in-place retry at its original position and refuses an equal-count replacement', () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      // Retry in place: B is denied after C's selection and retried before C's claim.
+      const b = admit(coreDb, 'retry-b', workspace(1));
+      const c = admit(coreDb, 'retry-c', workspace(2));
+      denySchedulerAdmissionEntry(coreDb, {
+        queueEntryId: b.queueEntryId,
+        denialReason: 'queue-full',
+      });
+      const beforeRetry = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, c);
+      retryDeniedSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: b.queueEntryId,
+        workspaceId: b.workspaceId,
+      });
+      expect([...schedulerRecordsInOrder(coreDb)].map((entry) => entry.queueEntryId)).toEqual([
+        b.queueEntryId,
+        c.queueEntryId,
+      ]);
+      expect(refusal(() => claim(coreDb, c, beforeRetry))).toEqual(selectionChanged);
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+      // A later ticket cannot invert FIFO: the retried B claims first on the fresh scan.
+      expect(claim(coreDb, b)).toMatchObject({ turnId: b.turnId });
+      // Equal count: the observed prefix names C and X1. X1 cancels and X2 becomes satisfiable.
+      const holder = admit(coreDb, 'equal-holder', workspace(3));
+      claim(coreDb, holder);
+      const x1 = admit(coreDb, 'equal-x1', workspace(4));
+      const x2 = admit(coreDb, 'equal-x2', workspace(3));
+      const d = admit(coreDb, 'equal-d', workspace(5));
+      const observed = createPrefix([c, x1]);
+      expect(attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, d)).toBe(observed);
+      cancelSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: x1.queueEntryId,
+        workspaceId: x1.workspaceId,
+      });
+      releaseWithoutEffects(coreDb, holder);
+      // One satisfiable predecessor before and after, so a count cannot see the change.
+      expect(attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, d)).toBe(
+        createPrefix([c, x2])
+      );
+      expect(refusal(() => claim(coreDb, d, observed))).toEqual(selectionChanged);
+      expect(attemptsFor(coreDb, d)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(coreDb, d.queueEntryId).status).toBe('queued');
+      // Retry after commit: E is denied, F claims, then E retries in place. F's claim stands.
+      const e = admit(coreDb, 'retry-e', workspace(6));
+      const f = admit(coreDb, 'retry-f', workspace(7));
+      denySchedulerAdmissionEntry(coreDb, {
+        queueEntryId: e.queueEntryId,
+        denialReason: 'queue-full',
+      });
+      const committed = claim(coreDb, f);
+      retryDeniedSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: e.queueEntryId,
+        workspaceId: e.workspaceId,
+      });
+      expect(
+        attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, committed.attemptId)
+      ).toMatchObject({ turnId: f.turnId, phase: 'open' });
+      expect([...schedulerRecordsInOrder(coreDb)].map((entry) => entry.queueEntryId)).toEqual([
+        c.queueEntryId,
+        x2.queueEntryId,
+        d.queueEntryId,
+        e.queueEntryId,
+      ]);
+      // A row enqueued after G's selection is younger, so it does not change G's prefix.
+      const g = admit(coreDb, 'retry-g', workspace(8));
+      const gObserved = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, g);
+      expect(gObserved).toBe(createPrefix([c, x2, d, e]));
+      const h = admit(coreDb, 'retry-h', workspace(9));
+      expect(claim(coreDb, g, gObserved)).toMatchObject({ turnId: g.turnId, phase: 'open' });
+      expect(requireSchedulerAdmissionEntry(coreDb, h.queueEntryId).status).toBe('queued');
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('lets a Task pass an older Task held only on selected storage, and gives the older Task priority after the exact release', () => {
+    const storageRef = 'wst_00000000-0000-77ec-b7e9-3fa6a72e9fa1';
+    const coreDb = createMigratedCoreDb();
+    try {
+      // H prepares with selected storage S in Workspace 1. B selects S in Workspace 2.
+      const h = admit(coreDb, 'storage-h', workspace(1), storageRef);
+      claim(coreDb, h);
+      const b = admit(coreDb, 'storage-b', workspace(2), storageRef);
+      const c = admit(coreDb, 'storage-c', workspace(2));
+      const d = admit(coreDb, 'storage-d', workspace(3));
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, b)).toBe(true);
+      expect(attemptActionOwners.schedulerClaimBlocked(coreDb, c)).toBe(false);
+      // The exact release of S commits after D's selection and before D's claim: B has priority.
+      const observed = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, d);
+      expect(observed).toBe(createPrefix([c]));
+      releaseWithoutEffects(coreDb, h);
+      expect(refusal(() => claim(coreDb, d, observed))).toEqual(selectionChanged);
+      expect(attemptsFor(coreDb, d)).toEqual([]);
+      expect(claim(coreDb, b)).toMatchObject({ turnId: b.turnId });
+    } finally {
+      coreDb.sqlite.close();
+    }
+    const permitted = createMigratedCoreDb();
+    try {
+      // Without the release, C in B's Workspace claims while B waits only on S.
+      const h = admit(permitted, 'storage-h', workspace(1), storageRef);
+      claim(permitted, h);
+      const b = admit(permitted, 'storage-b', workspace(2), storageRef);
+      const c = admit(permitted, 'storage-c', workspace(2));
+      expect(claim(permitted, c)).toMatchObject({ turnId: c.turnId, phase: 'open' });
+      expect(attemptsFor(permitted, b)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(permitted, b.queueEntryId).status).toBe('queued');
+    } finally {
+      permitted.sqlite.close();
+    }
+  });
+
+  it('refuses a claim on a new hold, and keeps preparation held while closing, after image intent and after a rolled-back submit', () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      // A new hold on C's Workspace commits after C's selection: C commits nothing.
+      const c = admit(coreDb, 'hold-c', workspace(1));
+      const n = admit(coreDb, 'hold-n', workspace(1));
+      const observed = attemptActionOwners.readSchedulerSelectionPrefixDigest(coreDb, c);
+      claim(coreDb, n);
+      expect(refusal(() => claim(coreDb, c, observed))).toEqual(placementHeld);
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+      const nAttempt = testEntityId('attempt', `attempt_${n.queueEntryId}`);
+      // Image or preparation operation intent alone does not clear the exclusion.
+      attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+        attemptId: nAttempt,
+        operationId: 'fixture-image-intent',
+      });
+      expect(attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, nAttempt)).toMatchObject({
+        operationId: 'fixture-image-intent',
+        deadline: null,
+      });
+      expect(refusal(() => claim(coreDb, c))).toEqual(placementHeld);
+      // A submit that rolls back leaves the deadline unset and preparation held.
+      const p = admit(coreDb, 'hold-p', workspace(2));
+      const q = admit(coreDb, 'hold-q', workspace(2));
+      claim(coreDb, p);
+      const pAttempt = testEntityId('attempt', `attempt_${p.queueEntryId}`);
+      expect(() =>
+        attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+          attemptId: pAttempt,
+          operationId: 'fixture-rolled-back-submit',
+          submission: true,
+        })
+      ).toThrow('Submission has no finalized package or assigned binding.');
+      expect(attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, pAttempt)).toMatchObject({
+        operationId: null,
+        deadline: null,
+      });
+      expect(refusal(() => claim(coreDb, q))).toEqual(placementHeld);
+      // A close in progress still holds. Only the proved no-effect close releases.
+      attemptActionOwners.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: pAttempt,
+        cause: 'turn-cancelled',
+      });
+      expect(attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, pAttempt).phase).toBe(
+        'closing'
+      );
+      expect(refusal(() => claim(coreDb, q))).toEqual(placementHeld);
+      expect(attemptsFor(coreDb, q)).toEqual([]);
+      releaseWithoutEffects(coreDb, p);
+      expect(claim(coreDb, q)).toMatchObject({ turnId: q.turnId, phase: 'open' });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses a vanished proposal and lets a direct claim attest only the empty prefix', () => {
+    const coreDb = createMigratedCoreDb();
+    try {
+      const b = admit(coreDb, 'direct-b', workspace(1));
+      const c = admit(coreDb, 'direct-c', workspace(2));
+      // A direct create without Main's skip evidence attests the empty prefix.
+      expect(
+        refusal(() =>
+          attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+            entry: c,
+            preparationInput: { admission: c },
+          })
+        )
+      ).toEqual(selectionChanged);
+      cancelSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: c.queueEntryId,
+        workspaceId: c.workspaceId,
+      });
+      expect(refusal(() => claim(coreDb, c, createPrefix([b])))).toEqual({
+        message: 'The exact queued admission is no longer dispatchable.',
+        reason: 'selection-changed',
+      });
+      expect(attemptsFor(coreDb, c)).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});
+
+/** Streams the Core queue in insertion order, in bounded batches. */
+function schedulerRecordsInOrder(coreDb: ReturnType<typeof createMigratedCoreDb>) {
+  return readQueuedSchedulerAdmissionEntriesInOrder(coreDb);
+}
+
+/** Builds the selection prefix digest of the given ordered predecessors. */
+function createPrefix(entries: readonly CoreSchedulerQueueEntry[]): string {
+  const prefix = attemptActionOwners.createSchedulerSelectionPrefix();
+  for (const entry of entries) prefix.add(entry);
+  return prefix.digest();
+}

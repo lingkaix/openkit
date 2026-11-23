@@ -15605,7 +15605,9 @@ describe('createConfiguredTurnExecutor', () => {
     60_000
   );
 
-  it('defers the held-placement claim refusal with its FIFO priority when the holder releases before dispatch classifies it', async () => {
+  it.each(['selection-read', 'delayed-reply'] as const)(
+    'orders a younger disjoint claim against the holder release at the %s boundary',
+    async (boundary) => {
     const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -15681,33 +15683,34 @@ describe('createConfiguredTurnExecutor', () => {
           }
         )
       );
-    // The predecessor's release does not commit while the claim's Worker reply is unhandled. The
-    // race window is after the client returns the typed claim refusal and before dispatch classifies
-    // it. Hold that typed refusal at this claim reply boundary.
+    // Main skips B and C, which the holder A blocks, and proposes the disjoint D. A's exact
+    // release commits after D's selection read and before Core decides D's claim.
     const claim = nativeAttemptOwners.createSchedulerExecutionAttempt;
-    const captured = Promise.withResolvers<() => void>();
-    let heldReply = false;
+    const claimed: { readonly turnId: string; readonly refusal?: string }[] = [];
+    // At the selection-read boundary the release commits before Core decides D's claim. At the
+    // delayed-reply boundary Core commits D's claim and the release commits before Main receives
+    // the reply.
+    let releaseAt: ((threadId: string) => Promise<void>) | undefined;
     const claims = vi
       .spyOn(nativeAttemptOwners, 'createSchedulerExecutionAttempt')
       .mockImplementation(async (...args) => {
+        if (boundary === 'selection-read') await releaseAt?.(args[1].entry.threadId);
         try {
-          return await claim(...args);
+          const attempt = await claim(...args);
+          claimed.push({ turnId: args[1].entry.turnId });
+          if (boundary === 'delayed-reply') await releaseAt?.(args[1].entry.threadId);
+          return attempt;
         } catch (error) {
-          if (
-            !heldReply &&
-            error instanceof nativeAttemptOwners.ExecutionAttemptRefusal &&
-            error.message === 'Execution placement has an unresolved writer.'
-          ) {
-            heldReply = true;
-            const read = Promise.withResolvers<void>();
-            captured.resolve(read.resolve);
-            await read.promise;
-          }
+          claimed.push({
+            turnId: args[1].entry.turnId,
+            refusal:
+              error instanceof nativeAttemptOwners.ExecutionAttemptRefusal
+                ? error.reason
+                : 'other',
+          });
           throw error;
         }
       });
-    let deliver: (() => void) | undefined;
-    let secondResponse: ReturnType<typeof post> | undefined;
     let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     try {
       const firstResponse = await post(0);
@@ -15729,67 +15732,130 @@ describe('createConfiguredTurnExecutor', () => {
       const workspaceHeld = () =>
         journalOwners.kernelSchedulerScopeIsHeld(coreDb, [`workspace:${workspaceId}`]);
       expect(workspaceHeld()).toBe(true);
-      secondResponse = post(1);
-      deliver = await captured.promise;
+      claimed.length = 0;
+      const passFor = async (queueEntryId: string) => {
+        const index = await vi.waitFor(() => {
+          const found = dispatches.mock.calls.findIndex(
+            ([input]) => input.callerQueueEntryId === queueEntryId
+          );
+          expect(found).toBeGreaterThanOrEqual(0);
+          return found;
+        });
+        const result = dispatches.mock.results[index];
+        if (result?.type !== 'return') throw new Error('The Task dispatch has not entered.');
+        return await result.value;
+      };
+      // B and C share A's Workspace. Main skips both and posts no claim for either.
+      const secondResponse = await post(1);
+      expect(secondResponse.status, await secondResponse.clone().text()).toBe(202);
       const entry = attemptActionOwners
         .listQueuedSchedulerAdmissionEntries(coreDb)
         .find((candidate) => candidate.threadId === threadIds[1])!;
       expect(entry).toMatchObject({ status: 'queued', workspaceId, threadId: threadIds[1] });
+      expect((await passFor(entry.queueEntryId)).startedTurns).toEqual([]);
       const secondScope = { workspaceId, threadId: entry.threadId, turnId: entry.turnId };
-      // A younger independent Task in the same Workspace completes its publication behind the
-      // held claim.
       const thirdResponse = await post(2);
       expect(thirdResponse.status, await thirdResponse.clone().text()).toBe(202);
       const younger = attemptActionOwners
         .listQueuedSchedulerAdmissionEntries(coreDb)
         .find((candidate) => candidate.threadId === threadIds[2])!;
       expect(younger).toMatchObject({ status: 'queued', workspaceId, threadId: threadIds[2] });
+      expect((await passFor(younger.queueEntryId)).startedTurns).toEqual([]);
       const youngerScope = { workspaceId, threadId: younger.threadId, turnId: younger.turnId };
+      expect(claimed).toEqual([]);
+      let effectsBefore = native.effects.length;
+      let released = false;
+      releaseAt = async (threadId) => {
+        if (threadId !== disjointThreadId) return;
+        releaseAt = undefined;
+        expect(workspaceHeld()).toBe(true);
+        // The first Task's exact release commits after the selection read of D's proposal.
+        firstWork.completion.resolve();
+        await firstWork.execution;
+        await firstCloseout;
+        await vi.waitFor(
+          () =>
+            expect(
+              attempts.requireSchedulerExecutionAttempt(coreDb, firstAttempt.attemptId)
+            ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) }),
+          { timeout: 30_000 }
+        );
+        expect(workspaceHeld()).toBe(false);
+        effectsBefore = native.effects.length;
+        released = true;
+      };
       const disjointResponse = await post(3);
       expect(disjointResponse.status, await disjointResponse.clone().text()).toBe(202);
       const disjoint = attemptActionOwners
-        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'admitted'],
+          workspaceId: other.id,
+        })
         .find((candidate) => candidate.threadId === disjointThreadId)!;
-      expect(disjoint).toMatchObject({ status: 'queued', workspaceId: other.id });
-      // The first Task's exact release commits before dispatch handles the held refusal.
-      firstWork.completion.resolve();
-      await firstWork.execution;
-      await firstCloseout;
-      await vi.waitFor(
-        () =>
-          expect(
-            attempts.requireSchedulerExecutionAttempt(coreDb, firstAttempt.attemptId)
-          ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) }),
-        { timeout: 30_000 }
-      );
-      expect(workspaceHeld()).toBe(false);
-      const effectsBefore = native.effects.length;
-      deliver();
-      deliver = undefined;
-      const { execution } = await vi.waitFor(() => {
-        const index = dispatches.mock.calls.findIndex(
-          ([input]) => input.callerQueueEntryId === entry.queueEntryId
+      const pass = await passFor(disjoint.queueEntryId);
+      expect(released).toBe(true);
+      const disjointScope = {
+        workspaceId: other.id,
+        threadId: disjointThreadId,
+        turnId: disjoint.turnId,
+      };
+      const started = pass.startedTurns.map((turn) => turn.dispatch.entry.queueEntryId);
+      if (boundary === 'delayed-reply') {
+        // The committed claim stands. B keeps its original admission and gets the next claim.
+        expect(claimed).toEqual([{ turnId: disjoint.turnId }]);
+        expect(started).toEqual([disjoint.queueEntryId]);
+        const disjointAttempt = pass.startedTurns[0]!.dispatch.attempt;
+        expect(disjointAttempt).toMatchObject({ workspaceId: other.id, turnId: disjoint.turnId });
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+        ).toEqual(entry);
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
+        const disjointWork = native.executionFor(disjoint.turnId);
+        disjointWork.completion.resolve();
+        await disjointWork.execution;
+        await vi.waitFor(
+          () =>
+            expect(
+              attempts.requireSchedulerExecutionAttempt(coreDb, disjointAttempt.attemptId)
+            ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) }),
+          { timeout: 30_000 }
         );
-        const result = dispatches.mock.results[index];
-        if (result?.type !== 'return') throw new Error('Original Task dispatch has not entered.');
-        return { execution: result.value };
-      });
-      // The deciding Core refusal named the held placement. Dispatch defers it although a later
-      // read of the placement is false. The second Task keeps its original durable admission.
-      // The later Task in another Workspace shares no scope with it and dispatches in this pass.
-      const pass = await execution;
-      expect(pass.startedTurns.map((started) => started.dispatch.entry.queueEntryId)).toEqual([
-        disjoint.queueEntryId,
+        claimed.length = 0;
+        const agentSessionId = testEntityId('as', 'as_reply_second');
+        admitted = await native.admitTurn(entry, {
+          attemptId: testEntityId('attempt', 'attempt_reply_second'),
+          agentSessionId,
+          candidateAgentSessionId: agentSessionId,
+        });
+        expect(claimed).toEqual([{ turnId: entry.turnId }]);
+        expect(admitted.attempt).toMatchObject({ turnId: entry.turnId, phase: 'open' });
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
+        ).toEqual(younger);
+        return;
+      }
+      // Core recomputed D's prefix: B became satisfiable, so D committed nothing. The fresh scan
+      // gave B the first claim. C stays queued behind B. D keeps its original admission.
+      expect(claimed).toEqual([
+        { turnId: disjoint.turnId, refusal: 'selection-changed' },
+        { turnId: entry.turnId },
       ]);
-      const disjointAttempt = pass.startedTurns[0]!.dispatch.attempt;
-      expect(disjointAttempt).toMatchObject({ workspaceId: other.id, turnId: disjoint.turnId });
-      expect((await secondResponse).status).toBe(202);
-      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toEqual([]);
+      expect(started).toEqual([entry.queueEntryId]);
+      const secondAttempt = pass.startedTurns[0]!.dispatch.attempt;
+      expect(secondAttempt).toMatchObject({ workspaceId, turnId: entry.turnId });
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, secondScope)).toHaveLength(1);
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, disjointScope)).toEqual([]);
       expect(
-        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
-      ).toEqual(entry);
-      // Only the disjoint dispatch has effects: its own lease, and the first Task's idle Sandbox
-      // eviction that it needs. No effect names another lease.
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, disjoint.queueEntryId)
+      ).toEqual(disjoint);
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
+      ).toEqual(younger);
+      // Only B's dispatch has effects after the release: its own lease and the first Task's
+      // idle Sandbox. No effect names another lease.
       expect(
         native.effects
           .slice(effectsBefore)
@@ -15797,40 +15863,12 @@ describe('createConfiguredTurnExecutor', () => {
           .filter(
             (leaseId) =>
               leaseId !== undefined &&
-              leaseId !== disjointAttempt.attemptId &&
+              leaseId !== secondAttempt.attemptId &&
               leaseId !== firstAttempt.attemptId
           )
       ).toEqual([]);
-      // The deferred Task keeps its FIFO priority for the released Workspace. The younger Task
-      // stays queued with no attempt until the deferred Task gets the first claim.
-      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
-      expect(
-        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
-      ).toEqual(younger);
-      // The disjoint Task completes and releases before the next pass needs the Sandbox.
-      const disjointWork = native.executionFor(disjoint.turnId);
-      disjointWork.completion.resolve();
-      await disjointWork.execution;
-      await vi.waitFor(
-        () =>
-          expect(
-            attempts.requireSchedulerExecutionAttempt(coreDb, disjointAttempt.attemptId)
-          ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) }),
-        { timeout: 30_000 }
-      );
-      const agentSessionId = testEntityId('as', 'as_reply_second');
-      admitted = await native.admitTurn(entry, {
-        attemptId: testEntityId('attempt', 'attempt_reply_second'),
-        agentSessionId,
-        candidateAgentSessionId: agentSessionId,
-      });
-      expect(admitted.attempt).toMatchObject({ turnId: entry.turnId, phase: 'open' });
-      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
-      expect(
-        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
-      ).toEqual(younger);
     } finally {
-      deliver?.();
+      releaseAt = undefined;
       claims.mockRestore();
       await admitted?.cleanup();
       for (const threadId of threadIds)
@@ -15838,14 +15876,14 @@ describe('createConfiguredTurnExecutor', () => {
           native.executionFor(turn.id).completion.resolve();
       for (const turn of store.listThreadTurns(other.id, disjointThreadId))
         native.executionFor(turn.id).completion.resolve();
-      await secondResponse?.catch(() => undefined);
       await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      // D stays queued in its own Workspace; cancel it with the held Tasks.
       for (const entry of attemptActionOwners
         .listQueuedSchedulerAdmissionEntries(coreDb)
-        .filter((entry) => threadIds.includes(entry.threadId))) {
+        .filter((entry) => [...threadIds, disjointThreadId].includes(entry.threadId))) {
         await app.request(
           ...operationRequest('scheduler.cancel', {
-            workspaceId,
+            workspaceId: entry.workspaceId,
             queueEntryId: entry.queueEntryId,
           })
         );
@@ -15867,7 +15905,9 @@ describe('createConfiguredTurnExecutor', () => {
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
-  }, 120_000);
+      },
+    120_000
+  );
 
   it('dispatches a younger fresh-storage Task while a deferred Task waits only on its held selected storage', async () => {
     type FactoryManifest = ReturnType<typeof createTestAgentSetup>['manifest'];
@@ -16012,13 +16052,12 @@ describe('createConfiguredTurnExecutor', () => {
       const held = await queue('held', threadIds[2]!, codex, storage);
       const fresh = await queue('fresh', threadIds[3]!, codex);
       claimed.length = 0;
-      // One pass: the older Task is refused on its held storage only. The younger Task shares the
-      // Workspace but no held scope, so it dispatches in the same pass.
+      // One pass: the shared Core selector skips the older Task on its held storage only, so
+      // Main posts no claim for it. The younger Task shares the Workspace but no held scope, so
+      // it dispatches in the same pass. The held Task's satisfiable state is absent from the
+      // younger Task's prefix, which Core recomputes in its claim.
       younger = await admit(fresh, 'fresh');
-      expect(claimed).toEqual([
-        { turnId: held.turnId, refusal: 'placement-held' },
-        { turnId: fresh.turnId },
-      ]);
+      expect(claimed).toEqual([{ turnId: fresh.turnId }]);
       expect(younger.attempt).toMatchObject({ turnId: fresh.turnId, phase: 'open' });
       expect(
         attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
@@ -16034,168 +16073,6 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       claims.mockRestore();
       await younger?.cleanup();
-      await native.restore();
-      coreDb.sqlite.close();
-    }
-  }, 120_000);
-
-  it('gives a deferred Task the next claim when its holder releases after a younger Task passes selection', async () => {
-    const coreDb = await createFactoryCoreDb();
-    const dataRoot = coreDb.dataRoot;
-    const ownerUserId = ensureLocalUser(coreDb);
-    const workspaceId = testEntityId('ws', 'workspace_claim_order');
-    const threadIds = ['holder', 'deferred', 'younger'].map((label) =>
-      testEntityId('th', `thread_claim_order_${label}`)
-    );
-    const store = new FsStore({ dataRoot });
-    const fixture = createDemoWorkspaceForUser(ownerUserId);
-    await store.importWorkspaceSnapshot({
-      workspace: {
-        ...fixture.workspace,
-        id: workspaceId,
-        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
-      },
-      threads: [{ ...fixture.thread, id: threadIds[0]!, owner: { kind: 'workspace', workspaceId } }],
-      turns: [],
-      knowledge: [],
-      agentSessions: [],
-      artifacts: [],
-      itemRevisions: [],
-      turnEvents: [],
-      ...notebookImportFixture({ workspaceId, knowledge: [], userId: ownerUserId }),
-    });
-    for (const threadId of threadIds.slice(1))
-      await store.createThread(workspaceId, 'Claim order', threadId);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
-    const codex = createTestAgentSetup({
-      adapter: 'codex',
-      agentId: 'agent-codex',
-      imageRef: `sha256:${'f'.repeat(64)}`,
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    }).manifest;
-    admitFactoryNativeEnvironment(coreDb, codex);
-    const configuration = createInMemoryRuntimeConfigSnapshot({
-      ...loadRuntimeConfig(dataRoot),
-      agentManifests: [codex],
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Claim order fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-    });
-    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
-      readRuntimeConfig: () => configuration,
-    });
-    const queue = async (label: string, threadId: string) => {
-      const entry = await createTestQueueEntry(coreDb, {
-        backendId: 'nanohost',
-        queueEntryId: `queue:${testEntityId('attempt', `lease_claim_order_${label}`)}`,
-        requestId: testEntityId('tu', `request_claim_order_${label}`).slice(3),
-        requestedAgentId: codex.id,
-        workspaceId,
-        threadId,
-        turnId: testEntityId('tu', `turn_claim_order_${label}`),
-        text: `Run ${label}`,
-        triggerActor: { kind: 'user', id: ownerUserId },
-      });
-      await publishFactoryAdmission(store, entry);
-      return entry;
-    };
-    const admit = (entry: Awaited<ReturnType<typeof queue>>, label: string) =>
-      native.admitTurn(entry, {
-        attemptId: testEntityId('attempt', `lease_claim_order_${label}`),
-        agentSessionId: testEntityId('as', `as_claim_order_${label}`),
-        candidateAgentSessionId: testEntityId('as', `as_claim_order_${label}`),
-      });
-    const workspaceHeld = () =>
-      journalOwners.kernelSchedulerScopeIsHeld(coreDb, [`workspace:${workspaceId}`]);
-    const claim = nativeAttemptOwners.createSchedulerExecutionAttempt;
-    const claimed: { readonly turnId: string; readonly refusal?: string }[] = [];
-    let beforeClaim: ((turnId: string) => Promise<void>) | undefined;
-    const claims = vi
-      .spyOn(nativeAttemptOwners, 'createSchedulerExecutionAttempt')
-      .mockImplementation(async (...args) => {
-        await beforeClaim?.(args[1].entry.turnId);
-        try {
-          const attempt = await claim(...args);
-          claimed.push({ turnId: args[1].entry.turnId });
-          return attempt;
-        } catch (error) {
-          claimed.push({
-            turnId: args[1].entry.turnId,
-            refusal:
-              error instanceof nativeAttemptOwners.ExecutionAttemptRefusal
-                ? error.reason
-                : 'other',
-          });
-          throw error;
-        }
-      });
-    let holder: Awaited<ReturnType<typeof admit>> | undefined;
-    let winner: Awaited<ReturnType<typeof admit>> | undefined;
-    try {
-      holder = await admit(await queue('holder', threadIds[0]!), 'holder');
-      expect(workspaceHeld()).toBe(true);
-      const deferred = await queue('deferred', threadIds[1]!);
-      const younger = await queue('younger', threadIds[2]!);
-      // The pass refuses the older Task on the held Workspace and selects the younger Task. The
-      // holder's exact release commits after that selection and before the younger claim reaches
-      // Core.
-      let released = false;
-      beforeClaim = async (turnId) => {
-        if (turnId !== younger.turnId) return;
-        beforeClaim = undefined;
-        expect(workspaceHeld()).toBe(true);
-        await holder!.complete();
-        await vi.waitFor(() => expect(workspaceHeld()).toBe(false), { timeout: 30_000 });
-        released = true;
-      };
-      claimed.length = 0;
-      await expect(admit(younger, 'younger')).rejects.toThrow(
-        'Native admission returned without its Turn.'
-      );
-      expect(released).toBe(true);
-      // The younger claim is refused in its own Core transaction: the older deferred Task is
-      // eligible now and keeps its FIFO priority. Both Tasks keep their original admissions.
-      expect(claimed).toEqual([
-        { turnId: deferred.turnId, refusal: 'placement-held' },
-        { turnId: younger.turnId, refusal: 'placement-held' },
-      ]);
-      for (const entry of [deferred, younger]) {
-        expect(
-          attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
-            workspaceId,
-            threadId: entry.threadId,
-            turnId: entry.turnId,
-          })
-        ).toEqual([]);
-        expect(
-          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
-        ).toEqual(entry);
-      }
-      // The next pass gives the older Task the first claim. The younger Task stays queued.
-      claimed.length = 0;
-      winner = await admit(deferred, 'deferred');
-      expect(claimed).toEqual([{ turnId: deferred.turnId }]);
-      expect(winner.attempt).toMatchObject({ turnId: deferred.turnId, phase: 'open' });
-      expect(
-        attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
-          workspaceId,
-          threadId: younger.threadId,
-          turnId: younger.turnId,
-        })
-      ).toEqual([]);
-      expect(
-        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
-      ).toEqual(younger);
-    } finally {
-      claims.mockRestore();
-      await winner?.cleanup();
-      await holder?.cleanup();
       await native.restore();
       coreDb.sqlite.close();
     }

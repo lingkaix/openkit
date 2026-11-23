@@ -2863,7 +2863,8 @@ function dispatchLease(
   nativePrepared = true,
   threadId = testEntityId('th', `th_${suffix}`),
   admittedAt = '2026-07-05T00:00:01.000Z',
-  admittedSubmission = false
+  admittedSubmission = false,
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2876,16 +2877,16 @@ function dispatchLease(
       .run(responsible, responsible, `${responsible}@restart.invalid`, at, at);
     coreDb.sqlite
       .prepare(
-        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(
+        workspaceId,
         responsible,
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z'
       );
   }
-  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -3077,7 +3078,8 @@ async function recordBackendSession(
   suffix: string,
   state: WorkerBackendSessionState = 'materializing',
   threadId = testEntityId('th', `th_${suffix}`),
-  submitAfterAnchor: boolean | 'unlaunched' | 'retired-core-operation' = false
+  submitAfterAnchor: boolean | 'unlaunched' | 'retired-core-operation' = false,
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): Promise<void> {
   await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
     deploymentId: 'deployment-test',
@@ -3085,14 +3087,11 @@ async function recordBackendSession(
     allocationAt: '2026-07-05T00:00:00.000Z',
     readyAt: '2026-07-05T00:00:01.000Z',
   });
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
     if (
-      !listExportableAgentEnvironmentPackageSnapshots(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001'
-      ).some(
+      !listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId).some(
         (record) =>
           record.snapshotId ===
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
@@ -3124,7 +3123,7 @@ async function recordBackendSession(
     lineage: {
       threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     },
     now: () => '2026-07-05T00:00:03.000Z',
     sandboxBindingRef: `lease-binding:lease_${suffix}`,
@@ -8004,8 +8003,33 @@ describe('minimal scheduler reconnect contract', () => {
         'failed-preparation'
       );
       const original = f.store.getTurnById(f.turnId);
-      dispatchLease(f.coreDb, 'early_image_sibling', undefined, false);
-      await recordBackendSession(f.coreDb, 'early_image_sibling', undefined, undefined, true);
+      // The failed preparation has not submitted, so it holds its Workspace until recovery proves
+      // its close. The live sibling therefore runs in another Workspace.
+      const siblingWorkspaceId = 'ws_00000000-0000-7000-8000-000000000002';
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: siblingWorkspaceId,
+      });
+      dispatchLease(
+        f.coreDb,
+        'early_image_sibling',
+        undefined,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        siblingWorkspaceId
+      );
+      await recordBackendSession(
+        f.coreDb,
+        'early_image_sibling',
+        undefined,
+        undefined,
+        true,
+        siblingWorkspaceId
+      );
       const sibling = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
         getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_early_image_sibling'))
       );

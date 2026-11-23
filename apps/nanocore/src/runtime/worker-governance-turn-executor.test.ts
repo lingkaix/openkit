@@ -21457,6 +21457,13 @@ describe('Login publication under the original Goal Task decision', () => {
         };
         const planned = resolveAgentEnvironmentPackageMetadata(environmentInput);
         const attemptId = testEntityId('attempt', requestId);
+        // The shared fixture's claim on its context Turn never runs here. It has not submitted,
+        // so it holds the Workspace. Its real no-effect close releases it before this Task claims.
+        attempts.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          noOutstandingEffects: true,
+          cause: 'fixture-context-turn-unused',
+        });
         recordTestExecutionAttempt(coreDb, {
           entry,
           attemptId,
