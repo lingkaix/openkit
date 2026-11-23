@@ -689,7 +689,7 @@ describe('execution backend port through real Core coordination', () => {
               ? /queued admission/
               : collision === 'thread'
                 ? /Execution placement has an unresolved writer/
-                : /Selected AgentSession has an unresolved writer|UNIQUE constraint/
+                : /Selected AgentSession has an unresolved writer/
           );
           expect(
             attempts(f.db),

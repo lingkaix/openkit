@@ -215,13 +215,6 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
-    if (schedulerPlacementIsHeld(input.coreDb, entry)) {
-      // The Core claim refuses this placement. Keep the admission queued and select the next
-      // eligible entry; the release wake or a later pass dispatches it in FIFO order.
-      heldQueueEntryIds.add(entry.queueEntryId);
-      count--;
-      continue;
-    }
     if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
       // Retain the admission and all exclusion; only this process-local selection is skipped.
       unpublishedQueueEntryIds.add(entry.queueEntryId);
@@ -317,7 +310,8 @@ export async function runSchedulerDispatchLoop(
         result.terminalResult.status === 'queued' &&
         result.terminalResult.reason === 'thread-busy'
       ) {
-        // A hold committed after selection, and the Core claim refused it. The admission stays queued.
+        // The Core claim refused a held placement. Keep the admission queued and select the next
+        // eligible entry; the release wake or a later pass dispatches it in FIFO order.
         heldQueueEntryIds.add(entry.queueEntryId);
         count--;
         continue;
