@@ -9,7 +9,6 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
-  mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
@@ -26,6 +25,7 @@ import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
   disposeTestStore,
+  setTestBackendSessionTurn,
   setTestExecutionAttemptBackend,
 } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -303,11 +303,7 @@ describe('restart classification fault isolation (T4)', () => {
     };
     const bad = retain('native-fault', workspaceId);
     const healthy = retain('native-healthy', goodWorkspace.id);
-    mutateAdmittedTestNanoHost(db, (sqlite) =>
-      sqlite
-        .prepare('UPDATE worker_backend_sessions SET turn_id = ? WHERE attempt_id = ?')
-        .run(testEntityId('tu', 'wrong-lineage'), bad.attemptId)
-    );
+    await setTestBackendSessionTurn(db, bad.attemptId, testEntityId('tu', 'wrong-lineage'));
     const session = (attemptId: string) =>
       readAdmittedTestNanoHost(db, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId));
     const before = session(bad.attemptId);
