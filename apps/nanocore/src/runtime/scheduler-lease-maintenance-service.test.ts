@@ -5,12 +5,18 @@ import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
-import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -22,6 +28,7 @@ import {
 import {
   seedTestNanoHostHeartbeat,
   seedTestWorkerControlReceipt,
+  submitTestNanoHostWorkerLease,
 } from '../test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
@@ -180,9 +187,10 @@ function recordCanonicalWorkspaceHandoff(
 
 /** Establishes exact authorized submitted Native authority and its original physical anchor. */
 async function dispatchLease(
-  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
   suffix: string,
-  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
+  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID },
+  retainedNative = false
 ): Promise<void> {
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -200,6 +208,35 @@ async function dispatchLease(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-05T00:00:01.000Z',
   });
+  if (retainedNative) {
+    await openAdmittedTestNanoHost(coreDb);
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    // This maintenance fixture begins after launch: retain the already-decided submit
+    // and Native tuple. No fixture decides later cleanup or release.
+    const original = submitTestNanoHostWorkerLease(
+      coreDb,
+      entry,
+      `lease-binding:lease_${suffix}`,
+      {
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${entry.turnId}_${agentSessionId}`,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      {
+        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        observedAt: '2026-07-05T00:00:02.000Z',
+      }
+    );
+    // Match the fixture's original package image, not the generic route fixture image.
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_lineage_json = ? WHERE attempt_id = ?')
+        .run(JSON.stringify({ imageRef: 'openkit/worker-codex:dev' }), original.attemptId);
+    });
+    return;
+  }
   const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: testEntityId('attempt', `lease_${suffix}`),
@@ -219,8 +256,22 @@ async function dispatchLease(
 }
 
 /** The Native recovery subject owns Workspace projection; only its product terminal callback is modeled here. */
-function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () => string) {
+function recoveryInput(
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
+  now: () => string,
+  admitted = false
+) {
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  if (admitted && !owner) throw new Error('Maintenance fixture requires admitted Native recovery.');
   return {
+    ...(admitted && owner
+      ? {
+          admittedNanoHostRecovery: {
+            state: 'ready' as const,
+            value: bindBootNanoHostAttemptRecovery(owner),
+          },
+        }
+      : {}),
     executionBackend: new SimulatedTurnExecutor({ coreDb }),
     now,
     cleanupBackendSession: vi.fn(async () => {}),
@@ -234,7 +285,7 @@ function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () 
 
 /** Records the production backend anchor owned by one dispatched test lease. */
 async function recordBackendSession(
-  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
   suffix: string
 ): Promise<void> {
   await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
@@ -338,7 +389,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'heartbeat');
+      await dispatchLease(coreDb, 'heartbeat', undefined, true);
       seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
@@ -360,7 +411,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
@@ -381,7 +432,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'server_user', triggerActor);
+      await dispatchLease(coreDb, 'server_user', triggerActor, true);
       seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
@@ -404,7 +455,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
@@ -421,11 +472,16 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'actor_mismatch', {
-        kind: 'automation',
-        id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
-        responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
-      });
+      await dispatchLease(
+        coreDb,
+        'actor_mismatch',
+        {
+          kind: 'automation',
+          id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
+          responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
+        },
+        true
+      );
       seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
@@ -452,7 +508,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       ).catch((error: AggregateError) => errors.push(...error.errors));
 
       expect(errors).toEqual([
@@ -473,7 +529,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'release_retry');
+      await dispatchLease(coreDb, 'release_retry', undefined, true);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retry',
         workspaceInputIds: ['repo'],
@@ -488,7 +544,7 @@ describe('scheduler lease maintenance service', () => {
       for (let index = 0; index < 2; index += 1) {
         await runNanoHostAttemptRecoveryMaintenance(
           coreDb,
-          recoveryInput(coreDb, () => '2026-07-05T00:05:12.000Z')
+          recoveryInput(coreDb, () => '2026-07-05T00:05:12.000Z', true)
         );
       }
 
@@ -556,7 +612,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'partial_handoff');
+      await dispatchLease(coreDb, 'partial_handoff', undefined, true);
       seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
@@ -583,7 +639,7 @@ describe('scheduler lease maintenance service', () => {
       // Either outcome must preserve exclusion until the missing input can be evaluated.
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       ).catch((error: AggregateError) => {
         expect(error.errors).toEqual(
           expect.arrayContaining([
@@ -607,7 +663,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:01.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:01.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);

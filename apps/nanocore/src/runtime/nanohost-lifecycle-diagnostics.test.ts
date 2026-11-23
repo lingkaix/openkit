@@ -1,5 +1,5 @@
 import { EventEmitter, once } from 'node:events';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { setImmediate as nextLoop } from 'node:timers/promises';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { runWorkerHarness, WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -16,8 +16,14 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHostSettled,
+} from '../test-support/admitted-nanohost.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   acknowledgeTestExternalWorkspaceConsumer,
@@ -25,21 +31,27 @@ import {
   recordTestExecutionAttempt,
 } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
-  createNanoHostHarnessRuntime,
-  markNanoHostHarnessOperationUnknown,
   type NanoHostHarnessCommand,
-  openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
 } from './nanohost-harness.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   registerNanoHostSessionSemanticRoutes,
 } from './nanohost-session-dispatch.js';
+
+import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './worker-backend-sessions.js';
 
 // Inject histogram readings so sibling test load cannot choose the diagnostic oracle.
 // Keep real sample arrival to exercise deferred reset and one-shot carry.
@@ -151,8 +163,25 @@ describe('Harness delivery localization through real Core and shim owners', () =
             ? true
             : write(chunk)) as typeof process.stdout.write);
       const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
-      const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-lifecycle-diag-')));
+      const root = mkdtempSync(join(tmpdir(), 'openkit-lifecycle-diag-'));
+      const coreDb = openCoreDb(root);
+      onTestFinished(async () => {
+        clock?.mockRestore();
+        handle.mockRestore();
+        stdout.mockRestore();
+        log.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      });
       applyMigrations(coreDb);
+      const storage = await openAdmittedTestNanoHost(coreDb);
+      const { owner } = storage.value;
+      const harnessLifecycle = owner.harnessTurnLifecycle;
+      const readHarness = (columns: string) =>
+        readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+          sqlite.prepare(`SELECT ${columns} FROM harness_instance_records`).get()
+        );
       const preparedOperations = new Map<
         string,
         ReturnType<typeof prepareNanoHostHarnessOperation>
@@ -162,17 +191,21 @@ describe('Harness delivery localization through real Core and shim owners', () =
         input: Parameters<typeof prepareNanoHostHarnessOperation>[1]
       ) => {
         const prepared = prepareNanoHostHarnessOperation(coreDb, input);
-        await queueTestPreparedHarnessOperation(coreDb, { ...input, prepared });
+        await queueTestPreparedHarnessOperation(coreDb, { ...input, prepared }, harnessLifecycle);
         preparedOperations.set(prepared.command.operationId, prepared);
         return prepared.command;
       };
       const authority = createNanoHostTransportSessionAuthority();
       const target = { deploymentId: 'diag', identityId: 'diag', targetId: 'diag' };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
         ...target,
         observedAt: new Date().toISOString(),
       });
-      const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const dispatch = createNanoHostSessionDispatch({
+        coreDb,
+        nativeStorage: storage,
+        sessionAuthority: authority,
+      });
       const app = new Hono<{ Variables: AuthVariables }>();
       const knownCancellation = ['request-aborted', 'stream-destroyed', 'stream-reset'].includes(
         scenario
@@ -277,6 +310,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         app,
         coreDb,
+        nativeStorage: storage,
+        nativeHarnessLifecycle: harnessLifecycle,
         dispatch,
         nanoHostConfig: target,
         harnessCommandDispatched: (command) => {
@@ -295,13 +330,17 @@ describe('Harness delivery localization through real Core and shim owners', () =
         },
         // Model the outside Workspace consumer; this suite proves Core/shim diagnostics, not native execution.
         harnessResultSettled: async () =>
-          await acknowledgeTestExternalWorkspaceConsumer(coreDb, {
-            harnessInstanceId: 'diag-harness',
-            harnessBindingRef: 'diag-harness-binding',
-            workspaceId: testEntityId('ws', 'diag-workspace'),
-            turnId: testEntityId('tu', 'diag-turn'),
-            timestamp: new Date().toISOString(),
-          }),
+          await acknowledgeTestExternalWorkspaceConsumer(
+            coreDb,
+            {
+              harnessInstanceId: 'diag-harness',
+              harnessBindingRef: 'diag-harness-binding',
+              workspaceId: testEntityId('ws', 'diag-workspace'),
+              turnId: testEntityId('tu', 'diag-turn'),
+              timestamp: new Date().toISOString(),
+            },
+            harnessLifecycle
+          ),
       });
       const listener = getRequestListener(app.fetch);
       let admitted = false;
@@ -458,7 +497,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
           ).status
         ).toBe(204);
         const now = new Date().toISOString();
-        await createNanoHostHarnessRuntime(coreDb, {
+        await owner.harnessLifecycle({
+          kind: 'runtime.create',
           adapterId: 'codex',
           adapterVersion: '0.166.0',
           harnessBindingRef: 'diag-harness-binding',
@@ -466,14 +506,15 @@ describe('Harness delivery localization through real Core and shim owners', () =
           harnessInstanceId: 'diag-harness',
           imageDigest: `sha256:${'f'.repeat(64)}`,
           originPhysicalEpoch: 'e'.repeat(64),
-          sandboxBindingRef: 'diag-sandbox-binding',
+          sandboxBindingRef: 'diag-turn-binding',
           sandboxCompatibilityKey: 'a'.repeat(64),
           sandboxIntegrationBindingRef: 'diag-integration',
           sandboxRuntimeId: 'diag-sandbox',
           runtimeTargetId: target.identityId,
           timestamp: now,
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await owner.harnessLifecycle({
+          kind: 'session-binding.open',
           agentSessionCompatibilityKey: 'c'.repeat(64),
           agentSessionId: testEntityId('as', 'diag-session'),
           agentSessionRuntimeBindingId: 'diag-session-binding',
@@ -505,16 +546,90 @@ describe('Harness delivery localization through real Core and shim owners', () =
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           now: () => now,
         });
+        const attemptId = testEntityId('attempt', 'diag-lease');
         recordTestExecutionAttempt(coreDb, {
           entry,
-          attemptId: testEntityId('attempt', 'diag-lease'),
+          attemptId,
           agentSessionId: testEntityId('as', 'diag-session'),
           inputRef: 'diag-package',
           bindingRef: 'diag-turn-binding',
           sessionCompatibilityKey: 'c'.repeat(64),
-          operationId: 'diag-submit',
           now: () => now,
         });
+
+        // The admitted turn.start dispatch binds route hashes only under the original Core
+        // submission and the acknowledged Native placement/Workspace handoff.
+        const agentSessionId = testEntityId('as', 'diag-session');
+        const agentSetup = createTestAgentSetup();
+        const snapshot = await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSetup,
+          agentSessionId,
+          backend: { kind: 'openshell' },
+          createdAt: now,
+          requestId: entry.requestId,
+          triggerActor: entry.triggerActor,
+          turn: {
+            id: entry.turnId,
+            threadId: entry.threadId,
+            owner: { kind: 'workspace', workspaceId: entry.workspaceId },
+            triggerActor: entry.triggerActor,
+            items: [],
+            status: 'running',
+            error: null,
+            configVersion: null,
+            startedAt: now,
+            completedAt: null,
+            durationMs: null,
+          },
+          workspaceRoots: [],
+        });
+        const workspace = openWorkspaceDb(coreDb.dataRoot, entry.workspaceId);
+        try {
+          applyScopedMigrations(workspace);
+          await openTestNativeWorkspace(workspace);
+          recordAgentEnvironmentPackageSnapshot(workspace, {
+            createdAt: now,
+            environmentPackage: { ...snapshot, snapshotId: 'diag-package' },
+          });
+        } finally {
+          workspace.sqlite.close();
+        }
+        await recordWorkerBackendSessionMaterializing(coreDb, {
+          backendLineage: { kind: 'reference', imageRef: `sha256:${'f'.repeat(64)}` },
+          backendVersion: '0.166.0',
+          identity: {
+            agentSessionId,
+            backendKind: 'openshell',
+            backendSessionId: 'diag-sandbox',
+            deploymentId: target.deploymentId,
+            packageSnapshotId: 'diag-package',
+            runtimeTargetId: target.targetId,
+            stagingDirectoryRef: 'server/runtime/worker-backend-sessions/diag-package',
+            transientProviderInstanceId: null,
+          },
+          lineage: entry,
+          sandboxBindingRef: 'diag-turn-binding',
+          now: () => now,
+        });
+        await transitionWorkerBackendSessionState(coreDb, {
+          attemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
+          now: () => now,
+        });
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId, now: () => now });
+        const submitted = await owner.firstSubmission({ attemptId, observedAt: now });
+        if (!submitted.attempt.deadline)
+          throw new Error('Diagnostic fixture requires the original submit deadline.');
+        const routeBinding = () =>
+          readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT worker_route_binding_json AS routeBinding FROM worker_backend_sessions WHERE attempt_id = ?'
+              )
+              .get(attemptId)
+          );
         const queuedCommand = await queueOperation({
           harnessInstanceId: 'diag-harness',
           operation: 'turn.start',
@@ -525,8 +640,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
             agentSessionRuntimeBindingId: 'diag-session-binding',
             contextPackageId: 'ctxpkg_diag-turn',
             contextRef: '/openkit/context',
-            deadline: '2099-01-01T00:00:00.000Z',
-            leaseId: testEntityId('attempt', 'diag-lease'),
+            deadline: submitted.attempt.deadline,
+            leaseId: attemptId,
             packageSnapshotId: 'diag-package',
             threadId: testEntityId('th', 'diag-thread'),
             turnId: testEntityId('tu', 'diag-turn'),
@@ -688,22 +803,11 @@ describe('Harness delivery localization through real Core and shim owners', () =
             ).status
           ).toBe(204);
           expect(dispatchCount).toBe(0);
-          expect(
-            coreDb.sqlite
-              .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
-              .get()
-          ).toEqual({ operation_state: 'queued', operation_id: queuedCommand.operationId });
-          expect(
-            coreDb.sqlite
-              .prepare(
-                'SELECT worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash FROM scheduler_execution_attempts'
-              )
-              .get()
-          ).toEqual({
-            worker_control_token_hash: null,
-            worker_inference_token_hash: null,
-            worker_capability_token_hash: null,
+          expect(await readHarness('operation_state, operation_id')).toEqual({
+            operation_state: 'queued',
+            operation_id: queuedCommand.operationId,
           });
+          expect(await routeBinding()).toEqual({ routeBinding: null });
           expect(
             (
               await post(
@@ -727,16 +831,11 @@ describe('Harness delivery localization through real Core and shim owners', () =
           expect(failedRequest?.stream.destroyed).toBe(true);
           expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
           expect(dispatchCount).toBe(0);
-          expect(
-            coreDb.sqlite
-              .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
-              .get()
-          ).toEqual({ operation_state: 'queued', operation_id: queuedCommand.operationId });
-          expect(
-            coreDb.sqlite
-              .prepare('SELECT worker_control_token_hash FROM scheduler_execution_attempts')
-              .get()
-          ).toEqual({ worker_control_token_hash: null });
+          expect(await readHarness('operation_state, operation_id')).toEqual({
+            operation_state: 'queued',
+            operation_id: queuedCommand.operationId,
+          });
+          expect(await routeBinding()).toEqual({ routeBinding: null });
           const next = await post(
             '/worker-control/harness/poll',
             JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
@@ -760,11 +859,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
           expect(failedResponse?.writableFinished).toBe(false);
           expect(
-            coreDb.sqlite
-              .prepare(
-                'SELECT operation_state, operation, next_sequence, drain_state FROM harness_instance_records'
-              )
-              .get()
+            await readHarness('operation_state, operation, next_sequence, drain_state')
           ).toEqual({
             operation_state: 'queued',
             operation: 'session.inspect',
@@ -829,9 +924,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
           expect(failedResponse?.writableFinished).toBe(scenario === 'cancel-finished-command');
           expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
         }
-        const row = coreDb.sqlite
-          .prepare('SELECT operation_state FROM harness_instance_records')
-          .get();
+        const row = await readHarness('operation_state');
         if (scenario !== 'timed-cancel-ended-command') {
           expect(row).toEqual({
             operation_state: shape === 'withhold-result' ? 'dispatched' : 'unknown',
@@ -872,17 +965,17 @@ describe('Harness delivery localization through real Core and shim owners', () =
         }
         // A completed local write without a result still consumes the unchanged outage budget.
         if (shape === 'withhold-result') {
-          await markNanoHostHarnessOperationUnknown(coreDb, {
+          await owner.harnessLifecycle({
+            kind: 'operation.unknown',
             harnessBindingRef: 'diag-harness-binding',
             operationId,
             timestamp: new Date(Date.now() + 300_000).toISOString(),
           });
         }
-        expect(
-          coreDb.sqlite
-            .prepare('SELECT operation_state, drain_state FROM harness_instance_records')
-            .get()
-        ).toEqual({ operation_state: 'unknown', drain_state: 'draining' });
+        expect(await readHarness('operation_state, drain_state')).toEqual({
+          operation_state: 'unknown',
+          drain_state: 'draining',
+        });
         expect(
           (
             await post(
@@ -901,10 +994,6 @@ describe('Harness delivery localization through real Core and shim owners', () =
         transport.client = null;
         client?.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
-        coreDb.sqlite.close();
-        handle.mockRestore();
-        stdout.mockRestore();
-        log.mockRestore();
       }
     }
   );

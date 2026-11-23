@@ -2,21 +2,30 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { runBootPhases } from '../bootstrap/phases.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import {
+  readTestNanoHostWorkerLease,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
 import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
   disposeTestStore,
-  setTestBackendSessionTurn,
   setTestExecutionAttemptBackend,
 } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -67,9 +76,14 @@ async function fixture() {
 }
 
 /** Uses the admission and attempt owners; native preparation adds no accepted effect. */
-function attempt(db: CoreDb, suffix: string, submitted = false) {
-  const entry = createSchedulerAdmissionEntry(db, {
-    backendId: 'nanohost',
+function isolationAdmission(
+  db: CoreDb,
+  suffix: string,
+  backendId = 'nanohost',
+  workspace = workspaceId
+) {
+  return createSchedulerAdmissionEntry(db, {
+    backendId,
     triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
     queueEntryId: `queue_${suffix}`,
     requestId: `request_${suffix}`,
@@ -77,13 +91,17 @@ function attempt(db: CoreDb, suffix: string, submitted = false) {
     threadId: testEntityId('th', suffix),
     turnId: testEntityId('tu', suffix),
     inputRef: schedulerFixtureInput(
-      workspaceId,
+      workspace,
       testEntityId('tu', suffix),
       'Recover original attempt'
     ),
-    workspaceId,
+    workspaceId: workspace,
     now: () => '2026-07-05T00:00:01.000Z',
   });
+}
+
+function attempt(db: CoreDb, suffix: string, submitted = false, backendId = 'nanohost') {
+  const entry = isolationAdmission(db, suffix, backendId);
   return recordTestExecutionAttempt(db, {
     entry,
     attemptId: testEntityId('attempt', suffix),
@@ -216,9 +234,9 @@ describe('restart classification fault isolation (T4)', () => {
 
   it('skips a changed backend without changing its attempt and still classifies its sibling', async () => {
     const { db, input } = await fixture();
-    const foreign = attempt(db, 'foreign-backend');
+    // Boot has only the new backend; the foreign attempt keeps its original admitted backend.
+    const foreign = attempt(db, 'foreign-backend', false, 'unavailable-backend');
     const healthy = attempt(db, 'backend-healthy');
-    await setTestExecutionAttemptBackend(db, foreign.attemptId, 'unavailable-backend');
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
     const recovery = await runSchedulerRestartRecovery(db, input);
     expect(recovery).toMatchObject({ failedAttemptIds: [foreign.attemptId] });
@@ -241,14 +259,13 @@ describe('restart classification fault isolation (T4)', () => {
 
   it('skips product publication for a closed no-effect attempt belonging to a different backend', async () => {
     const { db, input } = await fixture();
-    const foreign = attempt(db, 'closed-foreign-backend');
+    const foreign = attempt(db, 'closed-foreign-backend', false, 'unavailable-backend');
     await closeSchedulerExecutionAttemptWithoutEffects(db, {
       attemptId: foreign.attemptId,
       noOutstandingEffects: true,
       cause: 'restart-before-effects',
       now,
     });
-    await setTestExecutionAttemptBackend(db, foreign.attemptId, 'unavailable-backend');
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
     await runSchedulerRecoveryMaintenance(db, input);
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
@@ -256,20 +273,67 @@ describe('restart classification fault isolation (T4)', () => {
   });
 
   it('holds corrupt native lineage and continues preparing exact cleanup for a healthy sibling', async () => {
-    const { db, input } = await fixture();
-    const bad = await anchored(db, 'native-fault');
-    const healthy = await anchored(db, 'native-healthy');
-    await setTestBackendSessionTurn(db, bad.attemptId, testEntityId('tu', 'wrong-lineage'));
-    const before = getWorkerBackendSession(db, bad.attemptId);
+    const { db, store, input } = await fixture();
+    const storage = await openAdmittedTestNanoHost(db);
+    const goodWorkspace = await store.createWorkspace('Independent healthy recovery');
+    recordWorkspaceOwnerMembership({
+      coreDb: db,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: goodWorkspace.id,
+    });
+    const retain = (suffix: string, workspace: string) => {
+      const admission = isolationAdmission(db, suffix, 'nanohost', workspace);
+      const agentSessionId = testEntityId('as', suffix);
+      return submitTestNanoHostWorkerLease(
+        db,
+        admission,
+        `binding_${suffix}`,
+        {
+          agentSessionId,
+          packageSnapshotId: `aepsnap_${admission.turnId}_${agentSessionId}`,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        {
+          attemptId: testEntityId('attempt', suffix),
+          observedAt: '2026-07-05T00:00:02.000Z',
+        }
+      );
+    };
+    const bad = retain('native-fault', workspaceId);
+    const healthy = retain('native-healthy', goodWorkspace.id);
+    mutateAdmittedTestNanoHost(db, (sqlite) =>
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET turn_id = ? WHERE attempt_id = ?')
+        .run(testEntityId('tu', 'wrong-lineage'), bad.attemptId)
+    );
+    const session = (attemptId: string) =>
+      readAdmittedTestNanoHost(db, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId));
+    const before = session(bad.attemptId);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(classifyNanoHostAttemptsAfterRestart(db, input)).resolves.toMatchObject({
+    await expect(
+      classifyNanoHostAttemptsAfterRestart(db, {
+        ...input,
+        admittedNanoHostRecovery: {
+          state: 'ready',
+          value: bindBootNanoHostAttemptRecovery(storage.value.owner),
+        },
+      })
+    ).resolves.toMatchObject({
       failedAttemptIds: [bad.attemptId],
     });
     expect(attempts.requireSchedulerExecutionAttempt(db, bad.attemptId)).toEqual(bad);
-    expect(getWorkerBackendSession(db, bad.attemptId)).toEqual(before);
+    expect(session(bad.attemptId)).toEqual(before);
     expect(attempts.requireSchedulerExecutionAttempt(db, healthy.attemptId).phase).toBe('closing');
-    expect(getWorkerBackendSession(db, healthy.attemptId)?.state).toBe('cleanup-pending');
-    expect(input.prepareBackendCleanup).toHaveBeenCalledTimes(1);
+    // Boot now records the exact Native recovery requirement, leaving physical cleanup to maintenance.
+    expect(readTestNanoHostWorkerLease(db, healthy.attemptId)).toMatchObject({
+      attemptId: healthy.attemptId,
+      phase: 'closing',
+      recoveryState: 'needs-evidence',
+      fenceRef: null,
+    });
+    expect(input.prepareBackendCleanup).not.toHaveBeenCalled();
     expect(input.cleanupBackendSession).not.toHaveBeenCalled();
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalled();

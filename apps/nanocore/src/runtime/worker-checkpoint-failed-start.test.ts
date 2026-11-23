@@ -8,6 +8,7 @@ import { workerInputWithKnowledgeOverview } from '../context/worker-overview-inp
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestKey, FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   ControlStoreWorkerError,
@@ -36,7 +37,11 @@ import {
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
 import { createNanoHostHarnessRuntime } from './nanohost-harness.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
@@ -511,24 +516,37 @@ describe('checkpoint-owned never-submitted failed start', () => {
   it('settles with an earlier proved busy refusal at the same creation timestamp', async () => {
     const f = await failedStart('conversation', true);
     try {
-      const row = f.coreDb.sqlite
-        .prepare('SELECT rowid, * FROM scheduler_execution_attempts WHERE attempt_id = ?')
-        .get(f.attempt.attemptId) as Record<string, unknown>;
-      row.rowid = Number(row.rowid) - 1;
-      row.attempt_id = testEntityId('attempt', 'earlier-busy-attempt');
-      row.terminal_cause = 'backend-busy';
-      row.agent_session_id = null;
-      row.input_ref = null;
-      row.binding_ref = null;
-      f.coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_execution_attempts (${Object.keys(row).join(',')}) VALUES (${Object.keys(
-            row
-          )
-            .map(() => '?')
-            .join(',')})`
-        )
-        .run(...Object.values(row));
+      const sql = f.coreDb.sqlite;
+      const earlierId = testEntityId('attempt', 'earlier-busy-attempt');
+      const admission = requireSchedulerAdmissionEntry(f.coreDb, f.attempt.queueEntryId);
+      // Reproduce the earlier no-effect history with the real claim and no-effect owners.
+      // Only chronology is seeded; restore the original admission in the same transaction.
+      sql
+        .transaction(() => {
+          const status = sql.prepare(
+            'UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?'
+          );
+          status.run('queued', admission.queueEntryId);
+          createSchedulerExecutionAttempt(f.coreDb, {
+            entry: admission,
+            attemptId: earlierId,
+            preparationInput: { admission },
+            now: () => f.attempt.createdAt,
+          });
+          closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+            attemptId: earlierId,
+            cause: 'backend-busy',
+            noOutstandingEffects: true,
+            now: () => f.attempt.createdAt,
+          });
+          status.run(admission.status, admission.queueEntryId);
+          sql
+            .prepare(`UPDATE scheduler_execution_attempts SET rowid = (
+          SELECT rowid - 1 FROM scheduler_execution_attempts WHERE attempt_id = ?
+        ) WHERE attempt_id = ?`)
+            .run(f.attempt.attemptId, earlierId);
+        })
+        .immediate();
       expect((f.pkg.snapshot.extensions.openkit as { turnInput: string }).turnInput).toBe(
         workerInputWithKnowledgeOverview(
           f.store.getTurnById(f.turnId).items.find((item) => item.type === 'user-message')!.text,
@@ -951,8 +969,6 @@ describe('checkpoint-owned never-submitted failed start', () => {
           closing: ['phase', 'closing'],
           operation: ['operation_id', 'original-operation'],
           deadline: ['deadline', '2026-10-09T00:00:00.000Z'],
-          outcome: ['outcome_ref', 'unproved'],
-          fence: ['fence_ref', 'unproved'],
         };
         const column = columns[gap];
         if (column)
@@ -961,6 +977,59 @@ describe('checkpoint-owned never-submitted failed start', () => {
               `UPDATE scheduler_execution_attempts SET ${column[0]} = ? WHERE attempt_id = ?`
             )
             .run(column[1], attemptId);
+        if (gap === 'fence' || gap === 'outcome') {
+          const executionId = `scheduler-lifecycle:${attemptId}`;
+          if (gap === 'fence') {
+            // Model corrupt retained release bytes, not a live write that bypasses settle-once.
+            const release = sql
+              .prepare(`SELECT * FROM control_execution_steps
+              WHERE execution_id = ? AND state = 'completed'
+                AND json_extract(control_json, '$.kind') = 'release'`)
+              .get(executionId) as Record<string, unknown> & {
+              step_id: string;
+              control_json: string;
+            };
+            sql
+              .transaction(() => {
+                sql
+                  .prepare(
+                    'DELETE FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
+                  )
+                  .run(executionId, release.step_id);
+                const control = JSON.parse(release.control_json);
+                release.control_json = JSON.stringify({
+                  ...control,
+                  outputRefs: [...control.outputRefs, 'fence:unproved'],
+                });
+                sql
+                  .prepare(`INSERT INTO control_execution_steps (${Object.keys(release).join(',')})
+                VALUES (${Object.keys(release)
+                  .map(() => '?')
+                  .join(',')})`)
+                  .run(...Object.values(release));
+              })
+              .immediate();
+          } else {
+            // Inject a contradictory observation without replacing the original claim or release.
+            expect(
+              sql
+                .prepare(`INSERT INTO control_execution_steps
+              (execution_id, step_id, schema_version, ordinal, parent_step_id, state,
+               invocation_id, control_json, invocation_json, span_json)
+              SELECT execution_id, 'unproved-outcome', schema_version, ordinal + 1,
+                parent_step_id, state, 'unproved-outcome',
+                json_set(control_json, '$.kind', 'observe', '$.invocationId', 'unproved-outcome',
+                         '$.outputRefs', json_array('outcome:unproved')),
+                invocation_json, span_json
+              FROM control_execution_steps WHERE execution_id = ? AND state = 'completed'
+                AND json_extract(control_json, '$.kind') = 'release'`)
+                .run(executionId).changes
+            ).toBe(1);
+          }
+          expect(requireSchedulerExecutionAttempt(f.coreDb, attemptId)).toMatchObject({
+            [gap === 'fence' ? 'fenceRef' : 'outcomeRef']: 'unproved',
+          });
+        }
         const livenessFaults: Partial<Record<typeof gap, [string, string | number]>> = {
           heartbeat: ['lastAcceptedHeartbeatAt', '2026-10-09T00:00:00.000Z'],
           sequence: ['lastWorkerSequence', 1],

@@ -2377,6 +2377,9 @@ describe('pending requests', () => {
   it.each(['echo', 'openkit-repository'])(
     'grants a retained %s call whose tool left the supply without executing it and admits one delivering Turn',
     async (serverId) => {
+      // The delivering Turn explicitly uses the packaged simulator, not a physical Worker.
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      onTestFinished(() => vi.unstubAllEnvs());
       const gateway = createDefaultWorkerMcpGateway();
       const callTool = vi.spyOn(gateway, 'callTool');
       const listTools = vi.spyOn(gateway, 'listTools');

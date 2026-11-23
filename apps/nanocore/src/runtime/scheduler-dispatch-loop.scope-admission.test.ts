@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
@@ -43,6 +43,9 @@ const faults = [
   'missing input after claim',
 ] as const;
 it.each(faults)('holds %s and dispatches the healthy FIFO sibling', async (hold) => {
+  // The explicit simulator publishes its actual self-check final rather than a physical Harness result.
+  vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+  onTestFinished(() => vi.unstubAllEnvs());
   const dataRoot = mkdtempSync(join(tmpdir(), 'dispatch-scope-'));
   const coreDb = openCoreDb(dataRoot);
   try {

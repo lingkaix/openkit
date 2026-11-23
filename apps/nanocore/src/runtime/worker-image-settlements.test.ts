@@ -4,33 +4,47 @@ import { connect as connectHttp2, createServer as createHttp2Server } from 'node
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { settlePreparedNanoHostImage } from '../app.js';
 import { getLocalUserId } from '../auth/identity.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { readCoreImageAcquisitionRef } from '../storage/core-journal-native.js';
 import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
+import {
+  recordTestNativeRuntimeTarget,
+  transitionTestNativeRuntimeTargetFields,
+} from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
   createTestServerThread,
   createTestServerWorkStore,
 } from '../test-support/server-work-store.js';
 import { shutdownTestStoreWorker } from '../test-support/store.js';
+import { publishCoreJournal } from './core-journal-owner.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
-import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
+import {
+  createNanoHostSessionDispatch,
+  type SettleNanoHostPreparedImage,
+} from './nanohost-session-dispatch.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
-  admitWorkerImageEnvironment,
   readAdmittedWorkerImageEnvironment,
   readWorkerImageSettlement,
-  writeWorkerImageSettlement,
+  type writeWorkerImageSettlement,
 } from './worker-image-settlements.js';
 
 // The shared hook preserves the actual Worker and its SQLite COMMIT.
@@ -59,7 +73,52 @@ const settlement = {
   outcome: { kind: 'success' as const, imageDigest },
 };
 
+// Deliberate read-only observation of committed bytes while the owner ACK is held.
+function inspectNativeImage<T>(
+  db: { dataRoot: string },
+  inspect: (owner: { sqlite: Database.Database }) => T
+): T {
+  const sqlite = new Database(serverStoragePath(db.dataRoot, 'nanohost'), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return inspect({ sqlite });
+  } finally {
+    sqlite.close();
+  }
+}
+
+const imageRows = (db: { dataRoot: string }) =>
+  inspectNativeImage(db, ({ sqlite }) =>
+    sqlite.prepare('SELECT * FROM worker_image_settlements ORDER BY request_id').all()
+  );
+const readSettlement = (db: { dataRoot: string }, requestId: string) =>
+  inspectNativeImage(db, (owner) => readWorkerImageSettlement(owner, requestId));
+const readEnvironment = (db: { dataRoot: string }, digest: string) =>
+  inspectNativeImage(db, (owner) => readAdmittedWorkerImageEnvironment(owner, digest));
+
+/** The standalone format tests exercise the local build receipt, not a Core acquisition journal. */
+async function formatWriters(db: ReturnType<typeof openCoreDb>) {
+  const target = await recordTestNativeRuntimeTarget(db);
+  const {
+    value: { owner },
+  } = await reopenAdmittedTestNanoHost(db);
+  const { deploymentId, identityId, targetId, connectionGeneration, physicalEpoch } = target;
+  if (!physicalEpoch) throw new Error('Image format fixture requires a ready physical target.');
+  return {
+    write: (value: Parameters<typeof writeWorkerImageSettlement>[1]) =>
+      owner.settlePreparedImage({
+        settlement: value,
+        target: { deploymentId, identityId, targetId, connectionGeneration, physicalEpoch },
+      }),
+    admit: () => owner.workerImage({ kind: 'environment', candidate: identity, environment }),
+  };
+}
+
 describe('retained worker image settlement format', () => {
+  const localSettlement = { ...settlement, operation: 'image.build' as const };
+
   it('keeps confirmed defaults as a separate native FULL stage on a read-only Main handle', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-image-native-stages-'));
     let db = openCoreDb(root);
@@ -70,40 +129,40 @@ describe('retained worker image settlement format', () => {
       rmSync(root, { recursive: true, force: true });
     });
     applyMigrations(db);
+    let { write, admit } = await formatWriters(db);
     db.sqlite.pragma('query_only = ON');
-    const receipt = await heldCommit(1, () => writeWorkerImageSettlement(db, settlement));
-    expect(readWorkerImageSettlement(db, settlement.requestId)).toBeNull();
-    expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
+    const receipt = await heldCommit(1, () => write(localSettlement));
+    expect(readSettlement(db, localSettlement.requestId)).toBeNull();
+    expect(readEnvironment(db, imageDigest)).toBeNull();
     releaseCommit();
     await receipt.result;
-    expect(readWorkerImageSettlement(db, settlement.requestId)).toEqual(settlement);
-    expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
-    const beforeReplay = db.sqlite.prepare('SELECT * FROM worker_image_settlements').all();
-    await writeWorkerImageSettlement(db, settlement);
+    expect(readSettlement(db, localSettlement.requestId)).toEqual(localSettlement);
+    expect(readEnvironment(db, imageDigest)).toBeNull();
+    const beforeReplay = imageRows(db);
+    await write(localSettlement);
     await expect(
-      writeWorkerImageSettlement(db, {
-        ...settlement,
+      write({
+        ...localSettlement,
         outcome: { kind: 'failure', failureCode: 'effect_failed' },
       })
     ).rejects.toMatchObject({ status: 409 });
-    expect(db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(beforeReplay);
-    const defaults = await heldCommit(2, () =>
-      admitWorkerImageEnvironment(db, identity, environment)
-    );
-    expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual(environment);
+    expect(imageRows(db)).toEqual(beforeReplay);
+    const defaults = await heldCommit(2, () => admit());
+    expect(readEnvironment(db, imageDigest)).toEqual(environment);
     expect(defaults.completed()).toBe(false);
     releaseCommit();
     await defaults.result;
-    const before = db.sqlite.prepare('SELECT * FROM worker_image_settlements').all();
-    await admitWorkerImageEnvironment(db, identity, environment);
-    expect(db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(before);
+    const before = imageRows(db);
+    await admit();
+    expect(imageRows(db)).toEqual(before);
     await shutdownTestStoreWorker();
     db.sqlite.close();
     db = openCoreDb(root);
+    ({ write, admit } = await formatWriters(db));
     db.sqlite.pragma('query_only = ON');
-    expect(readWorkerImageSettlement(db, settlement.requestId)).toEqual(settlement);
-    expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual(environment);
-    expect(db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual(before);
+    expect(readSettlement(db, localSettlement.requestId)).toEqual(localSettlement);
+    expect(readEnvironment(db, imageDigest)).toEqual(environment);
+    expect(imageRows(db)).toEqual(before);
   });
 
   it('writes v1 and reopens annotated environment bytes without rewriting them', async () => {
@@ -116,25 +175,32 @@ describe('retained worker image settlement format', () => {
       rmSync(root, { recursive: true, force: true });
     });
     applyMigrations(db);
-    await writeWorkerImageSettlement(db, settlement);
-    await admitWorkerImageEnvironment(db, identity, environment);
+    let { write, admit } = await formatWriters(db);
+    await write(localSettlement);
+    await admit();
     const bytes = JSON.stringify({ ...environment, note: 'retained description' }, null, 2);
-    db.sqlite.prepare('UPDATE worker_image_settlements SET native_environment_json = ?').run(bytes);
+    mutateAdmittedTestNanoHost(db, (sqlite) =>
+      sqlite.prepare('UPDATE worker_image_settlements SET native_environment_json = ?').run(bytes)
+    );
     expect(
-      db.sqlite
-        .prepare('SELECT schema_version AS schemaVersion FROM worker_image_settlements')
-        .get()
+      inspectNativeImage(db, ({ sqlite }) =>
+        sqlite.prepare('SELECT schema_version AS schemaVersion FROM worker_image_settlements').get()
+      )
     ).toEqual({ schemaVersion: 1 });
+    await shutdownTestStoreWorker();
     db.sqlite.close();
     db = openCoreDb(root);
-    expect(readWorkerImageSettlement(db, settlement.requestId)).toEqual(settlement);
-    expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual(environment);
-    await writeWorkerImageSettlement(db, settlement);
-    await admitWorkerImageEnvironment(db, identity, environment);
+    ({ write, admit } = await formatWriters(db));
+    expect(readSettlement(db, localSettlement.requestId)).toEqual(localSettlement);
+    expect(readEnvironment(db, imageDigest)).toEqual(environment);
+    await write(localSettlement);
+    await admit();
     expect(
-      db.sqlite
-        .prepare('SELECT native_environment_json AS bytes FROM worker_image_settlements')
-        .get()
+      inspectNativeImage(db, ({ sqlite }) =>
+        sqlite
+          .prepare('SELECT native_environment_json AS bytes FROM worker_image_settlements')
+          .get()
+      )
     ).toEqual({ bytes });
   });
 
@@ -148,24 +214,23 @@ describe('retained worker image settlement format', () => {
       rmSync(root, { recursive: true, force: true });
     });
     applyMigrations(db);
-    await writeWorkerImageSettlement(db, settlement);
-    db.sqlite.exec(
-      "UPDATE worker_image_settlements SET schema_version = 2, native_environment_json = '{'"
+    const { write, admit } = await formatWriters(db);
+    await write(localSettlement);
+    mutateAdmittedTestNanoHost(db, (sqlite) =>
+      sqlite.exec(
+        "UPDATE worker_image_settlements SET schema_version = 2, native_environment_json = '{'"
+      )
     );
-    const before = db.sqlite.serialize();
-    expect(() => readWorkerImageSettlement(db, settlement.requestId)).toThrow(
+    const before = inspectNativeImage(db, ({ sqlite }) => sqlite.serialize());
+    expect(() => readSettlement(db, localSettlement.requestId)).toThrow(
       'Unsupported retained record format.'
     );
-    expect(() => readAdmittedWorkerImageEnvironment(db, imageDigest)).toThrow(
+    expect(() => readEnvironment(db, imageDigest)).toThrow('Unsupported retained record format.');
+    await expect(async () => await write(localSettlement)).rejects.toThrow(
       'Unsupported retained record format.'
     );
-    await expect(async () => await writeWorkerImageSettlement(db, settlement)).rejects.toThrow(
-      'Unsupported retained record format.'
-    );
-    await expect(
-      async () => await admitWorkerImageEnvironment(db, identity, environment)
-    ).rejects.toThrow('Unsupported retained record format.');
-    expect(db.sqlite.serialize().equals(before)).toBe(true);
+    await expect(async () => await admit()).rejects.toThrow('Unsupported retained record format.');
+    expect(inspectNativeImage(db, ({ sqlite }) => sqlite.serialize()).equals(before)).toBe(true);
   });
 });
 
@@ -193,7 +258,49 @@ async function preparationFixture() {
     rmSync(root, { recursive: true, force: true });
   });
   applyMigrations(db);
-  let dispatch = createNanoHostSessionDispatch({ coreDb: db, sessionAuthority: authority });
+  let storage = await openAdmittedTestNanoHost(db);
+  let receiptHold: PromiseWithResolvers<Awaited<ReturnType<typeof heldCommit<void>>>> | undefined;
+  const settlePreparedImage: SettleNanoHostPreparedImage = (input) => {
+    const hold = receiptHold;
+    receiptHold = undefined;
+    if (!hold) return settlePreparedNanoHostImage(db, storage, input);
+    const actual = storage.value.owner;
+    return settlePreparedNanoHostImage(
+      db,
+      {
+        ...storage,
+        value: {
+          ...storage.value,
+          owner: {
+            ...actual,
+            // The Core image-result has already acknowledged. Hold only the following Native FULL.
+            async settlePreparedImage(result) {
+              try {
+                const receipt = await heldCommit(2, () => actual.settlePreparedImage(result));
+                hold.resolve(receipt);
+                await receipt.result;
+              } catch (error) {
+                hold.reject(error);
+                throw error;
+              }
+            },
+          },
+        },
+      },
+      input
+    ).catch((error: unknown) => {
+      hold.reject(error);
+      throw error;
+    });
+  };
+  const composeDispatch = () =>
+    createNanoHostSessionDispatch({
+      coreDb: db,
+      nativeStorage: storage,
+      sessionAuthority: authority,
+      settlePreparedImage,
+    });
+  let dispatch = composeDispatch();
   const target = {
     deploymentId: 'independent-preparation',
     identityId: 'independent-host',
@@ -219,11 +326,13 @@ async function preparationFixture() {
   await dispatch.readiness!(
     physical,
     Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-    { coreDb: db, ...target }
+    { coreDb: db, ...target, nativeStorage: storage.value }
   );
   return {
     root,
     physical,
+    settlePreparedImage,
+    target: { ...target, connectionGeneration: 1, physicalEpoch: 'a'.repeat(64) },
     get db() {
       return db;
     },
@@ -233,15 +342,21 @@ async function preparationFixture() {
     get effects() {
       return createWorkerEnvironmentRuntimeEffects(dispatch, TEST_WORKER_RELEASE_IDENTITY);
     },
+    holdNextNativeReceipt() {
+      if (receiptHold) throw new Error('The next image receipt is already held.');
+      receiptHold = Promise.withResolvers<Awaited<ReturnType<typeof heldCommit<void>>>>();
+      return receiptHold.promise;
+    },
     async reopen() {
       await shutdownTestStoreWorker();
       db.sqlite.close();
       db = openCoreDb(root);
-      dispatch = createNanoHostSessionDispatch({ coreDb: db, sessionAuthority: authority });
+      storage = await reopenAdmittedTestNanoHost(db);
+      dispatch = composeDispatch();
       await dispatch.readiness!(
         physical,
         Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        { coreDb: db, ...target }
+        { coreDb: db, ...target, nativeStorage: storage.value }
       );
     },
   };
@@ -285,7 +400,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     };
     await expect(f.effects.prepareImage({ ...input, authorize: () => false })).rejects.toThrow();
     await expect(f.dispatch.poll(f.physical, 'image.acquire')).resolves.toBeNull();
-    expect(f.db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual([]);
+    expect(imageRows(f.db)).toEqual([]);
     // Core Storage: the native FULL acknowledgement precedes first effect delivery.
     f.db.sqlite.pragma('query_only = ON');
     const intentAck = await heldCommit(2, () => f.effects.prepareImage(input));
@@ -308,7 +423,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     if (!acquire || typeof acquire.requestId !== 'string')
       throw new Error('Native acquisition was not delivered.');
     expect(f.db.sqlite.inTransaction).toBe(false);
-    expect(readWorkerImageSettlement(f.db, acquire.requestId)).toBeNull();
+    expect(readSettlement(f.db, acquire.requestId)).toBeNull();
     // Read committed native rows at delivery, before the controlled Host returns any result.
     // A soft assertion preserves the independent authorization, receipt and cold-reopen controls below.
     const intents = f.db.sqlite
@@ -348,21 +463,31 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       ]);
     const result = { requestId: acquire.requestId, digest: imageDigest };
     f.db.sqlite.pragma('query_only = ON');
-    const receiptAck = await heldCommit(2, () =>
+    const heldReceipt = f.holdNextNativeReceipt();
+    const coreReceipt = await heldCommit(2, () =>
       f.dispatch.result(f.physical, 'image.acquire', result)
     );
-    expect(readWorkerImageSettlement(f.db, acquire.requestId)).toMatchObject({
+    expect(readSettlement(f.db, acquire.requestId)).toBeNull();
+    await expect(f.dispatch.poll(f.physical, 'image.inspect')).resolves.toBeNull();
+    releaseCommit();
+    const receiptAck = await heldReceipt;
+    expect(readSettlement(f.db, acquire.requestId)).toMatchObject({
       requestId: acquire.requestId,
       outcome: { kind: 'success', imageDigest },
     });
     expect(f.db.sqlite.prepare('SELECT state FROM control_execution_steps').all()).toEqual([
       { state: 'completed' },
     ]);
-    // The real receipt and journal are committed, but delivery and dependent inspection still await ACK.
-    await expect(f.dispatch.poll(f.physical, 'image.inspect')).resolves.toBeNull();
+    // The receipt is now physically committed, but the admitted target is unavailable to
+    // dependent inspection until the exact Native acknowledgement is observed.
+    await expect(f.dispatch.poll(f.physical, 'image.inspect')).rejects.toMatchObject({
+      status: 503,
+      message: 'NanoHost RuntimeTarget storage is unavailable.',
+    });
     expect(receiptAck.completed()).toBe(false);
+    expect(coreReceipt.completed()).toBe(false);
     releaseCommit();
-    await receiptAck.result;
+    await coreReceipt.result;
     await new Promise<void>((resolve) => setImmediate(resolve));
     const inspect = await f.dispatch.poll(f.physical, 'image.inspect');
     expect(inspect).toMatchObject({ imageDigest });
@@ -384,7 +509,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       },
     });
     await expect(prepared).resolves.toMatchObject({ imageDigest });
-    const original = readWorkerImageSettlement(f.db, acquire.requestId);
+    const original = readSettlement(f.db, acquire.requestId);
     expect(original).toStrictEqual({
       requestId: acquire.requestId,
       operation: 'image.acquire',
@@ -398,9 +523,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       roots: f.db.sqlite.prepare('SELECT * FROM control_executions').all(),
       steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
     };
-    const originalRows = f.db.sqlite
-      .prepare('SELECT * FROM worker_image_settlements ORDER BY request_id')
-      .all();
+    const originalRows = imageRows(f.db);
     expect(originalRows).toHaveLength(1);
     await f.dispatch.result(f.physical, 'image.acquire', result);
     await expect(
@@ -409,20 +532,16 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
         digest: `sha256:${'e'.repeat(64)}`,
       })
     ).rejects.toMatchObject({ status: 409 });
-    expect(
-      f.db.sqlite.prepare('SELECT * FROM worker_image_settlements ORDER BY request_id').all()
-    ).toStrictEqual(originalRows);
+    expect(imageRows(f.db)).toStrictEqual(originalRows);
     expect({
       roots: f.db.sqlite.prepare('SELECT * FROM control_executions').all(),
       steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
     }).toStrictEqual(originalJournalRows);
     await f.reopen();
-    expect(readWorkerImageSettlement(f.db, acquire.requestId)).toStrictEqual(original);
+    expect(readSettlement(f.db, acquire.requestId)).toStrictEqual(original);
     await f.dispatch.result(f.physical, 'image.acquire', result);
     await expect(f.dispatch.poll(f.physical, 'image.acquire')).resolves.toBeNull();
-    expect(
-      f.db.sqlite.prepare('SELECT * FROM worker_image_settlements ORDER BY request_id').all()
-    ).toStrictEqual(originalRows);
+    expect(imageRows(f.db)).toStrictEqual(originalRows);
     expect({
       roots: f.db.sqlite.prepare('SELECT * FROM control_executions').all(),
       steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
@@ -435,6 +554,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       [
         join('server', 'db', 'core.sqlite'),
         relative(f.root, serverStoragePath(f.root, 'server-work')),
+        relative(f.root, serverStoragePath(f.root, 'nanohost')),
       ].sort()
     );
   });
@@ -484,13 +604,13 @@ it('rolls back the entire image receipt and journal tuple after a real later jou
     })
   ).rejects.toMatchObject({ status: 503 });
   await expect(prepared).rejects.toMatchObject({ code: 'recovery_required' });
-  expect(readWorkerImageSettlement(f.db, acquire.requestId)).toBeNull();
+  expect(readSettlement(f.db, acquire.requestId)).toBeNull();
   expect({
     roots: f.db.sqlite.prepare('SELECT * FROM control_executions').all(),
     steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
   }).toStrictEqual(before);
   await f.reopen();
-  expect(readWorkerImageSettlement(f.db, acquire.requestId)).toBeNull();
+  expect(readSettlement(f.db, acquire.requestId)).toBeNull();
   expect({
     roots: f.db.sqlite.prepare('SELECT * FROM control_executions').all(),
     steps: f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all(),
@@ -529,8 +649,10 @@ it('refuses image intent after its queued current Core Epoch loses authority', a
     // The existing native posting hold proves the command cannot already have decided SQL.
     expect(f.db.sqlite.prepare('SELECT * FROM control_executions').all()).toEqual([]);
     // Deliberate post-setup loss of current authority, never a fabricated successful record.
-    f.db.sqlite.exec(`UPDATE nanohost_runtime_targets
-      SET ready = 0, fresh_empty = 0, physical_epoch = NULL`);
+    mutateAdmittedTestNanoHost(f.db, (sqlite) =>
+      sqlite.exec(`UPDATE nanohost_runtime_targets
+        SET ready = 0, fresh_empty = 0, physical_epoch = NULL`)
+    );
     f.db.sqlite.pragma('query_only = ON');
   } finally {
     resume();
@@ -538,7 +660,7 @@ it('refuses image intent after its queued current Core Epoch loses authority', a
   await expect(prepared).rejects.toThrow();
   expect(f.db.sqlite.prepare('SELECT * FROM control_executions').all()).toEqual([]);
   expect(f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all()).toEqual([]);
-  expect(f.db.sqlite.prepare('SELECT * FROM worker_image_settlements').all()).toEqual([]);
+  expect(imageRows(f.db)).toEqual([]);
   await f.reopen();
   expect(f.db.sqlite.prepare('SELECT * FROM control_executions').all()).toEqual([]);
   expect(f.db.sqlite.prepare('SELECT * FROM control_execution_steps').all()).toEqual([]);
@@ -609,33 +731,50 @@ it('abandons a cold accepted image natively and preserves unknown bytes through 
     WHEN json_extract(NEW.control_json, '$.kind') = 'consume-receipt'
     BEGIN SELECT RAISE(ABORT, 'injected late image consumption failure'); END`);
   f.db.sqlite.pragma('query_only = ON');
-  await expect(writeWorkerImageSettlement(f.db, lateSettlement)).rejects.toMatchObject({
+  const ref = readCoreImageAcquisitionRef(f.db, request.requestId);
+  if (!ref || ref.execution.owner.kind !== 'server')
+    throw new Error('Late receipt requires its original Core acquisition.');
+  await expect(
+    publishCoreJournal(f.db, {
+      kind: 'image-result',
+      ref: {
+        execution: { owner: { kind: 'server' }, executionId: ref.execution.executionId },
+        stepId: ref.stepId,
+      },
+      settlement: lateSettlement,
+      target: f.target,
+    })
+  ).rejects.toMatchObject({
     name: 'ControlStoreWorkerError',
     commit: 'not-committed',
   });
-  expect(readWorkerImageSettlement(f.db, settlement.requestId)).toBeNull();
+  expect(readSettlement(f.db, settlement.requestId)).toBeNull();
   expect(roots()).toStrictEqual(originalRoots);
   expect(steps()).toStrictEqual(originalSteps);
   await f.reopen();
-  expect(readWorkerImageSettlement(f.db, settlement.requestId)).toBeNull();
+  expect(readSettlement(f.db, settlement.requestId)).toBeNull();
   expect(roots()).toStrictEqual(originalRoots);
   expect(steps()).toStrictEqual(originalSteps);
   f.db.sqlite.exec('DROP TRIGGER reject_late_image_consumption');
   f.db.sqlite.pragma('query_only = ON');
-  const lateAck = await heldCommit(2, () => writeWorkerImageSettlement(f.db, lateSettlement));
-  expect(readWorkerImageSettlement(f.db, settlement.requestId)).toStrictEqual(lateSettlement);
+  const originalResult = { settlement: lateSettlement, target: f.target, originalExecution: ref };
+  const heldLateReceipt = f.holdNextNativeReceipt();
+  const lateResult = f.settlePreparedImage(originalResult);
+  void lateResult.catch(() => undefined);
+  const lateAck = await heldLateReceipt;
+  expect(readSettlement(f.db, settlement.requestId)).toStrictEqual(lateSettlement);
   expect(steps()[0]).toStrictEqual(originalSteps[0]);
   expect(roots()[0]).toMatchObject({ phase: 'closing', exclusion_refs_json: exclusion });
   expect(steps()).toHaveLength(2);
   expect(steps()[1]).toMatchObject({ state: 'completed' });
   expect(lateAck.completed()).toBe(false);
   releaseCommit();
-  await lateAck.result;
+  await lateResult;
   const lateRoots = roots();
   const lateSteps = steps();
-  await writeWorkerImageSettlement(f.db, lateSettlement);
+  await f.settlePreparedImage(originalResult);
   await f.reopen();
-  expect(readWorkerImageSettlement(f.db, settlement.requestId)).toStrictEqual(lateSettlement);
+  expect(readSettlement(f.db, settlement.requestId)).toStrictEqual(lateSettlement);
   expect(roots()).toStrictEqual(lateRoots);
   expect(steps()).toStrictEqual(lateSteps);
   await expect(f.dispatch.poll(f.physical, 'image.acquire')).resolves.toBeNull();
@@ -678,7 +817,7 @@ it('fences undelivered image cancellation before its native FULL reply and reope
     { state: 'intent' },
   ]);
   await expect(f.dispatch.poll(f.physical, 'image.acquire')).resolves.toBeNull();
-  expect(readWorkerImageSettlement(f.db, '7'.repeat(64))).toBeNull();
+  expect(readSettlement(f.db, '7'.repeat(64))).toBeNull();
   expect(cancelledAck.completed()).toBe(false);
   releaseCommit();
   await expect(cancelledAck.result).rejects.toThrow(
@@ -757,7 +896,7 @@ it('retains one result-only image waiter when two recoveries join native abandon
     kind: 'image.acquire',
     result: { digest: imageDigest },
   });
-  expect(readWorkerImageSettlement(f.db, requestId)).toMatchObject({ requestId });
+  expect(readSettlement(f.db, requestId)).toMatchObject({ requestId });
   expect(
     f.db.sqlite.prepare('SELECT * FROM control_execution_steps ORDER BY ordinal').all()[0]
   ).toStrictEqual(unknown[0]);
