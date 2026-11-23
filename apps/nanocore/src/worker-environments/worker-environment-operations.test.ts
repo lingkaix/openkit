@@ -17,10 +17,8 @@ import {
   admitWorkerStorageContributor,
   createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
-  markWorkerStoragePurgePending,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
-  settleWorkerStoragePurge,
   type WorkerStorageBinding,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
@@ -43,7 +41,10 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
+import {
+  admittedWorkerStoragePurgeDecisions,
+  createWorkerEnvironmentOperations,
+} from './worker-environment-operations.js';
 
 const NOW = '2026-09-10T00:00:00.000Z';
 const LAYOUT: WorkerStorageLayout = {
@@ -179,6 +180,7 @@ async function createFixture(
     },
     owner
   );
+  const nativeOwner = (await openAdmittedTestNanoHost(coreDb)).value.owner;
   const binding = await releaseWorkerStorageAttachment(
     coreDb,
     {
@@ -188,7 +190,7 @@ async function createFixture(
       sandboxBindingRef: 'sandbox_binding_1',
       storageRef: reserved.storageRef,
     },
-    (await openAdmittedTestNanoHost(coreDb)).value.owner.releaseIdleSandboxStorage
+    nativeOwner.releaseIdleSandboxStorage
   );
   const runtimeEffects: WorkerEnvironmentRuntimeEffects = {
     inspectImage: vi.fn(),
@@ -220,10 +222,8 @@ async function createFixture(
       coreDb,
       runtimeEffects,
       store,
-      purgeDecisions: {
-        markPending: (input) => markWorkerStoragePurgePending(coreDb, input),
-        settle: (input) => settleWorkerStoragePurge(coreDb, input),
-      },
+      // The App composition: the admitted owner decides both purge transitions.
+      purgeDecisions: admittedWorkerStoragePurgeDecisions(coreDb, nativeOwner),
     }),
     store,
     threadId: thread.id,
@@ -937,14 +937,19 @@ describe('Worker environment operations', () => {
         typeof reply === 'object' &&
         reply !== null &&
         'operation' in reply &&
-        reply.operation === 'worker-storage-binding' &&
+        reply.operation === 'nanohost-owner' &&
         'status' in reply &&
         reply.status === 'ok' &&
         'result' in reply &&
         typeof reply.result === 'object' &&
         reply.result !== null &&
-        'state' in reply.result &&
-        reply.result.state === 'purged'
+        'kind' in reply.result &&
+        reply.result.kind === 'worker-storage-binding' &&
+        'value' in reply.result &&
+        typeof reply.result.value === 'object' &&
+        reply.result.value !== null &&
+        'state' in reply.result.value &&
+        reply.result.value.state === 'purged'
       ) {
         termination = this.terminate();
         return true;
@@ -962,6 +967,9 @@ describe('Worker environment operations', () => {
     } finally {
       replies.mockRestore();
     }
+    // The unknown commit fails that admitted owner generation. Restart it to read the committed row.
+    await shutdownControlStoreWorkerClient();
+    await openAdmittedTestNanoHost(fixture.coreDb);
     expect(
       readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
         getWorkerStorageBinding({ sqlite }, input)
