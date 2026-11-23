@@ -8141,15 +8141,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             // After Workspace ACK, join the exact Harness drain already committed by retirement.
             if (idleCloseDrain) this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
             else
-              await claimNanoHostIdleCaptureDrain(this.coreDb, {
-                harnessBindingRef: session.harnessBindingRef,
-                harnessInstanceId: session.harnessInstanceId,
-                agentSessionId: session.environmentPackage.scope.agentSessionId,
-                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-                attemptId: session.attemptId,
-                sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
-                originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
-              });
+              await claimNanoHostIdleCaptureDrain(
+                this.coreDb,
+                {
+                  harnessBindingRef: session.harnessBindingRef,
+                  harnessInstanceId: session.harnessInstanceId,
+                  agentSessionId: session.environmentPackage.scope.agentSessionId,
+                  agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+                  attemptId: session.attemptId,
+                  sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
+                  originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+                },
+                this.harnessTurnLifecycle()
+              );
           } catch (error) {
             if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
               throw new WorkspaceCaptureRecoveryRequired(error.message);

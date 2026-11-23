@@ -5731,7 +5731,10 @@ describe('createConfiguredTurnExecutor', () => {
       const cleanupAnchor = readAdmittedTestNanoHost(resident.coreDb, (sqlite) => getWorkerBackendSession({ sqlite },
         String(created.input.leaseId)
       ))!;
-      await harnessRecords.drainNanoHostSandboxAdmission(resident.coreDb, {
+      // Production posts this drain through the admitted owner (`harnessWriter()`), never Core.
+      const drainOwner = currentAdmittedTestNanoHostOwner(resident.coreDb);
+      if (!drainOwner) throw new Error('Fixture drain has no admitted NanoHost owner.');
+      await harnessRecords.drainNanoHostSandboxAdmission(drainOwner, {
         sandboxBindingRef: cleanupAnchor.sandboxBindingRef,
         originPhysicalEpoch: cleanupAnchor.originPhysicalEpoch,
       });
@@ -5911,10 +5914,19 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const fixture = [];
       for (const { producer, request } of captured) {
+        // Same image deciding storage as the App dispatch (`app.ts`); image effects need it.
+        const nativeStorage = currentAdmittedTestNanoHostStorage(coreDb);
         const dispatch = createNanoHostSessionDispatch({
           coreDb,
           sessionAuthority: authority,
           fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          ...(nativeStorage
+            ? {
+                nativeStorage,
+                settlePreparedImage: (input) =>
+                  appOwner.settlePreparedNanoHostImage(coreDb, nativeStorage, input),
+              }
+            : {}),
         });
         await dispatch.readiness!(
           physical,

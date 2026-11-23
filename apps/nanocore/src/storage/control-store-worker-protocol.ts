@@ -897,11 +897,18 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
     input
   ): input is Extract<
     ControlHarnessLifecycleInput,
-    { kind: 'operation.queue' | 'operation.dispatch' | 'operation.settle' }
+    {
+      kind:
+        | 'operation.queue'
+        | 'operation.dispatch'
+        | 'operation.settle'
+        | 'harness.claim-idle-capture-drain';
+    }
   > =>
     input.kind === 'operation.queue' ||
     input.kind === 'operation.dispatch' ||
-    input.kind === 'operation.settle'
+    input.kind === 'operation.settle' ||
+    input.kind === 'harness.claim-idle-capture-drain'
 );
 
 const nanoHostIdleSandboxInput = ControlHarnessLifecycleInputSchema.refine(

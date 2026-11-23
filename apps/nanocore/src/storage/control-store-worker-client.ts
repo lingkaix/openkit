@@ -4132,6 +4132,13 @@ class ControlStoreWorkerClient {
             if (reply.operation !== 'harness-lifecycle' || reply.result !== null)
               throw new ControlStoreWorkerError('integrity', 'unknown');
           }),
+        claimIdleCaptureDrain: async (input) => {
+          const result = await writeHarnessTurn({
+            ...input,
+            kind: 'harness.claim-idle-capture-drain',
+          });
+          if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
+        },
       };
 
       opening.prepareNanoHostBackend = async (input) => {
