@@ -63,6 +63,13 @@ export function applyControlHarnessLifecycle(
             claimIdleSandboxDrain(admitted.coreDb, input, owner);
           } else if (authority.rollback) {
             restoreSandboxAdmission(admitted.coreDb, input.sandboxRuntimeId, owner, authority);
+          } else {
+            restoreHarnessAdmissionAfterLocalClose(
+              admitted.coreDb,
+              input.sandboxRuntimeId,
+              owner,
+              authority
+            );
           }
           return null;
         })();
@@ -172,6 +179,68 @@ function refuseHarnessLifecycle(error: unknown): never {
   throw error;
 }
 
+/** Capture dispositions are observations, never Workspace writes or a retained Main authorization boolean. */
+function captureDispositionsRecovered(
+  coreDb: CoreDb,
+  owner: { readonly sqlite: Database.Database },
+  sandboxBindingRef: string
+): boolean {
+  const anchors = readNanoHostWorkspaceCaptureAnchors(owner, sandboxBindingRef);
+  const attempts = new Set(anchors.map((anchor) => anchor.attemptId));
+  for (const workspaceId of new Set(anchors.map((anchor) => anchor.workspaceId))) {
+    let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
+    try {
+      reader = openControlStoreProductReadHandle(workspaceDbPath(coreDb.dataRoot, workspaceId), {
+        kind: 'workspace',
+        workspaceId,
+      });
+      if (
+        listWorkspaceReconciliationRecords(reader, workspaceId).some(
+          (record) =>
+            record.id.startsWith('wrr_capture_') &&
+            attempts.has(String(record.backendHandleSummary.attemptId)) &&
+            record.stateAfter !== 'recovered'
+        )
+      )
+        return false;
+    } catch {
+      // Optional restoration fails closed when its anchored Workspace disposition cannot be read.
+      return false;
+    } finally {
+      reader?.sqlite.close();
+    }
+  }
+  return true;
+}
+
+/**
+ * Releases an idle capture latch on an accepting Sandbox in the authorized target Epoch, after a
+ * proved local close or a close refused before queue. A whole-Sandbox drain claim, a Harness drain,
+ * a pending operation and a close without a succeeded result keep their drain.
+ */
+function restoreHarnessAdmissionAfterLocalClose(
+  coreDb: CoreDb,
+  sandboxRuntimeId: string,
+  owner: { readonly sqlite: Database.Database },
+  authority: NanoHostIdleSandboxAuthority
+): void {
+  const sandbox = owner.sqlite
+    .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
+      WHERE sandbox_runtime_id=? AND runtime_target_id=? AND origin_physical_epoch=?
+      AND drain_state='accepting' AND lifecycle_state='open' AND health_state='ready'
+      AND cleanup_state='clean'`)
+    .get(sandboxRuntimeId, authority.target.targetId, authority.target.physicalEpoch) as
+    | { binding: string }
+    | undefined;
+  if (!sandbox || !captureDispositionsRecovered(coreDb, owner, sandbox.binding)) return;
+  owner.sqlite
+    .prepare(`UPDATE harness_instance_records SET drain_state='accepting'
+    WHERE sandbox_runtime_id=? AND lifecycle_state='open' AND drain_state='draining'
+      AND operation_state IN ('idle','settled') AND (operation IS NULL OR (operation<>'harness.drain'
+      AND (operation<>'session.close' OR json_extract(result_json, '$.disposition')='succeeded')))`)
+    .run(sandboxRuntimeId);
+}
+
 /** Restores the exact two-table admission tuple while its current Core proof remains inside the native savepoint. */
 function restoreSandboxAdmission(
   coreDb: CoreDb,
@@ -196,32 +265,7 @@ function restoreSandboxAdmission(
         sandbox.drain !== 'draining'))
   )
     return;
-  const anchors = readNanoHostWorkspaceCaptureAnchors(owner, sandbox.binding);
-  const attempts = new Set(anchors.map((anchor) => anchor.attemptId));
-  // Capture dispositions are observations, never Workspace writes or a retained Main authorization boolean.
-  for (const workspaceId of new Set(anchors.map((anchor) => anchor.workspaceId))) {
-    let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
-    try {
-      reader = openControlStoreProductReadHandle(workspaceDbPath(coreDb.dataRoot, workspaceId), {
-        kind: 'workspace',
-        workspaceId,
-      });
-      if (
-        listWorkspaceReconciliationRecords(reader, workspaceId).some(
-          (record) =>
-            record.id.startsWith('wrr_capture_') &&
-            attempts.has(String(record.backendHandleSummary.attemptId)) &&
-            record.stateAfter !== 'recovered'
-        )
-      )
-        return;
-    } catch {
-      // Optional restoration fails closed when its anchored Workspace disposition cannot be read.
-      return;
-    } finally {
-      reader?.sqlite.close();
-    }
-  }
+  if (!captureDispositionsRecovered(coreDb, owner, sandbox.binding)) return;
   const restored = owner.sqlite
     .prepare(`UPDATE sandbox_runtime_records SET drain_state = 'accepting'
     WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open' AND health_state = 'ready'
