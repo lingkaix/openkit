@@ -3960,6 +3960,115 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   );
 
+  it('keeps the final-status waiter pending while the Boot recovery close is unacknowledged', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(vi.getRealSystemTime());
+    const f = await launchFinalReviewWorker('active-held-close');
+    const post = NativeWorker.prototype.postMessage;
+    const emit = NativeWorker.prototype.emit;
+    let closeId: unknown;
+    const closeHeld = Promise.withResolvers<() => void>();
+    const requests = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['postMessage']>
+    ) {
+      const message = args[0] as
+        | { id?: unknown; operation?: string; nanoHostRecoveryClose?: unknown }
+        | undefined;
+      if (
+        closeId === undefined &&
+        message?.operation === 'execution-attempt' &&
+        message.nanoHostRecoveryClose !== undefined
+      )
+        closeId = message.id;
+      return post.apply(this, args);
+    });
+    const replies = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+      this: NativeWorker,
+      event: string | symbol,
+      ...args: unknown[]
+    ): boolean {
+      const reply = args[0] as { id?: unknown } | undefined;
+      if (event === 'message' && closeId !== undefined && reply?.id === closeId) {
+        // Boot's recovery close committed in the Worker. Main has not handled its reply, so the
+        // NanoHost owner write stays pending.
+        closeId = null;
+        closeHeld.resolve(() => {
+          emit.call(this, event, ...args);
+        });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    let deliver: (() => void) | undefined;
+    try {
+      const heartbeat = {
+        authorization: `Bearer ${f.token}`,
+        lineage: f.lineage,
+        operation: 'heartbeat' as const,
+        schemaVersion: 2 as const,
+      };
+      await f.gateway.recordHeartbeat({
+        ...heartbeat,
+        sequence: 0,
+        body: {
+          status: 'starting',
+          processKeyHash: createHash('sha256').update('owned-worker-process').digest('base64url'),
+        },
+      });
+      await f.gateway.recordHeartbeat({ ...heartbeat, sequence: 1, body: { status: 'running' } });
+      const live = readTestNanoHostWorkerLease(f.coreDb, f.attemptId);
+      vi.setSystemTime(live.heartbeatDeadline);
+      expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
+      const admittedNanoHostRecovery = testBootNanoHostRecovery(f.coreDb);
+      if (!admittedNanoHostRecovery) throw new Error('Fixture has no admitted Boot recovery.');
+      const maintenance = runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+        admittedNanoHostRecovery,
+        executionBackend: f.backend,
+        store: f.store,
+        isTurnExecutionActive: (turnId) => f.executor.isTurnExecutionActive(turnId),
+        cleanupBackendSession: () => f.backend.cleanupSession(),
+        reconcileExecutions: async () => {},
+        prepareBackendCleanup: () => false,
+        restoreBackendSession: async () => {},
+        reconcileAcceptedFinalStatus: async () => {
+          throw new Error('No terminal report was sent.');
+        },
+        projectRecoveredTurn: async () => {
+          throw new Error('The active executor owns product closeout.');
+        },
+      });
+      deliver = await closeHeld.promise;
+      // The real waiter polls every 100 ms. Several polls see the unacknowledged owner write.
+      await delay(600);
+      expect(f.settled()).toBe(false);
+      expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
+      deliver();
+      deliver = undefined;
+      await maintenance;
+      expect(readTestNanoHostWorkerLease(f.coreDb, f.attemptId)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'native-liveness-expired',
+      });
+      await Promise.race([f.execution, delay(2000)]);
+      expect(f.settled()).toBe(true);
+      // The pending write did not end the Turn. The committed lease close did.
+      expect(f.store.getTurnById(f.turn.id)).toMatchObject({
+        status: 'failed',
+        error: {
+          code: 'worker_governance_turn_failed',
+          message: expect.stringContaining('native-liveness-expired'),
+        },
+      });
+    } finally {
+      deliver?.();
+      requests.mockRestore();
+      replies.mockRestore();
+      await f.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['inactive', 'lease mismatch'] as const)(
     'returns the interrupt response when the receiving Harness sees %s',
     async (receiverState) => {
