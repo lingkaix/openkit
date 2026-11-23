@@ -399,7 +399,10 @@ describe('execution backend port through real Core coordination', () => {
       const admission = requireSchedulerAdmissionEntry(f.db, b.queueEntryId);
       // Main selected B under its current authority. The responsible User is disabled before Core
       // decides B's claim, so Core refuses B for lost authority while A still holds the Workspace.
-      requests.mockImplementation(function (this: Worker, ...args: Parameters<Worker['postMessage']>) {
+      requests.mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
         const message: unknown = args[0];
         if (
           revoked === false &&

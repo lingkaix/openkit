@@ -4834,9 +4834,9 @@ describe('createConfiguredTurnExecutor', () => {
             turnId: secondTurnId,
           })
         ).toEqual([]);
-        expect(attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, second.queueEntryId)).toEqual(
-          second
-        );
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, second.queueEntryId)
+        ).toEqual(second);
         expect(native.effects).toHaveLength(beforeEffects);
         expect(commands.mock.calls).toHaveLength(beforeCommands);
         expect(
