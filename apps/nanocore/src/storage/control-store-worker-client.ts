@@ -3,7 +3,7 @@ import type {
   WorkspaceBlocker,
   WorkspaceReconciliationRecord,
 } from '@openkit/app-api-schemas';
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import {
   type ControlAccessTokenLifecycle,
   type ControlAccessTokenLifecycleResult,
@@ -3322,7 +3322,12 @@ class ControlStoreWorkerClient {
 
       const assertCurrent = (ownPendingWrite = false) => {
         if (!gate.enabled()) throw new ControlStoreWorkerError('unavailable', 'not-committed');
-        if (this.stopping || opening.host.failed || this.openings.get(database) !== opening)
+        // Shutdown drains an accepted operation, so its own owner reads and close can finish.
+        if (
+          (this.stopping && !this.operationContext.getStore()?.active) ||
+          opening.host.failed ||
+          this.openings.get(database) !== opening
+        )
           throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
         this.assertScopeProducerAdmission(database);
         if (opening.nanoHostWritePending && !ownPendingWrite)
@@ -3354,10 +3359,34 @@ class ControlStoreWorkerClient {
       const read = <Value>(
         query: (sqlite: Database.Database) => Value
       ): StorageResult<'nanohost', Value> => {
+        // A refusal decided by the caller's own query is its domain answer. A SQL fault or a
+        // failure to admit the owner stays unavailable.
+        let refusal: { readonly error: unknown } | undefined;
         try {
           if (!gate.enabled()) return disabled;
-          return { state: 'ready', value: readCurrent(query) };
+          return {
+            state: 'ready',
+            value: readCurrent((handle) => {
+              try {
+                return query(handle);
+              } catch (error) {
+                if (
+                  !(error instanceof Database.SqliteError) &&
+                  !(error instanceof ControlStoreWorkerError) &&
+                  !(error instanceof ServerOwnerAdmissionError) &&
+                  // better-sqlite3 throws this TypeError for any closed peer connection.
+                  !(
+                    error instanceof TypeError &&
+                    error.message === 'The database connection is not open'
+                  )
+                )
+                  refusal = { error };
+                throw error;
+              }
+            }),
+          };
         } catch (error) {
+          if (refusal) throw refusal.error;
           return serverOwnerUnavailable(owner, error);
         }
       };
@@ -4243,7 +4272,8 @@ class ControlStoreWorkerClient {
             return (
               await write(
                 { kind: 'worker-storage-binding', input: original },
-                () => original.cleanupProved && typeof original.sandboxBindingRef === 'string'
+                // The Native CAS refuses an unproved cleanup with its typed answer.
+                () => typeof original.sandboxBindingRef === 'string'
               )
             ).value;
           },
@@ -7628,6 +7658,15 @@ class ControlStoreWorkerClient {
             facts: captured,
           });
           const json = JSON.stringify(owned);
+          // The deciding census reads Native backend sessions only from this admitted opening.
+          const nanoHost = this.openings.get(
+            `server-owner:${serverStoragePath(db.dataRoot, 'nanohost')}`
+          );
+          const nanoHostOwnerIdentity =
+            nanoHost?.identity !== undefined &&
+            nanoHost.readNanoHost?.(() => true).state === 'ready'
+              ? nanoHost.identity
+              : undefined;
           try {
             const reply = await this.request(
               {
@@ -7635,6 +7674,7 @@ class ControlStoreWorkerClient {
                 database,
                 input: { workspaceId: db.workspaceId, ...frameControlScalarText(json) },
                 content: new ArrayBuffer(0),
+                ...(nanoHostOwnerIdentity === undefined ? {} : { nanoHostOwnerIdentity }),
               },
               [json],
               undefined,

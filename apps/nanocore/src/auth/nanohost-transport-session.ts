@@ -186,6 +186,11 @@ export function isNanoHostPhysicalConnectionContext(physicalConnection: object):
   return nativePhysicalConnections.has(physicalConnection);
 }
 
+/** Whether a native physical connection has already consumed its single admission. */
+export function isNanoHostPhysicalConnectionAdmissionConsumed(connection: object): boolean {
+  return nativePhysicalConnections.get(connection) === false;
+}
+
 /** Consumes existing native eligibility before the allocation await; an unknown outcome requires a fresh connection. */
 export function consumeNanoHostPhysicalConnectionAdmission(connection: object): boolean {
   if (nativePhysicalConnections.get(connection) !== true) return false;

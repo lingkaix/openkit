@@ -543,7 +543,8 @@ async function failed(work: Promise<unknown>): Promise<void> {
 
 describe('NanoHost native credential ownership', () => {
   it('allocates once for concurrent admission on the same real physical connection and keeps its winner ready', async () => {
-    const f = await fixture();
+    // The ready winner's teardown close retires its Epoch with the installed deployment.
+    const f = await fixture({ useLayoutDeployment: true });
     const issued = await issue(f);
     const physical = await f.physical();
     const posted = vi.spyOn(interception.workers.at(-1)!, 'postMessage');
@@ -584,7 +585,7 @@ describe('NanoHost native credential ownership', () => {
     const ready = await upsertTarget(f, {
       targetId: identityId,
       identityId,
-      deploymentId,
+      deploymentId: f.config.deploymentId,
       connectionGeneration: 1,
       predecessorFenced: true,
       ready: true,
@@ -1080,29 +1081,48 @@ describe('NanoHost native credential ownership', () => {
         await closed;
       }
       if (scenario === 'already admitted connection') {
-        expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource).toBe(
-          'first-admission'
-        );
+        const lastUsedSource = () =>
+          getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource;
+        expect(lastUsedSource()).toBe('first-admission');
         expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
-        const second = await admitNativeNanoHostTransportConnection(f.storage.value, authority, {
-          secret: token.secret,
-          physicalConnection: physical,
-          transportRevision: String(transportRevision),
-          source: 'second-admission',
-        });
-        expect(second).toMatchObject({
+        const posted = vi.spyOn(interception.workers.at(-1)!, 'postMessage');
+        const allocatePosts = () =>
+          posted.mock.calls.filter(([message]) => runtimeTargetPost(message, 'allocate')).length;
+        const second = () =>
+          f.track(
+            admitNativeNanoHostTransportConnection(f.storage.value, authority, {
+              secret: token.secret,
+              physicalConnection: physical,
+              transportRevision: String(transportRevision),
+              source: 'second-admission',
+            })
+          );
+        // COORD ruling P13-W2 (b): no second NanoHost tuple relies on a write whose full ACK is
+        // outstanding. The same-physical admission gets the typed transient refusal and changes nothing.
+        expect(await second()).toEqual({ ok: false, reason: 'storage_unavailable' });
+        expect(allocatePosts()).toBe(0);
+        expect(authority.connectionGeneration(physical)).toBeNull();
+        expect(lastUsedSource()).toBe('first-admission');
+        expect(pending.settled()).toBe(false);
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
+        release(f.gate);
+        // The landed ACK resumes the first admission. The later same-physical admission superseded
+        // it before it consumed the connection, so it ends with no further Native read or write.
+        while (!pending.settled()) await nextTurn();
+        expect(lastUsedSource()).toBe('first-admission');
+        expect(allocatePosts()).toBe(0);
+        // A retry verifies, allocates and binds.
+        expect(await second()).toMatchObject({
           ok: true,
           connectionGeneration: 1,
           role: 'authoritative',
           mayCarryWork: true,
         });
-        expect(pending.settled()).toBe(false);
+        expect(allocatePosts()).toBe(1);
         expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
           connectionGeneration: 1,
         });
-        expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource).toBe(
-          'second-admission'
-        );
+        expect(lastUsedSource()).toBe('second-admission');
       }
       reload?.();
       release(f.gate);

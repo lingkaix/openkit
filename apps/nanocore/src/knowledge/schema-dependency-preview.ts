@@ -52,6 +52,10 @@ interface WorkspaceSchemaPreviewInput extends Omit<ParametersShape, 'revalidate'
   readonly access: KnowledgeRetrievalAccess;
   /** Admit both complete retained Proposal trees through the existing Notebook publication owner. */
   readonly admitProposal: (proposal: Proposal) => void | Generator<void, void, void>;
+  /** The deciding Worker's acknowledged NanoHost reader. Main keeps its own admitted reader. */
+  readonly readNanoHost?: NonNullable<
+    Parameters<typeof readVerifiedThreadWorkerContextTraceSteps>[0]['readNanoHost']
+  >;
 }
 type ParametersShape = Parameters<typeof previewNotebookSchema>[0];
 
@@ -358,6 +362,7 @@ export function* previewWorkspaceSchemaSteps(
               store: input.store,
               workspaceDb: input.workspaceDb,
               threadId: thread.id,
+              ...(input.readNanoHost ? { readNanoHost: input.readNanoHost } : {}),
             });
             for (const { trace } of verified) {
               yield;

@@ -23,6 +23,7 @@ import transportRevision from './nanohost-transport-revision.json' with { type: 
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
   consumeNanoHostPhysicalConnectionAdmission,
+  isNanoHostPhysicalConnectionAdmissionConsumed,
   isNanoHostPhysicalConnectionContext,
   readNanoHostPhysicalConnectionContext,
 } from './nanohost-transport-session.js';
@@ -108,6 +109,9 @@ type TransportAdmissionStorage = {
 };
 
 class NanoHostTransportStorageUnavailable extends Error {}
+
+/** The latest admission attempt on each physical connection that has not consumed it. */
+const latestPhysicalAdmissionAttempts = new WeakMap<object, symbol>();
 
 function requireNativeResult<Value>(
   result: StorageResult<'nanohost' | 'control-kernel', Value>
@@ -222,13 +226,30 @@ async function admitTransportConnection(
   input: AdmitNanoHostTransportConnectionInput
 ): Promise<AdmitNanoHostTransportConnectionResult> {
   const request = { ...input, ...(input.now ? { now: new Date(input.now.getTime()) } : {}) };
+  // A consumed physical connection is never admitted again. It cannot wait for another
+  // admission's outstanding owner ACK, and it reads or uses no Token.
+  if (
+    request.physicalConnection &&
+    isNanoHostPhysicalConnectionAdmissionConsumed(request.physicalConnection)
+  )
+    return { ok: false, reason: 'rejected' };
+  // A later attempt on the same physical connection supersedes this one until one consumes it.
+  // A superseded attempt reads and writes nothing more.
+  const attempt = Symbol('nanohost-admission');
+  if (request.physicalConnection)
+    latestPhysicalAdmissionAttempts.set(request.physicalConnection, attempt);
+  const superseded = () =>
+    !!request.physicalConnection &&
+    latestPhysicalAdmissionAttempts.get(request.physicalConnection) !== attempt;
   const verified = await storage.verify(request.secret, {
     channel: request.channel ?? 'nanohost-transport',
     source: request.source ?? 'session-admit',
     ...(request.now ? { now: request.now } : {}),
   });
+  if (superseded()) return { ok: false, reason: 'rejected' };
 
   const current = verified ? await storage.readCurrent(verified.tokenId, request.now) : null;
+  if (superseded()) return { ok: false, reason: 'rejected' };
   if (
     !verified ||
     !current ||
