@@ -67,6 +67,10 @@ export function applyControlHarnessLifecycle(
           return null;
         })();
       }
+      case 'harness.claim-idle-capture-drain':
+        if (owner.scope === 'core' || !admitted) break;
+        owner.sqlite.transaction(() => claimIdleCaptureDrain(admitted.coreDb, input, owner))();
+        return null;
       case 'operation.queue':
         if (admitted) return records.queueNanoHostHarnessOperation(admitted.coreDb, input, owner);
         break;
@@ -423,28 +427,43 @@ function claimIdleSandboxDrain(
 /** Retains the original Workspace-first, Core-second idle capture drain with its current healthy physical binding checks. */
 function claimIdleCaptureDrain(
   coreDb: CoreDb,
-  input: Extract<ControlHarnessLifecycleInput, { kind: 'harness.claim-idle-capture-drain' }>
+  input: Extract<ControlHarnessLifecycleInput, { kind: 'harness.claim-idle-capture-drain' }>,
+  owner: { readonly sqlite: Database.Database } = coreDb
 ): void {
-  const changed = coreDb.sqlite
-    .prepare(`UPDATE harness_instance_records SET drain_state='draining'
+  // The binding is Native and the closed attempt is Core: compare both inside the deciding commit.
+  const binding = owner.sqlite
+    .prepare(`SELECT workspace_id AS workspaceId, thread_id AS threadId FROM agent_session_runtime_bindings
+    WHERE agent_session_runtime_binding_id=? AND agent_session_id=? AND harness_instance_id=?
+    AND current_attempt_id IS NULL AND current_turn_id IS NULL`)
+    .get(input.agentSessionRuntimeBindingId, input.agentSessionId, input.harnessInstanceId) as
+    | { workspaceId: string; threadId: string }
+    | undefined;
+  const closed =
+    binding &&
+    coreDb.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE attempt_id=? AND phase='closed'
+      AND agent_session_id=? AND workspace_id=? AND thread_id=?`)
+      .get(input.attemptId, input.agentSessionId, binding.workspaceId, binding.threadId);
+  const changed = closed
+    ? owner.sqlite
+        .prepare(`UPDATE harness_instance_records SET drain_state='draining'
     WHERE harness_binding_ref=? AND harness_instance_id=? AND lifecycle_state='open' AND operation_state IN ('idle','settled')
-    AND EXISTS (SELECT 1 FROM agent_session_runtime_bindings b JOIN scheduler_execution_attempts a
-      ON a.agent_session_id=b.agent_session_id AND a.workspace_id=b.workspace_id AND a.thread_id=b.thread_id
+    AND EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
       WHERE b.harness_instance_id=harness_instance_records.harness_instance_id
       AND b.agent_session_runtime_binding_id=? AND b.agent_session_id=?
-      AND b.current_attempt_id IS NULL AND b.current_turn_id IS NULL AND a.attempt_id=? AND a.phase='closed')
+      AND b.current_attempt_id IS NULL AND b.current_turn_id IS NULL)
     AND sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
     WHERE sandbox_binding_ref=? AND origin_physical_epoch=? AND lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean')`)
-    .run(
-      input.harnessBindingRef,
-      input.harnessInstanceId,
-      input.agentSessionRuntimeBindingId,
-      input.agentSessionId,
-      input.attemptId,
-      input.sandboxBindingRef,
-      input.originPhysicalEpoch
-    );
-  if (changed.changes !== 1) throw new Error('Idle capture drain ownership changed.');
+        .run(
+          input.harnessBindingRef,
+          input.harnessInstanceId,
+          input.agentSessionRuntimeBindingId,
+          input.agentSessionId,
+          input.sandboxBindingRef,
+          input.originPhysicalEpoch
+        )
+    : undefined;
+  if (changed?.changes !== 1) throw new Error('Idle capture drain ownership changed.');
 }
 
 /** Retains the two original environment-lineage stages, exact current value and original binding identities inside the native deciding section. */

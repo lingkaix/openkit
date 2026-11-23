@@ -299,6 +299,7 @@ import {
   type WorkerStorageTarget,
   type WriteNanoHostStorageAttachment,
   type WriteNanoHostStorageRelease,
+  type WriteNanoHostStorageTransition,
 } from './worker-storage-bindings.js';
 import type {
   WorkerRuntimeProvenanceCollection,
@@ -359,7 +360,7 @@ export interface TurnExecutorFactoryEnv {
 type NanoHostLifecycleOwner = Pick<
   AdmittedNanoHostTransportStorage['owner'],
   'harnessLifecycle' | 'read'
->;
+> & { readonly workerStorageBinding: WriteNanoHostStorageTransition };
 
 export interface AdmittedNanoHostIdleSandbox {
   readonly writeIdleHarnessDrain: WriteNanoHostIdleSandboxLifecycle;
@@ -1255,6 +1256,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.nanoHostOwner.state !== 'ready' || !this.admittedHarnessTurn)
       this.unavailableNanoHostRuntime();
     return this.admittedHarnessTurn;
+  }
+
+  /** Posts a storage release or fence through the admitted owner; a root without one keeps Core. */
+  private storageTransitionWriter(): WriteNanoHostStorageTransition | undefined {
+    const owner = this.nanoHostOwner;
+    if (!owner) return undefined;
+    return owner.state === 'ready'
+      ? owner.value.workerStorageBinding
+      : this.unavailableNanoHostRuntime();
   }
 
   private idleSandboxLifecycle(): AdmittedNanoHostIdleSandbox | undefined {
@@ -4017,10 +4027,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private findWorkerStorageForFailedMaterialization(
     session: WorkerBackendSessionRecord
   ): WorkerStorageBinding | null {
-    const bindings = listWorkerStorageBindings(this.coreDb, {
-      authorizeContributor: () => true,
-      workspaceId: session.workspaceId,
-    }).filter(
+    const bindings = this.readNanoHost((owner) =>
+      listWorkerStorageBindings(owner, {
+        authorizeContributor: () => true,
+        workspaceId: session.workspaceId,
+      })
+    ).filter(
       (binding) =>
         (binding.state === 'reserved' ||
           binding.state === 'attached' ||
@@ -4051,13 +4063,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     binding: WorkerStorageBinding | null
   ): Promise<WorkerStorageBinding | null> {
     if (!binding) return null;
-    return await releaseWorkerStorageAttachment(this.coreDb, {
-      attachmentGeneration: binding.attachmentGeneration,
-      cleanupProved: true,
-      expectedRevision: binding.revision,
-      sandboxBindingRef: binding.currentSandboxBindingRef,
-      storageRef: binding.storageRef,
-    });
+    return await releaseWorkerStorageAttachment(
+      this.coreDb,
+      {
+        attachmentGeneration: binding.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: binding.revision,
+        sandboxBindingRef: binding.currentSandboxBindingRef,
+        storageRef: binding.storageRef,
+      },
+      this.storageTransitionWriter()
+    );
   }
 
   /** Fences only one retained association after Sandbox cleanup becomes uncertain. */
@@ -4066,11 +4082,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       getWorkerStorageBindingForSandbox(owner, { sandboxBindingRef })
     );
     if (!binding || binding.state === 'unknown') return;
-    await markWorkerStorageAttachmentUnknown(this.coreDb, {
-      attachmentGeneration: binding.attachmentGeneration,
-      expectedRevision: binding.revision,
-      storageRef: binding.storageRef,
-    });
+    await markWorkerStorageAttachmentUnknown(
+      this.coreDb,
+      {
+        attachmentGeneration: binding.attachmentGeneration,
+        expectedRevision: binding.revision,
+        storageRef: binding.storageRef,
+      },
+      this.storageTransitionWriter()
+    );
   }
 
   /** Finds canonical nonclosed owners across per-Turn routes, excluding only this no-effect preparation. */
@@ -5087,12 +5107,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       } catch (error) {
         this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
-        await releaseWorkerStorageAttachment(this.coreDb, {
-          attachmentGeneration: storageBinding.attachmentGeneration,
-          cleanupProved: true,
-          expectedRevision: storageBinding.revision,
-          storageRef: storageBinding.storageRef,
-        });
+        await releaseWorkerStorageAttachment(
+          this.coreDb,
+          {
+            attachmentGeneration: storageBinding.attachmentGeneration,
+            cleanupProved: true,
+            expectedRevision: storageBinding.revision,
+            storageRef: storageBinding.storageRef,
+          },
+          this.storageTransitionWriter()
+        );
         throw error;
       }
       const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
@@ -5127,11 +5151,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           },
         });
       } catch (error) {
-        await markWorkerStorageAttachmentUnknown(this.coreDb, {
-          attachmentGeneration: storageBinding.attachmentGeneration,
-          expectedRevision: storageBinding.revision,
-          storageRef: storageBinding.storageRef,
-        });
+        await markWorkerStorageAttachmentUnknown(
+          this.coreDb,
+          {
+            attachmentGeneration: storageBinding.attachmentGeneration,
+            expectedRevision: storageBinding.revision,
+            storageRef: storageBinding.storageRef,
+          },
+          this.storageTransitionWriter()
+        );
         throw error;
       }
       this.livePartialMaterializations.set(identity.packageSnapshotId, {
@@ -8113,15 +8141,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             // After Workspace ACK, join the exact Harness drain already committed by retirement.
             if (idleCloseDrain) this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
             else
-              await claimNanoHostIdleCaptureDrain(this.coreDb, {
-                harnessBindingRef: session.harnessBindingRef,
-                harnessInstanceId: session.harnessInstanceId,
-                agentSessionId: session.environmentPackage.scope.agentSessionId,
-                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-                attemptId: session.attemptId,
-                sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
-                originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
-              });
+              await claimNanoHostIdleCaptureDrain(
+                this.coreDb,
+                {
+                  harnessBindingRef: session.harnessBindingRef,
+                  harnessInstanceId: session.harnessInstanceId,
+                  agentSessionId: session.environmentPackage.scope.agentSessionId,
+                  agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+                  attemptId: session.attemptId,
+                  sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
+                  originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+                },
+                this.harnessTurnLifecycle()
+              );
           } catch (error) {
             if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
               throw new WorkspaceCaptureRecoveryRequired(error.message);
