@@ -16,6 +16,7 @@ export {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
+  schedulerClaimScopes,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 

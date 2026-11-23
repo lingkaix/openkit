@@ -315,6 +315,17 @@ export function listOpenSchedulerExecutionAttempts(
     .map((row) => decodeAttempt(coreDb, row));
 }
 
+/** Lists the Core scopes that an unresolved writer can hold against one scheduler claim. */
+export function schedulerClaimScopes(entry: CoreSchedulerQueueEntry): string[] {
+  const storage = entry.workerStorageChoice;
+  return [
+    `workspace:${entry.workspaceId}`,
+    `thread:${entry.threadId}`,
+    `turn:${entry.turnId}`,
+    ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+  ];
+}
+
 /** Acquires only the selected entry's product boundaries, before any preparation effect. */
 export function createSchedulerExecutionAttempt(
   coreDb: CoreDb,
@@ -338,15 +349,7 @@ export function createSchedulerExecutionAttempt(
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
-      const storage = entry.workerStorageChoice;
-      if (
-        kernelSchedulerScopeIsHeld(coreDb, [
-          `workspace:${entry.workspaceId}`,
-          `thread:${entry.threadId}`,
-          `turn:${entry.turnId}`,
-          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
-        ])
-      )
+      if (kernelSchedulerScopeIsHeld(coreDb, schedulerClaimScopes(entry)))
         throw new ExecutionAttemptRefusal(
           'Execution placement has an unresolved writer.',
           'placement-held'

@@ -15312,40 +15312,43 @@ describe('createConfiguredTurnExecutor', () => {
         expect(native.effects.slice(effectsBefore)).toEqual([]);
         const finalGuard = scenario === 'materialization-forced-retirement-guard';
         if (delayedGuard) {
-          // The Core hold now refuses before these backend guards. Keep them witnessed at the
-          // backend owner. The probe is the first Task's real package, moved to the second Thread
-          // and Turn. Core refused the second Task, so it has no package of its own.
-          const firstPackage = materialization.mock.calls.find(
+          // Replaced per A8 P10 r1 review. The Core hold now refuses before these backend guards, so
+          // each decision is witnessed at the backend owner. The probe is the first Task's real
+          // package. It has the resident's compatibility key, so it passes the incompatible-resident
+          // refusal and reaches the capacity and retirement decisions. Capacity counts held attempts.
+          const [probe, firstContext] = materialization.mock.calls.find(
             ([pkg]) => pkg.scope.threadId === first.threadId
-          )![0];
-          const probe = {
-            ...firstPackage,
-            scope: {
-              ...firstPackage.scope,
-              threadId: second.threadId,
-              turnId: second.id,
-              requestId: requestIds[1]!,
-              agentSessionId: testEntityId('as', 'busy-backend-guard'),
-            },
-          };
+          )!;
           const probeEffects = native.effects.length;
+          const published: string[] = [];
+          const publication = () => {
+            published.push(probe.snapshotId);
+          };
+          expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
+          expect(await inspect(probe)).toBe('available');
           if (scenario === 'late-capacity') {
-            // The late capacity reduction does not change the resident limit. The real capacity
-            // recheck still refuses a distinct Thread against the actual first binding.
+            // A late reduction of the configured capacity refuses the compatible probe. The
+            // resident limit stays 2, so only the configured comparison decides.
             configuration = reduced;
             expect(await inspect(probe)).toBe('capacity-saturated');
             expect(native.runtime.readNanoHostResidentTurnLimit()).toBe(2);
+            await expect(
+              materialize(probe, { ...firstContext!, beforeMaterialization: publication })
+            ).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
             configuration = initial;
           }
           if (finalGuard) {
-            // The final materialization owner refuses against the actual first binding without
-            // opening or deleting anything, under the configured capacity of 2.
-            expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
-            expect(await inspect(probe)).toBe('capacity-saturated');
-            await expect(materialize(probe)).rejects.toBeInstanceOf(
-              WorkerGovernanceCapacityUnavailableError
-            );
+            // The fresh-storage choice forces retirement of the compatible resident. The live first
+            // Task refuses that retirement.
+            await expect(
+              materialize(probe, {
+                ...firstContext!,
+                beforeMaterialization: publication,
+                workerStorageChoice: { kind: 'fresh', goalId: null, taskId: null },
+              })
+            ).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
           }
+          expect(published).toEqual([]);
           expect(native.effects).toHaveLength(probeEffects);
         }
         const retainedAttempt = attempts.requireSchedulerExecutionAttempt(
@@ -15601,13 +15604,13 @@ describe('createConfiguredTurnExecutor', () => {
     60_000
   );
 
-  it('defers the held-placement claim refusal when the holder releases before dispatch classifies it', async () => {
+  it('defers the held-placement claim refusal with its FIFO priority when the holder releases before dispatch classifies it', async () => {
     const coreDb = await createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
-    const threadIds = ['first', 'second'].map((label) => testEntityId('th', `th_reply_${label}`));
+    const threadIds = ['first', 'second', 'third'].map((label) => testEntityId('th', `th_reply_${label}`));
     for (const threadId of threadIds)
       await store.createThread(workspaceId, 'Independent Task', threadId);
     const setup = createTestAgentSetup({
@@ -15652,6 +15655,7 @@ describe('createConfiguredTurnExecutor', () => {
     const requestIds = [
       '00000000-0000-4000-8000-000000000310',
       '00000000-0000-4000-8000-000000000311',
+      '00000000-0000-4000-8000-000000000312',
     ];
     const post = (index: number) =>
       app.request(
@@ -15693,6 +15697,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
     let deliver: (() => void) | undefined;
     let secondResponse: ReturnType<typeof post> | undefined;
+    let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     try {
       const firstResponse = await post(0);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
@@ -15720,6 +15725,15 @@ describe('createConfiguredTurnExecutor', () => {
         .find((candidate) => candidate.threadId === threadIds[1])!;
       expect(entry).toMatchObject({ status: 'queued', workspaceId, threadId: threadIds[1] });
       const secondScope = { workspaceId, threadId: entry.threadId, turnId: entry.turnId };
+      // A younger independent Task in the same Workspace completes its publication behind the
+      // held claim.
+      const thirdResponse = await post(2);
+      expect(thirdResponse.status, await thirdResponse.clone().text()).toBe(202);
+      const younger = attemptActionOwners
+        .listQueuedSchedulerAdmissionEntries(coreDb)
+        .find((candidate) => candidate.threadId === threadIds[2])!;
+      expect(younger).toMatchObject({ status: 'queued', workspaceId, threadId: threadIds[2] });
+      const youngerScope = { workspaceId, threadId: younger.threadId, turnId: younger.turnId };
       // The first Task's exact release commits before dispatch handles the held refusal.
       firstWork.completion.resolve();
       await firstWork.execution;
@@ -15755,9 +15769,27 @@ describe('createConfiguredTurnExecutor', () => {
         attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
       ).toEqual(entry);
       expect(native.effects).toHaveLength(effectsBefore);
+      // The deferred Task keeps its FIFO priority for the released Workspace. The younger Task
+      // stays queued with no attempt until the deferred Task gets the first claim.
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
+      ).toEqual(younger);
+      const agentSessionId = testEntityId('as', 'as_reply_second');
+      admitted = await native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', 'attempt_reply_second'),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      expect(admitted.attempt).toMatchObject({ turnId: entry.turnId, phase: 'open' });
+      expect(attempts.listSchedulerExecutionAttemptsForTurn(coreDb, youngerScope)).toEqual([]);
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
+      ).toEqual(younger);
     } finally {
       deliver?.();
       claims.mockRestore();
+      await admitted?.cleanup();
       for (const threadId of threadIds)
         for (const turn of store.listThreadTurns(workspaceId, threadId))
           native.executionFor(turn.id).completion.resolve();
