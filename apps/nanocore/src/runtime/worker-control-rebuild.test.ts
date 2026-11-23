@@ -751,16 +751,6 @@ describe('closed predecessor restore isolation', () => {
       const f = await createClosedPredecessorFixture(fault);
       const { gateway, holds } = f.hydrate();
 
-      // Inspectable, per owner, with finite fields only.
-      expect(holds).toEqual([
-        {
-          event: 'worker.control.restore-held',
-          errorCode: 'recovery_required',
-          causeCode,
-          attemptId: f.predecessor.attemptId,
-          workspaceId: DEMO_WORKSPACE_ID,
-        },
-      ]);
       // The old route is not restored, so its exact replay stays refused.
       expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
       await expect(replayPredecessorFinal(gateway, f.predecessor)).rejects.toMatchObject({
@@ -774,6 +764,16 @@ describe('closed predecessor restore isolation', () => {
       expect(gateway.registerSession(f.newSession)).toMatchObject({
         packageSnapshotId: f.newSession.snapshotId,
       });
+      // Inspectable, per owner, with finite fields only.
+      expect(holds).toEqual([
+        {
+          event: 'worker.control.restore-held',
+          errorCode: 'recovery_required',
+          causeCode,
+          attemptId: f.predecessor.attemptId,
+          workspaceId: DEMO_WORKSPACE_ID,
+        },
+      ]);
       if (fault === 'package-unreadable') {
         // Hydration never rewrites the retained record. Its exit is same-owner repair: the next
         // hydration of the repaired record restores the exact replay.
