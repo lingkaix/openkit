@@ -46,6 +46,11 @@ import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js'
 import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHostSettled,
+  testNanoHostRecoveryJoins,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -53,7 +58,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -67,10 +72,7 @@ import {
 } from './aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
-import {
-  dispatchNanoHostHarnessOperation,
-  settleNanoHostHarnessOperation,
-} from './nanohost-harness.js';
+import { settleNanoHostHarnessOperation } from './nanohost-harness.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
@@ -117,7 +119,7 @@ beforeAll(async () => {
   const workspaceDb = openWorkspaceDb(dataRoot, recoveryWorkspaceId);
   applyScopedMigrations(workspaceDb);
   await recordTestNativeRuntimeTarget(coreDb);
-  admitTestNativeEnvironment(
+  await admitTestNativeEnvironmentForRoot(
     coreDb,
     createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest
   );
@@ -164,7 +166,7 @@ async function createCheckpointCloseoutFixture(
     workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb);
     await recordTestNativeRuntimeTarget(coreDb);
-    admitTestNativeEnvironment(
+    await admitTestNativeEnvironmentForRoot(
       coreDb,
       createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest
     );
@@ -247,7 +249,9 @@ async function createCheckpointCloseoutFixture(
     sessionCompatibilityKey: 'fixture-compatibility',
     now: () => new Date().toISOString(),
   });
-  const gateway = createDefaultWorkerControlGateway(coreDb);
+  const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+  const { owner } = nanoHostStorage.value;
+  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
   const lineage = {
     workspaceId,
     threadId: turn.threadId,
@@ -300,6 +304,7 @@ async function createCheckpointCloseoutFixture(
     store,
     env: {},
     workerControlGateway: gateway,
+    nanoHostRecovery: testNanoHostRecoveryJoins(nanoHostStorage),
     nanoHostSessionDispatch: {
       async effect(first, second) {
         const request = second ?? (first as NanoHostSessionEffectRequest);
@@ -505,11 +510,15 @@ async function createCheckpointCloseoutFixture(
   try {
     const deadline = Date.now() + 25_000;
     while (!done && Date.now() < deadline) {
-      const integrations = coreDb.sqlite
-        .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
-        .all() as { ref: string }[];
+      const integrations = await readAdmittedTestNanoHostSettled(
+        coreDb,
+        (sqlite) =>
+          sqlite
+            .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+            .all() as { ref: string }[]
+      );
       for (const integration of integrations) {
-        const queued = await dispatchNanoHostHarnessOperation(coreDb, {
+        const queued = await owner.harnessTurnLifecycle.dispatch({
           sandboxIntegrationBindingRef: integration.ref,
         });
         if (!queued) continue;
@@ -546,11 +555,15 @@ async function createCheckpointCloseoutFixture(
           schemaVersion: 2 as const,
           sequence: command.sequence,
         };
-        await settleNanoHostHarnessOperation(coreDb, {
-          result,
-          sandboxIntegrationBindingRef: integration.ref,
-          timestamp: new Date().toISOString(),
-        });
+        await settleNanoHostHarnessOperation(
+          coreDb,
+          {
+            result,
+            sandboxIntegrationBindingRef: integration.ref,
+            timestamp: new Date().toISOString(),
+          },
+          owner.harnessTurnLifecycle
+        );
         await runtime.acceptNanoHostHarnessResult(result);
         if (command.operation === 'turn.start') {
           // The real final waiter follows native deliver-start and delivery-prove ACKs.
@@ -1594,9 +1607,26 @@ describe('worker recovery materialization', () => {
         case 'attempt still open':
           f.coreDb.sqlite.prepare("UPDATE scheduler_execution_attempts SET phase = 'open'").run();
           break;
-        case 'attempt has no fence':
-          f.coreDb.sqlite.prepare('UPDATE scheduler_execution_attempts SET fence_ref = NULL').run();
+        case 'attempt has no fence': {
+          // A retained closed projection without its exact lifecycle witness must fail closed.
+          const cut = f.coreDb.sqlite
+            .prepare(`DELETE FROM control_execution_steps
+              WHERE execution_id = ? AND state = 'completed'
+                AND json_extract(control_json, '$.kind') = 'release'
+                AND json_extract(control_json, '$.operationId') = ?
+                AND EXISTS (SELECT 1 FROM json_each(control_json, '$.outputRefs') WHERE value = ?)`)
+            .run(
+              `scheduler-lifecycle:${f.attempt.attemptId}`,
+              f.attempt.operationId,
+              `fence:${f.attempt.fenceRef}`
+            );
+          expect(cut.changes).toBe(1);
+          expect(requireSchedulerExecutionAttempt(f.coreDb, f.attempt.attemptId)).toMatchObject({
+            phase: 'closed',
+            fenceRef: null,
+          });
           break;
+        }
         case 'attempt has no operation':
           f.coreDb.sqlite
             .prepare('UPDATE scheduler_execution_attempts SET operation_id = NULL')

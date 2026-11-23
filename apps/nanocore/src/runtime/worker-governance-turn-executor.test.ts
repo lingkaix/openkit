@@ -202,6 +202,7 @@ import {
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
   currentAdmittedTestNanoHostOwner,
+  openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
   seedAdmittedTestNanoHost,
   testNanoHostRecoveryJoins,
@@ -299,7 +300,6 @@ import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-co
 import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
-import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -426,14 +426,17 @@ async function recordExecutorAttempt(
     readonly admittedAt?: string;
     readonly triggerActor?: ActorRef;
     readonly serverAdminTokenId?: string;
+    readonly useConfiguredRuntimeTarget?: true;
   }
 ): Promise<void> {
-  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
-    deploymentId: 'deployment_fake_executor',
-    identityId: 'identity_fake_executor',
-    allocationAt: '2026-07-15T00:00:00.000Z',
-    readyAt: '2026-07-15T00:00:01.000Z',
-  });
+  if (!input.useConfiguredRuntimeTarget) {
+    await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+      deploymentId: 'deployment_fake_executor',
+      identityId: 'identity_fake_executor',
+      allocationAt: '2026-07-15T00:00:00.000Z',
+      readyAt: '2026-07-15T00:00:01.000Z',
+    });
+  }
   const entry = await createTestQueueEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor: input.triggerActor ?? {
@@ -892,6 +895,7 @@ async function createWorkerContextExecutorFixture(
     readonly retrievalTraceOwner?: 'thread-before-turn' | 'turn';
     /** The caller publishes its own Knowledge and binds its selected trace before launch. */
     readonly skipInitialKnowledgeSelection?: boolean;
+    readonly useConfiguredRuntimeTarget?: true;
     readonly turnId?: string;
     readonly originatingThreadId?: string;
     readonly workerRequest?: string;
@@ -1034,6 +1038,7 @@ async function createWorkerContextExecutorFixture(
     threadId: turn.threadId,
     turnId: turn.id,
     turnInput: workerRequest,
+    ...(options.useConfiguredRuntimeTarget ? { useConfiguredRuntimeTarget: true } : {}),
   });
   const retrievalTraceRef = {
     scopeId:
@@ -12222,7 +12227,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     type CompletedKnowledgeTask = {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
       app: ReturnType<typeof createApp>;
-      launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
+      launchSpy: MockInstance<WorkerGovernanceBackend['submit']>;
+      native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
       selectedArtifact: ReturnType<FsStore['createArtifact']>;
       selectedArtifactBytes: string;
       journalRef: ExecutionJournalRef | null;
@@ -12238,6 +12244,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
         maxContextTokens: 240_000,
         skipInitialKnowledgeSelection: true,
+        useConfiguredRuntimeTarget: true,
         selectedArtifact: { id: selectedArtifactId, artifactVersion: 1 },
         prepareThread: async (store) => {
           const recordedAt = new Date().toISOString();
@@ -12393,9 +12400,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       workspaceDb.sqlite.close();
 
-      const backend = new FakeWorkerGovernanceBackend();
+      const setup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      await admitTestNativeEnvironmentForRoot(fixture.coreDb, setup.manifest);
+      const native = await createNativeTaskAdmissionFixture(fixture.coreDb, fixture.store, {
+        readRuntimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            ...loadRuntimeConfig(fixture.coreDb.dataRoot),
+            agentManifests: [setup.manifest],
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: new ProviderRegistry([
+              {
+                id: 'agent-openrouter',
+                displayName: 'Fixture Provider',
+                kind: 'local',
+                models: ['openai/gpt-5.2'],
+              },
+            ]),
+          }),
+      });
+      const backend = native.runtime.turnExecutor.executionBackend as WorkerGovernanceBackend;
       const launch = backend.submit.bind(backend);
       const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
+        if (args[0].turnId !== fixture.turn.id) return launch(...args);
         expect(
           parseWorkerContextPackageTrace(
             JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
@@ -12457,21 +12485,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ).toBe(oversizedKnowledgePageBytes);
         return launch(...args);
       });
-      const executor = new WorkerGovernanceTurnExecutor({
-        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb: fixture.coreDb,
-        createAgentSessionId: () => fixture.agentSessionId,
-        environmentBackend: {
-          kind: 'openshell',
-        },
-        now: () => '2026-07-15T00:00:03.000Z',
-      });
-
       const completed: CompletedKnowledgeTask = {
         fixture,
         app,
         launchSpy,
+        native,
         selectedArtifact,
         selectedArtifactBytes,
         journalRef: null,
@@ -12480,15 +12498,27 @@ describe('WorkerGovernanceTurnExecutor', () => {
       retainForCleanup(completed);
       // Observe the real producer's admission; do not manufacture a journal identity.
       const turnUpdates = vi.spyOn(fixture.store, 'updateTurn');
-      await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
-        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
-        agentSessionId: fixture.agentSessionId,
-        agentSetup: createTestAgentSetup(),
-        requestId: fixture.requestId,
-        sandboxBindingRef: fixture.sandboxBindingRef,
-        triggerActor: fixture.turn.triggerActor,
-        workspaceRoots: [],
-      });
+      const execution = native.executor.startTurn(
+        fixture.store,
+        fixture.turn.id,
+        fixture.workerRequest,
+        {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: setup,
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      const worker = native.executionFor(fixture.turn.id);
+      try {
+        await Promise.race([worker.launched.promise, execution]);
+      } finally {
+        worker.completion.resolve();
+        await execution;
+      }
       const admissions = turnUpdates.mock.calls.flatMap(([id, , options]) =>
         id === fixture.turn.id ? [...(options?.journalIntents ?? [])] : []
       );
@@ -12507,9 +12537,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         completed = value;
       });
     }, 60_000);
-    afterAll(() => {
+    afterAll(async () => {
       if (completed) {
         completed.launchSpy.mockRestore();
+        await completed.native.restore();
         completed.fixture.coreDb.sqlite.close();
       }
     });
@@ -12517,6 +12548,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     /** Proves the original exact lineage through public draft, human decision and retrieval. */
     async function proveCompletedWorkLineage(completed: CompletedKnowledgeTask) {
       const { fixture, app } = completed;
+      // Between cases the fixture Store shuts down its Worker; reopen the retained Native reader.
+      await openAdmittedTestNanoHost(fixture.coreDb);
 
       const completedTurn = fixture.store.getTurn(
         workspaceIdForOwner(fixture.turn.owner),
@@ -12708,39 +12741,28 @@ describe('WorkerGovernanceTurnExecutor', () => {
       sourceReferences: string[],
       candidatePageBytes: string
     ) {
-      const { fixture, selectedArtifact, selectedArtifactBytes, journalRef } = completed;
+      const { fixture, native, selectedArtifact, selectedArtifactBytes, journalRef } = completed;
       const workspaceId = workspaceIdForOwner(fixture.turn.owner);
       const workspaceRoot = join(fixture.coreDb.dataRoot, 'workspaces', workspaceId);
       const db = openTestWorkspaceDb(fixture.coreDb);
-      const target = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
-        getNanoHostRuntimeTarget({ sqlite }, 'runtime-target-test')
-      );
-      if (!target) throw new Error('The completed-work fixture RuntimeTarget is unavailable.');
-      const backend = new FakeWorkerGovernanceBackend();
-      const plan = backend.planSession.bind(backend);
-      backend.planSession = (pkg) => ({
-        ...plan(pkg),
-        deploymentId: target.deploymentId,
-        runtimeTargetId: target.targetId,
-      });
-      Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
+      const backend = native.runtime.turnExecutor.executionBackend as WorkerGovernanceBackend;
+      const submitCount = completed.launchSpy.mock.calls.length;
       const reached = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const collect = backend.collectTranscript.bind(backend);
       // External collection pauses after real submit acknowledgement and all S39 handoff writes.
-      const collection = vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
-        reached.resolve();
-        await release.promise;
-        return collect();
-      });
+      const collection = vi
+        .spyOn(backend, 'collectTranscript')
+        .mockImplementation(async (...args) => {
+          reached.resolve();
+          await release.promise;
+          return collect(...args);
+        });
       const turnUpdates = vi.spyOn(fixture.store, 'updateTurn');
-      const setup = createTestAgentSetup();
-      const executor = new WorkerGovernanceTurnExecutor({
-        backend,
-        coreDb: fixture.coreDb,
-        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
-        now: () => new Date().toISOString(),
+      const setup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
       });
+      const executor = native.executor;
       const app = createAppWithWorkspaceAuthority({
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
@@ -12773,13 +12795,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(accepted.status, await accepted.clone().text()).toBe(202);
         const acceptedBody = (await accepted.json()) as { turn: { id: string } };
         liveTurnId = acceptedBody.turn.id;
+        const worker = native.executionFor(liveTurnId);
+        await worker.launched.promise;
+        worker.completion.resolve();
         await Promise.race([
           reached.promise,
+          worker.execution,
           delay(10_000).then(() => {
             throw new Error('Live Task did not reach external collection after S39 delivery.');
           }),
         ]);
-        expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+        expect(completed.launchSpy.mock.calls.length - submitCount).toBe(1);
         const liveTurn = fixture.store.getTurnById(liveTurnId);
         expect(['pending', 'running', 'cancel-requested']).toContain(liveTurn.status);
         const liveAdmissions = turnUpdates.mock.calls.flatMap(([id, , options]) =>
@@ -13209,8 +13235,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       let history: ReturnType<typeof assertLiveSchemaHistory> | undefined;
       let previewed = false;
       beforeAll(async () => {
-        // A selected child suite must not inherit the parent fixture's Native mutation owner.
-        await shutdownControlStoreWorkerClient();
+        // A separate root admits its own Native owner; the parent still needs its retained read owner.
         const prepared = await prepareCompletedKnowledgeTask((value) => {
           companion = value;
         });
@@ -13232,6 +13257,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         } finally {
           if (companion) {
             companion.launchSpy.mockRestore();
+            await companion.native.restore();
             companion.fixture.coreDb.sqlite.close();
           }
         }
