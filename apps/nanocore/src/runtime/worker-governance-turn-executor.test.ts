@@ -95,7 +95,6 @@ import { WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import { NativeRuntimeCapture } from '../../../../packages/worker-shim/src/runtime-capture.js';
 import { openEphemeralSandboxIntegration } from '../../../../packages/worker-shim/src/test-support/ephemeral-integration.js';
-import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
@@ -1702,155 +1701,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const target = await recordTestNativeRuntimeTarget(coreDb);
-    const backend = new FakeWorkerGovernanceBackend();
-    const planSession = backend.planSession.bind(backend);
-    backend.planSession = (pkg) => ({
-      ...planSession(pkg),
-      deploymentId: target.deploymentId,
-      runtimeTargetId: target.targetId,
+    // The real configured runtime and Harness round trip run; only the outside peer is modeled.
+    const native = await createNativeTaskAdmissionFixture(coreDb, store);
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
-    const setup = createTestAgentSetup();
     const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
-    const gateway = createDefaultWorkerControlGateway(coreDb, undefined, nanoHostStorage);
-    const tokens = {
-      controlToken: Buffer.alloc(32, 17).toString('base64url'),
-      inferenceToken: Buffer.alloc(32, 34).toString('base64url'),
-      capabilityToken: Buffer.alloc(32, 51).toString('base64url'),
-    };
-    const materialize = backend.materialize.bind(backend);
-    let registration: ReturnType<typeof gateway.registerSession> | undefined;
-    backend.materialize = async (pkg, context) => {
-      registration = gateway.registerSession(pkg, {
-        sandboxBindingRef: context!.sandboxBindingRef!,
-        workerControlToken: tokens.controlToken,
-        workerInferenceToken: tokens.inferenceToken,
-        workerCapabilityToken: tokens.capabilityToken,
-      });
-      return materialize(pkg, context);
-    };
-    let app: ReturnType<typeof createAppWithWorkspaceAuthority>;
     const fenceEntered = Promise.withResolvers<void>();
     const permitFence = Promise.withResolvers<void>();
-    const release = backend.release.bind(backend);
-    vi.spyOn(backend, 'release').mockImplementation(async (input) => {
+    const executionBackend = native.executor.executionBackend!;
+    const release = executionBackend.release;
+    // Observe the release fence on top of the fixture's own observation.
+    executionBackend.release = async (...args) => {
       fenceEntered.resolve();
       await permitFence.promise;
-      return release(input);
-    });
-    const executor = new WorkerGovernanceTurnExecutor({
-      // Keep the existing deterministic fixture clock across the native owner boundary.
-      now: () => new Date().toISOString(),
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      commitNanoHostCloseout: nanoHostStorage.value.owner.classifyRecovery,
-      admitNanoHostSubmission: async (input) => {
-        if (!registration) throw new Error('Fixture Worker registration is missing.');
-        const decision = await nanoHostStorage.value.owner.firstSubmission(input);
-        if (decision.state === 'admitted-now')
-          seedTestNanoHostWorkerLaunch(
-            coreDb,
-            input.attemptId,
-            registration,
-            input.observedAt ?? new Date().toISOString()
-          );
-        return decision;
-      },
-      awaitWorkerCompletion: async (pkg) => {
-        const root = join(dataRoot, 'shim');
-        mkdirSync(root, { recursive: true });
-        const packagePath = join(root, 'package.json');
-        const lineage = {
-          workspaceId: pkg.scope.workspaceId,
-          threadId: pkg.scope.threadId,
-          turnId: pkg.scope.turnId,
-          agentSessionId: pkg.scope.agentSessionId,
-          requestId: pkg.scope.requestId,
-          packageSnapshotId: pkg.snapshotId,
-        };
-        // The external sandbox double supplies local paths; both terminal producers and Core consumers are real.
-        writeFileSync(
-          packagePath,
-          JSON.stringify({
-            ...pkg,
-            control: {
-              ...pkg.control,
-              adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture' },
-            },
-            extensions: {
-              openkit: {
-                turnInput: 'bounded attempt',
-                sessionWorkspace: {
-                  layout: { slots: [{ kind: 'worktree', access: 'read-write', path: root }] },
-                },
-              },
-            },
-            runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: root } },
-            workspace: { root, inputs: [] },
-            supply: { mcpServers: [{ id: 'echo' }] },
-          })
-        );
-        const integration = {
-          ready: Promise.resolve(),
-          bindTurnRouteTokens() {},
-          clearTurnRouteTokens() {},
-          async drainTurn() {
-            return 0;
-          },
-          workerControlFetch: async (url: string, init: RequestInit) =>
-            app.request(url.replace('/worker-control/', '/api/worker-control/'), init),
-        } as unknown as SandboxIntegrationClient;
-        await runResidentTurn({
-          adapterId: 'fixture',
-          credentialValues: [],
-          environment: {},
-          integration,
-          lineage,
-          onStarted() {},
-          packagePath,
-          resident: {
-            exited: new Promise(() => {}),
-            childState: () => 'running',
-            close: async () => {},
-            nativeHandle: async () => ({ state: 'pending' }),
-            startTurn: async () => ({
-              interrupt: async () => {},
-              settled: Promise.resolve({
-                assistantText: null,
-                status: 'length',
-                stopReason: 'length',
-              }),
-            }),
-          },
-          runtimeEnvironmentNames: new Set(),
-          nativeEnvironment: null,
-          sessionDir: join(root, 'output'),
-          signal: new AbortController().signal,
-          tokens,
-          turnDirectory: join(root, 'turn'),
-        });
-        const transcript = backend.collectTranscript.bind(backend);
-        vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => ({
-          ...(await transcript()),
-          eventsJsonl: readFileSync(join(root, 'output', 'events.jsonl'), 'utf8'),
-          itemsJsonl: readFileSync(join(root, 'output', 'items.jsonl'), 'utf8'),
-        }));
-        return readAdmittedTestNanoHost(coreDb, (sqlite) =>
-          getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
-        )!;
-      },
-      ...testWorkerExecutorNanoHostJoins(
-        await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-      ),
-    });
-    app = createAppWithWorkspaceAuthority({
+      return release.apply(executionBackend, args);
+    };
+    const app = createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
       store,
-      turnExecutor: executor,
-      workerControlGateway: gateway,
+      nanoHostStorage,
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
@@ -1874,12 +1748,35 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const accepted = await submit();
       expect(accepted.status, await accepted.clone().text()).toBe(202);
       const original = await accepted.json();
-      await vi.waitFor(() => expect(backend.calls).toContain('cleanupSession'), {
-        timeout: 10_000,
-      });
+      await native.executor.launched.promise;
+      // The Worker reports Harness length through the Worker control authority; the shim's
+      // native-length to blocked/length mapping is covered by `packages/worker-shim/src/turn.test.ts`.
+      const lineage = native.executor.nativeLineage!;
+      const data = {
+        status: 'blocked',
+        stopReason: 'length',
+        evidenceManifestDigests: {},
+      } as const;
+      native.outside.transcripts
+        .get(lineage.turnId)!
+        .events.push(buildWorkerCanonicalTerminalEventRecord({ lineage, sequence: 1, data }));
+      expect(
+        (
+          await native.workerControlGateway.recordFinalStatus({
+            authorization: `Bearer ${native.executionFor(original.turn.id).workerControlToken}`,
+            tokenFamily: 'worker-control',
+            lineage,
+            sequence: 1,
+            ...data,
+          })
+        ).accepted
+      ).toBe(true);
+      for (const harness of native.outside.bindings.values())
+        for (const binding of harness.values())
+          if (binding.turnId === lineage.turnId) binding.state = 'completed';
       await Promise.race([
         fenceEntered.promise,
-        delay(1_000).then(() => {
+        delay(15_000).then(() => {
           throw new Error('Expected release fence was not reached.');
         }),
       ]);
@@ -1894,6 +1791,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
           )
         ).not.toBeNull();
         permitFence.resolve();
+        // The outside peer's delivery join ends only after the Worker Turn has settled; let the
+        // real closeout finish first so the peer never publishes a second final.
+        await vi.waitFor(() => {
+          expect(store.getTurnById(original.turn.id).status).toBe('completed');
+          expect(
+            attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: original.turn.threadId,
+              turnId: original.turn.id,
+            })[0]
+          ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+        });
+        await delay(300);
+        native.executor.completion.resolve();
         await vi.waitFor(() =>
           expect(
             getWorkerCheckpoint(
@@ -1927,7 +1838,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(attempt).toHaveLength(1);
       expect(attempt[0]).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
-      expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+      expect(native.executor.launches).toBe(1);
       expect(
         store.listThreadAgentSessions(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -1936,6 +1847,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ).toHaveLength(1);
     } finally {
       permitFence.resolve();
+      native.executor.completion.resolve();
+      if (native.executor.launches) await Promise.allSettled([native.executor.execution]);
+      await native.restore();
       coreDb.sqlite.close();
     }
   });
@@ -7014,118 +6928,66 @@ describe('WorkerGovernanceTurnExecutor', () => {
   );
 
   it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+    // The Native peer's accepted ready proof is real: the Harness result carries this digest.
     const digest = 'a'.repeat(64);
-    let record:
-      | ((
-          digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
-        ) => void | Promise<void>)
-      | null = null;
-    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
-      bindNativeHandleRecorder: (
-        _packageSnapshotId: string,
-        recorder: (
-          digest: string,
-          retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
-        ) => void | Promise<void>
-      ) => {
-        record = recorder;
+    const opens: { agentSessionId: unknown; resume: unknown }[] = [];
+    const f = await launchFinalReviewWorker(
+      'resume_first',
+      async (coreDb) => {
+        const agentSetup = createTestAgentSetup({
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        });
+        await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
+        return { agentSetup };
       },
-    });
-    const agentSessionIds = [
-      testEntityId('as', 'as_resume_first'),
-      testEntityId('as', 'as_resume_successor'),
-    ];
-    const executor = await createAdmittedModeledWorkerExecutor(
       {
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        awaitWorkerCompletion: async () => {
-          // The backend accepts the ready proof during the Turn, after materialization.
-          await record?.(digest, {
-            attachmentGeneration: 1,
-            storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
-            workSlotRef: workerStorageDefaultWorkSlotRef(
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001'
-            ),
-          });
-          return {
-            acceptedAt: '2026-07-15T00:00:03.000Z',
-            status: 'completed' as const,
-            stopReason: 'completed',
-          };
+        realNative: true,
+        onNative: (native) => {
+          const accept = native.runtime.acceptNanoHostHarnessCommand;
+          vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand').mockImplementation(
+            async (command) => {
+              const wire = await accept(command);
+              if (wire?.operation === 'session.open')
+                opens.push({ agentSessionId: wire.body.agentSessionId, resume: wire.body.resume });
+              return wire;
+            }
+          );
         },
-        backend,
-        coreDb,
-        now: () => '2026-07-15T00:00:03.000Z',
-      },
-      'publish'
+      }
     );
-    const run = async (agentSessionId: string, index: number) => {
-      const turn = await createAssignedTurn(
-        store,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        `Resume turn ${index}`
-      );
-      const sandboxBindingRef = `lease-binding:resume-${index}`;
-      await recordExecutorAttempt(coreDb, {
-        agentSessionId,
-        packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
-        requestId: `00000000-0000-4000-8000-00000000026${index}`,
-        sandboxBindingRef,
-        threadId: turn.threadId,
-        turnId: turn.id,
-      });
-      await executor.startTurn(store, turn.id, `Resume turn ${index}`, {
-        attemptId: testEntityId('attempt', `lease_${turn.id}`),
-        agentSessionId,
-        agentSetup: createTestAgentSetup(),
-        requestId: `00000000-0000-4000-8000-00000000026${index}`,
-        sandboxBindingRef,
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
-    };
-
     try {
-      await run(agentSessionIds[0]!, 1);
-      // The first binding of a Thread starts a new native conversation.
-      expect(backend.lastContext?.nativeResume).toBeNull();
-      expect(store.getAgentSession(agentSessionIds[0]!)).toMatchObject({
+      await f.admitted.complete();
+      expect(f.store.getAgentSession(f.agentSessionId)).toMatchObject({
         nativeHandleDigest: digest,
         status: 'idle',
       });
+      // The first binding of a Thread starts a new native conversation.
+      expect(opens).toEqual([{ agentSessionId: f.agentSessionId, resume: null }]);
       // The pair outlives the binding: close the predecessor, then admit a successor.
-      await store.updateAgentSession(agentSessionIds[0]!, { status: 'closed' });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
-        )
-        .run(agentSessionIds[0]);
-      record = null;
-
-      await run(agentSessionIds[1]!, 2);
-      expect(backend.lastContext?.nativeResume).toEqual({
-        digest,
-        locator: agentSessionIds[0],
+      await f.store.updateAgentSession(f.agentSessionId, { status: 'closed' });
+      const successorId = testEntityId('as', 'as_resume_successor');
+      const successor = await admitNativeSuccessorTurn(f, {
+        agentSessionId: successorId,
+        requestId: '00000000-0000-4000-8000-000000000262',
+        text: 'Resume turn 2',
       });
-      expect(store.getAgentSession(agentSessionIds[0]!).nativeHandleDigest).toBe(digest);
+      try {
+        await successor.admitted.complete();
+      } finally {
+        await successor.admitted.cleanup();
+      }
+      expect(opens.at(-1)).toEqual({
+        agentSessionId: successorId,
+        resume: { digest, locator: f.agentSessionId },
+      });
+      expect(f.store.getAgentSession(f.agentSessionId).nativeHandleDigest).toBe(digest);
       // A conflicting later proof for the same AgentSession is refused.
-      await store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: digest });
+      await f.store.updateAgentSession(successorId, { nativeHandleDigest: digest });
       await expect(
-        store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: 'b'.repeat(64) })
+        f.store.updateAgentSession(successorId, { nativeHandleDigest: 'b'.repeat(64) })
       ).rejects.toThrow('resume digest cannot change');
     } finally {
-      coreDb.sqlite.close();
+      await f.dispose();
     }
   });
 
@@ -14161,164 +14023,94 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('records Vault injection receipts only when a Turn opens its binding', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-vault-reuse-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
+    // Provider-visibility credentials are refused by the production NanoHost backend (see the
+    // 'nanohost-provider' credential-support case), so the reuse contract runs on a runtime-file
+    // declaration delivered through the real Harness `reference.import`.
     const timestamp = '2026-07-05T00:00:00.000Z';
-    const agentSessionId = testEntityId('as', 'as_governance_vault_reuse');
-
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
-    vaultUnlockState.backend().store({
-      material: ['ghp', 'governance', 'token'].join('_'),
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-      secretKind: 'github-token',
-      now: () => timestamp,
-    });
-    await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      expiresAt: '2099-07-05T01:00:00.000Z',
-      grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      policyDecisionId: 'pd_00000000-0000-74a7-97bd-a31e71c87579',
-      targetAgentSessionId: agentSessionId,
-      vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-      now: () => timestamp,
-    });
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const providerAccessShape = {
-      id: 'github_mcp',
-      credentialKey: 'GITHUB_TOKEN',
-      endpoints: [
-        { name: 'github_api', host: 'api.github.com', port: 443, binaries: ['/usr/bin/curl'] },
-      ],
-    };
-    const baseConfiguration = loadRuntimeConfig(coreDb.dataRoot);
-    const configuration = createInMemoryRuntimeConfigSnapshot({
-      ...baseConfiguration,
-      dataRoot: coreDb.dataRoot,
-      gatewayConfig: {
-        ...baseConfiguration.gatewayConfig,
-        providerAccessShapes: [providerAccessShape],
-      },
-    });
-    const interception = new PolicyInterception();
-    const backend = new FakeWorkerGovernanceBackend();
-    // Each Turn has its own backend session record even when it reuses the AgentSession binding.
-    const planSession = backend.planSession.bind(backend);
-    backend.planSession = (environmentPackage) => ({
-      ...planSession(environmentPackage),
-      backendSessionId: `openkit-${environmentPackage.snapshotId}`,
-    });
-    const executor = await createAdmittedModeledWorkerExecutor(
-      {
-        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-        backend,
-        coreDb,
-        createAgentSessionId: () => agentSessionId,
-        policyInterception: () => interception,
-        readRuntimeConfig: () => configuration,
-        now: () => timestamp,
-        vaultBackend: () => vaultUnlockState.backend(),
-      },
-      true
-    );
-    const agentSetup = createTestAgentSetup({
-      credentialDeclarations: [
-        {
-          id: 'github_mcp_read',
-          provider: {
-            credentialKey: 'GITHUB_TOKEN',
-            instanceId: 'provider_github_read',
-            profileId: 'github_mcp',
-            type: 'github_mcp',
-          },
-          vaultGrantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-          visibility: 'sandbox-provider',
-        },
-      ],
-    });
-    const run = async (index: number) => {
-      const turn = await createAssignedTurn(
-        store,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        `Vault reuse ${index}`,
-        undefined,
-        undefined,
-        `00000000-0000-4000-8000-00000000027${index}`
-      );
-      await startWithExecutorAttempt(
-        coreDb,
-        executor,
-        store,
-        turn,
-        agentSessionId,
-        timestamp,
-        `Vault reuse ${index}`,
-        {
-          agentSessionId,
+    const credentialValue = ['ghp', 'governance', 'token'].join('_');
+    const referenceId = 'vault_00000000-0000-7d14-9747-33948cb59d1e';
+    const grantId = 'grant_00000000-0000-7d98-b1e4-8d2f442e5137';
+    const f = await launchFinalReviewWorker(
+      'vault_reuse',
+      async (coreDb, _store, _turn, agentSessionId) => {
+        const vault = createVaultUnlockState({
+          backendKind: 'encrypted-file',
+          storeDir: join(coreDb.dataRoot, 'server', 'vault'),
+        });
+        vault.unlock({ masterKey: Buffer.alloc(32, 8) });
+        vault.backend().store({
+          material: credentialValue,
+          metadata: { ownerScope: 'server' },
+          referenceId,
+        });
+        await createVaultReference(coreDb, {
+          backendKind: 'encrypted-file',
+          backendLocator: `encrypted-file://server/vault/${referenceId}`,
+          displayName: 'GitHub read token',
+          ownerScope: 'server',
+          referenceId,
+          secretKind: 'github-token',
+          now: () => timestamp,
+        });
+        await createVaultGrant(coreDb, {
+          allowedInjectionPaths: ['runtime-file'],
+          expiresAt: '2099-07-05T01:00:00.000Z',
+          grantId,
+          lifetime: 'agent-session',
+          ownerScope: 'server',
+          policyDecisionId: 'pd_00000000-0000-74a7-97bd-a31e71c87579',
+          targetAgentSessionId: agentSessionId,
+          vaultReferenceId: referenceId,
+          now: () => timestamp,
+        });
+        const agentSetup = createTestAgentSetup({
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+          credentialDeclarations: [
+            {
+              id: 'github_token_file',
+              targetPath: '/sandbox/github-token',
+              vaultGrantId: grantId,
+              visibility: 'runtime-file' as const,
+            },
+          ],
+        });
+        await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
+        const interception = new PolicyInterception();
+        return {
           agentSetup,
-          requestId: `00000000-0000-4000-8000-00000000027${index}`,
-          triggerActor: turn.triggerActor,
-          workspaceRoots: [],
-        }
+          vaultBackend: () => vault.backend(),
+          policyInterception: () => interception,
+        };
+      },
+      { realNative: true }
+    );
+    const imports = () =>
+      f.native.effects.filter(
+        (effect) => effect.kind === 'reference.import' && effect.input.slot === 'runtime-credential'
       );
-    };
-
     try {
-      await run(1);
-      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
-      expect(backend.lastContext?.providerCredentials).toEqual([
-        expect.objectContaining({
-          declarationId: 'github_mcp_read',
-          grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-          vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-          materialVersion: 1,
-          accessShape: providerAccessShape,
-        }),
+      await f.admitted.complete();
+      expect(listVaultInjectionReceipts(f.coreDb)).toEqual([
+        expect.objectContaining({ agentSessionId: f.agentSessionId, grantId }),
       ]);
-      expect(
-        (backend.lastContext?.providerCredentials ?? []).every(
-          (value) =>
-            typeof value === 'object' &&
-            value !== null &&
-            !Object.hasOwn(value, 'credentialValue') &&
-            !Object.hasOwn(value, 'synthetic')
-        )
-      ).toBe(true);
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
-        )
-        .run(agentSessionId);
-
+      expect(imports()).toHaveLength(1);
       // The idle AgentSession's binding is reused: credential material was delivered at open.
-      await run(2);
-      expect(store.getAgentSession(agentSessionId).status).toBe('idle');
-      expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
-      expect(backend.providerCredentialCheckValues).toEqual([
-        ['ghp', 'governance', 'token'].join('_'),
-      ]);
+      const reuse = await admitNativeSuccessorTurn(f, {
+        agentSessionId: f.agentSessionId,
+        candidateAgentSessionId: testEntityId('as', 'as_vault_reuse_candidate'),
+        requestId: '00000000-0000-4000-8000-000000000272',
+        text: 'Vault reuse 2',
+      });
+      try {
+        await reuse.admitted.complete();
+      } finally {
+        await reuse.admitted.cleanup();
+      }
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('idle');
+      expect(listVaultInjectionReceipts(f.coreDb)).toHaveLength(1);
+      expect(imports()).toHaveLength(1);
     } finally {
-      coreDb.sqlite.close();
+      await f.dispose();
     }
   });
 
@@ -18157,6 +17949,66 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
   }
 }
 
+/** Publishes and admits one more Turn of the same Thread through the running Native fixture. */
+async function admitNativeSuccessorTurn(
+  f: NativeFinalReviewWorkerFixture,
+  input: {
+    agentSessionId: string;
+    candidateAgentSessionId?: string;
+    requestId: string;
+    text: string;
+  }
+) {
+  const { coreDb, store } = f;
+  const workspaceId = f.lineage.workspaceId;
+  const threadId = f.lineage.threadId;
+  const turnId = deriveEntityId('tu', [
+    JSON.stringify({ kind: 'user', id: LOCAL_USER_ID }),
+    workspaceId,
+    threadId,
+    input.requestId,
+    null,
+  ]);
+  const entry = await createTestQueueEntry(coreDb, {
+    backendId: 'nanohost',
+    triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+    queueEntryId: `queue_${turnId}`,
+    requestId: input.requestId,
+    requestedAgentId: 'agent_codex_host',
+    threadId,
+    turnId,
+    text: input.text,
+    workspaceId,
+    now: () => new Date().toISOString(),
+  });
+  await store.createTurn(
+    entry.workspaceId,
+    entry.threadId,
+    input.text,
+    entry.triggerActor,
+    undefined,
+    {
+      turnId: entry.turnId,
+      status: 'pending',
+      agentId: entry.requestedAgentId,
+      executorKind: 'worker',
+      triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
+      commandReceipt: turnStartFixtureReceipt(
+        input.requestId,
+        { workspaceId: entry.workspaceId, threadId: entry.threadId, actorId: LOCAL_USER_ID },
+        commandInputHash({ queueEntryId: entry.queueEntryId, turnInput: input.text })
+      ),
+    }
+  );
+  const attemptId = testEntityId('attempt', `lease_${turnId}`);
+  const admitted = await f.native.admitTurn(entry, {
+    attemptId,
+    agentSessionId: input.agentSessionId,
+    candidateAgentSessionId: input.candidateAgentSessionId ?? input.agentSessionId,
+  });
+  return { entry, attemptId, admitted };
+}
+
 /** Launches through the real Core owners and waits on the real durable completion stream; only the external worker is modeled. */
 type FinalReviewWorkerPreparation = (
   coreDb: CoreDb,
@@ -18207,12 +18059,17 @@ type NativeFinalReviewWorkerFixture = Omit<
   workerLifecycleRuntime: NativeAdmissionFixture['runtime'];
   runtimeConfigManager: ReturnType<typeof createRuntimeConfigManager>;
   gatewayConfig: ReturnType<typeof createTestGatewayConfig>;
+  native: NativeAdmissionFixture;
+  admitted: Awaited<ReturnType<NativeAdmissionFixture['admitTurn']>>;
 };
 
 type NativeFinalReviewWorkerOptions = Pick<
   NonNullable<Parameters<typeof createNativeTaskAdmissionFixture>[2]>,
   'beforeStaleInterruptPoll' | 'interruptRefusal'
->;
+> & {
+  /** Observes the fixture before its first Turn is admitted (for example to record Harness commands). */
+  onNative?: (native: NativeAdmissionFixture) => void;
+};
 
 function launchFinalReviewWorker(
   suffix: string,
@@ -18379,6 +18236,7 @@ async function launchFinalReviewWorker(
     });
     const entry = nativeEntry;
     if (!entry) throw new Error('Real native setup omitted its canonical pending admission.');
+    options.onNative?.(native);
     const admitted = await native
       .admitTurn(entry, {
         attemptId,
@@ -18431,6 +18289,8 @@ async function launchFinalReviewWorker(
       workerLifecycleRuntime: native.runtime,
       runtimeConfigManager,
       gatewayConfig,
+      native,
+      admitted,
       execution,
       settled: () => settled,
       async dispose() {
