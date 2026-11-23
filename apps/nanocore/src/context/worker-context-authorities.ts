@@ -64,8 +64,8 @@ export interface WorkerContextPackageAuthorityReaderInput {
 export function createWorkerContextPackageAuthorityReader(
   input: WorkerContextPackageAuthorityReaderInput
 ): WorkerContextPackageAuthorityReader {
-  const { coreDb, store, workspaceDb } = input;
-  const steps = workerContextAuthoritySteps(coreDb, store, workspaceDb, true);
+  const { coreDb, store, workspaceDb, readNanoHost } = input;
+  const steps = workerContextAuthoritySteps(coreDb, store, workspaceDb, true, readNanoHost);
   return {
     readSourceFile: (source) =>
       readOrNull(() => {

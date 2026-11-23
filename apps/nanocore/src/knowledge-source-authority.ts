@@ -5,6 +5,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import {
   createWorkerContextPackageAuthorityReader,
   createWorkerContextPackageAuthorityStepReader,
+  type WorkerContextPackageAuthorityReaderInput,
 } from './context/worker-context-authorities.js';
 import {
   readPortableWorkerContextPackageTrace,
@@ -54,6 +55,8 @@ export function verifyKnowledgeProposalWorkHistory(input: {
   readonly workspaceDb: WorkspaceDb | undefined;
   /** Workspace that must own every completed-work record. */
   readonly workspaceId: string;
+  /** The deciding Worker's acknowledged NanoHost reader. Main keeps its own admitted reader. */
+  readonly readNanoHost?: WorkerContextPackageAuthorityReaderInput['readNanoHost'];
 }): KnowledgeProposalWorkHistoryVerification {
   const steps = verifyKnowledgeProposalWorkHistoryWithOwners(input, true);
   for (;;) {
@@ -76,6 +79,8 @@ export function* verifyKnowledgeProposalWorkHistorySteps(input: {
   readonly workspaceDb: WorkspaceDb | undefined;
   /** Workspace that must own every completed-work record. */
   readonly workspaceId: string;
+  /** The deciding Worker's acknowledged NanoHost reader. Main keeps its own admitted reader. */
+  readonly readNanoHost?: WorkerContextPackageAuthorityReaderInput['readNanoHost'];
 }): Generator<void, KnowledgeProposalWorkHistoryVerification, void> {
   return yield* verifyKnowledgeProposalWorkHistoryWithOwners(input, false);
 }
@@ -146,6 +151,7 @@ function* verifyKnowledgeProposalWorkHistoryWithOwners(
       coreDb: input.coreDb,
       store: input.store,
       workspaceDb: input.workspaceDb,
+      ...(input.readNanoHost ? { readNanoHost: input.readNanoHost } : {}),
     };
     const traceInput = {
       workspaceId: input.workspaceId,

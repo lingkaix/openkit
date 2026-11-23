@@ -488,7 +488,16 @@ function* nativeSchemaApplicationSteps(
       workspaceRoot,
       knowledgeBaseId,
     });
-    const access = { store, coreDb, workspaceDb, actor: producer, requestActor };
+    // Completed-work Page disclosure reads backend sessions from the acknowledged opening.
+    const nanoHostRead = observations?.readNanoHost;
+    const access = {
+      store,
+      coreDb,
+      workspaceDb,
+      actor: producer,
+      requestActor,
+      ...(nanoHostRead ? { readNanoHost: nanoHostRead } : {}),
+    };
     yield;
     const ownerAdmission = (
       baseRevision: string,
