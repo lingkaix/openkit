@@ -338,7 +338,8 @@ async function createDurableWorkerControlLease(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
-  suffix: string
+  suffix: string,
+  readyTarget?: Awaited<ReturnType<typeof recordTestNativeRuntimeTarget>>
 ): Promise<string> {
   const binding = `lease-binding:lease_${suffix}`;
   await admittedRouteNanoHost(coreDb);
@@ -371,7 +372,10 @@ async function createDurableWorkerControlLease(
       workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
       workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
     },
-    { attemptId: testEntityId('attempt', `lease_${suffix}`) }
+    {
+      attemptId: testEntityId('attempt', `lease_${suffix}`),
+      ...(readyTarget ? { readyTarget } : {}),
+    }
   );
   attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
     ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
@@ -1160,11 +1164,15 @@ describe('worker control routes', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           ownerUserId: LOCAL_USER_ID,
         });
+        const target = clearRuntimeTargetReadiness
+          ? await recordTestNativeRuntimeTarget(coreDb, `test-target-${fixture.lineage.turnId}`)
+          : undefined;
         const binding = await createDurableWorkerControlLease(
           coreDb,
           fixture.environmentPackage,
           fixture.lineage,
-          'process_key_reconnect'
+          'process_key_reconnect',
+          target
         );
         // The submitted lease already holds its launched Native anchor with the Workspace handoff complete.
         const attemptId = testEntityId('attempt', 'lease_process_key_reconnect');
@@ -1222,15 +1230,103 @@ describe('worker control routes', () => {
           expect((await postHeartbeat(firstApp, 1)).status).toBe(200);
         }
         expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
-        const restartedApp = restart();
-        if (clearRuntimeTargetReadiness) {
-          await transitionTestNativeRuntimeTargetFields('close', coreDb, {
-            authoritativeGeneration: null,
-            closedGeneration: 1,
-            observedAt: '2026-07-05T00:00:01.000Z',
-            targetId: `test-target-${fixture.lineage.turnId}`,
+        if (target) {
+          // Boot may arm only after sequence 1 has genuinely reached the admitted writer.
+          expect((await postHeartbeat(firstApp, 1)).status).toBe(200);
+          const boot = async (sequence: number) => {
+            await shutdownControlStoreWorkerClient();
+            const storage = await reopenRouteNanoHost(coreDb);
+            const restoreBackendSession = vi.fn(async () => {});
+            const classifiedAt = new Date().toISOString();
+            await expect(
+              classifyNanoHostAttemptsAfterRestart(coreDb, {
+                now: () => classifiedAt,
+                admittedNanoHostRecovery: {
+                  state: 'ready',
+                  value: bindBootNanoHostAttemptRecovery(storage.value.owner),
+                },
+                executionBackend: new SimulatedTurnExecutor({ coreDb }),
+                reconcileExecutions: async () => {},
+                cleanupBackendSession: vi.fn(),
+                prepareBackendCleanup: vi.fn(() => false),
+                restoreBackendSession,
+                reconcileAcceptedFinalStatus: vi.fn(),
+                projectRecoveredTurn: vi.fn(),
+              })
+            ).resolves.toEqual({ failedAttemptIds: [] });
+            expect(restoreBackendSession).toHaveBeenCalledOnce();
+            expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
+              lastWorkerSequence: sequence,
+              workerProcessKeyHash: processKeyHash,
+              recoveryState: 'awaiting-reconnect',
+              recoveryDeadline: new Date(
+                Math.min(Date.parse(absoluteDeadline), Date.parse(classifiedAt) + 300_000)
+              ).toISOString(),
+            });
+            return makeApp();
+          };
+          const restarted = await boot(1);
+          const beforeKey = requireNanoHostExecutionAttempt(coreDb, attemptId);
+          const missingKey = await postHeartbeat(restarted, 2);
+          expect(missingKey.status).toBe(expectedStatus);
+          const missingKeyBody = await missingKey.text();
+          expect(JSON.parse(missingKeyBody)).toMatchObject({ code: expectedErrorCode });
+          expect(missingKeyBody).not.toContain(originalKey);
+          expect(
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, fixture.lineage.workspaceId)
+            )
+          ).toEqual([]);
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(beforeKey);
+          const wrongKey = createHash('sha256')
+            .update('wrong-route-process-key')
+            .digest('base64url');
+          const refused = await postHeartbeat(restarted, 2, wrongKey);
+          expect(refused.status).not.toBe(200);
+          expect(await refused.text()).not.toContain(wrongKey);
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(beforeKey);
+          const adopted = await postHeartbeat(restarted, 2, originalKey);
+          expect(adopted.status).toBe(200);
+          expect(await adopted.text()).not.toContain(originalKey);
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
+            lastWorkerSequence: 2,
+            recoveryState: null,
+            recoveryDeadline: null,
           });
+          const unreadyApp = await boot(2);
+          const notReady = await transitionTestNativeRuntimeTargetFields('close', coreDb, {
+            authoritativeGeneration: null,
+            closedGeneration: target.connectionGeneration,
+            observedAt: new Date().toISOString(),
+            targetId: target.targetId,
+          });
+          expect(notReady.ready).toBe(false);
+          const beforeRefused = requireNanoHostExecutionAttempt(coreDb, attemptId);
+          const unavailable = await postHeartbeat(unreadyApp, 3, originalKey);
+          expect(unavailable.status).toBe(403);
+          const refusedBody = await unavailable.text();
+          expect(JSON.parse(refusedBody)).toMatchObject({ code: 'worker_control_lease_not_live' });
+          expect(refusedBody).not.toContain(originalKey);
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(beforeRefused);
+          expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
+          expect(
+            workerControlJournal(coreDb)
+              .prepare(
+                "SELECT sequence FROM worker_control_sequence_fingerprints WHERE operation='heartbeat' ORDER BY sequence"
+              )
+              .all()
+          ).toEqual([{ sequence: 0 }, { sequence: 1 }, { sequence: 2 }]);
+          const retained = JSON.stringify(
+            workerControlJournal(coreDb)
+              .prepare(`SELECT record_json FROM worker_control_records
+                UNION ALL SELECT fingerprint AS record_json FROM worker_control_sequence_fingerprints`)
+              .all()
+          );
+          expect(retained).not.toContain(originalKey);
+          expect(retained).not.toContain(wrongKey);
+          return;
         }
+        const restartedApp = restart();
         if (beginBackendCleanup) {
           const { value: native } = await openAdmittedTestNanoHost(coreDb);
           await native.owner.backendSession({

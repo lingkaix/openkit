@@ -14,7 +14,10 @@ import {
   NANO_HOST_HEARTBEAT_BUDGET_MS,
   nanoHostStartupDeadline,
 } from '../runtime/nanohost-attempt-clocks.js';
-import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
+import {
+  getNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from '../runtime/nanohost-runtime-target-records.js';
 import type {
   WorkerControlLineage,
   WorkerControlRegistration,
@@ -137,14 +140,33 @@ export function submitTestNanoHostWorkerLease(
     readonly nativePath?: string;
     readonly observedAt?: string;
     readonly exclusionRefs?: readonly string[];
+    /** Reuse a target opened by the real placement producer so its epoch can later retire. */
+    readonly readyTarget?: NanoHostRuntimeTargetRecord;
   } = {}
 ) {
+  const readyTarget = fixture.readyTarget;
+  if (readyTarget) {
+    const current = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getNanoHostRuntimeTarget({ sqlite }, readyTarget.targetId)
+    );
+    if (
+      !current?.ready ||
+      !current.freshEmpty ||
+      !current.predecessorFenced ||
+      current.connectionGeneration !== readyTarget.connectionGeneration ||
+      current.identityId !== readyTarget.identityId ||
+      current.deploymentId !== readyTarget.deploymentId ||
+      !current.physicalEpoch ||
+      current.physicalEpoch !== readyTarget.physicalEpoch
+    )
+      throw new Error('Worker lease fixture requires its exact acknowledged ready target.');
+  }
   const createdAt = fixture.observedAt ?? new Date().toISOString();
   const now = () => createdAt;
   const { workspaceId, threadId, turnId } = admission;
   const { agentSessionId, packageSnapshotId: inputRef } = registration;
   const attemptId = fixture.attemptId ?? testEntityId('attempt', `worker-lease-${turnId}`);
-  const targetId = `test-target-${turnId}`;
+  const targetId = readyTarget?.targetId ?? `test-target-${turnId}`;
   createSchedulerExecutionAttempt(coreDb, {
     entry: admission,
     attemptId,
@@ -158,14 +180,14 @@ export function submitTestNanoHostWorkerLease(
     admission,
     attemptId,
     targetId,
-    generation: '1',
+    generation: String(readyTarget?.connectionGeneration ?? 1),
     observedAt: createdAt,
     ...(fixture.exclusionRefs === undefined ? {} : { exclusionRefs: fixture.exclusionRefs }),
   });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 
-  const deploymentId = 'test-worker-deployment';
-  const epoch = 'a'.repeat(64);
+  const deploymentId = readyTarget?.deploymentId ?? 'test-worker-deployment';
+  const epoch = readyTarget?.physicalEpoch ?? 'a'.repeat(64);
   const startupDeadline = nanoHostStartupDeadline({ createdAt });
   const sqlite = new Database(
     fixture.nativePath ?? serverStoragePath(coreDb.dataRoot, 'nanohost'),
@@ -178,20 +200,21 @@ export function submitTestNanoHostWorkerLease(
     // Gateway reads. The Harness submission, Workspace handoff and writer gates have their own tests.
     sqlite
       .transaction(() => {
-        sqlite
-          .prepare(`INSERT INTO nanohost_runtime_targets (
+        if (!readyTarget)
+          sqlite
+            .prepare(`INSERT INTO nanohost_runtime_targets (
           target_id, identity_id, deployment_id, connection_generation, predecessor_fenced,
           ready, fresh_empty, physical_epoch, observed_at, slot_count, last_fresh_ready_at
         ) VALUES (?, ?, ?, ?, 1, 1, 1, ?, ?, 1, ?)`)
-          .run(
-            targetId,
-            targetId,
-            deploymentId,
-            Number(grant.generation),
-            epoch,
-            createdAt,
-            createdAt
-          );
+            .run(
+              targetId,
+              targetId,
+              deploymentId,
+              Number(grant.generation),
+              epoch,
+              createdAt,
+              createdAt
+            );
         sqlite
           .prepare(`INSERT INTO worker_backend_sessions (
           attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,

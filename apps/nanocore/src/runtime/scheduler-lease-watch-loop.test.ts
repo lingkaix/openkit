@@ -1,9 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import * as storage from '../storage/db.js';
@@ -16,8 +24,13 @@ import {
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
-import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+  recordTestAgentEnvironmentPackage,
+} from '../test-support/agent-environment.js';
+import { createAppWithLocalIdentity } from '../test-support/app.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -27,21 +40,25 @@ import {
   removeTestNativeWorkerAnchor,
   submitTestNanoHostWorkerLease,
 } from '../test-support/nanohost-worker-lease.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
-  closeSchedulerExecutionAttemptWithFence,
-  markSchedulerExecutionAttemptClosing,
+  listSchedulerExecutionAttemptsForTurn,
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
-  schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
   type AdmittedNanoHostAttemptRecovery,
   classifyNanoHostAttemptsAfterRestart,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
+import * as productTurnStart from './product-turn-start.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import {
   runSchedulerRecoveryMaintenance,
@@ -395,94 +412,218 @@ describe('Native attempt liveness and recovery', () => {
     }
   );
 
-  it.each(['open', 'closed'] as const)(
-    'logs each failed native recovery item with fixed safe diagnostics and exact product correlation: %s',
-    async (phase) => {
-      const f = await fixture();
-      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const secret = 'native-maintenance-secret-canary';
-      const path = '/private/native-maintenance-path-canary';
-      const faults = [new Error(`${path}: ${secret}`), new Error(`second ${secret}: ${path}`)];
-      f.recovery.cleanupBackendSession
-        .mockRejectedValueOnce(faults[0])
-        .mockRejectedValueOnce(faults[1]);
-      try {
-        const secondWorkspace =
-          phase === 'open'
-            ? await f.store.createWorkspace('Independent maintenance failure')
-            : undefined;
-        if (secondWorkspace)
-          recordWorkspaceOwnerMembership({
-            coreDb: f.coreDb,
-            workspaceId: secondWorkspace.id,
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          });
-        const bindings = [
-          await f.seed('safe_first', true, true, phase === 'open'),
-          await f.seed('safe_second', true, true, phase === 'open', secondWorkspace?.id),
-        ];
-        if (phase === 'closed') {
-          // Model already accepted generic release while an idle native binding remains for retirement.
-          for (const binding of bindings) {
-            const closing = markSchedulerExecutionAttemptClosing(f.coreDb, {
-              attemptId: binding.attemptId,
-              cause: 'turn-completed',
-            });
-            closeSchedulerExecutionAttemptWithFence(f.coreDb, {
-              correlation: schedulerExecutionCorrelation(closing),
-              fenceRef: `fixture-fence:${binding.attemptId}`,
-              proof: {
-                terminalHandoff: true,
-                output: true,
-                evidence: true,
-                outsideWorkspaceCollection: true,
-                integrationDrain: true,
-                routesRevoked: true,
-              },
-            });
-          }
-        }
+  it('logs each failed native recovery item with fixed safe diagnostics and exact product correlation: open', async () => {
+    const f = await fixture();
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const canary = 'native-maintenance-secret-canary';
+    const path = '/private/native-maintenance-path-canary';
+    const faults = [new Error(`${path}: ${canary}`), new Error(`second ${canary}: ${path}`)];
+    f.recovery.cleanupBackendSession
+      .mockRejectedValueOnce(faults[0])
+      .mockRejectedValueOnce(faults[1]);
+    try {
+      const secondWorkspace = await f.store.createWorkspace('Independent maintenance failure');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: secondWorkspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      const bindings = [
+        await f.seed('safe_first', true, true, true),
+        await f.seed('safe_second', true, true, true, secondWorkspace.id),
+      ];
+      const clock = () => '2026-07-05T00:26:00.000Z';
+      const failure = await runNanoHostAttemptRecoveryMaintenance(
+        f.coreDb,
+        f.admittedPhysicalFault(clock)
+      ).catch((error: AggregateError) => error);
+      expect(failure).toMatchObject({
+        message: 'Native attempt recovery failed.',
+        errors: faults,
+      });
+      expect(f.recovery.cleanupBackendSession).toHaveBeenCalledTimes(2);
+      expect(log.mock.calls).toEqual(
+        bindings.map((binding) => [
+          JSON.stringify({
+            severityText: 'WARN',
+            body: 'Native attempt cleanup or terminal handoff check failed.',
+            attributes: {
+              'openkit.error.code': 'scheduler.native_attempt_recovery_failed',
+              'openkit.attempt.id': binding.attemptId,
+              'openkit.workspace.id': binding.lineage.workspaceId,
+              'openkit.thread.id': binding.lineage.threadId,
+              'openkit.turn.id': binding.lineage.turnId,
+              'openkit.agent.session.id': binding.lineage.agentSessionId,
+            },
+          }),
+        ])
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(canary);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(path);
+    } finally {
+      log.mockRestore();
+      await f.close();
+    }
+  });
 
-        const clock = () => '2026-07-05T00:26:00.000Z';
-        const failure = await runNanoHostAttemptRecoveryMaintenance(
-          f.coreDb,
-          phase === 'open' ? f.admittedPhysicalFault(clock) : { ...f.recovery, now: clock }
-        ).catch((error: AggregateError) => error);
-        expect(failure).toMatchObject({
-          message: 'Native attempt recovery failed.',
-          errors: faults,
+  it('logs exact closed-retirement diagnostics when two genuine closed owners cannot be read', async () => {
+    const f = await fixture();
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(f.coreDb.dataRoot),
+      agentManifests: [setup.manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Closed census',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const storage = await admitTestNativeEnvironmentForRoot(f.coreDb, setup.manifest);
+    const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+      readRuntimeConfig: () => snapshot,
+    });
+    const app = createAppWithLocalIdentity({
+      coreDb: f.coreDb,
+      store: f.store,
+      nanoHostStorage: storage,
+      turnExecutor: native.executor,
+      workerLifecycleRuntime: native.runtime,
+      workerControlGateway: native.workerControlGateway,
+      fileAdmission: native.fileAdmission,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      }),
+    });
+    const ownedWork: ReturnType<typeof native.executionFor>[] = [];
+    const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    try {
+      const attempts = [];
+      for (const input of ['First closed owner', 'Second closed owner']) {
+        const beforeAdmission = admissions.mock.results.length;
+        const response = await app.request(
+          ...operationRequest(
+            'task.start',
+            {
+              workspaceId: DEMO_WORKSPACE_ID,
+              threadId: DEMO_THREAD_ID,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ input, requestId: randomUUID() }),
+            }
+          )
+        );
+        expect(response.status).toBe(202);
+        const { turn } = StartTaskModeResponseSchema.parse(await response.json());
+        const work = native.executionFor(turn.id);
+        ownedWork.push(work);
+        await work.launched.promise;
+        await native.waitForStartup(turn.id);
+        work.completion.resolve();
+        await work.execution;
+        // The App still owns Task closeout after the Worker settles. Join it before injecting
+        // Core read failures so the canaries belong only to the maintenance census.
+        const admitted = admissions.mock.results.slice(beforeAdmission);
+        expect(admitted).toHaveLength(1);
+        const observed = admitted[0]!;
+        if (observed.type !== 'return') throw new Error('Task has no original closeout owner.');
+        expect((await observed.value.accepted).id).toBe(turn.id);
+        await observed.value.closeout;
+        const forTurn = listSchedulerExecutionAttemptsForTurn(f.coreDb, {
+          turnId: turn.id,
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: DEMO_THREAD_ID,
         });
-        expect(f.recovery.cleanupBackendSession).toHaveBeenCalledTimes(2);
+        expect(forTurn).toHaveLength(1);
+        const attempt = forTurn[0]!;
+        expect(attempt).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+        attempts.push(attempt);
+      }
+      const ordered = attempts.toSorted((a, b) => a.attemptId.localeCompare(b.attemptId));
+      const retained = () =>
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          ordered.map(({ attemptId }) => getWorkerBackendSession({ sqlite }, attemptId))
+        );
+      const before = retained();
+      expect(before.map((session) => session?.state)).toEqual(['cleaned', 'cleaned']);
+      const canary = 'native-maintenance-secret-canary';
+      const path = '/private/native-maintenance-path-canary';
+      const faults = [new Error(`${path}: ${canary}`), new Error(`second ${canary}: ${path}`)];
+      const atOwnerRead = new Map(ordered.map(({ attemptId }, i) => [attemptId, faults[i]!]));
+      const actualPrepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+      // The admitted scan supplies the real closed Native rows; fault only their exact Core
+      // lookups. Modern release has already cleaned both, so no later cleanup call is possible.
+      const readFault = vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+        const statement = actualPrepare(sql);
+        if (sql.endsWith('WHERE attempt.attempt_id = ?')) {
+          const actualGet = statement.get.bind(statement);
+          statement.get = (...args: unknown[]) => {
+            const fault = atOwnerRead.get(String(args[0]));
+            if (fault) throw fault;
+            return actualGet(...args);
+          };
+        }
+        return statement;
+      });
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+            ...f.recovery,
+            admittedNanoHostRecovery: {
+              state: 'ready',
+              value: bindBootNanoHostAttemptRecovery(storage.value.owner),
+            },
+          })
+        ).rejects.toMatchObject({ message: 'Native attempt recovery failed.', errors: faults });
         expect(log.mock.calls).toEqual(
-          bindings.map((binding) => [
+          ordered.map((attempt) => [
             JSON.stringify({
               severityText: 'WARN',
-              body:
-                phase === 'open'
-                  ? 'Native attempt cleanup or terminal handoff check failed.'
-                  : 'Closed-attempt backend retirement check failed.',
+              body: 'Closed-attempt backend retirement check failed.',
               attributes: {
-                'openkit.error.code':
-                  phase === 'open'
-                    ? 'scheduler.native_attempt_recovery_failed'
-                    : 'scheduler.native_orphan_backend_recovery_failed',
-                'openkit.attempt.id': binding.attemptId,
-                'openkit.workspace.id': binding.lineage.workspaceId,
-                'openkit.thread.id': binding.lineage.threadId,
-                'openkit.turn.id': binding.lineage.turnId,
-                'openkit.agent.session.id': binding.lineage.agentSessionId,
+                'openkit.error.code': 'scheduler.native_orphan_backend_recovery_failed',
+                'openkit.attempt.id': attempt.attemptId,
+                'openkit.workspace.id': attempt.workspaceId,
+                'openkit.thread.id': attempt.threadId,
+                'openkit.turn.id': attempt.turnId,
+                'openkit.agent.session.id': attempt.agentSessionId,
               },
             }),
           ])
         );
-        expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+        expect(JSON.stringify(log.mock.calls)).not.toContain(canary);
         expect(JSON.stringify(log.mock.calls)).not.toContain(path);
       } finally {
         log.mockRestore();
-        await f.close();
+        readFault.mockRestore();
       }
+      expect(f.recovery.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(retained()).toEqual(before);
+      expect(
+        ordered.map(({ attemptId }) => requireSchedulerExecutionAttempt(f.coreDb, attemptId))
+      ).toEqual(ordered);
+    } finally {
+      for (const work of ownedWork) work.completion.resolve();
+      await Promise.allSettled([
+        ...ownedWork.map((work) => work.execution),
+        ...admissions.mock.results.flatMap((result) =>
+          result.type === 'return' ? [result.value.closeout] : []
+        ),
+      ]);
+      admissions.mockRestore();
+      await native.restore();
+      await f.close();
     }
-  );
+  });
 
   it('classifies checkpoints in the same maintenance pass after a real native item failure', async () => {
     const f = await fixture();
