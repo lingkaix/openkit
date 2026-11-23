@@ -2477,65 +2477,23 @@ describe('worker control routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const gateway = durableWorkerControlGateway(coreDb);
-    createSchedulerAdmissionEntry(coreDb, {
-      backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      profileRef: environmentPackage.agent.profileId,
-      queueEntryId: 'queue_default_binding',
-      requestedAgentId: environmentPackage.agent.agentId,
-      threadId: lineage.threadId,
-      turnId: lineage.turnId,
-      inputRef: schedulerFixtureInput(
-        lineage.workspaceId,
-        lineage.turnId,
-        'Run worker control route test'
-      ),
-      workspaceId: lineage.workspaceId,
-    });
-    const submittedAttempt = recordTestExecutionAttempt(coreDb, {
-      entry: requireSchedulerAdmissionEntry(coreDb, 'queue_default_binding'),
-      attemptId: testEntityId('attempt', 'lease_default_binding'),
-      agentSessionId: lineage.agentSessionId,
-      inputRef: lineage.packageSnapshotId,
-      bindingRef: 'lease-binding:lease_default_binding',
-      sessionCompatibilityKey: 'fixture-compatibility',
-      now: () => new Date().toISOString(),
-      operationId: `fixture-submit:${String(testEntityId('attempt', 'lease_default_binding'))}`,
-    });
-    attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
-      ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
-      disposition: 'accepted',
-      execution: 'running',
-      fenceRef: null,
-      outcomeRef: null,
-    });
-    bindNanoHostAttemptRouteTokenHashes(coreDb, {
-      attemptId: testEntityId('attempt', 'lease_default_binding'),
-      sandboxBindingRef: 'lease-binding:lease_default_binding',
-      workerCapabilityTokenHash: hashWorkerRouteToken(
-        workerRouteToken('lease-binding:lease_default_binding', 'capability')
-      ),
-      workerControlTokenHash: hashWorkerRouteToken(
-        workerRouteToken('lease-binding:lease_default_binding', 'worker-control')
-      ),
-      workerInferenceTokenHash: hashWorkerRouteToken(
-        workerRouteToken('lease-binding:lease_default_binding', 'inference')
-      ),
-    });
-    const backendLeaseId = await recordWorkerControlBackendSession(
+    const binding = await createDurableWorkerControlLease(
       coreDb,
       environmentPackage,
       lineage,
-      'lease-binding:lease_default_binding',
-      'sandbox_default_binding'
+      'default_binding'
     );
-    const registration = registerDurableWorkerControlSession(
-      gateway,
-      environmentPackage,
-      'lease-binding:lease_default_binding'
-    );
-    const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+    const attemptId = testEntityId('attempt', 'lease_default_binding');
+    const storage = await admittedRouteNanoHost(coreDb);
+    const gateway = durableWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+    const app = createApp({
+      coreDb,
+      mode: 'server',
+      nanoHostStorage: storage,
+      store,
+      workerControlGateway: gateway,
+    });
 
     await gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
@@ -2557,52 +2515,30 @@ describe('worker control routes', () => {
       testEntityId('attempt', 'lease_default_binding')
     );
 
-    coreDb.sqlite
-      .prepare(
-        'UPDATE scheduler_execution_attempts SET last_worker_sequence = ? WHERE attempt_id = ?'
-      )
-      .run(3, testEntityId('attempt', 'lease_default_binding'));
-    const staleSequenceResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
-      headers: {
-        authorization: `Bearer ${registration.token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const staleSequenceBody = (await staleSequenceResponse.json()) as { code: string };
-
-    expect.soft(staleSequenceResponse.status).toBe(409);
-    expect.soft(staleSequenceBody.code).toBe('worker_control_sequence_stale');
-    workerControlJournal(coreDb)
-      .prepare(
-        "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
-      )
-      .run(2);
-    coreDb.sqlite
-      .prepare(
-        'UPDATE scheduler_execution_attempts SET last_worker_sequence = ? WHERE attempt_id = ?'
-      )
-      .run(heartbeatBaseline.lastWorkerSequence, testEntityId('attempt', 'lease_default_binding'));
-
-    coreDb.sqlite.exec(`
-      CREATE TRIGGER reject_second_heartbeat_acceptance
-      BEFORE UPDATE ON scheduler_execution_attempts
-      WHEN NEW.attempt_id = '${testEntityId('attempt', 'lease_default_binding')}'
-        AND NEW.last_worker_sequence = 2
-      BEGIN
-        SELECT RAISE(ABORT, 'injected attempt heartbeat acceptance failure');
-      END
-    `);
-    const failedHeartbeatResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
-      headers: {
-        authorization: `Bearer ${registration.token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    coreDb.sqlite.exec('DROP TRIGGER reject_second_heartbeat_acceptance');
+    const requestHeartbeat = (sequence: number) =>
+      app.request('/api/worker-control/heartbeat', {
+        body: JSON.stringify(heartbeatEnvelope(lineage, sequence, 'running')),
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+    const ownerCall = vi.spyOn(storage.value.owner, 'workerControlHeartbeat');
+    onTestFinished(() => ownerCall.mockRestore());
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite.exec(`
+        CREATE TRIGGER reject_second_heartbeat_acceptance
+        BEFORE UPDATE OF worker_recovery_json ON worker_backend_sessions
+        WHEN NEW.attempt_id = '${attemptId}'
+          AND json_extract(NEW.worker_recovery_json, '$.lastWorkerSequence') = 2
+        BEGIN SELECT RAISE(ABORT, 'injected attempt heartbeat acceptance failure'); END
+      `)
+    );
+    const failedHeartbeatResponse = await requestHeartbeat(2);
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite.exec('DROP TRIGGER reject_second_heartbeat_acceptance')
+    );
     const failedSequence = workerControlJournal(coreDb)
       .prepare(
         "SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
@@ -2618,7 +2554,14 @@ describe('worker control routes', () => {
       testEntityId('attempt', 'lease_default_binding')
     );
 
-    expect(failedHeartbeatResponse.status).toBe(500);
+    expect(failedHeartbeatResponse.status).toBe(503);
+    expect(await failedHeartbeatResponse.json()).toMatchObject({
+      code: 'worker_observation_storage_unavailable',
+    });
+    await expect(ownerCall.mock.results.at(-1)!.value).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+    });
     expect.soft(failedSequence.count).toBe(0);
     expect.soft(failedRecord.count).toBe(0);
     expect.soft(leaseAfterFailure).toMatchObject({
@@ -2627,42 +2570,26 @@ describe('worker control routes', () => {
       lastWorkerSequence: heartbeatBaseline.lastWorkerSequence,
       phase: heartbeatBaseline.phase,
     });
-    workerControlJournal(coreDb)
-      .prepare(
-        "DELETE FROM worker_control_sequence_fingerprints WHERE operation = 'heartbeat' AND sequence = ?"
-      )
-      .run(2);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE scheduler_execution_attempts
-         SET phase = ?, heartbeat_deadline = ?, last_accepted_heartbeat_at = ?, last_worker_sequence = ?
-         WHERE attempt_id = ?`
-      )
-      .run(
-        heartbeatBaseline.phase,
-        heartbeatBaseline.heartbeatDeadline,
-        heartbeatBaseline.lastAcceptedHeartbeatAt,
-        heartbeatBaseline.lastWorkerSequence,
-        testEntityId('attempt', 'lease_default_binding')
-      );
-    coreDb.sqlite
-      .prepare(
-        "UPDATE scheduler_execution_attempts SET heartbeat_deadline = '2000-01-01T00:00:00.000Z' WHERE attempt_id = ?"
-      )
-      .run(testEntityId('attempt', 'lease_default_binding'));
-    const staleResponse = await app.request('/api/worker-control/heartbeat', {
-      body: JSON.stringify(heartbeatEnvelope(lineage, 2, 'running')),
-      headers: {
-        authorization: `Bearer ${registration.token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
+    // Ordinary heartbeat can advance over an unacknowledged sequence. The exact failed
+    // sequence then remains stale, rather than looking like a conflicting accepted replay.
+    expect((await requestHeartbeat(3)).status).toBe(200);
+    const staleSequenceResponse = await requestHeartbeat(2);
+    expect.soft(staleSequenceResponse.status).toBe(409);
+    expect.soft(await staleSequenceResponse.json()).toMatchObject({
+      code: 'worker_control_sequence_stale',
     });
-    const staleBody = (await staleResponse.json()) as { code: string };
-
-    expect(staleResponse.status).toBe(403);
-    expect(staleBody.code).toBe('worker_control_lease_not_live');
-    await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+    const advanced = requireNanoHostExecutionAttempt(coreDb, attemptId);
+    expect(advanced.lastWorkerSequence).toBe(3);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(Date.parse(advanced.heartbeatDeadline!) + 1));
+      const staleResponse = await requestHeartbeat(4);
+      expect(staleResponse.status).toBe(403);
+      expect(await staleResponse.json()).toMatchObject({ code: 'worker_control_lease_not_live' });
+    } finally {
+      vi.useRealTimers();
+    }
+    await markWorkerControlBackendSessionCleaned(coreDb, attemptId);
     await closeOwnedExecutionAttempt(coreDb, {
       attemptId: testEntityId('attempt', 'lease_default_binding'),
       firstTerminalCause: 'completed',

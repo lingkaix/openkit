@@ -933,7 +933,7 @@ describe('exact live source capture finalization', () => {
         [
           '--import',
           'tsx',
-          '--input-type=module',
+          // A file-backed Worker inherits execArgv and rejects an explicit --input-type.
           '-e',
           `
         import fs from 'node:fs';
@@ -993,15 +993,27 @@ describe('exact live source capture finalization', () => {
         ],
         {
           cwd: fileURLToPath(new URL('../../', import.meta.url)),
-          env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, TMPDIR: tmpdir() },
+          // Start a fresh worker from the same entry compiled by Vitest global setup. Do not
+          // cold-transpile its dependency graph again inside this child's existing deadline.
+          env: {
+            PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+            TMPDIR: tmpdir(),
+            VITEST: 'true',
+          },
           timeout: 15_000,
           maxBuffer: 16_384,
         }
       ).catch((cause: unknown) => {
-        const stderr = (cause as { stderr?: string | Buffer }).stderr;
-        throw new Error(`Fresh boot census child failed: ${String(stderr ?? '').slice(0, 4096)}`, {
-          cause,
-        });
+        const child = cause as {
+          code?: number | string;
+          signal?: string;
+          killed?: boolean;
+          stderr?: string | Buffer;
+        };
+        throw new Error(
+          `Fresh boot census child failed (code=${child.code ?? 'none'}, signal=${child.signal ?? 'none'}, killed=${child.killed === true}): ${String(child.stderr ?? '').slice(0, 4096)}`,
+          { cause }
+        );
       });
       return JSON.parse(stdout);
     };
