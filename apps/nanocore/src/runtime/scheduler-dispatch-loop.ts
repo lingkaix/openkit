@@ -54,10 +54,8 @@ import {
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
-  schedulerClaimScopes,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
-import { kernelSchedulerScopeIsHeld } from './execution-journal.js';
 import {
   externalTriggerTurnPublicationComplete,
   readExternalTriggerPollSource,
@@ -194,11 +192,12 @@ export async function runSchedulerDispatchLoop(
   const unpublishedQueueEntryIds = new Set<string>();
   // Admissions whose placement an unresolved writer holds stay queued in FIFO order for this pass.
   const heldQueueEntryIds = new Set<string>();
-  // A deferred admission keeps its FIFO priority for its placement. The holder can release before
-  // dispatch reads the refusal. When the deferred claim's scopes are free, a younger admission that
-  // shares one of them waits for a later pass. A deferred claim that is still held does not stop a
-  // younger claim: the younger claim's own Core check decides.
-  const deferredClaims: string[][] = [];
+  // A deferred admission keeps its FIFO priority for its placement. Every later claim in this pass
+  // sends the deferred admissions to its own Core transaction. That transaction refuses the later
+  // claim when a deferred admission shares a scope with it and is now eligible, so no release can
+  // commit between that decision and the claim. A deferred admission that is still held does not
+  // stop a later claim.
+  const deferredQueueEntryIds: string[] = [];
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     if (input.agentWorkPaused?.())
@@ -221,18 +220,6 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
-    const scopes = schedulerClaimScopes(entry);
-    if (
-      deferredClaims.some(
-        (deferred) =>
-          deferred.some((scope) => scopes.includes(scope)) &&
-          !kernelSchedulerScopeIsHeld(input.coreDb, deferred)
-      )
-    ) {
-      heldQueueEntryIds.add(entry.queueEntryId);
-      count--;
-      continue;
-    }
     if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
       // Retain the admission and all exclusion; only this process-local selection is skipped.
       unpublishedQueueEntryIds.add(entry.queueEntryId);
@@ -305,7 +292,7 @@ export async function runSchedulerDispatchLoop(
         };
       });
       const promise = withTurnDispatchTelemetry(entry.turnId, () =>
-        dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
+        dispatchSchedulerAdmission(input, entry, acknowledgeSubmission, deferredQueueEntryIds)
       );
       claims.set(entry.queueEntryId, promise);
       const releaseDispatch = release;
@@ -331,7 +318,7 @@ export async function runSchedulerDispatchLoop(
         // The Core claim refused a held placement. Keep the admission queued and select the next
         // eligible entry; the release wake or a later pass dispatches it in FIFO order.
         heldQueueEntryIds.add(entry.queueEntryId);
-        deferredClaims.push(schedulerClaimScopes(entry));
+        deferredQueueEntryIds.push(entry.queueEntryId);
         count--;
         continue;
       }
@@ -513,7 +500,8 @@ function currentSchedulerDispatchAuthority(
 async function dispatchSchedulerAdmission(
   input: RunSchedulerDispatchLoopInput,
   entry: CoreSchedulerQueueEntry,
-  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void
+  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void,
+  deferredQueueEntryIds: readonly string[]
 ): Promise<SchedulerDispatchLoopResult> {
   input.onDispatchAttribution?.(entry.queueEntryId);
   const responsibleUserId =
@@ -546,6 +534,7 @@ async function dispatchSchedulerAdmission(
         workspaceDataSourceCatalog,
         workspaceMcpServerCatalog,
       },
+      deferredQueueEntryIds,
       ...(input.now ? { now: input.now } : {}),
     });
   } catch (error) {

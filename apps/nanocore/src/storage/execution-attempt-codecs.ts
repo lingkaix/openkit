@@ -80,6 +80,9 @@ export const ControlExecutionAttemptInputSchema = z.discriminatedUnion('kind', [
       backendId: identity,
       byteLength: z.number().int().nonnegative().safe(),
       attemptId: ExecutionAttemptIdSchema.optional(),
+      // Main-internal: the admissions that this dispatch pass deferred on a placement-held claim
+      // refusal, at most the fixed queued bound.
+      deferredQueueEntryIds: z.array(identity).max(20).optional(),
       ...clock,
     })
     .strict(),

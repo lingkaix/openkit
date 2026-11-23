@@ -16335,6 +16335,168 @@ describe('createConfiguredTurnExecutor', () => {
     }
   }, 120_000);
 
+  it('gives a deferred Task the next claim when its holder releases after a younger Task passes selection', async () => {
+    const coreDb = await createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const ownerUserId = ensureLocalUser(coreDb);
+    const workspaceId = testEntityId('ws', 'workspace_claim_order');
+    const threadIds = ['holder', 'deferred', 'younger'].map((label) =>
+      testEntityId('th', `thread_claim_order_${label}`)
+    );
+    const store = new FsStore({ dataRoot });
+    const fixture = createDemoWorkspaceForUser(ownerUserId);
+    await store.importWorkspaceSnapshot({
+      workspace: {
+        ...fixture.workspace,
+        id: workspaceId,
+        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
+      },
+      threads: [{ ...fixture.thread, id: threadIds[0]!, owner: { kind: 'workspace', workspaceId } }],
+      turns: [],
+      knowledge: [],
+      agentSessions: [],
+      artifacts: [],
+      itemRevisions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId, knowledge: [], userId: ownerUserId }),
+    });
+    for (const threadId of threadIds.slice(1))
+      await store.createThread(workspaceId, 'Claim order', threadId);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const codex = createTestAgentSetup({
+      adapter: 'codex',
+      agentId: 'agent-codex',
+      imageRef: `sha256:${'f'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    admitFactoryNativeEnvironment(coreDb, codex);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(dataRoot),
+      agentManifests: [codex],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Claim order fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    const queue = async (label: string, threadId: string) => {
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${testEntityId('attempt', `lease_claim_order_${label}`)}`,
+        requestId: testEntityId('tu', `request_claim_order_${label}`).slice(3),
+        requestedAgentId: codex.id,
+        workspaceId,
+        threadId,
+        turnId: testEntityId('tu', `turn_claim_order_${label}`),
+        text: `Run ${label}`,
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      return entry;
+    };
+    const admit = (entry: Awaited<ReturnType<typeof queue>>, label: string) =>
+      native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', `lease_claim_order_${label}`),
+        agentSessionId: testEntityId('as', `as_claim_order_${label}`),
+        candidateAgentSessionId: testEntityId('as', `as_claim_order_${label}`),
+      });
+    const workspaceHeld = () =>
+      journalOwners.kernelSchedulerScopeIsHeld(coreDb, [`workspace:${workspaceId}`]);
+    const claim = nativeAttemptOwners.createSchedulerExecutionAttempt;
+    const claimed: { readonly turnId: string; readonly refusal?: string }[] = [];
+    let beforeClaim: ((turnId: string) => Promise<void>) | undefined;
+    const claims = vi
+      .spyOn(nativeAttemptOwners, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (...args) => {
+        await beforeClaim?.(args[1].entry.turnId);
+        try {
+          const attempt = await claim(...args);
+          claimed.push({ turnId: args[1].entry.turnId });
+          return attempt;
+        } catch (error) {
+          claimed.push({
+            turnId: args[1].entry.turnId,
+            refusal:
+              error instanceof nativeAttemptOwners.ExecutionAttemptRefusal
+                ? error.reason
+                : 'other',
+          });
+          throw error;
+        }
+      });
+    let holder: Awaited<ReturnType<typeof admit>> | undefined;
+    let winner: Awaited<ReturnType<typeof admit>> | undefined;
+    try {
+      holder = await admit(await queue('holder', threadIds[0]!), 'holder');
+      expect(workspaceHeld()).toBe(true);
+      const deferred = await queue('deferred', threadIds[1]!);
+      const younger = await queue('younger', threadIds[2]!);
+      // The pass refuses the older Task on the held Workspace and selects the younger Task. The
+      // holder's exact release commits after that selection and before the younger claim reaches
+      // Core.
+      let released = false;
+      beforeClaim = async (turnId) => {
+        if (turnId !== younger.turnId) return;
+        beforeClaim = undefined;
+        expect(workspaceHeld()).toBe(true);
+        await holder!.complete();
+        await vi.waitFor(() => expect(workspaceHeld()).toBe(false), { timeout: 30_000 });
+        released = true;
+      };
+      claimed.length = 0;
+      await expect(admit(younger, 'younger')).rejects.toThrow(
+        'Native admission returned without its Turn.'
+      );
+      expect(released).toBe(true);
+      // The younger claim is refused in its own Core transaction: the older deferred Task is
+      // eligible now and keeps its FIFO priority. Both Tasks keep their original admissions.
+      expect(claimed).toEqual([
+        { turnId: deferred.turnId, refusal: 'placement-held' },
+        { turnId: younger.turnId, refusal: 'placement-held' },
+      ]);
+      for (const entry of [deferred, younger]) {
+        expect(
+          attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+            workspaceId,
+            threadId: entry.threadId,
+            turnId: entry.turnId,
+          })
+        ).toEqual([]);
+        expect(
+          attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId)
+        ).toEqual(entry);
+      }
+      // The next pass gives the older Task the first claim. The younger Task stays queued.
+      claimed.length = 0;
+      winner = await admit(deferred, 'deferred');
+      expect(claimed).toEqual([{ turnId: deferred.turnId }]);
+      expect(winner.attempt).toMatchObject({ turnId: deferred.turnId, phase: 'open' });
+      expect(
+        attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId,
+          threadId: younger.threadId,
+          turnId: younger.turnId,
+        })
+      ).toEqual([]);
+      expect(
+        attemptActionOwners.requireSchedulerAdmissionEntry(coreDb, younger.queueEntryId)
+      ).toEqual(younger);
+    } finally {
+      claims.mockRestore();
+      await winner?.cleanup();
+      await holder?.cleanup();
+      await native.restore();
+      coreDb.sqlite.close();
+    }
+  }, 120_000);
+
   // One completed proof per group. Later cases copy that data root and run only their own fault.
   beforeAll(async () => {
     ordinaryProofTemplate = await buildOrdinaryProofTemplate();
