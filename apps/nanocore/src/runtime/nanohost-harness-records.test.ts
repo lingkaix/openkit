@@ -21,7 +21,6 @@ import {
   mutateAdmittedTestNanoHost,
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
-  reopenAdmittedTestNanoHost,
   seedAdmittedTestNanoHost,
 } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -39,6 +38,7 @@ import {
 } from '../test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { readAdmittedTestNanoHostRefusing } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { EXECUTION_ATTEMPT_BUDGET_MS } from './execution-attempt-records.js';
 import {
@@ -671,7 +671,8 @@ describe('private NanoHost Harness records', () => {
       }
 
       await shutdownControlStoreWorkerClient();
-      await reopenAdmittedTestNanoHost(coreDb);
+      // A fresh worker generation needs its Core opening as well as the Native owner.
+      await openAdmittedTestNanoHost(coreDb);
       const retained = readAdmittedTestNanoHost(coreDb, (sqlite) =>
         sqlite
           .prepare(
@@ -966,7 +967,7 @@ describe('private NanoHost Harness records', () => {
         })
       ).rejects.toThrow('Unsupported retained record format.');
       expect(() =>
-        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        readAdmittedTestNanoHostRefusing(coreDb, (sqlite) =>
           readNanoHostThreadAgentSessionBinding(
             { sqlite },
             {
@@ -2059,7 +2060,7 @@ describe('private NanoHost Harness records', () => {
             );
         });
         expect(() =>
-          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readAdmittedTestNanoHostRefusing(coreDb, (sqlite) =>
             readNanoHostThreadAgentSessionBinding(
               { sqlite },
               {

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
+import type Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
@@ -25,7 +26,12 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openBootVerifiedWorkspaceDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openCoreDb,
+  openWorkspaceDb,
+} from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -211,6 +217,14 @@ function operationDouble(
       throw new Error('Effects double cannot carry semantic requests.');
     },
   };
+}
+
+/** Reads one Native record family through the acknowledged NanoHost reader; the Core handle has none of those tables. */
+function onNative<Value>(
+  coreDb: CoreDb,
+  read: (owner: { sqlite: Database.Database }) => Value
+): Value {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) => read({ sqlite }));
 }
 
 /** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
@@ -1410,6 +1424,8 @@ describe('first-release worker faults (real Core crossings)', () => {
   it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(vi.getRealSystemTime());
+    // KEEP-PORT-later: the 5th heartbeat after 40 virtual seconds never settles. K8 commits each
+    // heartbeat in the NanoHost owner thread, whose clock this Main-thread spy cannot move.
     // This case deliberately advances Main's verification clock. Carry it through the existing
     // typed clock seam; the real native owner still validates and commits every heartbeat.
     const publish = controlPublication.publishWorkerControlHeartbeat;
@@ -1437,7 +1453,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       const start = await f.dispatch('turn.start');
       const lineage = {
-        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        ...onNative(f.coreDb, (owner) =>
+          getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+        )!,
         requestId: f.requestId,
       };
       await f.result(start, { ...ready, state: 'started' });
@@ -1500,7 +1518,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       }
       expect(new Date().toISOString()).toBe(new Date(heartbeatStartedAt + 80_000).toISOString());
       expect(new Date().toISOString() > firstDeadline).toBe(true);
-      expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+      expect(
+        onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+      ).toEqual([]);
       // Include accepted content chunks omitted by canonical-event readers.
       expect(
         readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
@@ -1667,7 +1687,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         });
         await f.waitQueued('turn.start');
         const lineage = {
-          ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+          ...onNative(f.coreDb, (owner) =>
+            getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+          )!,
           requestId: f.requestId,
         };
         f.loseNextPoll(true, finished);
@@ -1701,7 +1723,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(
           f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
         ).toHaveLength(1);
-        expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+        expect(
+          onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+        ).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
           readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
@@ -1719,7 +1743,9 @@ describe('first-release worker faults (real Core crossings)', () => {
               )
           )
         ).toEqual({ count: 0 });
-        expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
+        expect(
+          onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+        ).toBeNull();
         expect(
           requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
             .lastWorkerSequence
@@ -1747,7 +1773,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         });
         await f.waitQueued('turn.start');
         const lineage = {
-          ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+          ...onNative(f.coreDb, (owner) =>
+            getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+          )!,
           requestId: f.requestId,
         };
         const proof = [
@@ -1783,7 +1811,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         expect(
           f.dispatchedCommands.filter((command) => command.operation === 'turn.start')
         ).toHaveLength(1);
-        expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+        expect(
+          onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+        ).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
           readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
@@ -1801,7 +1831,9 @@ describe('first-release worker faults (real Core crossings)', () => {
               )
           )
         ).toEqual({ count: 0 });
-        expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
+        expect(
+          onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+        ).toBeNull();
         expect(
           requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
             .lastWorkerSequence
@@ -1830,7 +1862,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         });
         await f.waitQueued('turn.start');
         const lineage = {
-          ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+          ...onNative(f.coreDb, (owner) =>
+            getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+          )!,
           requestId: f.requestId,
         };
         f.loseNextPoll(true, finished);
@@ -1844,7 +1878,11 @@ describe('first-release worker faults (real Core crossings)', () => {
         const nextPoll = await f.poll();
         // Prompt cleanup may already have retired the Integration; neither response may carry work.
         expect([204, 409]).toContain(nextPoll.status);
-        expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+        // KEEP-PORT-later: the admitted reader refuses (recovery-required) while the unknown-delivery
+        // failure publication is pending on the virtual clock; settling it would deadlock the case.
+        expect(
+          onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+        ).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
           readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
@@ -1862,7 +1900,9 @@ describe('first-release worker faults (real Core crossings)', () => {
               )
           )
         ).toEqual({ count: 0 });
-        expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
+        expect(
+          onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+        ).toBeNull();
         expect(
           requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
             .lastWorkerSequence
@@ -1888,7 +1928,9 @@ describe('first-release worker faults (real Core crossings)', () => {
           }),
         ]);
         expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
-        expect(listWorkerControlAcceptedEvents(f.coreDb, lineage)).toEqual([]);
+        expect(
+          onNative(f.coreDb, (owner) => listWorkerControlAcceptedEvents(owner, lineage))
+        ).toEqual([]);
         // Include accepted content chunks and other record kinds omitted by canonical-event readers.
         expect(
           readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
@@ -1906,13 +1948,17 @@ describe('first-release worker faults (real Core crossings)', () => {
               )
           )
         ).toEqual({ count: 0 });
-        expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toBeNull();
+        expect(
+          onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+        ).toBeNull();
         expect(
           requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
             .lastWorkerSequence
         ).toBeNull();
         expect(
-          getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))?.state
+          onNative(f.coreDb, (owner) =>
+            getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+          )?.state
         ).toBe('cleaned');
         expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
         expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
@@ -1949,7 +1995,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       const start = await f.dispatch('turn.start');
       const lineage = {
-        ...getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))!,
+        ...onNative(f.coreDb, (owner) =>
+          getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+        )!,
         requestId: f.requestId,
       };
       await f.result(start, { ...ready, state: 'started' });
@@ -1963,7 +2011,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       await vi.advanceTimersByTimeAsync(100);
       const inspect = await f.dispatch('session.inspect');
-      const accepted = getWorkerControlAcceptedFinalStatus(f.coreDb, lineage);
+      const accepted = onNative(f.coreDb, (owner) =>
+        getWorkerControlAcceptedFinalStatus(owner, lineage)
+      );
       expect(accepted).not.toBeNull();
       const oldShim = await f.post('/worker-control/harness/poll', { schemaVersion: 2 });
       expect(oldShim.status).toBe(409);
@@ -1986,7 +2036,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       expect(turn.error?.message).toContain(
         'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
       );
-      expect(getWorkerControlAcceptedFinalStatus(f.coreDb, lineage)).toEqual(accepted);
+      expect(
+        onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
+      ).toEqual(accepted);
       expect(f.effects.map((effect) => effect.kind)).not.toContain('file.export');
       expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
       expect(inspect.operation).toBe('session.inspect');
@@ -2002,9 +2054,11 @@ describe('first-release worker faults (real Core crossings)', () => {
         }),
       ]);
       expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
-      expect(getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'fault-lease'))?.state).toBe(
-        'cleaned'
-      );
+      expect(
+        onNative(f.coreDb, (owner) =>
+          getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+        )?.state
+      ).toBe('cleaned');
       markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
       // Submission was accepted, but held inspection leaves collection/evidence unproved.
       expect(
