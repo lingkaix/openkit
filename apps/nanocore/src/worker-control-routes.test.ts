@@ -3303,46 +3303,27 @@ describe('worker control routes', () => {
         binding,
         'sandbox_final_status_replay_race'
       );
-      const gateway = new WorkerControlGateway({
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
-        onFinalStatusAccepted: (input) => {
-          const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
-
-          if (resolution.status !== 'accepted') {
-            throw new Error('Expected a live lease during initial final-status acceptance.');
-          }
-
-          beginOwnedAttemptCloseout(coreDb, {
-            attemptId: resolution.attempt.attemptId,
-            firstTerminalCause: 'worker-final-status',
-          });
-        },
-        resolveFinalStatusTokenBinding: (input) =>
-          resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
-        runFinalStatusTransaction: (operation) => {
-          transactionCount += 1;
-          if (transactionCount === 2) {
-            coreDb.sqlite
-              .prepare('UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?')
-              .run(
-                '2000-01-01T00:00:00.000Z',
-                testEntityId('attempt', 'lease_final_status_replay_race')
-              );
-            deadlineExpiredAtTransactionEntry = true;
-            beginOwnedAttemptCloseout(coreDb, {
-              attemptId: testEntityId('attempt', 'lease_final_status_replay_race'),
-
-              firstTerminalCause: 'worker-final-status',
-            });
-          }
-          return coreDb.sqlite.transaction(operation)();
-        },
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      const storage = await admittedRouteNanoHost(coreDb);
+      const deadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
+      const originalFinal = storage.value.owner.workerControlFinalStatus;
+      const ownerCall = vi.spyOn(storage.value.owner, 'workerControlFinalStatus');
+      onTestFinished(() => ownerCall.mockRestore());
+      ownerCall.mockImplementation((input) => {
+        transactionCount += 1;
+        if (transactionCount === 2) {
+          // After Main preflight, move only the observation clock to the exact deadline.
+          // The deciding Core intake still reads the original grant, final and fingerprint.
+          deadlineExpiredAtTransactionEntry = true;
+          return originalFinal({ ...input, payload: { ...input.payload, acceptedAt: deadline } });
+        }
+        return originalFinal(input);
       });
+      const gateway = durableWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
       const app = createApp({
         coreDb,
         mode: 'server',
+        nanoHostStorage: storage,
         store,
         workerControlGateway: gateway,
       });
@@ -3381,7 +3362,12 @@ describe('worker control routes', () => {
 
       expect(accepted.status).toBe(200);
       expect(replay.status).toBe(403);
+      expect(await replay.json()).toMatchObject({ code: 'worker_control_lease_not_live' });
       expect(deadlineExpiredAtTransactionEntry).toBe(true);
+      await expect(ownerCall.mock.results[1]!.value).rejects.toMatchObject({
+        commit: 'not-committed',
+        domain: { code: 'worker_control_lease_not_live' },
+      });
       expect.soft(acceptedRecordCount.count).toBe(2);
       expect.soft(fingerprintCount.count).toBe(2);
       expect(
