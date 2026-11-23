@@ -1701,7 +1701,11 @@ describe('admitted NanoHost owner worker', () => {
             ...materializing,
             sandboxBindingRef: 'different-binding',
           })
-        ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+        ).rejects.toMatchObject({
+          message: 'execution attempt binding does not match worker backend session lineage.',
+          // The live owner write keeps the Worker reply as the cause. Self-check keeps the message.
+          ...(selfCheck ? {} : { cause: { commit: 'not-committed' } }),
+        });
         expect(
           f.owner.read((sqlite) =>
             sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()

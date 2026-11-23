@@ -44,6 +44,13 @@ export interface WorkerContextPackageAuthorityReaderInput {
   readonly store: FsStore;
   /** Workspace database that owns package, Goal, Material, and handoff authority. */
   readonly workspaceDb: WorkspaceDb;
+  /**
+   * Reads one deferred NanoHost snapshot. A deciding Worker supplies its acknowledged opening;
+   * Main uses the process-local admitted reader.
+   */
+  readonly readNanoHost?: <Value>(
+    query: (sqlite: WorkspaceDb['sqlite']) => Value
+  ) => ReturnType<typeof readNanoHostObservation<Value>>;
 }
 
 /**
@@ -159,8 +166,8 @@ export function createWorkerContextPackageAuthorityReader(
 export function createWorkerContextPackageAuthorityStepReader(
   input: WorkerContextPackageAuthorityReaderInput
 ): WorkerContextPackageAuthorityStepReader {
-  const { coreDb, store, workspaceDb } = input;
-  return workerContextAuthoritySteps(coreDb, store, workspaceDb, false);
+  const { coreDb, store, workspaceDb, readNanoHost } = input;
+  return workerContextAuthoritySteps(coreDb, store, workspaceDb, false, readNanoHost);
 }
 
 /** Shares the original scope check and callback bodies without capturing any collection at creation. */
@@ -168,7 +175,9 @@ function workerContextAuthoritySteps(
   coreDb: CoreDb,
   store: FsStore,
   workspaceDb: WorkspaceDb,
-  synchronousLeafReads: boolean
+  synchronousLeafReads: boolean,
+  readNanoHost: NonNullable<WorkerContextPackageAuthorityReaderInput['readNanoHost']> = (query) =>
+    readNanoHostObservation(coreDb.dataRoot, query)
 ): WorkerContextPackageAuthorityStepReader {
   const workspace = readOrNull(() => store.getWorkspace(workspaceDb.workspaceId));
   if (
@@ -282,7 +291,7 @@ function workerContextAuthoritySteps(
         if (leases.length !== 1) {
           return null;
         }
-        const observed = readNanoHostObservation(coreDb.dataRoot, (sqlite) =>
+        const observed = readNanoHost((sqlite) =>
           getWorkerBackendSession({ sqlite }, leases[0]!.attemptId)
         );
         if (observed.state !== 'ready') return null;
