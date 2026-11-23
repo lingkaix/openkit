@@ -4110,17 +4110,18 @@ describe('scheduler restart recovery', () => {
                 .get(testEntityId('attempt', `lease_${suffix}`))
             );
           const before = nativeAnchor();
-          // The production owner's exact refusal per fault, never committed. The process and backend
-          // faults fail the Native reconnect authority check (`recordNanoHostRecoveryHeartbeat`) inside the
-          // writer transaction, whose redacted failure carries no domain refusal.
-          await expect(adopt()).rejects.toMatchObject({
+          // Keep the original Native domain reasons for backend lineage and process authority.
+          // A sanitized writer error leaves those witnesses red while we still check retained state.
+          await expect.soft(adopt()).rejects.toMatchObject({
             name: 'ControlStoreWorkerError',
             commit: 'not-committed',
             ...{
               binding: { domain: { code: 'worker_control_unauthorized', status: 401 } },
-              backend: { code: 'sql-failed' },
+              backend: { domain: { message: 'NanoHost recovery has no original native lease.' } },
               package: { domain: { code: 'worker_control_unauthorized', status: 401 } },
-              process: { code: 'sql-failed' },
+              process: {
+                domain: { message: 'NanoHost heartbeat has no exact reconnect authority.' },
+              },
               sequence: { domain: { code: 'worker_control_sequence_stale', status: 409 } },
               epoch: { domain: { code: 'worker_control_lease_not_live', status: 403 } },
             }[mismatch],
@@ -7400,29 +7401,31 @@ describe('minimal scheduler reconnect contract', () => {
             ? { ...fixture.lineage, turnId: testEntityId('tu', 'turn_from_another_worker') }
             : fixture.lineage;
 
-        await expect(
-          presentReconnectHeartbeat(coreDb, {
-            acceptedAt:
-              mismatch === 'deadline'
-                ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
-                : '2026-07-05T00:01:01.000Z',
-            lineage,
-            reconnectKey:
-              mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
-            sandboxBindingRef: `lease-binding:lease_${suffix}`,
-            workerSequence: mismatch === 'sequence' ? 3 : 2,
-          })
-        ).rejects.toMatchObject({
-          name: 'ControlStoreWorkerError',
-          commit: 'not-committed',
-          ...{
-            // The Native reconnect authority check refuses inside the writer transaction (redacted).
-            key: { code: 'sql-failed' },
-            lineage: { domain: { code: 'worker_control_lineage_mismatch', status: 403 } },
-            sequence: { domain: { code: 'worker_control_sequence_stale', status: 409 } },
-            deadline: { domain: { code: 'worker_control_lease_not_live', status: 403 } },
-          }[mismatch],
-        });
+        await expect
+          .soft(
+            presentReconnectHeartbeat(coreDb, {
+              acceptedAt:
+                mismatch === 'deadline'
+                  ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
+                  : '2026-07-05T00:01:01.000Z',
+              lineage,
+              reconnectKey:
+                mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
+              sandboxBindingRef: `lease-binding:lease_${suffix}`,
+              workerSequence: mismatch === 'sequence' ? 3 : 2,
+            })
+          )
+          .rejects.toMatchObject({
+            name: 'ControlStoreWorkerError',
+            commit: 'not-committed',
+            ...{
+              // A generic writer error must not satisfy the wrong-key refusal.
+              key: { domain: { message: 'NanoHost heartbeat has no exact reconnect authority.' } },
+              lineage: { domain: { code: 'worker_control_lineage_mismatch', status: 403 } },
+              sequence: { domain: { code: 'worker_control_sequence_stale', status: 409 } },
+              deadline: { domain: { code: 'worker_control_lease_not_live', status: 403 } },
+            }[mismatch],
+          });
         expect(
           requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
         ).toMatchObject({
