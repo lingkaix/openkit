@@ -139,7 +139,7 @@ export function submitTestNanoHostWorkerLease(
     readonly nativePath?: string;
     readonly observedAt?: string;
     readonly exclusionRefs?: readonly string[];
-    /** Opt-in production placement: this deployment, with the submit placement digest. */
+    /** Deployment of the production placement. The submit always carries its placement digest. */
     readonly placementDeploymentId?: string;
   } = {}
 ) {
@@ -178,9 +178,8 @@ export function submitTestNanoHostWorkerLease(
     generation: '1',
     observedAt: createdAt,
     ...(fixture.exclusionRefs === undefined ? {} : { exclusionRefs: fixture.exclusionRefs }),
-    ...(fixture.placementDeploymentId === undefined
-      ? {}
-      : { authorityRefs: [admission.queueEntryId, commandInputHash(placement)] }),
+    // K8b: a missing-final absence derives its receipt key only from this verified placement.
+    authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
   });
   if (!grant.deadline) throw new Error('Worker route fixture has no submitted grant.');
 

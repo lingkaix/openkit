@@ -40,7 +40,7 @@ export function bindBootNanoHostAttemptRecovery(
       // Unavailable, missing, duplicate or contradictory proof holds with the recovery diagnostic.
       if (read.state !== 'ready' || read.value.state === 'held')
         throw new ControlProductPreconditionError();
-      if (read.value.state === 'native-only') return 'native-only';
+      if (read.value.state === 'native-only') return read.value;
       await closeout.reconcileAcceptedFinalStatus(session, read.value);
       return 'closed';
     },
