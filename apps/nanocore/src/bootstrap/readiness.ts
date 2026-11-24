@@ -67,9 +67,11 @@ export function settleWorkspaceRecoveryScope(input: {
   const { failure } = input;
   const failures = scopeFailures.get(resolve(input.dataRoot));
   const key = `workspace:${failure.id}:authority`;
+  // A Boot walk hold survives lifecycle settlement; only that walk's revalidation on restart clears it.
   if (
     failure.scope !== 'workspace' ||
     failure.check !== 'recovery' ||
+    failure.stage !== undefined ||
     failures?.get(key) !== failure
   )
     throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);

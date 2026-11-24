@@ -38,7 +38,10 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
-import { withinBootWorkspaceBoundary } from './bootstrap/boot-workspace-walk.js';
+import {
+  bootWorkspaceWrite,
+  withinBootWorkspaceBoundary,
+} from './bootstrap/boot-workspace-walk.js';
 import {
   findWorkspaceConfig,
   type RuntimeConfigManager,
@@ -2648,6 +2651,8 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
       { dataRoot, workspaceId, stage: 'assistant-turn-recovery' },
       async () => {
         store.getWorkspace(workspaceId);
+        // Every read precedes the first interruption, so a refused read leaves this Workspace unchanged.
+        const orphans: { readonly threadId: string; readonly turnId: string }[] = [];
         for (const thread of store.listThreads(workspaceId)) {
           if (thread.entryPath !== 'conversation') continue;
           const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
@@ -2659,16 +2664,21 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
             activeTurn.triggerSource
           )
             continue;
-          await store.completeTurn(activeTurn.id, {
-            status: 'interrupted',
-            completedAt: new Date().toISOString(),
-            error: {
-              code: 'recovery_required',
-              message:
-                'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
-            },
-          });
+          orphans.push({ threadId: thread.id, turnId: activeTurn.id });
         }
+        // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
+        for (const orphan of orphans)
+          await bootWorkspaceWrite(() =>
+            store.completeWorkspaceTurn(workspaceId, orphan.threadId, orphan.turnId, {
+              status: 'interrupted',
+              completedAt: new Date().toISOString(),
+              error: {
+                code: 'recovery_required',
+                message:
+                  'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+              },
+            })
+          );
       }
     );
   }

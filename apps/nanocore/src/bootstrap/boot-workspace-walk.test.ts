@@ -3,8 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
-import { withinBootWorkspaceBoundary } from './boot-workspace-walk.js';
-import { isScopeAdmitted, scopeAdmissionFailures } from './readiness.js';
+import { BootWorkspaceConflict, withinBootWorkspaceBoundary } from './boot-workspace-walk.js';
+import {
+  assertScopeAdmitted,
+  isScopeAdmitted,
+  refuseScope,
+  scopeAdmissionFailures,
+  settleWorkspaceRecoveryScope,
+} from './readiness.js';
 
 const WORKSPACE_ID = 'ws_00000000-0000-7000-8000-000000000001';
 const roots: string[] = [];
@@ -55,14 +61,15 @@ describe('Boot Workspace walk boundary', () => {
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      expect(
-        await withinBootWorkspaceBoundary(
+      // The hold is observed through readiness; the boundary itself completes.
+      await expect(
+        withinBootWorkspaceBoundary(
           { dataRoot: root, workspaceId: WORKSPACE_ID, stage: 'pending-request-recovery' },
           () => {
             throw refusal;
           }
         )
-      ).toBe(false);
+      ).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledWith(
         `Boot recovery held Workspace ${WORKSPACE_ID} during pending-request-recovery.`,
         'Control database writer operation failed.'
@@ -78,5 +85,41 @@ describe('Boot Workspace walk boundary', () => {
         stage: 'pending-request-recovery',
       },
     ]);
+  });
+
+  it('keeps a Boot walk recovery hold through restore and capture settlement until restart revalidates it', async () => {
+    const root = dataRoot();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await withinBootWorkspaceBoundary(
+        { dataRoot: root, workspaceId: WORKSPACE_ID, stage: 'pending-request-recovery' },
+        () => {
+          throw new BootWorkspaceConflict(
+            'recovery',
+            'Pending request Turn association is incomplete.'
+          );
+        }
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    const [hold] = scopeAdmissionFailures(root);
+    expect(hold).toMatchObject({ check: 'recovery', stage: 'pending-request-recovery' });
+    // Restore and capture reactivation settle through this owner with the exact recorded entry.
+    expect(() => settleWorkspaceRecoveryScope({ dataRoot: root, failure: hold! })).toThrow(
+      expect.objectContaining({ code: 'recovery_required', status: 409 })
+    );
+    expect(scopeAdmissionFailures(root)).toEqual([hold]);
+    expect(() => assertScopeAdmitted(root, 'workspace', WORKSPACE_ID)).toThrow(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+
+    // Control: the restore owner's own recovery entry, with no Boot stage, still settles.
+    const other = 'ws_00000000-0000-7000-8000-000000000002';
+    refuseScope(root, { scope: 'workspace', id: other, check: 'recovery' });
+    const [, owned] = scopeAdmissionFailures(root);
+    settleWorkspaceRecoveryScope({ dataRoot: root, failure: owned! });
+    expect(isScopeAdmitted(root, 'workspace', other)).toBe(true);
+    expect(isScopeAdmitted(root, 'workspace', WORKSPACE_ID)).toBe(false);
   });
 });
