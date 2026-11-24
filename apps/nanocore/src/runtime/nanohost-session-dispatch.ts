@@ -462,6 +462,12 @@ export interface NanoHostSessionDispatch {
   ): Promise<void>;
   /** Dispatches one existing semantic route on the current generation. */
   route(physicalConnection: object, request: NanoHostSessionRouteRequest): Promise<unknown>;
+  /**
+   * Synchronously admits one private Harness request on its current authoritative, ready connection.
+   *
+   * @throws Error with the existing carriage refusal when the connection, family or path is not admitted.
+   */
+  assertHarnessCarriage(physicalConnection: object, request: NanoHostSessionRouteRequest): void;
 }
 
 /** One process-local pending effect owned by the dispatcher. */
@@ -662,6 +668,21 @@ export function createNanoHostSessionDispatch(
       throw effectTransportError(503, 'NanoHost image deciding storage is unavailable.');
   };
   let harnessLoginHandler: NanoHostHarnessLoginHandler | undefined;
+  // One predicate admits Harness carriage at route entry and at the first result post.
+  const assertHarnessCarriage = (
+    physicalConnection: object,
+    request: NanoHostSessionRouteRequest
+  ): void => {
+    requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+    if (
+      (request.path !== HARNESS_POLL_PATH && request.path !== HARNESS_RESULT_PATH) ||
+      request.family !== 'worker-control' ||
+      request.credentialClass !== 'harness' ||
+      !readyPhysicalConnections.has(physicalConnection)
+    ) {
+      throw new Error('NanoHost private Harness route is not admitted.');
+    }
+  };
 
   return {
     supportsHarnessLogin: () => harnessLoginHandler !== undefined,
@@ -1395,20 +1416,14 @@ export function createNanoHostSessionDispatch(
       );
     },
 
+    assertHarnessCarriage,
+
     async route(physicalConnection, request) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       if (request.path === HARNESS_LOGIN_PATH)
         throw effectTransportError(409, 'Native Login requires its private physical route.');
-      const isHarnessRoute =
-        request.path === HARNESS_POLL_PATH || request.path === HARNESS_RESULT_PATH;
-      if (isHarnessRoute) {
-        if (
-          request.family !== 'worker-control' ||
-          request.credentialClass !== 'harness' ||
-          !readyPhysicalConnections.has(physicalConnection)
-        ) {
-          throw new Error('NanoHost private Harness route is not admitted.');
-        }
+      if (request.path === HARNESS_POLL_PATH || request.path === HARNESS_RESULT_PATH) {
+        assertHarnessCarriage(physicalConnection, request);
         return;
       }
       if (request.credentialClass !== request.family) {
@@ -2371,13 +2386,13 @@ export function registerNanoHostSessionSemanticRoutes(
           throw new Error('NanoHost private Harness content type must be application/json.');
         }
         const physicalConnection = requirePhysicalConnection(context.env);
-        const checkHarnessCarriage = () =>
-          input.dispatch.route(physicalConnection, {
-            body,
-            credentialClass: 'harness',
-            family: 'worker-control',
-            path,
-          });
+        const harnessRoute = {
+          body,
+          credentialClass: 'harness',
+          family: 'worker-control',
+          path,
+        } as const;
+        const checkHarnessCarriage = () => input.dispatch.route(physicalConnection, harnessRoute);
         await checkHarnessCarriage();
         const value = parseJsonObject(body, 'NanoHost private Harness body is invalid.');
         if (path === HARNESS_POLL_PATH) {
@@ -2537,8 +2552,12 @@ export function registerNanoHostSessionSemanticRoutes(
           result,
           timestamp: completedAt,
         };
+        // The first durable record of this result also requires this connection's carriage.
         const settlement = nativeHarness
-          ? await nativeHarness.settle(originalResult)
+          ? await nativeHarness.settle(originalResult, {
+              current: () => input.dispatch.assertHarnessCarriage(physicalConnection, harnessRoute),
+              signal: request.signal,
+            })
           : await settleNanoHostHarnessOperation(input.coreDb, originalResult);
         if (!input.harnessResultSettled)
           throw new Error('NanoHost Harness native result consumer is unavailable.');

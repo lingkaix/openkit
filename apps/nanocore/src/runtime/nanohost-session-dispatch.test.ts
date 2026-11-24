@@ -46,7 +46,7 @@ import {
 import { shutdownTestStoreWorker } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
-import type { NanoHostHarnessResult } from './nanohost-harness.js';
+import type { NanoHostHarnessResult, NanoHostHarnessResultCarriage } from './nanohost-harness.js';
 import type { AllocateNanoHostRuntimeTargetConnectionGenerationInput } from './nanohost-runtime-target.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import {
@@ -3977,6 +3977,113 @@ describe('private NanoHost Effect result route outside the owner acknowledgement
       expect(await outcome).toEqual({ sandboxId, state: 'deleted' });
       expect(executions).toBe(1);
       expect(authority.mayCarryWork(physicalConnection!)).toBe(true);
+    } finally {
+      held.resolve();
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/** B2b: the private result route hands its own live carriage check and cancellation to settlement. */
+describe('private Harness result route carriage at the first deciding post', () => {
+  it('B2b gives settlement the exact connection check and answers the carriage refusal after that connection fences', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-result-carriage-'));
+    const fixture = openNanoHostTestOwner();
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const target = { deploymentId: 'carriage', identityId: 'carriage', targetId: 'carriage' };
+    await fixture.transition({ kind: 'allocate', ...target, observedAt: new Date().toISOString() });
+    const held = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<NanoHostHarnessResultCarriage | null>();
+    const consume = vi.fn(async () => undefined);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: fixture.storage },
+      nativeHarnessLifecycle: {
+        async dispatch() {
+          return null;
+        },
+        // Stands for the admitted owner: its first deciding post runs the supplied check.
+        async settle(_input, carriage) {
+          entered.resolve(carriage);
+          await held.promise;
+          carriage?.current();
+          return 'settled';
+        },
+      },
+      harnessResultSettled: consume,
+    });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let physicalConnection: object | undefined;
+    const server = createHttp2Server((request, response) => {
+      if (!physicalConnection) {
+        physicalConnection = readNanoHostPhysicalConnectionContext(request)!;
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection,
+        });
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing fixture address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+          'x-openkit-integration-binding': 'carriage-integration',
+        });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { status: headers[':status'], body: Buffer.concat(chunks).toString() };
+      };
+      expect(
+        await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) })
+      ).toEqual({ status: 204, body: '' });
+      const result = {
+        schemaVersion: 2,
+        harnessInstanceId: 'carriage-harness',
+        operationId: 'd'.repeat(64),
+        sequence: 1,
+        disposition: 'succeeded',
+        body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+      };
+      const accepted = post('/worker-control/harness/result', result);
+      const carriage = await entered.promise;
+      expect(carriage).not.toBeNull();
+      expect(() => carriage!.current()).not.toThrow();
+      expect(carriage!.signal.aborted).toBe(false);
+      // The session owner fences this exact connection while its result is still in settlement.
+      void authority.closePhysicalConnection(physicalConnection!);
+      expect(() => carriage!.current()).toThrow('not authoritative or has been fenced');
+      held.resolve();
+      const refused = await accepted;
+      // The same connection's next request gets the existing route-entry carriage refusal.
+      expect(refused).toEqual(await post('/worker-control/harness/result', result));
+      expect(refused.status).not.toBe(204);
+      expect(consume).not.toHaveBeenCalled();
     } finally {
       held.resolve();
       client?.destroy();

@@ -153,11 +153,24 @@ export interface AdmittedNanoHostHarnessTurnLifecycle {
   dispatch(
     input: Parameters<typeof Records.dispatchNanoHostHarnessOperation>[1]
   ): Promise<Records.NanoHostHarnessCommand | null>;
+  /**
+   * @param carriage The private result request's live carriage check and cancellation, or null
+   *   for an owner-local entry that has its own authority and no peer connection.
+   */
   settle(
-    input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1]
+    input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1],
+    carriage: NanoHostHarnessResultCarriage | null
   ): Promise<'settled' | 'replayed'>;
   acknowledge(input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]): Promise<void>;
   claimIdleCaptureDrain(input: NanoHostIdleCaptureDrainInput): Promise<void>;
+}
+
+/** Process-local proof that a private Harness result still arrives on authoritative carriage. */
+export interface NanoHostHarnessResultCarriage {
+  /** Throws the route's carriage refusal when the original physical connection lost authority. */
+  readonly current: () => void;
+  /** The original result request's cancellation. */
+  readonly signal: AbortSignal;
 }
 
 export type NanoHostIdleCaptureDrainInput = Omit<
@@ -229,7 +242,7 @@ export async function settleNanoHostHarnessOperation(
   input: Parameters<typeof Records.settleNanoHostHarnessOperation>[1],
   admitted?: AdmittedNanoHostHarnessTurnLifecycle
 ): Promise<'settled' | 'replayed'> {
-  if (admitted) return admitted.settle(input);
+  if (admitted) return admitted.settle(input, null);
   return (await publishHarness(coreDb, { ...input, kind: 'operation.settle' })) as
     | 'settled'
     | 'replayed';

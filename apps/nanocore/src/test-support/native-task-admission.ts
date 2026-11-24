@@ -312,6 +312,9 @@ export async function createNativeTaskAdmissionFixture(
     poll: async () => null,
     async result() {},
     route: options.actualWorker?.route ?? unsupported,
+    assertHarnessCarriage() {
+      throw new Error('Native peer carries no private Harness route.');
+    },
     fileExportResult: unsupported,
     workspaceCollectResult: unsupported,
     imageBuildInput: unsupported,
@@ -496,11 +499,14 @@ export async function createNativeTaskAdmissionFixture(
               turn = executions.get(String(command.body.turnId));
               const result = await options.actualWorker.handle(wire, integrationRef);
               const completedAt = new Date().toISOString();
-              const settlement = await harnessWriter.settle({
-                result,
-                sandboxIntegrationBindingRef: integrationRef,
-                timestamp: completedAt,
-              });
+              const settlement = await harnessWriter.settle(
+                {
+                  result,
+                  sandboxIntegrationBindingRef: integrationRef,
+                  timestamp: completedAt,
+                },
+                null
+              );
               commandSettled = true;
               await runtime.acceptNanoHostHarnessResult(
                 result,
@@ -693,11 +699,14 @@ export async function createNativeTaskAdmissionFixture(
               body: refusal ? { reasonCode: refusal } : body,
             };
             const completedAt = new Date().toISOString();
-            const settlement = await harnessWriter.settle({
-              result,
-              sandboxIntegrationBindingRef: integrationRef,
-              timestamp: completedAt,
-            });
+            const settlement = await harnessWriter.settle(
+              {
+                result,
+                sandboxIntegrationBindingRef: integrationRef,
+                timestamp: completedAt,
+              },
+              null
+            );
             commandSettled = true;
             await runtime.acceptNanoHostHarnessResult(
               result,
@@ -729,18 +738,21 @@ export async function createNativeTaskAdmissionFixture(
             if (stopped) return;
             if (turn) failTurn(turn, error);
             if (!commandSettled) {
-              await harnessWriter.settle({
-                sandboxIntegrationBindingRef: integrationRef,
-                result: {
-                  schemaVersion: 2,
-                  harnessInstanceId: command.harnessInstanceId,
-                  operationId: command.operationId,
-                  sequence: command.sequence,
-                  disposition: 'unknown',
-                  body: { reasonCode: 'outcome_unknown' },
+              await harnessWriter.settle(
+                {
+                  sandboxIntegrationBindingRef: integrationRef,
+                  result: {
+                    schemaVersion: 2,
+                    harnessInstanceId: command.harnessInstanceId,
+                    operationId: command.operationId,
+                    sequence: command.sequence,
+                    disposition: 'unknown',
+                    body: { reasonCode: 'outcome_unknown' },
+                  },
+                  timestamp: new Date().toISOString(),
                 },
-                timestamp: new Date().toISOString(),
-              });
+                null
+              );
               runtime.failNanoHostHarnessDelivery(command, error);
             }
           }

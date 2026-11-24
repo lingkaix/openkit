@@ -31,7 +31,8 @@ export async function settleNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: Parameters<AdmittedNanoHostHarnessTurnLifecycle['settle']>[0]
 ) {
-  return (await harnessOwner(coreDb)).settle(input);
+  // The test peer has no private physical connection; its result is owner-local.
+  return (await harnessOwner(coreDb)).settle(input, null);
 }
 
 /** Supplies the original external Workspace ACK through the admitted Core consumer. */

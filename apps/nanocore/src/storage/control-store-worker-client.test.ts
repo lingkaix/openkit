@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { once } from 'node:events';
 import {
   existsSync,
   linkSync,
@@ -10,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +42,10 @@ import {
 import { observeAppUpdatePreflight } from '../app-update/preflight.js';
 import { auditEventFromRow, listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from '../auth/nanohost-transport-session.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { openCommunicationDiscordChannel } from '../channels/discord-owner.js';
@@ -3064,6 +3070,121 @@ describe('admitted NanoHost owner worker', () => {
     }
   });
 
+  // B2b: the first post that can record a private Harness result runs the live carriage check.
+  it('B2b records no fenced session.open result that waited for the FULL acknowledgement', async () => {
+    const h = await dispatchedHarnessResult('session.open');
+    try {
+      const before = h.row();
+      expect(before).toMatchObject({ state: 'ready', value: { state: 'dispatched' } });
+      Atomics.store(h.f.gate, 0, 0);
+      const holding = h.create('-held');
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      let settlement: Promise<unknown> | undefined;
+      try {
+        await waitForHold(h.f.gate);
+        settlement = h.lifecycle.settle(h.settlementInput, h.carriage);
+        void settlement.catch(() => undefined);
+        await nextTurn();
+        // The session owner fences synchronously while the result still waits for the ACK.
+        h.fence();
+        expect(h.carriage.signal.aborted).toBe(false);
+      } finally {
+        release(h.f.gate);
+      }
+      await expect(holding).resolves.toBeUndefined();
+      await expect(settlement).rejects.toThrow('not authoritative or has been fenced');
+      expect(harnessSettleFrames(posted)).toEqual([]);
+      expect(h.row()).toEqual(before);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('B2b commits no Core receipt for a fenced idle close that waited for the FULL acknowledgement', async () => {
+    const h = await dispatchedHarnessResult('session.close');
+    try {
+      const before = h.row();
+      expect(before).toMatchObject({ state: 'ready', value: { state: 'dispatched' } });
+      Atomics.store(h.f.gate, 0, 0);
+      const holding = h.create('-held');
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      let settlement: Promise<unknown> | undefined;
+      try {
+        await waitForHold(h.f.gate);
+        settlement = h.lifecycle.settle(h.settlementInput, h.carriage);
+        void settlement.catch(() => undefined);
+        await nextTurn();
+        h.fence();
+      } finally {
+        release(h.f.gate);
+      }
+      await expect(holding).resolves.toBeUndefined();
+      await expect(settlement).rejects.toThrow('not authoritative or has been fenced');
+      expect(harnessSettleFrames(posted)).toEqual([]);
+      expect(inspectCoreHarnessConsumption(h.core, h.key)).toBeNull();
+      expect(h.row()).toEqual(before);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('B2b checks carriage at the delayed post itself, not when the acknowledgement releases', async () => {
+    const h = await dispatchedHarnessResult('session.open');
+    try {
+      const before = h.row();
+      const client = h.f.writer as unknown as { postChecked(entry: { command: unknown }): void };
+      const postChecked = Object.getPrototypeOf(client).postChecked as typeof client.postChecked;
+      let fenced = false;
+      // Fence after the acknowledgement released and before this result's own post proceeds.
+      vi.spyOn(client, 'postChecked').mockImplementation(function (this: unknown, entry) {
+        if (!fenced && harnessSettleFrames([[entry.command]]).length > 0) {
+          fenced = true;
+          h.fence();
+        }
+        return postChecked.call(this, entry);
+      });
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      await expect(h.lifecycle.settle(h.settlementInput, h.carriage)).rejects.toThrow(
+        'not authoritative or has been fenced'
+      );
+      expect(fenced).toBe(true);
+      expect(harnessSettleFrames(posted)).toEqual([]);
+      expect(h.row()).toEqual(before);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('B2b completes the exact Native settlement after the Core receipt even when the connection then fences', async () => {
+    const h = await dispatchedHarnessResult('session.close');
+    try {
+      const client = h.f.writer as unknown as { postChecked(entry: { command: unknown }): void };
+      const postChecked = Object.getPrototypeOf(client).postChecked as typeof client.postChecked;
+      let receiptAtFence: unknown;
+      // Cut after the committed Core receipt, before the Native settlement's own post.
+      vi.spyOn(client, 'postChecked').mockImplementation(function (this: unknown, entry) {
+        if (
+          receiptAtFence === undefined &&
+          harnessSettleFrames([[entry.command]])[0] === 'native'
+        ) {
+          receiptAtFence = inspectCoreHarnessConsumption(h.core, h.key);
+          h.fence();
+        }
+        return postChecked.call(this, entry);
+      });
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      // The receipt-backed completion needs no fresh physical authority.
+      await expect(h.lifecycle.settle(h.settlementInput, h.carriage)).resolves.toBe('settled');
+      expect(receiptAtFence).toEqual(h.receipt);
+      expect(h.carriage.current).toThrow('not authoritative or has been fenced');
+      expect(harnessSettleFrames(posted)).toEqual(['core', 'native']);
+      expect(inspectCoreHarnessConsumption(h.core, h.key)).toEqual(h.receipt);
+      expect(h.row()).toMatchObject({ state: 'ready', value: { state: 'settled' } });
+    } finally {
+      await h.close();
+    }
+  });
+
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
     const f = await nanoHostWorkerFixture();
     const allocation = await prepareNanoHostTarget(f.owner, nanoHostTarget);
@@ -5869,3 +5990,199 @@ describe('User Policy covering FULL acknowledgement', () => {
     }
   );
 });
+
+/** B2b: the deciding settle frames a Harness result posted, in order. */
+function harnessSettleFrames(
+  calls: readonly (readonly unknown[])[] | { mock: { calls: unknown[][] } }
+) {
+  const frames = 'mock' in calls ? calls.mock.calls : calls;
+  return frames.flatMap(([frame]) => {
+    const value = frame as {
+      operation?: string;
+      input?: { kind?: string };
+      mutation?: { kind?: string; input?: { kind?: string } };
+    };
+    if (value?.operation === 'harness-lifecycle' && value.input?.kind === 'operation.settle')
+      return ['core'];
+    if (
+      value?.operation === 'nanohost-owner' &&
+      value.mutation?.kind === 'harness-turn-lifecycle' &&
+      value.mutation.input?.kind === 'operation.settle'
+    )
+      return ['native'];
+    return [];
+  });
+}
+
+/** B2b: one dispatched Harness result on the production owner, carried by a real session authority. */
+async function dispatchedHarnessResult(operation: 'session.open' | 'session.close') {
+  const f = await nanoHostWorkerFixture();
+  const core = openCoreReadDb(f.root);
+  const selected = await prepareNanoHostOwner(core, f.serving);
+  if (selected.state !== 'ready') throw new Error('Expected the admitted NanoHost owner.');
+  const { owner } = selected.value;
+  const lifecycle = owner.harnessTurnLifecycle;
+  for (const target of [nanoHostTarget, nanoHostReady]) {
+    const original = await prepareNanoHostTarget(owner, target);
+    await expect(
+      owner.transitionRuntimeTarget(nanoHostUnknownKernel, original)
+    ).resolves.toMatchObject({ state: 'ready' });
+  }
+  const timestamp = new Date().toISOString();
+  const harnessBindingRef = 'b2b-harness-binding';
+  const harnessInstanceId = 'b2b-harness';
+  const sandboxIntegrationBindingRef = 'b2b-integration';
+  const create = (suffix: string) =>
+    owner.harnessLifecycle({
+      kind: 'runtime.create',
+      adapterId: 'codex',
+      adapterVersion: 'fixture',
+      harnessBindingRef: `${harnessBindingRef}${suffix}`,
+      harnessCompatibilityKey: 'b'.repeat(64),
+      harnessInstanceId: `${harnessInstanceId}${suffix}`,
+      imageDigest: `sha256:${'c'.repeat(64)}`,
+      originPhysicalEpoch: nanoHostReady.physicalEpoch,
+      runtimeTargetId: nanoHostTarget.targetId,
+      sandboxBindingRef: `b2b-sandbox-binding${suffix}`,
+      sandboxCompatibilityKey: 'd'.repeat(64),
+      sandboxIntegrationBindingRef: `${sandboxIntegrationBindingRef}${suffix}`,
+      sandboxRuntimeId: `b2b-sandbox${suffix}`,
+      timestamp,
+    });
+  await create('');
+  const consumer = {
+    workspaceId: allocateEntityId('ws'),
+    threadId: allocateEntityId('th'),
+    agentSessionId: allocateEntityId('as'),
+    agentSessionRuntimeBindingId: 'b2b-agent-session',
+  };
+  await owner.harnessLifecycle({
+    kind: 'session-binding.open',
+    ...consumer,
+    agentSessionCompatibilityKey: 'e'.repeat(64),
+    effectiveSetupGeneration: 1,
+    harnessInstanceId,
+    timestamp,
+  });
+  const request = {
+    harnessInstanceId,
+    operation,
+    body:
+      operation === 'session.close'
+        ? {
+            agentSessionId: consumer.agentSessionId,
+            agentSessionRuntimeBindingId: consumer.agentSessionRuntimeBindingId,
+          }
+        : {
+            ...consumer,
+            adapterId: 'codex',
+            agentSessionCompatibilityKey: 'e'.repeat(64),
+            effectiveSetupGeneration: 1,
+            resume: null,
+          },
+    timestamp,
+  };
+  const prepared = owner.read((sqlite) =>
+    prepareNanoHostHarnessOperation(core, request, { sqlite })
+  );
+  if (prepared.state !== 'ready') throw new Error('Expected the original Harness operation.');
+  await lifecycle.queue({ ...request, prepared: prepared.value });
+  const dispatched = await lifecycle.dispatch({ sandboxIntegrationBindingRef });
+  if (!dispatched || dispatched.operation !== operation)
+    throw new Error('Expected the original Harness dispatch.');
+  // A valid open result repeats the Harness's own admitted capacity declaration.
+  const declared = owner.read(
+    (sqlite) =>
+      sqlite
+        .prepare(
+          'SELECT max_active_turns AS maxActiveTurns FROM harness_instance_records WHERE harness_instance_id = ?'
+        )
+        .get(harnessInstanceId) as { maxActiveTurns: number }
+  );
+  if (declared.state !== 'ready') throw new Error('Expected the Harness capacity declaration.');
+  const result = {
+    schemaVersion: 2 as const,
+    harnessInstanceId,
+    operationId: dispatched.operationId,
+    sequence: dispatched.sequence,
+    disposition: 'succeeded' as const,
+    body:
+      operation === 'session.close'
+        ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+        : {
+            state: 'open',
+            nativeHandleState: 'pending',
+            nativeHandleDigest: null,
+            maxActiveTurns: declared.value.maxActiveTurns,
+          },
+  };
+  const key = {
+    harnessBindingRef,
+    operationId: result.operationId,
+    sequence: result.sequence,
+    resultFingerprint: sha256CanonicalJson(result),
+  };
+  // The real session authority decides carriage on a real accepted HTTP/2 connection.
+  const authority = createNanoHostTransportSessionAuthority();
+  let physicalConnection: object | null = null;
+  const server = createHttp2Server((incoming, response) => {
+    physicalConnection ??= readNanoHostPhysicalConnectionContext(incoming);
+    response.end();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing fixture address.');
+  const client = connectHttp2(`http://127.0.0.1:${address.port}`);
+  const stream = client.request({ ':method': 'GET', ':path': '/' });
+  stream.end();
+  stream.resume();
+  await once(stream, 'end');
+  const connection = physicalConnection as object | null;
+  if (!connection) throw new Error('Missing the accepted physical connection.');
+  authority.admit({
+    identityId: 'b2b-host',
+    connectionGeneration: 1,
+    physicalConnection: connection,
+  });
+  if (!authority.mayCarryWork(connection))
+    throw new Error('Expected the authoritative fixture connection.');
+  const closeConnection = async () => {
+    client.destroy();
+    server.close();
+    await once(server, 'close');
+  };
+  const carriage = {
+    current: () => {
+      if (!authority.mayCarryWork(connection))
+        throw new Error('NanoHost physical connection is not authoritative or has been fenced.');
+    },
+    signal: new AbortController().signal,
+  };
+  const row = () =>
+    owner.read((sqlite) =>
+      sqlite
+        .prepare(
+          `SELECT operation_state AS state, operation_sequence AS sequence, operation_id AS operationId
+           FROM harness_instance_records WHERE harness_instance_id = ?`
+        )
+        .get(harnessInstanceId)
+    );
+  return {
+    f,
+    core,
+    lifecycle,
+    create,
+    carriage,
+    fence: () => void authority.closePhysicalConnection(connection),
+    // Closes the fixture transport and the Core reader.
+    close: async () => {
+      core.sqlite.close();
+      await closeConnection();
+    },
+    row,
+    key,
+    receipt: { consumer: canonicalJsonText(consumer), acknowledgedAt: timestamp },
+    settlementInput: { sandboxIntegrationBindingRef, timestamp, result },
+  };
+}

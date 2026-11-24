@@ -1028,6 +1028,8 @@ interface Pending {
   /** A forecast is resolved once within this request's existing slot. */
   physicalForecasted?: boolean;
   readonly verifyNanoHostPost?: (mutation: NanoHostOwnerMutation) => boolean;
+  /** A private Harness result's live physical carriage, checked in the turn that posts its first record. */
+  readonly verifyCarriage?: () => void;
   /** Original owner capture; neither the supplier nor facts are sent back in a forecast decision. */
   readonly schemaApplicationFacts?: {
     readonly captured: ControlSchemaApplicationFacts;
@@ -3419,7 +3421,8 @@ class ControlStoreWorkerClient {
 
       const write = async <Kind extends NanoHostOwnerMutation['kind']>(
         mutation: NanoHostOwnerMutation & { kind: Kind },
-        verifyStorageAttachment?: (sqlite: Database.Database) => boolean
+        verifyStorageAttachment?: (sqlite: Database.Database) => boolean,
+        verifyCarriage?: () => void
       ): Promise<Extract<NanoHostOwnerMutationResult, { kind: Kind }>> => {
         assertCurrent();
         opening.nanoHostWritePending =
@@ -3450,7 +3453,8 @@ class ControlStoreWorkerClient {
             verifyStorageAttachment
               ? () =>
                   !opening.nanoHostTargetTransition && readCurrent(verifyStorageAttachment, true)
-              : verifyPost
+              : verifyPost,
+            verifyCarriage
           )) as Extract<Success, { operation: 'nanohost-owner' }>;
           return reply.result as Extract<NanoHostOwnerMutationResult, { kind: Kind }>;
         } catch (error) {
@@ -3977,12 +3981,19 @@ class ControlStoreWorkerClient {
         });
 
       const writeHarnessTurn = (
-        input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input']
+        input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input'],
+        verifyCarriage?: () => void
       ) => {
         const original = structuredClone(input);
         return withCoreHold(
           async (coreIdentity) =>
-            (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
+            (
+              await write(
+                { kind: 'harness-turn-lifecycle', input: original, coreIdentity },
+                undefined,
+                verifyCarriage
+              )
+            ).value
         );
       };
       const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
@@ -4092,19 +4103,48 @@ class ControlStoreWorkerClient {
           if (typeof result !== 'object') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         },
-        settle: (input) =>
+        settle: (input, carriage) =>
           afterWorkerControlAcknowledgement(async () => {
             const original = { ...structuredClone(input), kind: 'operation.settle' } as const;
+            // Only the first post that can record this result needs current physical carriage.
+            // After a Core receipt the exact Native settlement completes without it.
+            let refused: { readonly error: unknown } | undefined;
+            const verifyCarriage = carriage
+              ? () => {
+                  try {
+                    carriage.current();
+                  } catch (error) {
+                    refused = { error };
+                    throw error;
+                  }
+                }
+              : undefined;
             const inspectIdleClose = readers.inspectIdleHarnessClose;
-            const idleAcknowledgedAt =
-              inspectIdleClose && readCurrent((sqlite) => inspectIdleClose({ sqlite }, original))
+            const idle =
+              inspectIdleClose !== undefined &&
+              readCurrent((sqlite) => inspectIdleClose({ sqlite }, original));
+            try {
+              const idleAcknowledgedAt = idle
                 ? await withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
-                    const reply = await this.request({
-                      operation: 'harness-lifecycle',
-                      database: core.command.database,
-                      input: original,
-                      nanoHostAckPeer: { openingRequestId, ownerIdentity },
-                    });
+                    const reply = await this.request(
+                      {
+                        operation: 'harness-lifecycle',
+                        database: core.command.database,
+                        input: original,
+                        nanoHostAckPeer: { openingRequestId, ownerIdentity },
+                      },
+                      undefined,
+                      undefined,
+                      false,
+                      undefined,
+                      [],
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      verifyCarriage
+                    );
                     if (
                       reply.operation !== 'harness-lifecycle' ||
                       reply.result !== null ||
@@ -4114,14 +4154,19 @@ class ControlStoreWorkerClient {
                     return reply.idleAcknowledgedAt;
                   })
                 : undefined;
-            const result = await writeHarnessTurn({
-              ...original,
-              timestamp: idleAcknowledgedAt ?? original.timestamp,
-            });
-            if (result !== 'settled' && result !== 'replayed')
-              throw new ControlStoreWorkerError('integrity', 'unknown');
-            return result;
-          }),
+              const result = await writeHarnessTurn(
+                { ...original, timestamp: idleAcknowledgedAt ?? original.timestamp },
+                idle ? undefined : verifyCarriage
+              );
+              if (result !== 'settled' && result !== 'replayed')
+                throw new ControlStoreWorkerError('integrity', 'unknown');
+              return result;
+            } catch (error) {
+              // The carriage refusal is the route's existing answer; the post stayed unsent.
+              if (refused) throw refused.error;
+              throw error;
+            }
+          }, carriage?.signal),
         acknowledge: (input) =>
           withNativeReadForCore(async (core, openingRequestId, ownerIdentity) => {
             const reply = await this.request({
@@ -9149,7 +9194,8 @@ class ControlStoreWorkerClient {
     policyCall?: PolicyCall,
     publicationGuard?: ControlStorePublicationGuard,
     schedulerWorkspaceId?: string,
-    verifyNanoHostPost?: Pending['verifyNanoHostPost']
+    verifyNanoHostPost?: Pending['verifyNanoHostPost'],
+    verifyCarriage?: Pending['verifyCarriage']
   ): Promise<Success> {
     if (publicationGuard?.signal.aborted)
       return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
@@ -9486,6 +9532,7 @@ class ControlStoreWorkerClient {
           ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
           ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
           ...(verifyNanoHostPost ? { verifyNanoHostPost } : {}),
+          ...(verifyCarriage ? { verifyCarriage } : {}),
           ...(policyCall ? { policyCall } : {}),
           ...(schedulerWorkspaceId === undefined ? {} : { schedulerWorkspaceId }),
           ...(publicationGuard && cancelUnposted
@@ -9686,6 +9733,17 @@ class ControlStoreWorkerClient {
       }
     }
     if (publication && performance.now() >= publication.guard.deadline) {
+      this.complete(
+        entry.request.id,
+        undefined,
+        new ControlStoreWorkerError('precondition', 'not-committed')
+      );
+      return;
+    }
+    // A fenced physical connection records no result. No await separates this check from the post.
+    try {
+      entry.verifyCarriage?.();
+    } catch {
       this.complete(
         entry.request.id,
         undefined,
