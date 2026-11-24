@@ -396,6 +396,15 @@ function feed(env: Env, ctx: Ctx, event: Event, hooks: { prefix?: string } = {})
   if (after.cycle && after.passes[after.cycle.pass]?.parkedOn) violation(ctx, 'I4.no-execution');
   if (after.ready.filter((id) => !after.passes[id]!.begun).length > 1)
     violation(ctx, 'I9.coalescing');
+  // I9 fairness: the ready queue is FIFO. A waiting pass keeps its order and stays ahead of each
+  // pass that becomes ready later, and the drain gives the cycle to the head. So each ready pass
+  // gets the cycle within |ready| handoffs.
+  const stayed = after.ready.filter((id) => before.ready.includes(id));
+  if (
+    stayed.join() !== before.ready.filter((id) => after.ready.includes(id)).join() ||
+    after.ready.slice(0, stayed.length).join() !== stayed.join()
+  )
+    violation(ctx, 'I9.fairness');
   if (env.handles !== (after.cycle?.handle ? 1 : 0) + Object.keys(after.live).length)
     violation(ctx, 'I8.handle-balance');
 }
@@ -1784,6 +1793,65 @@ const CLEAR_ON_SETTLEMENT = rowsWith({
   T18: clearOnSettlement('T18'),
 });
 
+/** I1 take-out: a trigger that arrives during a cycle starts a second selection for its fresh pass. */
+const SECOND_CYCLE = rowsWith({
+  T2: handoffRow('T2', 'trigger', base('T2').guard as never, (draft, event) => {
+    base('T2').apply(draft as never, event as never);
+    const cycle = draft.cycle;
+    const fresh = draft.ready.map((id) => draft.passes[id]!).find((pass) => !pass.begun);
+    if (cycle && fresh)
+      draft.emit(
+        HANDOFF_TABLE.selectEffect(
+          draft as never,
+          { ...cycle, pass: fresh.id, replayEntry: null, barrierProof: null },
+          fresh as never
+        ) as never
+      );
+  }) as unknown as AnyRow,
+});
+
+/** I4 take-out: the claimed pass parks on its invocation and keeps the cycle. */
+const PARK_IN_CYCLE = rowsWith({
+  T7: handoffRow('T7', 'reply', base('T7').guard as never, (draft) => {
+    const cycle = draft.requireCycle();
+    const entry = cycle.entry!;
+    const invocation = cycle.posted!.identity.attemptId;
+    delete draft.unresolved[entry];
+    draft.live[entry] = invocation;
+    draft.cyclePass().parkedOn = invocation;
+    draft.emit({ kind: 'publish', entry, invocation });
+    draft.resolveEntryWaiters(entry, { kind: 'join', entry, invocation });
+  }) as unknown as AnyRow,
+});
+
+/** I9 take-out: each trigger gets its own pass; the base row does not see the waiting fresh pass. */
+const PASS_PER_TRIGGER = rowsWith({
+  T2: handoffRow('T2', 'trigger', base('T2').guard as never, (draft, event) => {
+    const fresh = draft.ready.map((id) => draft.passes[id]!).filter((pass) => !pass.begun);
+    for (const pass of fresh) pass.begun = true;
+    base('T2').apply(draft as never, event as never);
+    for (const pass of fresh) pass.begun = false;
+  }) as unknown as AnyRow,
+});
+
+/** I9 take-out: the fresh pass always goes to the head of the ready queue. */
+const FRESH_FIRST = rowsWith({
+  T2: handoffRow('T2', 'trigger', base('T2').guard as never, (draft, event) => {
+    base('T2').apply(draft as never, event as never);
+    const fresh = draft.ready.find((id) => !draft.passes[id]!.begun);
+    if (fresh !== undefined) draft.ready = [fresh, ...draft.ready.filter((id) => id !== fresh)];
+  }) as unknown as AnyRow,
+});
+
+/** I3 take-out: a denial reaches every keyed waiter of the pass as the result of the denied entry. */
+const DENIAL_TO_EVERY_WAITER: Table = {
+  ...(HANDOFF_TABLE as unknown as Table),
+  callerResultAtPassEnd: (draft, pass, waiter, outcome, ownerEntry) =>
+    outcome.kind === 'denied' && ownerEntry !== null
+      ? { kind: 'entry', entry: ownerEntry, outcome }
+      : HANDOFF_TABLE.callerResultAtPassEnd(draft as never, pass, waiter, outcome, ownerEntry),
+};
+
 // ---------------------------------------------------------------------------------------------
 // Worlds. Entries b and c overlap on one Workspace and Thread; d is disjoint. FIFO is b, c, d.
 
@@ -1940,6 +2008,27 @@ export const WORLDS = {
     owner: ['publish:b'],
   },
 } satisfies Record<string, World>;
+
+/** I9: an unkeyed pass resumes after its claim while another pass holds the cycle; a third caller arrives. */
+const FAIRNESS: World = {
+  name: 'fairness',
+  entries: [C, D],
+  callers: [
+    { id: 'u', entry: null, max: 2 },
+    { id: 'x', entry: 'd', max: 1 },
+    { id: 'y', entry: null, max: 1 },
+  ],
+};
+
+/** I3: the denial world with a keyed caller of the skipped entry B in the pass that denies D. */
+const DENIAL_KEYED: World = {
+  ...WORLDS.denial,
+  name: 'denial-keyed',
+  callers: [
+    { id: 'x', entry: 'd', max: 1 },
+    { id: 'y', entry: 'b', max: 1 },
+  ],
+};
 
 const named = (report: ExploreReport) => Object.keys(report.traces).sort();
 
@@ -2129,6 +2218,35 @@ describe('Main selection handoff model check', () => {
     expect(named(report)).toContain('I8.handle-balance');
     keep('I8', [report.traces['I8.handle-balance']]);
   });
+
+  it('I1: a second selection started during a cycle fails the one-handoff invariant', () => {
+    const report = explore(WORLDS.exactCaller, { table: SECOND_CYCLE });
+    expect(named(report)).toContain('I1.one-handoff');
+    keep('I1', [report.traces['I1.one-handoff']]);
+  }, 600_000);
+
+  it('I4: a pass that parks on its invocation inside the cycle fails no execution under the handoff', () => {
+    const report = explore(WORLDS.exactCaller, { table: PARK_IN_CYCLE });
+    expect(named(report)).toContain('I4.no-execution');
+    keep('I4', [report.traces['I4.no-execution']]);
+  }, 600_000);
+
+  it('I9: a pass for each trigger fails coalescing, and a fresh pass first fails fairness', () => {
+    const perTrigger = explore(WORLDS.callers, { table: PASS_PER_TRIGGER });
+    expect(named(perTrigger)).toContain('I9.coalescing');
+    // The fairness world holds every invariant unmodified; only the take-out reorders the queue.
+    expect(explore(FAIRNESS).traces).toEqual({});
+    const first = explore(FAIRNESS, { table: FRESH_FIRST });
+    expect(named(first)).toContain('I9.fairness');
+    keep('I9', [perTrigger.traces['I9.coalescing'], first.traces['I9.fairness']]);
+  }, 600_000);
+
+  it('I3: a denial delivered to every waiter gives the keyed caller of B the result of D', () => {
+    expect(explore(DENIAL_KEYED).traces).toEqual({});
+    const report = explore(DENIAL_KEYED, { table: DENIAL_TO_EVERY_WAITER });
+    expect(named(report)).toContain('I3.exact-caller');
+    keep('I3-denial', [report.traces['I3.exact-caller']]);
+  }, 600_000);
 
   it('the seeded runner skeleton replays fixed seeds with the same oracles', () => {
     for (const seed of [1, 2, 3, 4, 5])
