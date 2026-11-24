@@ -212,7 +212,7 @@ If Tc, Ts or Ta expires before the deciding queue commit, the result is zero que
 | --- | --- | --- | --- |
 | Core user disable or membership (named) | R, B | The Core hold, from RC6 to the RC8 reply | Earlier: zero queued rows and zero bytes. Later: it waits, then advances. |
 | Workspace contributor-audience edit (named) | A | The successor Workspace hold, with the Native revision unchanged | Earlier: the original P14 refusal, zero queued rows and zero bytes. Later: it waits, then advances. |
-| Applied Workspace policy publisher | A | The Main turn of the RC7 read and the synchronous RC10 run. The Native queue does not read the policy. | Installed before RC7: the P14 refusal and zero queued rows. Installed after RC7 and before RC10: zero bytes. Installed after the write: it advances. |
+| Applied Workspace policy publisher | A | The install waits for the successor Workspace hold, from RC6 until the RC8 reply. The Native queue does not read the policy. The synchronous RC10 run reads it again. | The install wins: the original P14 refusal, zero queued rows and zero bytes. The close wins: the install waits until the queue decision and then advances, and RC10 refuses the first carriage with zero bytes. A queue commit after a restrictive install is a failure even when RC10 sends zero bytes. |
 | B's same-Harness claim while A's admitted cold restore is paused after its positive read of A (named) | L | The restore CAS on the Harness revision | A legitimate release makes the Harness accepting, B's admitted claim advances the revision, then A's stale CAS posts. The CAS preserves B. |
 | B's admission while A holds the Harness | L | The Main Harness exclusion before RC2; the Native claim CAS at RC3; the RC8 transfer check | B gets the typed capacity cause and makes no Workspace claim. If another writer wins RC3 after B's RC2, B's Workspace record stays at P1 with the original cause. After A's proved release, B claims again. |
 | Legacy double claims in an existing data root | L | The cold `decide` only | No live owner. The cold exits below apply. |
@@ -249,7 +249,7 @@ If Tc, Ts or Ta expires before the deciding queue commit, the result is zero que
 | P4 | Queued, reply lost | The exact inspect, expire or fence of the original key through Native. A reused cell needs the original sequence or receipt evidence (see Unknown outcomes), or the fence stays. |
 | P5 | Dispatched, with no result | The exact result or a physical fence |
 | P6 | Core consumption only | For the canonical local `refused`/`stale`, derive the candidate from the retained command. If the fingerprint and receiver are equal, the existing writer completes the Native result only. Other results need the exact bytes or a physical recovery. A fingerprint match proves the disposition, not zero bytes. |
-| P7 | Core and Native both committed | A scoped restore with no peer. The success decrements occupancy once, at RC12. A restore or a replay decrements nothing. `stale` keeps the binding and the resume pair. A private Login keeps its departure ACK. `cleanup_required` keeps its wider cleanup. |
+| P7 | Core and Native both committed | A scoped restore with no peer, only while the Harness revision equals the settle revision that Core keeps with the consumption. A later claim or write leaves the fence. The success decrements occupancy once, at RC12. A restore or a replay decrements nothing. `stale` keeps the binding and the resume pair. A private Login keeps its departure ACK. `cleanup_required` keeps its wider cleanup. |
 | P8 | Restored | E7 |
 | PF | A Native fence: queued expiry or dispatched unknown (`unknown`, `failed`, `draining`), or a Harness-only drain | The fence stays. Only its existing exact cleanup or a physical fence exits. |
 
@@ -258,10 +258,16 @@ If Tc, Ts or Ta expires before the deciding queue commit, the result is zero que
   - every ambiguous writer is joined;
   - no queue cell of a binding on the Harness is queued, dispatched, unknown or unsettled;
   - the reader has the complete set of original capture anchors and dispositions on the Harness, under the owner order, and each is settled and none is abandoned. An unreadable or missing anchor keeps the fence;
+  - a present binding on the Harness has an accepted capture that no close consumed. Without it, the drain can be a Harness-only drain whose `harness.drain` marker a later operation replaced, because only `session.open` and `turn.start` refuse a draining Harness;
   - the positive predicates of the existing scoped restore hold: the Sandbox is accepting, open, ready and clean on the current Epoch; the Harness is open, not failed, and draining; the operation is idle or settled with no `harness.drain`;
   - the restore CAS reads the same Harness revision.
 
   Otherwise keep the fence. A failed Harness with an idle or settled cell on a clean accepting Sandbox keeps its drain. A reachable prefix with no exit keeps its fence for an engineer ruling.
+
+  The model check found three cases that this exit does not settle. Each needs an engineer ruling before the executor uses the exit:
+  - **An open receipt that is out of date.** After a quiescent restore, the receipt stays open until the next close of its binding. A Harness-only drain, followed by a later operation, then satisfies every condition above. The exit would clear that drain.
+  - **A sibling abandon.** A binding that never held the latch has an abandoned P1 capture on a Harness that another close drains. The restore is safe for the real history. Older double claims give the same durable values, so the exit keeps the fence.
+  - **A reused cell.** A close settled. Before its restore, a later operation reused the cell. Neither the P7 settle revision nor an open capture proves the claim, so the latch stays.
 - **Healthy-Epoch no-source abandon.** RC3 commits, then the process stops before the capture source or publication, then Workspace makes the governed no-source abandon. The Sandbox is accepting, the Harness is open and draining, and no cleanup intent exists. Capacity refuses it, the same-Epoch retirement refuses it, and the original cleanup reservation needs a draining Sandbox. An independently authorized cleanup that is already under way, or proved absence in a later fenced Epoch, exits only its own case. This prefix keeps its fence and its evidence and goes to an engineer ruling. An abandon alone grants no local restore and no wider delete.
 - **E7.** The owner that makes the last local change requests the root reread after that change. A no-op restore or an intervening drain requests nothing. If another independent owner still blocks, that owner requests the reread at its own edge.
 
