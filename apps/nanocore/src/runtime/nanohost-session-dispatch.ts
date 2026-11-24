@@ -30,6 +30,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { OperationError, WorkerControlGatewayError } from '../operation-error.js';
+import { releaseSchedulerCapacity } from '../scheduler-hold-release.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { ControlCoreJournalInput } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
@@ -1367,6 +1368,12 @@ export function createNanoHostSessionDispatch(
       if (native) requireCurrentReadiness(acceptedReadiness);
       readyPhysicalConnections.set(physicalConnection, acceptedReadiness);
       currentReadiness = acceptedReadiness;
+      // Owner edge (E7): the RuntimeTarget readiness is accepted and installed, so a refused entry
+      // can read clear.
+      releaseSchedulerCapacity(runtimeTarget.coreDb.dataRoot, {
+        kind: 'backend-changed',
+        backendId: 'nanohost',
+      });
     },
 
     async result(physicalConnection, operation, result, telemetryHeaders, signal) {
@@ -2559,6 +2566,12 @@ export function registerNanoHostSessionSemanticRoutes(
               signal: request.signal,
             })
           : await settleNanoHostHarnessOperation(input.coreDb, originalResult);
+        // Owner edge (E7): the writer acknowledged the Harness result settlement, which can return
+        // a Sandbox slot. It comes before the separate consumer await.
+        releaseSchedulerCapacity(input.coreDb.dataRoot, {
+          kind: 'backend-changed',
+          backendId: 'nanohost',
+        });
         if (!input.harnessResultSettled)
           throw new Error('NanoHost Harness native result consumer is unavailable.');
         // Exact result replay must cross the same durable consumer boundary before HTTP ACK.
