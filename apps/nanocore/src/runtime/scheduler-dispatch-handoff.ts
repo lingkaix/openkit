@@ -186,20 +186,27 @@ export type HandoffEvent<Snapshot extends HandoffSnapshot, Turn> =
       readonly inspections: readonly string[];
     }
   | { readonly kind: 'submitted'; readonly invocation: string; readonly turn: Turn }
-  | {
+  | ({
       readonly kind: 'settled';
       readonly entry: string;
       readonly invocation: string;
-      readonly outcome: HandoffSettlement;
-      readonly backendId: string;
       readonly turn?: Turn;
       readonly cause?: unknown;
-      /** The invocation held backend capacity, so its settlement returns it. Default: `dispatched`. */
-      readonly returnsCapacity?: boolean;
-      /** For `backend-busy`: the refusing key and whether its owner held it when the event was queued. */
-      readonly capacity?: { readonly key: HandoffCapacityKey; readonly held: boolean };
-    }
-  | { readonly kind: 'released'; readonly hold: HandoffHold; readonly key?: HandoffCapacityKey };
+    } & (
+      | { readonly outcome: Exclude<HandoffSettlement, 'backend-busy'> }
+      | {
+          readonly outcome: 'backend-busy';
+          /** The refusing key and the held fact its owner read for the entry when the event was queued (E7). */
+          readonly capacity: { readonly key: HandoffCapacityKey; readonly held: boolean };
+        }
+    ))
+  | {
+      readonly kind: 'released';
+      readonly hold: HandoffHold;
+      readonly key?: HandoffCapacityKey;
+      /** For a backend key: the entries whose refusal predicate the owner read as clear. */
+      readonly cleared?: readonly string[];
+    };
 
 export type HandoffEffect<Snapshot extends HandoffSnapshot, Turn> =
   | {
@@ -519,29 +526,14 @@ function isNewer(current: HandoffSnapshot | null, next: HandoffSnapshot): boolea
   return current === null || (next.configVersion ?? -1) >= (current.configVersion ?? -1);
 }
 
-/** Applies a settlement's change to the busy set (T17, T18). */
+/** Applies a settlement's change to the busy set (T17, T18). A settlement removes no busy mark. */
 function settleBusy<S extends HandoffSnapshot, T>(
   draft: HandoffDraft<S, T>,
   event: EventOf<'settled', S, T>
 ): void {
-  // Row change R3 (explorer): any settlement of an invocation that held backend capacity returns it.
-  if (event.returnsCapacity ?? event.outcome === 'dispatched') {
-    const returned: HandoffCapacityKey = { kind: 'backend', backendId: event.backendId };
-    for (const entry of Object.keys(draft.busy))
-      if (sameKey(draft.busy[entry]!, returned)) {
-        // Row change R1 (explorer): a removed mark requests one coalesced scan, as T19 does.
-        delete draft.busy[entry];
-        draft.holdObserved = true;
-      }
-  }
-  if (event.outcome === 'backend-busy') {
-    const capacity = event.capacity ?? {
-      key: { kind: 'backend', backendId: event.backendId } as HandoffCapacityKey,
-      held: true,
-    };
-    if (capacity.held) draft.busy[event.entry] = capacity.key;
-    else draft.holdObserved = true;
-  }
+  if (event.outcome !== 'backend-busy') return;
+  if (event.capacity.held) draft.busy[event.entry] = event.capacity.key;
+  else draft.holdObserved = true;
 }
 
 /** Ends P after a cycle disposition that belongs to the cycle entry. */
@@ -946,13 +938,20 @@ export const HANDOFF_TRANSITIONS: readonly HandoffRow<HandoffSnapshot, unknown>[
     () => {}
   ),
   handoffRow('T19', 'released', always, (draft, event) => {
-    if (event.hold === 'backend-capacity' && event.key?.kind === 'login-close') {
+    const key = event.hold === 'backend-capacity' ? event.key : undefined;
+    if (key) {
       let removed = false;
+      // Row change R3 (V1-P round 4): a backend owner releases only the entries whose refusal
+      // predicate it read as clear. A Login close release clears every mark with its key.
       for (const entry of Object.keys(draft.busy))
-        if (sameKey(draft.busy[entry]!, event.key)) {
+        if (
+          sameKey(draft.busy[entry]!, key) &&
+          (key.kind === 'login-close' || event.cleared?.includes(entry) === true)
+        ) {
           delete draft.busy[entry];
           removed = true;
         }
+      // Row change R1 (explorer): a removed mark requests one coalesced scan.
       if (removed) draft.holdObserved = true;
     }
     draft.wake();
@@ -1187,9 +1186,9 @@ export const MAIN_HOLD_EXITS: Readonly<
     wakeRow: 'selection',
   },
   'backend-capacity': {
-    exit: 'Login close key: the last original close clears. Backend key: a dispatched settlement.',
-    owner: 'NanoHost Login close owner and handoff',
-    wakeRow: 'T19/T17/T18',
+    exit: 'Login close key: the last original close clears. Backend key: the owner reads the refusal predicate of the entry as clear.',
+    owner: 'NanoHost Login close owner, NanoHost backend owner and handoff',
+    wakeRow: 'T19',
   },
   'writer-unavailable': {
     exit: 'Owner recovery or restart.',
