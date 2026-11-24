@@ -2401,6 +2401,13 @@ describe('authoritative NanoHost session dispatch', () => {
           requestId,
         })
       ).resolves.toBeUndefined();
+      // The fenced predecessor cannot replay the settled result after the successor is admitted.
+      await expect(
+        dispatch.result(firstPhysical, 'image.acquire', {
+          failureCode: 'effect_failed',
+          requestId,
+        })
+      ).rejects.toThrow(/authoritative session|not authoritative|fenced|superseded/i);
       await expect(
         dispatch.result(successorPhysical, 'image.acquire', {
           failureCode: 'effect_failed',

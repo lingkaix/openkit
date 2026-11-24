@@ -4023,10 +4023,11 @@ mod tests {
     }
 
     /// Serves one in-memory Core whose result path answers with `statuses` in order; a missing
-    /// status closes the connection. Records every request path and body.
+    /// status closes the physical connection after the whole body was read. Records every request
+    /// path and body.
     type ObservedRequests = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
 
-    fn deferral_core(
+    fn result_core(
         server_io: tokio::io::DuplexStream,
         statuses: Vec<StatusCode>,
     ) -> (tokio::task::JoinHandle<()>, ObservedRequests) {
@@ -4036,206 +4037,195 @@ mod tests {
             let mut connection = h2::server::handshake(server_io)
                 .await
                 .expect("server handshake");
-            let mut results = statuses.into_iter();
-            while let Some(request) = connection.accept().await {
-                let (request, mut respond) = request.expect("request");
-                let path = request.uri().path().to_string();
-                let mut body = request.into_body();
-                let mut bytes = Vec::new();
-                while let Some(chunk) = body.data().await {
-                    let chunk = chunk.expect("body");
-                    body.flow_control()
-                        .release_capacity(chunk.len())
-                        .expect("flow control");
-                    bytes.extend_from_slice(&chunk);
-                }
-                observed
-                    .lock()
-                    .expect("observations")
-                    .push((path.clone(), bytes));
-                let status = if path.ends_with("/result") {
-                    match results.next() {
-                        Some(status) => status,
-                        // An operator restart or decommission closes the physical connection.
-                        None => return,
-                    }
-                } else if path == "/independent" {
-                    StatusCode::OK
-                } else {
-                    StatusCode::NO_CONTENT
+            let results = std::sync::Arc::new(std::sync::Mutex::new(
+                statuses
+                    .into_iter()
+                    .collect::<std::collections::VecDeque<_>>(),
+            ));
+            let (close, mut closed) = tokio::sync::mpsc::unbounded_channel::<()>();
+            loop {
+                let request = tokio::select! {
+                    request = connection.accept() => request,
+                    _ = closed.recv() => return,
                 };
-                respond
-                    .send_response(
-                        Response::builder()
-                            .status(status)
-                            .body(())
-                            .expect("response"),
-                        true,
-                    )
-                    .expect("send response");
+                let Some(request) = request else { return };
+                let (request, mut respond) = request.expect("request");
+                let observed = observed.clone();
+                let results = results.clone();
+                let close = close.clone();
+                // The connection is polled by `accept`; each body is consumed by its own task.
+                tokio::spawn(async move {
+                    let path = request.uri().path().to_string();
+                    let mut body = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.expect("body");
+                        body.flow_control()
+                            .release_capacity(chunk.len())
+                            .expect("flow control");
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    observed
+                        .lock()
+                        .expect("observations")
+                        .push((path.clone(), bytes));
+                    let status = if path.ends_with("/result") {
+                        match results.lock().expect("results").pop_front() {
+                            Some(status) => status,
+                            // An operator restart or decommission closes the physical connection.
+                            None => {
+                                let _ = close.send(());
+                                return;
+                            }
+                        }
+                    } else {
+                        StatusCode::NO_CONTENT
+                    };
+                    respond
+                        .send_response(
+                            Response::builder()
+                                .status(status)
+                                .body(())
+                                .expect("response"),
+                            true,
+                        )
+                        .expect("send response");
+                });
             }
         });
         (server, requests)
     }
 
-    fn deferred_image_command() -> PolledEffectCommand {
-        PolledEffectCommand {
-            kind: RuntimeEffectKind::AcquireImage,
-            request_id: "a".repeat(64),
-            input: serde_json::json!({}),
+    /// One verified export staged through the production `stage_export` boundary.
+    fn staged_export(
+        bytes: &[u8],
+    ) -> (
+        PolledEffectCommand,
+        crate::sandbox_bridge::RetainedExportResult,
+        std::path::PathBuf,
+    ) {
+        use crate::sandbox_bridge::{FileEffectKind, FileEffectPresence, FileEffectRequest};
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-b3-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let request = FileEffectRequest {
+            artifact_submission: true,
+            request_id: "e".repeat(64),
+            sandbox_id: "sandbox-live".into(),
+            slot: "main-worktree".into(),
+            relative_path: std::path::PathBuf::from("slot-a/report.md"),
+            sha256: String::new(),
+            byte_length: 1024,
+            kind: FileEffectKind::ExportFile,
+            presence: FileEffectPresence::Optional,
+        };
+        let mut stage = crate::file_transfer::FileStage::create(&root, request.byte_length, 0)
+            .expect("private file stage");
+        std::io::Write::write_all(&mut stage, bytes).expect("export bytes");
+        let retained =
+            crate::sandbox_bridge::stage_export(&request, stage, false).expect("verified export");
+        let command = PolledEffectCommand {
+            kind: RuntimeEffectKind::ExportFile,
+            request_id: request.request_id.clone(),
+            input: serde_json::json!({"maxByteLength": 1024}),
             trace_context: opentelemetry::Context::new(),
             file_data: None,
             admission_failure: None,
-        }
+        };
+        (command, retained, root)
     }
 
-    /// B3: repeated empty `503` deferral keeps one exact image result in the effect loop while
-    /// independent streams continue; after `204` the same connection polls lifecycle work again.
+    /// B3: the raw export sender treats a received non-204 as a definite refusal, never retries it,
+    /// and the production pending-slot rule drops the refused tuple.
     #[tokio::test]
-    async fn image_deferral_keeps_one_result_across_repeated_503_and_resumes_polling() {
+    async fn raw_export_non_204_is_a_terminal_refusal_and_is_not_retained() {
+        let bytes = b"exported report bytes";
+        let (command, retained, root) = staged_export(bytes);
         let (client_io, server_io) = tokio::io::duplex(65536);
-        let (sender, connection) = h2::client::handshake(client_io)
-            .await
-            .expect("client handshake");
+        let (mut sender, connection) = h2::client::handshake(client_io).await.expect("client");
         let client_driver = tokio::spawn(connection);
-        let unavailable = StatusCode::SERVICE_UNAVAILABLE;
-        let (server, requests) = deferral_core(
-            server_io,
-            vec![
-                unavailable,
-                unavailable,
-                unavailable,
-                StatusCode::NO_CONTENT,
-            ],
-        );
-        let results = |requests: &std::sync::Mutex<Vec<(String, Vec<u8>)>>| {
-            requests
-                .lock()
-                .expect("observations")
-                .iter()
-                .filter(|(path, _)| path.ends_with("/result"))
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let mut deferred_sender = sender.clone();
-        let started = tokio::time::Instant::now();
-        let delivery = tokio::spawn(async move {
-            submit_effect_result(
-                "http://nanocore.test",
-                &mut deferred_sender,
-                &deferred_image_command(),
-                serde_json::json!({"digest": format!("sha256:{}", "b".repeat(64))}),
-            )
-            .await
-        });
-        let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        while results(&requests).len() < 2 {
-            assert!(
-                tokio::time::Instant::now() < wait_deadline,
-                "the deferred image result was not redelivered within 10 s"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        // Independent Worker traffic shares the healthy connection during the deferral.
-        let mut independent = sender.clone().ready().await.expect("independent ready");
-        let (response, _) = independent
-            .send_request(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("http://nanocore.test/independent")
-                    .body(())
-                    .expect("independent request"),
-                true,
-            )
-            .expect("independent send");
-        assert_eq!(
-            response.await.expect("independent response").status(),
-            StatusCode::OK
-        );
-        assert!(
-            !delivery.is_finished(),
-            "the deferred result still occupies the effect loop"
-        );
-        let delivered = delivery.await.expect("delivery task");
-        assert!(
-            delivered.is_ok(),
-            "deferral must end in acceptance: {delivered:?}"
-        );
-        assert!(started.elapsed() >= std::time::Duration::from_secs(3));
-        let delivered = results(&requests);
-        assert_eq!(delivered.len(), 4, "three deferrals and one acceptance");
-        assert!(
-            delivered.windows(2).all(|pair| pair[0] == pair[1]),
-            "only the identical result may repeat"
-        );
-        assert!(
-            requests
-                .lock()
-                .expect("observations")
-                .iter()
-                .all(|(path, _)| path.ends_with("/result") || path == "/independent"),
-            "no lifecycle poll while the result is deferred"
-        );
-        let mut sender = sender;
-        let mut cursor = 0;
-        let staging = std::env::temp_dir();
-        match poll_effect_command(
-            "http://nanocore.test",
-            &mut sender,
-            &mut cursor,
-            false,
-            &staging,
+        let (server, requests) = result_core(server_io, vec![StatusCode::SERVICE_UNAVAILABLE]);
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut sender, &command, &retained),
         )
         .await
-        {
-            Ok(None) => {}
-            Ok(Some(_)) => panic!("idle Core returned a command"),
-            Err(failure) => panic!("polling must resume on the same connection: {failure:?}"),
-        }
+        .expect("the raw export sender settled within 10 s")
+        .expect_err("a received 503 is a definite refusal");
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+        assert_eq!(failure.status(), Some(503));
+        assert_eq!(failure.reason(), "file export result rejected");
         assert_eq!(
-            requests
-                .lock()
-                .expect("observations")
-                .last()
-                .expect("poll")
-                .0,
-            "/api/nanohost/transport/effects/sandbox.create"
+            requests.lock().expect("observations").len(),
+            1,
+            "a definite refusal is never retried"
         );
+        let mut pending = Some((command, crate::ExecutedEffectResult::FileExport(retained)));
+        crate::clear_pending_after_failure(&mut pending, &failure);
+        assert!(pending.is_none(), "a refused export is not retained");
         client_driver.abort();
         server.abort();
+        let _ = std::fs::remove_dir_all(root);
     }
 
-    /// B3: an operator restart or decommission during the deferral ends the wait through the
-    /// existing physical-close path. The unacknowledged image result is retained for a successor.
+    /// B3: a physical close after the export body is sent keeps the original bytes for the
+    /// successor through the production pending-slot rule, and the successor resends them exactly.
     #[tokio::test]
-    async fn image_deferral_exits_on_operator_connection_close_and_retains_result() {
+    async fn raw_export_physical_close_retains_original_bytes_for_the_successor() {
+        let bytes = b"exported report bytes";
+        let (command, retained, root) = staged_export(bytes);
         let (client_io, server_io) = tokio::io::duplex(65536);
-        let (mut sender, connection) = h2::client::handshake(client_io)
-            .await
-            .expect("client handshake");
+        let (mut sender, connection) = h2::client::handshake(client_io).await.expect("client");
         let client_driver = tokio::spawn(connection);
-        let unavailable = StatusCode::SERVICE_UNAVAILABLE;
-        let (server, requests) = deferral_core(server_io, vec![unavailable, unavailable]);
-        let command = deferred_image_command();
-        let delivered = submit_effect_result(
-            "http://nanocore.test",
-            &mut sender,
-            &command,
-            serde_json::json!({"digest": format!("sha256:{}", "b".repeat(64))}),
+        // No scripted status: the Core reads the whole body and closes the physical connection.
+        let (server, requests) = result_core(server_io, Vec::new());
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut sender, &command, &retained),
         )
-        .await;
-        let failure = delivered.expect_err("a closed connection cannot acknowledge the result");
+        .await
+        .expect("the raw export sender settled within 10 s")
+        .expect_err("a closed connection cannot acknowledge the export");
         assert_eq!(failure.disposition(), OuterSessionDisposition::Reconnect);
-        assert!(
-            !clear_lost_effect_result(command.kind),
-            "an unacknowledged image result is kept for the successor"
+        assert_eq!(failure.reason(), "file export result delivery uncertain");
+        let first = requests.lock().expect("observations").clone();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1, bytes, "the whole original body was sent");
+        let mut pending = Some((command, crate::ExecutedEffectResult::FileExport(retained)));
+        crate::clear_pending_after_failure(&mut pending, &failure);
+        let (command, result) =
+            pending.expect("an unacknowledged export is kept for the successor");
+        let crate::ExecutedEffectResult::FileExport(retained) = result else {
+            panic!("the retained slot keeps the export tuple");
+        };
+        // The successor connection receives the same bytes from the retained file.
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let (mut successor, connection) = h2::client::handshake(client_io).await.expect("client");
+        let successor_driver = tokio::spawn(connection);
+        let (successor_server, successor_requests) =
+            result_core(server_io, vec![StatusCode::NO_CONTENT]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut successor, &command, &retained),
+        )
+        .await
+        .expect("the successor resend settled within 10 s")
+        .expect("the successor acknowledges the retained export");
+        assert_eq!(
+            successor_requests.lock().expect("observations")[0].1,
+            bytes,
+            "the successor resend is byte-identical"
         );
-        let observed = requests.lock().expect("observations");
-        assert_eq!(observed.len(), 3, "two deferrals, then the close");
-        assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
-        drop(observed);
         client_driver.abort();
         server.abort();
+        successor_driver.abort();
+        successor_server.abort();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The raw entry boundary must reject unsafe carriage before exposing a Sandbox command.

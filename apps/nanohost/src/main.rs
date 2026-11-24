@@ -2819,6 +2819,433 @@ mod tests {
         let _ = peer.await;
     }
 
+    /// Chooses the scripted Core action from the connection index, request path and nth hit on that path.
+    type CoreScript = std::sync::Arc<dyn Fn(usize, &str, usize) -> CoreAction + Send + Sync>;
+
+    type CoreLog = std::sync::Arc<Mutex<Vec<(usize, String, Vec<u8>, u16)>>>;
+
+    /// What the scripted Core does with one request on one physical connection.
+    enum CoreAction {
+        Status(u16),
+        Command(Vec<u8>),
+        Close,
+    }
+
+    const B3_REQUEST_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const B3_ACQUIRE_POLL: &str = "/api/nanohost/transport/effects/image.acquire";
+    const B3_ACQUIRE_RESULT: &str = "/api/nanohost/transport/effects/image.acquire/result";
+
+    /// One acquire command whose local digest is absent from the store, so execution fails definitively.
+    fn b3_failing_acquire_command() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "requestId": B3_REQUEST_ID,
+            "backendSessionId": "nh-1111111111111111-2222222222222222",
+            "leaseId": "attempt_00000000-0000-7000-8000-000000000001",
+            "packageSnapshotId": "snapshot_producer_pin",
+            "imageReference": format!("sha256:{}", "c".repeat(64)),
+        }))
+        .unwrap()
+    }
+
+    /// Serves the real admission and readiness routes, then lets the script decide every other request.
+    async fn b3_core_peer(
+        socket: tokio::net::TcpStream,
+        connection_index: usize,
+        log: CoreLog,
+        script: CoreScript,
+    ) {
+        let mut connection = h2::server::handshake(socket).await.unwrap();
+        let mut seen_on_path = BTreeMap::<String, usize>::new();
+        while let Some(request) = connection.accept().await {
+            let (request, mut respond) = request.unwrap();
+            let path = request.uri().path().to_string();
+            let mut body = request.into_body();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                body.flow_control().release_capacity(chunk.len()).unwrap();
+                bytes.extend_from_slice(&chunk);
+            }
+            let respond_with = |respond: &mut h2::server::SendResponse<bytes::Bytes>,
+                                status: u16,
+                                payload: Option<Vec<u8>>| {
+                let mut response = http::Response::builder().status(status);
+                if path == "/api/nanohost/transport/session/admit" {
+                    response = response.header(
+                        crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER,
+                        crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim(),
+                    );
+                }
+                let end = payload.is_none();
+                let mut stream = respond
+                    .send_response(response.body(()).unwrap(), end)
+                    .unwrap();
+                if let Some(payload) = payload {
+                    stream.send_data(bytes::Bytes::from(payload), true).unwrap();
+                }
+            };
+            if path == "/api/nanohost/transport/session/admit" {
+                let payload = serde_json::json!({
+                    "connectionGeneration": connection_index + 1,
+                    "deploymentId": "deployment-main",
+                    "identityId": "integration_nanohost_main",
+                    "mayCarryWork": true,
+                    "role": "authoritative"
+                });
+                log.lock()
+                    .unwrap()
+                    .push((connection_index, path.clone(), bytes, 200));
+                respond_with(
+                    &mut respond,
+                    200,
+                    Some(serde_json::to_vec(&payload).unwrap()),
+                );
+                continue;
+            }
+            if path == "/api/nanohost/transport/session/readiness" {
+                log.lock()
+                    .unwrap()
+                    .push((connection_index, path.clone(), bytes, 204));
+                respond_with(&mut respond, 204, None);
+                continue;
+            }
+            let nth = {
+                let count = seen_on_path.entry(path.clone()).or_default();
+                *count += 1;
+                *count
+            };
+            match script(connection_index, &path, nth) {
+                CoreAction::Close => {
+                    log.lock().unwrap().push((connection_index, path, bytes, 0));
+                    return;
+                }
+                CoreAction::Status(status) => {
+                    log.lock()
+                        .unwrap()
+                        .push((connection_index, path.clone(), bytes, status));
+                    respond_with(&mut respond, status, None);
+                }
+                CoreAction::Command(payload) => {
+                    log.lock()
+                        .unwrap()
+                        .push((connection_index, path.clone(), bytes, 200));
+                    respond_with(&mut respond, 200, Some(payload));
+                }
+            }
+        }
+    }
+
+    /// Accepts every physical connection the production loop opens and numbers them.
+    fn b3_accept_loop(
+        listener: tokio::net::TcpListener,
+        log: CoreLog,
+        script: CoreScript,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut index = 0;
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(b3_core_peer(socket, index, log.clone(), script.clone()));
+                index += 1;
+            }
+        })
+    }
+
+    struct B3Root(std::path::PathBuf);
+    impl Drop for B3Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn b3_root(label: &str) -> B3Root {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-b3-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        B3Root(root)
+    }
+
+    /// Waits until the scripted Core has logged `done`, failing at that assertion instead of hanging.
+    async fn b3_wait_for(
+        host: &mut (impl std::future::Future<Output = Result<(), super::NanoHostRunFailure>> + Unpin),
+        log: &CoreLog,
+        what: &str,
+        done: impl Fn(&[(usize, String, Vec<u8>, u16)]) -> bool,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if done(&log.lock().unwrap()) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}; log: {:?}",
+                log.lock()
+                    .unwrap()
+                    .iter()
+                    .map(|e| (e.0, e.1.clone(), e.3))
+                    .collect::<Vec<_>>()
+            );
+            tokio::select! {
+                result = &mut *host => panic!("the host ended while waiting for {what}: {:?}", result.err().map(|e| e.to_string())),
+                () = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
+    }
+
+    fn b3_result_entries(
+        log: &[(usize, String, Vec<u8>, u16)],
+    ) -> Vec<&(usize, String, Vec<u8>, u16)> {
+        log.iter()
+            .filter(|entry| entry.1 == B3_ACQUIRE_RESULT)
+            .collect()
+    }
+
+    fn b3_is_effect_poll(entry: &(usize, String, Vec<u8>, u16)) -> bool {
+        entry.1.starts_with("/api/nanohost/transport/effects/") && !entry.1.ends_with("/result")
+    }
+
+    /// B3: the production `run_sessions` loop keeps one image result across repeated empty `503`
+    /// while a resident Worker stream keeps moving, and polls again only after the `204`, on the
+    /// same connection.
+    #[tokio::test]
+    async fn run_sessions_defers_image_result_on_503_while_worker_stream_moves_then_polls() {
+        let root = b3_root("deferral-loop");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (mut coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root.0);
+        let _reports = coordinator.fixture_invalidation_reports(&root.0);
+        let projection = coordinator.outer_route_projection();
+        let log: CoreLog = Default::default();
+        let script: CoreScript = std::sync::Arc::new(|_, path, nth| match path {
+            B3_ACQUIRE_POLL if nth == 1 => CoreAction::Command(b3_failing_acquire_command()),
+            B3_ACQUIRE_RESULT if nth <= 3 => CoreAction::Status(503),
+            B3_ACQUIRE_RESULT => CoreAction::Status(204),
+            _ => CoreAction::Status(204),
+        });
+        let accept = b3_accept_loop(listener, log.clone(), script);
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        // A resident Worker stream: a nested request forwarded through the production projection.
+        let (nested_client_io, nested_server_io) = tokio::io::duplex(1024 * 1024);
+        let nested_projection = projection.clone();
+        let nested_server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(nested_server_io).await.unwrap();
+            while let Some(incoming) = connection.accept().await {
+                let (request, respond) = incoming.unwrap();
+                let projection = nested_projection.clone();
+                tokio::spawn(async move {
+                    let _ = projection
+                        .forward(
+                            crate::sandbox_bridge::RouteFamily::WorkerControl,
+                            request,
+                            respond,
+                            "binding",
+                        )
+                        .await;
+                });
+            }
+        });
+        let (worker, nested_connection) = h2::client::handshake(nested_client_io).await.unwrap();
+        let nested_driver = tokio::spawn(nested_connection);
+
+        b3_wait_for(&mut host, &log, "the first deferred result", |entries| {
+            b3_result_entries(entries)
+                .iter()
+                .any(|entry| entry.3 == 503)
+        })
+        .await;
+        // The stream must move between the repeated empty 503 answers: send it while the loop is deferred.
+        let mut moved = 0;
+        let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while b3_result_entries(&log.lock().unwrap()).len() < 4 {
+            assert!(
+                tokio::time::Instant::now() < stream_deadline,
+                "the deferral did not end within 20 s"
+            );
+            let request = http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/worker-control/heartbeat")
+                .body(())
+                .unwrap();
+            let (response, _output) = worker
+                .clone()
+                .ready()
+                .await
+                .unwrap()
+                .send_request(request, true)
+                .unwrap();
+            let status = tokio::select! {
+                response = tokio::time::timeout(Duration::from_secs(5), response) => response
+                    .unwrap_or_else(|_| panic!("the Worker stream stalled during the deferral; Core saw {:?}", log.lock().unwrap().iter().map(|e| (e.0, e.1.clone(), e.3)).collect::<Vec<_>>()))
+                    .expect("Worker stream response")
+                    .status(),
+                result = &mut host => panic!("the host ended during the deferral: {:?}", result.err().map(|e| e.to_string())),
+            };
+            assert_eq!(
+                status,
+                http::StatusCode::NO_CONTENT,
+                "the Worker stream must progress during the deferral"
+            );
+            moved += 1;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(
+            moved >= 1,
+            "the Worker stream moved at least once during the deferral"
+        );
+        b3_wait_for(&mut host, &log, "the poll after the 204", |entries| {
+            let results = b3_result_entries(entries);
+            results.last().is_some_and(|last| last.3 == 204)
+                && entries
+                    .iter()
+                    .rev()
+                    .take_while(|entry| entry.1 != B3_ACQUIRE_RESULT)
+                    .any(b3_is_effect_poll)
+        })
+        .await;
+        let entries = log.lock().unwrap().clone();
+        let results = b3_result_entries(&entries);
+        assert_eq!(
+            results.iter().map(|entry| entry.3).collect::<Vec<_>>(),
+            vec![503, 503, 503, 204],
+            "three empty 503 answers then one acceptance"
+        );
+        assert!(
+            results
+                .windows(2)
+                .all(|pair| pair[0].2 == pair[1].2 && pair[0].0 == pair[1].0),
+            "the identical result bytes are redelivered on one connection"
+        );
+        let first = entries
+            .iter()
+            .position(|entry| entry.1 == B3_ACQUIRE_RESULT)
+            .unwrap();
+        let last = entries
+            .iter()
+            .rposition(|entry| entry.1 == B3_ACQUIRE_RESULT)
+            .unwrap();
+        assert!(
+            !entries[first..=last].iter().any(b3_is_effect_poll),
+            "no lifecycle poll while the result is deferred"
+        );
+        let poll_after = entries[last + 1..]
+            .iter()
+            .find(|entry| b3_is_effect_poll(entry))
+            .expect("poll after 204");
+        assert_eq!(
+            poll_after.0, results[0].0,
+            "polling resumes on the same connection"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.1 == B3_ACQUIRE_POLL && entry.3 == 200)
+                .count(),
+            1,
+            "the command was delivered once and never re-executed"
+        );
+        accept.abort();
+        nested_driver.abort();
+        nested_server.abort();
+    }
+
+    /// B3: an operator close during the deferral ends the wait through the existing physical-close
+    /// path; each successor resends the exact original request and result from the real pending
+    /// slot before its first poll, and the command is never executed again.
+    #[tokio::test]
+    async fn run_sessions_resends_retained_image_result_before_first_poll_on_each_successor() {
+        let root = b3_root("operator-exit");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (mut coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root.0);
+        let _reports = coordinator.fixture_invalidation_reports(&root.0);
+        let log: CoreLog = Default::default();
+        let script: CoreScript =
+            std::sync::Arc::new(|connection, path, nth| match (connection, path) {
+                // The first connection loses its result: delivery is unknown.
+                (0, B3_ACQUIRE_POLL) if nth == 1 => {
+                    CoreAction::Command(b3_failing_acquire_command())
+                }
+                (0, B3_ACQUIRE_RESULT) => CoreAction::Close,
+                // The successor defers once, then the operator closes the connection during the deferral.
+                (1, B3_ACQUIRE_RESULT) if nth == 1 => CoreAction::Status(503),
+                (1, B3_ACQUIRE_RESULT) => CoreAction::Close,
+                (2, B3_ACQUIRE_RESULT) => CoreAction::Status(204),
+                _ => CoreAction::Status(204),
+            });
+        let accept = b3_accept_loop(listener, log.clone(), script);
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        b3_wait_for(
+            &mut host,
+            &log,
+            "the second successor's first poll",
+            |entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.0 == 2 && b3_is_effect_poll(entry))
+            },
+        )
+        .await;
+        let entries = log.lock().unwrap().clone();
+        let results = b3_result_entries(&entries);
+        assert_eq!(
+            results
+                .iter()
+                .map(|entry| (entry.0, entry.3))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (1, 503), (1, 0), (2, 204)],
+            "the result is resent to each successor"
+        );
+        assert!(
+            results.windows(2).all(|pair| pair[0].2 == pair[1].2),
+            "every resend carries the exact original bytes"
+        );
+        for connection in [1, 2] {
+            let own = entries
+                .iter()
+                .filter(|entry| entry.0 == connection)
+                .collect::<Vec<_>>();
+            let first_work = own
+                .iter()
+                .find(|entry| !entry.1.starts_with("/api/nanohost/transport/session/"))
+                .expect("work on the successor");
+            assert_eq!(
+                first_work.1, B3_ACQUIRE_RESULT,
+                "the pending slot resends before the first poll on connection {connection}"
+            );
+        }
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.1 == B3_ACQUIRE_POLL && entry.3 == 200)
+                .count(),
+            1,
+            "zero re-execution: the command was delivered once"
+        );
+        accept.abort();
+    }
+
     #[tokio::test]
     async fn admission_rejection_waits_before_the_next_physical_connection() {
         use tokio::net::TcpListener;
