@@ -102,6 +102,7 @@ import { policyDigest } from '@openkit/protocol/digest';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import * as holdRelease from '../scheduler-hold-release.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import {
   createSchedulerAdmissionEntry,
@@ -25447,6 +25448,7 @@ describe('inert initial private Login exchange through the concrete backend sess
       let replacementCompleted = false;
       let replacementTurnId: string | undefined;
       let observeClose: { mockRestore(): void } | undefined;
+      let observeLoginRelease: { mockRestore(): void } | undefined;
       const startDeliveryFailed = Promise.withResolvers<void>();
       let heldStart: harnessRecords.NanoHostHarnessCommand | undefined;
       const acquireAbort = new AbortController();
@@ -28530,6 +28532,19 @@ describe('inert initial private Login exchange through the concrete backend sess
         if (departure) {
           // This continuation models the outside start/terminal/close, never native private absence.
           const acceptResult = native.runtime.acceptNanoHostHarnessResult.bind(native.runtime);
+          // The Login close held-to-clear edge of this Thread (I6), sent to this Core root only.
+          const loginRelease = vi.spyOn(holdRelease, 'releaseSchedulerCapacity');
+          observeLoginRelease = loginRelease;
+          const loginReleases = () =>
+            loginRelease.mock.calls.filter((call) =>
+              call.some((value) => isRecord(value) && value.kind === 'login-close')
+            );
+          const threadReleased = [
+            [
+              coreDb.dataRoot,
+              { kind: 'login-close', workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id },
+            ],
+          ];
           observeClose = vi
             .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
             .mockImplementation((...args) => {
@@ -28629,6 +28644,8 @@ describe('inert initial private Login exchange through the concrete backend sess
                 outcome.then(() => 'returned'),
               ])
             ).toBe('removal-entered');
+            // The close still owns the Thread: no Login close release yet.
+            expect(loginReleases()).toEqual([]);
             if (!closeResult || closeSettlement?.disposition !== 'settled')
               throw new Error('Actual first close settlement evidence is unavailable.');
             const consumed = harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult);
@@ -28655,6 +28672,8 @@ describe('inert initial private Login exchange through the concrete backend sess
                   harnessRecords.NANO_HOST_HARNESS_RESULT_BUDGET_MS
                 );
                 expect((await outcome).kind).toBe('refused');
+                // A failed dispatched close releases only after its admission fence joins, once.
+                expect(loginReleases()).toEqual(threadReleased);
                 expect(
                   readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite
                     .prepare(
@@ -28705,6 +28724,8 @@ describe('inert initial private Login exchange through the concrete backend sess
               if (ending !== 'departure-ordinary')
                 expect(finished).toEqual({ kind: 'succeeded', value: 'closed' });
               await closeCallback;
+              // The idle close and the ordinary live close each release the Thread once.
+              expect(loginReleases()).toEqual(threadReleased);
               if (ending === 'departure-warm-replay') {
                 // The original callback and Workspace FULL ACK are both known, not uncertain.
                 await expect(replayClose()).resolves.toBeUndefined();
@@ -28746,6 +28767,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         await startup?.catch(() => undefined);
         await native?.restore().catch(() => undefined);
         observeClose?.mockRestore();
+        observeLoginRelease?.mockRestore();
         acceptStart?.mockRestore();
         observeDeliveryFailure?.mockRestore();
         observeSchedulerDispatch?.mockRestore();

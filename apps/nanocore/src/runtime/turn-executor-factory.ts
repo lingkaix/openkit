@@ -48,7 +48,11 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import { releaseSchedulerCapacity, type SchedulerCapacityKey } from '../scheduler-hold-release.js';
+import {
+  releaseSchedulerCapacity,
+  type SchedulerCapacityKey,
+  type SchedulerCapacityRefusal,
+} from '../scheduler-hold-release.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
@@ -943,6 +947,8 @@ interface PendingNanoHostHarnessOperation {
     settlement?: Promise<void>;
     failure?: Error;
     fence?: Promise<void>;
+    /** The admission fence of a failed dispatched close is acknowledged; its Thread may read clear. */
+    fenceAcknowledged?: true;
   };
   /** Existing public receipt producer; no prompt or extra durable state is retained here. */
   steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl };
@@ -1183,16 +1189,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.workspaceCollectionPublisher = publisher;
   }
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
-  /**
-   * The last capacity refusal of each Thread outside the Login close and RuntimeTarget checks: its
-   * side-effect-free re-check, or null when none exists and only intake or the timer retries it.
-   */
-  private readonly schedulerCapacityRefusals = new Map<string, (() => boolean) | null>();
-  /** Threads whose refusal predicate read the original Login close as held, until it clears. */
-  private readonly schedulerLoginCloseHolds = new Map<
-    string,
-    { readonly workspaceId: string; readonly threadId: string }
-  >();
   private readonly cleanupRecoveryResults = new Map<
     string,
     ReturnType<NonNullable<NanoHostSessionDispatch['expectResultOnly']>>
@@ -2007,6 +2003,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
     }
     if (pending.timeout) clearTimeout(pending.timeout);
+    const clearedSlot =
+      session?.pendingHarnessOperation === pending || closeOwner?.pending === pending;
     if (session?.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
     if (closeOwner?.pending === pending) {
       closeOwner.pending = null;
@@ -2016,7 +2014,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         this.agentSessionCloseOwners.delete(closeOwner.inspection.agentSessionRuntimeBindingId);
     }
-    this.reportLoginClosesCleared();
+    // Only a succeeded close clears here. A failed dispatched close reports at its fence ACK.
+    if (clearedSlot && result.disposition === 'succeeded' && !pending.closeDeparture?.failure)
+      this.reportLoginCloseCleared(pending);
     if (result.disposition === 'succeeded') {
       pending.resolve(result.body);
       return;
@@ -2756,28 +2756,35 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
-   * The side-effect-free refusal predicate of this backend owner for one Thread (E7). It repeats
-   * the capacity checks that refused the Thread and changes nothing: the original Login close of
-   * the Thread, RuntimeTarget readiness, and the last other refusal of the Thread. A refusal with
-   * no side-effect-free re-check reads as held.
+   * The capacity refusal that one refusal error of this backend carries (E7). It changes nothing.
+   * Each throw site outside the #987 zone attaches its own refusal. The two Thread admission
+   * refusals of `prepareAgentSessionContinuity` attach none: their exact messages identify them,
+   * and their Thread is the Thread of the refused entry.
    */
-  public readSchedulerCapacityHold(thread: {
-    readonly workspaceId: string;
-    readonly threadId: string;
-  }): SchedulerCapacityKey | null {
-    const threadKey = JSON.stringify([thread.workspaceId, thread.threadId]);
-    if (this.loginCloseOwnsThread(thread)) {
-      this.schedulerLoginCloseHolds.set(threadKey, {
-        workspaceId: thread.workspaceId,
-        threadId: thread.threadId,
-      });
-      return { kind: 'login-close', workspaceId: thread.workspaceId, threadId: thread.threadId };
-    }
-    const backend = { kind: 'backend', backendId: this.id } as const;
-    if (!this.runtimeTargetReadyForAdmission()) return backend;
-    if (!this.schedulerCapacityRefusals.has(threadKey)) return null;
-    const stillRefused = this.schedulerCapacityRefusals.get(threadKey);
-    return stillRefused && !stillRefused() ? null : backend;
+  public schedulerCapacityRefusal(
+    error: unknown,
+    thread: { readonly workspaceId: string; readonly threadId: string }
+  ): SchedulerCapacityRefusal | null {
+    if (!(error instanceof WorkerGovernanceCapacityUnavailableError)) return null;
+    if (error.schedulerCapacity) return error.schedulerCapacity;
+    if (error.message === 'The original Login close still owns Thread admission.')
+      return {
+        key: { kind: 'login-close', workspaceId: thread.workspaceId, threadId: thread.threadId },
+        stillRefused: () => this.loginCloseOwnsThread(thread),
+      };
+    if (error.message === 'The configured NanoHost RuntimeTarget is not ready for admission.')
+      return {
+        key: this.schedulerBackendKey(),
+        stillRefused: () => !this.runtimeTargetReadyForAdmission(),
+      };
+    return null;
+  }
+
+  /** Repeats the `capacity-saturated` read of `inspectMaterializationCapacity` without effects (E7). */
+  public materializationCapacityRefused(
+    environmentPackage: AgentEnvironmentPackagePreview
+  ): boolean {
+    return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated';
   }
 
   /** The original Login close admission check of one Thread, read without effects. */
@@ -2824,36 +2831,60 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
-   * The Login close held-to-clear edge: each Thread that the refusal predicate read as held by its
-   * original Login close and that now reads clear releases its key once.
+   * The Login close held-to-clear edge (I6) of one close slot that a site cleared: when the Thread
+   * now reads clear, its key releases. A failed dispatched close keeps its Thread held until the
+   * admission fence of its rejection is acknowledged.
    */
-  private reportLoginClosesCleared(): void {
-    for (const [threadKey, thread] of this.schedulerLoginCloseHolds)
-      if (!this.loginCloseOwnsThread(thread)) {
-        this.schedulerLoginCloseHolds.delete(threadKey);
-        releaseSchedulerCapacity({ kind: 'login-close', ...thread });
-      }
+  private reportLoginCloseCleared(pending: PendingNanoHostHarnessOperation): void {
+    const departure = pending.closeDeparture;
+    if (departure?.expectedReferenceId == null) return;
+    const thread = { workspaceId: departure.workspaceId, threadId: departure.threadId };
+    if (!this.loginCloseOwnsThread(thread))
+      releaseSchedulerCapacity(this.coreDb.dataRoot, { kind: 'login-close', ...thread });
   }
 
-  /** Keeps the Sandbox capacity check of a refused package as the re-check of its Thread. */
-  private recordSchedulerSandboxRefusal(
+  /** A slot clear after a failed dispatched close reports the edge only after its fence ACK. */
+  private reportLoginCloseSlotCleared(pending: PendingNanoHostHarnessOperation): void {
+    if (pending.operationId === null || pending.closeDeparture?.fenceAcknowledged)
+      this.reportLoginCloseCleared(pending);
+  }
+
+  private schedulerBackendKey(): SchedulerCapacityKey {
+    return { kind: 'backend', backendId: this.id };
+  }
+
+  /** A Sandbox capacity refusal of one package: its re-check is the same capacity check (E7). */
+  private schedulerSandboxRefusal(
     environmentPackage: AgentEnvironmentPackagePreview,
     forceRetirement = false
-  ): void {
-    this.schedulerCapacityRefusals.set(
-      JSON.stringify([environmentPackage.scope.workspaceId, environmentPackage.scope.threadId]),
-      () =>
+  ): SchedulerCapacityRefusal {
+    return {
+      key: this.schedulerBackendKey(),
+      stillRefused: () =>
         this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement) ===
-        'capacity-saturated'
-    );
+        'capacity-saturated',
+    };
   }
 
-  /** Keeps a refusal of one Thread that has no side-effect-free re-check: it reads as held. */
-  private recordSchedulerHeldRefusal(scope: {
-    readonly workspaceId: string;
-    readonly threadId: string;
-  }): void {
-    this.schedulerCapacityRefusals.set(JSON.stringify([scope.workspaceId, scope.threadId]), null);
+  /** A refusal with no side-effect-free re-check: it reads as held (E7). */
+  private schedulerHeldRefusal(): SchedulerCapacityRefusal {
+    return { key: this.schedulerBackendKey(), stillRefused: null };
+  }
+
+  /** The exact changed-resident check after an eviction handoff, read without effects. */
+  private residentChangedAfterHandoff(
+    environmentPackage: AgentEnvironmentPackagePreview,
+    forceRetirement: boolean,
+    eviction: NanoHostIdleSandboxEviction
+  ): boolean {
+    const current = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
+    return (
+      !current ||
+      current === 'capacity-saturated' ||
+      current.sandboxRuntimeId !== eviction.sandboxRuntimeId ||
+      current.sandboxBindingRef !== eviction.sandboxBindingRef ||
+      !isDeepStrictEqual(current.target, eviction.target)
+    );
   }
 
   /** Projects the exact selected-storage authorization used before one Sandbox replacement. */
@@ -3066,9 +3097,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (
             this.inspectIncompatibleIdleSandbox(input.environmentPackage) === 'capacity-saturated'
           ) {
-            this.recordSchedulerSandboxRefusal(input.environmentPackage);
             throw new WorkerGovernanceCapacityUnavailableError(
-              'Resident retirement awaits definite cleanup or predecessor Epoch fencing and fresh readiness.'
+              'Resident retirement awaits definite cleanup or predecessor Epoch fencing and fresh readiness.',
+              this.schedulerSandboxRefusal(input.environmentPackage)
             );
           }
           throw error;
@@ -3197,9 +3228,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           )
         ) {
           // Only the predecessor close had effects. Requeue the same Turn so its next placement owns wider cleanup.
-          this.recordSchedulerHeldRefusal(input.environmentPackage.scope);
           throw new WorkerGovernanceCapacityUnavailableError(
-            'The idle predecessor requires whole-Sandbox retirement before admission.'
+            'The idle predecessor requires whole-Sandbox retirement before admission.',
+            this.schedulerHeldRefusal()
           );
         }
       }
@@ -4242,10 +4273,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
-    if (eviction === 'capacity-saturated') {
-      this.recordSchedulerSandboxRefusal(environmentPackage);
-      return 'capacity-saturated';
-    }
+    if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
       await this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
     }
@@ -4618,9 +4646,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<WorkerStorageBinding | null> {
     const inspected = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
     if (inspected === 'capacity-saturated') {
-      this.recordSchedulerSandboxRefusal(environmentPackage, forceRetirement);
       throw new WorkerGovernanceCapacityUnavailableError(
-        'NanoHost one-Sandbox capacity is occupied or unproved.'
+        'NanoHost one-Sandbox capacity is occupied or unproved.',
+        this.schedulerSandboxRefusal(environmentPackage, forceRetirement)
       );
     }
     const eviction = inspected;
@@ -4640,17 +4668,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Refusal/crash here keeps that recoverable state; no physical cleanup has started.
     for (const binding of eviction.bindings)
       await this.handoffDurableAgentSessionProof(binding, undefined, eviction);
-    const current = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
-    if (
-      !current ||
-      current === 'capacity-saturated' ||
-      current.sandboxRuntimeId !== eviction.sandboxRuntimeId ||
-      current.sandboxBindingRef !== eviction.sandboxBindingRef ||
-      !isDeepStrictEqual(current.target, eviction.target)
-    ) {
-      this.recordSchedulerSandboxRefusal(environmentPackage, forceRetirement);
+    if (this.residentChangedAfterHandoff(environmentPackage, forceRetirement, eviction)) {
+      // The re-check is the same exact resident and target comparison (E7).
       throw new WorkerGovernanceCapacityUnavailableError(
-        'NanoHost one-Sandbox capacity is occupied or unproved.'
+        'NanoHost one-Sandbox capacity is occupied or unproved.',
+        {
+          key: this.schedulerBackendKey(),
+          stillRefused: () =>
+            this.residentChangedAfterHandoff(environmentPackage, forceRetirement, eviction),
+        }
       );
     }
     if (replacementSelection) {
@@ -4873,12 +4899,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     for (const [snapshotId, session] of this.sessions) {
       if (session.sharedHarness.sandbox.sandboxRuntimeId !== eviction.sandboxRuntimeId) continue;
       session.nativeSessionReusable = false;
-      if (session.pendingHarnessOperation) {
-        if (session.pendingHarnessOperation.timeout) {
-          clearTimeout(session.pendingHarnessOperation.timeout);
+      const pending = session.pendingHarnessOperation;
+      if (pending) {
+        if (pending.timeout) {
+          clearTimeout(pending.timeout);
         }
-        session.pendingHarnessOperation.reject(error);
+        pending.reject(error);
         session.pendingHarnessOperation = null;
+        this.reportLoginCloseSlotCleared(pending);
       }
       this.failHarnessLoginDeliveries(session);
       await this.joinHarnessLoginDeliveries(session);
@@ -4891,12 +4919,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     for (const binding of eviction.bindings) {
       const closeOwner = this.agentSessionCloseOwners.get(binding.agentSessionRuntimeBindingId);
       if (!closeOwner) continue;
-      if (closeOwner.pending?.timeout) clearTimeout(closeOwner.pending.timeout);
-      closeOwner.pending?.reject(error);
+      const pending = closeOwner.pending;
+      if (pending?.timeout) clearTimeout(pending.timeout);
+      pending?.reject(error);
       closeOwner.pending = null;
       this.agentSessionCloseOwners.delete(binding.agentSessionRuntimeBindingId);
+      if (pending) this.reportLoginCloseSlotCleared(pending);
     }
-    this.reportLoginClosesCleared();
   }
 
   /** Acquires or builds the immutable image and creates the exact NanoHost sandbox. */
@@ -4972,9 +5001,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         ? this.requireCurrentPhysicalEpoch(identity.runtimeTargetId)
         : this.requireCurrentBackendPhysicalEpoch(identity);
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
-      this.recordSchedulerSandboxRefusal(environmentPackage);
       throw new WorkerGovernanceCapacityUnavailableError(
-        'NanoHost one-Sandbox capacity is occupied or unproved.'
+        'NanoHost one-Sandbox capacity is occupied or unproved.',
+        this.schedulerSandboxRefusal(environmentPackage)
       );
     }
     let releasedSelectedBinding: WorkerStorageBinding | null;
@@ -4988,9 +5017,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // Eviction owns the resident's fence; this incoming attempt created no Sandbox or bridge.
       this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
       if (error instanceof WorkerStorageBindingError) throw error;
-      this.recordSchedulerHeldRefusal(environmentPackage.scope);
       throw new WorkerGovernanceCapacityUnavailableError(
-        'Incompatible resident cleanup requires exact deletion or Epoch fence proof.'
+        'Incompatible resident cleanup requires exact deletion or Epoch fence proof.',
+        this.schedulerHeldRefusal()
       );
     }
     let sharedHarness = this.restoreSharedHarness(
@@ -5623,9 +5652,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.readNanoHost((native) => readNanoHostThreadAgentSessionBinding(native, receiver))
           ?.agentSessionId !== session.environmentPackage.scope.agentSessionId
       ) {
-        this.recordSchedulerHeldRefusal(session.environmentPackage.scope);
         throw new WorkerGovernanceCapacityUnavailableError(
-          'The active Thread Login has no current native binding; inspection is required.'
+          'The active Thread Login has no current native binding; inspection is required.',
+          this.schedulerHeldRefusal()
         );
       }
       await openNanoHostAgentSessionBinding(this.harnessWriter(), {
@@ -9914,8 +9943,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           const failure = new NanoHostLoginDepartureIncompleteError(error);
           // Expiry stops departure effects immediately. Join the existing admission fence before
           // releasing the bounded caller; a lost fence ACK remains unknown and cannot restore it.
-          void this.fenceHarnessLoginDeparture(pending.closeDeparture).then(
-            () => rejectResult(failure),
+          const departure = pending.closeDeparture;
+          void this.fenceHarnessLoginDeparture(departure).then(
+            () => {
+              // The fence ACK of a failed dispatched close: its Thread may now read clear.
+              departure.fenceAcknowledged = true;
+              this.reportLoginCloseCleared(pending);
+              rejectResult(failure);
+            },
             (fenceError: unknown) =>
               rejectResult(
                 new NanoHostLoginDepartureIncompleteError(
@@ -9997,9 +10032,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
       } finally {
         if (pending.timeout) clearTimeout(pending.timeout);
+        const clearedSlot =
+          session.pendingHarnessOperation === pending || closeOwner?.pending === pending;
         if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
         if (closeOwner?.pending === pending) closeOwner.pending = null;
-        this.reportLoginClosesCleared();
+        if (clearedSlot) this.reportLoginCloseSlotCleared(pending);
       }
     }
     const admittedDb = openAdmittedWorkspaceReadDb(
@@ -10189,8 +10226,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw error;
     } finally {
       if (pending.timeout) clearTimeout(pending.timeout);
+      const clearedSlot =
+        session.pendingHarnessOperation === pending || closeOwner?.pending === pending;
       if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
       if (closeOwner?.pending === pending) closeOwner.pending = null;
+      // The ordinary live close unwinds here too (A8 r7-step3 finding 5).
+      if (clearedSlot) this.reportLoginCloseSlotCleared(pending);
       const exchange = session.initialHarnessLogin;
       if (exchange?.pending === pending) {
         if (!exchange.completed) this.failHarnessLoginDeliveries(session);

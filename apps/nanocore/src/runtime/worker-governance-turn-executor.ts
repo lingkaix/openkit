@@ -1081,7 +1081,7 @@ export async function withPreparedWorkerSubmission<Value>(
     )
       throw new NanoHostSubmissionHeld();
     // The active-preparation release edge: the native first-submit commit is acknowledged.
-    releaseSchedulerHold('active-preparation');
+    releaseSchedulerHold(input.coreDb.dataRoot, 'active-preparation');
     return await submit(attempt);
   }
   const attempt = await recordSchedulerExecutionOperation(input.coreDb, {
@@ -2084,10 +2084,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return;
     }
     let capacity: 'available' | 'capacity-saturated';
+    let environmentPackage: AgentEnvironmentPackagePreview;
     try {
-      capacity = await this.backend.inspectMaterializationCapacity(
-        this.previewAgentEnvironmentPackage(agentSessionId, input)
-      );
+      environmentPackage = this.previewAgentEnvironmentPackage(agentSessionId, input);
+      capacity = await this.backend.inspectMaterializationCapacity(environmentPackage);
     } catch (cause) {
       // Keep the public cause finite: native names, messages and decoder values can contain secrets.
       const errorClass =
@@ -2149,7 +2149,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw failure;
     }
     if (capacity === 'capacity-saturated') {
-      throw new WorkerGovernanceCapacityUnavailableError();
+      // E7: the refusal carries its key and the backend's read-only repeat of this inspection.
+      const backend = this.backend;
+      throw new WorkerGovernanceCapacityUnavailableError(undefined, {
+        key: { kind: 'backend', backendId: backend.id },
+        stillRefused: backend.materializationCapacityRefused
+          ? () => backend.materializationCapacityRefused!(environmentPackage)
+          : null,
+      });
     }
   }
 

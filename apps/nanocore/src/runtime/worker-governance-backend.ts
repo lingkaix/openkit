@@ -35,6 +35,7 @@ import {
   workerContextPackageOriginalPath,
 } from '../context/worker-context-package.js';
 import { TurnStartValidationError } from '../operation-error.js';
+import type { SchedulerCapacityRefusal } from '../scheduler-hold-release.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -300,10 +301,17 @@ export type WorkerGovernanceAgentSessionContinuityDisposition =
 
 /** Signals that existing scheduler admission must remain queued for physical runtime capacity. */
 export class WorkerGovernanceCapacityUnavailableError extends Error {
+  /** The in-process key and re-check of the check that refused (E7). It is never serialized. */
+  public readonly schedulerCapacity?: SchedulerCapacityRefusal;
+
   /** Preserves the product-safe capacity or readiness reason while retaining scheduler queue semantics. */
-  public constructor(message = 'Worker runtime capacity is saturated.') {
+  public constructor(
+    message = 'Worker runtime capacity is saturated.',
+    schedulerCapacity?: SchedulerCapacityRefusal
+  ) {
     super(message);
     this.name = 'WorkerGovernanceCapacityUnavailableError';
+    if (schedulerCapacity) this.schedulerCapacity = schedulerCapacity;
   }
 }
 
@@ -1240,6 +1248,9 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
   inspectMaterializationCapacity?(
     environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated' | Promise<'available' | 'capacity-saturated'>;
+
+  /** Repeats the `capacity-saturated` read of `inspectMaterializationCapacity` without effects (E7). */
+  materializationCapacityRefused?(environmentPackage: AgentEnvironmentPackagePreview): boolean;
 
   /**
    * Reads the sole native AgentSession occupying one Workspace Thread, if any.
