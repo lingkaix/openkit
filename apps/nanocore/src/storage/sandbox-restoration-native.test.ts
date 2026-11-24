@@ -499,6 +499,29 @@ it('claims only the exact idle-capture Harness and persists its drain after reop
   expect(await coldTuple(f)).toEqual(expected);
 });
 
+it('refuses a later idle-capture claim on a Harness that an earlier claim already drains (CL3)', async () => {
+  const f = await fixture(false, false, true);
+  const claim = {
+    ...f.idleClaim,
+    harnessBindingRef: 'restore-harness-binding',
+    sandboxBindingRef,
+    originPhysicalEpoch: physicalEpoch,
+  };
+  await claimNanoHostIdleCaptureDrain(f.db, claim, f.owner.harnessTurnLifecycle);
+  const latched = tuple(f.db);
+  // A strictly later clock is not enough: the Harness is no longer accepting, so the earlier
+  // claim keeps the latch and its revision.
+  await expect(
+    claimNanoHostIdleCaptureDrain(
+      f.db,
+      { ...claim, claimedAt: '2098-08-21T00:00:02.000Z' },
+      f.owner.harnessTurnLifecycle
+    )
+  ).rejects.toThrow('Idle capture drain ownership changed.');
+  expect(tuple(f.db)).toEqual(latched);
+  expect(await coldTuple(f)).toEqual(latched);
+});
+
 it('refuses an idle-capture claim whose clock is not later than the Harness revision', async () => {
   const f = await fixture(false, false, true);
   const before = tuple(f.db);

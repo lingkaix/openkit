@@ -518,18 +518,21 @@ function claimIdleCaptureDrain(
       .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE attempt_id=? AND phase='closed'
       AND agent_session_id=? AND workspace_id=? AND thread_id=?`)
       .get(input.attemptId, input.agentSessionId, binding.workspaceId, binding.threadId);
-  // The claim's clock is this Harness's new revision; an older or equal clock refuses.
+  // The claim's clock is this Harness's new revision; an older or equal clock refuses. Only an
+  // accepting Harness on an accepting Sandbox can be claimed (CLOSE-LC RC3, CL3): a drain that
+  // another owner holds, or an earlier claim, keeps the latch.
   const changed = closed
     ? owner.sqlite
         .prepare(`UPDATE harness_instance_records SET drain_state='draining', updated_at=?
     WHERE harness_binding_ref=? AND harness_instance_id=? AND lifecycle_state='open' AND operation_state IN ('idle','settled')
-    AND updated_at < ?
+    AND drain_state='accepting' AND updated_at < ?
     AND EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
       WHERE b.harness_instance_id=harness_instance_records.harness_instance_id
       AND b.agent_session_runtime_binding_id=? AND b.agent_session_id=?
       AND b.current_attempt_id IS NULL AND b.current_turn_id IS NULL)
     AND sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
-    WHERE sandbox_binding_ref=? AND origin_physical_epoch=? AND lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean')`)
+    WHERE sandbox_binding_ref=? AND origin_physical_epoch=? AND lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean'
+    AND drain_state='accepting')`)
         .run(
           input.claimedAt,
           input.harnessBindingRef,
