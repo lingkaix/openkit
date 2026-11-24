@@ -315,6 +315,25 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
     requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
     requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
   };
+  // A live capture owner releases its fence by itself, so the closure is temporary; deletion keeps its denial.
+  const refusedWorkspaceMutation = (workspaceId: string) => {
+    if (
+      !getControlStoreWorkerClient().isWorkspaceCaptureActive(input.coreDb!.dataRoot, workspaceId)
+    )
+      return mcpDeniedError();
+    const unavailable = new WorkerControlGatewayError(
+      'worker_observation_storage_unavailable',
+      'Workspace is temporarily unavailable.',
+      503
+    );
+    const refusal = new ProtocolError(
+      ProtocolErrorCode.InvalidRequest,
+      unavailable.message,
+      workerMcpFailureData(unavailable)
+    );
+    refusal.cause = unavailable;
+    return refusal;
+  };
   const beforeProtocolRead = async <Value>(read: () => Value, signal: AbortSignal) => {
     try {
       return await afterAcknowledgement(read, signal);
@@ -652,7 +671,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             );
             if (!releaseMutation) {
               toolCancellation.release();
-              throw mcpDeniedError();
+              throw refusedWorkspaceMutation(environmentPackage.scope.workspaceId);
             }
             let activeWorkspaceDb: WorkspaceDb | null = null;
             try {
@@ -1107,7 +1126,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         );
         if (!releaseMutation) {
           cancellation.release();
-          throw mcpDeniedError();
+          throw refusedWorkspaceMutation(environmentPackage.scope.workspaceId);
         }
         let activeWorkspaceDb: WorkspaceDb | null = null;
         try {
@@ -1287,7 +1306,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               input.coreDb!.dataRoot,
               environmentPackage.scope.workspaceId
             );
-            if (!releaseMutation) throw mcpDeniedError();
+            if (!releaseMutation)
+              throw refusedWorkspaceMutation(environmentPackage.scope.workspaceId);
             let activeWorkspaceDb: WorkspaceDb | null = null;
             try {
               activeWorkspaceDb = borrowWorkspaceReadDb(

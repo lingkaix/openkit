@@ -3875,3 +3875,115 @@ it('holds Harness close result and replay before the mixed deciding owner is att
     await fixture.close();
   }
 });
+
+/** B2: a non-image Effect result never reads the owner acknowledgement, so a held one cannot defer it. */
+describe('private NanoHost Effect result route outside the owner acknowledgement wait', () => {
+  it('accepts one sandbox.delete result at once while the owner acknowledgement is held', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-result-wait-'));
+    const fixture = openNanoHostTestOwner();
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const target = { deploymentId: 'waitcase', identityId: 'waitcase', targetId: 'waitcase' };
+    await fixture.transition({
+      kind: 'allocate',
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    const held = Promise.withResolvers<void>();
+    let hold = false;
+    let heldCalls = 0;
+    const originalOwner = fixture.storage.owner;
+    const storage = {
+      ...fixture.storage,
+      owner: {
+        ...originalOwner,
+        async afterWorkerControlAcknowledgement<Value>(read: () => Value, signal?: AbortSignal) {
+          if (hold) {
+            heldCalls += 1;
+            await held.promise;
+          }
+          return originalOwner.afterWorkerControlAcknowledgement
+            ? originalOwner.afterWorkerControlAcknowledgement(read, signal)
+            : read();
+        },
+      },
+    };
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+      nativeStorage: { state: 'ready', value: storage },
+    });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let physicalConnection: object | undefined;
+    const server = createHttp2Server((request, response) => {
+      if (!physicalConnection) {
+        physicalConnection = readNanoHostPhysicalConnectionContext(request)!;
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection,
+        });
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing fixture address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+        });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { status: headers[':status'], body: Buffer.concat(chunks).toString() };
+      };
+      expect(
+        await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) })
+      ).toEqual({ status: 204, body: '' });
+      const requestId = '1'.padStart(64, '0');
+      const sandboxId = 'sandbox-wait-case';
+      let executions = 0;
+      const outcome = dispatch
+        .effect({ kind: 'sandbox.delete', requestId, input: { sandboxId } })
+        .catch((error: unknown) => error);
+      const command = await post('/api/nanohost/transport/effects/sandbox.delete', {});
+      expect(command.status).toBe(200);
+      executions += 1;
+      hold = true;
+      const settled = post('/api/nanohost/transport/effects/sandbox.delete/result', {
+        requestId,
+        sandboxId,
+        state: 'deleted',
+      });
+      // The route has no wait to enter: it answers while the acknowledgement stays held.
+      expect(await settled).toEqual({ status: 204, body: '' });
+      expect(heldCalls).toBe(0);
+      expect(await outcome).toEqual({ sandboxId, state: 'deleted' });
+      expect(executions).toBe(1);
+      expect(authority.mayCarryWork(physicalConnection!)).toBe(true);
+    } finally {
+      held.resolve();
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

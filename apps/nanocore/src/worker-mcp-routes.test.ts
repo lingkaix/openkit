@@ -8606,6 +8606,7 @@ async function createMcpCommitFixture(
   let onDiscovery: (() => Promise<void> | void) | undefined;
   let onTool: (() => Promise<void> | void) | undefined;
   let onKnowledge: (() => Promise<void> | void) | undefined;
+  let beforeRequest: (() => void) | undefined;
   let toolContacts = 0;
   const observe = (stage: string) => {
     const reader = openWorkspaceDb(dataRoot, workspaceId);
@@ -8708,6 +8709,9 @@ async function createMcpCommitFixture(
     version(value: string) {
       serverVersion = value;
     },
+    beforeRequest(callback: () => void) {
+      beforeRequest = callback;
+    },
     tools(value: typeof tools) {
       tools = value;
     },
@@ -8717,6 +8721,8 @@ async function createMcpCommitFixture(
       toolArguments?: Record<string, unknown>
     ) {
       await openTestNativeWorkspace(db);
+      // Closing the gate after the open keeps the test's own setup outside the closure.
+      beforeRequest?.();
       const response = await app.request(
         `/api/worker-capabilities/mcp/${kind === 'echo' ? 'echo' : 'openkit-work'}`,
         {
@@ -9631,6 +9637,37 @@ describe('MCP proved failure and admitted schema observation', () => {
         )
       ).toEqual(new Set([first.schemaSnapshotId]));
     } finally {
+      await f.close();
+    }
+  });
+});
+
+describe('MCP Workspace mutation gate outcome', () => {
+  it.each([
+    {
+      closure: 'live capture',
+      close: (dataRoot: string, workspaceId: string) =>
+        getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, workspaceId, () => []),
+      expected: { code: 'worker_observation_storage_unavailable', status: 503 },
+    },
+    {
+      closure: 'deleted Workspace',
+      close: (dataRoot: string, workspaceId: string) =>
+        getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(dataRoot, workspaceId),
+      expected: { code: 'mcp-denied' },
+    },
+  ] as const)('answers a $closure closure without a Tool contact', async ({ close, expected }) => {
+    const f = await createMcpCommitFixture();
+    try {
+      f.beforeRequest(() => close(f.dataRoot, f.workspaceId));
+      const response = await f.call();
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([]);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      expect(response).toMatchObject({ error: { data: expected } });
+    } finally {
+      getControlStoreWorkerClient().reopenWorkspaceMutations(f.dataRoot, f.workspaceId);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(f.dataRoot, f.workspaceId, 'capture');
       await f.close();
     }
   });

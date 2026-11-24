@@ -111,6 +111,10 @@ A lifetime bound covers only its documented writer domain after the last possibl
 
 An authorized administrator may abandon enumerated missing handoffs only for fenced scopes. Compare-and-set the original execution revision and commit the proof, abandonment decision and surviving exclusions together. Later inspection may release only the references newly covered by proof. Keep unfenced references after logical closure and enforce them at claim and placement. Release a Turn, Thread, or AgentSession exclusion only when every writer covered by it is fenced. A volume still writable by an unfenced predecessor blocks reuse of that volume. A proved-disjoint destination may proceed once old publishers are fenced. Hold the encompassing scope when the affected writers cannot be bounded. Track remote cleanup independently.
 
+### Result Classes
+
+An operation that did not complete has one of three outcomes. **Temporary:** the owner proved that it did not start the operation and that the cause ends with no action. **Refused:** the owner decided no. **Unknown:** the owner accepted the operation and the reply was lost, or the owner cannot prove either case. The outcome is set where the cause is known. The owner that receives the call absorbs a temporary cause inside that call, within its existing bounded wait, and checks authority again before it accepts. When the wait ends, the route keeps its current failure contract. This paragraph adds no retry and no status value to a wire contract. An error with no outcome keeps the current refusal of its route. If a commit was possible before the error, the caller treats the outcome as unknown and inspects by the original identity.
+
 ### Network
 
 [Protocol](protocol.md) and [Communication](communication.md) own request identity, replay, stream ordering, cursor expiry and terminal evidence. A lost response calls for an authoritative read or the same request identity, not a new Turn. A client that stops observing does not stop server work. Output that cannot be collected within the owner's bounds fails the affected work explicitly; it is never dropped silently under a complete result.
