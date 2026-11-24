@@ -4281,6 +4281,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // A held Worker Control restore can only refuse registration. Report the existing unavailable
     // result here, before any dispatch commit, Workspace intent or Sandbox effect exists to unwind.
     if (this.workerControlGateway?.restoreHeld()) return 'capacity-saturated';
+    await this.releaseUnsentCloseLatches(environmentPackage);
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
@@ -4289,6 +4290,43 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       await this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
     }
     return 'available';
+  }
+
+  /**
+   * FIX 4 F3/F4 cold exit: an idle close refused as unsent stale carried zero bytes, so no peer
+   * replays it. Before capacity is decided, the admitted owner releases only the capture latch
+   * that close still holds; the Native restore requires its exact settle and Core consumption.
+   */
+  private async releaseUnsentCloseLatches(
+    environmentPackage: AgentEnvironmentPackagePreview
+  ): Promise<void> {
+    if (!this.idleSandboxLifecycle()) return;
+    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
+    const latched = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT h.harness_instance_id AS harnessInstanceId,
+        h.harness_binding_ref AS harnessBindingRef, h.operation_id AS operationId,
+        h.operation_sequence AS sequence, s.sandbox_runtime_id AS sandboxRuntimeId
+        FROM harness_instance_records h
+        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+        WHERE s.runtime_target_id=? AND s.drain_state='accepting' AND h.lifecycle_state='open'
+        AND h.drain_state='draining' AND h.operation='session.close' AND h.operation_state='settled'
+        AND json_extract(h.result_json, '$.disposition')='refused'
+        AND json_extract(h.result_json, '$.body.reasonCode')='stale'
+        ORDER BY h.harness_instance_id`)
+        .all(runtimeTargetId)
+    ) as Array<{
+      readonly harnessInstanceId: string;
+      readonly harnessBindingRef: string;
+      readonly operationId: string;
+      readonly sequence: number;
+      readonly sandboxRuntimeId: string;
+    }>;
+    for (const { sandboxRuntimeId, operationId, sequence, ...harness } of latched)
+      await this.releaseIdleCaptureLatch(runtimeTargetId, sandboxRuntimeId, {
+        ...harness,
+        close: { operationId, sequence },
+      });
   }
 
   private readIdleSandboxTarget(targetId: string): NanoHostIdleSandboxAuthority['target'] | null {
@@ -8266,7 +8304,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       let receipt = readWorkspaceCollection(db, identity);
       // Exact disposition was verified above. Retained A is never replaced by a release scan of B.
-      if (disposedCaptures.has(session.attemptId)) return [];
+      if (disposedCaptures.has(session.attemptId)) {
+        // AMEND 2: an abandon keeps its evidence and permits only its original cleanup path; an
+        // ordinary replacement neither rescans, closes locally nor restores the latch.
+        if (boundary === 'successor' && !idleCloseDrain)
+          throw new WorkspaceCaptureRecoveryRequired(
+            'An abandoned Workspace capture permits only its original cleanup path.'
+          );
+        return [];
+      }
       if (!receipt) {
         const cursor = readWorkspaceSnapshotCursor(db, identity);
         if (!cursor)

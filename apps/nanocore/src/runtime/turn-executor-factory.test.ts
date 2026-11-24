@@ -8433,6 +8433,88 @@ describe('createConfiguredTurnExecutor', () => {
     expect(harness()).toEqual({ drain: 'draining', revision: laterClaimedAt });
   }, 90_000);
 
+  // AMEND 2: a terminal abandon of the predecessor's capture is no ordinary replacement input.
+  it('refuses an ordinary replacement of an idle predecessor whose capture was abandoned', async () => {
+    const f = await admitNativeReplacementClose('p23_abandoned_capture');
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    const backend = f.backend as unknown as {
+      assertWorkspaceCaptureSettled: (ref: string | null) => Promise<Set<string>>;
+    };
+    const settled = backend.assertWorkspaceCaptureSettled.bind(f.backend);
+    vi.spyOn(backend, 'assertWorkspaceCaptureSettled').mockImplementation(async (ref) => {
+      const disposed = await settled(ref);
+      // Stands for the Workspace's terminal abandon of the predecessor attempt's capture.
+      disposed.add(f.predecessor.admission.attempt.attemptId);
+      return disposed;
+    });
+    await expect(f.close()).rejects.toMatchObject({
+      message: 'An abandoned Workspace capture permits only its original cleanup path.',
+    });
+    // No rescan, no local close, no latch: the evidence and the resume pair stay as they were.
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before.binding,
+      digest: before.digest,
+      revision: before.revision,
+      harnessDrain: 'accepting',
+      sandboxDrain: 'accepting',
+    });
+  }, 90_000);
+
+  // FIX 4 F3/F4: the unsent stale settlement has no peer to replay it; its cold exit is local.
+  it('exits the capture latch of an unsent stale close after a cut before its live release', async () => {
+    const f = await admitNativeReplacementClose('p23_unsent_cold_exit');
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    f.onCloseDispatch(() =>
+      nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: f.successor.attemptId,
+        noOutstandingEffects: true,
+        cause: 'backend-busy',
+        requeue: true,
+      })
+    );
+    // The stale result and its Core consumption commit; NanoCore stops before the live release.
+    const latch = f.backend as unknown as {
+      releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(latch, 'releaseIdleCaptureLatch').mockRejectedValue(
+      new Error('NanoCore stopped before the live latch release.')
+    );
+    await expect(f.close()).rejects.toThrow('NanoCore stopped before the live latch release.');
+    const harness = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT operation, operation_state AS state, drain_state AS drain,
+          json_extract(result_json, '$.disposition') AS disposition,
+          json_extract(result_json, '$.body.reasonCode') AS reasonCode
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(before.harness)
+      );
+    const refused = {
+      operation: 'session.close',
+      state: 'settled',
+      disposition: 'refused',
+      reasonCode: 'stale',
+    };
+    expect(harness()).toEqual({ ...refused, drain: 'draining' });
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    await f.reopen();
+    await f.retry('next');
+    // No peer result and no second close: the admitted owner exits exactly that latch.
+    expect(
+      await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)
+    ).not.toBe('capacity-saturated');
+    expect(harness()).toEqual({ ...refused, drain: 'accepting' });
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before.binding,
+      digest: before.digest,
+      revision: before.revision,
+      harnessDrain: 'accepting',
+      sandboxDrain: 'accepting',
+    });
+  }, 120_000);
+
   it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
     const f = await admitNativeReplacementClose('p23_lost_ack');
     f.loseClose();
