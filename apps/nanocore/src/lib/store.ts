@@ -2566,6 +2566,18 @@ export class FsStore {
     return records;
   }
 
+  /** Lists admitted Workspace IDs without reading their records, so each record read keeps its own owner. */
+  public listAdmittedWorkspaceIds(): string[] {
+    const ids = this.dataRoot
+      ? listDirectoryNames(join(this.dataRoot, 'workspaces')).filter((id) => id !== '.staging')
+      : [...this.workspaces.keys()];
+    return ids.filter(
+      (id) =>
+        !this.dataRoot ||
+        isScopeAdmitted(this.dataRoot, 'workspace', id, this.suppliedScopeRefusals)
+    );
+  }
+
   /**
    * Ensures the built-in owner-only personal Workspace for one canonical user.
    *

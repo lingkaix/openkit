@@ -14,6 +14,7 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import { withinBootWorkspaceBoundary } from '../bootstrap/boot-workspace-walk.js';
 import type { FsStore } from '../lib/store.js';
 
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
@@ -359,93 +360,104 @@ export async function recoverPendingRequestsAtBoot(
 ): Promise<void> {
   const now = new Date().toISOString();
   const dataRoot = store.getDataRoot();
-  for (const workspace of store.listWorkspaces()) {
+  // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
+  for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     // A retained deletion or recovery fence belongs to its original lifecycle continuation.
     // Ordinary Pending settlement must not write through it or prevent the App from listening.
     // The rooted boot Store names the native scope; optional services never decide it.
-    if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id))
+    if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId))
       continue;
-    const db = dependencies.openWorkspace(workspace.id);
-    try {
-      assertPendingAssociations(store, db.sqlite, workspace.id);
-      const readable = db.sqlite
-        .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
-        .all(workspace.id) as { request_id: string }[];
-      const usable = readable.flatMap((row) => {
+    await withinBootWorkspaceBoundary(
+      { dataRoot, workspaceId, stage: 'pending-request-recovery' },
+      async () => {
+        const workspace = store.getWorkspace(workspaceId);
+        const db = dependencies.openWorkspace(workspace.id);
         try {
-          const record = readPendingRequest(db.sqlite, row.request_id);
-          return record && canonicalRecordIsUsable(store, db.sqlite, record) ? [record] : [];
-        } catch {
-          return [];
-        }
-      });
-      await mutatePending(store, db.sqlite, {
-        action: 'settle-unfinished',
-        workspaceId: workspace.id,
-        now,
-        expected: pendingSources(usable),
-      });
-      const loaded = usable.flatMap((source) => {
-        const record = readPendingRequest(db.sqlite, source.requestId);
-        return record ? [record] : [];
-      });
-      const localPublications = new Set<string>();
-      for (const record of loaded) {
-        if (
-          record.delivery === 'frozen' &&
-          record.deliveryTurnId &&
-          record.requesterKind !== 'person' &&
-          store.getTurnById(record.deliveryTurnId).status !== 'pending'
-        )
-          await store.applyPendingRequestCommand(workspace.id, {
-            action: 'delivery-unknown',
-            workspaceId: workspace.id,
-            turnId: record.deliveryTurnId,
-            now,
+          assertPendingAssociations(store, db.sqlite, workspace.id);
+          const readable = db.sqlite
+            .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
+            .all(workspace.id) as { request_id: string }[];
+          const usable = readable.flatMap((row) => {
+            try {
+              const record = readPendingRequest(db.sqlite, row.request_id);
+              return record && canonicalRecordIsUsable(store, db.sqlite, record) ? [record] : [];
+            } catch {
+              return [];
+            }
           });
-        for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
-          if (!turnId) continue;
-          const publication = store.getTurnById(turnId);
-          if (!publication.agentId && !publication.agentSessionId) localPublications.add(turnId);
-          else await publishOutcomeItems(store, [record], turnId, now, true);
+          await mutatePending(store, db.sqlite, {
+            action: 'settle-unfinished',
+            workspaceId: workspace.id,
+            now,
+            expected: pendingSources(usable),
+          });
+          const loaded = usable.flatMap((source) => {
+            const record = readPendingRequest(db.sqlite, source.requestId);
+            return record ? [record] : [];
+          });
+          const localPublications = new Set<string>();
+          for (const record of loaded) {
+            if (
+              record.delivery === 'frozen' &&
+              record.deliveryTurnId &&
+              record.requesterKind !== 'person' &&
+              store.getTurnById(record.deliveryTurnId).status !== 'pending'
+            )
+              await store.applyPendingRequestCommand(workspace.id, {
+                action: 'delivery-unknown',
+                workspaceId: workspace.id,
+                turnId: record.deliveryTurnId,
+                now,
+              });
+            for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
+              if (!turnId) continue;
+              const publication = store.getTurnById(turnId);
+              if (!publication.agentId && !publication.agentSessionId)
+                localPublications.add(turnId);
+              else await publishOutcomeItems(store, [record], turnId, now, true);
+            }
+          }
+          for (const turnId of localPublications) {
+            const publication = store.getTurnById(turnId);
+            const records = loaded.filter(
+              (record) =>
+                record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+            );
+            await store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, {
+              turnId,
+              summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
+              actor: publication.triggerActor,
+              now: publication.completedAt ?? now,
+              items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map(
+                (item) => {
+                  const retained = publication.items.find((current) => current.id === item.id);
+                  // Replay validates semantic fields while retaining the original projection clocks.
+                  return retained
+                    ? ItemSchema.parse({
+                        ...item,
+                        createdAt: retained.createdAt,
+                        completedAt: retained.completedAt,
+                      })
+                    : item;
+                }
+              ),
+              pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
+            });
+          }
+        } finally {
+          db.sqlite.close();
+        }
+        for (const thread of store.listThreads(workspace.id)) {
+          if (thread.status === 'archived') continue;
+          if (
+            !store
+              .listThreadTurns(workspace.id, thread.id)
+              .some((turn) => !isSealedTurnTerminal(turn.status))
+          )
+            await admitNextOutcome(store, dependencies, workspace.id, thread.id);
         }
       }
-      for (const turnId of localPublications) {
-        const publication = store.getTurnById(turnId);
-        const records = loaded.filter(
-          (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
-        );
-        await store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, {
-          turnId,
-          summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
-          actor: publication.triggerActor,
-          now: publication.completedAt ?? now,
-          items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map((item) => {
-            const retained = publication.items.find((current) => current.id === item.id);
-            // Replay validates semantic fields while retaining the original projection clocks.
-            return retained
-              ? ItemSchema.parse({
-                  ...item,
-                  createdAt: retained.createdAt,
-                  completedAt: retained.completedAt,
-                })
-              : item;
-          }),
-          pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
-        });
-      }
-    } finally {
-      db.sqlite.close();
-    }
-    for (const thread of store.listThreads(workspace.id)) {
-      if (thread.status === 'archived') continue;
-      if (
-        !store
-          .listThreadTurns(workspace.id, thread.id)
-          .some((turn) => !isSealedTurnTerminal(turn.status))
-      )
-        await admitNextOutcome(store, dependencies, workspace.id, thread.id);
-    }
+    );
   }
 }
 

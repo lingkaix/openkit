@@ -33,6 +33,8 @@ Effect uncertainty and any recovery requirement are expressed by the effect owne
 
 **Contain failure to its owning scope.** Unreadable or unsupported Workspace authority quarantines that Workspace as recovery-required and inspectable. The server and healthy Workspaces can still boot. If Control Kernel authority or the Server configuration required for startup is untrustworthy, refuse whole-server boot. A failed Core Service, Core Extension, provider, MCP server, Worker, or channel blocks dependent effects. Shared authority, a shared writer, or loss of containment can require a wider fence. The [storage ownership decision](../decisions/20261120-control_kernel_and_service_storage.md) and [Storage](storage.md#server-storage-owners) identify the Server failure domains.
 
+**Attribute Boot recovery to its Workspace.** A Boot step that walks Workspaces attributes a failure to the Workspace that caused it. That Workspace stays held for the affected operation, and its stored bytes do not change. Boot continues with the other Workspaces and opens the listeners. Readiness shows the held Workspace and the cause. Boot stops only when the common owner or the list of Workspaces is not trustworthy.
+
 **Keep controls proportional to reachable loss.** Controls protect user content, authorization, secrets and scope isolation against failures that can actually happen. Operators are trusted, and model or Worker claims can be wrong without malice. Durable execution replaces its scattered state and bespoke recovery; it MUST NOT add a second proof, reconciliation or reliability ledger beside those owners.
 
 **State the limits.** What OpenKit cannot guarantee is written down, not hidden.
