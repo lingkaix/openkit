@@ -5172,6 +5172,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
       new FakeWorkerGovernanceBackend({ sandboxName: 'executor-B' }),
     ];
     const setup = createTestAgentSetup();
+    // The executor fixtures' own RuntimeTarget: the same one their scheduler attempts record.
+    const target = await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+      deploymentId: 'deployment_fake_executor',
+      identityId: 'identity_fake_executor',
+      allocationAt: '2026-07-15T00:00:00.000Z',
+      readyAt: '2026-07-15T00:00:01.000Z',
+    });
     let binding: Awaited<ReturnType<typeof createAndReserveWorkerStorageAttachment>> | null = null;
     const layout = {
       family: 'openkit-worker',
@@ -5209,12 +5216,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
               1
             );
           const result = await materialize(pkg, context);
+          // The retained-storage attachment is written by the Native owner this executor joined.
+          const owner = currentAdmittedTestNanoHostOwner(coreDb);
+          if (!owner) throw new Error('Executor has no admitted NanoHost owner.');
+          const attempt = attempts
+            .listSchedulerExecutionAttemptsForTurn(coreDb, pkg.scope)
+            .find((row) => row.phase === 'open' && row.agentSessionId === pkg.scope.agentSessionId);
+          if (!attempt) throw new Error('Executor has no open attempt for its storage attachment.');
           const selection = {
             agentSessionId: sessionId,
             layout,
             purpose: 'work' as const,
             responsibleUserId: LOCAL_USER_ID,
-            runtimeTargetId: 'runtime-target-test',
+            runtimeTargetId: target.targetId,
             threadId: turn.threadId,
             workspaceId: pkg.scope.workspaceId,
             now: timestamp,
@@ -5232,28 +5246,49 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 true
               ),
           };
+          const attachment = {
+            attemptId: attempt.attemptId,
+            target,
+            read: owner.read,
+            write: owner.writeStorageAttachment,
+            authorizeContributor: selection.authorizeContributor,
+            isCurrentAttempt: () =>
+              attempts.requireSchedulerExecutionAttempt(coreDb, attempt.attemptId).phase === 'open',
+          } satisfies AdmittedWorkerStorageAttachment;
           binding = binding
-            ? await reserveWorkerStorageAttachment(coreDb, {
-                ...selection,
-                storageRef: binding.storageRef,
-                expectedRevision: binding.revision,
-                reuseWorkSlotRef: nativeReference
-                  ? store.getAgentSession(nativeReference.locator).retainedStorage!.workSlotRef
-                  : undefined,
-              })
-            : await createAndReserveWorkerStorageAttachment(coreDb, {
-                ...selection,
-                deploymentId: 'deployment_fake_executor',
-              });
+            ? await reserveWorkerStorageAttachment(
+                coreDb,
+                {
+                  ...selection,
+                  storageRef: binding.storageRef,
+                  expectedRevision: binding.revision,
+                  reuseWorkSlotRef: nativeReference
+                    ? store.getAgentSession(nativeReference.locator).retainedStorage!.workSlotRef
+                    : undefined,
+                },
+                attachment
+              )
+            : await createAndReserveWorkerStorageAttachment(
+                coreDb,
+                {
+                  ...selection,
+                  deploymentId: target.deploymentId,
+                },
+                attachment
+              );
           expect(context?.sandboxBindingRef).toEqual(expect.any(String));
-          binding = await activateWorkerStorageAttachment(coreDb, {
-            storageRef: binding.storageRef,
-            expectedRevision: binding.revision,
-            attachmentGeneration: binding.attachmentGeneration,
-            sandboxBindingRef: context!.sandboxBindingRef!,
-            targets: binding.targets.map((target) => ({ ...target, initialized: true })),
-            now: timestamp,
-          });
+          binding = await activateWorkerStorageAttachment(
+            coreDb,
+            {
+              storageRef: binding.storageRef,
+              expectedRevision: binding.revision,
+              attachmentGeneration: binding.attachmentGeneration,
+              sandboxBindingRef: context!.sandboxBindingRef!,
+              targets: binding.targets.map((target) => ({ ...target, initialized: true })),
+              now: timestamp,
+            },
+            attachment
+          );
           storage = {
             storageRef: binding.storageRef,
             workSlotRef: binding.currentWorkSlotRef!,
@@ -5283,14 +5318,18 @@ describe('WorkerGovernanceTurnExecutor', () => {
         vi.spyOn(backend, 'cleanupSession').mockImplementation(async (...args) => {
           await cleanup(...args);
           if (binding?.currentAgentSessionId === sessionId)
-            binding = await releaseWorkerStorageAttachment(coreDb, {
-              storageRef: binding.storageRef,
-              attachmentGeneration: binding.attachmentGeneration,
-              expectedRevision: binding.revision,
-              cleanupProved: true,
-              sandboxBindingRef: binding.currentSandboxBindingRef,
-              now: timestamp,
-            });
+            binding = await releaseWorkerStorageAttachment(
+              coreDb,
+              {
+                storageRef: binding.storageRef,
+                attachmentGeneration: binding.attachmentGeneration,
+                expectedRevision: binding.revision,
+                cleanupProved: true,
+                sandboxBindingRef: binding.currentSandboxBindingRef,
+                now: timestamp,
+              },
+              currentAdmittedTestNanoHostOwner(coreDb)!.releaseIdleSandboxStorage
+            );
         });
         const submit = backend.submit.bind(backend);
         vi.spyOn(backend, 'submit').mockImplementation(async (correlation) => {
@@ -5319,15 +5358,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
           submitted.push(correlation);
           return submit(correlation);
         });
-        const executor = new WorkerGovernanceTurnExecutor({
-          backend,
-          coreDb,
-          fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-          now: () => timestamp,
-          ...testWorkerExecutorNanoHostJoins(
-            await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest)
-          ),
-        });
+        const executor = await createAdmittedModeledWorkerExecutor(
+          {
+            backend,
+            coreDb,
+            fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+            now: () => timestamp,
+          },
+          true
+        );
         const context = {
           agentSetup: setup,
           requestId: `00000000-0000-4000-8000-00000000028${index}`,
@@ -5357,7 +5396,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           acquireCommitFixtureAttempt(
             coreDb,
             preparation,
-            testEntityId('attempt', `lease_${turn.id}`)
+            testEntityId('attempt', `lease_${turn.id}`),
+            () => timestamp
           );
           const workerStorageChoice = await executor.commitPreparedAgentSessionForTurn(store, {
             attemptId: testEntityId('attempt', `lease_${turn.id}`),
@@ -5376,6 +5416,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }
         expect(store.getTurnById(turn.id).status).toBe('completed');
         expect(store.getAgentSession(sessionId).nativeHandleDigest).toBe(digest);
+        // This direct start has no scheduler-consumed turn.start receipt, so its terminal scope release
+        // is proved with the production release path. Here the predecessor's hold ends, as it would
+        // after that release, so the successor claims the same Thread.
+        coreDb.sqlite
+          .prepare("UPDATE control_executions SET exclusion_refs_json = '[]' WHERE work_id = ?")
+          .run(turn.id);
       }
       expect(nativeOperations).toEqual(['create', 'resume']);
       expect(backends[0]!.lastContext?.nativeResume ?? null).toBeNull();
@@ -17539,7 +17585,8 @@ async function readCommitFixtureEnvironment(coreDb: CoreDb) {
 function acquireCommitFixtureAttempt(
   db: CoreDb,
   preparation: Parameters<WorkerGovernanceTurnExecutor['prepareAgentSessionForTurn']>[1],
-  attemptId: string
+  attemptId: string,
+  now?: () => string
 ): void {
   const entry = createSchedulerAdmissionEntry(db, {
     backendId: 'nanohost',
@@ -17560,6 +17607,7 @@ function acquireCommitFixtureAttempt(
     entry,
     attemptId,
     preparationInput: { turnInput: preparation.turnInput },
+    ...(now ? { now } : {}),
   });
 }
 
