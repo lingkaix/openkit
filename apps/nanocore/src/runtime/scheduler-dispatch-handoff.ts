@@ -1042,6 +1042,9 @@ function applySelectionFirst<S extends HandoffSnapshot, T>(
   const cycle = draft.requireCycle();
   const pass = draft.cyclePass();
   cycle.replayEntry = null;
+  // The selection that reads the barrier proof consumes it (A8 r7-step3 finding 1). A claim
+  // posted after the barrier is not covered, so a later selection cannot discharge it.
+  cycle.barrierProof = null;
   for (const entry of event.discharged) delete draft.unresolved[entry];
   for (const entry of event.recovered) {
     delete draft.unresolved[entry];

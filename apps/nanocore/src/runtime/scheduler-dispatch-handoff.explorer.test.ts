@@ -137,15 +137,37 @@ interface Env {
   passSrc: Record<string, string>;
   postsBy: Record<string, number>;
   successors: Record<string, number>;
+  /** The successor identities counted in `successors` that may still hold a Core row. */
+  successorIds: string[];
   heldBy: Record<string, number[]>;
   /** A barrier failed or a selection read threw: the timer or restart is the exit. */
   barrierFailed: boolean;
+  /**
+   * I5c: the attempt identities whose post reply was unknown to Main, and that neither a later
+   * barrier ACK nor a Core-decided reply to the same identity has proved since.
+   */
+  unproved: string[];
   /** A second settlement callback that is still to come for a retired invocation. */
   late: { entry: string; invocation: string } | null;
   /** Backend owner facts read by its refusal predicate. */
   target: boolean;
   fence: string[];
   sessionsFull: string[];
+}
+
+/** A busy release starts a new one-successor count for the entry (D2). */
+function resetSuccessors(env: Env, entry: string) {
+  env.successors[entry] = 0;
+  env.successorIds = env.successorIds.filter((attemptId) => !attemptId.startsWith(`${entry}#`));
+}
+
+/** D2: a successor identity that is proved to have no Core row is not a successor claim. */
+function provedAbsent(env: Env, attemptId: string) {
+  if (!env.successorIds.includes(attemptId)) return;
+  env.successorIds = env.successorIds.filter((value) => value !== attemptId);
+  const entry = attemptId.slice(0, attemptId.lastIndexOf('#'));
+  if (env.successors[entry] !== undefined && env.successors[entry]! > 0)
+    env.successors[entry]! -= 1;
 }
 
 /** The raw facts that one synchronous selection read sees at its emission. */
@@ -167,7 +189,8 @@ interface Ctx {
   readonly readback: typeof UNRESOLVED_DISPOSITION;
   readonly envMutation: EnvMutation | null;
   violations: string[];
-  bound: boolean;
+  /** The selection would post a fresh attempt identity for this entry while an earlier one is unproved (I5c). */
+  unprovedMint: string | null;
   rows?: Set<string>;
   /** The capacity schedules that the exploration reached. */
   cover?: Set<string>;
@@ -222,8 +245,10 @@ function initialEnv(world: World): Env {
     passSrc: {},
     postsBy: {},
     successors: {},
+    successorIds: [],
     heldBy: {},
     barrierFailed: false,
+    unproved: [],
     late: null,
     target: world.targetUnready !== true,
     fence: [],
@@ -398,6 +423,7 @@ function runEffect(env: Env, ctx: Ctx, before: Rec, effect: Effect, hooks: { pre
         violation(ctx, 'I7.busy-reclaim');
       if (!effect.retained && env.successors[effect.entry] !== undefined) {
         env.successors[effect.entry]! += 1;
+        env.successorIds.push(effect.identity.attemptId);
         if (env.successors[effect.entry]! > 1) violation(ctx, 'D2.one-successor');
       }
       settleOwed(env, effect.entry);
@@ -609,8 +635,10 @@ function select(env: Env, facts: Facts, ctx: Ctx, eff: SelectEffect) {
       return finish(`deny:${entry}`, done({ kind: 'deny', entry }, { acquire: true }));
     }
     const ids = env.ent[entry]!.ids + 1;
-    if (ids > 2) {
-      ctx.bound = true;
+    // I5c (A8 r7-step3 finding 1): a fresh identity for an entry is posted only after every
+    // earlier identity of the entry is proved. The step is a violation, not a bound cut.
+    if (env.unproved.some((attemptId) => attemptId.startsWith(`${entry}#`))) {
+      ctx.unprovedMint = `${entry}#${ids}`;
       return alts;
     }
     env.handles += 1;
@@ -753,7 +781,7 @@ function backendChanged(
   ctx.cover?.add(`cleared-at-${change}`);
   for (const entry of cleared) {
     delete env.busyHeld[entry];
-    env.successors[entry] = 0;
+    resetSuccessors(env, entry);
     owe(env, 'backend-capacity', (value) => value === entry);
   }
   feed(env, ctx, {
@@ -797,14 +825,19 @@ function actions(env: Env, world: World): Action[] {
           if (variant !== 'normal') next.faults.reply -= 1;
           const decided = coreCreate(next, world, post);
           const cause: Cause = { of: post.entry, tag: variant };
-          if (variant === 'not-run')
+          if (variant === 'not-run') {
+            provedAbsent(next, post.attemptId);
             return feed(next, ctx, { kind: 'reply', replyClass: 'not-run', cause });
+          }
           if (variant.startsWith('unknown')) {
+            if (!next.unproved.includes(post.attemptId)) next.unproved.push(post.attemptId);
             if (decided.kind === 'insert' && variant === 'unknown-committed') insertRow(next, post);
             if (decided.kind === 'insert' && variant === 'unknown-pending')
               next.pending = { ...post };
             return feed(next, ctx, { kind: 'reply', replyClass: 'unknown', cause });
           }
+          // A Core-decided reply proves the state of this exact identity.
+          next.unproved = next.unproved.filter((attemptId) => attemptId !== post.attemptId);
           if (decided.kind === 'insert') {
             insertRow(next, post);
             return feed(next, ctx, { kind: 'reply', replyClass: 'claimed' });
@@ -814,6 +847,7 @@ function actions(env: Env, world: World): Action[] {
               kind: 'reply',
               replyClass: decided.fresh ? 'claimed' : 'stale-original',
             });
+          provedAbsent(next, post.attemptId);
           return feed(next, ctx, {
             kind: 'reply',
             replyClass: decided.reason === null ? 'refused-final' : 'refused-rescan',
@@ -828,6 +862,10 @@ function actions(env: Env, world: World): Action[] {
       internal: true,
       run: (next, ctx) => {
         next.op = null;
+        // The ACK covers every earlier post of the root: the writer has no pending commit.
+        for (const attemptId of next.unproved)
+          if (!next.rows[attemptId]) provedAbsent(next, attemptId);
+        next.unproved = [];
         feed(next, ctx, { kind: 'barrier', acknowledged: true });
       },
     });
@@ -979,7 +1017,7 @@ function actions(env: Env, world: World): Action[] {
             ctx.cover?.add(
               key === 'backend:nh' ? 'release-before-enqueue' : 'login-release-before-enqueue'
             );
-            next.successors[inv.entry] = 0;
+            resetSuccessors(next, inv.entry);
             if (!next.owed.includes(inv.entry)) next.owed.push(inv.entry);
           }
           const capacityKey = key.startsWith('login:')
@@ -1159,7 +1197,7 @@ function actions(env: Env, world: World): Action[] {
           for (const entry of Object.keys(next.busyHeld))
             if (next.busyHeld[entry] === loginKey(subject)) {
               delete next.busyHeld[entry];
-              next.successors[entry] = 0;
+              resetSuccessors(next, entry);
               owe(next, 'backend-capacity', (value) => value === entry);
               ctx.cover?.add('login-release-after-enqueue');
             }
@@ -1180,32 +1218,30 @@ function actions(env: Env, world: World): Action[] {
 function successors(
   env: Env,
   ctx: Ctx
-): { label: string; next: Env; violations: string[]; bound: boolean; internal: boolean }[] {
+): { label: string; next: Env; violations: string[]; internal: boolean }[] {
   const out: {
     label: string;
     next: Env;
     violations: string[];
-    bound: boolean;
     internal: boolean;
   }[] = [];
   const clone = () => structuredClone(env);
   for (const action of actions(env, ctx.world)) {
     if (action.label === 'select') {
       const probe = clone();
-      const probeCtx: Ctx = { ...ctx, violations: [], bound: false };
+      const probeCtx: Ctx = { ...ctx, violations: [], unprovedMint: null };
       const pendingSelect = env.op as Extract<Op, { k: 'select' }>;
       const alts = select(probe, pendingSelect.facts, probeCtx, pendingSelect.eff);
-      if (probeCtx.bound)
+      if (probeCtx.unprovedMint !== null)
         out.push({
-          label: 'select:bound',
+          label: `select:claim:${probeCtx.unprovedMint}`,
           next: probe,
-          violations: [],
-          bound: true,
+          violations: ['I5c.unproved-identity'],
           internal: true,
         });
       for (const alt of alts) {
         const next = clone();
-        const stepCtx: Ctx = { ...ctx, violations: [], bound: false };
+        const stepCtx: Ctx = { ...ctx, violations: [], unprovedMint: null };
         const { eff, facts } = next.op as Extract<Op, { k: 'select' }>;
         // A thrown selection reports no skip and acquires no handle or identity.
         if (alt.event.kind === 'failed' && alt.fault) {
@@ -1222,20 +1258,18 @@ function successors(
           label: `select:${alt.label}`,
           next,
           violations: stepCtx.violations,
-          bound: stepCtx.bound,
           internal: true,
         });
       }
       continue;
     }
     const next = clone();
-    const stepCtx: Ctx = { ...ctx, violations: [], bound: false };
+    const stepCtx: Ctx = { ...ctx, violations: [], unprovedMint: null };
     action.run(next, stepCtx);
     out.push({
       label: action.label,
       next,
       violations: stepCtx.violations,
-      bound: stepCtx.bound,
       internal: action.internal,
     });
   }
@@ -1284,6 +1318,8 @@ function stateKey(env: Env): string {
     wakeSeq: 0,
     resolved: [...env.resolved].sort(),
     owed: [...env.owed].sort(),
+    unproved: [...env.unproved].sort(),
+    successorIds: [...env.successorIds].sort(),
     observed: Object.fromEntries(
       Object.entries(env.observed).map(([entry, holds]) => [entry, [...holds].sort()])
     ),
@@ -1319,7 +1355,6 @@ export interface ExploreReport {
   readonly states: number;
   readonly edges: number;
   readonly quiescent: number;
-  readonly boundCuts: number;
   readonly cycles: number;
   readonly traces: Readonly<Record<string, readonly string[]>>;
   readonly rows: readonly string[];
@@ -1341,7 +1376,7 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
     readback: options.readback ?? UNRESOLVED_DISPOSITION,
     envMutation: options.envMutation ?? null,
     violations: [],
-    bound: false,
+    unprovedMint: null,
   };
   const ids = new Map<string, number>();
   const parent: number[] = [-1];
@@ -1358,7 +1393,6 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
   ctx.cover = cover;
   let edges = 0;
   let quiescent = 0;
-  let boundCuts = 0;
   const trace = (id: number, last: string) => {
     const path = [last];
     for (let at = id; at > 0; at = parent[at]!) path.unshift(via[at]!);
@@ -1373,10 +1407,6 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
     }
     for (const step of steps) {
       edges += 1;
-      if (step.bound) {
-        boundCuts += 1;
-        continue;
-      }
       if (step.violations.length > 0) {
         for (const name of step.violations) traces[name] ??= trace(head, step.label);
         continue;
@@ -1402,7 +1432,6 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
     states: queue.length,
     edges,
     quiescent,
-    boundCuts,
     cycles: countCycles(queue.length, from, to),
     traces,
     rows: [...rows].sort(),
@@ -1472,7 +1501,7 @@ export function replayTrace(world: World, labels: readonly string[], options: Ex
     readback: options.readback ?? UNRESOLVED_DISPOSITION,
     envMutation: options.envMutation ?? null,
     violations: [],
-    bound: false,
+    unprovedMint: null,
   };
   let env = initialEnv(world);
   const steps: { label: string; env: Env; violations: string[] }[] = [];
@@ -1504,12 +1533,12 @@ export function runSeeded(world: World, seed: number, steps: number, options: Ex
     readback: options.readback ?? UNRESOLVED_DISPOSITION,
     envMutation: options.envMutation ?? null,
     violations: [],
-    bound: false,
+    unprovedMint: null,
   };
   let env = initialEnv(world);
   const path: string[] = [];
   for (let step = 0; step < steps; step += 1) {
-    const choices = successors(env, ctx).filter((choice) => !choice.bound);
+    const choices = successors(env, ctx);
     if (choices.length === 0) break;
     const choice = choices[Math.floor(random() * choices.length)]!;
     path.push(choice.label);
@@ -1844,19 +1873,28 @@ export const WORLDS = {
     faults: { settle: 1 },
   },
   /**
-   * R3: the backend refuses C with no Turn (RuntimeTarget not ready) and on its full Harness h2
-   * while D settles on h1. Timer and intake held.
+   * R3: the backend refuses C with no Turn (RuntimeTarget not ready) and on its full Harness h2.
+   * Timer and intake held. With no identity cut this world and the next one are split from one
+   * world that went past the state bound; together they keep every R3 schedule.
    */
   backendCapacity: {
     name: 'backend-capacity',
+    entries: [{ ...C, harness: 'h2' }],
+    targetUnready: true,
+    sessionsFull: ['h2'],
+    callers: [{ id: 'u', entry: null, max: 3 }],
+    owner: ['target', 'sessions:h2'],
+  },
+  /** R3: the backend refuses C on its full Harness h2 while D settles on h1. Timer and intake held. */
+  backendCapacitySettlement: {
+    name: 'backend-capacity-settlement',
     entries: [
       { ...C, harness: 'h2' },
       { ...D, published: false },
     ],
-    targetUnready: true,
     sessionsFull: ['h2'],
     callers: [{ id: 'u', entry: null, max: 3 }],
-    owner: ['target', 'sessions:h2', 'publish:d'],
+    owner: ['sessions:h2', 'publish:d'],
   },
   /** R3: a failed Turn after its ACK leaves its Core attempt closing; recovery closes it. */
   backendFence: {
@@ -1943,7 +1981,10 @@ describe('Main selection handoff model check', () => {
     const schedules = Object.fromEntries(reports.map((report) => [report.world, report.schedules]));
     keep('schedules', schedules);
     // R3: every backend refusal schedule is in the gate, with a release on either side of enqueue.
-    expect(schedules['backend-capacity']).toEqual(
+    expect([
+      ...schedules['backend-capacity']!,
+      ...schedules['backend-capacity-settlement']!,
+    ]).toEqual(
       expect.arrayContaining([
         'unready-zero-turns',
         'kept-at-settlement',
@@ -2026,7 +2067,7 @@ describe('Main selection handoff model check', () => {
 
   it('R3: a backend mark released at a settlement claims C again while its owner still refuses it', () => {
     // An unrelated settlement on the same backend while the Harness of C stays full.
-    const harness = explore(WORLDS.backendCapacity, { table: CLEAR_ON_SETTLEMENT });
+    const harness = explore(WORLDS.backendCapacitySettlement, { table: CLEAR_ON_SETTLEMENT });
     expect(named(harness)).toContain('I7.busy-reclaim');
     // A failed Turn whose Core attempt is still closing.
     const fence = explore(WORLDS.backendFence, { table: CLEAR_ON_SETTLEMENT });
