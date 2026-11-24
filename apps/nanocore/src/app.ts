@@ -274,6 +274,7 @@ import {
   WorkerRawOutputPendingError,
 } from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
+import { releaseSchedulerHold } from './scheduler-hold-release.js';
 import {
   listSchedulerAdmissionEntriesForWorkspace,
   type SchedulerWorkerStorageChoice,
@@ -1439,8 +1440,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const wasPaused = runtimeConfig().openKitConfig.security?.pauseAgentWork === true;
     const pending = reloadRuntimeConfig(input);
     const response = pending instanceof Promise ? await pending : pending;
-    if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork)
+    if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork) {
+      releaseSchedulerHold('agent-work-paused');
       await resumeAgentWork?.();
+    }
     return response;
   };
   // An inferred physical root supplies file reserve policy without loading unrelated runtime settings.

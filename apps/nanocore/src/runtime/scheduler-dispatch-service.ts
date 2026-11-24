@@ -1,8 +1,10 @@
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { addSchedulerHoldReleaseListener } from '../scheduler-hold-release.js';
 import type { HandoffSource } from './scheduler-dispatch-handoff.js';
 import {
   type RunSchedulerDispatchLoopInput,
   registerSchedulerDispatchWake,
+  releaseSchedulerDispatchHold,
   runSchedulerDispatchLoop,
   type SchedulerDispatchLoopResult,
 } from './scheduler-dispatch-loop.js';
@@ -97,6 +99,14 @@ export function startSchedulerDispatchRetryService(
   const unregisterWake = registerSchedulerDispatchWake(input.coreDb, () => {
     void runOnce('wake');
   });
+  // The owner release edges of the holds table reach the handoff of this Core data root.
+  const removeHoldReleases = addSchedulerHoldReleaseListener({
+    hold: (hold) => releaseSchedulerDispatchHold(input.coreDb, hold),
+    capacity: (change) => {
+      if (change.kind === 'login-close')
+        releaseSchedulerDispatchHold(input.coreDb, 'backend-capacity', change);
+    },
+  });
   void runOnce();
   const timer = setTimer(() => {
     void runOnce();
@@ -111,6 +121,7 @@ export function startSchedulerDispatchRetryService(
 
       stopped = true;
       unregisterWake();
+      removeHoldReleases();
       clearTimer(timer);
     },
   };

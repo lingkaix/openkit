@@ -36,6 +36,7 @@ import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
+import { releaseSchedulerHold } from '../scheduler-hold-release.js';
 import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
@@ -1367,7 +1368,10 @@ class ControlStoreWorkerClient {
     state.captureClosed = closure;
     const blockers = freezeBlockers(readBlockers);
     if (blockers.length !== 0) {
-      if (state.captureClosed === closure) state.captureClosed = null;
+      if (state.captureClosed === closure) {
+        state.captureClosed = null;
+        this.reportWorkspaceAdmissionOpen(owner, workspaceId);
+      }
       return { status: 'blocked', blockers };
     }
     if (state.captureClosed !== closure || state.closed) return { status: 'busy' };
@@ -1393,7 +1397,10 @@ class ControlStoreWorkerClient {
       await drain();
       const preparationBlockers = await prepare();
       if (preparationBlockers?.length) {
-        if (state.captureClosed === closure) state.captureClosed = null;
+        if (state.captureClosed === closure) {
+          state.captureClosed = null;
+          this.reportWorkspaceAdmissionOpen(owner, workspaceId);
+        }
         return { status: 'blocked', blockers: preparationBlockers };
       }
       await drain();
@@ -1406,13 +1413,19 @@ class ControlStoreWorkerClient {
       };
     }
     if (state.captureClosed !== closure || state.closed) {
-      if (state.captureClosed === closure) state.captureClosed = null;
+      if (state.captureClosed === closure) {
+        state.captureClosed = null;
+        this.reportWorkspaceAdmissionOpen(owner, workspaceId);
+      }
       return { status: 'busy' };
     }
     delete closure.preparing;
     const blockers = freezeBlockers(readBlockers);
     if (blockers.length) {
-      if (state.captureClosed === closure) state.captureClosed = null;
+      if (state.captureClosed === closure) {
+        state.captureClosed = null;
+        this.reportWorkspaceAdmissionOpen(owner, workspaceId);
+      }
       return { status: 'blocked', blockers };
     }
     if (state.captureClosed !== closure || state.closed || state.admitted !== 0)
@@ -1677,6 +1690,15 @@ class ControlStoreWorkerClient {
     }
     if (closure === 'capture') state.captureClosed = null;
     else state.closed = false;
+    this.reportWorkspaceAdmissionOpen(owner, workspaceId);
+  }
+
+  /**
+   * The frozen-Workspace release edge of the Main selection handoff: ordinary admission of this
+   * Workspace is open again. A partial thaw under another closure stays held and reports nothing.
+   */
+  private reportWorkspaceAdmissionOpen(owner: WorkspaceMutationScope, workspaceId: string): void {
+    if (!this.isScopeClosed(owner, workspaceId)) releaseSchedulerHold('frozen-workspace');
   }
 
   /** Restores an owned closure without clearing a different lifecycle owner's exclusion. */

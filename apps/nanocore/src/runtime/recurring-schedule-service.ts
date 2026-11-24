@@ -9,6 +9,7 @@ import {
 } from '../lib/automation-store.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import { releaseSchedulerHold } from '../scheduler-hold-release.js';
 import {
   type CoreSchedulerQueueEntry,
   listQueuedSchedulerAdmissionEntries,
@@ -214,6 +215,7 @@ export function startRecurringScheduleService(
       if ((await publishWorkspaceTurn(entry)) === 'busy') await writeBusyProof(entry, 'defer-busy');
     } finally {
       publication.release();
+      releaseSchedulerHold('publication-pending');
     }
   }
 
@@ -299,6 +301,7 @@ export function startRecurringScheduleService(
     })().finally(() => {
       clearTimeout(timer);
       publication.release();
+      releaseSchedulerHold('publication-pending');
     });
     await Promise.race([settlement, elapsed.promise]);
   }
