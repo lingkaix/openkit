@@ -204,6 +204,7 @@ import {
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -7780,7 +7781,7 @@ describe('createConfiguredTurnExecutor', () => {
     const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
     const queue = owner.harnessTurnLifecycle.queue;
     let drained = false;
-    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input) => {
+    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
       if (input.operation === 'session.close' && !drained) {
         drained = true;
         // The admitted credential-revocation drain commits after the Main slot comparison and
@@ -7790,7 +7791,7 @@ describe('createConfiguredTurnExecutor', () => {
           originPhysicalEpoch: anchor.originPhysicalEpoch,
         });
       }
-      return await queue(input);
+      return await queue(input, authority);
     });
     await expect(f.close()).rejects.toMatchObject({
       name: 'WorkerGovernanceCapacityUnavailableError',
@@ -7817,7 +7818,7 @@ describe('createConfiguredTurnExecutor', () => {
     const queue = owner.harnessTurnLifecycle.queue;
     let requeue: Promise<unknown> | undefined;
     let phaseAtCommit: string | undefined;
-    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input) => {
+    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
       if (input.operation === 'session.close' && !requeue) {
         // The successor's attempt writer starts after the Main slot comparison and before the
         // close's Native queue commit. It waits for that commit instead of overtaking it.
@@ -7833,7 +7834,7 @@ describe('createConfiguredTurnExecutor', () => {
           f.successor.attemptId
         ).phase;
       }
-      return await queue(input);
+      return await queue(input, authority);
     });
     const outcome = await f.close().then(
       (value) => value,
@@ -7851,6 +7852,292 @@ describe('createConfiguredTurnExecutor', () => {
       attempts.requireSchedulerExecutionAttempt(f.coreDb, f.successor.attemptId).phase
     ).toBe('closed');
   }, 90_000);
+
+  // 3e-r2 S1: the queue decides the successor request under the Core and Workspace holds it posts in.
+  it.each(['launch-revoked', 'startup-expired', 'storage-changed'] as const)(
+    'refuses a replacement close whose request or storage changes while its queue waits for the holds (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`p23_queue_hold_${change}`);
+      let expiresAt = 0;
+      if (change === 'startup-expired') {
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+        const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+        const createdAt = new Date(Date.now() - budget + 6_000).toISOString();
+        await f.retry('aged', { now: () => createdAt });
+        expiresAt = Date.parse(nanoHostStartupDeadline({ createdAt }));
+      }
+      const selected =
+        change === 'storage-changed'
+          ? readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerStorageBinding(
+                { sqlite },
+                f.store.getAgentSession(f.predecessor.agentSessionId).retainedStorage!
+              )
+            )!
+          : undefined;
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let changed = false;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation === 'session.close' && !changed) {
+          changed = true;
+          // After the slot comparison passed: the change commits while the queue still has to
+          // acquire its holds, so only the decision in its post turn can see it.
+          if (change === 'launch-revoked')
+            f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.ownerUserId))();
+          else if (change === 'startup-expired')
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, expiresAt - Date.now() + 100))
+            );
+          else
+            await markTestWorkerStorageUnknown(f.coreDb, {
+              attachmentGeneration: selected!.attachmentGeneration,
+              expectedRevision: selected!.revision,
+              storageRef: selected!.storageRef,
+            });
+        }
+        return await queue(input, authority);
+      });
+      const operation = f.close(
+        selected
+          ? {
+              kind: 'selected',
+              storageRef: selected.storageRef,
+              expectedRevision: selected.revision,
+              purpose: 'work',
+              goalId: null,
+              taskId: null,
+            }
+          : undefined
+      );
+      if (change === 'storage-changed') {
+        await expect(operation).rejects.toSatisfy(
+          (error: { code?: string }) =>
+            error instanceof WorkerStorageBindingError ||
+            error.code === 'operation_storage_unavailable'
+        );
+      } else {
+        await expect(operation).rejects.toMatchObject({
+          name: 'WorkerGovernanceCapacityUnavailableError',
+          message: 'The selected predecessor binding changed before its replacement close.',
+        });
+      }
+      expect(changed).toBe(true);
+      // Zero queued and zero carried closes; the resume pair is intact and the latch released.
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+        )
+      ).not.toContainEqual({ operation: 'session.close' });
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
+  // 3e-r2 S1: the post-turn decision cannot see Native work posted ahead of the queue or time
+  // passing before its transaction, so the Native commit itself decides the clock and storage.
+  it.each(['startup-deadline', 'storage-revision'] as const)(
+    'refuses at the Native queue commit a replacement close whose %s moved after its post-turn decision',
+    async (moved) => {
+      const f = await admitNativeReplacementClose(`p23_queue_txn_${moved}`);
+      const selected =
+        moved === 'storage-revision'
+          ? readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerStorageBinding(
+                { sqlite },
+                f.store.getAgentSession(f.predecessor.agentSessionId).retainedStorage!
+              )
+            )!
+          : undefined;
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let decided: boolean | undefined;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !input.replacement || !authority)
+          return await queue(input, authority);
+        // The post-turn decision observed the current request and storage. The transaction then
+        // meets an expired original clock or a newer storage revision than that observation.
+        const replacement =
+          moved === 'startup-deadline'
+            ? { ...input.replacement, startupDeadline: new Date(Date.now() - 1).toISOString() }
+            : {
+                ...input.replacement,
+                storage: {
+                  ...input.replacement.storage!,
+                  revision: input.replacement.storage!.revision - 1,
+                },
+              };
+        return await queue(
+          { ...input, replacement },
+          {
+            ...authority,
+            verifyBeforePost: (native) => (decided = authority.verifyBeforePost(native)),
+          }
+        );
+      });
+      await expect(
+        f.close(
+          selected
+            ? {
+                kind: 'selected',
+                storageRef: selected.storageRef,
+                expectedRevision: selected.revision,
+                purpose: 'work',
+                goalId: null,
+                taskId: null,
+              }
+            : undefined
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      expect(decided).toBe(true);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+        )
+      ).not.toContainEqual({ operation: 'session.close' });
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
+  // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
+  // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.
+  it.each(['core-user-disable', 'workspace-thread-edit'] as const)(
+    'keeps a %s that starts after the queue decision out until the Native queue reply',
+    async (writer) => {
+      const f = await admitNativeReplacementClose(`p23_queue_pin_${writer}`);
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      const prefix = writer === 'core-user-disable' ? 'core:' : 'workspace:';
+      const frames: string[] = [];
+      let queueId: unknown;
+      let competitorStarted = false;
+      let competitorPosted = false;
+      const post = NativeWorker.prototype.postMessage;
+      const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const frame = args[0] as {
+          id?: unknown;
+          database?: string;
+          mutation?: { input?: { kind?: string; operation?: string } };
+        };
+        if (
+          frame?.mutation?.input?.kind === 'operation.queue' &&
+          frame.mutation.input.operation === 'session.close'
+        ) {
+          queueId = frame.id;
+          frames.push('native-queue');
+        } else if (
+          competitorStarted &&
+          !competitorPosted &&
+          typeof frame?.database === 'string' &&
+          frame.database.startsWith(prefix)
+        ) {
+          competitorPosted = true;
+          frames.push('competitor');
+        }
+        return Reflect.apply(post, this, args);
+      });
+      onTestFinished(() => posts.mockRestore());
+      // Hold the queue reply back until the later writer posted (no hold) or 1.5 s passed (held).
+      const emit = NativeWorker.prototype.emit;
+      let replyHeld = false;
+      const emits = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['emit']>
+      ) {
+        const [event, value] = args as [unknown, { id?: unknown } | undefined];
+        if (event !== 'message' || replyHeld || queueId === undefined || value?.id !== queueId)
+          return Reflect.apply(emit, this, args);
+        replyHeld = true;
+        void (async () => {
+          const until = Date.now() + 1_500;
+          while (!competitorPosted && Date.now() < until)
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          frames.push('native-queue-reply');
+          Reflect.apply(emit, this, args);
+        })();
+        return true;
+      });
+      onTestFinished(() => emits.mockRestore());
+      const sharing = createWorkspaceSharingOperationImplementations({
+        coreDb: f.coreDb,
+        store: f.store,
+        inflightCommands: new WeakMap(),
+      });
+      let competitor: Promise<unknown> | undefined;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const decided = authority.verifyBeforePost(native);
+            if (decided && !competitor) {
+              competitorStarted = true;
+              competitor =
+                writer === 'core-user-disable'
+                  ? sharing['user.disable'](
+                      { targetUserId: f.ownerUserId, requestId: randomUUID() },
+                      {
+                        kind: 'public',
+                        actor: { kind: 'local', userId: f.ownerUserId },
+                        actorRef: { kind: 'user', id: f.ownerUserId },
+                        scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+                      }
+                    )
+                  : f.store.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
+                      name: 'renamed during the queue decision',
+                    });
+              void competitor.catch(() => undefined);
+            }
+            return decided;
+          },
+        });
+      });
+      const outcome = await f.close().then(
+        (value) => value,
+        (error: unknown) => error
+      );
+      await expect(competitor).resolves.toBeDefined();
+      expect(replyHeld).toBe(true);
+      // The later writer of the held file posts nothing before the decision's Native commit returns.
+      expect(frames).toEqual(['native-queue', 'native-queue-reply', 'competitor']);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare("SELECT 1 AS queued FROM harness_instance_records WHERE operation='session.close'").all()
+        )
+      ).toEqual([{ queued: 1 }]);
+      if (outcome !== 'closed')
+        expect(outcome).toMatchObject({ name: 'WorkerGovernanceCapacityUnavailableError' });
+    },
+    90_000
+  );
 
   it('closes one of two co-residents while its sibling continues', async () => {
     const f = await admitNativeReplacementClose('p23_sibling');
@@ -7960,6 +8247,219 @@ describe('createConfiguredTurnExecutor', () => {
     expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([
       expect.objectContaining({ agentSessionId: f.predecessor.agentSessionId }),
     ]);
+  }, 90_000);
+
+  // FIX 4 F3: the last change before the first bytes lands after the acknowledgement recheck.
+  it.each(['requeued', 'startup-expired'] as const)(
+    'decides an unsent replacement close again in the turn that writes its first carriage (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`p23_first_carriage_${change}`);
+      let expiresAt = 0;
+      if (change === 'startup-expired') {
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+        const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+        const createdAt = new Date(Date.now() - budget + 8_000).toISOString();
+        await f.retry('aged', { now: () => createdAt });
+        expiresAt = Date.parse(nanoHostStartupDeadline({ createdAt }));
+      }
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const ref = f.native.outside.integrationBindingRef!;
+      // The real poll route is this close's only carrier: the fixture peer stops polling.
+      f.native.outside.integrationBindingRef = undefined;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const carry = owner.harnessTurnLifecycle.carry;
+      let changed = false;
+      vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+        if (!changed) {
+          changed = true;
+          // The acknowledgement recheck passed; the change commits before the final decision.
+          if (change === 'requeued')
+            await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+              attemptId,
+              noOutstandingEffects: true,
+              cause: 'backend-busy',
+              requeue: true,
+            });
+          else
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, expiresAt - Date.now() + 100))
+            );
+        }
+        return await carry(attemptId, run);
+      });
+      const rows = () =>
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT operation, operation_state AS state,
+            json_extract(result_json, '$.disposition') AS disposition,
+            json_extract(result_json, '$.body.reasonCode') AS reasonCode FROM harness_instance_records`)
+            .all()
+        );
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await vi.waitFor(
+        () =>
+          expect(rows()).toEqual([
+            expect.objectContaining({ operation: 'session.close', state: 'queued' }),
+          ]),
+        { timeout: 30_000 }
+      );
+      // The poll issues no command bytes: 204 with an empty body.
+      expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(changed).toBe(true);
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      // Accepted for carriage before the final decision; refused before any byte.
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toHaveLength(1);
+      expect(rows()).toEqual([
+        { operation: 'session.close', state: 'settled', disposition: 'refused', reasonCode: 'stale' },
+      ]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
+  // FIX 4 F4 / AMEND 3.3: a later same-Harness claim committed after the restore decision was
+  // read and before its Native post survives the exact restore.
+  it('keeps a later same-Harness capture claim through the predecessor close latch restore', async () => {
+    const f = await admitNativeReplacementClose('p23_restore_later_claim');
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    // An idle co-resident on the predecessor's Harness, with its own closed Core attempt, seeded
+    // through the production session-binding writer while the Harness still admits.
+    const coThread = (
+      await f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Later co-resident',
+        testEntityId('th', 'p23_later_claim')
+      )
+    ).id;
+    const coSession = testEntityId('as', 'p23_later_claim');
+    const coBinding = 'agent-session-binding-p23-later-claim';
+    const entry = await createTestQueueEntry(f.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue:p23_later_claim',
+      requestedAgentId: 'agent_worker',
+      text: 'Earlier Turn of the later co-resident.',
+      threadId: coThread,
+      triggerActor: { kind: 'user', id: f.ownerUserId },
+      turnId: testEntityId('tu', 'p23_later_claim'),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const { attemptId: coAttempt } = await nativeAttemptOwners.createSchedulerExecutionAttempt(
+      f.coreDb,
+      { entry, preparationInput: { admission: entry } }
+    );
+    await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(f.coreDb, {
+      attemptId: coAttempt,
+      agentSessionId: coSession,
+    });
+    await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+      attemptId: coAttempt,
+      cause: 'worker-final-phase',
+      noOutstandingEffects: true,
+    });
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionCompatibilityKey: 'c'.repeat(64),
+      agentSessionId: coSession,
+      agentSessionRuntimeBindingId: coBinding,
+      effectiveSetupGeneration: 1,
+      harnessInstanceId,
+      threadId: coThread,
+      timestamp: new Date().toISOString(),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+    const claim = owner.harnessTurnLifecycle.claimIdleCaptureDrain;
+    let original: Parameters<typeof claim>[0] | undefined;
+    vi.spyOn(owner.harnessTurnLifecycle, 'claimIdleCaptureDrain').mockImplementation(
+      async (input) => {
+        original ??= input;
+        return await claim(input);
+      }
+    );
+    const harness = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT drain_state AS drain, updated_at AS revision
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(harnessInstanceId)
+      ) as { drain: string; revision: string };
+    let laterClaimedAt: string | undefined;
+    let laterBeforeRestore = false;
+    // Pause after the restore's key (live) or cold read (replay), before its Native post; the
+    // co-resident's own capture claim commits on the same Harness through the admitted writer.
+    const latch = f.backend as unknown as {
+      releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+    };
+    const release = latch.releaseIdleCaptureLatch.bind(f.backend);
+    let held = false;
+    vi.spyOn(latch, 'releaseIdleCaptureLatch').mockImplementation(async (...args) => {
+      if (!held) {
+        held = true;
+        expect(original?.harnessInstanceId).toBe(harnessInstanceId);
+        laterClaimedAt = new Date(
+          Math.max(Date.now(), Date.parse(harness().revision) + 1)
+        ).toISOString();
+        await claim({
+          ...original!,
+          agentSessionId: coSession,
+          agentSessionRuntimeBindingId: coBinding,
+          attemptId: coAttempt,
+          claimedAt: laterClaimedAt,
+        });
+        laterBeforeRestore = true;
+      }
+      return await release(...args);
+    });
+    expect(await f.close()).toBe('closed');
+    expect(held).toBe(true);
+    expect(laterBeforeRestore).toBe(true);
+    // The old close's restore cannot clear the later claim's latch on its Harness.
+    expect(harness()).toEqual({ drain: 'draining', revision: laterClaimedAt });
+  }, 90_000);
+
+  // AMEND 2: a terminal abandon of the predecessor's capture is no ordinary replacement input.
+  it('refuses an ordinary replacement of an idle predecessor whose capture was abandoned', async () => {
+    const f = await admitNativeReplacementClose('p23_abandoned_capture');
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    const backend = f.backend as unknown as {
+      assertWorkspaceCaptureSettled: (ref: string | null) => Promise<Set<string>>;
+    };
+    const settled = backend.assertWorkspaceCaptureSettled.bind(f.backend);
+    vi.spyOn(backend, 'assertWorkspaceCaptureSettled').mockImplementation(async (ref) => {
+      const disposed = await settled(ref);
+      // Stands for the Workspace's terminal abandon of the predecessor attempt's capture.
+      disposed.add(f.predecessor.admission.attempt.attemptId);
+      return disposed;
+    });
+    await expect(f.close()).rejects.toMatchObject({
+      message: 'An abandoned Workspace capture permits only its original cleanup path.',
+    });
+    // No rescan, no local close, no latch: the evidence and the resume pair stay as they were.
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before.binding,
+      digest: before.digest,
+      revision: before.revision,
+      harnessDrain: 'accepting',
+      sandboxDrain: 'accepting',
+    });
   }, 90_000);
 
   it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
@@ -9032,6 +9532,38 @@ describe('createConfiguredTurnExecutor', () => {
         .filter((effect) => effect.kind === 'workspace.collect')
         .map((effect) => effect.requestId);
       expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+  // B3 F4 (carried): a collection result lost before Core accepts it advances nothing.
+  it('keeps the retained Core cursor when a collection result is lost before acceptance', async () => {
+    const f = await admitIdleSupplyResident('closed_lost_result', {
+      onCollection: async (request) => {
+        if (request.input.mode === 'baseline')
+          return {
+            outcome: 'baseline',
+            head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
+          };
+        // The scan ran; its reply never reaches the Core owner.
+        throw new Error('NanoHost collection reply was lost before acceptance.');
+      },
+    });
+    const collector = f.backend as unknown as {
+      collectWorkspaceSnapshot(session: unknown, boundary: 'turn-end'): Promise<unknown>;
+    };
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const before = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
+      expect(before).not.toEqual([]);
+      await expect(collector.collectWorkspaceSnapshot(f.session, 'turn-end')).rejects.toThrow(
+        'NanoHost collection reply was lost before acceptance.'
+      );
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(before);
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM workspace_snapshot_collections').get()
+      ).toEqual({ count: 0 });
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -25908,7 +26440,10 @@ async function postNativeHarnessPoll(
     coreDb,
     nativeStorage: { state: 'ready', value: currentAdmittedTestNanoHostStorage(coreDb)! },
     nativeHarnessLifecycle: currentAdmittedTestNanoHostOwner(coreDb)!.harnessTurnLifecycle,
-    dispatch: { route: async () => undefined } as unknown as NanoHostSessionDispatch,
+    dispatch: {
+      route: async () => undefined,
+      assertHarnessCarriage: () => undefined,
+    } as unknown as NanoHostSessionDispatch,
     harnessCommandDispatched: (command, signal) =>
       runtime.acceptNanoHostHarnessCommand(command, signal),
     harnessResultSettled: (result, settlement) =>

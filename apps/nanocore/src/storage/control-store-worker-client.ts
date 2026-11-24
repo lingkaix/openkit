@@ -3447,7 +3447,8 @@ class ControlStoreWorkerClient {
       const write = async <Kind extends NanoHostOwnerMutation['kind']>(
         mutation: NanoHostOwnerMutation & { kind: Kind },
         verifyStorageAttachment?: (sqlite: Database.Database) => boolean,
-        verifyCarriage?: () => void
+        verifyCarriage?: () => void,
+        verifyAuthority?: (sqlite: Database.Database) => boolean
       ): Promise<Extract<NanoHostOwnerMutationResult, { kind: Kind }>> => {
         assertCurrent();
         opening.nanoHostWritePending =
@@ -3478,7 +3479,9 @@ class ControlStoreWorkerClient {
             verifyStorageAttachment
               ? () =>
                   !opening.nanoHostTargetTransition && readCurrent(verifyStorageAttachment, true)
-              : verifyPost,
+              : verifyAuthority
+                ? (posted) => verifyPost(posted) && readCurrent(verifyAuthority, true)
+                : verifyPost,
             verifyCarriage
           )) as Extract<Success, { operation: 'nanohost-owner' }>;
           return reply.result as Extract<NanoHostOwnerMutationResult, { kind: Kind }>;
@@ -4090,8 +4093,11 @@ class ControlStoreWorkerClient {
         return settled;
       };
       const harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle = {
-        queue: async ({ prepared, body, harnessInstanceId, operation, timestamp, replacement }) => {
-          const result = await writeHarnessTurn({
+        queue: async (
+          { prepared, body, harnessInstanceId, operation, timestamp, replacement },
+          authority
+        ) => {
+          const original = structuredClone({
             kind: 'operation.queue',
             prepared,
             body,
@@ -4099,7 +4105,27 @@ class ControlStoreWorkerClient {
             operation,
             timestamp,
             ...(replacement ? { replacement } : {}),
-          });
+          } as const);
+          // A replacement close decides its successor's Core and Workspace authority after both
+          // holds drained earlier writers, in the turn that posts this Native commit.
+          const result = authority
+            ? await withCoreHold((coreIdentity) =>
+                withWorkspaceForAttempt(authority.attemptId, async () => {
+                  try {
+                    return (
+                      await write(
+                        { kind: 'harness-turn-lifecycle', input: original, coreIdentity },
+                        undefined,
+                        undefined,
+                        (sqlite) => authority.verifyBeforePost({ sqlite })
+                      )
+                    ).value;
+                  } finally {
+                    if (opening.host.failed) await opening.host.exited.promise;
+                  }
+                })
+              )
+            : await writeHarnessTurn(original);
           if (typeof result !== 'number') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         },
@@ -4209,6 +4235,20 @@ class ControlStoreWorkerClient {
             kind: 'harness.claim-idle-capture-drain',
           });
           if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
+        },
+        carry: async (attemptId, run) => {
+          // A first carriage waits behind a held queue commit instead of failing beside it.
+          for (
+            let held = opening.nanoHostCoreHoldPending;
+            held;
+            held = opening.nanoHostCoreHoldPending
+          )
+            await held;
+          await withCoreHold(() =>
+            withWorkspaceForAttempt(attemptId, async () => {
+              run();
+            })
+          );
         },
       };
 

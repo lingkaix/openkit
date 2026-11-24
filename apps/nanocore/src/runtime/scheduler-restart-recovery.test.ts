@@ -8152,13 +8152,7 @@ describe('minimal scheduler reconnect contract', () => {
         undefined,
         siblingWorkspaceId
       );
-      await recordBackendSession(
-        f.coreDb,
-        'early_image_sibling',
-        undefined,
-        undefined,
-        true
-      );
+      await recordBackendSession(f.coreDb, 'early_image_sibling', undefined, undefined, true);
       const sibling = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
         getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_early_image_sibling'))
       );
