@@ -103,7 +103,7 @@ The claim-post budget of a pass is a current default of `20` posts. It bounds th
 | `denied` | The `deny` effect |
 | `failed` with its stage, its entry when known, its held handle, its cause and its failed inspections | The `select` or `deny` effect when it throws. A failed selection identifies the unresolved claims whose inspection failed, including claims whose inspection snapshot could not open. |
 | `submitted(inv)` | The first-submission callback of an invocation. The Worker can call it two times for one invocation. |
-| `settled(inv, outcome)` with outcome `dispatched`, `backend-busy`, `recovery-required` or `failed`. `backend-busy` carries its capacity key and whether the owner of that key still holds it. | The invocation promise. A publish or continuation failure after a claim is a `failed` settlement of that invocation. |
+| `settled(inv, outcome)` with outcome `dispatched`, `backend-busy`, `recovery-required` or `failed`. `backend-busy` carries its capacity key and whether the owner of that key still holds it. Each outcome says whether the invocation held backend capacity. | The invocation promise. A publish or continuation failure after a claim is a `failed` settlement of that invocation. |
 | `released(hold)`. A Login close release names its Workspace and Thread. | An owner release edge in the holds table below |
 
 The effects are:
@@ -132,7 +132,7 @@ In the rows, P is the pass of the cycle, e is the entry of the cycle, and the bu
 - **Pass end.** When P ends with a result, the cycle ends if P owns it, P leaves the ready queue, and each remaining waiter of P resolves under the keyed-caller rules and is removed. Then the drain runs.
 - **Resume.** A pass with no waiter ends with no result. Otherwise, when its dispatched count reaches its allowed count, it ends with `max-dispatches`. Otherwise, when its posts reach the budget, it ends with `recovery-required` if it is undecided and with `thread-busy` if not. It keeps its started Turns and emits no wake. Otherwise it goes to the tail of the ready queue.
 - **Drain.** After every row, while there is no cycle and the ready queue is not empty, take its head. A head with no waiter ends with no result. Any other head gets the cycle and emits `select`. The drain awaits nothing and consumes no event.
-- **Wake.** If hold observed is true, set it to false and emit `wake`.
+- **Wake.** If hold observed is true, or the cycle is at stage `select`, set hold observed to false and emit `wake`. A selection in flight can have read a hold before the release and reports its skip only later.
 - **Selection first.** Every `selected` event first removes its discharged entries from the unresolved claims and sets hold observed when it reports a skip. Its row applies after that.
 
 | # | Event | Guard | Next record | Effects |
@@ -156,15 +156,15 @@ In the rows, P is the pass of the cycle, e is the entry of the cycle, and the bu
 | T14r | `failed` at the `select` stage | The failure names failed inspections | T14r applies only to those claims, retains their identities and cause, releases the held handle once and returns `recovery-required` to their waiters. Add their entries to P recovery entries and P failed inspections. P is undecided. The cycle ends; resume P. If the same inspection fails again in that pass, end the pass with recovery. | Release the held handle one time, if one is held; resolve the waiters of those entries with `recovery-required` and the cause |
 | T15 | `submitted(inv)` | P is parked on inv | P is no longer parked. Add the submission result to P started Turns and one to P dispatched. Resume P. | None |
 | T16 | `submitted(inv)` | No pass is parked on inv | None | None |
-| T17 | `settled(inv, outcome)` | A pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation; the pass is no longer parked. `dispatched`: as T15, and remove the busy marks keyed to the backend of the entry. `recovery-required`: add the entry to the pass recovery entries, set the observed facts, resume the pass. `backend-busy`: mark the entry busy with its key if the owner still holds the key, else set hold observed; the pass ends with it. `failed`: the pass ends with the cause. | `retire(e, inv)`; `release(e)`; Wake |
-| T18 | `settled(inv, outcome)` | No pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation. `dispatched` and `backend-busy` change the busy set as in T17. | `retire(e, inv)`; `release(e)`; Wake |
+| T17 | `settled(inv, outcome)` | A pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation; the pass is no longer parked. `dispatched`: as T15. A settlement that returns backend capacity removes the busy marks keyed to that backend and sets hold observed if it removed one. `recovery-required`: add the entry to the pass recovery entries, set the observed facts, resume the pass. `backend-busy`: mark the entry busy with its key if the owner still holds the key, else set hold observed; the pass ends with it. `failed`: the pass ends with the cause. | `retire(e, inv)`; `release(e)`; Wake |
+| T18 | `settled(inv, outcome)` | No pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation. A capacity return and `backend-busy` change the busy set as in T17. | `retire(e, inv)`; `release(e)`; Wake |
 | T18s | `settled(inv, outcome)` | inv is not the live invocation of its entry | None | None |
 | T19 | `released(hold)` | | A Login close release removes the busy marks with its key and sets hold observed if it removed one. | Wake |
 | T20 | `selected` `barrier` | | The cycle stage becomes `barrier`. The barrier covers every unresolved claim that has no row. P has used its barrier. | `barrier` |
 | T21 | `barrier` acknowledged | | The cycle holds the barrier proof for the covered claims. The cycle stage becomes `select`. | `select` in a new read snapshot |
 | T22 | `barrier` failed or ambiguous | | Keep every covered claim. Add each covered entry to P recovery entries. P is undecided. The cycle ends; resume P. | Resolve the waiters of each covered entry with `recovery-required`. No wake. |
 
-A `dispatched` settlement returns the backend capacity that its Turn held, so it releases only the busy marks keyed to that backend. A Login close key releases only at its owner edge. A refused probe, a failed settlement or the settlement of an unrelated Turn releases no Login close key.
+The settlement of an invocation that held backend capacity returns that capacity, whether the Turn dispatched or failed, so it releases only the busy marks keyed to that backend. A Login close key releases only at its owner edge. A refused probe, a failed settlement or the settlement of an unrelated Turn releases no Login close key.
 
 #### Keyed Caller
 
@@ -206,7 +206,7 @@ The walk skips the recovery entries of its pass, the busy set when only wakes re
 - **E4.** The zero-effect gates after a claim, the exact expiry callback and its proved-close readback stay unchanged.
 - **E5.** An effect never calls the transition again while it runs. It queues its event.
 - **E6.** The submission result and the full-closeout promise stay distinct.
-- **E7.** A capacity refusal names its capacity key in process, with no wire field. When the executor queues a `backend-busy` settlement, it reads the held fact of that key from its owner in the same synchronous step. A backend key is always held. Events run in queue order, so a release on either side of the no-effect requeue leaves no stale busy mark.
+- **E7.** A capacity refusal names its capacity key in process, with no wire field. When the executor queues a `backend-busy` settlement, it reads the held fact of that key from its owner in the same synchronous step. For a backend key, the held fact is whether another Turn still holds that capacity. Events run in queue order, so a release on either side of the no-effect requeue leaves no stale busy mark.
 
 #### Holds And Release Edges
 
@@ -221,7 +221,7 @@ The holds below form a closed set. Main MUST map each hold to its exit and MUST 
 | Agent work paused | An applied reload that is not a dry run clears the pause. | The runtime configuration reload owner |
 | Input or publication pending | The last owner acknowledgement that completes the input and publication facts. A recurring occurrence releases at its initial and its deferred Workspace publication. An external event uses its existing product-start trigger and adds no second trigger. | The command owner and the recurring schedule service |
 | Unresolved claim identity | A readback discharge or restart. | This handoff and the restart classification |
-| Backend capacity (a busy mark) | A Login close key: the last pending original Login close of that Workspace and Thread clears, at the held-to-clear transition of the close owner on its success, ordinary and idle unwind paths. A failed close clears only after its admission fence joins. A backend key: a `dispatched` settlement on that backend. Intake and the timer stay as fallbacks. | The NanoHost Login close owner, this handoff and the dispatch retry service |
+| Backend capacity (a busy mark) | A Login close key: the last pending original Login close of that Workspace and Thread clears, at the held-to-clear transition of the close owner on its success, ordinary and idle unwind paths. A failed close clears only after its admission fence joins. A backend key: the settlement of a Turn that held that capacity. Intake and the timer stay as fallbacks. | The NanoHost Login close owner, this handoff and the dispatch retry service |
 | Writer unavailable (`not-run`) | Owner recovery or restart, then the startup scan. | Restart |
 
 #### Handoff Invariants
@@ -229,7 +229,7 @@ The holds below form a closed set. Main MUST map each hold to its exit and MUST 
 | # | Invariant | Take-out that MUST fail it |
 | --- | --- | --- |
 | I1 | One handoff: at most one cycle and one outstanding post or barrier for each root. | A second cycle |
-| I2 | Budget: each pass issues at most the budget of posts on every path, counted at issuance. | A replay without the debit; a resume without the budget check |
+| I2 | Budget: each pass issues at most the budget of posts on every path, counted at issuance. | A replay without the debit; a success path with no budget check at resume and at issuance |
 | I3 | Exact caller: K1 to K3 hold. No caller gets the result, Turn handle or error of another entry. No caller stays unresolved after its pass ends. | A late caller lookup after its pass ends while another entry is held; a denial delivered to every waiter |
 | I4 | No execution under the handoff: a cycle waits only for `selected`, `reply`, `barrier`, `denied` or `failed`. | A pass parked inside its cycle |
 | I5 | One identity: (a) an unresolved claim leaves only by adoption (T7), a stale original (T8) or a readback discharge. (b) While it exists, the disposition of e is `recovery-required`, and every post for e carries the retained identity with the same preparation digest. | Forgetting the first unknown claim when the inspection cannot post, red on (a) and on (b); a new identity while unresolved; a discharge on no row without a barrier proof; an inspection read failure delivered to e as its error |
