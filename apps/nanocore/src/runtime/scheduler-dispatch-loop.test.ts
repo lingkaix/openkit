@@ -5731,13 +5731,14 @@ describe('scheduler FIFO class closure in the dispatch pass', () => {
       expect(by('burst_1')).toBeLessThanOrEqual(20);
       expect([0, 2, 3, 4].map((index) => by(`burst_${index}`))).toEqual([0, 0, 0, 0]);
       expect(versions).toEqual(Array.from({ length: by('burst_1') }, () => 5));
-      await holder;
-      // The wake received during that pass was retained: its own pass claims C.
+      // The wake received during that pass was retained and served by its own distinct pass. Any
+      // ready pass may claim C with the newest snapshot's allocator (V1-P W5 ruling, option b).
+      // The burst shares one result, so it counts once for its five callers.
       expect(wake).toBeDefined();
-      expect(started(await wake!)).toEqual([c.queueEntryId]);
-      expect(f.attemptsFor(c).map((attempt) => labels.get(String(attempt.attempt_id)))).toEqual([
-        'wake',
-      ]);
+      const passes = [await holder, results[0]!, await wake!];
+      expect(new Set(passes).size).toBe(3);
+      expect(passes.flatMap(started)).toEqual([c.queueEntryId]);
+      expect(f.attemptsFor(c).map((a) => labels.get(String(a.attempt_id)))).toEqual(['wake']);
     } finally {
       gate.resolve();
       spy.mockRestore();
