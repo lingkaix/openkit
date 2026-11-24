@@ -82,7 +82,7 @@ test('an actual Vitest import failure is a gate failure with zero assertions', (
     'Files with a result (1)',
     'Failed assertions (0)',
     'Groups not run (no coverage credit) (0)',
-    'Gate: FAIL (1)',
+    'Gate: FAIL (2)',
   ])
     assert.ok(printed.stdout.includes(heading), `${heading}\n${printed.stdout}`);
   assert.match(printed.stdout, /selected file has no result: .*import\.test\.js/u);
@@ -134,4 +134,45 @@ test('a group that was not run shows its issue, last SHA and result and gets no 
   });
   assert.equal(unmeasured.pass, false);
   assert.match(unmeasured.failures[0], /lacks issue, last measured SHA or result/u);
+});
+
+test('an actual Vitest run that reports success false never passes, even with every case passed', (t) => {
+  const { cwd, report, reportFile } = vitestRun(t, {
+    'teardown.test.js':
+      'afterAll(()=>{throw Error("teardown")}); test("passes",()=>expect(1).toBe(1));',
+  });
+  assert.equal(report.success, false);
+  const summary = gateSummary({ root: cwd, selected: ['teardown.test.js'], report });
+  assert.equal(summary.pass, false);
+  assert.deepEqual(summary.failedAssertions, []);
+  assert.deepEqual(summary.withResult, [path.join(cwd, 'teardown.test.js')]);
+  assert.ok(
+    summary.failures.some((f) => /teardown/u.test(f)),
+    summary.failures.join('\n')
+  );
+  const printed = cli(['--report', reportFile, '--root', cwd, 'teardown.test.js']);
+  assert.equal(printed.status, 1, printed.stdout);
+  assert.match(printed.stdout, /Files with a result \(1\)/u);
+  assert.match(printed.stdout, /Failed assertions \(0\)/u);
+  assert.match(printed.stdout, /Gate: FAIL/u);
+});
+
+test('an actual superset report gives no credit to an unselected file and fails the gate', (t) => {
+  const { cwd, report, reportFile } = vitestRun(t, {
+    'selected.test.js': 'test("selected",()=>expect(1).toBe(1));',
+    'extra.test.js': 'test("extra",()=>expect(1).toBe(1));',
+  });
+  assert.equal(report.success, true);
+  const summary = gateSummary({ root: cwd, selected: ['selected.test.js'], report });
+  assert.equal(summary.pass, false);
+  assert.deepEqual(summary.withResult, [path.join(cwd, 'selected.test.js')]);
+  assert.ok(
+    summary.failures.some((f) => /not selected: .*extra\.test\.js/u.test(f)),
+    summary.failures.join('\n')
+  );
+  const printed = cli(['--report', reportFile, '--root', cwd, 'selected.test.js']);
+  assert.equal(printed.status, 1, printed.stdout);
+  assert.match(printed.stdout, /Files selected \(1\)/u);
+  assert.match(printed.stdout, /Files with a result \(1\)/u);
+  assert.doesNotMatch(printed.stdout.split('Failed assertions')[0], /extra\.test\.js/u);
 });

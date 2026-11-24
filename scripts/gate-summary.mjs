@@ -10,6 +10,7 @@ const USAGE =
 /**
  * Build the four gate lists. A file has a result only when one of its cases passed or failed;
  * an import failure or a failed suite setup leaves a file with no result, which fails the gate.
+ * The runner's own unsuccessful report and any reported file outside the selection also fail the gate.
  * A declared group that was not run carries its issue, last measured SHA and result, and no credit.
  */
 export function gateSummary({ root = process.cwd(), selected, report, notRun = [] }) {
@@ -18,18 +19,20 @@ export function gateSummary({ root = process.cwd(), selected, report, notRun = [
   if (!Array.isArray(notRun)) throw Error('Gate summary: not-run groups must be a list');
   const files = [...new Set(selected.map((file) => resolve(root, file)))].sort();
   const reported = new Map(report.testResults.map((entry) => [entry.name, entry]));
-  const withResult = [...reported.values()]
+  const unselected = [...reported.keys()].filter((file) => !files.includes(file)).sort();
+  const inSelection = [...reported.values()].filter((entry) => files.includes(entry.name));
+  const withResult = inSelection
     .filter((entry) =>
       entry.assertionResults?.some((a) => a.status === 'passed' || a.status === 'failed')
     )
     .map((entry) => entry.name)
     .sort();
-  const failedAssertions = [...reported.values()].flatMap((entry) =>
+  const failedAssertions = inSelection.flatMap((entry) =>
     (entry.assertionResults ?? [])
       .filter((a) => a.status === 'failed')
       .map((a) => ({ file: entry.name, name: [...a.ancestorTitles, a.title].join(' > ') }))
   );
-  const noResult = [...new Set([...files, ...reported.keys()])]
+  const noResult = files
     .filter((file) => !withResult.includes(file))
     .sort()
     .map((file) => ({
@@ -48,7 +51,18 @@ export function gateSummary({ root = process.cwd(), selected, report, notRun = [
       typeof g.lastResult !== 'string' ||
       !g.lastResult
   );
+  const runFailures = [];
+  if (report.success === false) {
+    const outside = report.testResults
+      .filter((entry) => entry.status === 'failed' && entry.message)
+      .map((entry) => `${entry.name}: ${entry.message.split('\n')[0]}`);
+    runFailures.push(
+      `the runner reported success false${outside.length ? ` (${outside.join('; ')})` : ''}`
+    );
+  }
   const failures = [
+    ...runFailures,
+    ...unselected.map((file) => `report has a result for a file not selected: ${file}`),
     ...noResult.map((entry) => `selected file has no result: ${entry.file} (${entry.cause})`),
     ...failedAssertions.map((entry) => `failed assertion: ${entry.file} > ${entry.name}`),
     ...malformed.map(
@@ -61,6 +75,7 @@ export function gateSummary({ root = process.cwd(), selected, report, notRun = [
     failedAssertions,
     notRun: groups,
     noResult,
+    unselected,
     pass: !failures.length,
     failures,
   };
