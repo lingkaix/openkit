@@ -1083,14 +1083,43 @@ it('joins Provider receipt generations at the actual sequential native decision'
       now: () => secondTimestamp,
     };
     ownerStage = 'independent-compatibility-and-attempt';
-    const secondAttempt = recordTestExecutionAttempt(f.db, {
-      entry: secondEntry,
-      attemptId: allocateEntityId('attempt'),
+    const secondAttemptId = allocateEntityId('attempt');
+    const claimSecond = () =>
+      recordTestExecutionAttempt(f.db, {
+        entry: secondEntry,
+        attemptId: secondAttemptId,
+        agentSessionId: secondSessionId,
+        inputRef: `aepsnap_${secondTurn.id}_${secondSessionId}`,
+        bindingRef: `lease-binding:${secondTurn.id}`,
+        sessionCompatibilityKey: resolveAgentSessionCompatibilityKey(secondResolverInput),
+        now: () => secondTimestamp,
+      });
+    // W7: Core decides the independent claim synchronously at its writer. The claim succeeds with
+    // the exact claimed tuple before the mixed-lineage and receipt assertions run.
+    let secondAttempt!: ReturnType<typeof claimSecond>;
+    expect(() => {
+      secondAttempt = claimSecond();
+    }).not.toThrow();
+    expect(secondAttempt).toEqual({
+      attemptId: secondAttemptId,
+      queueEntryId: secondEntry.queueEntryId,
+      backendId: 'nanohost',
+      workspaceId: secondWorkspace.id,
+      threadId: secondThread.id,
+      turnId: secondTurn.id,
       agentSessionId: secondSessionId,
+      preparationInputJson: expect.any(String),
       inputRef: `aepsnap_${secondTurn.id}_${secondSessionId}`,
       bindingRef: `lease-binding:${secondTurn.id}`,
-      sessionCompatibilityKey: resolveAgentSessionCompatibilityKey(secondResolverInput),
-      now: () => secondTimestamp,
+      phase: 'open',
+      disposition: 'not_accepted',
+      operationId: null,
+      deadline: null,
+      terminalCause: null,
+      outcomeRef: null,
+      fenceRef: null,
+      createdAt: secondTimestamp,
+      updatedAt: secondTimestamp,
     });
     const secondProviders: ResolvedAgentEnvironmentProviderCredential[] = [];
     const secondFiles: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
