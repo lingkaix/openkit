@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -81,6 +82,28 @@ function statusItem(
     createdAt,
     completedAt: createdAt,
   };
+}
+
+/** A contradictory MCP Item holds its Workspace with zero publications; the Boot log names the conflict. */
+async function expectMcpBootConflictHeld(dataRoot: string, store: FsStore, conflict: RegExp) {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+    expect(warn).toHaveBeenCalledWith(
+      'Boot recovery held Workspace ws_00000000-0000-7000-8000-000000000001 during mcp-item-backfill.',
+      expect.stringMatching(conflict)
+    );
+  } finally {
+    warn.mockRestore();
+  }
+  expect(scopeAdmissionFailures(dataRoot)).toEqual([
+    {
+      scope: 'workspace',
+      id: 'ws_00000000-0000-7000-8000-000000000001',
+      check: 'records',
+      stage: 'mcp-item-backfill',
+    },
+  ]);
 }
 
 /**
@@ -443,7 +466,9 @@ describe('post-terminal write admission', () => {
     });
     await shutdownControlStoreWorkerClient();
     await verifyAndMigrateExistingScopedDatabases(conflictRoot);
-    await expect(reconcileWorkerMcpItems(conflictRoot, conflictStore)).rejects.toThrow(
+    await expectMcpBootConflictHeld(
+      conflictRoot,
+      conflictStore,
       /conflicts with the already-decided record|MCP boot backfill conflicts/
     );
   });
@@ -562,7 +587,9 @@ describe('post-terminal write admission', () => {
     });
     await shutdownControlStoreWorkerClient();
     await verifyAndMigrateExistingScopedDatabases(dataRoot);
-    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
+    await expectMcpBootConflictHeld(
+      dataRoot,
+      store,
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-748c-8305-6a5f709ad4dc/
     );
   });
@@ -577,7 +604,9 @@ describe('post-terminal write admission', () => {
     });
     await shutdownControlStoreWorkerClient();
     await verifyAndMigrateExistingScopedDatabases(dataRoot);
-    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
+    await expectMcpBootConflictHeld(
+      dataRoot,
+      store,
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-769e-be1f-7403aafc125a/
     );
   });
@@ -642,7 +671,9 @@ describe('post-terminal write admission', () => {
     });
     await shutdownControlStoreWorkerClient();
     await verifyAndMigrateExistingScopedDatabases(dataRoot);
-    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
+    await expectMcpBootConflictHeld(
+      dataRoot,
+      store,
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-78cf-ac54-13510d8883d9/
     );
   });

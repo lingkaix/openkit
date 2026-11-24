@@ -38,6 +38,7 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
+import { withinBootWorkspaceBoundary } from './bootstrap/boot-workspace-walk.js';
 import {
   findWorkspaceConfig,
   type RuntimeConfigManager,
@@ -2643,42 +2644,49 @@ function taskModeEvidenceForTurn(
 /** Closes orphaned command-owned Assistant Turns before boot opens product admission. */
 export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<void> {
   const dataRoot = store.getDataRoot();
-  for (const { id: workspaceId } of store.listWorkspaces()) {
+  // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
+  for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId))
       continue;
-    for (const thread of store.listThreads(workspaceId)) {
-      if (thread.entryPath !== 'conversation') continue;
-      const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
-      // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
-      if (
-        activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
-        activeTurn.agentSessionId ||
-        activeTurn.configVersion !== null ||
-        activeTurn.triggerSource
-      )
-        continue;
-      const cutoff =
-        dataRoot &&
-        readWorkspaceObservationCutoff(dataRoot, {
-          workspaceId,
-          threadId: thread.id,
-          turnId: activeTurn.id,
-        });
-      await store.completeTurn(activeTurn.id, {
-        status: 'interrupted',
-        completedAt: new Date().toISOString(),
-        error: cutoff
-          ? {
-              code: 'observation_limit_reached',
-              message: 'Work observation collection reached its limit.',
-            }
-          : {
-              code: 'recovery_required',
-              message:
-                'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
-            },
-      });
-    }
+    await withinBootWorkspaceBoundary(
+      { dataRoot, workspaceId, stage: 'assistant-turn-recovery' },
+      async () => {
+        store.getWorkspace(workspaceId);
+        for (const thread of store.listThreads(workspaceId)) {
+          if (thread.entryPath !== 'conversation') continue;
+          const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
+          // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
+          if (
+            activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
+            activeTurn.agentSessionId ||
+            activeTurn.configVersion !== null ||
+            activeTurn.triggerSource
+          )
+            continue;
+          const cutoff =
+            dataRoot &&
+            readWorkspaceObservationCutoff(dataRoot, {
+              workspaceId,
+              threadId: thread.id,
+              turnId: activeTurn.id,
+            });
+          await store.completeTurn(activeTurn.id, {
+            status: 'interrupted',
+            completedAt: new Date().toISOString(),
+            error: cutoff
+              ? {
+                  code: 'observation_limit_reached',
+                  message: 'Work observation collection reached its limit.',
+                }
+              : {
+                  code: 'recovery_required',
+                  message:
+                    'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+                },
+          });
+        }
+      }
+    );
   }
 }
 

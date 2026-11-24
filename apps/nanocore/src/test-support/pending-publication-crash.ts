@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../app.js';
+import { assertScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import {
   raiseRecordedPendingRequest,
@@ -43,17 +44,16 @@ if (retainedRoot) {
         )
         .run('tu_01890f3e-0000-7000-8000-000000000099');
     }
-    const observe = () => ({
-      turns: store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      ),
-      requests: db.sqlite.prepare('SELECT * FROM pending_requests ORDER BY request_id').all(),
-      items: store.listThreadItems(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      ),
-    });
+    // Raw retained rows: a held Workspace refuses Store reads, and its bytes must not change.
+    const observe = () =>
+      Object.fromEntries(
+        (
+          db.sqlite
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .pluck()
+            .all() as string[]
+        ).map((table) => [table, db.sqlite.prepare(`SELECT * FROM "${table}"`).raw().all()])
+      );
     const before = observe();
     let recoveryCode: string | null = null;
     try {
@@ -61,11 +61,14 @@ if (retainedRoot) {
         coreDb,
         openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
       });
+      // Boot holds the Workspace; its next dependent operation gets the typed refusal.
+      assertScopeAdmitted(dataRoot, 'workspace', 'ws_00000000-0000-7000-8000-000000000001');
     } catch (error) {
       recoveryCode =
         error && typeof error === 'object' && 'code' in error ? String(error.code) : 'unexpected';
     }
-    console.log(JSON.stringify({ recoveryCode, before, after: observe() }));
+    const held = scopeAdmissionFailures(dataRoot);
+    console.log(JSON.stringify({ recoveryCode, held, before, after: observe() }));
     await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();
