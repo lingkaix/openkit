@@ -139,6 +139,128 @@ Turn
 - **Admission, `sandbox.create` storage attachment, and per-Turn materialization**: NanoCore owns public-endpoint classification, current-authority admission ([decision](../decisions/20260930-public_endpoints_by_admitted_grant.md)), and persisted scheduler attempt authority before NanoHost receives work; only a bounded `200` response on a fixed effect command path admits that local operation (`204` admits nothing, with no local command queue or authority cache). For `sandbox.create`, `storageRef` is a nonempty opaque JSON string of at most 512 UTF-8 bytes with no Unicode control characters or leading/trailing Unicode whitespace, `scopeDigest` is `sha256:` followed by 64 lowercase hexadecimal characters, `attachmentGeneration` is a JSON integer from `1` through `9,007,199,254,740,991`, and `sandboxId` is a nonempty JSON string of at most 512 UTF-8 bytes with no Unicode control characters; these grammars confer no attachment authority. NanoHost verifies root identity and ownership, initializes only explicitly new volumes from the exact image, and supplies fixed validated mounts to the official SDK (root metadata is host-owned and not worker-writable, definite Sandbox deletion releases the attachment without purging volume data, and image builds never mount retained work). `workspace.collect` ([NanoHost Workspace Data Boundary](20260801-nanohost_workspace_data_boundary.md)) runs only against the current live Sandbox and matching retained attachment verified through the epoch and volume owners before scanning, neither changes generation nor releases the attachment, and precedes teardown when required at release. When no compatible ready Sandbox and declared Harness set exist, NanoHost runs stock Provider setup, Sandbox creation, static materialization, Sandbox Integration launch, bridge establishment, and the first private Harness poll before settling `bridge.open`; for a later compatible AgentSession, NanoCore grants open-session capacity and delivers `session.open` with the selected `harnessInstanceId` without recreating the Sandbox, bridge, Integration, or Harness. Every `turn.start` receives a fresh immutable per-Turn AEP snapshot, Context Package, execution attempt, deadline, and sequence scope bound to its exact owner lineage, delivering Turn route tokens only to Sandbox Integration while the resident process keeps its `session.open` loopback credentials; no Sandbox-wide AEP or credential package exists, and missing, stale, revoked, conflicting, or dependency-failed Turn inputs block `turn.start`. Verified AEP import precedes worker-supply imports ([Agent Plugin Packaging And Worker Supply](20260907-agent_plugin_packaging_and_worker_supply.md), producing a read-only Session-private native projection of selected Skills and the fixed Gateway MCP binding without original MCP config, vendor extensions, package fetch, version choice, or new routes, and blocking readiness if exact adapter/image/flag support is unproved), which precede Context Package imports and `turn.start` (for the first open, initial AEP and session-static worker supply import before `session.open`, and for a newly initialized work slot NanoCore resolves [Workspace Synchronization](20260703-workspace_synchronization.md) check values and completes durable baseline collection after `session.open` before the first `turn.start` under [decision](../decisions/20260930-first_accepted_base_by_baseline_scan.md), whereas a retained slot is not re-baselined).
 - **Normal AgentSession close, Sandbox drain, and on-demand idle Sandbox retirement**: when an AgentSession reaches its terminal and output barriers, `session.close` revokes its route bindings and native handle, removes only its disposable control/request slots after required collection while preserving retained native and working roots, and releases open-session capacity only after exact local cleanup proof without sending `bridge.close`, `sandbox.delete`, or `attempt-session.cleanup` (preserving siblings, the shared Harness, bridge, and Sandbox, while uncertain close stops admission and widens the fence). Terminal transcript/evidence `file.export` starts after NanoCore accepts `final_status` ([Worker Control Protocol](20260703-worker_control_protocol.md)) without waiting for process-group absence or workspace collection (which gates the next Turn); synchronous Artifact submission uses active-Turn output-slot admission, an ordinary refusal does not terminate a healthy Turn, and the 10-second Integration drain and independent heartbeat/cancellation remain unchanged. User stop or bounded compatible rebuild of a retained Sandbox uses the existing drain/end and replacement proof under [Persistent Worker Volumes](20260910-persistent_worker_volumes.md), and membership removal revokes and fences only the affected binding unless unproved local safety requires widening. Normal Sandbox termination issues `harness.drain` for every declared Harness, refuses new AgentSessions and Turns, lets non-security-sensitive work settle or interrupts it through owners, closes all resident AgentSessions, revokes routes, collects required output and evidence, and proves every Harness plus the Integration process group absent before requesting `bridge.close` and `sandbox.delete` (keeping the healthy Epoch and imported images on definite delete, or invalidating the Epoch on uncertainty). When incoming admitted work computes a desired `SandboxCompatibilityKey` (`apps/nanocore/src/runtime/turn-executor-factory.ts`), missing current `physicalEpoch`, multiple resident rows, non-closed obligations, or unproved capacity refuse placement; a compatible ready resident is retained unless explicit forced replacement or a settled `cleanup_required` close requires widening, and otherwise an incompatible idle resident Sandbox may be retired on demand to admit the current work (with no general inactivity timer). On-demand idle retirement requires zero live local Session execution, no unrecorded accepted proof, no pending operation or incomplete terminal inspection, no non-closed domain attempt, Harness `activeTurnCount = 0` with idle/settled operation state, and every binding having no current Turn/attempt, an exact clean open or closed lifecycle, and no concurrent close owner (unknown or dirty residency returns `capacity-saturated` rather than evicting). Retirement requires the retained old backend owner to name the exact Sandbox, `runtimeTarget`, and origin `physicalEpoch`, hands off each binding, re-inspects and validates unchanged storage selection, claims exact drain with settled Workspace capture, closes old Sessions where proved possible (widening `cleanup_required` or unknown close through a distinct old-owner delete rather than repeating close or attaching an outcome to the incoming Turn), and completes exact `sandbox.delete` before releasing storage attachment and removing residency projections.
 
+### Replacement Close Lifecycle
+
+This section owns the decision points of one **local close** of an idle predecessor binding. The close comes from a successor replacement or from an authorized release of the retained binding. The product rules for close, drain and on-demand idle retirement are in [Persistent Worker Storage Amendment](#persistent-worker-storage-amendment). The scheduler holds, the release edges and the E7 reread are in [Main Selection Handoff](20260703-durable_scheduler_design.md#main-selection-handoff), in particular Holds And Release Edges and invariants I5, I6 and I7. A Login close uses the same Main slots and keeps its own departure ACK and fence contract.
+
+- **One lifecycle owner and the existing deciders.** One in-process owner in Main drives each close from selection to E7, on the live path and on the cold path. A pure `decide(facts, event)` returns the next action and the proof that the action needs. The owner gives each action to its deciding writer. That writer decides in its own transaction or exact readback:
+  - Workspace decides the capture claim, publication, recovery and abandon.
+  - Core decides the attempt, request authority, the idle-binding proof and receipt consumption.
+  - Native decides the binding, Harness slot, latch, queue, dispatch, settle, restore and removal.
+  - Transport decides the synchronous write of the first command bytes to the bound HTTP/2 response writer.
+  - Main decides its admission-visible slots (the pending Harness operation and the close owner), its scheduler marks and the E7 request.
+- **Cold path.** The cold path calls the same `decide` only with facts that it reads again from these owners. The capacity predicate only reads. The lifecycle adds no store, retained field, wire operation, worker, timer, retry loop or receipt.
+
+**Premises.** Each premise has one original identity. The close carries that identity from selection, and each effect that a premise authorizes decides it again.
+
+| # | Premise | Original identity carried | Decided at | Competing writers |
+| --- | --- | --- | --- | --- |
+| R | The successor request is open, pre-submit and authorized. | Backend, attempt, Workspace, Thread, Turn, AgentSession, admission, trigger actor and credential | RC7, RC10 | Scheduler requeue, cancel and submission. Core user disable, credential expiry or revocation and membership. Workspace lifecycle. |
+| Tc | The close allowance is live. | Original enqueue wall and monotonic instants, and the absolute wall deadline | RC7, RC8, RC10 | Time |
+| Ts | The successor startup allowance is live. | Attempt creation plus `nanoHostStartupDeadline`, as an absolute wall deadline | RC8, RC10 | Time |
+| S | The selected storage is still eligible. | Storage ref and revision, purpose, caller, scope, adjudication and work slot | RC7 (P14 recheck), RC8 (revision CAS) | Native attachment, release, purge, mark-unknown and contributor writers |
+| A | The contributor audience still admits the Thread. | The Thread audience decision for the selected storage | RC7, under the successor Workspace hold | Workspace contributor-audience and Thread edits. Core membership. |
+| B | Core proves the predecessor idle. | Binding, closed attempt, no current Turn, no competing owner | RC7 under the Core hold, RC11 | Core admissions and attempt transitions. Another closer. |
+| N | The Native placement is unchanged. | Binding ref and revision, Harness id and ref, Sandbox id and ref, Integration, target, deployment, connection generation and origin Epoch | RC5, RC8, RC9, RC10 | Native open, rebind, handoff, occupancy, reconnect, generation or Epoch change, revoke, drain, delete and fence |
+| L | This close owns the Harness latch. | The claim and the prefix that it guards. The Native claim records no claimant. | RC8 (transfer to the key), RC13 | Another same-Harness claim. A whole-Sandbox drain. An old restore. |
+| C | The capture is accepted for this close. | Capture anchor, source, storage, work slot, attachment generation, collection disposition and resume pair | RC4, RC13 | Workspace claim, publication, recovery and abandon |
+| K | One keyed command exists. | Harness binding, op id, sequence, prepared body and fingerprint | RC8 to RC12 | Other producers on the slot. Native expiry. Cold readers. |
+| X | The first delivery is exclusive. | Authenticated Integration, connection, poll and cancellation | RC9, RC10 | A second poll, disconnect, rotation and revocation |
+| W | The caller has a bound. | The original deadline of the waiter | Its timer | None. It ends the wait only. |
+
+**Clocks.** Three clocks run independently. No lock or wait stops a clock. No poll, reopen or retry restarts a clock.
+
+- **Tc, the close allowance**, starts at the original enqueue. Main checks it at the actual post with the wall clock and the monotonic clock. Native checks the carried absolute wall deadline inside the queue transaction, because a monotonic instant does not compare across workers or restarts. The first carriage checks it again.
+- **Ts, the successor startup deadline.** Native checks it inside the queue transaction. The first carriage checks it again.
+- **W, the caller bound**, rejects the caller with its typed cause at the original deadline. It does not wait for a writer reply and it gives no release. The owner keeps both slots and the writer outcome until proof.
+
+If Tc or Ts expires before the deciding queue commit, the result is zero queued rows and zero close bytes. A cold reader uses only absolute wall values.
+
+**Boundaries and edges.** Each row is one cut. The edge is a lock, post, commit, ACK or the handoff of bytes. "Observed by" names the production entry that finds the cut after it occurs.
+
+| # | Boundary | Edge | Deciding owner and check | Observed by | Exit if stopped here |
+| --- | --- | --- | --- | --- | --- |
+| RC1 | Select the predecessor for R, Ts and S | None | Factory selection, with no effect | Fresh admission | Fresh admission |
+| RC2 | Workspace capture claim | Commit, ACK | Workspace claim on the original anchor | Workspace recovery; the factory capture boundary | P1 |
+| RC3 | Native latch claim | Commit, ACK | Native claim CAS on the idle Harness and the closed attempt | Capacity inspection (cold entry) | P2 |
+| RC4 | Capture publication | Commit, ACK | Workspace publishes the exact collection | The factory capture boundary; capacity inspection | P3 |
+| RC5 | Harness slot admission | Lock | Main orders local producers, prepares the id, sequence and body, and compares R, Ts, S and N | The live owner only | The slot is volatile. Use the capture exit. |
+| RC6 | Holds | Lock | The Core hold, then the successor Workspace hold. Reads R, A and B. | The live owner only | Release in `finally`. A definite noncommit. |
+| RC7 | Actual post | Post | Main, in the turn that posts the worker frame: the original pending owner, Tc on both clocks, R, A with the P14 cause, and B | The worker post hook | A definite noncommit when the post did not run |
+| RC8 | Native queue | Commit, ACK | The Native transaction: Tc as an absolute wall value, Ts, the S revision, N, the L transfer, K and the next sequence | The queue reply; an exact readback of the original key | A known refusal leaves zero queued rows. A lost reply goes to P4. |
+| RC9 | Dispatch | Commit | Native CAS from queued to dispatched for the authenticated Integration | The poll route | P5 |
+| RC10 | First bytes | Bytes | The poll owner, in one synchronous run after the last authentication: R, Tc, Ts, S, N, K still dispatched and X, then the write | The poll route and its response writer | Before bytes: settle `refused`/`stale` and answer 204. After a possible handoff: P5. |
+| RC11 | Core consumption | Commit, ACK | The Core receipt keyed by Harness binding, op id, sequence, normalized fingerprint and receiver | The result route; capacity inspection | P6 |
+| RC12 | Native settle | Commit, ACK | Native result, sequence and occupancy in one commit | The result route; capacity inspection | P7 |
+| RC13 | Restore or removal | Commit, ACK | The Native restore CAS on the exact Harness, latch, close key or proved pre-queue ownership, on an accepting Sandbox. Or the removal of the exact binding. | Capacity inspection; the removal callers | A lost ACK reads back by key. A later claim makes the restore a no-op. |
+| RC14 | Local projection and E7 | Local | Main retires the exact slots and cache entries, then requests the root reread | Scheduler E7 | None. E7 grants no authority. |
+
+**Competing writers.** A competing writer either commits before the read under the hold, so that the decision sees it, or waits until the effect is durable or handed to transport. Each named writer needs its own witness.
+
+| Writer | Changes | Ordered by | Required result |
+| --- | --- | --- | --- |
+| Core user disable or membership (named) | R, B | The Core hold, from RC6 to the RC8 reply | Earlier: zero queued rows and zero bytes. Later: it waits, then advances. |
+| Workspace contributor-audience edit (named) | A | The successor Workspace hold, with the Native revision unchanged | Earlier: the original P14 refusal, zero queued rows and zero bytes. Later: it waits, then advances. |
+| B's same-Harness claim while A's admitted cold restore is paused after its read of A (named) | L | The restore CAS on the Harness revision | The CAS preserves B. |
+| B's same-Harness claim before A's queue | L | The Native claim precondition and the RC8 transfer check | A's queue refuses. B keeps its latch. |
+| Scheduler requeue or cancel | R | The Core hold; the RC10 recheck | Zero queued rows, or 204 with `stale` |
+| Credential expiry or revocation | R | RC7; RC10 | Zero queued rows, or 204 with `stale` |
+| Native storage mark-unknown, release, purge or rebind | S | The RC8 revision CAS | The P14 cause and zero queued rows |
+| Target generation or Epoch change, reconnect | N | RC8, RC9, RC10 | Zero queued rows, or 204 with `stale` |
+| Whole-Sandbox drain | L, N | The Native drain state; the restore CAS | The drain survives. |
+| Second poll, disconnect or rotation | X | The delivery reservation at RC9; RC10 | At most one first send |
+| Time | Tc, Ts | Absolute compares at RC7, RC8 and RC10 | Zero queued rows and zero bytes |
+| A Login close or another closer on the Thread | Main slots | Identity-keyed slots | Each owner retires only its own slots. |
+
+**Pins.** The Core hold and the successor Workspace hold pin R, A and B from RC6 until the RC8 reply reaches Main. If the worker can still commit, Main joins the worker exit before it reopens. At first carriage the poll owner holds the pins through the synchronous write. On a definite refusal it reserves the unsent delivery against other polls, releases the short pins, and then calls the settlement owner, which acquires them again. Pins release in `finally`. A pin never outlives the decision that it serves. A caller bound never releases a pin and never waits for one.
+
+**Unknown outcomes.** An unknown outcome is not unsent, and it is not a noncommit until an owner proves it.
+
+- **RC7 or RC8 reply lost.** Join writer quiescence, then read the original slot, id and sequence. Proved absence is a definite noncommit. A queued row keeps the slot and goes to the exact inspect, expire or fence through Native.
+- **RC9 with no result, or RC10 after the write starts.** Contact is possible. Wait for the exact result or a physical fence. No cold reader sends bytes or builds the command again.
+- **RC11, RC12 or RC13 ACK lost.** Read back by the same key and fingerprint. Changed bytes or a changed receiver refuse.
+
+**Cold projection and exits.** On reopen, discard the live delivery authority, guards, waiters, monotonic instants, the Harness slot and the Main maps. Rebuild only the obligations that have durable proof: the Workspace claim, collection and attachment; the Core attempt, receiver and consumption step; the Native binding, Harness drain, queue cell and result; and the physical journal. The admitted effect path runs the cold `decide` before the capacity early return.
+
+| Prefix | Durable facts | Exit |
+| --- | --- | --- |
+| P0 | No claim | None |
+| P1 | Workspace claim only | Workspace recovery of the original capture by anchor. An abandon permits only the original cleanup or a sufficient physical fence. |
+| P2 | P1 plus the Native latch, with the capture not published | P1, then the quiescent Harness exit |
+| P3 | Latch and published capture, with no queue cell | The quiescent Harness exit, or a held fence |
+| P4 | Queued, reply lost | The exact inspect, expire or fence of the original key through Native |
+| P5 | Dispatched, with no result | The exact result or a physical fence |
+| P6 | Core consumption only | For the canonical local `refused`/`stale`, derive the candidate from the retained command. If the fingerprint and receiver are equal, the existing writer completes the Native result only. Other results need the exact bytes or a physical recovery. A fingerprint match proves the disposition, not zero bytes. |
+| P7 | Core and Native both committed | A scoped restore with no peer. Success decrements occupancy once. `stale` keeps the binding and the resume pair. A private Login keeps its departure ACK. `cleanup_required` keeps its wider cleanup. |
+| P8 | Restored | E7 |
+
+- **Quiescent Harness exit (P2, P3).** The Native claim records no claimant, so a cold reader cannot name the latch owner. Restore a draining Harness only when all of these are true:
+  - no live owner in this process holds or posts a claim or a close on the Harness;
+  - no queue cell of a binding on the Harness is queued, dispatched or unsettled;
+  - every Workspace capture of its bindings is settled, and none is abandoned;
+  - no whole-Sandbox drain holds;
+  - the restore CAS reads the same Harness revision.
+
+  Otherwise keep the fence. A reachable prefix with no exit keeps its fence for an engineer ruling.
+- **E7.** The owner that makes the last local change requests the root reread after that change. A no-op restore or an intervening drain requests nothing. If another independent owner still blocks, that owner requests the reread at its own edge.
+
+**Invariants.**
+
+| # | Invariant | Take-out that MUST fail it |
+| --- | --- | --- |
+| CL1 | Effect-local decision: each effect decides all of its premises at its own deciding mutation. Earlier checks only avoid effects or keep the P14 order. | Remove the RC7 check; remove the RC8 Tc compare |
+| CL2 | Independent clocks: Tc and Ts expire independently and neither restarts. W ends only the wait. | Check only Ts at RC8 |
+| CL3 | One latch owner: a claim excludes later claims on its Harness until transfer or rollback. A queue transfers only its own claim. A replay without a claim transfers nothing. A restore clears only a latch that it proves. | Accept a later claim on a draining Harness; restore with no latch compare |
+| CL4 | Writer order: a competing writer commits before the read under the hold, or waits until the effect is durable or handed off. | Release the Core hold before the post |
+| CL5 | Unknown is not unsent: possible contact never settles as unsent. A lost reply is not a noncommit without quiescence and readback. | Settle `stale` from a cold dispatched row |
+| CL6 | Every durable prefix has an exit with no peer, or a held named fence. | Remove one cold exit (P3, P6 or P7) |
+| CL7 | Ownership through proof: the original owner stays in both admission-visible slots until success, a definite noncommit, a never-dispatched unwind, the exact fence or a later fenced Epoch. | Clear a slot in `finally` |
+| CL8 | Independent caller bound: W fires at the original deadline with every writer reply withheld. | Arm the bound only after a writer reply |
+| CL9 | Carried cause: a refusal keeps its first structured cause through every catch. A fallback only reads. | Replace the cause with a Sandbox-only read |
+| CL10 | Scope: a restore or removal changes only the named Harness or binding. Siblings, a later claim, a same-key successor and a whole-Sandbox drain survive. | Remove by compatibility key |
+| CL11 | Core and Native stay separate: a Core receipt frees no capacity, and a Native restore closes no Core attempt. | Free capacity at the Core receipt |
+| CL12 | Last-change wake: E7 follows the last local change, and a no-op requests nothing. | Remove the E7 request at RC14 |
+
 ### Physical Epoch Identity And Recovery
 
 `physicalEpoch` is a private non-secret physical-incarnation witness scoped to the configured NanoHost identity and deployment, derived once by NanoHost as the lowercase SHA-256 over the original UTF-8 bytes of the fresh `EpochPlan` epoch name (`apps/nanohost/src/epoch_coordinator.rs`, a named raw-byte digest exception to the RFC 8785 canonical JSON digest rule in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md)) that owns the private run/data roots and backend namespaces. The live coordinator retains and re-declares the same value on every healthy reconnect (including after a lost readiness acknowledgement), whereas a replacement coordinator derives a new value without reloading a predecessor witness or treating self-declaration alone as absence proof. The `RuntimeTarget` row owns nullable current `physicalEpoch` with its readiness projection; `SandboxRuntimeRecord` and pre-effect Worker backend-session rows own immutable non-null `originPhysicalEpoch` (inherited by Harness and AgentSession bindings without duplicate fields on attempts or storage associations). Normal origin writers read the current authenticated ready `RuntimeTarget` witness in the creating transaction and refuse absent, changed, conflicting, or non-ready authority; Sandbox reuse inherits the proved matching origin, and effect dispatch and Sandbox publication recheck the originating witness against current authenticated readiness (refusing publication on mismatch and preserving the original attempt/outcome for its cleanup owner). All cached and durable Sandbox, Harness, and AgentSession reuse requires matching current and originating witnesses alongside compatibility keys, lifecycle, scope, and authorization.
@@ -195,6 +317,12 @@ The Epoch Invalidation Report is NanoHost-private, non-product, non-authorizing 
 - **Redacted contents and bounds**: a report contains only epoch identity/generation, creation and invalidation timestamps, configured NanoHost identity id, trigger, uncertain operation kind/lineage/loss point/elapsed time, effect-capable member inventory with PIDs/resolved binary identities/cgroup/observed exit code, signal, or task-finished reason (or unavailable proof, never unverified exit codes or raw exception text), configured backend identity/version and imported image digests, readiness proof results, current connection generation/fence/bridge state, and a bounded redacted tail of member diagnostics. It MUST NOT contain raw or hashed NanoHost Tokens, sink contents, Gateway/backend/provider/Vault credentials, TLS private material, prompts, transcripts, or Workspace/Artifact bytes. Each report or note is bounded to at most `8 MiB` and `2 s` of export time (truncated and marked incomplete if reached, never delaying the fence), and at most the `20` most recent reports or notes are retained before pruning the oldest.
 
 ## Acceptance
+
+### Replacement Close Lifecycle Conformance
+
+- **Model and explorer before executor changes.** Verify the [Replacement Close Lifecycle](#replacement-close-lifecycle) with the pure `decide` table and an independent environment model. The environment generates only the writes that a real owner can make. It records posts, commits, ACKs, committed captures, receipts and occupancy, and handed-off bytes as separate facts. The oracle checks the original owner, the contact count and the available capacity from those raw facts, not from the table under test.
+- **Bounds.** Two bindings A and B on one Harness. One binding on another Harness of the same Sandbox as a control. Two competing polls. Two target generations. One whole-Sandbox drain. Tc and Ts advance independently. At each reachable commit, the explorer also generates a lost ACK, a stopped producer and a reopen with no peer, and runs the same `decide` on the durable projection. Report the state and edge counts, the shortest failing trace for each mutation and every runnable state with no successor. Liveness assumes that owners recover and that legal operations are scheduled. A cold step must be safe for every history with the same durable evidence.
+- **Mutations.** The unmodified model passes. Each mutation fails at its named assertion: the actual-post Tc and identity check, the Native Tc compare, the claim-to-queue transfer, each independently recoverable cold exit and the last E7 request. Keep the controls: A queues before B, B claims before A's queue or after A settles, two Harnesses, and a whole-Sandbox drain. After wiring, each mutation fails again at a production assertion. A setup failure, an escaping injected exception or a timeout earns no credit.
 
 ### Epoch Rebuild Cost Budget
 
