@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { releaseSchedulerHold } from '../scheduler-hold-release.js';
+import { releaseSchedulerCapacity, releaseSchedulerHold } from '../scheduler-hold-release.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { ControlExecutionAttemptCommand } from '../storage/execution-attempt-codecs.js';
@@ -85,6 +85,9 @@ async function publishAttempt(
     (snapshot.kind === 'record-operation' && snapshot.submission === true)
   )
     releaseSchedulerHold('active-preparation');
+  // The backend owner edge (E7): a Core attempt closed, including its recovery after a failed Turn.
+  if (snapshot.kind === 'close-without-effects' || snapshot.kind === 'close-with-fence')
+    releaseSchedulerCapacity({ kind: 'backend-changed' });
   return result;
 }
 /** Acquires the original admission and complete attempt atomically on the Core writer. */

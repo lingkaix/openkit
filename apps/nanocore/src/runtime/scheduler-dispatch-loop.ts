@@ -228,6 +228,8 @@ interface SchedulerDispatchHandoff {
   /** Entry to the exact Workspace admission handle that its selection acquired. */
   readonly handles: Map<string, () => void>;
   work: SchedulerSelectionWork | null;
+  /** Entry to the refusal predicate read of its last backend-busy settlement (E7). */
+  readonly capacityReads: Map<string, () => HandoffCapacityKey | null>;
 }
 
 const schedulerDispatchHandoffs = new Map<string, SchedulerDispatchHandoff>();
@@ -250,6 +252,7 @@ function schedulerDispatchHandoff(coreDb: CoreDb): SchedulerDispatchHandoff {
       callers: new Map(),
       handles: new Map(),
       work: null,
+      capacityReads: new Map(),
     };
     schedulerDispatchHandoffs.set(coreDb.dataRoot, root);
   }
@@ -283,6 +286,49 @@ export function releaseSchedulerDispatchHold(
 }
 
 /**
+ * The backend capacity owner edge (R3, E7) of one Core data root. For each busy entry with a
+ * backend key, including a queued held settlement, it reads the refusal predicate of the owner
+ * again, without effects. It releases only the entries that read clear, so the remaining entries
+ * keep their marks.
+ */
+export function releaseSchedulerBackendCapacity(coreDb: CoreDb): void {
+  const root = schedulerDispatchHandoffs.get(coreDb.dataRoot);
+  if (root) {
+    const marked = new Map<string, string>();
+    for (const [entry, key] of Object.entries(root.record.busy))
+      if (key.kind === 'backend') marked.set(entry, key.backendId);
+    for (const event of root.events)
+      if (
+        event.kind === 'settled' &&
+        event.outcome === 'backend-busy' &&
+        event.capacity.held &&
+        event.capacity.key.kind === 'backend'
+      )
+        marked.set(event.entry, event.capacity.key.backendId);
+    for (const entry of root.capacityReads.keys())
+      if (!marked.has(entry)) root.capacityReads.delete(entry);
+    const cleared = new Map<string, string[]>();
+    for (const [entry, backendId] of marked) {
+      const read = root.capacityReads.get(entry);
+      let key: HandoffCapacityKey | null;
+      try {
+        key = read ? read() : { kind: 'backend', backendId };
+      } catch {
+        key = { kind: 'backend', backendId };
+      }
+      if (key === null) cleared.set(backendId, [...(cleared.get(backendId) ?? []), entry]);
+    }
+    for (const [backendId, entries] of cleared)
+      feedSchedulerDispatchLater(root, {
+        kind: 'released',
+        hold: 'backend-capacity',
+        key: { kind: 'backend', backendId },
+        cleared: entries,
+      });
+  }
+}
+
+/**
  * Feeds one event. Events run one at a time in queue order. An effect never calls the transition:
  * an event that an effect produces while the queue drains waits in the queue (E5).
  */
@@ -295,9 +341,18 @@ function feedSchedulerDispatch(root: SchedulerDispatchHandoff, event: DispatchEv
       const decision = decideHandoff(root.record, root.events.shift()!);
       root.record = decision.record;
       const starts: (() => void)[] = [];
-      // Every effect of the decision runs, so a failed read or barrier cannot drop the wake of an
-      // independently released sibling in the same decision.
-      for (const effect of decision.effects) runSchedulerDispatchEffect(root, effect, starts);
+      // Every effect of the decision runs, also after an effect throws, so a failed read, barrier
+      // or handle release cannot drop the wake of an independently released sibling.
+      for (const effect of decision.effects)
+        try {
+          runSchedulerDispatchEffect(root, effect, starts);
+        } catch (error) {
+          console.error(
+            'scheduler_dispatch_effect_failed',
+            effect.kind,
+            error instanceof Error ? error.message : 'unknown'
+          );
+        }
       // E1: a published invocation starts only after its waiters hold its promise.
       for (const start of starts) start();
     }
@@ -950,7 +1005,10 @@ function publishSchedulerInvocation(
   root.claims.set(entryId, invocation);
   invocation.then(
     (result) =>
-      feedSchedulerDispatchLater(root, schedulerSettlement(work, entryId, invocationId, result)),
+      feedSchedulerDispatchLater(
+        root,
+        schedulerSettlement(root, work, entryId, invocationId, result)
+      ),
     (cause: unknown) => {
       // A failure after the submission result reached the pass has no other observer.
       if (!Object.values(root.record.passes).some((pass) => pass.parkedOn === invocationId))
@@ -972,6 +1030,7 @@ function publishSchedulerInvocation(
 
 /** Maps the full closeout of one invocation to its settlement event. */
 function schedulerSettlement(
+  root: SchedulerDispatchHandoff,
   work: SchedulerSelectionWork | null,
   entryId: string,
   invocationId: string,
@@ -986,7 +1045,7 @@ function schedulerSettlement(
   if (reason === 'recovery-required') return { ...base, outcome: 'recovery-required' };
   if (reason === 'backend-busy' && work)
     // E7: the held fact of the refusing key, read in the same synchronous step that queues it.
-    return { ...base, outcome: 'backend-busy', capacity: readSchedulerCapacityHold(work) };
+    return { ...base, outcome: 'backend-busy', capacity: readSchedulerCapacityHold(root, work) };
   return {
     ...base,
     outcome: 'failed',
@@ -994,12 +1053,32 @@ function schedulerSettlement(
   };
 }
 
-/** The refusing capacity key of a busy entry and whether its owner still holds it. */
-function readSchedulerCapacityHold(work: SchedulerSelectionWork): {
+/**
+ * The refusing capacity key of a busy entry and whether its owner still holds it, read from the
+ * side-effect-free refusal predicate of the backend owner. A backend without the predicate, or a
+ * predicate that throws, reads as held, so only a timer or intake pass retries the entry.
+ */
+function readSchedulerCapacityHold(
+  root: SchedulerDispatchHandoff,
+  work: SchedulerSelectionWork
+): {
   readonly key: HandoffCapacityKey;
   readonly held: boolean;
 } {
-  return { key: { kind: 'backend', backendId: work.entry.backendId }, held: true };
+  const backend: HandoffCapacityKey = { kind: 'backend', backendId: work.entry.backendId };
+  const executionBackend = work.input.executionBackend;
+  const thread = { workspaceId: work.entry.workspaceId, threadId: work.entry.threadId };
+  const read = (): HandoffCapacityKey | null =>
+    executionBackend.readSchedulerCapacityHold
+      ? executionBackend.readSchedulerCapacityHold(thread)
+      : backend;
+  root.capacityReads.set(work.entry.queueEntryId, read);
+  try {
+    const key = read();
+    return key === null ? { key: backend, held: false } : { key, held: true };
+  } catch {
+    return { key: backend, held: true };
+  }
 }
 
 /** Dispatches eligible FIFO work through an attempt persisted before its preparation effects. */

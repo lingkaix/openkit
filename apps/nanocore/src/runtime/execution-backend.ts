@@ -5,6 +5,7 @@ import {
   type WorkerCredentialReceipt,
   WorkerCredentialReceiptSchema,
 } from '@openkit/config-schema';
+import type { SchedulerCapacityKey } from '../scheduler-hold-release.js';
 
 /** Exact durable correlation shared by every execution backend operation. */
 export interface ExecutionBackendCorrelation {
@@ -40,6 +41,14 @@ export interface ExecutionReleaseProof {
 /** NanoCore's four-operation backend boundary; preparation uses existing supply and Workspace owners. */
 export interface ExecutionBackend {
   readonly id: string;
+  /**
+   * The side-effect-free refusal predicate of this backend owner for one Thread (E7): the capacity
+   * key that still refuses it, or null when it reads clear. It changes nothing.
+   */
+  readSchedulerCapacityHold?(thread: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+  }): SchedulerCapacityKey | null;
   /** Reports the installed private Login path, independent of current placement or Vault authority. */
   supportsHarnessLogin?(): boolean;
   submit(
