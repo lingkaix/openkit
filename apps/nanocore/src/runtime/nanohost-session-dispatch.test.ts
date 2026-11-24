@@ -3030,7 +3030,7 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  const preparedImageModes = ['held', 'admitted'] as const;
+  const preparedImageModes = ['held', 'admitted', 'deferred'] as const;
   it.each(preparedImageModes)('carries prepared images over H2 (%s)', async (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-'));
     const coreDb = openCoreDb(root);
@@ -3063,7 +3063,13 @@ describe('authoritative NanoHost session dispatch', () => {
         sqlite.close();
       }
     };
+    // In deferred mode the local settlement write fails three times before storage returns.
+    let persistenceFailures = mode === 'deferred' ? 3 : 0;
     const settlePreparedImage = vi.fn<SettleNanoHostPreparedImage>(async (request) => {
+      if (persistenceFailures > 0) {
+        persistenceFailures -= 1;
+        throw new Error('SQLITE_IOERR: disk I/O error');
+      }
       expect(request.target).toEqual({ ...target, physicalEpoch, connectionGeneration: 1 });
       expect(request.originalExecution).toBeDefined();
       const original = coreDb.sqlite
@@ -3100,7 +3106,7 @@ describe('authoritative NanoHost session dispatch', () => {
       nativeStorage: { state: 'ready', value: nanoHost },
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
-      ...(mode === 'admitted' ? { settlePreparedImage } : {}),
+      ...(mode === 'held' ? {} : { settlePreparedImage }),
     });
     await expect(
       transitionAdmittedNanoHostRuntimeTarget(nanoHost, {
@@ -3218,6 +3224,81 @@ describe('authoritative NanoHost session dispatch', () => {
       const pending = attempt();
       const acquirePath = '/api/nanohost/transport/effects/image.acquire';
       let command = await post(acquirePath, {});
+      const settledRows = () => {
+        const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          return sqlite
+            .prepare(
+              'SELECT outcome, image_digest FROM worker_image_settlements WHERE request_id = ?'
+            )
+            .all(requestId);
+        } finally {
+          sqlite.close();
+        }
+      };
+      if (mode === 'deferred') {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+        try {
+          const callerOutcome = pending.then(
+            () => undefined,
+            (error: unknown) => error
+          );
+          const deadline = performance.now() + 2_000;
+          while (command.status === 204 && performance.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            command = await post(acquirePath, {});
+          }
+          expect(command.status, command.body).toBe(200);
+          // Core keeps the single pending correlation and answers each delivery with an empty 503.
+          for (const _delivery of [1, 2, 3])
+            expect(await post(`${acquirePath}/result`, { requestId, digest })).toEqual({
+              status: 503,
+              body: '',
+            });
+          expect(await callerOutcome).toMatchObject({ status: 503, code: 'recovery_required' });
+          expect(settledRows()).toEqual([]);
+          // Storage returns: the identical bytes settle once and receive an empty 204.
+          expect(await post(`${acquirePath}/result`, { requestId, digest })).toEqual({
+            status: 204,
+            body: '',
+          });
+          expect(settledRows()).toEqual([{ outcome: 'success', image_digest: digest }]);
+          expect(settlePreparedImage).toHaveBeenCalledTimes(4);
+          expect(
+            new Set(settlePreparedImage.mock.calls.map(([call]) => JSON.stringify(call.settlement)))
+              .size
+          ).toBe(1);
+          expect(
+            warn.mock.calls.filter(([line]) => line === 'nanohost image settlement deferred')
+          ).toHaveLength(1);
+          expect(
+            info.mock.calls.filter(([line]) => line === 'nanohost image settlement recovered')
+          ).toHaveLength(1);
+          // Polling resumes on the same connection and Epoch; the durable settlement answers.
+          expect(await post(acquirePath, {})).toEqual({ status: 204, body: '' });
+          const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+            readonly: true,
+            fileMustExist: true,
+          });
+          try {
+            expect(getNanoHostRuntimeTarget({ sqlite }, target.targetId)).toMatchObject({
+              connectionGeneration: 1,
+            });
+          } finally {
+            sqlite.close();
+          }
+          await expect(attempt()).resolves.toEqual({ digest });
+          expect(settledRows()).toHaveLength(1);
+        } finally {
+          warn.mockRestore();
+          info.mockRestore();
+        }
+        return;
+      }
       const deadline = performance.now() + 2_000;
       while ((command.status === 204 || command.status === 503) && performance.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 10));
