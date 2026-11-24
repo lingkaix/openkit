@@ -210,13 +210,36 @@ export function startRecurringScheduleService(
       await publishDeferredTurn(entry, deferred, publication);
       return;
     }
+    let acknowledged = false;
     try {
       if (requireSchedulerAdmissionEntry(db, entry.queueEntryId).status !== 'queued') return;
       if ((await publishWorkspaceTurn(entry)) === 'busy') await writeBusyProof(entry, 'defer-busy');
+      else acknowledged = true;
     } finally {
       publication.release();
-      releaseSchedulerHold('publication-pending');
+      reportPublicationReleased(entry, acknowledged);
     }
+  }
+
+  /**
+   * The publication-pending release edge: only after the exact publication ACK, or after the exact
+   * complete readback through the deciding reader. A rollback or a publication that never posts
+   * reports nothing (A8 r7-step3 finding 6).
+   */
+  function reportPublicationReleased(entry: CoreSchedulerQueueEntry, acknowledged: boolean): void {
+    let complete = acknowledged;
+    if (!complete)
+      try {
+        complete =
+          recurringTurnPublicationIssue(
+            db,
+            input.store,
+            requireSchedulerAdmissionEntry(db, entry.queueEntryId)
+          ) === null;
+      } catch {
+        complete = false;
+      }
+    if (complete) releaseSchedulerHold(db.dataRoot, 'publication-pending');
   }
 
   /** One deadline covers proof consumption, the schedule section, and actual native posting. */
@@ -262,6 +285,7 @@ export function startRecurringScheduleService(
         startedAt
       );
     };
+    let acknowledged = false;
     const settlement = (async () => {
       if (
         deferredPublicationState(entry, deferred) !== 'ready' ||
@@ -294,6 +318,7 @@ export function startRecurringScheduleService(
               ) === null,
             startedAt
           );
+          if (result === 'published') acknowledged = true;
           if (result !== 'busy' || publicationExpired(publicationGuard)) return;
         }
         await updateBusyProof(occurrence, 'defer-busy');
@@ -301,7 +326,7 @@ export function startRecurringScheduleService(
     })().finally(() => {
       clearTimeout(timer);
       publication.release();
-      releaseSchedulerHold('publication-pending');
+      reportPublicationReleased(entry, acknowledged);
     });
     await Promise.race([settlement, elapsed.promise]);
   }

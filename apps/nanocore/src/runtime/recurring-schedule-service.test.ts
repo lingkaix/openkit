@@ -6,6 +6,7 @@ import { AutomationHistoryResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAutomationOperationImplementations } from '../automation-operations.js';
 import { AutomationStore, stageRecurringQueueInput } from '../lib/automation-store.js';
+import * as holdRelease from '../scheduler-hold-release.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   ControlStoreWorkerError,
@@ -1445,4 +1446,39 @@ it('prepares Knowledge maintenance after Worker candidates and contains callback
   expect(events).toEqual(['worker', 'knowledge', 'knowledge']);
   expect(prepareKnowledgeMaintenance).toHaveBeenCalledTimes(2);
   expect(setTimer).toHaveBeenCalledTimes(1);
+});
+
+it('reports the publication-pending release only after the exact publication ACK', async () => {
+  const release = vi.spyOn(holdRelease, 'releaseSchedulerHold');
+  const published = () => release.mock.calls.filter((call) => call.includes('publication-pending'));
+  try {
+    const { db, store, schedule, schedules, start } = await fixture();
+    const { workspaceId, threadId, responsibleUserId } = schedule;
+    const busy = await store.createTurn(workspaceId, threadId, 'Original active work.', {
+      kind: 'user',
+      id: responsibleUserId,
+    });
+    const { service } = start();
+    // A definite native thread_busy refusal rolls the publication back: no release.
+    await service.runOnce();
+    const occurrence = schedules.listHistory(schedule.id).items[0]!.record;
+    expect(occurrence.publicationDeferred).toBe('thread_busy');
+    const entry = requireSchedulerAdmissionEntry(db, occurrence.queueEntryId!);
+    expect(recurringTurnPublicationIssue(db, store, entry)).not.toBeNull();
+    expect(published()).toEqual([]);
+    // The deferred publication rechecks while the Thread is still busy and never posts.
+    await service.runOnce();
+    expect(recurringTurnPublicationIssue(db, store, entry)).not.toBeNull();
+    expect(published()).toEqual([]);
+    // The active Turn completes. The deferred publication posts, and its ACK reports once.
+    await store.completeTurn(busy.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    await service.runOnce();
+    expect(recurringTurnPublicationIssue(db, store, entry)).toBeNull();
+    expect(published()).toEqual([[db.dataRoot, 'publication-pending']]);
+  } finally {
+    release.mockRestore();
+  }
 });
