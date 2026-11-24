@@ -2070,6 +2070,20 @@ describe('scheduler dispatch loop', () => {
     const gate = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+    /** The claims of one entry, in claim order, with their submission disposition. */
+    const claims = (suffix: string) =>
+      coreDb.sqlite
+        .prepare(
+          'SELECT attempt_id, disposition FROM scheduler_execution_attempts WHERE queue_entry_id = ? ORDER BY rowid'
+        )
+        .all(`queue_claim_${suffix}`) as { attempt_id: string; disposition: string }[];
+    // The modeled native owner runs one simulator write at a time. So a later Turn prepares only
+    // after the native submission of the Turn before it is accepted. This does not change when
+    // Main claims an entry.
+    const before: Record<string, string> = {
+      [testEntityId('tu', 'turn_claim_second')]: 'first',
+      [testEntityId('tu', 'turn_claim_third')]: 'second',
+    };
     let preparations = 0;
     executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
       preparations += 1;
@@ -2077,6 +2091,12 @@ describe('scheduler dispatch loop', () => {
         entered.resolve();
         await gate.promise;
       }
+      const previous = before[preparation.turn.id];
+      if (previous)
+        await vi.waitFor(
+          () => expect(claims(previous).map((claim) => claim.disposition)).toEqual(['accepted']),
+          { timeout: 5000 }
+        );
       return prepare(ownerStore, preparation);
     };
     await seedLocalSchedulerTarget(coreDb);
@@ -2128,29 +2148,58 @@ describe('scheduler dispatch loop', () => {
       const overlapPending = service.runOnce();
       expect(preparations).toBe(1);
       const overlap = await overlapPending;
+      // The overlap caller gets its own empty result: the second entry waits behind the first
+      // preparation, so its pass ends with no claim.
       expect(overlap?.startedTurns).toEqual([]);
       expect(errors).toEqual([]);
+      // While the first preparation is held, no pass claims a second entry.
+      for (let turn = 0; turn < 20; turn += 1)
+        await new Promise((resolve) => setImmediate(resolve));
+      expect([claims('first').length, claims('second').length, claims('third').length]).toEqual([
+        1, 0, 0,
+      ]);
+      expect(preparations).toBe(1);
       gate.resolve();
       await firstRun;
-      const [firstLease] = coreDb.sqlite
-        .prepare('SELECT attempt_id FROM scheduler_execution_attempts')
-        .all() as { attempt_id: string }[];
-      await closeOwnedExecutionAttempt(coreDb, {
-        attemptId: firstLease!.attempt_id,
-      });
-      for (const suffix of ['second', 'third']) {
-        const result = await service.runOnce();
-        expect(result?.startedTurns[0]?.dispatch.entry.queueEntryId).toBe(`queue_claim_${suffix}`);
-        await closeOwnedExecutionAttempt(coreDb, {
-          attemptId: result!.startedTurns[0]!.dispatch.attempt.attemptId,
-        });
-      }
-      expect(preparations).toBe(3);
+      // The owner wake claims the second entry when the first preparation leaves. The test calls
+      // no runOnce and no timer tick for it.
+      await vi.waitFor(
+        () =>
+          expect(executor.calls.map((call) => call.turnId)).toEqual([
+            testEntityId('tu', 'turn_claim_first'),
+            testEntityId('tu', 'turn_claim_second'),
+          ]),
+        { timeout: 5000 }
+      );
+      expect([claims('first').length, claims('second').length, claims('third').length]).toEqual([
+        1, 1, 0,
+      ]);
+      // The wake pass ends at its one dispatch, so no scan saw the third entry held. Intake claims
+      // it next.
+      await vi.waitFor(
+        () => expect(claims('second').map((claim) => claim.disposition)).toEqual(['accepted']),
+        { timeout: 5000 }
+      );
+      const third = await service.runOnce();
+      expect(third?.startedTurns.map((turn) => turn.dispatch.entry.queueEntryId)).toEqual([
+        'queue_claim_third',
+      ]);
+      // FIFO order and one claim for each entry.
       expect(executor.calls.map((call) => call.turnId)).toEqual([
         testEntityId('tu', 'turn_claim_first'),
         testEntityId('tu', 'turn_claim_second'),
         testEntityId('tu', 'turn_claim_third'),
       ]);
+      expect([claims('first').length, claims('second').length, claims('third').length]).toEqual([
+        1, 1, 1,
+      ]);
+      expect(preparations).toBe(3);
+      await vi.waitFor(
+        () => expect(claims('third').map((claim) => claim.disposition)).toEqual(['accepted']),
+        { timeout: 5000 }
+      );
+      for (const suffix of ['first', 'second', 'third'])
+        await closeOwnedExecutionAttempt(coreDb, { attemptId: claims(suffix)[0]!.attempt_id });
       expect(errors).toEqual([]);
     } finally {
       gate.resolve();
@@ -5678,8 +5727,9 @@ describe('scheduler FIFO class closure in the dispatch pass', () => {
           reached.resolve();
           await gate.promise;
         }
-        // The first follow-up post: a wake arrives during the follow-up pass.
-        if (!wake && id === 'burst_1') wake = trigger('wake');
+        // The first follow-up post: a wake arrives during the follow-up pass. Like the production
+        // wake, it carries the current configuration version.
+        if (!wake && id === 'burst_1') wake = trigger('wake', 5);
         // The prefix churns between Main's selection and Core's decision for every proposal of
         // the holder and the burst: X alternates between a direct claim and a requeue.
         if (x && id !== 'wake') {
