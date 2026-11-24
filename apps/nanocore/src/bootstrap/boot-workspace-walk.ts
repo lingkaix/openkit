@@ -54,25 +54,45 @@ export async function withinBootWorkspaceBoundary(
   try {
     await step();
   } catch (error) {
-    const check = attributedCheck(error);
-    if (check === 'shared') throw error;
-    if (isScopeAdmitted(dataRoot, 'workspace', workspaceId)) {
-      if (check === undefined) assertCommonOwners(dataRoot, workspaceId);
-      refuseScope(dataRoot, {
-        scope: 'workspace',
-        id: workspaceId,
-        check: check ?? 'records',
-        stage,
-      });
-    } else {
-      // The scoped owner already recorded its own failed check during this step.
-      attributeBootWalkStage(dataRoot, workspaceId, stage);
-    }
-    console.warn(
-      `Boot recovery held Workspace ${workspaceId} during ${stage}.`,
-      error instanceof Error ? error.message : String(error)
-    );
+    holdBootWorkspaceFailure({ dataRoot, workspaceId, stage }, error);
   }
+}
+
+/**
+ * Attributes one failed startup step of a walked Workspace: an owned failure holds that Workspace
+ * through scope admission, while a shared writer failure, or one the common owners cannot
+ * exclude, is rethrown so startup stops.
+ *
+ * @param input Rooted data, the walked Workspace and the Boot walk stage.
+ * @param error The step's failure.
+ */
+export function holdBootWorkspaceFailure(
+  input: {
+    readonly dataRoot: string;
+    readonly workspaceId: string;
+    readonly stage: BootWorkspaceWalkStage;
+  },
+  error: unknown
+): void {
+  const { dataRoot, workspaceId, stage } = input;
+  const check = attributedCheck(error);
+  if (check === 'shared') throw error;
+  if (isScopeAdmitted(dataRoot, 'workspace', workspaceId)) {
+    if (check === undefined) assertCommonOwners(dataRoot, workspaceId);
+    refuseScope(dataRoot, {
+      scope: 'workspace',
+      id: workspaceId,
+      check: check ?? 'records',
+      stage,
+    });
+  } else {
+    // The scoped owner already recorded its own failed check during this step.
+    attributeBootWalkStage(dataRoot, workspaceId, stage);
+  }
+  console.warn(
+    `Boot recovery held Workspace ${workspaceId} during ${stage}.`,
+    error instanceof Error ? error.message : String(error)
+  );
 }
 
 /**

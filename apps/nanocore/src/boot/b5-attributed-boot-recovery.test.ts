@@ -8,19 +8,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OperationId } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
+import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { CoreDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from '../storage/index-rebuild.js';
 import { recordWorkspaceOwnerMembership } from '../storage/workspace-owner-records.js';
-import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  recordTestAgentEnvironmentPackage,
+} from '../test-support/agent-environment.js';
 import {
   capabilityCallCount,
   raiseSeedPendingRequest,
@@ -29,6 +33,7 @@ import {
   withSeedWorkspaceDb,
   workspaceEvidence,
   writeCapabilityCallColumn,
+  writePendingDisposition,
   writePendingPublication,
 } from '../test-support/boot-walk-evidence.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -48,11 +53,17 @@ const roots: string[] = [];
 interface BootWalkFault {
   readonly workspaceId?: string;
   readonly fail?: string;
-  readonly within?: string;
+  readonly within?: string | readonly string[];
   readonly outside?: string | readonly string[];
   readonly after?: number;
+  readonly times?: number;
+  readonly miss?: boolean;
   readonly writer?: 'missing-head' | 'busy';
+  readonly writerSql?: string;
+  readonly writerWithin?: string;
+  readonly writerAfter?: number;
   readonly arm?: string;
+  readonly live?: string | readonly string[];
   readonly shared?: boolean;
   readonly census?: 'walk' | 'lost';
   readonly label: string;
@@ -64,6 +75,8 @@ const ACTIVE_TURN_SQL = "status IN ('pending','running') LIMIT 1";
 const TURN_TIMELINE_SQL = 'WHERE thread_id=? AND admission_order>?';
 /** Statement text that only the Pending Boot walk issues on a Workspace database. */
 const PENDING_WALK_SQL = 'SELECT request_id FROM pending_requests WHERE workspace_id=?';
+/** Statement text of the Pending walk's association check, its first read of each Workspace. */
+const PENDING_ASSOCIATION_SQL = 'SELECT request_id FROM pending_requests WHERE workspace_id = ?';
 /** Statement text that only the MCP Boot walk issues on a Workspace database. */
 const MCP_WALK_SQL = "WHERE family = 'mcp'";
 /** Statement text of a Workspace's own record read. */
@@ -75,6 +88,24 @@ const ITEM_SELECTOR_SQL =
   "SELECT schema_version,turn_id,identity_json FROM control_product_entries WHERE kind='item' AND id=? LIMIT 1";
 /** Statement text of a Workspace's own Turn record read. */
 const TURN_RECORD_SQL = 'SELECT * FROM control_turns WHERE id=?';
+/** Statement text of one Thread's Pending page read. */
+const PENDING_PAGE_SQL = 'WHERE workspace_id = ? AND thread_id = ?';
+/** Statement text of the writer's own Thread read while it validates a Turn publication. */
+const WRITER_THREAD_SQL = 'SELECT * FROM control_threads WHERE id=?';
+/**
+ * Each distinct Pending post the Boot tail addresses to a Workspace writer, with the number of
+ * that writer's Thread reads that precede it: admission reads the Thread three times (Thread CAS
+ * and graph validation), the close once, and the acknowledged close's wake then admits again.
+ */
+const PENDING_BOOT_POSTS = [
+  { write: 'closeout', seed: 'agent-removed', writerAfter: 0 },
+  { write: 'invalidation', seed: 'invalidated', writerAfter: 0 },
+  { write: 'outcome admission', seed: 'outcome', writerAfter: 0 },
+  { write: 'outcome close', seed: 'outcome', writerAfter: 3 },
+  { write: 'outcome wake', seed: 'outcomes', writerAfter: 4 },
+] as const;
+/** Agent named by seeded Worker approvals; no Boot configuration declares it. */
+const WORKER_AGENT_ID = 'agent_b5_worker';
 
 /**
  * ARCH-REVIEW B5, docs/core/fault-tolerance.md "Attribute Boot recovery to its Workspace".
@@ -813,6 +844,271 @@ describe('B5 attributed Boot recovery', () => {
     },
     CASE_TIMEOUT_MS
   );
+
+  it.each([
+    {
+      site: 'outcome close, transcript, executor and acknowledgement',
+      // The whole window from the Pending walk to the bind: the close's terminal publication and
+      // its acknowledgement run on the writer queue, whose stack no longer names the walk.
+      within: undefined,
+      outside: ['createTurnPublication'],
+      sibling: 'served',
+    },
+    { site: 'creation identity', within: ['createTurnPublication'], sibling: 'held' },
+  ] as const)(
+    'proves the healthy person outcome at Boot from its own Workspace while a sibling Turn selector is unreadable ($site)',
+    async ({ within, sibling, ...rest }) => {
+      const root = await seedRoot(['Healthy outcome', 'Unreadable selector']);
+      const [healthy, unreadable] = root.workspaceIds as [string, string];
+      const [seeded] = await withSeedStore(root, async (store) => {
+        // An unassociated active Turn makes the association check read its admitted executor.
+        const other = await store.createThread(healthy, 'Other conversation');
+        await store.createTurn(healthy, other.id, 'Still running', root.actor, null);
+        return seedDecidedApprovals(store, root, [healthy], {
+          requesterKind: 'person',
+          decision: 'denied',
+          services: 'none',
+        });
+      });
+      const requestId = seeded!.requestIds[0]!;
+      expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
+        delivery: 'undelivered',
+        delivery_turn_id: null,
+      });
+      // Global owner discovery would read this selector in the sibling for the healthy outcome.
+      const fault: BootWalkFault = {
+        workspaceId: unreadable,
+        fail: TURN_SELECTOR_SQL,
+        arm: PENDING_ASSOCIATION_SQL,
+        ...(within ? { within } : {}),
+        ...('outside' in rest ? { outside: rest.outside } : {}),
+        label: `pending-outcome-sibling-${sibling}`,
+      };
+      const original = workspaceEvidence(root.dataRoot, unreadable);
+
+      const server = await startServer(root, fault);
+      expectListening(server);
+      // Entry marker: the Pending walk ran its own read before the outcome was admitted.
+      expect(server.output()).toContain('[boot-walk-fault] armed');
+      if (sibling === 'held') {
+        // Only the creation identity needs every sibling's answer; one that cannot answer is held.
+        expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+        await expectHeld(server, unreadable, 'check=database; stage=scope-admission');
+      }
+      await expectNotHeld(server, healthy);
+      await expectServed(server, [healthy], sibling === 'held' ? unreadable : null);
+      await stopServer(server);
+      const row = readPendingRow(root.dataRoot, healthy, requestId);
+      expect(row).toMatchObject({ delivery: 'delivered' });
+      await withSeedStore(root, (store) => {
+        expect(
+          store.getTurn(healthy, seeded!.threadId, row.delivery_turn_id as string)
+        ).toMatchObject({ status: 'completed', threadId: seeded!.threadId });
+      });
+      expectEvidenceUnchanged(root.dataRoot, unreadable, original);
+      if (sibling === 'served') {
+        // After the result: no step of the healthy outcome read the sibling's selector.
+        expect(server.output()).not.toContain('[boot-walk-fault] hit');
+        expect(bootDecisionLines(server)).not.toContain('Boot recovery held Workspace');
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'holds the Workspace whose own Turn history misses at its terminal write instead of reading a sibling',
+    async () => {
+      const root = await seedRoot(['Missing history', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const orphans = await withSeedStore(root, (store) =>
+        Promise.all(root.workspaceIds.map((id) => seedOrphanAssistantTurn(store, root, id)))
+      );
+      // The selected owner's own history read observes no row once, inside the terminal write.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_RECORD_SQL,
+        within: 'completeTurnPublication',
+        miss: true,
+        times: 1,
+        label: 'assistant-terminal-history-miss',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
+      expect(server.output()).toContain(`Turn not found: ${orphans[0]!.turnId}`);
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        expect(store.getTurn(held, orphans[0]!.threadId, orphans[0]!.turnId).status).toBe(
+          'running'
+        );
+        expect(store.getTurn(healthy, orphans[1]!.threadId, orphans[1]!.turnId)).toMatchObject({
+          status: 'interrupted',
+          error: { code: 'recovery_required' },
+        });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each([
+    { read: 'record', fail: WORKSPACE_RECORD_SQL, within: ['resumeFrozenPendingDelivery'] },
+    { read: 'census', fail: PENDING_PAGE_SQL, within: ['resumeFrozenPendingDelivery'] },
+    {
+      read: 'selector',
+      fail: TURN_SELECTOR_SQL,
+      within: ['resumeFrozenPendingDelivery', 'deliverWorkerOutcome', 'startTurn'],
+      // Only a new Turn's identity check reads every sibling.
+      outside: ['createTurnPublication'],
+      // The delivery owner's refusal bookkeeping may finish after the listeners bind.
+      live: ['deliverWorkerOutcome'],
+    },
+  ] as const)(
+    'hands the healthy frozen Worker outcome to its delivery owner before the listeners bind while a sibling $read read fails',
+    async ({ read, ...rest }) => {
+      const root = await seedRoot(['Unreadable sibling', 'Healthy frozen']);
+      const [unreadable, healthy] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const frozen = root.workspaceIds.map((id, index) => {
+        const row = readPendingRow(root.dataRoot, id, seeded[index]!.requestIds[0]!);
+        expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+        return row.delivery_turn_id as string;
+      });
+      const fault: BootWalkFault = {
+        workspaceId: unreadable,
+        ...rest,
+        label: `pending-resume-sibling-${read}`,
+      };
+
+      const server = await startServer(root, fault);
+      expectListening(server);
+      if (read !== 'selector') {
+        expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+        await expectHeld(server, unreadable, 'check=records; stage=pending-request-recovery');
+      }
+      await expectNotHeld(server, healthy);
+      // The real delivery owner took the healthy outcome and refused it with its own result:
+      // Boot's configuration does not declare the agent, so the batch is released and closed out.
+      await vi.waitFor(
+        () =>
+          expect(readPendingRow(root.dataRoot, healthy, seeded[1]!.requestIds[0]!)).toMatchObject({
+            delivery: 'closed-out',
+          }),
+        { timeout: 60_000, interval: 250 }
+      );
+      await expectServed(server, [healthy], read === 'selector' ? null : unreadable);
+      await stopServer(server);
+      await withSeedStore(root, (store) => {
+        expect(store.getTurn(healthy, seeded[1]!.threadId, frozen[1]!)).toMatchObject({
+          status: 'failed',
+          error: { code: 'agent_not_found' },
+        });
+        if (read !== 'selector') {
+          // The held sibling keeps its own frozen outcome for the Boot that admits it again.
+          expect(
+            readPendingRow(root.dataRoot, unreadable, seeded[0]!.requestIds[0]!)
+          ).toMatchObject({ delivery: 'frozen', delivery_turn_id: frozen[0] });
+          expect(store.getTurn(unreadable, seeded[0]!.threadId, frozen[0]!).status).toBe('pending');
+        }
+      });
+      if (read === 'selector') {
+        // After the result: the handoff named its Workspace and Thread and read no sibling.
+        expect(server.output()).not.toContain('[boot-walk-fault] hit');
+        expect(bootDecisionLines(server)).not.toContain('Boot recovery held Workspace');
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each(PENDING_BOOT_POSTS)(
+    'holds only the Workspace whose own writer refuses its Pending $write at Boot with a definite precondition',
+    async ({ write, seed, writerAfter }) => {
+      const root = await seedRoot(['Healthy before', 'Writer refusal', 'Healthy after']);
+      const [before, held, after] = root.workspaceIds as [string, string, string];
+      const seeded = await seedPendingBootPost(root, seed);
+      const rows = () =>
+        root.workspaceIds.map((id, index) =>
+          seeded[index]!.requestIds.map((requestId) => readPendingRow(root.dataRoot, id, requestId))
+        );
+      const seededRows = rows();
+      // The walk's own Pending post reaches A's writer, which then observes no Thread record.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        writer: 'missing-head',
+        writerSql: WRITER_THREAD_SQL,
+        writerWithin: 'applyProducts',
+        writerAfter,
+        label: `pending-writer-${write.replaceAll(' ', '-')}`,
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [before, after], held);
+      await stopServer(server);
+      const settled = rows();
+      if (writerAfter === 0) {
+        // The refused post is A's first Boot write: A's retained evidence is unchanged.
+        expectEvidenceUnchanged(root.dataRoot, held, original);
+        expect(settled[1]).toEqual(seededRows[1]);
+      } else if (seed === 'outcome') {
+        // The admitted outcome Turn committed; its refused close leaves the batch frozen, unproved.
+        expect(settled[1]![0]).toMatchObject({ delivery: 'frozen' });
+      } else {
+        // The first batch closed and was proved; the wake's next admission was refused.
+        expect(settled[1]!.slice(0, 16).map((row) => row.delivery)).toEqual(
+          Array(16).fill('delivered')
+        );
+        expect(settled[1]![16]).toMatchObject({ delivery: 'undelivered', delivery_turn_id: null });
+      }
+      for (const index of [0, 2])
+        for (const row of settled[index]!)
+          if (seed === 'agent-removed') expect(row).toMatchObject({ delivery: 'closed-out' });
+          else if (seed === 'invalidated')
+            expect(row.invalidation_turn_id).toEqual(expect.any(String));
+          else expect(row).toMatchObject({ delivery: 'delivered' });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each(PENDING_BOOT_POSTS)(
+    'stops Boot without binding a listener when the Workspace writer is busy during the Pending $write',
+    async ({ write, seed, writerAfter }) => {
+      const root = await seedRoot(['Healthy before', 'Busy writer', 'Healthy after']);
+      await seedPendingBootPost(root, seed);
+      const fault: BootWalkFault = {
+        workspaceId: root.workspaceIds[1]!,
+        writer: 'busy',
+        writerSql: WRITER_THREAD_SQL,
+        writerWithin: 'applyProducts',
+        writerAfter,
+        label: `pending-writer-busy-${write.replaceAll(' ', '-')}`,
+      };
+      const outcome = await runUntilBootDecision(root, fault);
+      expect(outcome.output).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expect(outcome.running).toBe(false);
+      expect(outcome.exitCode).not.toBe(0);
+      expect(outcome.output).toContain(
+        'NanoCore boot failed during critical phase "scheduler-restart-recovery": Control database writer operation failed.'
+      );
+      // The shared writer result is not attributed to the Workspace whose post was current.
+      expect(outcome.output).not.toContain('Boot recovery held Workspace');
+      expect(outcome.output).not.toContain('App server is running');
+      expect(outcome.output).not.toContain('NanoHost server is running');
+    },
+    CASE_TIMEOUT_MS
+  );
 });
 
 interface SeededRoot {
@@ -986,6 +1282,179 @@ async function seedClaimedPending(store: FsStore, root: SeededRoot, workspaceId:
   } finally {
     closeTestCoreDb(coreDb);
   }
+}
+
+/**
+ * Raises approvals under one running Turn per Workspace through the production raiser, decides
+ * them through `approval.respond` while that Turn still runs, then completes every raising Turn.
+ * One App serves every Workspace, so no later App start resumes an earlier freeze. `services`
+ * names the Pending services bound at completion: `none` leaves every decided outcome for Boot,
+ * and `frozen` binds storage without a Worker delivery owner, so each completion wake freezes its
+ * Worker outcome Turn pending, as a Core stopped before its delivery owner started leaves it.
+ */
+async function seedDecidedApprovals(
+  store: FsStore,
+  root: SeededRoot,
+  workspaceIds: readonly string[],
+  input: {
+    readonly count?: number;
+    readonly requesterKind: 'person' | 'worker';
+    readonly decision: 'granted' | 'denied' | null;
+    readonly governedIntent?: boolean;
+    readonly services: 'none' | 'frozen';
+  }
+) {
+  const coreDb = createTestCoreDb(root.dataRoot);
+  try {
+    const worker = input.requesterKind === 'worker';
+    const responsibleUserId = root.ownerUserId;
+    // The seeding Core still declares the Worker agent; Boot's configuration no longer does.
+    const app = createApp({
+      coreDb,
+      store,
+      dataRoot: root.dataRoot,
+      ...(worker
+        ? { agentManifests: [createTestAgentSetup({ agentId: WORKER_AGENT_ID }).manifest] }
+        : {}),
+    });
+    const seeded: { threadId: string; raisingTurnId: string; requestIds: string[] }[] = [];
+    for (const workspaceId of workspaceIds)
+      await withSeedWorkspaceDb(root.dataRoot, workspaceId, async (db) => {
+        const thread = await store.createThread(workspaceId, 'Pending outcome');
+        const turn = await store.createTurn(
+          workspaceId,
+          thread.id,
+          'Needs approval',
+          root.actor,
+          null,
+          worker ? { agentId: WORKER_AGENT_ID } : {}
+        );
+        const requestIds: string[] = [];
+        for (let index = 0; index < (input.count ?? 1); index++) {
+          const requestId = `ap_b5_${randomUUID().replaceAll('-', '')}`;
+          const requestItemId = pendingRequestItemId(requestId, 'request');
+          const approval = { title: 'Exact command', description: 'One command.' };
+          const now = new Date().toISOString();
+          await store.createItem({
+            id: requestItemId,
+            owner: { kind: 'workspace', workspaceId },
+            threadId: thread.id,
+            turnId: turn.id,
+            type: 'approval-request',
+            status: 'completed',
+            approvalRequestId: requestId,
+            ...approval,
+            kind: 'permission',
+            createdAt: now,
+            completedAt: now,
+          });
+          await raiseSeedPendingRequest(store, db, {
+            requestId,
+            requestItemId,
+            workspaceId,
+            threadId: thread.id,
+            raisingTurnId: turn.id,
+            kind: 'approval',
+            requesterKind: input.requesterKind,
+            responsibleUserId,
+            approval: { kind: 'permission', ...approval },
+            ...(input.governedIntent ? { governedIntent: { operation: 'b5-fixture' } } : {}),
+            ...(worker
+              ? {
+                  agentId: WORKER_AGENT_ID,
+                  call: {
+                    serverId: 'echo',
+                    catalogRevision: 'sha256:catalog',
+                    schemaSnapshotId: 'snap_1',
+                    toolName: 'echo',
+                    canonicalArgumentsJson: JSON.stringify({ message: requestId }),
+                    argumentsDigest: mcpToolArgumentsContentDigest({ message: requestId }),
+                    packageDigest: null,
+                    policyDecisionId: null,
+                    authorizationContext: {
+                      threadId: thread.id,
+                      turnId: turn.id,
+                      agentSessionId: null,
+                      agentId: WORKER_AGENT_ID,
+                      responsibleUserId,
+                      packageDigest: null,
+                      policyDecisionId: null,
+                    },
+                  },
+                }
+              : {}),
+            now,
+          });
+          if (input.decision) {
+            const response = await app.request(
+              ...operationRequest(
+                'approval.respond',
+                { approvalRequestId: requestId },
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    workspaceId,
+                    threadId: thread.id,
+                    turnId: turn.id,
+                    requestId: randomUUID(),
+                    decision: input.decision,
+                  }),
+                }
+              )
+            );
+            expect(response.status, await response.clone().text()).toBe(200);
+          }
+          requestIds.push(requestId);
+        }
+        seeded.push({ threadId: thread.id, raisingTurnId: turn.id, requestIds });
+      });
+    store.startPendingRequestDelivery(
+      input.services === 'frozen'
+        ? // The same read opener Boot registers before the Pending walk.
+          { openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id) }
+        : null
+    );
+    for (const entry of seeded)
+      await store.updateTurn(entry.raisingTurnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+    return seeded;
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
+}
+
+/** Seeds every Workspace with the retained Pending state whose Boot tail issues one post. */
+async function seedPendingBootPost(
+  root: SeededRoot,
+  seed: (typeof PENDING_BOOT_POSTS)[number]['seed']
+) {
+  const seeded = await withSeedStore(root, (store) =>
+    seedDecidedApprovals(store, root, root.workspaceIds, {
+      services: 'none',
+      // A waiting Worker approval whose agent Boot's configuration no longer declares.
+      ...(seed === 'agent-removed'
+        ? { requesterKind: 'worker', decision: null }
+        : seed === 'invalidated'
+          ? { requesterKind: 'person', decision: 'granted', governedIntent: true }
+          : { requesterKind: 'person', decision: 'denied', count: seed === 'outcomes' ? 17 : 1 }),
+    })
+  );
+  if (seed === 'invalidated')
+    // Stopped retained state the closeout writer leaves when authority is lost before a claim.
+    for (const [index, id] of root.workspaceIds.entries())
+      expect(
+        writePendingDisposition(
+          root.dataRoot,
+          id,
+          seeded[index]!.requestIds[0]!,
+          'denied-not-executed',
+          'membership-revoked'
+        )
+      ).toBe(1);
+  return seeded;
 }
 
 /** Records terminal MCP calls in one Turn; `existing` publishes the Item, optionally contradicting it. */
