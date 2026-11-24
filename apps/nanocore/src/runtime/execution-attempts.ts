@@ -44,16 +44,26 @@ export async function withSchedulerPreparationPublication<T>(
   }
 }
 
+/**
+ * The step of one claim command that is running. A failure before `create` is posted did not run;
+ * the classification stays in process and adds no wire field.
+ */
+export interface SchedulerClaimStage {
+  current: 'prepare' | 'open' | 'create';
+}
+
 /** Posts an immutable tuple after Core open; explicit caller clocks stay outside the wire. */
 async function publishAttempt(
   db: CoreDb,
   input: ControlExecutionAttemptCommand,
-  clock?: () => string
+  clock?: () => string,
+  stage?: SchedulerClaimStage
 ) {
   const snapshot = structuredClone(input);
   const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
   const database = `core:${scope.path}`;
   const client = getControlStoreWorkerClient();
+  if (stage) stage.current = 'open';
   await client.open({
     database,
     path: scope.path,
@@ -64,12 +74,14 @@ async function publishAttempt(
     contentMount: scope.contentMount,
   });
   if (clock && snapshot.kind !== 'observe') snapshot.observedAt = clock();
+  if (stage) stage.current = 'create';
   return client.executionAttempt(database, snapshot);
 }
 /** Acquires the original admission and complete attempt atomically on the Core writer. */
 export async function createSchedulerExecutionAttempt(
   db: CoreDb,
-  input: Parameters<typeof records.createSchedulerExecutionAttempt>[1]
+  input: Parameters<typeof records.createSchedulerExecutionAttempt>[1],
+  stage?: SchedulerClaimStage
 ) {
   // Preserve the original JSON.stringify semantics before crossing the message boundary.
   return (await publishAttempt(
@@ -84,7 +96,8 @@ export async function createSchedulerExecutionAttempt(
         ? {}
         : { selectionPrefixDigest: input.selectionPrefixDigest }),
     },
-    input.now
+    input.now,
+    stage
   ))!;
 }
 

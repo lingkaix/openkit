@@ -12,6 +12,7 @@ import {
   responsibleUserIdForActor,
   type TurnSchema,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
 import { agentNotReadyMessage, computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
@@ -33,6 +34,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   readQueuedSchedulerAdmissionEntriesInOrder,
   requireSchedulerAdmissionEntry,
+  SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
@@ -48,6 +50,7 @@ import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigge
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
+  acceptSchedulerExecutionObservation,
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
@@ -55,6 +58,7 @@ import {
   ExecutionAttemptRefusal,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
+  type SchedulerClaimStage,
   type SchedulerExecutionAttemptRecord,
   schedulerAdmissionQualified,
   schedulerClaimBlocked,
@@ -74,6 +78,23 @@ import {
 } from './orchestrator.js';
 import { isRecurringQueueEntry } from './recurring-queue-input.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
+import {
+  classifyClaimReply,
+  classifyUnresolvedReadback,
+  createHandoffRecord,
+  decideHandoff,
+  HANDOFF_CLAIM_POST_BUDGET,
+  type HandoffCallerResult,
+  type HandoffCapacityKey,
+  type HandoffClaimIdentity,
+  type HandoffEffect,
+  type HandoffEvent,
+  type HandoffHold,
+  type HandoffRecord,
+  type HandoffSelection,
+  type HandoffSkip,
+  type HandoffSource,
+} from './scheduler-dispatch-handoff.js';
 import { readScheduledAdmissionText } from './scheduler-dispatch-input.js';
 import type { PrepareAgentSessionForTurnInput, TurnExecutor } from './types.js';
 import {
@@ -116,6 +137,8 @@ export interface RunSchedulerDispatchLoopInput
   }[];
   onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
   onDispatchAttribution?: (queueEntryId: string | null) => void;
+  /** `wake` only for the run that a handoff wake starts; such a pass skips the busy set. */
+  dispatchSource?: HandoffSource;
 }
 
 /** One exact acquisition and its existing executor's full closeout. */
@@ -172,371 +195,811 @@ export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparat
   return claims;
 }
 
-/**
- * The original identity of each claim whose reply was ambiguous and whose replay did not decide
- * it, per Core data root. The next post for that entry replays this identity.
- */
-const unresolvedClaimsByDataRoot = new Map<
-  string,
-  Map<string, { readonly attemptId: string; readonly inputHash: string }>
->();
-
-function getUnresolvedSchedulerClaims(coreDb: CoreDb) {
-  let claims = unresolvedClaimsByDataRoot.get(coreDb.dataRoot);
-  if (!claims) {
-    claims = new Map();
-    unresolvedClaimsByDataRoot.set(coreDb.dataRoot, claims);
-  }
-  return claims;
+/** The selected entry of the cycle, with the facts that its post, denial and publication use. */
+interface SchedulerSelectionWork {
+  readonly input: RunSchedulerDispatchLoopInput;
+  readonly entry: CoreSchedulerQueueEntry;
+  readonly selectionPrefixDigest: string;
+  readonly preparationInput: SchedulerPreparationInput;
+  /** The attempt that the claim post returned. */
+  attempt?: SchedulerExecutionAttemptRecord;
 }
 
-/** Each pass makes at most this many Core claim attempts, counting refusals and rescans. */
-const SCHEDULER_PASS_CLAIM_ATTEMPTS = 20;
-
-/** The outstanding Main selection-to-claim handoff of each Core data root. */
-const selectionHandoffs = new Map<string, Promise<void>>();
+type SchedulerPreparationInput = ReturnType<typeof schedulerPreparationInput>;
+type DispatchEvent = HandoffEvent<RunSchedulerDispatchLoopInput, SchedulerDispatchLoopStartedTurn>;
+type DispatchEffect = HandoffEffect<RunSchedulerDispatchLoopInput, SchedulerDispatchLoopStartedTurn>;
 
 /**
- * Reserves the per-root selection-to-claim handoff synchronously, behind any outstanding one.
- * The holder selects, posts its claim and publishes its invocation before it releases.
+ * The executor of the Main selection handoff of one Core data root. It runs the effects that the
+ * pure transition returns and feeds each result back as one event, in queue order. It keeps no
+ * copy of a record fact: only caller promises, admission handles and the work of the cycle.
  */
-function reserveSelectionHandoff(dataRoot: string): {
-  readonly ready: Promise<void>;
-  readonly release: () => void;
-} {
-  const previous = selectionHandoffs.get(dataRoot);
-  const own = Promise.withResolvers<void>();
-  selectionHandoffs.set(dataRoot, own.promise);
-  let released = false;
-  return {
-    ready: previous ?? Promise.resolve(),
-    release: () => {
-      if (released) return;
-      released = true;
-      own.resolve();
-      if (selectionHandoffs.get(dataRoot) === own.promise) selectionHandoffs.delete(dataRoot);
-    },
+interface SchedulerDispatchHandoff {
+  readonly dataRoot: string;
+  readonly claims: SchedulerPreparationClaims;
+  record: HandoffRecord<RunSchedulerDispatchLoopInput, SchedulerDispatchLoopStartedTurn>;
+  readonly events: DispatchEvent[];
+  draining: boolean;
+  nextCaller: number;
+  readonly callers: Map<string, PromiseWithResolvers<SchedulerDispatchLoopResult>>;
+  /** Entry to the exact Workspace admission handle that its selection acquired. */
+  readonly handles: Map<string, () => void>;
+  work: SchedulerSelectionWork | null;
+}
+
+const schedulerDispatchHandoffs = new Map<string, SchedulerDispatchHandoff>();
+/** The callers of one pass share one result value, as they share one pass. */
+const schedulerPassResults = new WeakMap<object, SchedulerDispatchLoopResult>();
+const schedulerDispatchWakes = new Map<string, () => void>();
+/** The attempt ID of each published invocation promise, for an exact join and retire. */
+const schedulerInvocationIds = new WeakMap<Promise<SchedulerDispatchLoopResult>, string>();
+
+function schedulerDispatchHandoff(coreDb: CoreDb): SchedulerDispatchHandoff {
+  let root = schedulerDispatchHandoffs.get(coreDb.dataRoot);
+  if (!root) {
+    root = {
+      dataRoot: coreDb.dataRoot,
+      claims: getSchedulerPreparationClaims(coreDb),
+      record: createHandoffRecord(HANDOFF_CLAIM_POST_BUDGET),
+      events: [],
+      draining: false,
+      nextCaller: 1,
+      callers: new Map(),
+      handles: new Map(),
+      work: null,
+    };
+    schedulerDispatchHandoffs.set(coreDb.dataRoot, root);
+  }
+  return root;
+}
+
+/**
+ * Registers the one dispatch retry run that a `wake` effect starts for this Core data root. The
+ * effect does not await it.
+ */
+export function registerSchedulerDispatchWake(coreDb: CoreDb, wake: () => void): () => void {
+  schedulerDispatchWakes.set(coreDb.dataRoot, wake);
+  return () => {
+    if (schedulerDispatchWakes.get(coreDb.dataRoot) === wake)
+      schedulerDispatchWakes.delete(coreDb.dataRoot);
   };
 }
 
-/** The Main facts that one pass observed. They apply to this pass only. */
-interface SchedulerPassObservations {
-  sourceRecoveryRequired: boolean;
-  publicationPending: boolean;
-  /** Admissions whose claimed dispatch returned recovery-required in this pass. */
-  readonly recoveryQueueEntryIds: Set<string>;
+/**
+ * An owner release edge of the holds table. It queues one `released` event on each root and
+ * awaits nothing, so an owner can call it while it holds the gate that it releases.
+ */
+export function releaseSchedulerDispatchHold(hold: HandoffHold, key?: HandoffCapacityKey): void {
+  for (const root of schedulerDispatchHandoffs.values())
+    feedSchedulerDispatch(root, { kind: 'released', hold, ...(key ? { key } : {}) });
 }
 
-type SchedulerSelection =
-  | { readonly kind: 'none' }
-  | {
-      readonly kind: 'deny';
-      readonly entry: CoreSchedulerQueueEntry;
-      readonly release: () => void;
+/**
+ * Feeds one event. Events run one at a time in queue order. An effect never calls the transition:
+ * an event that an effect produces while the queue drains waits in the queue (E5).
+ */
+function feedSchedulerDispatch(root: SchedulerDispatchHandoff, event: DispatchEvent): void {
+  root.events.push(event);
+  if (root.draining) return;
+  root.draining = true;
+  try {
+    while (root.events.length > 0) {
+      const decision = decideHandoff(root.record, root.events.shift()!);
+      root.record = decision.record;
+      const starts: (() => void)[] = [];
+      // Every effect of the decision runs, so a failed read or barrier cannot drop the wake of an
+      // independently released sibling in the same decision.
+      for (const effect of decision.effects) runSchedulerDispatchEffect(root, effect, starts);
+      // E1: a published invocation starts only after its waiters hold its promise.
+      for (const start of starts) start();
     }
-  | {
-      readonly kind: 'claim';
-      readonly entry: CoreSchedulerQueueEntry;
-      readonly release: () => void;
-      readonly selectionPrefixDigest: string;
-    };
+  } finally {
+    root.draining = false;
+  }
+}
+
+/** Feeds an event from an asynchronous completion; a transition defect is logged, not lost. */
+function feedSchedulerDispatchLater(root: SchedulerDispatchHandoff, event: DispatchEvent): void {
+  try {
+    feedSchedulerDispatch(root, event);
+  } catch (error) {
+    console.error(
+      'scheduler_dispatch_handoff_failed',
+      error instanceof Error ? error.message : 'unknown'
+    );
+  }
+}
+
+function runSchedulerDispatchEffect(
+  root: SchedulerDispatchHandoff,
+  effect: DispatchEffect,
+  starts: (() => void)[]
+): void {
+  switch (effect.kind) {
+    case 'select':
+      root.events.push(selectSchedulerDispatch(root, effect));
+      return;
+    case 'post':
+      postSchedulerClaim(root, effect);
+      return;
+    case 'barrier':
+      postSchedulerClaimBarrier(root);
+      return;
+    case 'deny':
+      denySchedulerAdmission(root, effect.entry);
+      return;
+    case 'publish':
+      starts.push(publishSchedulerInvocation(root, effect.entry, effect.invocation));
+      return;
+    case 'release': {
+      const release = root.handles.get(effect.entry);
+      root.handles.delete(effect.entry);
+      release?.();
+      return;
+    }
+    case 'retire': {
+      const current = root.claims.get(effect.entry);
+      if (current && schedulerInvocationIds.get(current) === effect.invocation)
+        root.claims.delete(effect.entry);
+      return;
+    }
+    case 'resolve':
+      resolveSchedulerDispatchCaller(root, effect.caller, effect.result);
+      return;
+    case 'wake': {
+      const wake = schedulerDispatchWakes.get(root.dataRoot);
+      if (wake) queueMicrotask(wake);
+      return;
+    }
+  }
+}
 
 /**
- * Walks one Core read snapshot in insertion order. Each Core-satisfiable admission gets Main's
- * own checks. The first admission that passes them is the proposal. Every satisfiable
- * predecessor that Main skipped goes into the selection prefix that Core verifies.
+ * The `resolve` effect. The result is fixed in the decision step, so a join names that exact
+ * invocation; it reaches the caller one macrotask later, after the microtask closeout of a
+ * settled invocation retires it.
  */
-function selectSchedulerAdmission(
+function resolveSchedulerDispatchCaller(
+  root: SchedulerDispatchHandoff,
+  callerId: string,
+  result: HandoffCallerResult<SchedulerDispatchLoopStartedTurn>
+): void {
+  const target = root.callers.get(callerId);
+  if (!target) return;
+  root.callers.delete(callerId);
+  const caller = {
+    resolve: (value: SchedulerDispatchLoopResult | Promise<SchedulerDispatchLoopResult>) =>
+      setImmediate(() => target.resolve(value)),
+    reject: (reason: unknown) => setImmediate(() => target.reject(reason)),
+  };
+  if (result.kind === 'join') {
+    // K1: the full-closeout promise of that exact invocation.
+    const invocation = root.claims.get(result.entry);
+    if (invocation && schedulerInvocationIds.get(invocation) === result.invocation)
+      caller.resolve(invocation);
+    else caller.reject(new Error('The joined scheduler invocation is not published.'));
+    return;
+  }
+  const outcome = result.outcome;
+  if (outcome.kind === 'refused' || outcome.kind === 'failed') {
+    caller.reject(outcome.kind === 'refused' ? outcome.refusal : outcome.cause);
+    return;
+  }
+  const shared = result.kind === 'pass' ? schedulerPassResults.get(outcome) : undefined;
+  if (shared) {
+    caller.resolve(shared);
+    return;
+  }
+  const startedTurns = result.kind === 'pass' ? [...result.started] : [];
+  const value: SchedulerDispatchLoopResult =
+    outcome.kind === 'queued'
+      ? { startedTurns, terminalResult: { status: 'queued', reason: outcome.reason } }
+      : {
+          startedTurns,
+          terminalResult: { status: 'denied', entry: outcome.denial as CoreSchedulerQueueEntry },
+        };
+  if (result.kind === 'pass') schedulerPassResults.set(outcome, value);
+  caller.resolve(value);
+}
+
+/** The preparation input that the claim serializes; its digest is the retained preparation claim. */
+function schedulerPreparationInput(
   input: RunSchedulerDispatchLoopInput,
-  claims: SchedulerPreparationClaims,
-  observed: SchedulerPassObservations
-): SchedulerSelection {
+  entry: CoreSchedulerQueueEntry
+) {
+  const config = schedulerDispatchConfiguration(input, entry);
+  return {
+    admission: entry,
+    configVersion: input.configVersion ?? null,
+    manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
+    workspaceConfig: config.workspaceConfig,
+    userConfig: config.userConfig,
+    workspaceDataSourceCatalog: config.workspaceDataSourceCatalog,
+    workspaceMcpServerCatalog: config.workspaceMcpServerCatalog,
+  };
+}
+
+function schedulerDispatchConfiguration(
+  input: RunSchedulerDispatchLoopInput,
+  entry: CoreSchedulerQueueEntry
+) {
+  const responsibleUserId =
+    entry.triggerActor.kind === 'user'
+      ? entry.triggerActor.id
+      : entry.triggerActor.responsibleUserId;
+  return {
+    workspaceConfig: input.workspaceConfigs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.config,
+    userConfig: input.userConfigs?.find((candidate) => candidate.userId === responsibleUserId)
+      ?.config,
+    workspaceDataSourceCatalog: input.workspaceDataSourceCatalogs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.catalog,
+    workspaceMcpServerCatalog: input.workspaceMcpServerCatalogs?.find(
+      (candidate) => candidate.workspaceId === entry.workspaceId
+    )?.catalog,
+  };
+}
+
+/** The queued admission representation that the original post of an entry serialized. */
+function queuedAdmissionRepresentation(entry: CoreSchedulerQueueEntry): CoreSchedulerQueueEntry {
+  return entry.status === 'queued' ? entry : { ...entry, status: 'queued' };
+}
+
+function schedulerSelectionWork(
+  input: RunSchedulerDispatchLoopInput,
+  entry: CoreSchedulerQueueEntry,
+  selectionPrefixDigest: string
+): SchedulerSelectionWork {
+  return {
+    input,
+    entry,
+    selectionPrefixDigest,
+    preparationInput: schedulerPreparationInput(input, queuedAdmissionRepresentation(entry)),
+  };
+}
+
+function preparationDigestOf(work: SchedulerSelectionWork): string {
+  return sha256Hex(JSON.stringify(work.preparationInput));
+}
+
+/** Main's own checks of one proposal after its Workspace admission handle is held. */
+function schedulerProposalCheck(
+  input: RunSchedulerDispatchLoopInput,
+  entry: CoreSchedulerQueueEntry
+):
+  | { readonly kind: 'pass' }
+  | { readonly kind: 'deny' }
+  | { readonly kind: 'skip'; readonly hold: HandoffHold; readonly sourceRecovery: boolean } {
+  if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))
+    return { kind: 'deny' };
+  if (entry.backendId !== input.executionBackend.id)
+    throw new Error('Queued admission does not name the configured execution backend.');
+  // An incomplete cross-store publication fences only its own request/Thread. Continue
+  // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
+  const turnInput = readScheduledAdmissionText(input.coreDb, entry);
+  if (turnInput === null) return { kind: 'skip', hold: 'publication-pending', sourceRecovery: true };
+  if (!schedulerEntryPublicationComplete(input, entry, turnInput))
+    return {
+      kind: 'skip',
+      hold: 'publication-pending',
+      sourceRecovery:
+        isRecurringQueueEntry(input.coreDb, entry.queueEntryId) ||
+        !!findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId),
+    };
+  // Admission is only early refusal; the live activated policy decides before effects.
+  return currentSchedulerDispatchAuthority(input, entry) ? { kind: 'pass' } : { kind: 'deny' };
+}
+
+/** Reads the retained claim row of one attempt identity in the selection snapshot. */
+function readSchedulerClaimRow(
+  coreDb: CoreDb,
+  entryId: string,
+  claim: HandoffClaimIdentity
+): 'none' | 'exact' | 'other' {
+  const row = coreDb.sqlite
+    .prepare(`SELECT attempt.queue_entry_id AS queueEntryId,
+      json_extract(claim.invocation_json, '$.carriage.schedulerPreparation') AS claim
+    FROM scheduler_execution_attempts AS attempt
+    LEFT JOIN control_execution_steps AS claim
+      ON claim.execution_id = 'scheduler-lifecycle:' || attempt.attempt_id
+      AND claim.step_id = 'claim' AND claim.state = 'completed'
+    WHERE attempt.attempt_id = ?`)
+    .get(claim.attemptId) as { queueEntryId: string; claim: string | null } | undefined;
+  if (!row) return 'none';
+  if (row.queueEntryId !== entryId || row.claim === null) return 'other';
+  const retained = JSON.parse(row.claim) as {
+    readonly queueEntryId?: unknown;
+    readonly admissionHash?: unknown;
+    readonly preparationDigest?: unknown;
+  };
+  return retained.queueEntryId === entryId &&
+    retained.admissionHash === claim.inputHash &&
+    retained.preparationDigest === claim.preparationDigest
+    ? 'exact'
+    : 'other';
+}
+
+/** The `select` effect: one synchronous Core read transaction that ends before any post. */
+function selectSchedulerDispatch(
+  root: SchedulerDispatchHandoff,
+  effect: Extract<DispatchEffect, { kind: 'select' }>
+): DispatchEvent {
+  // An inspection snapshot that cannot open fails the inspection of every unresolved claim.
+  const failure = { entry: null as string | null, inspections: Object.keys(effect.unresolved) };
+  try {
+    const input = effect.snapshot;
+    if (!input) throw new Error('The scheduler selection has no trigger snapshot.');
+    return input.coreDb.sqlite
+      .transaction(() => readSchedulerDispatchSelection(root, input, effect, failure))
+      .deferred();
+  } catch (cause) {
+    return {
+      kind: 'failed',
+      stage: 'select',
+      entry: failure.entry,
+      cause,
+      inspections: failure.inspections,
+    };
+  }
+}
+
+function readSchedulerDispatchSelection(
+  root: SchedulerDispatchHandoff,
+  input: RunSchedulerDispatchLoopInput,
+  effect: Extract<DispatchEffect, { kind: 'select' }>,
+  failure: { entry: string | null; inspections: string[] }
+): DispatchEvent {
+  failure.inspections = [];
+  const db = input.coreDb;
+  const skipped: HandoffSkip[] = [];
+  const discharged: string[] = [];
+  const recovered: string[] = [];
+  const selected = (selection: HandoffSelection): DispatchEvent => ({
+    kind: 'selected',
+    selection,
+    skipped,
+    discharged,
+    recovered,
+  });
+  // The pause can take effect while a pass waits. A queued entry keeps its admission with no attempt.
+  if (input.agentWorkPaused?.()) return selected({ kind: 'paused' });
+  // Preparation is single-flight. Keep its invocation promise through closeout so product observers cannot mistake a terminal row for finished output and backend handoff.
+  if (
+    [...root.claims.keys()].some((queueEntryId) =>
+      db.sqlite
+        .prepare(
+          "SELECT 1 FROM scheduler_execution_attempts WHERE queue_entry_id = ? AND phase = 'open' AND deadline IS NULL"
+        )
+        .get(queueEntryId)
+    )
+  )
+    return selected({ kind: 'preparing' });
+  // Read every unresolved claim by attempt ID before the walk: a committed original is already
+  // admitted and is no longer a queued row.
+  const held = new Set<string>();
+  const walkClaims = new Set<string>();
+  const noRow = new Set<string>();
+  let barrier = false;
+  for (const [entryId, claim] of Object.entries(effect.unresolved)) {
+    failure.entry = entryId;
+    failure.inspections = [entryId];
+    const row = readSchedulerClaimRow(db, entryId, claim);
+    if (row === 'none') noRow.add(entryId);
+    const current = listSchedulerAdmissionEntry(db, entryId);
+    const replayAfterUnknown = effect.replayEntry === entryId;
+    const replay =
+      replayAfterUnknown && row === 'exact' && current
+        ? acquireImmediateReplay(root, input, current, claim)
+        : null;
+    const disposition = classifyUnresolvedReadback({
+      replayAfterUnknown,
+      row,
+      checksPass: replay !== null,
+      proofCovers: effect.barrierProof?.includes(entryId) === true,
+      queued: current?.status === 'queued',
+      walkCandidate: 'pending',
+      sameDigest: false,
+      barrierAllowed: effect.barrierAllowed,
+    });
+    if (disposition === 'immediate-replay' && replay) {
+      root.handles.set(entryId, replay.release);
+      root.work = replay.work;
+      return selected({ kind: 'claim', entry: entryId, identity: claimIdentity(claim), retained: true });
+    }
+    replay?.release();
+    if (disposition === 'discharge-recovery') recovered.push(entryId);
+    else if (disposition === 'discharge') discharged.push(entryId);
+    else if (disposition === 'barrier') barrier = true;
+    else if (disposition === 'walk') walkClaims.add(entryId);
+    else held.add(entryId);
+  }
+  failure.entry = null;
+  failure.inspections = [];
+  const covered = () =>
+    Object.keys(effect.unresolved).filter(
+      (entryId) => noRow.has(entryId) && effect.barrierProof?.includes(entryId) !== true
+    );
+  if (barrier) return selected({ kind: 'barrier', covered: covered() });
+  // Walk one Core read snapshot in insertion order. Each Core-satisfiable admission gets Main's
+  // own checks. The first admission that passes them is the proposal. Every satisfiable
+  // predecessor that Main skipped goes into the selection prefix that Core verifies.
   const prefix = createSchedulerSelectionPrefix();
-  for (const entry of readQueuedSchedulerAdmissionEntriesInOrder(input.coreDb)) {
-    if (schedulerClaimBlocked(input.coreDb, entry)) continue;
+  for (const entry of readQueuedSchedulerAdmissionEntriesInOrder(db)) {
+    if (schedulerClaimBlocked(db, entry)) continue;
+    const entryId = entry.queueEntryId;
+    failure.entry = entryId;
+    failure.inspections = effect.unresolved[entryId] ? [entryId] : [];
     // Core applies the same backend and authority qualification to each predecessor. A skipped
     // admission goes into the prefix only if Core also counts it as satisfiable.
-    const qualified = schedulerAdmissionQualified(input.coreDb, entry);
-    const skip = () => {
+    const qualified = schedulerAdmissionQualified(db, entry);
+    const skip = (hold: HandoffHold, sourceRecovery = false) => {
       if (qualified) prefix.add(entry);
+      skipped.push(sourceRecovery ? { entry: entryId, hold, sourceRecovery } : { entry: entryId, hold });
     };
     let release: (() => void) | undefined;
     try {
-      if (observed.recoveryQueueEntryIds.has(entry.queueEntryId)) {
-        skip();
+      if (effect.recovery.includes(entryId) || held.has(entryId)) {
+        skip('unresolved-claim');
         continue;
       }
-      if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
+      if (!isScopeAdmitted(db.dataRoot, 'workspace', entry.workspaceId)) {
         // Retain the admission and all exclusion; only this process-local selection is skipped.
-        observed.sourceRecoveryRequired = true;
-        observed.publicationPending = true;
-        skip();
+        skip('scope-not-admitted');
         continue;
       }
       // A live local invocation owns this admission.
-      if (claims.has(entry.queueEntryId)) {
-        skip();
+      if (root.claims.has(entryId)) {
+        skip('local-invocation');
+        continue;
+      }
+      // A pass that only wakes requested skips the busy set; intake and the timer do not.
+      if (effect.skipBusy && effect.busy[entryId]) {
+        skip('backend-capacity');
         continue;
       }
       try {
         release = input.store.enterWorkspaceMutation(entry.workspaceId);
       } catch (error) {
         if (!(error instanceof OperationError) || error.code !== 'workspace_frozen') throw error;
-        observed.publicationPending = true;
-        skip();
+        skip('frozen-workspace');
         continue;
       }
-      if (
-        !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
-      ) {
-        const denied = release;
-        release = undefined;
-        return { kind: 'deny', entry, release: denied };
-      }
-      if (entry.backendId !== input.executionBackend.id)
-        throw new Error('Queued admission does not name the configured execution backend.');
-      // An incomplete cross-store publication fences only its own request/Thread. Continue
-      // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
-      const turnInput = readScheduledAdmissionText(input.coreDb, entry);
-      if (turnInput === null) {
-        observed.sourceRecoveryRequired = true;
-        observed.publicationPending = true;
-        skip();
+      const check = schedulerProposalCheck(input, entry);
+      if (check.kind === 'skip') {
+        skip(check.hold, check.sourceRecovery);
         continue;
       }
-      if (!schedulerEntryPublicationComplete(input, entry, turnInput)) {
-        if (
-          isRecurringQueueEntry(input.coreDb, entry.queueEntryId) ||
-          findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId)
-        )
-          observed.sourceRecoveryRequired = true;
-        observed.publicationPending = true;
-        skip();
+      const work = schedulerSelectionWork(input, entry, prefix.digest());
+      const claim = walkClaims.has(entryId) ? effect.unresolved[entryId] : undefined;
+      if (claim) {
+        // An unresolved entry is never denied: its disposition stays recovery-required.
+        const disposition =
+          check.kind === 'deny'
+            ? 'hold'
+            : classifyUnresolvedReadback({
+                replayAfterUnknown: false,
+                row: 'none',
+                checksPass: false,
+                proofCovers: false,
+                queued: true,
+                walkCandidate: 'yes',
+                sameDigest: preparationDigestOf(work) === claim.preparationDigest,
+                barrierAllowed: effect.barrierAllowed,
+              });
+        if (disposition === 'replay') {
+          root.handles.set(entryId, release!);
+          release = undefined;
+          root.work = work;
+          return selected({ kind: 'claim', entry: entryId, identity: claimIdentity(claim), retained: true });
+        }
+        if (disposition === 'barrier') return selected({ kind: 'barrier', covered: covered() });
+        skip('unresolved-claim');
         continue;
       }
-      // Admission is only early refusal; the live activated policy decides before effects. The
-      // authority read can fail on its source owner, so the Workspace admission transfers to the
-      // proposal only after the read returns.
-      const authorized = currentSchedulerDispatchAuthority(input, entry);
-      const proposal = release;
+      // The authority read can fail on its source owner, so the Workspace admission transfers to
+      // the proposal only after the read returns.
+      root.handles.set(entryId, release!);
       release = undefined;
-      if (!authorized) return { kind: 'deny', entry, release: proposal };
-      return {
+      root.work = work;
+      if (check.kind === 'deny') return selected({ kind: 'deny', entry: entryId });
+      return selected({
         kind: 'claim',
-        entry,
-        release: proposal,
-        selectionPrefixDigest: prefix.digest(),
-      };
+        entry: entryId,
+        identity: {
+          attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
+          inputHash: entry.inputHash,
+          preparationDigest: preparationDigestOf(work),
+        },
+        retained: false,
+      });
     } finally {
       release?.();
     }
   }
-  return { kind: 'none' };
+  failure.entry = null;
+  return selected({ kind: 'none', queuedRemain: listQueuedSchedulerAdmissionEntries(db).length > 0 });
 }
 
-/** The one pending fresh scan of each Core data root. It waits behind the outstanding handoff. */
-const pendingScans = new Map<
-  string,
-  {
-    readonly input: Omit<RunSchedulerDispatchLoopInput, 'callerQueueEntryId'>;
-    readonly result: Promise<SchedulerDispatchLoopResult>;
+function claimIdentity(claim: HandoffClaimIdentity): HandoffClaimIdentity {
+  return {
+    attemptId: claim.attemptId,
+    inputHash: claim.inputHash,
+    preparationDigest: claim.preparationDigest,
+  };
+}
+
+function listSchedulerAdmissionEntry(
+  coreDb: CoreDb,
+  queueEntryId: string
+): CoreSchedulerQueueEntry | null {
+  try {
+    return requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+  } catch (error) {
+    if (error instanceof SchedulerAdmissionTransitionError) return null;
+    throw error;
   }
->();
+}
+
+/**
+ * The immediate replay of an exact committed row: the current pause, authority, eligibility and
+ * proposal-digest checks pass, with its Workspace admission handle held.
+ */
+function acquireImmediateReplay(
+  root: SchedulerDispatchHandoff,
+  input: RunSchedulerDispatchLoopInput,
+  entry: CoreSchedulerQueueEntry,
+  claim: HandoffClaimIdentity
+): { readonly work: SchedulerSelectionWork; readonly release: () => void } | null {
+  if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) return null;
+  if (root.claims.has(entry.queueEntryId)) return null;
+  let release: (() => void) | undefined;
+  try {
+    release = input.store.enterWorkspaceMutation(entry.workspaceId);
+  } catch (error) {
+    if (!(error instanceof OperationError) || error.code !== 'workspace_frozen') throw error;
+    return null;
+  }
+  try {
+    const work = schedulerSelectionWork(input, entry, createSchedulerSelectionPrefix().digest());
+    if (
+      schedulerProposalCheck(input, entry).kind !== 'pass' ||
+      preparationDigestOf(work) !== claim.preparationDigest
+    )
+      return null;
+    const handle = release;
+    release = undefined;
+    return { work, release: handle };
+  } finally {
+    release?.();
+  }
+}
+
+/** The `post` effect: the claim command, whose reply class is a function of its stage and outcome. */
+function postSchedulerClaim(
+  root: SchedulerDispatchHandoff,
+  effect: Extract<DispatchEffect, { kind: 'post' }>
+): void {
+  const work = root.work;
+  const stage: SchedulerClaimStage = { current: 'prepare' };
+  let posted: Promise<SchedulerExecutionAttemptRecord>;
+  try {
+    if (!work || work.entry.queueEntryId !== effect.entry)
+      throw new Error('The scheduler claim has no selected admission.');
+    work.input.onDispatchAttribution?.(effect.entry);
+    posted = createSchedulerExecutionAttempt(
+      work.input.coreDb,
+      {
+        entry: work.entry,
+        attemptId: effect.identity.attemptId,
+        preparationInput: work.preparationInput,
+        selectionPrefixDigest: work.selectionPrefixDigest,
+        ...(work.input.now ? { now: work.input.now } : {}),
+      },
+      stage
+    );
+  } catch (error) {
+    posted = Promise.reject(error);
+  }
+  posted.then(
+    (attempt) => {
+      if (work) work.attempt = attempt;
+      feedSchedulerDispatchLater(root, {
+        kind: 'reply',
+        // A replay can return an original that another owner has already advanced or closed.
+        // Only an untouched pre-submit claim continues; a fresh scan decides the entry again.
+        replyClass: classifyClaimReply({
+          kind: 'attempt',
+          openWithoutProgress:
+            attempt.phase === 'open' &&
+            attempt.deadline === null &&
+            attempt.operationId === null &&
+            attempt.agentSessionId === null,
+        }),
+      });
+    },
+    (error: unknown) => feedSchedulerDispatchLater(root, schedulerClaimFailureReply(error, stage))
+  );
+}
+
+function schedulerClaimFailureReply(error: unknown, stage: SchedulerClaimStage): DispatchEvent {
+  if (error instanceof ExecutionAttemptRefusal)
+    return {
+      kind: 'reply',
+      replyClass: classifyClaimReply({ kind: 'refusal', reason: error.reason ?? null }),
+      refusal: error,
+    };
+  return {
+    kind: 'reply',
+    replyClass: classifyClaimReply({
+      kind: 'error',
+      stage: stage.current,
+      commit: error instanceof ControlStoreWorkerError ? error.commit : 'untyped',
+    }),
+    cause: error,
+  };
+}
+
+/** The `barrier` effect: the null observation on the same admitted Core writer, after every earlier post. */
+function postSchedulerClaimBarrier(root: SchedulerDispatchHandoff): void {
+  let posted: Promise<unknown>;
+  try {
+    const snapshot = root.record.snapshot;
+    if (!snapshot) throw new Error('The scheduler barrier has no trigger snapshot.');
+    posted = acceptSchedulerExecutionObservation(snapshot.coreDb, null);
+  } catch (error) {
+    posted = Promise.reject(error);
+  }
+  posted.then(
+    () => feedSchedulerDispatchLater(root, { kind: 'barrier', acknowledged: true }),
+    () => feedSchedulerDispatchLater(root, { kind: 'barrier', acknowledged: false })
+  );
+}
+
+/** The `deny` effect: the existing queued denial of the entry. */
+function denySchedulerAdmission(root: SchedulerDispatchHandoff, entryId: string): void {
+  let denied: Promise<CoreSchedulerQueueEntry>;
+  try {
+    const work = root.work;
+    if (!work || work.entry.queueEntryId !== entryId)
+      throw new Error('The scheduler denial has no selected admission.');
+    denied = admitCoreScheduler(work.input.coreDb, {
+      mode: 'deny',
+      queueEntryId: entryId,
+      denialReason: 'authority-denied',
+    }).then((result) => {
+      if (result.kind !== 'queue') throw new Error('Scheduler publication returned another family.');
+      return result.entry;
+    });
+  } catch (error) {
+    denied = Promise.reject(error);
+  }
+  denied.then(
+    (entry) => feedSchedulerDispatchLater(root, { kind: 'denied', denial: entry }),
+    (cause: unknown) =>
+      feedSchedulerDispatchLater(root, {
+        kind: 'failed',
+        stage: 'deny',
+        entry: entryId,
+        cause,
+        inspections: [],
+      })
+  );
+}
+
+/**
+ * The `publish` effect (E1): installs the invocation promise in the existing preparation claim
+ * set. The returned start runs the claimed continuation after the waiters hold the promise.
+ */
+function publishSchedulerInvocation(
+  root: SchedulerDispatchHandoff,
+  entryId: string,
+  invocationId: string
+): () => void {
+  const work = root.work;
+  let start!: () => void;
+  const invocation = new Promise<SchedulerDispatchLoopResult>((resolve, reject) => {
+    start = () => {
+      try {
+        if (!work?.attempt || work.attempt.attemptId !== invocationId)
+          throw new Error('The scheduler invocation has no claimed attempt.');
+        const attempt = work.attempt;
+        resolve(
+          withTurnDispatchTelemetry(work.entry.turnId, () =>
+            continueSchedulerAdmission(work.input, work.entry, attempt, (result) =>
+              feedSchedulerDispatchLater(root, {
+                kind: 'submitted',
+                invocation: invocationId,
+                turn: result.startedTurns[0]!,
+              })
+            )
+          )
+        );
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
+  schedulerInvocationIds.set(invocation, invocationId);
+  root.claims.set(entryId, invocation);
+  invocation.then(
+    (result) =>
+      feedSchedulerDispatchLater(root, schedulerSettlement(work, entryId, invocationId, result)),
+    (cause: unknown) => {
+      // A failure after the submission result reached the pass has no other observer.
+      if (!Object.values(root.record.passes).some((pass) => pass.parkedOn === invocationId))
+        console.error(
+          'scheduler_dispatch_failed_after_admission',
+          cause instanceof Error ? cause.message : 'unknown'
+        );
+      feedSchedulerDispatchLater(root, {
+        kind: 'settled',
+        entry: entryId,
+        invocation: invocationId,
+        outcome: 'failed',
+        cause,
+      });
+    }
+  );
+  return start;
+}
+
+/** Maps the full closeout of one invocation to its settlement event. */
+function schedulerSettlement(
+  work: SchedulerSelectionWork | null,
+  entryId: string,
+  invocationId: string,
+  result: SchedulerDispatchLoopResult
+): DispatchEvent {
+  const base = { kind: 'settled', entry: entryId, invocation: invocationId } as const;
+  const reason = result.terminalResult.status === 'queued' ? result.terminalResult.reason : null;
+  if (reason === 'max-dispatches') {
+    const turn = result.startedTurns[0];
+    return { ...base, outcome: 'dispatched', ...(turn ? { turn } : {}) };
+  }
+  if (reason === 'recovery-required') return { ...base, outcome: 'recovery-required' };
+  if (reason === 'backend-busy' && work)
+    // E7: the held fact of the refusing key, read in the same synchronous step that queues it.
+    return { ...base, outcome: 'backend-busy', capacity: readSchedulerCapacityHold(work) };
+  return {
+    ...base,
+    outcome: 'failed',
+    cause: new Error('The scheduler invocation returned an unexpected result.'),
+  };
+}
+
+/** The refusing capacity key of a busy entry and whether its owner still holds it. */
+function readSchedulerCapacityHold(work: SchedulerSelectionWork): {
+  readonly key: HandoffCapacityKey;
+  readonly held: boolean;
+} {
+  return { key: { kind: 'backend', backendId: work.entry.backendId }, held: true };
+}
 
 /** Dispatches eligible FIFO work through an attempt persisted before its preparation effects. */
 export async function runSchedulerDispatchLoop(
   input: RunSchedulerDispatchLoopInput
 ): Promise<SchedulerDispatchLoopResult> {
-  if (input.agentWorkPaused?.())
-    return { startedTurns: [], terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
-  const claims = getSchedulerPreparationClaims(input.coreDb);
-  const own = () => (input.callerQueueEntryId ? claims.get(input.callerQueueEntryId) : undefined);
-  const joined = own();
-  if (joined) return joined;
-  const root = input.coreDb.dataRoot;
-  if (!selectionHandoffs.has(root)) return runSchedulerDispatchPass(input, claims);
-  // A trigger during an outstanding handoff joins the one pending fresh scan, or starts it. The
-  // scan leaves the pending slot when it acquires the handoff, so a later trigger is retained.
-  let pending = pendingScans.get(root);
-  const { callerQueueEntryId: _caller, ...fresh } = input;
-  if (pending) {
-    const scan = pending.input as Record<string, unknown>;
-    const maxDispatches = Math.max(pending.input.maxDispatches ?? 1, input.maxDispatches ?? 1);
-    // The pending scan waits for the handoff and has read only its root and the pause flag.
-    // It runs with the newest configuration snapshot of its triggers and the largest budget.
-    if ((input.configVersion ?? -1) > (pending.input.configVersion ?? -1)) {
-      for (const key of Object.keys(scan)) delete scan[key];
-      Object.assign(scan, fresh);
-    }
-    scan.maxDispatches = maxDispatches;
-  } else {
-    const leave = () => {
-      if (pendingScans.get(root)?.input === fresh) pendingScans.delete(root);
-    };
-    const result = runSchedulerDispatchPass(fresh, claims, leave);
-    void result.then(leave, leave);
-    pending = { input: fresh, result };
-    pendingScans.set(root, pending);
+  const root = schedulerDispatchHandoff(input.coreDb);
+  const caller = `caller:${root.nextCaller++}`;
+  const result = Promise.withResolvers<SchedulerDispatchLoopResult>();
+  root.callers.set(caller, result);
+  try {
+    feedSchedulerDispatch(root, {
+      kind: 'trigger',
+      caller,
+      entry: input.callerQueueEntryId ?? null,
+      snapshot: input,
+      max: input.maxDispatches ?? 1,
+      source: input.dispatchSource ?? 'external',
+    });
+  } catch (error) {
+    root.callers.delete(caller);
+    throw error;
   }
-  const result = await pending.result;
-  // The exact same-entry result: the caller joins its own invocation and holds no handoff.
-  const mine = result.startedTurns.some(
-    (turn) => turn.dispatch.entry.queueEntryId === input.callerQueueEntryId
-  )
-    ? undefined
-    : own();
-  return mine ? await mine : result;
+  return result.promise;
 }
-
-/** Runs one pass: at most the claim-attempt budget, each attempt under the per-root handoff. */
-async function runSchedulerDispatchPass(
-  input: RunSchedulerDispatchLoopInput,
-  claims: SchedulerPreparationClaims,
-  onHandoffAcquired?: () => void
-): Promise<SchedulerDispatchLoopResult> {
-  const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
-  const observed: SchedulerPassObservations = {
-    sourceRecoveryRequired: false,
-    publicationPending: false,
-    recoveryQueueEntryIds: new Set(),
-  };
-  let dispatched = 0;
-  for (let claimAttempts = 0; dispatched < (input.maxDispatches ?? 1); claimAttempts++) {
-    // At the cap the pass yields to the next wake or timer.
-    if (claimAttempts >= SCHEDULER_PASS_CLAIM_ATTEMPTS)
-      return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
-    if (input.agentWorkPaused?.())
-      return { startedTurns, terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
-    const handoff = reserveSelectionHandoff(input.coreDb.dataRoot);
-    try {
-      await handoff.ready;
-      onHandoffAcquired?.();
-      // A trigger that waited for the handoff joins its own admission's invocation. The join
-      // awaits execution and closeout, so the handoff is released first.
-      const own =
-        dispatched === 0 && input.callerQueueEntryId
-          ? claims.get(input.callerQueueEntryId)
-          : undefined;
-      if (own) {
-        handoff.release();
-        return await own;
-      }
-      // The pause can take effect while this pass waits for the handoff. Recheck it before the
-      // selection and the post, so a queued entry keeps its admission with no attempt.
-      if (input.agentWorkPaused?.())
-        return { startedTurns, terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
-      // Preparation is single-flight. Keep its invocation promise through closeout so product observers cannot mistake a terminal row for finished output and backend handoff.
-      if (
-        [...claims.keys()].some((queueEntryId) =>
-          input.coreDb.sqlite
-            .prepare(
-              "SELECT 1 FROM scheduler_execution_attempts WHERE queue_entry_id = ? AND phase = 'open' AND deadline IS NULL"
-            )
-            .get(queueEntryId)
-        )
-      )
-        return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
-      // One Core read snapshot for the whole walk; it ends before any post.
-      const selection = input.coreDb.sqlite
-        .transaction(() => selectSchedulerAdmission(input, claims, observed))
-        .deferred();
-      if (selection.kind === 'none')
-        return {
-          startedTurns,
-          terminalResult: {
-            status: 'queued',
-            reason: observed.sourceRecoveryRequired
-              ? 'recovery-required'
-              : observed.publicationPending
-                ? 'entry-publication-pending'
-                : listQueuedSchedulerAdmissionEntries(input.coreDb).length
-                  ? 'thread-busy'
-                  : 'no-queued-entry',
-          },
-        };
-      if (selection.kind === 'deny') {
-        try {
-          const denied = await admitCoreScheduler(input.coreDb, {
-            mode: 'deny',
-            queueEntryId: selection.entry.queueEntryId,
-            denialReason: 'authority-denied',
-          });
-          if (denied.kind !== 'queue')
-            throw new Error('Scheduler publication returned another family.');
-          return { startedTurns, terminalResult: { status: 'denied', entry: denied.entry } };
-        } finally {
-          selection.release();
-        }
-      }
-      const { entry } = selection;
-      let acknowledgeSubmission!: (result: SchedulerDispatchLoopResult) => void;
-      let submissionResult: SchedulerDispatchLoopResult | undefined;
-      const submitted = new Promise<SchedulerDispatchLoopResult>((resolve) => {
-        acknowledgeSubmission = (result) => {
-          submissionResult = result;
-          resolve(result);
-        };
-      });
-      const claimDecided = Promise.withResolvers<void>();
-      const promise = withTurnDispatchTelemetry(entry.turnId, () =>
-        dispatchSchedulerAdmission(
-          input,
-          entry,
-          acknowledgeSubmission,
-          selection.selectionPrefixDigest,
-          claimDecided.resolve
-        )
-      );
-      // Publish the winner's invocation before the handoff is released.
-      claims.set(entry.queueEntryId, promise);
-      const forget = () => {
-        selection.release();
-        if (claims.get(entry.queueEntryId) === promise) claims.delete(entry.queueEntryId);
-      };
-      void promise.then(forget, forget);
-      // Core decided the claim: commit, definite refusal or owner failure. Release the handoff
-      // before awaiting preparation or closeout.
-      await Promise.race([claimDecided.promise, promise.then(noop, noop)]);
-      handoff.release();
-      const result = await Promise.race([promise, submitted]);
-      if (result === submissionResult)
-        void promise.catch((error: unknown) =>
-          console.error(
-            'scheduler_dispatch_failed_after_admission',
-            error instanceof Error ? error.message : 'unknown'
-          )
-        );
-      startedTurns.push(...result.startedTurns);
-      // Core refused the claim and committed nothing: the placement is held, or the FIFO
-      // selection changed. The next fresh scan decides again.
-      if (
-        result.terminalResult.status === 'queued' &&
-        result.terminalResult.reason === 'thread-busy'
-      )
-        continue;
-      if (
-        result.terminalResult.status === 'queued' &&
-        result.terminalResult.reason === 'recovery-required'
-      ) {
-        observed.sourceRecoveryRequired = true;
-        observed.publicationPending = true;
-        observed.recoveryQueueEntryIds.add(entry.queueEntryId);
-        continue;
-      }
-      if (
-        result.terminalResult.status !== 'queued' ||
-        result.terminalResult.reason !== 'max-dispatches'
-      )
-        return { startedTurns, terminalResult: result.terminalResult };
-      dispatched++;
-    } finally {
-      handoff.release();
-    }
-  }
-  return { startedTurns, terminalResult: { status: 'queued', reason: 'max-dispatches' } };
-}
-
-function noop(): void {}
 
 /** Checks the existing receipt or receipt-free source tuple without inventing a second ready flag. */
 function schedulerEntryPublicationComplete(
@@ -692,99 +1155,14 @@ function currentSchedulerDispatchAuthority(
 }
 
 /** Keeps preparation, submission, and Turn closeout with their current executor owner. */
-async function dispatchSchedulerAdmission(
+async function continueSchedulerAdmission(
   input: RunSchedulerDispatchLoopInput,
   entry: CoreSchedulerQueueEntry,
-  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void,
-  selectionPrefixDigest: string,
-  claimDecided: () => void
+  attempt: SchedulerExecutionAttemptRecord,
+  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void
 ): Promise<SchedulerDispatchLoopResult> {
-  input.onDispatchAttribution?.(entry.queueEntryId);
-  const responsibleUserId =
-    entry.triggerActor.kind === 'user'
-      ? entry.triggerActor.id
-      : entry.triggerActor.responsibleUserId;
-  const workspaceConfig = input.workspaceConfigs?.find(
-    (candidate) => candidate.workspaceId === entry.workspaceId
-  )?.config;
-  const userConfig = input.userConfigs?.find(
-    (candidate) => candidate.userId === responsibleUserId
-  )?.config;
-  const workspaceDataSourceCatalog = input.workspaceDataSourceCatalogs?.find(
-    (candidate) => candidate.workspaceId === entry.workspaceId
-  )?.catalog;
-  const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
-    (candidate) => candidate.workspaceId === entry.workspaceId
-  )?.catalog;
-  const unresolved = getUnresolvedSchedulerClaims(input.coreDb);
-  const original = unresolved.get(entry.queueEntryId);
-  // An unresolved original claim of this entry is the only identity that this process posts.
-  const attemptId =
-    original?.inputHash === entry.inputHash
-      ? original.attemptId
-      : (input.createAttemptId ?? (() => allocateEntityId('attempt')))();
-  const post = () =>
-    createSchedulerExecutionAttempt(input.coreDb, {
-      entry,
-      attemptId,
-      preparationInput: {
-        admission: entry,
-        configVersion: input.configVersion ?? null,
-        manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
-        workspaceConfig,
-        userConfig,
-        workspaceDataSourceCatalog,
-        workspaceMcpServerCatalog,
-      },
-      selectionPrefixDigest,
-      ...(input.now ? { now: input.now } : {}),
-    });
-  const ambiguous = (error: unknown) =>
-    error instanceof ControlStoreWorkerError && error.commit === 'unknown';
-  let attempt: SchedulerExecutionAttemptRecord;
-  try {
-    try {
-      attempt = await post();
-    } catch (error) {
-      if (!ambiguous(error)) throw error;
-      // Typed recovery for an ambiguous claim reply. Replay the exact original claim through
-      // the Core writer: under its write lock Core returns the original attempt if the claim
-      // committed, or decides this same identity now. No other identity is posted for the entry.
-      unresolved.set(entry.queueEntryId, { attemptId, inputHash: entry.inputHash });
-      try {
-        attempt = await post();
-      } catch (inspection) {
-        if (ambiguous(inspection))
-          return {
-            startedTurns: [],
-            terminalResult: { status: 'queued', reason: 'recovery-required' },
-          };
-        throw inspection;
-      }
-    }
-    unresolved.delete(entry.queueEntryId);
-  } catch (error) {
-    unresolved.delete(entry.queueEntryId);
-    // A held placement or a changed FIFO selection committed nothing; a fresh scan decides again.
-    // Every other refusal keeps its own answer.
-    if (
-      error instanceof ExecutionAttemptRefusal &&
-      (error.reason === 'placement-held' || error.reason === 'selection-changed')
-    )
-      return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
-    throw error;
-  } finally {
-    claimDecided();
-  }
-  // A replay can return an original that another owner has already advanced or closed. Only an
-  // untouched pre-submit claim continues here; a fresh scan decides the entry again.
-  if (
-    attempt.phase !== 'open' ||
-    attempt.deadline !== null ||
-    attempt.operationId !== null ||
-    attempt.agentSessionId !== null
-  )
-    return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
+  const { workspaceConfig, userConfig, workspaceDataSourceCatalog, workspaceMcpServerCatalog } =
+    schedulerDispatchConfiguration(input, entry);
   const expiration = Promise.withResolvers<never>();
   const expirationKey = JSON.stringify([input.coreDb.dataRoot, attempt.attemptId]);
   preparationExpirations.set(expirationKey, expiration.reject);

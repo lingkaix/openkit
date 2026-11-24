@@ -1,6 +1,8 @@
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
+import type { HandoffSource } from './scheduler-dispatch-handoff.js';
 import {
   type RunSchedulerDispatchLoopInput,
+  registerSchedulerDispatchWake,
   runSchedulerDispatchLoop,
   type SchedulerDispatchLoopResult,
 } from './scheduler-dispatch-loop.js';
@@ -37,8 +39,8 @@ export interface StartSchedulerDispatchRetryServiceInput
 
 /** Running dispatch retry service handle. */
 export interface SchedulerDispatchRetryService {
-  /** Runs one dispatch retry iteration immediately. */
-  readonly runOnce: () => Promise<SchedulerDispatchLoopResult | null>;
+  /** Runs one dispatch retry iteration immediately; a handoff wake passes source `wake`. */
+  readonly runOnce: (source?: HandoffSource) => Promise<SchedulerDispatchLoopResult | null>;
   /** Stops future scheduled dispatch retries. */
   readonly stop: () => void;
 }
@@ -57,7 +59,9 @@ export function startSchedulerDispatchRetryService(
   }
 
   let stopped = false;
-  const runOnce = async (): Promise<SchedulerDispatchLoopResult | null> => {
+  const runOnce = async (
+    source: HandoffSource = 'external'
+  ): Promise<SchedulerDispatchLoopResult | null> => {
     if (stopped) {
       return null;
     }
@@ -76,6 +80,7 @@ export function startSchedulerDispatchRetryService(
         workspaceConfigs: snapshot.workspaceConfigs,
         workspaceDataSourceCatalogs: snapshot.workspaceDataSourceCatalogs,
         workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+        dispatchSource: source,
       });
     } catch (error) {
       input.onError?.(error);
@@ -87,6 +92,11 @@ export function startSchedulerDispatchRetryService(
     input.clearInterval ??
     ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>));
 
+  // A handoff wake starts one run with source `wake`. Startup and the timer stay fallbacks for a
+  // lost wake and for the first scan after restart.
+  const unregisterWake = registerSchedulerDispatchWake(input.coreDb, () => {
+    void runOnce('wake');
+  });
   void runOnce();
   const timer = setTimer(() => {
     void runOnce();
@@ -100,6 +110,7 @@ export function startSchedulerDispatchRetryService(
       }
 
       stopped = true;
+      unregisterWake();
       clearTimer(timer);
     },
   };
