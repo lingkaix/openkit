@@ -9590,6 +9590,38 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  // B3 F4 (carried): a collection result lost before Core accepts it advances nothing.
+  it('keeps the retained Core cursor when a collection result is lost before acceptance', async () => {
+    const f = await admitIdleSupplyResident('closed_lost_result', {
+      onCollection: async (request) => {
+        if (request.input.mode === 'baseline')
+          return {
+            outcome: 'baseline',
+            head: { tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904', manifest: '2'.repeat(40) },
+          };
+        // The scan ran; its reply never reaches the Core owner.
+        throw new Error('NanoHost collection reply was lost before acceptance.');
+      },
+    });
+    const collector = f.backend as unknown as {
+      collectWorkspaceSnapshot(session: unknown, boundary: 'turn-end'): Promise<unknown>;
+    };
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const before = db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all();
+      expect(before).not.toEqual([]);
+      await expect(collector.collectWorkspaceSnapshot(f.session, 'turn-end')).rejects.toThrow(
+        'NanoHost collection reply was lost before acceptance.'
+      );
+      expect(db.sqlite.prepare('SELECT * FROM workspace_snapshot_cursors').all()).toEqual(before);
+      expect(
+        db.sqlite.prepare('SELECT COUNT(*) AS count FROM workspace_snapshot_collections').get()
+      ).toEqual({ count: 0 });
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
   it('waits for an unfinished prior Turn collection before reusing the binding and replays its committed receipt', async () => {
     let finish!: (result: Record<string, unknown>) => void;
     let arrived!: () => void;
