@@ -797,6 +797,8 @@ export async function createNativeTaskAdmissionFixture(
         turnExecutor: executor,
         executionBackend,
         agentManifests: configuration.agentManifests,
+        // The trigger carries the version of its snapshot, as each production caller does.
+        configVersion: configuration.version,
         gatewayConfig: configuration.gatewayConfig,
         providerRegistry: configuration.providerRegistry,
         workspaceConfigs: configuration.workspaceConfigs,
