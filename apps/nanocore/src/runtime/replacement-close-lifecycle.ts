@@ -139,6 +139,7 @@ export type ColdFence =
   | 'abandon'
   | 'unproved'
   | 'ambiguous-drain'
+  | 'unattributed-claim'
   | 'live-producer';
 
 export interface ReplacementCloseTable {
@@ -176,8 +177,13 @@ export interface ReplacementCloseTable {
     readonly storage: boolean;
     readonly sandbox: SandboxFacts;
   }) => CloseCause | null;
-  /** Main maps the Native deadline refusal to the original limiting clock. */
-  readonly slotCause: (premises: ClosePremises) => CloseCause;
+  /**
+   * When Main fixes the limiting clock of the slot: at the post, as the clock of the original
+   * minimum that it folds into the slot, or at the reply, from the wall clock it reads then.
+   */
+  readonly slotClockAt: 'post' | 'reply';
+  /** Main maps an acknowledged Native deadline refusal to the cause of the posted limiting clock. */
+  readonly slotCause: (posted: CloseClock) => CloseCause;
   /** RC9: dispatch for one authenticated poll. A reserved cell refuses another poll. */
   readonly dispatch: (input: {
     readonly harness: HarnessFacts;
@@ -240,6 +246,19 @@ export function limitingClock(p: ClosePremises): CloseClock {
     if (passed(p, clock) && (limit === null || p.deadlines[clock] < p.deadlines[limit]))
       limit = clock;
   return limit ?? 'Tc';
+}
+
+/**
+ * RC8: the clock whose original wall deadline is the minimum that Main folds into the private
+ * slot. It reads no wall instant, so a later wall step back cannot change it.
+ */
+export function slotClock(
+  deadlines: Readonly<Record<CloseClock, number>>,
+  clocks: readonly CloseClock[] = CLOCKS
+): CloseClock {
+  let limit = clocks[0] ?? 'Tc';
+  for (const clock of clocks) if (deadlines[clock] < deadlines[limit]) limit = clock;
+  return limit;
 }
 
 /** A clock refusal among the checked clocks, answered with the cause of the limiting clock. */
@@ -389,11 +408,18 @@ export const COLD_RULES: readonly ColdRule[] = [
       f.bindings.some((b) => b.capture === 'abandoned') ? fence('abandon') : undefined,
   },
   {
-    // P7: the close key and its settle revision prove the latch.
+    // P7: the close key and its settle revision prove that no later claim or write changed the
+    // row. They do not prove that the claim found an accepting row. The older Native claims (c1,
+    // r2) admit a draining row, so an independent drain under a settled close leaves the same
+    // durable values as an ordinary cell reuse. No existing durable value tells them apart, so P7
+    // fails closed. The live owner, whose claim refused a draining row, releases its own close.
     id: 'p7-success',
-    decide: (f) => p7(f, 'succeeded'),
+    decide: (f) => (settledCloseProof(f, 'succeeded') ? fence('unattributed-claim') : undefined),
   },
-  { id: 'p7-stale', decide: (f) => p7(f, 'stale') },
+  {
+    id: 'p7-stale',
+    decide: (f) => (settledCloseProof(f, 'stale') ? fence('unattributed-claim') : undefined),
+  },
   {
     // A drain with no open capture can be a Harness-only drain whose marker a later operation
     // replaced. Only an accepted capture that no close consumed is evidence of a capture claim.
@@ -422,18 +448,18 @@ function fence(reason: ColdFence): ColdAction {
   return { kind: 'fence', reason };
 }
 
-function p7(f: ColdFacts, result: 'succeeded' | 'stale'): ColdAction | undefined {
+/** P7 positive predicates: the exact settled close and the settle revision that Core retains. */
+export function settledCloseProof(f: ColdFacts, result: 'succeeded' | 'stale'): boolean {
   const h = f.harness;
   const consumed = closeOwner(f)?.consumed;
-  // The settle revision that Core retains proves that no later claim or write changed the row.
-  return h.cell === 'settled' &&
+  return (
+    h.cell === 'settled' &&
     h.operation === 'session.close' &&
     h.result === result &&
     consumed?.result === result &&
     consumed.revision === h.revision &&
     restorable(h, f.sandbox)
-    ? { kind: 'restore', scope: 'close', revision: h.revision }
-    : undefined;
+  );
 }
 
 /** Runs the rules in order. */
@@ -483,7 +509,8 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
       return 'sequence';
     return null;
   },
-  slotCause: (p) => CLOCK_CAUSE[limitingClock(p)],
+  slotClockAt: 'post',
+  slotCause: (posted) => CLOCK_CAUSE[posted],
   dispatch: ({ harness, key, reservedBy, poll }) =>
     harness.cell === 'queued' && harness.key === key
       ? null

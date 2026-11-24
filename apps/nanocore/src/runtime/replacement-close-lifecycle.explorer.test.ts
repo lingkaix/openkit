@@ -11,11 +11,14 @@ import {
   type ColdRule,
   composeCold,
   type HarnessFacts,
+  limitingClock,
   REPLACEMENT_CLOSE_TABLE,
   type ReplacementCloseTable,
   restorable,
   type SandboxFacts,
   sandboxOpen,
+  settledCloseProof,
+  slotClock,
 } from './replacement-close-lifecycle.js';
 
 /*
@@ -31,6 +34,7 @@ import {
 type Env =
   | CloseClock
   | 'TcMono'
+  | 'Wback'
   | 'W'
   | 'thread'
   | 'policy'
@@ -128,10 +132,11 @@ interface State {
     X: boolean;
   };
   /**
-   * Wall deadlines pass in this order; a live deadline is later than every passed one. The
-   * monotonic Tc and the caller bound W are separate.
+   * Wall deadlines pass in this order; a live deadline is later than every passed one. `back`: the
+   * wall clock stepped back before every passed deadline, which keep their order. The monotonic Tc
+   * and the caller bound W are separate.
    */
-  clock: { passed: CloseClock[]; mono: boolean; W: boolean };
+  clock: { passed: CloseClock[]; back: boolean; mono: boolean; W: boolean };
   cold: Record<string, number | null>;
   used: string[];
   after: boolean;
@@ -223,7 +228,7 @@ function initial(world: World): State {
       S: true,
       X: true,
     },
-    clock: { passed: [], mono: false, W: false },
+    clock: { passed: [], back: false, mono: false, W: false },
     cold: Object.fromEntries((world.splitCold ?? []).map((k) => [k, null])),
     used: [],
     after: world.legacy === undefined,
@@ -273,7 +278,8 @@ const deadlineOf = (s: State, clock: CloseClock) => {
   const at = s.clock.passed.indexOf(clock);
   return at < 0 ? LIVE_DEADLINE : at + 1;
 };
-const wallPassed = (s: State, clock: CloseClock) => s.clock.passed.includes(clock);
+const wallNow = (s: State) => (s.clock.back ? 0 : s.clock.passed.length);
+const wallPassed = (s: State, clock: CloseClock) => deadlineOf(s, clock) <= wallNow(s);
 
 function premises(s: State, pendingOwner: boolean): ClosePremises {
   return {
@@ -285,7 +291,7 @@ function premises(s: State, pendingOwner: boolean): ClosePremises {
     placement: { harness: s.h.life, sandbox: sandboxFacts(s) },
     connection: s.prem.X,
     deadlines: { Tc: deadlineOf(s, 'Tc'), Ts: deadlineOf(s, 'Ts'), Ta: deadlineOf(s, 'Ta') },
-    now: s.clock.passed.length,
+    now: wallNow(s),
     closeMonotonicExpired: s.clock.mono,
   };
 }
@@ -629,13 +635,14 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
             x.settleRev = null;
             return;
           }
-          if (decision !== 'commit')
-            return liveRefuse(
-              ctx,
-              n,
-              b,
-              decision === 'deadline' ? t.slotCause(premises(n, n.prem.pend)) : decision
-            );
+          if (decision !== 'commit') {
+            // The model assigns wall deadlines lazily in the order they pass, so the original
+            // minimum that Main posted is rebuilt from those fixed deadlines, never from the wall.
+            const p = premises(n, n.prem.pend);
+            const posted =
+              t.slotClockAt === 'post' ? slotClock(p.deadlines, t.deadlineSlot) : limitingClock(p);
+            return liveRefuse(ctx, n, b, decision === 'deadline' ? t.slotCause(posted) : decision);
+          }
           x.phase = x.settleRev !== null ? 'settled' : 'queued';
         });
     if (c.phase === 'unknown-reply')
@@ -799,10 +806,24 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         case 'Tc':
         case 'Ts':
         case 'Ta':
-          // A held Core writer does not stop a clock.
-          env((n) => {
-            n.clock.passed.push(e);
-          });
+          // A held Core writer does not stop a clock. After a step back the wall stays behind.
+          if (!s.clock.back)
+            env((n) => {
+              n.clock.passed.push(e);
+            });
+          break;
+        case 'Wback':
+          // V1-P S2-r1 item 2: the wall clock steps back while a Native deadline refusal is in
+          // transit to Main. A step back at RC7, RC8 or RC10 is out of scope: those owners read
+          // the wall as the existing owners do, and Tc keeps its monotonic check.
+          if (
+            !s.clock.back &&
+            s.clock.passed.length > 0 &&
+            Object.values(s.c).some((c) => c.phase === 'replying' && c.decision === 'deadline')
+          )
+            env((n) => {
+              n.clock.back = true;
+            });
           break;
         case 'TcMono':
           // The monotonic Tc passes while the wall Tc is still live.
@@ -1028,10 +1049,12 @@ function fenceClass(world: World, s: State): string | null {
   const opProves =
     (s.h.cell === 'idle' && s.h.operation === null) ||
     (s.h.cell === 'settled' && ['session.open', 'turn.start'].includes(s.h.operation ?? ''));
-  // A settled close of a claimant whose settle revision still matches has its own exit, P7.
+  // A settled close of a claimant whose settle revision still matches fails closed at P7: an older
+  // claim on a draining row leaves the same durable values (V1-P S2-r1 item 1).
   const p7Proof =
     settledClose && key !== null && s.core[ownerOfKey(key)]?.revision === s.h.revision;
-  if (!opProves && !p7Proof) return 'ambiguous-drain';
+  if (p7Proof) return 'unattributed-claim';
+  if (!opProves) return 'ambiguous-drain';
   return null;
 }
 
@@ -1056,7 +1079,13 @@ interface Report {
   projections?: { crash: Projections; after: Projections };
   probes: Record<
     string,
-    { states: number; quiescent: Record<string, number>; trace: string[] | null }
+    {
+      states: number;
+      quiescent: Record<string, number>;
+      /** The cold decision of the table under test at each quiescent probe state. */
+      decisions: Record<string, number>;
+      trace: string[] | null;
+    }
   >;
   truncated: boolean;
 }
@@ -1143,7 +1172,7 @@ function explore(
     if (options.stopOn && report.traces[options.stopOn]) break;
     for (const [name, probe] of Object.entries(world.probes ?? {}))
       if (probe(s)) {
-        report.probes[name] ??= { states: 0, quiescent: {}, trace: null };
+        report.probes[name] ??= { states: 0, quiescent: {}, decisions: {}, trace: null };
         const entry = report.probes[name]!;
         entry.states += 1;
         entry.trace ??= trace(key);
@@ -1168,9 +1197,17 @@ function explore(
       const cls = fenceClass(world, s);
       for (const [name, probe] of Object.entries(world.probes ?? {}))
         if (probe(s)) {
-          const q = report.probes[name]!.quiescent;
+          const entry = report.probes[name]!;
           const label = cls ?? (s.h.drain === 'accepting' ? 'accepting' : 'unclassified');
-          q[label] = (q[label] ?? 0) + 1;
+          entry.quiescent[label] = (entry.quiescent[label] ?? 0) + 1;
+          const a = table.cold(coldFacts(world, s));
+          const decision =
+            a.kind === 'fence'
+              ? `fence:${a.reason}`
+              : a.kind === 'restore'
+                ? `restore:${a.scope}`
+                : a.kind;
+          entry.decisions[decision] = (entry.decisions[decision] ?? 0) + 1;
         }
       const active = Object.values(s.c).some((c) => ACTIVE.includes(c.phase));
       if (!checked(s)) {
@@ -1230,6 +1267,7 @@ const LIVE_ENV: readonly Env[] = [
   'Ts',
   'Ta',
   'TcMono',
+  'Wback',
   'W',
   'thread',
   'policy',
@@ -1251,7 +1289,31 @@ const unsafeLegacyP7 = (s: State) =>
   s.h.operation === 'session.close' &&
   s.h.key === s.core.A.key &&
   s.cap.B === 'abandoned' &&
-  s.p.drainBy.includes('claim:B');
+  s.p.drainBy.includes('claim:B') &&
+  !s.p.drainBy.includes('hdrain');
+
+/** A settled close whose Core settle revision still matches the row: the P7 projection. */
+const settledP7 = (s: State) => {
+  const key = s.h.key;
+  return (
+    s.after &&
+    s.h.drain === 'draining' &&
+    s.h.cell === 'settled' &&
+    s.h.operation === 'session.close' &&
+    key !== null &&
+    s.core[ownerOfKey(key)]?.key === key &&
+    s.core[ownerOfKey(key)]?.revision === s.h.revision
+  );
+};
+/**
+ * V1-P S2-r1 item 1: an independent drain settled after A's Workspace claim, the older Native claim
+ * succeeded on the draining row, and A settled its close before the stop.
+ */
+const LEGACY_PROBES = {
+  'legacy-p7-over-drain': (s: State) => settledP7(s) && s.p.drainBy.includes('hdrain'),
+  'legacy-p7-own-claim': (s: State) =>
+    settledP7(s) && s.p.drainBy.length === 1 && s.p.drainBy[0] === `claim:${ownerOfKey(s.h.key!)}`,
+};
 
 const startPublished =
   (rev = 1) =>
@@ -1309,26 +1371,28 @@ const WORLDS = {
   },
   /**
    * Older double claims (c1: no revision change) in a data root, then the new cold decide. The
-   * older writers run every phase before the restart.
+   * older writers run every phase before the restart. The older claim also succeeds on a row that
+   * an independent Harness-only drain holds; an ordinary cell reuse is the equal-input control.
    */
   legacyC1: {
     name: 'legacy-c1',
     closers: ['A', 'B'],
     bindings: ['A', 'B'],
-    env: ['crash'],
-    budget: 1,
+    env: ['hdrain', 'reuse', 'crash'],
+    budget: 2,
     polls: ['p1'],
     legacy: 'c1',
-    probes: { 'v1p-unsafe-p7': unsafeLegacyP7 },
+    probes: { 'v1p-unsafe-p7': unsafeLegacyP7, ...LEGACY_PROBES },
   },
   legacyR2: {
     name: 'legacy-r2',
     closers: ['A', 'B'],
     bindings: ['A', 'B'],
-    env: ['crash'],
-    budget: 1,
+    env: ['hdrain', 'reuse', 'crash'],
+    budget: 2,
     polls: ['p1'],
     legacy: 'r2',
+    probes: LEGACY_PROBES,
   },
   /** CL3 to completion: each winner order, then the other's fresh claim after the release. */
   cl3full: {
@@ -1565,12 +1629,29 @@ const bytesWithout =
     });
 
 /** The cold rules with `ids` moved in front of `before`. */
-function moveBefore(ids: readonly string[], before: string): ColdRule[] {
-  const moved = COLD_RULES.filter((r) => ids.includes(r.id));
-  const rest = COLD_RULES.filter((r) => !ids.includes(r.id));
+function moveBefore(
+  ids: readonly string[],
+  before: string,
+  rules: readonly ColdRule[] = COLD_RULES
+): ColdRule[] {
+  const moved = rules.filter((r) => ids.includes(r.id));
+  const rest = rules.filter((r) => !ids.includes(r.id));
   const at = rest.findIndex((r) => r.id === before);
   return [...rest.slice(0, at), ...moved, ...rest.slice(at)];
 }
+
+/** The S2-r1 P7: restore on the exact settled close and its settle revision alone. */
+const S2R1_P7_RULES: readonly ColdRule[] = COLD_RULES.map((r) =>
+  r.id === 'p7-success' || r.id === 'p7-stale'
+    ? {
+        id: r.id,
+        decide: (f: ColdFacts): ColdAction | undefined =>
+          settledCloseProof(f, r.id === 'p7-success' ? 'succeeded' : 'stale')
+            ? { kind: 'restore', scope: 'close', revision: f.harness.revision }
+            : undefined,
+      }
+    : r
+);
 
 interface MutationRow {
   readonly id: string;
@@ -1695,20 +1776,6 @@ const M: readonly MutationRow[] = [
     oracle: 'L.exit',
     takeOut: 'remove the P6 result-only completion',
     table: { cold: withRules(['p6-stale']) },
-  },
-  {
-    id: 'M-F3e',
-    world: WORLDS.live,
-    oracle: 'L.exit',
-    takeOut: 'remove the P7 stale exit',
-    table: { cold: withRules(['p7-stale']) },
-  },
-  {
-    id: 'M-F3f',
-    world: WORLDS.live,
-    oracle: 'L.exit',
-    takeOut: 'remove the P7 success exit',
-    table: { cold: withRules(['p7-success']) },
   },
   {
     id: 'M-F3g',
@@ -2102,8 +2169,34 @@ const M: readonly MutationRow[] = [
     id: 'M-P7a',
     world: WORLDS.legacyC1,
     oracle: 'O.restore.abandon',
-    takeOut: 'P7 runs before the anchor and abandon fences (the S2 order)',
-    table: { cold: composeCold(moveBefore(['p7-success', 'p7-stale'], 'anchors')) },
+    takeOut: 'the S2-r1 P7 restore runs before the anchor and abandon fences (the S2 order)',
+    table: {
+      cold: composeCold(moveBefore(['p7-success', 'p7-stale'], 'anchors', S2R1_P7_RULES)),
+    },
+  },
+  {
+    id: 'M-P7b',
+    world: WORLDS.legacyC1,
+    oracle: 'O.restore.foreign',
+    takeOut: 'P7 restores on the settle revision alone (S2-r1), c1 claim over an independent drain',
+    table: { cold: composeCold(S2R1_P7_RULES) },
+    via: 'env:hdrain',
+  },
+  {
+    id: 'M-P7c',
+    world: WORLDS.legacyR2,
+    oracle: 'O.restore.foreign',
+    takeOut: 'P7 restores on the settle revision alone (S2-r1), r2 claim over an independent drain',
+    table: { cold: composeCold(S2R1_P7_RULES) },
+    via: 'env:hdrain',
+  },
+  {
+    id: 'M-T5',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'Main maps the acknowledged deadline refusal from the wall at the reply (S2-r1)',
+    table: { slotClockAt: 'reply' },
+    via: 'env:Wback',
   },
 ];
 
@@ -2129,14 +2222,17 @@ const reportOf = (world: World): Report => {
   return report;
 };
 
-/** Follows one directed schedule. Each edge must be enabled and violate nothing. */
+/**
+ * Follows one directed schedule. Each edge must be enabled and violate nothing. As in `explore`,
+ * the older writers of a legacy world are not checked before the restart.
+ */
 function run(world: World, labels: readonly string[], table = T): State {
   let s = initial(world);
   for (const [i, label] of labels.entries()) {
     const step = steps(world, table, s).find((x) => x.label === label);
     if (!step)
       throw new Error(`${label} is not enabled after ${labels.slice(0, i).join(' | ') || 'start'}`);
-    expect(step.violations).toEqual([]);
+    if (!world.legacy || s.after) expect(step.violations).toEqual([]);
     s = step.next;
   }
   return s;
@@ -2201,6 +2297,53 @@ describe('replacement close lifecycle model check', () => {
     expect(Object.keys(probe!.quiescent)).toEqual(['abandon-own']);
   }, 600_000);
 
+  it.each([WORLDS.legacyC1, WORLDS.legacyR2])(
+    'V1-P S2-r1: $name keeps the independent drain under a settled P7 close, and its reuse control decides alike',
+    (world) => {
+      const tail = [
+        'claim:A',
+        'raw:A',
+        'pub:A',
+        'hold:A',
+        'post:A',
+        'queue:A',
+        'reply:A:ack',
+        'dispatch:p1',
+        'write:p1:ok',
+        'result:A1',
+        'nsettle:A1',
+        'env:crash',
+      ];
+      const drained = run(world, ['admit:A', 'ws:A', 'env:hdrain', ...tail]);
+      const control = run(world, ['admit:A', 'ws:A', 'env:reuse', ...tail]);
+      expect(drained.p.drainBy).toEqual(['hdrain', 'claim:A']);
+      expect(control.p.drainBy).toEqual(['claim:A']);
+      // Equal inputs to the cold decision, so one disposition for both: the fence.
+      const facts = coldFacts(world, drained);
+      expect(coldFacts(world, control)).toEqual(facts);
+      expect(T.cold(facts)).toEqual({ kind: 'fence', reason: 'unattributed-claim' });
+      expect(enabled(world, drained).filter((l) => l.startsWith('cold:'))).toEqual([]);
+      // The S2-r1 P7 restored both, and so cleared the independent drain.
+      expect(composeCold(S2R1_P7_RULES)(facts)).toMatchObject({ kind: 'restore', scope: 'close' });
+      // Every explored P7 projection, with or without the independent drain, fences.
+      const report = reportOf(world);
+      keep(`legacy-p7:${world.name}`, {
+        overDrain: report.probes['legacy-p7-over-drain'],
+        ownClaim: report.probes['legacy-p7-own-claim'],
+      });
+      for (const name of ['legacy-p7-over-drain', 'legacy-p7-own-claim']) {
+        const probe = report.probes[name]!;
+        expect(probe.states).toBeGreaterThan(0);
+        expect(probe.decisions['fence:unattributed-claim']).toBeGreaterThan(0);
+        expect(Object.keys(probe.decisions).filter((d) => !d.startsWith('fence:'))).toEqual([]);
+      }
+      expect(Object.keys(report.probes['legacy-p7-over-drain']!.quiescent)).toEqual([
+        'harness-drain',
+      ]);
+    },
+    600_000
+  );
+
   it('ENGINEER (b): the genuine sibling keeps its fence after a restart; the live owner releases once', () => {
     const report = reportOf(WORLDS.sibling);
     keep('sibling', report.probes);
@@ -2235,7 +2378,10 @@ describe('replacement close lifecycle model check', () => {
       expect(r.fresh).toBe(Object.values(r.exits).reduce((n, x) => n + x, 0));
     }
     expect(reportOf(WORLDS.prefix).exits['cold:restore:quiescent']).toBeGreaterThan(0);
-    expect(reportOf(WORLDS.live).exits['cold:restore:close']).toBeGreaterThan(0);
+    // V1-P S2-r1 item 1: no cold P7 restore remains; the live owner releases its own close.
+    for (const w of Object.values(WORLDS))
+      expect(reportOf(w).exits['cold:restore:close'] ?? 0).toBe(0);
+    expect(reportOf(WORLDS.live).fences['unattributed-claim']).toBeGreaterThan(0);
     expect(reportOf(WORLDS.live).exits['restore:']).toBeGreaterThan(0);
     expect(reportOf(WORLDS.census).exits['cold:restore:quiescent']).toBeGreaterThan(0);
     const cl3 = reportOf(WORLDS.cl3full);
@@ -2288,6 +2434,58 @@ describe('replacement close lifecycle model check', () => {
       expect(atBytes.p.committed).toEqual(['A1']);
       expect(atBytes.p.bytes).toEqual({});
       expect(atBytes.clock.passed).toEqual([]);
+    });
+
+    it('V1-P S2-r1 101 -> 99: an acknowledged deadline refusal keeps the posted limiting clock', () => {
+      const deadlines = { Ta: 100, Ts: 200, Tc: 300 } as const;
+      const posted = slotClock(deadlines, T.deadlineSlot);
+      expect(posted).toBe('Ta');
+      const slot = Math.min(...T.deadlineSlot.map((clock) => deadlines[clock]));
+      expect(slot).toBe(100);
+      const harness: HarnessFacts = {
+        life: 'open',
+        drain: 'draining',
+        revision: 1,
+        operation: null,
+        cell: 'idle',
+        key: null,
+        sequence: null,
+        result: null,
+        nextSequence: 0,
+      };
+      // Native refuses the existing slot at wall 101.
+      expect(
+        T.queue({
+          harness,
+          claimRevision: 1,
+          key: { binding: 'A', key: 'A1', sequence: 0 },
+          slotExpired: slot <= 101,
+          storage: true,
+          sandbox: OPEN_SANDBOX,
+        })
+      ).toBe('deadline');
+      // The wall steps back to 99 before Main reads the ACK.
+      const atReply: ClosePremises = {
+        pendingOwner: true,
+        request: true,
+        audience: { thread: true, policy: true },
+        idleReceipt: true,
+        storage: true,
+        placement: { harness: 'open', sandbox: OPEN_SANDBOX },
+        connection: true,
+        deadlines,
+        now: 99,
+        closeMonotonicExpired: false,
+      };
+      expect(T.slotCause(posted)).toBe('authority-expired');
+      // The S2-r1 mapper read the wall again and fell back to Tc.
+      expect(T.slotCause(limitingClock(atReply))).toBe('close-allowance');
+      // The same order in the model: Ta passes, Native refuses, the wall steps back, Main answers.
+      const s = run(live, [...TO_POST, 'env:Ta', 'queue:A', 'env:Wback', 'reply:A:ack']);
+      expect(s.clock.back).toBe(true);
+      expect(s.c.A!.answer).toBe('authority-expired');
+      expect(s.p.committed).toEqual([]);
+      expect(s.p.bytes).toEqual({});
     });
 
     it('a Sandbox drain before RC8 gives zero rows; after the queue, zero bytes; the drain stays', () => {
