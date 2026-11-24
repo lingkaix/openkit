@@ -7,7 +7,7 @@
  * causal capacity refusal. The owner methods run with controlled native ACKs. The #604 departure
  * fixtures stay untouched (row 16 is deferred).
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,9 +16,9 @@ import {
   type SchedulerCapacityChange,
   type SchedulerCapacityRefusal,
 } from '../scheduler-hold-release.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import type { CoreDb } from '../storage/db.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import {
   claimNanoHostIdleSandboxDrain,
   drainNanoHostHarnessAdmission,
@@ -184,8 +184,7 @@ beforeEach(() => {
   control.budgetMs = 10_000;
   control.attemptPhase = 'closed';
   dataRoot = mkdtempSync(join(tmpdir(), 'openkit-login-close-owner-'));
-  coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
+  coreDb = createTestCoreDb(dataRoot);
   backend = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
@@ -203,11 +202,10 @@ beforeEach(() => {
   vi.mocked(claimNanoHostIdleSandboxDrain).mockClear();
 });
 
-afterEach(() => {
+afterEach(async () => {
   removeListener();
   vi.restoreAllMocks();
-  coreDb.sqlite.close();
-  rmSync(dataRoot, { recursive: true, force: true });
+  await disposeTestStore(dataRoot, coreDb);
 });
 
 function fakeSession(name: string, threadId: string): FakeSession {
