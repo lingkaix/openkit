@@ -3024,9 +3024,15 @@ mod tests {
         let _reports = coordinator.fixture_invalidation_reports(&root.0);
         let projection = coordinator.outer_route_projection();
         let log: CoreLog = Default::default();
-        let script: CoreScript = std::sync::Arc::new(|_, path, nth| match path {
+        // Acceptance is withheld (empty 503) until the test releases it, after the nested Worker
+        // heartbeat has been acknowledged inside that window.
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_in_script = release.clone();
+        let script: CoreScript = std::sync::Arc::new(move |_, path, nth| match path {
             B3_ACQUIRE_POLL if nth == 1 => CoreAction::Command(b3_failing_acquire_command()),
-            B3_ACQUIRE_RESULT if nth <= 3 => CoreAction::Status(503),
+            B3_ACQUIRE_RESULT if !release_in_script.load(std::sync::atomic::Ordering::SeqCst) => {
+                CoreAction::Status(503)
+            }
             B3_ACQUIRE_RESULT => CoreAction::Status(204),
             _ => CoreAction::Status(204),
         });
@@ -3067,19 +3073,21 @@ mod tests {
                 .any(|entry| entry.3 == 503)
         })
         .await;
-        // The stream must move between the repeated empty 503 answers: send it while the loop is deferred.
+        // The stream must move, with its ACK, while acceptance is still withheld: every ACK is
+        // checked against the Core log of that same moment (no 204, no lifecycle poll yet).
         let mut moved = 0;
         let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        while b3_result_entries(&log.lock().unwrap()).len() < 4 {
+        while b3_result_entries(&log.lock().unwrap()).len() < 4 || moved < 3 {
             assert!(
                 tokio::time::Instant::now() < stream_deadline,
-                "the deferral did not end within 20 s"
+                "the deferral window did not reach three answers in 20 s"
             );
             let request = http::Request::builder()
                 .method(http::Method::POST)
                 .uri("/worker-control/heartbeat")
                 .body(())
                 .unwrap();
+            let sent = tokio::time::Instant::now();
             let (response, _output) = worker
                 .clone()
                 .ready()
@@ -3094,18 +3102,37 @@ mod tests {
                     .status(),
                 result = &mut host => panic!("the host ended during the deferral: {:?}", result.err().map(|e| e.to_string())),
             };
+            let acked_in = sent.elapsed();
             assert_eq!(
                 status,
                 http::StatusCode::NO_CONTENT,
                 "the Worker stream must progress during the deferral"
             );
+            {
+                let entries = log.lock().unwrap();
+                let results = b3_result_entries(&entries);
+                assert!(
+                    !results.is_empty() && results.iter().all(|entry| entry.3 == 503),
+                    "the Worker ACK must arrive while acceptance is still withheld: {:?}",
+                    results.iter().map(|entry| entry.3).collect::<Vec<_>>()
+                );
+                let first = entries
+                    .iter()
+                    .position(|entry| entry.1 == B3_ACQUIRE_RESULT)
+                    .unwrap();
+                assert!(
+                    !entries[first..].iter().any(b3_is_effect_poll),
+                    "no lifecycle poll inside the recorded deferral window"
+                );
+            }
+            assert!(
+                acked_in < Duration::from_secs(2),
+                "the Worker ACK took {acked_in:?}: carriage waited on the deferral"
+            );
             moved += 1;
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        assert!(
-            moved >= 1,
-            "the Worker stream moved at least once during the deferral"
-        );
+        release.store(true, std::sync::atomic::Ordering::SeqCst);
         b3_wait_for(&mut host, &log, "the poll after the 204", |entries| {
             let results = b3_result_entries(entries);
             results.last().is_some_and(|last| last.3 == 204)
@@ -3120,8 +3147,14 @@ mod tests {
         let results = b3_result_entries(&entries);
         assert_eq!(
             results.iter().map(|entry| entry.3).collect::<Vec<_>>(),
-            vec![503, 503, 503, 204],
-            "three empty 503 answers then one acceptance"
+            std::iter::repeat_n(503, results.len() - 1)
+                .chain([204])
+                .collect::<Vec<_>>(),
+            "only empty 503 answers while withheld, then one acceptance"
+        );
+        assert!(
+            results.len() >= 4,
+            "at least three deferrals before acceptance"
         );
         assert!(
             results

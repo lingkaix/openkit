@@ -15,6 +15,7 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { getLocalUserId } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { fenceNanoHostTransportAuthority } from '../auth/nanohost-transport-lifecycle.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -3037,7 +3038,13 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  const preparedImageModes = ['held', 'admitted', 'deferred'] as const;
+  const preparedImageModes = [
+    'held',
+    'admitted',
+    'deferred',
+    'operator-restart',
+    'operator-decommission',
+  ] as const;
   it.each(preparedImageModes)('carries prepared images over H2 (%s)', async (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-'));
     const coreDb = openCoreDb(root);
@@ -3071,7 +3078,7 @@ describe('authoritative NanoHost session dispatch', () => {
       }
     };
     // In deferred mode the local settlement write fails three times before storage returns.
-    let persistenceFailures = mode === 'deferred' ? 3 : 0;
+    let persistenceFailures = mode === 'held' || mode === 'admitted' ? 0 : 3;
     const settlePreparedImage = vi.fn<SettleNanoHostPreparedImage>(async (request) => {
       if (persistenceFailures > 0) {
         persistenceFailures -= 1;
@@ -3134,12 +3141,14 @@ describe('authoritative NanoHost session dispatch', () => {
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let admitted = false;
+    let firstPhysical: object | undefined;
     const server = createHttp2Server((request, response) => {
       if (!admitted) {
+        firstPhysical = readNanoHostPhysicalConnectionContext(request)!;
         authority.admit({
           connectionGeneration: 1,
           identityId: target.identityId,
-          physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
+          physicalConnection: firstPhysical,
         });
         admitted = true;
       }
@@ -3246,6 +3255,69 @@ describe('authoritative NanoHost session dispatch', () => {
           sqlite.close();
         }
       };
+      if (mode === 'operator-restart' || mode === 'operator-decommission') {
+        // An existing authorized operator action lands in the middle of an actual settlement
+        // deferral. The pending correlation stays unsettled; the exact generation is closed/fenced.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const callerOutcome = pending.then(
+            () => undefined,
+            (error: unknown) => error
+          );
+          const deadline = performance.now() + 2_000;
+          while (command.status === 204 && performance.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            command = await post(acquirePath, {});
+          }
+          expect(command.status, command.body).toBe(200);
+          for (const _delivery of [1, 2])
+            expect(await post(`${acquirePath}/result`, { requestId, digest })).toEqual({
+              status: 503,
+              body: '',
+            });
+          expect(settlePreparedImage).toHaveBeenCalledTimes(2);
+          expect(authority.mayCarryWork(firstPhysical!)).toBe(true);
+          expect(authority.authoritativeGeneration(target.identityId)).toBe(1);
+          if (mode === 'operator-restart') {
+            await authority.closeAllPhysicalConnections();
+            expect((firstPhysical as { destroyed: boolean }).destroyed).toBe(true);
+          } else {
+            await fenceNanoHostTransportAuthority(
+              nanoHost,
+              authority,
+              target.identityId,
+              '2026-08-10T00:00:02.000Z'
+            );
+          }
+          // The exact generation no longer carries work, and decommission/restart name no successor.
+          expect(authority.mayCarryWork(firstPhysical!)).toBe(false);
+          expect(authority.authoritativeGeneration(target.identityId)).toBeNull();
+          if (mode === 'operator-decommission') {
+            const sqlite = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+              readonly: true,
+              fileMustExist: true,
+            });
+            try {
+              expect(getNanoHostRuntimeTarget({ sqlite }, target.targetId)).toMatchObject({
+                connectionGeneration: 1,
+                ready: false,
+              });
+            } finally {
+              sqlite.close();
+            }
+            // The fenced connection cannot settle the deferred result, nor is a retry deferred again.
+            const refused = await post(`${acquirePath}/result`, { requestId, digest });
+            expect(refused.status).not.toBe(204);
+            expect(refused.status).not.toBe(503);
+            expect(settlePreparedImage).toHaveBeenCalledTimes(2);
+          }
+          expect(settledRows()).toEqual([]);
+          expect(await callerOutcome).toMatchObject({ status: 503, code: 'recovery_required' });
+        } finally {
+          warn.mockRestore();
+        }
+        return;
+      }
       if (mode === 'deferred') {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const info = vi.spyOn(console, 'info').mockImplementation(() => {});
