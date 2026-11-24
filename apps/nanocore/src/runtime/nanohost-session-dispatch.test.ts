@@ -13,13 +13,18 @@ import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenSecret } from '../auth/access-token.js';
 import { getLocalUserId } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { fenceNanoHostTransportAuthority } from '../auth/nanohost-transport-lifecycle.js';
+import { createNanoHostOperationImplementations } from '../auth/nanohost-operations.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import {
+  enrollNanoHostTransportIdentity,
+  prepareNanoHostTransportWriter,
+} from '../auth/nanohost-transport-token-store.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -3282,12 +3287,55 @@ describe('authoritative NanoHost session dispatch', () => {
             await authority.closeAllPhysicalConnections();
             expect((firstPhysical as { destroyed: boolean }).destroyed).toBe(true);
           } else {
-            await fenceNanoHostTransportAuthority(
-              nanoHost,
-              authority,
-              target.identityId,
-              '2026-08-10T00:00:02.000Z'
-            );
+            // The admitted decommission operation, through its production entry, owns the fence.
+            const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-decommission-slots-'));
+            const material = createOpenKitAccessTokenSecret();
+            await enrollNanoHostTransportIdentity(nanoHost, {
+              deploymentId: target.deploymentId,
+              expiresAt: '2099-01-01T00:00:00.000Z',
+              now: new Date(),
+              ownerNanoHostIdentityId: target.identityId,
+              responsibleServerAdminActorId: actor.id,
+              secret: material,
+              tokenId: testEntityId('nhtok', 'decommission_operation'),
+            });
+            try {
+              const slot = (name: string) => ({
+                companionPath: join(slotRoot, `${name}.meta`),
+                secretPath: join(slotRoot, `${name}.token`),
+              });
+              const operations = createNanoHostOperationImplementations({
+                coreDb,
+                mode: 'server',
+                sessionAuthority: authority,
+                nanoHostConfig: {
+                  identityId: target.identityId,
+                  deploymentId: target.deploymentId,
+                  credentialSlots: { A: slot('A'), B: slot('B') },
+                },
+                administratorTransport: {
+                  storage: { state: 'ready', value: nanoHost },
+                  // Same routing as the App: audits via Core, administrator stages via the Native owner.
+                  submit: async (input) =>
+                    input.kind === 'lifecycle-audit' || input.kind === 'decommission-audit'
+                      ? (await prepareNanoHostTransportWriter(coreDb)).submit(input)
+                      : 'actor' in input && input.actor
+                        ? nanoHost.owner.administerTransport(input)
+                        : nanoHost.owner.transport(input),
+                },
+              });
+              await operations['nanohost.decommission'](
+                {},
+                {
+                  kind: 'public',
+                  actor: { kind: 'local', userId: actor.id },
+                  actorRef: { kind: 'user', id: actor.id },
+                  scope: { kind: 'server' },
+                }
+              );
+            } finally {
+              rmSync(slotRoot, { recursive: true, force: true });
+            }
           }
           // The exact generation no longer carries work, and decommission/restart name no successor.
           expect(authority.mayCarryWork(firstPhysical!)).toBe(false);
