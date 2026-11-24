@@ -331,7 +331,7 @@ export type WriteNanoHostIdleSandboxLifecycle = (
 /** Restores only the current healthy resident after native current capture dispositions and the covering FULL commit. */
 export async function restoreNanoHostSandboxAdmissionIfSafe(
   coreDb: CoreDb,
-  input: { readonly sandboxRuntimeId: string },
+  input: Omit<Extract<ControlHarnessLifecycleInput, { kind: 'sandbox.restore-admission' }>, 'kind'>,
   admitted?: {
     readonly write: WriteNanoHostIdleSandboxLifecycle;
     readonly authority: NanoHostIdleSandboxAuthority;

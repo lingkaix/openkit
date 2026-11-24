@@ -8334,6 +8334,105 @@ describe('createConfiguredTurnExecutor', () => {
     90_000
   );
 
+  // FIX 4 F4 / AMEND 3.3: a later same-Harness claim committed after the restore decision was
+  // read and before its Native post survives the exact restore.
+  it('keeps a later same-Harness capture claim through the predecessor close latch restore', async () => {
+    const f = await admitNativeReplacementClose('p23_restore_later_claim');
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    // An idle co-resident on the predecessor's Harness, with its own closed Core attempt, seeded
+    // through the production session-binding writer while the Harness still admits.
+    const coThread = (
+      await f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Later co-resident',
+        testEntityId('th', 'p23_later_claim')
+      )
+    ).id;
+    const coSession = testEntityId('as', 'p23_later_claim');
+    const coBinding = 'agent-session-binding-p23-later-claim';
+    const entry = await createTestQueueEntry(f.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue:p23_later_claim',
+      requestedAgentId: 'agent_worker',
+      text: 'Earlier Turn of the later co-resident.',
+      threadId: coThread,
+      triggerActor: { kind: 'user', id: f.ownerUserId },
+      turnId: testEntityId('tu', 'p23_later_claim'),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const { attemptId: coAttempt } = await nativeAttemptOwners.createSchedulerExecutionAttempt(
+      f.coreDb,
+      { entry, preparationInput: { admission: entry } }
+    );
+    await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(f.coreDb, {
+      attemptId: coAttempt,
+      agentSessionId: coSession,
+    });
+    await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+      attemptId: coAttempt,
+      cause: 'worker-final-phase',
+      noOutstandingEffects: true,
+    });
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionCompatibilityKey: 'c'.repeat(64),
+      agentSessionId: coSession,
+      agentSessionRuntimeBindingId: coBinding,
+      effectiveSetupGeneration: 1,
+      harnessInstanceId,
+      threadId: coThread,
+      timestamp: new Date().toISOString(),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+    const claim = owner.harnessTurnLifecycle.claimIdleCaptureDrain;
+    let original: Parameters<typeof claim>[0] | undefined;
+    vi.spyOn(owner.harnessTurnLifecycle, 'claimIdleCaptureDrain').mockImplementation(
+      async (input) => {
+        original ??= input;
+        return await claim(input);
+      }
+    );
+    const harness = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT drain_state AS drain, updated_at AS revision
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(harnessInstanceId)
+      ) as { drain: string; revision: string };
+    let laterClaimedAt: string | undefined;
+    let laterBeforeRestore = false;
+    // Pause after the restore's key (live) or cold read (replay), before its Native post; the
+    // co-resident's own capture claim commits on the same Harness through the admitted writer.
+    const latch = f.backend as unknown as {
+      releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+    };
+    const release = latch.releaseIdleCaptureLatch.bind(f.backend);
+    let held = false;
+    vi.spyOn(latch, 'releaseIdleCaptureLatch').mockImplementation(async (...args) => {
+      if (!held) {
+        held = true;
+        expect(original?.harnessInstanceId).toBe(harnessInstanceId);
+        laterClaimedAt = new Date(
+          Math.max(Date.now(), Date.parse(harness().revision) + 1)
+        ).toISOString();
+        await claim({
+          ...original!,
+          agentSessionId: coSession,
+          agentSessionRuntimeBindingId: coBinding,
+          attemptId: coAttempt,
+          claimedAt: laterClaimedAt,
+        });
+        laterBeforeRestore = true;
+      }
+      return await release(...args);
+    });
+    expect(await f.close()).toBe('closed');
+    expect(held).toBe(true);
+    expect(laterBeforeRestore).toBe(true);
+    // The old close's restore cannot clear the later claim's latch on its Harness.
+    expect(harness()).toEqual({ drain: 'draining', revision: laterClaimedAt });
+  }, 90_000);
+
   it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
     const f = await admitNativeReplacementClose('p23_lost_ack');
     f.loseClose();

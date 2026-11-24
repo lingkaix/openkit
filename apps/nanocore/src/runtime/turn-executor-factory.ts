@@ -1076,6 +1076,10 @@ interface NanoHostAgentSessionCloseOwner {
   readonly drain?: IdleSandboxCloseDrain;
   replacement?: AgentSessionReplacementClose;
   pending: PendingNanoHostHarnessOperation | null;
+  /** This owner's Harness capture claim clock, the exact restore key before its close queues. */
+  captureClaimedAt?: string;
+  /** This owner's committed close, the exact restore key once it queued. */
+  closeKey?: { readonly operationId: string; readonly sequence: number };
 }
 
 /** One compatible physical Sandbox and Harness retained across AgentSessions and Turns. */
@@ -8298,7 +8302,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             // After Workspace ACK, join the exact Harness drain already committed by retirement.
             if (idleCloseDrain) this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
-            else
+            else {
+              // A strictly later clock than the Harness row's last write keys this claim.
+              const previous = this.readNanoHost(({ sqlite }) =>
+                sqlite
+                  .prepare(
+                    'SELECT updated_at AS revision FROM harness_instance_records WHERE harness_instance_id=?'
+                  )
+                  .get(session.harnessInstanceId)
+              ) as { revision: string } | undefined;
+              const claimedAt = new Date(
+                Math.max(Date.now(), previous ? Date.parse(previous.revision) + 1 : 0)
+              ).toISOString();
               await claimNanoHostIdleCaptureDrain(
                 this.coreDb,
                 {
@@ -8309,9 +8324,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                   attemptId: session.attemptId,
                   sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
                   originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+                  claimedAt,
                 },
                 this.harnessTurnLifecycle()
               );
+              const closeOwner = this.agentSessionCloseOwners.get(
+                session.agentSessionRuntimeBindingId
+              );
+              if (closeOwner) closeOwner.captureClaimedAt = claimedAt;
+            }
           } catch (error) {
             if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
               throw new WorkspaceCaptureRecoveryRequired(error.message);
@@ -9929,7 +9950,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    */
   private async releaseIdleCaptureLatch(
     runtimeTargetId: string,
-    sandboxRuntimeId: string
+    sandboxRuntimeId: string,
+    harness: {
+      readonly harnessInstanceId: string;
+      readonly harnessBindingRef: string;
+      readonly close?: { readonly operationId: string; readonly sequence: number } | undefined;
+      readonly claimedAt?: string | undefined;
+    }
   ): Promise<void> {
     const admitted = this.idleSandboxLifecycle();
     if (!admitted) {
@@ -9937,10 +9964,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return;
     }
     const target = this.readIdleSandboxTarget(runtimeTargetId);
-    if (target)
+    const { close, claimedAt } = harness;
+    // FIX 4 F4: the Native restore decides this Harness only, on the write it still carries.
+    if (target && (close || claimedAt))
       await restoreNanoHostSandboxAdmissionIfSafe(
         this.coreDb,
-        { sandboxRuntimeId },
+        {
+          sandboxRuntimeId,
+          harness: {
+            harnessInstanceId: harness.harnessInstanceId,
+            harnessBindingRef: harness.harnessBindingRef,
+            ...(close ? { close } : { claimedAt }),
+          },
+        },
         { write: admitted.writeIdleHarnessDrain, authority: { target } }
       );
   }
@@ -9954,15 +9990,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const latched = this.readNanoHost(({ sqlite }) =>
       sqlite
         .prepare(`SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
-        s.runtime_target_id AS runtimeTargetId FROM harness_instance_records h
+        s.runtime_target_id AS runtimeTargetId, h.harness_binding_ref AS harnessBindingRef
+        FROM harness_instance_records h
         JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
         WHERE h.harness_instance_id=? AND h.operation='session.close' AND h.operation_id=?
         AND h.operation_sequence=? AND h.operation_state='settled' AND h.drain_state='draining'
         AND s.drain_state='accepting'`)
         .get(result.harnessInstanceId, result.operationId, result.sequence)
-    ) as { sandboxRuntimeId: string; runtimeTargetId: string } | undefined;
+    ) as
+      | { sandboxRuntimeId: string; runtimeTargetId: string; harnessBindingRef: string }
+      | undefined;
     if (latched)
-      await this.releaseIdleCaptureLatch(latched.runtimeTargetId, latched.sandboxRuntimeId);
+      await this.releaseIdleCaptureLatch(latched.runtimeTargetId, latched.sandboxRuntimeId, {
+        harnessInstanceId: result.harnessInstanceId,
+        harnessBindingRef: latched.harnessBindingRef,
+        close: { operationId: result.operationId, sequence: result.sequence },
+      });
   }
 
   /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
@@ -10023,10 +10066,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (sandbox?.drainState === 'accepting')
         await this.releaseIdleCaptureLatch(
           session.sharedHarness.sandbox.runtimeTargetId,
-          sandbox.id
+          sandbox.id,
+          {
+            harnessInstanceId: session.harnessInstanceId,
+            harnessBindingRef: session.harnessBindingRef,
+            close: closeOwner.closeKey,
+          }
         );
     } catch (error) {
-      // A request or selection refused before contact releases only its capture latch.
+      // A request or selection refused before contact releases only its capture latch: keyed by
+      // its unsent stale close once queued, else by its own claim.
       if (
         (error instanceof AgentSessionReplacementSelectionChanged ||
           (typeof error === 'object' && error !== null && this.replacementRefusals.has(error))) &&
@@ -10034,7 +10083,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         await this.releaseIdleCaptureLatch(
           session.sharedHarness.sandbox.runtimeTargetId,
-          sandbox.id
+          sandbox.id,
+          {
+            harnessInstanceId: session.harnessInstanceId,
+            harnessBindingRef: session.harnessBindingRef,
+            ...(closeOwner.closeKey
+              ? { close: closeOwner.closeKey }
+              : { claimedAt: closeOwner.captureClaimedAt }),
+          }
         );
       throw error;
     } finally {
@@ -10260,6 +10316,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               if (refusal) throw refusal.error;
               throw error;
             }
+            if (closeOwner)
+              closeOwner.closeKey = {
+                operationId: prepared.command.operationId,
+                sequence: pending.sequence,
+              };
           };
           if (!replacement) await enqueue();
           else {

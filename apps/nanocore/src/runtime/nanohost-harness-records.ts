@@ -24,6 +24,7 @@ import { applyNanoHostWorkerSubmission } from '../storage/nanohost-recovery-nati
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
 import {
+  inspectCoreHarnessConsumption,
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
 } from './core-journal-records.js';
@@ -2422,6 +2423,35 @@ export function inspectNanoHostIdleCloseConsumption(
   const result = requireHarnessResult('session.close', incoming, harness.max_active_turns);
   const consumer = idleHarnessConsumer(coreDb, owner, harness, command);
   return consumer === null ? null : { key: idleHarnessConsumptionKey(harness, result), consumer };
+}
+
+/**
+ * Reads the Core consumption clock of an exact settled idle close still current on its Harness
+ * row. The idle settle writes that same clock as the row's `updated_at`.
+ */
+export function readNanoHostSettledIdleCloseConsumedAt(
+  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
+  harnessInstanceId: string,
+  close: { readonly operationId: string; readonly sequence: number }
+): string | null {
+  const harness = requireHarness(owner, harnessInstanceId);
+  const receipt = readRetainedHarnessResult(harness);
+  if (
+    !receipt ||
+    harness.operation !== 'session.close' ||
+    harness.operation_state !== 'settled' ||
+    harness.operation_id !== close.operationId ||
+    harness.operation_sequence !== close.sequence ||
+    receipt.result.operationId !== close.operationId ||
+    receipt.result.sequence !== close.sequence
+  )
+    return null;
+  const result = requireHarnessResult('session.close', receipt.result, harness.max_active_turns);
+  return (
+    inspectCoreHarnessConsumption(coreDb, idleHarnessConsumptionKey(harness, result))
+      ?.acknowledgedAt ?? null
+  );
 }
 
 /** Validates the close command retained by the same dispatch slot. */
