@@ -7779,7 +7779,7 @@ describe('createConfiguredTurnExecutor', () => {
     const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
     const queue = owner.harnessTurnLifecycle.queue;
     let drained = false;
-    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input) => {
+    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
       if (input.operation === 'session.close' && !drained) {
         drained = true;
         // The admitted credential-revocation drain commits after the Main slot comparison and
@@ -7789,7 +7789,7 @@ describe('createConfiguredTurnExecutor', () => {
           originPhysicalEpoch: anchor.originPhysicalEpoch,
         });
       }
-      return await queue(input);
+      return await queue(input, authority);
     });
     await expect(f.close()).rejects.toMatchObject({
       name: 'WorkerGovernanceCapacityUnavailableError',
@@ -7816,7 +7816,7 @@ describe('createConfiguredTurnExecutor', () => {
     const queue = owner.harnessTurnLifecycle.queue;
     let requeue: Promise<unknown> | undefined;
     let phaseAtCommit: string | undefined;
-    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input) => {
+    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
       if (input.operation === 'session.close' && !requeue) {
         // The successor's attempt writer starts after the Main slot comparison and before the
         // close's Native queue commit. It waits for that commit instead of overtaking it.
@@ -7832,7 +7832,7 @@ describe('createConfiguredTurnExecutor', () => {
           f.successor.attemptId
         ).phase;
       }
-      return await queue(input);
+      return await queue(input, authority);
     });
     const outcome = await f.close().then(
       (value) => value,
@@ -7850,6 +7850,254 @@ describe('createConfiguredTurnExecutor', () => {
       attempts.requireSchedulerExecutionAttempt(f.coreDb, f.successor.attemptId).phase
     ).toBe('closed');
   }, 90_000);
+
+  // 3e-r2 S1: the queue decides the successor request under the Core and Workspace holds it posts in.
+  it.each(['launch-revoked', 'startup-expired', 'storage-changed'] as const)(
+    'refuses a replacement close whose request or storage changes while its queue waits for the holds (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`p23_queue_hold_${change}`);
+      let expiresAt = 0;
+      if (change === 'startup-expired') {
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+        const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+        const createdAt = new Date(Date.now() - budget + 6_000).toISOString();
+        await f.retry('aged', { now: () => createdAt });
+        expiresAt = Date.parse(nanoHostStartupDeadline({ createdAt }));
+      }
+      const selected =
+        change === 'storage-changed'
+          ? readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerStorageBinding(
+                { sqlite },
+                f.store.getAgentSession(f.predecessor.agentSessionId).retainedStorage!
+              )
+            )!
+          : undefined;
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let changed = false;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation === 'session.close' && !changed) {
+          changed = true;
+          // After the slot comparison passed: the change commits while the queue still has to
+          // acquire its holds, so only the decision in its post turn can see it.
+          if (change === 'launch-revoked')
+            f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.ownerUserId))();
+          else if (change === 'startup-expired')
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, expiresAt - Date.now() + 100))
+            );
+          else
+            await markTestWorkerStorageUnknown(f.coreDb, {
+              attachmentGeneration: selected!.attachmentGeneration,
+              expectedRevision: selected!.revision,
+              storageRef: selected!.storageRef,
+            });
+        }
+        return await queue(input, authority);
+      });
+      const operation = f.close(
+        selected
+          ? {
+              kind: 'selected',
+              storageRef: selected.storageRef,
+              expectedRevision: selected.revision,
+              purpose: 'work',
+              goalId: null,
+              taskId: null,
+            }
+          : undefined
+      );
+      if (change === 'storage-changed') {
+        await expect(operation).rejects.toSatisfy(
+          (error: { code?: string }) =>
+            error instanceof WorkerStorageBindingError ||
+            error.code === 'operation_storage_unavailable'
+        );
+      } else {
+        await expect(operation).rejects.toMatchObject({
+          name: 'WorkerGovernanceCapacityUnavailableError',
+          message: 'The selected predecessor binding changed before its replacement close.',
+        });
+      }
+      expect(changed).toBe(true);
+      // Zero queued and zero carried closes; the resume pair is intact and the latch released.
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+        )
+      ).not.toContainEqual({ operation: 'session.close' });
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
+  // 3e-r2 S1: the post-turn decision cannot see Native work posted ahead of the queue or time
+  // passing before its transaction, so the Native commit itself decides the clock and storage.
+  it.each(['startup-deadline', 'storage-revision'] as const)(
+    'refuses at the Native queue commit a replacement close whose %s moved after its post-turn decision',
+    async (moved) => {
+      const f = await admitNativeReplacementClose(`p23_queue_txn_${moved}`);
+      const selected =
+        moved === 'storage-revision'
+          ? readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerStorageBinding(
+                { sqlite },
+                f.store.getAgentSession(f.predecessor.agentSessionId).retainedStorage!
+              )
+            )!
+          : undefined;
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let decided: boolean | undefined;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !input.replacement || !authority)
+          return await queue(input, authority);
+        // The post-turn decision observed the current request and storage. The transaction then
+        // meets an expired original clock or a newer storage revision than that observation.
+        const replacement =
+          moved === 'startup-deadline'
+            ? { ...input.replacement, startupDeadline: new Date(Date.now() - 1).toISOString() }
+            : {
+                ...input.replacement,
+                storage: {
+                  ...input.replacement.storage!,
+                  revision: input.replacement.storage!.revision - 1,
+                },
+              };
+        return await queue(
+          { ...input, replacement },
+          {
+            ...authority,
+            verifyBeforePost: (native) => (decided = authority.verifyBeforePost(native)),
+          }
+        );
+      });
+      await expect(
+        f.close(
+          selected
+            ? {
+                kind: 'selected',
+                storageRef: selected.storageRef,
+                expectedRevision: selected.revision,
+                purpose: 'work',
+                goalId: null,
+                taskId: null,
+              }
+            : undefined
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      expect(decided).toBe(true);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+        )
+      ).not.toContainEqual({ operation: 'session.close' });
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
+  it.each(['core', 'workspace'] as const)(
+    'keeps a %s writer that starts after the queue decision out until the Native queue commit',
+    async (file) => {
+      const f = await admitNativeReplacementClose(`p23_queue_pin_${file}`);
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      const frames: string[] = [];
+      let competitorStarted = false;
+      let competitorPosted = false;
+      const post = NativeWorker.prototype.postMessage;
+      const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const frame = args[0] as {
+          database?: string;
+          mutation?: { input?: { kind?: string; operation?: string } };
+        };
+        if (
+          frame?.mutation?.input?.kind === 'operation.queue' &&
+          frame.mutation.input.operation === 'session.close'
+        )
+          frames.push('native-queue');
+        else if (typeof frame?.database === 'string' && competitorStarted && !competitorPosted) {
+          if (frame.database.startsWith(file === 'core' ? 'core:' : 'workspace:')) {
+            competitorPosted = true;
+            frames.push('competitor');
+          }
+        }
+        return Reflect.apply(post, this, args);
+      });
+      onTestFinished(() => posts.mockRestore());
+      let competitor: Promise<unknown> | undefined;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const decided = authority.verifyBeforePost(native);
+            // A real writer of the pinned file starts after the successful observation.
+            if (decided && !competitor) {
+              competitorStarted = true;
+              competitor =
+                file === 'core'
+                  ? nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+                      attemptId: f.successor.attemptId,
+                      noOutstandingEffects: true,
+                      cause: 'backend-busy',
+                      requeue: true,
+                    })
+                  : f.store.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
+                      name: 'renamed during the queue decision',
+                    });
+              void competitor.catch(() => undefined);
+            }
+            return decided;
+          },
+        });
+      });
+      const outcome = await f.close().then(
+        (value) => value,
+        (error: unknown) => error
+      );
+      await expect(competitor).resolves.toBeDefined();
+      // The decision's Native commit is posted before the later writer of the held file.
+      expect(frames).toEqual(['native-queue', 'competitor']);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare("SELECT 1 AS queued FROM harness_instance_records WHERE operation='session.close'").all()
+        )
+      ).toEqual([{ queued: 1 }]);
+      if (outcome !== 'closed')
+        expect(outcome).toMatchObject({ name: 'WorkerGovernanceCapacityUnavailableError' });
+    },
+    90_000
+  );
 
   it('closes one of two co-residents while its sibling continues', async () => {
     const f = await admitNativeReplacementClose('p23_sibling');

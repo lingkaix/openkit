@@ -453,11 +453,19 @@ export interface NanoHostReplacementCloseSelection {
   >;
   readonly bindingRevision: string;
   readonly bindingLifecycleState: string;
+  /** The successor attempt's original absolute startup expiry, compared at this mutation. */
+  readonly startupDeadline?: string | undefined;
+  /** The explicit storage selection's planned revision; any Native storage write advances it. */
+  readonly storage?: { readonly storageRef: string; readonly revision: number } | undefined;
 }
 
 /** Domain refusal of a replacement close whose selection changed before its queue commit. */
 export const NANO_HOST_REPLACEMENT_SELECTION_CHANGED =
   'NanoHost replacement close selection changed before enqueue.';
+
+/** Domain refusal of a replacement close whose selected storage changed before its queue commit. */
+export const NANO_HOST_REPLACEMENT_STORAGE_CHANGED =
+  'NanoHost replacement close storage selection changed before enqueue.';
 
 /** Input for dispatching the next exact Harness operation. */
 export interface DispatchNanoHostHarnessOperationInput {
@@ -1429,9 +1437,19 @@ function requireReplacementCloseSelection(
     target.connectionGeneration !== selection.target.connectionGeneration ||
     target.physicalEpoch !== selection.target.physicalEpoch ||
     binding?.revision !== selection.bindingRevision ||
-    binding.lifecycleState !== selection.bindingLifecycleState
+    binding.lifecycleState !== selection.bindingLifecycleState ||
+    // The original startup clock is sampled at this deciding mutation, never restarted.
+    (selection.startupDeadline !== undefined &&
+      new Date().toISOString() >= selection.startupDeadline)
   )
     throw new Error(NANO_HOST_REPLACEMENT_SELECTION_CHANGED);
+  if (selection.storage) {
+    const storage = owner.sqlite
+      .prepare('SELECT revision FROM worker_storage_bindings WHERE storage_ref=?')
+      .get(selection.storage.storageRef) as { revision: number } | undefined;
+    if (storage?.revision !== selection.storage.revision)
+      throw new Error(NANO_HOST_REPLACEMENT_STORAGE_CHANGED);
+  }
 }
 
 /** Observes pending dispatch for one current Integration on the admitted Native reader. */

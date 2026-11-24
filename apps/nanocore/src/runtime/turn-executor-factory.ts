@@ -172,6 +172,7 @@ import {
   markNanoHostHarnessOperationUnknown,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
+  NANO_HOST_REPLACEMENT_STORAGE_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
@@ -1042,8 +1043,13 @@ interface AgentSessionReplacementClose {
     readonly workspaceId: string;
     readonly threadId: string;
     readonly triggerActor: AgentEnvironmentPackagePreview['scope']['triggerActor'];
-    /** Re-runs the explicit storage selection's own P14 check; absent without a selection. */
-    readonly validateStorage?: () => void;
+    /**
+     * Re-runs the explicit storage selection's own P14 check, on the given committed Native state
+     * when a queue post decides it; absent without a selection.
+     */
+    readonly validateStorage?: (native?: Pick<CoreDb, 'sqlite'>) => void;
+    /** The explicit selection's planned revision, compared again inside the Native queue commit. */
+    readonly storage?: { readonly storageRef: string; readonly revision: number };
   };
   readonly selection: AgentSessionCloseSelection;
 }
@@ -2861,21 +2867,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     sandboxBindingRef: string,
     selection: Omit<WorkerStorageSelectionInput, 'layout'> & {
       readonly reuseWorkSlotRef?: string;
-    }
+    },
+    native?: Pick<CoreDb, 'sqlite'>
   ): WorkerStorageBinding {
-    const selected = this.readNanoHost((owner) =>
+    // A queue post supplies the committed Native state it decides on.
+    const read = <Value>(query: (owner: Pick<CoreDb, 'sqlite'>) => Value): Value =>
+      native ? query(native) : this.readNanoHost(query);
+    const selected = read((owner) =>
       getWorkerStorageBinding(owner, { storageRef: selection.storageRef })
     );
     if (!selected) throw new Error('Worker storage association was not found.');
     const binding =
       selected.currentSandboxBindingRef === sandboxBindingRef
-        ? this.readNanoHost((owner) =>
+        ? read((owner) =>
             authorizeAttachedWorkerStorageReplacement(owner, {
               ...selection,
               sandboxBindingRef,
             })
           )
-        : this.readNanoHost((owner) =>
+        : read((owner) =>
             selectWorkerStorageBinding(owner, { ...selection, layout: selected.layout })
           );
     if (
@@ -3121,7 +3131,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
     // The slot and dispatch rechecks rerun the same explicit selection check.
-    let validateStorage: (() => void) | undefined;
+    let validateStorage: ((native?: Pick<CoreDb, 'sqlite'>) => void) | undefined;
     if (input.workerStorageChoice?.kind === 'selected') {
       const environmentPackage = input.environmentPackage;
       const responsibleUserId = environmentPackage
@@ -3134,7 +3144,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('Worker storage selection lacks current AgentSession lineage.');
       }
       const workerStorageChoice = input.workerStorageChoice;
-      validateStorage = () => {
+      validateStorage = (native) => {
         this.validateWorkerStorageSelection(
           environmentPackage,
           sharedHarness.sandbox.sandboxBindingRef,
@@ -3143,16 +3153,26 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             workerStorageChoice,
             responsibleUserId,
             this.workerStorageAudienceAuthorizer(environmentPackage)
-          )!
+          )!,
+          native
         );
       };
       validateStorage();
     }
+    const selectedStorage =
+      input.workerStorageChoice?.kind === 'selected'
+        ? {
+            storageRef: input.workerStorageChoice.storageRef,
+            revision: input.workerStorageChoice.expectedRevision,
+          }
+        : undefined;
     try {
       await this.closeDurableAgentSession(
         inspection,
         undefined,
-        replacement && validateStorage ? { ...replacement, validateStorage } : replacement
+        replacement && validateStorage
+          ? { ...replacement, validateStorage, ...(selectedStorage ? { storage: selectedStorage } : {}) }
+          : replacement
       );
     } catch (error) {
       if (input.environmentPackage && input.admissionAttemptId && input.admissionAgentSessionId) {
@@ -9848,6 +9868,30 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
+   * Rechecks the successor request, the predecessor's idle Core proof and the explicit storage
+   * authorization on committed Native state, under the queue commit's Core and Workspace holds.
+   * The Native commit itself compares the selected binding, startup clock and storage revision.
+   */
+  private verifyAgentSessionReplacementQueue(
+    close: AgentSessionReplacementClose,
+    identity: Parameters<typeof readNanoHostIdleCloseAuthority>[1],
+    authority: ReturnType<typeof readNanoHostIdleCloseAuthority>,
+    native: Pick<CoreDb, 'sqlite'>
+  ): void {
+    try {
+      if (
+        !this.isAgentSessionReplacementRequestCurrent(close.request) ||
+        !isDeepStrictEqual(readNanoHostIdleCloseAuthority(this.coreDb, identity, native), authority)
+      )
+        throw new AgentSessionReplacementSelectionChanged();
+      close.request.validateStorage?.(native);
+    } catch (error) {
+      if (typeof error === 'object' && error !== null) this.replacementRefusals.add(error);
+      throw error;
+    }
+  }
+
+  /**
    * Releases the idle capture latch on its accepting Sandbox. The admitted owner decides from the
    * authorized target Epoch, recovered capture dispositions and the Harness's own operation.
    */
@@ -10133,18 +10177,57 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               timestamp: new Date().toISOString(),
             });
             pending.coreIdleClose!.prepared = prepared;
-            pending.sequence = await queueNanoHostHarnessOperation(
-              this.coreDb,
-              {
-                prepared,
-                body,
-                harnessInstanceId: session.harnessInstanceId,
-                operation,
-                timestamp: new Date().toISOString(),
-                ...(replacement ? { replacement: replacement.selection } : {}),
-              },
-              harnessTurnLifecycle
-            );
+            let refusal: { readonly error: unknown } | undefined;
+            const successor = replacement
+              ? requireSchedulerExecutionAttempt(this.coreDb, replacement.request.attemptId)
+              : undefined;
+            try {
+              pending.sequence = await queueNanoHostHarnessOperation(
+                this.coreDb,
+                {
+                  prepared,
+                  body,
+                  harnessInstanceId: session.harnessInstanceId,
+                  operation,
+                  timestamp: new Date().toISOString(),
+                  ...(replacement && successor
+                    ? {
+                        replacement: {
+                          ...replacement.selection,
+                          startupDeadline: nanoHostStartupDeadline(successor),
+                          ...(replacement.request.storage
+                            ? { storage: replacement.request.storage }
+                            : {}),
+                        },
+                      }
+                    : {}),
+                },
+                harnessTurnLifecycle,
+                replacement
+                  ? {
+                      attemptId: replacement.request.attemptId,
+                      verifyBeforePost: (native) => {
+                        try {
+                          this.verifyAgentSessionReplacementQueue(
+                            replacement,
+                            identity,
+                            consumerReceipt,
+                            native
+                          );
+                          return true;
+                        } catch (error) {
+                          refusal = { error };
+                          return false;
+                        }
+                      },
+                    }
+                  : undefined
+              );
+            } catch (error) {
+              // The decision refused before the post: keep its typed request or P14 cause.
+              if (refusal) throw refusal.error;
+              throw error;
+            }
           };
           if (!replacement) await enqueue();
           else {
@@ -10156,6 +10239,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 enqueue
               );
             } catch (error) {
+              if (
+                error instanceof Error &&
+                error.message === NANO_HOST_REPLACEMENT_STORAGE_CHANGED
+              ) {
+                // A Native storage write won before the commit: report the selection's own cause.
+                try {
+                  replacement.request.validateStorage?.();
+                } catch (cause) {
+                  if (typeof cause === 'object' && cause !== null) this.replacementRefusals.add(cause);
+                  throw cause;
+                }
+                throw new AgentSessionReplacementSelectionChanged();
+              }
               if (
                 error instanceof Error &&
                 error.message === NANO_HOST_REPLACEMENT_SELECTION_CHANGED

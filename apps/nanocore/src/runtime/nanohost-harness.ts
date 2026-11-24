@@ -23,6 +23,7 @@ export {
   NANO_HOST_HARNESS_OPERATIONS,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
+  NANO_HOST_REPLACEMENT_STORAGE_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
@@ -149,7 +150,14 @@ export async function copyNanoHostMeasuredHarnessIdentity(
 
 /** Split live Harness decisions bound to one acknowledged Core and NanoHost pair. */
 export interface AdmittedNanoHostHarnessTurnLifecycle {
-  queue(input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1]): Promise<number>;
+  /**
+   * @param authority A replacement close's successor authority, decided under the Core and
+   *   Workspace holds in the turn that posts the queue commit.
+   */
+  queue(
+    input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1],
+    authority?: NanoHostReplacementQueueAuthority
+  ): Promise<number>;
   dispatch(
     input: Parameters<typeof Records.dispatchNanoHostHarnessOperation>[1]
   ): Promise<Records.NanoHostHarnessCommand | null>;
@@ -163,6 +171,17 @@ export interface AdmittedNanoHostHarnessTurnLifecycle {
   ): Promise<'settled' | 'replayed'>;
   acknowledge(input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]): Promise<void>;
   claimIdleCaptureDrain(input: NanoHostIdleCaptureDrainInput): Promise<void>;
+}
+
+/** Process-local successor authority for one replacement close queue commit. */
+export interface NanoHostReplacementQueueAuthority {
+  /** The successor attempt whose Workspace is held with Core through the queue commit. */
+  readonly attemptId: string;
+  /**
+   * Rechecks the successor request, the predecessor's idle Core proof and explicit storage on
+   * committed Native state; false refuses the queue unposted.
+   */
+  readonly verifyBeforePost: (native: Pick<CoreDb, 'sqlite'>) => boolean;
 }
 
 /** Process-local proof that a private Harness result still arrives on authoritative carriage. */
@@ -182,11 +201,12 @@ export type NanoHostIdleCaptureDrainInput = Omit<
 export async function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1],
-  admitted?: AdmittedNanoHostHarnessTurnLifecycle
+  admitted?: AdmittedNanoHostHarnessTurnLifecycle,
+  authority?: NanoHostReplacementQueueAuthority
 ): Promise<number> {
   const startedAt = performance.now();
   try {
-    if (admitted) return await admitted.queue(input);
+    if (admitted) return await admitted.queue(input, authority);
     return (await publishHarness(coreDb, {
       kind: 'operation.queue',
       prepared: input.prepared,
