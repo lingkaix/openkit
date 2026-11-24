@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalJsonText } from '@openkit/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -1968,6 +1969,7 @@ describe('pending requests', () => {
         )
           settled.resolve();
       });
+      const held = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const dependencies = {
         openWorkspace: (workspaceId: string) => openWorkspaceDb(dataRoot, workspaceId),
       };
@@ -1992,14 +1994,17 @@ describe('pending requests', () => {
           }
           return apply(...args);
         });
-      const complete = store.completeTurn.bind(store);
-      const terminal = vi.spyOn(store, 'completeTurn').mockImplementation(async (...args) => {
-        if (args[0] === outcomeTurnId && fault === 'permanent')
-          throw new Error('Native terminal bookkeeping unavailable');
-        const result = await complete(...args);
-        if (args[0] === outcomeTurnId) settled.resolve();
-        return result;
-      });
+      // Delivery bookkeeping completes the outcome Turn in the Workspace and Thread that admitted it.
+      const complete = store.completeWorkspaceTurn.bind(store);
+      const terminal = vi
+        .spyOn(store, 'completeWorkspaceTurn')
+        .mockImplementation(async (...args) => {
+          if (args[2] === outcomeTurnId && fault === 'permanent')
+            throw new Error('Native terminal bookkeeping unavailable');
+          const result = await complete(...args);
+          if (args[2] === outcomeTurnId) settled.resolve();
+          return result;
+        });
       const workerDelivery = {
         async startTurn(_store: FsStore, turnId: string) {
           outcomeTurnId = turnId;
@@ -2054,16 +2059,20 @@ describe('pending requests', () => {
         if (site === 'boot-resume') {
           if (fault === 'initial-lookup') {
             outcomeTurnId = readPendingRequest(db.sqlite, input.requestId)!.deliveryTurnId!;
-            const getTurn = store.getTurnById.bind(store);
-            let reads = 0;
-            lookup = vi.spyOn(store, 'getTurnById').mockImplementation((id) => {
-              // The census reads the pending Turn first; the next lookup belongs to detached delivery.
-              if (id === outcomeTurnId && ++reads === 2)
-                throw new Error('Outcome Turn lookup unavailable');
-              return getTurn(id);
+            const getTurn = store.getTurn.bind(store);
+            // The handoff reads nothing before submission; the startup scan's own Turn read fails.
+            lookup = vi.spyOn(store, 'getTurn').mockImplementation((...args) => {
+              if (args[2] === outcomeTurnId) throw new Error('Outcome Turn lookup unavailable');
+              return getTurn(...args);
             });
           }
           store.startPendingRequestDelivery({ ...dependencies, workerDelivery });
+          if (fault === 'initial-lookup') {
+            lookup?.mockRestore();
+            // Any detached delivery would have started from the scan; none did.
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            settled.resolve();
+          }
         }
         if (fault !== 'initial-lookup') {
           await attempted.promise;
@@ -2080,12 +2089,22 @@ describe('pending requests', () => {
             (message.startsWith('Outcome delivery for Turn ') ||
               message.startsWith('Recording the outcome delivery result failed for Turn '))
         );
-        expect(deliveryLogs.some((call) => String(call[0]).includes(outcomeTurnId!))).toBe(true);
+        if (fault !== 'initial-lookup')
+          expect(deliveryLogs.some((call) => String(call[0]).includes(outcomeTurnId!))).toBe(true);
         if (fault === 'initial-lookup') {
+          // Startup holds the Workspace whose own scan failed; its outcome waits for the next Boot.
+          expect(deliveryLogs).toEqual([]);
           expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe('frozen');
-          expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
-          expect(deliveryLogs[0]?.[0]).toBe(
-            `Outcome delivery for Turn ${outcomeTurnId} failed before submission; leaving it for boot resume.`
+          // The held Workspace refuses product reads; its retained row shows the Turn still pending.
+          expect(
+            db.sqlite.prepare('SELECT status FROM control_turns WHERE id=?').get(outcomeTurnId)
+          ).toEqual({ status: 'pending' });
+          expect(terminal.mock.calls.some((call) => call[2] === outcomeTurnId)).toBe(false);
+          expect(
+            isScopeAdmitted(dataRoot, 'workspace', 'ws_00000000-0000-7000-8000-000000000001')
+          ).toBe(false);
+          expect(held.mock.calls[0]?.[0]).toBe(
+            'Boot recovery held Workspace ws_00000000-0000-7000-8000-000000000001 during pending-request-recovery.'
           );
         } else if (fault !== 'permanent') {
           const refused = fault === 'refusal-release';
@@ -2129,6 +2148,7 @@ describe('pending requests', () => {
         terminal.mockRestore();
         lookup?.mockRestore();
         logged.mockRestore();
+        held.mockRestore();
         db.sqlite.close();
         coreDb.sqlite.close();
       }

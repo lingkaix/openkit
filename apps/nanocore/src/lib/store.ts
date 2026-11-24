@@ -4332,9 +4332,10 @@ export class FsStore {
   private findNativeOwner(
     kind: 'thread' | 'turn' | 'agent-session' | 'item',
     id: string,
-    excludedWorkspaceId?: string
+    excludedWorkspaceId?: string,
+    creatingWorkspaceId?: string
   ): { owner: ControlProductOwner; threadId: string | null; turnId?: string } | undefined {
-    const steps = this.findNativeOwnerSteps(kind, id, excludedWorkspaceId);
+    const steps = this.findNativeOwnerSteps(kind, id, excludedWorkspaceId, creatingWorkspaceId);
     for (;;) {
       const step = steps.next();
       if (step.done) return step.value;
@@ -4345,7 +4346,8 @@ export class FsStore {
   private *findNativeOwnerSteps(
     kind: 'thread' | 'turn' | 'agent-session' | 'item',
     id: string,
-    excludedWorkspaceId?: string
+    excludedWorkspaceId?: string,
+    creatingWorkspaceId?: string
   ): Generator<
     void,
     { owner: ControlProductOwner; threadId: string | null; turnId?: string } | undefined,
@@ -4360,6 +4362,8 @@ export class FsStore {
           (id) =>
             id !== '.staging' &&
             id !== excludedWorkspaceId &&
+            // The creating Workspace answers for itself through its own scoped read.
+            id !== creatingWorkspaceId &&
             isScopeAdmitted(this.dataRoot!, 'workspace', id, this.suppliedScopeRefusals)
         )
         .map((workspaceId) => ({ kind: 'workspace' as const, workspaceId })),
@@ -4414,23 +4418,40 @@ export class FsStore {
           'agent-session': 'control_agent_sessions',
           item: 'control_product_entries',
         }[kind];
-        const row =
-          kind === 'item'
-            ? (reader.sqlite
-                .prepare(
-                  "SELECT schema_version,turn_id,identity_json FROM control_product_entries WHERE kind='item' AND id=? LIMIT 1"
-                )
-                .get(id) as
-                | { schema_version: number; identity_json: string; turn_id: string }
-                | undefined)
-            : (reader.sqlite
-                .prepare(
-                  `SELECT schema_version,${kind === 'thread' ? 'id AS thread_id' : 'thread_id'} FROM ${table} WHERE id=?`
-                )
-                .get(id) as { schema_version: number; thread_id: string | null } | undefined);
-        if (row) {
-          if (row.schema_version !== 1)
+        let row:
+          | { schema_version: number; identity_json: string; turn_id: string }
+          | { schema_version: number; thread_id: string | null }
+          | undefined;
+        try {
+          row =
+            kind === 'item'
+              ? (reader.sqlite
+                  .prepare(
+                    "SELECT schema_version,turn_id,identity_json FROM control_product_entries WHERE kind='item' AND id=? LIMIT 1"
+                  )
+                  .get(id) as
+                  | { schema_version: number; identity_json: string; turn_id: string }
+                  | undefined)
+              : (reader.sqlite
+                  .prepare(
+                    `SELECT schema_version,${kind === 'thread' ? 'id AS thread_id' : 'thread_id'} FROM ${table} WHERE id=?`
+                  )
+                  .get(id) as { schema_version: number; thread_id: string | null } | undefined);
+          if (row && row.schema_version !== 1)
             throw new Error('Unsupported native product selector format.');
+        } catch (error) {
+          // A sibling that cannot answer a creation's uniqueness read is held like an unopenable
+          // one; its failure is never charged to the creating Workspace.
+          if (!creatingWorkspaceId || owner.kind !== 'workspace') throw error;
+          closeWorkspaceProductReadHandles(path);
+          refuseScope(this.dataRoot, {
+            scope: 'workspace',
+            id: owner.workspaceId,
+            check: 'database',
+          });
+          row = undefined;
+        }
+        if (row) {
           if (result) {
             if (excludedWorkspaceId) {
               const identity = `${kind === 'agent-session' ? 'session' : kind}:${id}`;
@@ -5460,7 +5481,9 @@ export class FsStore {
 
     if (
       this.dataRoot
-        ? this.findNativeOwner('turn', turnId)
+        ? // The creating Workspace answers in its own scope; a sibling that cannot answer is held.
+          readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'turn', turnId) ||
+          this.findNativeOwner('turn', turnId, undefined, workspaceId)
         : this.turns.has(turnId) || this.serverTurns.has(turnId)
     ) {
       throw new Error(`Turn already exists: ${turnId}`);
@@ -5635,7 +5658,7 @@ export class FsStore {
   /** Binds the real Pending services and resumes their original frozen Worker deliveries. */
   public startPendingRequestDelivery(dependencies: PendingAdmissionDependencies | null): void {
     this.pendingRequestServices = dependencies;
-    if (dependencies) resumeFrozenPendingDelivery(this, dependencies);
+    if (dependencies) resumeFrozenPendingDelivery(this, dependencies, true);
   }
 
   /**
@@ -5646,6 +5669,22 @@ export class FsStore {
    */
   public getTurnExecutor(turnId: string): 'worker' | 'assistant' | 'coordinator' | 'person' | null {
     this.assertTurnPublicationAcknowledged(turnId);
+    return this.turnExecutors.get(turnId) ?? null;
+  }
+
+  /**
+   * Returns the executor declared when a Turn of a known Workspace was admitted; only that
+   * Workspace's admission is checked, so sibling Workspaces are never read.
+   *
+   * @param workspaceId Workspace whose own records named the Turn.
+   * @param turnId Turn id.
+   * @returns Executor, or null when admission did not declare one.
+   */
+  public getWorkspaceTurnExecutor(
+    workspaceId: string,
+    turnId: string
+  ): 'worker' | 'assistant' | 'coordinator' | 'person' | null {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
     return this.turnExecutors.get(turnId) ?? null;
   }
 
@@ -6041,17 +6080,24 @@ export class FsStore {
    * @param threadId Thread that owns the Turn.
    * @param turnId Turn to complete.
    * @param patch Terminal metadata patch.
+   * @param publication Optional complete terminal tuple, such as its Pending commands.
    * @returns The authoritative Turn after FULL COMMIT.
    */
   public async completeWorkspaceTurn(
     workspaceId: string,
     threadId: string,
     turnId: string,
-    patch: Parameters<FsStore['updateTurn']>[1]
+    patch: Parameters<FsStore['updateTurn']>[1],
+    publication: TerminalTurnPublication = {}
   ): Promise<Turn> {
     this.getTurn(workspaceId, threadId, turnId);
     const owner = { kind: 'workspace', workspaceId } as const;
-    const args: Parameters<FsStore['completeTurnPublication']> = [turnId, patch, {}, owner];
+    const args: Parameters<FsStore['completeTurnPublication']> = [
+      turnId,
+      patch,
+      publication,
+      owner,
+    ];
     return this.publishTurnMutation(owner, turnId, args, (owned) =>
       this.completeTurnPublication(...owned)
     );
@@ -6109,6 +6155,9 @@ export class FsStore {
     if (owner.kind === 'server') this.assertServerWorkMutationAvailable();
     const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
     const history = scope ? readNativeTurnHistory(scope, turnId) : undefined;
+    // A selected Workspace owner answers for its Turn; a miss there is never a sibling's record.
+    if (scope && owner.kind === 'workspace' && !history)
+      throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     const before =
       history?.turn ??
       (owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId));
@@ -6149,7 +6198,9 @@ export class FsStore {
     const events =
       owner.kind === 'server'
         ? this.getServerTurnTranscript(turnId)
-        : this.getTurnEventsForExport(turnId);
+        : scope
+          ? readWorkspaceTurnEvents(this.workspaceRootPath(owner.workspaceId), before)
+          : this.getTurnEventsForExport(turnId);
     const prior = events.find((event) => event.data.type === 'turn-completed');
     const precedingHistory: { data: unknown }[] = [...events];
     for (const draft of publication.precedingEvents ?? []) {
@@ -6475,7 +6526,12 @@ export class FsStore {
     for (const terminalEvent of [...precedingEvents, event])
       this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
     return {
-      turn: owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId),
+      turn:
+        owner.kind === 'server'
+          ? this.getServerTurnById(turnId)
+          : scope
+            ? this.getTurn(owner.workspaceId, turn.threadId, turnId)
+            : this.getTurnById(turnId),
       notify: Boolean(scope && owner.kind === 'workspace' && !prior),
     };
   }

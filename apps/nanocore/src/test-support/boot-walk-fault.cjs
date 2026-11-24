@@ -3,18 +3,27 @@
 
 // Fault fixture only: it refuses selected SQLite reads and never writes.
 // OPENKIT_TEST_BOOT_WALK_FAULT =
-//   { workspaceId?, fail?, within?, outside?, after?, arm?, shared?, census?, writer?, label }.
+//   { workspaceId?, fail?, within?, outside?, after?, times?, miss?, arm?, live?, shared?, census?,
+//     writer?, writerSql?, writerWithin?, writerAfter?, label }.
 // - fail: SQL text that throws on the named Workspace's own database in Main once armed.
-// - within / outside: the fail applies only while this function is / no listed function is on the stack.
+// - within / outside: the fail applies only while one listed function is / no listed function is
+//   on the stack.
 // - after: number of matching reads that still succeed before the fail applies.
+// - times: number of matching reads the fail applies to; absent = every later matching read.
+// - miss: the matching read observes no row instead of failing (a missing record, not an error).
 // - arm: SQL text on any handle that arms the fault; absent = armed from process start.
+// - live: function names whose matching reads stay faulted after the bind, for a Boot handoff whose
+//   owner keeps working after the listeners bind.
 // - shared: after the Workspace read fails, every Core read fails too (shared owner lost).
 // - census 'lost': after the Workspace read fails, listing the Workspace directory fails with EIO.
 // - census 'walk': the Boot walk's own census listing of the Workspace directory fails with EIO.
 // - writer: in the control-store writer thread, the named Workspace's Item publication reads its
 //   Turn head: 'missing-head' observes no row (the writer's own precondition refusal), 'busy'
-//   throws SQLITE_BUSY (the writer's busy result).
-// The Main fault covers Boot only: it disarms when the App listener binds, so live reads after Boot run unfaulted.
+//   throws SQLITE_BUSY (the writer's busy result). writerSql / writerWithin select another writer
+//   read (default the Turn head read inside prepareControlItemAppend); writerAfter counts the
+//   matching writer reads that still succeed first.
+// The Main fault covers Boot only: it disarms when the App listener binds, so live reads after Boot
+// run unfaulted, except reads under a listed `live` owner.
 (() => {
   const threads = require('node:worker_threads');
   const raw = process.env.OPENKIT_TEST_BOOT_WALK_FAULT;
@@ -42,14 +51,30 @@
     const statement = Object.getPrototypeOf(probe.prepare('SELECT 1'));
     probe.close();
     const get = statement.get;
+    let writerPassed = 0;
     statement.get = function (...args) {
       const name = typeof this.database?.name === 'string' ? this.database.name : '';
       if (
         name.endsWith(scoped) &&
-        String(this.source) === 'SELECT * FROM control_turns WHERE id=?' &&
-        stack().includes('prepareControlItemAppend')
+        String(this.source) === (fault.writerSql ?? 'SELECT * FROM control_turns WHERE id=?') &&
+        stack().includes(fault.writerWithin ?? 'prepareControlItemAppend') &&
+        writerPassed++ >= (fault.writerAfter ?? 0)
       ) {
         process.stderr.write(`[boot-walk-fault] hit ${fault.label}\n`);
+        // The writer hit names its operation, so a miscounted writerAfter shows which post it refused.
+        process.stderr.write(
+          `[boot-walk-fault] writer-stack ${stack()
+            .split('\n')
+            .slice(2, 14)
+            .map(
+              (frame) =>
+                frame
+                  .trim()
+                  .replace(/^at (async )?/, '')
+                  .split(' (')[0]
+            )
+            .join(' < ')}\n`
+        );
         if (fault.writer === 'missing-head') return undefined;
         throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
       }
@@ -60,6 +85,8 @@
   const core = path.join('server', 'db', 'core.sqlite');
   let armed = !fault.arm;
   let passed = 0;
+  let applied = 0;
+  const listed = (names) => [].concat(names);
   let disarmed = false;
   let coreLost = false;
   let censusLost = false;
@@ -80,15 +107,20 @@
       throw new Error('[boot-walk-fault] Core authority is unavailable.');
     }
     if (
-      armed &&
+      (armed ||
+        (disarmed && fault.live && listed(fault.live).some((name) => stack().includes(name)))) &&
       fault.fail &&
       name.endsWith(scoped) &&
       sql.includes(fault.fail) &&
-      (!fault.within || stack().includes(fault.within)) &&
-      (!fault.outside || ![].concat(fault.outside).some((name) => stack().includes(name))) &&
-      // A counted fault applies at execution, so one read counts once whether or not it was cached.
-      (fault.after === undefined || (execution && passed++ >= fault.after))
+      (!fault.within || listed(fault.within).some((name) => stack().includes(name))) &&
+      (!fault.outside || !listed(fault.outside).some((name) => stack().includes(name))) &&
+      // A counted or missing-row fault applies at execution, so one read counts once whether or
+      // not its statement was cached.
+      (fault.after === undefined || (execution && passed++ >= fault.after)) &&
+      (!fault.miss || execution) &&
+      (fault.times === undefined || applied < fault.times)
     ) {
+      applied++;
       report(`hit ${fault.label}`);
       // The first hit names its callers, so a misattributed hold shows which owner read it.
       report(
@@ -108,6 +140,7 @@
           .slice(0, 24)
           .join(' < ')}`
       );
+      if (fault.miss) return 'miss';
       if (fault.shared) coreLost = true;
       if (fault.census === 'lost') censusLost = true;
       throw Object.assign(new Error('database disk image is malformed'), {
@@ -161,7 +194,8 @@
   for (const method of ['get', 'all', 'iterate', 'run']) {
     const original = statement[method];
     statement[method] = function (...args) {
-      check(this.database, String(this.source), true);
+      if (check(this.database, String(this.source), true) === 'miss')
+        return method === 'all' ? [] : undefined;
       return original.apply(this, args);
     };
   }

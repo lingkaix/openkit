@@ -16,6 +16,7 @@ import {
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   bootWorkspaceWrite,
+  holdBootWorkspaceFailure,
   withinBootWorkspaceBoundary,
 } from '../bootstrap/boot-workspace-walk.js';
 import type { FsStore } from '../lib/store.js';
@@ -155,8 +156,26 @@ export interface PendingWorkerDelivery {
    *
    * @param store Store that owns the Turn.
    * @param turnId Outcome Turn.
+   * @param scope The Workspace and Thread whose own records admitted the Turn.
    */
-  startTurn(store: FsStore, turnId: string): Promise<void>;
+  startTurn(store: FsStore, turnId: string, scope: PendingOutcomeScope): Promise<void>;
+}
+
+/** The admitted Workspace and Thread of one outcome Turn, carried to its real submission. */
+export interface PendingOutcomeScope {
+  readonly workspaceId: string;
+  readonly threadId: string;
+}
+
+/** One admitted outcome Turn with the executor its admission declared. */
+interface PendingOutcome extends PendingOutcomeScope {
+  readonly turnId: string;
+  readonly executor: PendingExecutorKind | null;
+}
+
+/** Posts one Workspace write; Boot recovery attributes its definite local noncommit to that Workspace. */
+function postWorkspace<Value>(boot: boolean, write: () => Promise<Value>): Promise<Value> {
+  return boot ? bootWorkspaceWrite(write) : write();
 }
 
 /** Dependencies for admission and boot. */
@@ -317,38 +336,60 @@ export async function wakePendingOutcomes(
   await dependencies.goalTerminal?.(turn);
 }
 
-/** Resumes the original frozen pending Worker deliveries when their real service becomes available. */
+/**
+ * Resumes the original frozen pending Worker deliveries when their real service becomes available.
+ * Each outcome keeps the Workspace and Thread that admitted it through submission.
+ *
+ * @param store Store that owns the outcome Turns.
+ * @param dependencies Workspace storage and executor delivery owners.
+ * @param startup At startup one Workspace's failed scan holds that Workspace; live callers rethrow it.
+ */
 export function resumeFrozenPendingDelivery(
   store: FsStore,
-  dependencies: PendingAdmissionDependencies
+  dependencies: PendingAdmissionDependencies,
+  startup = false
 ): void {
   if (dependencies.agentWorkPaused?.()) return;
-  if (dependencies.workerDelivery) {
-    const pendingTurns = new Set<string>();
-    let workspaces: ReturnType<FsStore['listWorkspaces']>;
+  if (!dependencies.workerDelivery) return;
+  const dataRoot = store.getDataRoot();
+  const outcomes = new Map<string, PendingOutcome>();
+  // The census stays outside every Workspace boundary: an untrustworthy list stops the caller.
+  // It lists admitted owners only, so a held owner keeps its frozen outcomes until admitted again.
+  for (const workspaceId of store.listAdmittedWorkspaceIds()) {
+    const found: PendingOutcome[] = [];
     try {
-      workspaces = store.listWorkspaces();
-    } catch {
-      return;
-    }
-    for (const workspace of workspaces) {
-      withWorkspace(dependencies, workspace.id, (sqlite) => {
-        for (const thread of store.listThreads(workspace.id)) {
+      store.getWorkspace(workspaceId);
+      withWorkspace(dependencies, workspaceId, (sqlite) => {
+        for (const thread of store.listThreads(workspaceId)) {
           if (thread.status === 'archived') continue;
-          for (const record of listThreadPendingRequests(sqlite, workspace.id, thread.id))
+          for (const record of listThreadPendingRequests(sqlite, workspaceId, thread.id)) {
             if (
-              record.requesterKind === 'worker' &&
-              record.delivery === 'frozen' &&
-              record.deliveryTurnId &&
-              canonicalRecordIsUsable(store, sqlite, record) &&
-              store.getTurnById(record.deliveryTurnId).status === 'pending'
+              record.requesterKind !== 'worker' ||
+              record.delivery !== 'frozen' ||
+              !record.deliveryTurnId ||
+              !canonicalRecordIsUsable(store, sqlite, record)
             )
-              pendingTurns.add(record.deliveryTurnId);
+              continue;
+            const turn = recordTurn(store, record, record.deliveryTurnId);
+            if (turn.status === 'pending')
+              found.push({
+                workspaceId,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                executor:
+                  store.getWorkspaceTurnExecutor(workspaceId, turn.id) ?? executorKindForTurn(turn),
+              });
+          }
         }
       });
+    } catch (error) {
+      if (!startup || !dataRoot) throw error;
+      holdBootWorkspaceFailure({ dataRoot, workspaceId, stage: 'pending-request-recovery' }, error);
+      continue;
     }
-    for (const turnId of pendingTurns) void deliverWorkerOutcome(store, dependencies, turnId);
+    for (const outcome of found) outcomes.set(outcome.turnId, outcome);
   }
+  for (const outcome of outcomes.values()) void deliverWorkerOutcome(store, dependencies, outcome);
 }
 
 /**
@@ -485,7 +526,7 @@ export async function recoverPendingRequestsAtBoot(
               .listThreadTurns(workspace.id, thread.id)
               .some((turn) => !isSealedTurnTerminal(turn.status))
           )
-            await admitNextOutcome(store, dependencies, workspace.id, thread.id);
+            await admitNextOutcome(store, dependencies, workspace.id, thread.id, true);
         }
       }
     );
@@ -1154,7 +1195,8 @@ async function closeoutUnavailableRequests(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  boot = false
 ): Promise<boolean> {
   const selection = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
@@ -1197,26 +1239,29 @@ async function closeoutUnavailableRequests(
     now,
     (record) => events.get(record.requestId)!
   );
-  await store.publishPendingRequestServiceTurn(workspaceId, threadId, {
-    turnId,
-    summary: 'Requester authority was lost.',
-    actor,
-    now,
-    items: pendingOutcomeItems(projected, turnId, now),
-    pending: [
-      {
-        action: 'closeout',
-        workspaceId,
-        threadId,
-        closeoutTurnId: turnId,
-        actor: { kind: actor.kind, id: actor.id },
-        now,
-        expected: pendingSources(selection.records),
-        expectedThreadCensus: selection.census.map((record) => record.requestId),
-        invalidatingEvents: selection.events,
-      },
-    ],
-  });
+  // Core authority decided the loss above; only this Workspace's own post is attributed.
+  await postWorkspace(boot, () =>
+    store.publishPendingRequestServiceTurn(workspaceId, threadId, {
+      turnId,
+      summary: 'Requester authority was lost.',
+      actor,
+      now,
+      items: pendingOutcomeItems(projected, turnId, now),
+      pending: [
+        {
+          action: 'closeout',
+          workspaceId,
+          threadId,
+          closeoutTurnId: turnId,
+          actor: { kind: actor.kind, id: actor.id },
+          now,
+          expected: pendingSources(selection.records),
+          expectedThreadCensus: selection.census.map((record) => record.requestId),
+          invalidatingEvents: selection.events,
+        },
+      ],
+    })
+  );
   return true;
 }
 
@@ -1224,10 +1269,11 @@ async function admitNextOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  boot = false
 ): Promise<void> {
-  if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId)) return;
-  if (await admitInvalidations(store, dependencies, workspaceId, threadId)) return;
+  if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId, boot)) return;
+  if (await admitInvalidations(store, dependencies, workspaceId, threadId, boot)) return;
   const selectedRequestIds: string[] = [];
   let selected: {
     readonly executor: PendingExecutorKind;
@@ -1271,35 +1317,37 @@ async function admitNextOutcome(
     readonly agentId: string | null;
   } = selected;
   if (dependencies.agentWorkPaused?.() && choice.executor !== 'person') return;
+  // The creation owner decides the new identity: its own scope, then siblings it can read.
   const turnId = allocateEntityId('tu');
-  if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
   let turn: ReturnType<FsStore['getTurnById']>;
   try {
-    turn = await store.createTurn(
-      workspaceId,
-      threadId,
-      choice.triggerSource.kind === 'approval-resolution'
-        ? 'Approval outcomes'
-        : 'User-input outcomes',
-      choice.actorId === 'system'
-        ? pendingRequestSystemActor(null)
-        : { kind: 'user', id: choice.actorId },
-      null,
-      {
-        turnId,
-        status: choice.executor === 'worker' ? 'pending' : 'running',
-        executorKind: choice.executor,
-        agentId:
-          choice.executor === 'worker'
-            ? choice.agentId
-            : choice.executor === 'coordinator'
+    turn = await postWorkspace(boot, () =>
+      store.createTurn(
+        workspaceId,
+        threadId,
+        choice.triggerSource.kind === 'approval-resolution'
+          ? 'Approval outcomes'
+          : 'User-input outcomes',
+        choice.actorId === 'system'
+          ? pendingRequestSystemActor(null)
+          : { kind: 'user', id: choice.actorId },
+        null,
+        {
+          turnId,
+          status: choice.executor === 'worker' ? 'pending' : 'running',
+          executorKind: choice.executor,
+          agentId:
+            choice.executor === 'worker'
               ? choice.agentId
-              : choice.executor === 'assistant'
-                ? 'quick-chat'
-                : null,
-        triggerSource: choice.triggerSource,
-      }
+              : choice.executor === 'coordinator'
+                ? choice.agentId
+                : choice.executor === 'assistant'
+                  ? 'quick-chat'
+                  : null,
+          triggerSource: choice.triggerSource,
+        }
+      )
     );
   } catch (error) {
     // Native freezing owns the winner. A competing answer can win after this wake selected
@@ -1312,7 +1360,7 @@ async function admitNextOutcome(
       choice.executor === 'worker' &&
       (busyAdmission ||
         (error instanceof PendingRequestCommandError && error.code === 'recovery_required')) &&
-      storeProvesTurnAbsent(store, turnId) &&
+      provesTurnAbsent(store, workspaceId, threadId, turnId) &&
       withWorkspace(dependencies, workspaceId, (sqlite) => {
         let winnerId: string | undefined;
         return (
@@ -1331,11 +1379,15 @@ async function admitNextOutcome(
             )
               return false;
             winnerId ??= record.deliveryTurnId;
-            if (winnerId !== record.deliveryTurnId || !storeHasTurn(store, winnerId)) return false;
-            const winner = store.getTurnById(winnerId);
+            if (winnerId !== record.deliveryTurnId) return false;
+            // Only the original owner and Thread can hold the winner; a failed read proves none.
+            let winner: Turn;
+            try {
+              winner = store.getTurn(workspaceId, threadId, winnerId);
+            } catch {
+              return false;
+            }
             return (
-              workspaceIdForOwner(winner.owner) === workspaceId &&
-              winner.threadId === threadId &&
               executorKindForTurn(winner) === 'worker' &&
               winner.agentId === choice.agentId &&
               winner.triggerActor.kind === 'user' &&
@@ -1361,34 +1413,53 @@ async function admitNextOutcome(
     choice.executor === 'assistant' ||
     choice.executor === 'coordinator'
   ) {
-    void deliverWorkerOutcome(store, dependencies, turn.id);
+    void deliverWorkerOutcome(store, dependencies, {
+      workspaceId,
+      threadId,
+      turnId: turn.id,
+      executor: choice.executor,
+    });
     return;
   }
   const provedAt = new Date().toISOString();
-  await store.completeTurn(
-    turn.id,
-    { status: 'completed', completedAt: provedAt },
-    { pending: [{ action: 'delivery-prove', workspaceId, turnId: turn.id, now: provedAt }] }
+  await postWorkspace(boot, () =>
+    store.completeWorkspaceTurn(
+      workspaceId,
+      threadId,
+      turn.id,
+      { status: 'completed', completedAt: provedAt },
+      // The acknowledged outcome's own wake runs inside this write, so Boot attributes it too.
+      { pending: [{ action: 'delivery-prove', workspaceId, turnId: turn.id, now: provedAt }] }
+    )
   );
 }
 
 /**
  * Delivers an outcome without allowing submission or recovery failures to reject detached callers.
+ * The admitting caller supplies the Turn's Workspace, Thread and executor, so nothing is read
+ * before the real delivery owner takes the Turn; without that owner the frozen Turn stays pending.
  *
  * @param store Store that owns the outcome Turn.
  * @param dependencies Workspace storage and executor delivery owners.
- * @param turnId Outcome Turn identity, included in recovery diagnostics.
+ * @param outcome Outcome Turn, its admitted scope and declared executor.
  */
 async function deliverWorkerOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
-  turnId: string
+  outcome: PendingOutcome
 ): Promise<void> {
+  const { workspaceId, threadId, turnId, executor } = outcome;
+  const delivery =
+    executor === 'coordinator'
+      ? dependencies.coordinatorDelivery
+      : executor === 'assistant'
+        ? dependencies.assistantDelivery
+        : dependencies.workerDelivery;
+  if (!delivery) return;
   const deliver = async () => {
     let refusal: TurnStartValidationError | undefined;
     let submitted = false;
     try {
-      const turn = store.getTurnById(turnId);
       try {
         if (dependencies.agentWorkPaused?.())
           throw new TurnStartValidationError(
@@ -1396,16 +1467,8 @@ async function deliverWorkerOutcome(
             'Agent work is paused by a server administrator.',
             503
           );
-        const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
-        const delivery =
-          executor === 'coordinator'
-            ? dependencies.coordinatorDelivery
-            : executor === 'assistant'
-              ? dependencies.assistantDelivery
-              : dependencies.workerDelivery;
-        if (!delivery) return;
         submitted = true;
-        await delivery.startTurn(store, turnId);
+        await delivery.startTurn(store, turnId, { workspaceId, threadId });
         // The worker execution owner records delivery at native acceptance, before completion.
       } catch (error) {
         const now = new Date().toISOString();
@@ -1414,34 +1477,29 @@ async function deliverWorkerOutcome(
           if (error.code === 'recovery_required') return;
           refusal = error;
           refusedOutcomeTurns.add(turnId);
-          await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          await store.applyPendingRequestCommand(workspaceId, {
             action: 'delivery-release',
-            workspaceId: workspaceIdForOwner(turn.owner),
+            workspaceId,
             turnId,
             now,
           });
-          if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-            await store.completeTurn(turnId, {
+          if (!isSealedTurnTerminal(store.getTurn(workspaceId, threadId, turnId).status))
+            await store.completeWorkspaceTurn(workspaceId, threadId, turnId, {
               status: 'failed',
               completedAt: now,
               error: { code: error.code, message: error.message },
             });
-          await closeoutUnavailableRequests(
-            store,
-            dependencies,
-            workspaceIdForOwner(turn.owner),
-            turn.threadId
-          );
+          await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId);
           return;
         }
-        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+        await store.applyPendingRequestCommand(workspaceId, {
           action: 'delivery-unknown',
-          workspaceId: workspaceIdForOwner(turn.owner),
+          workspaceId,
           turnId,
           now,
         });
-        if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-          await store.completeTurn(turnId, {
+        if (!isSealedTurnTerminal(store.getTurn(workspaceId, threadId, turnId).status))
+          await store.completeWorkspaceTurn(workspaceId, threadId, turnId, {
             status: 'failed',
             completedAt: now,
             error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
@@ -1459,10 +1517,9 @@ async function deliverWorkerOutcome(
       console.error(`Recording the outcome delivery result failed for Turn ${turnId}.`, error);
       const now = new Date().toISOString();
       try {
-        const turn = store.getTurnById(turnId);
-        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+        await store.applyPendingRequestCommand(workspaceId, {
           action: refusal ? 'delivery-release' : 'delivery-unknown',
-          workspaceId: workspaceIdForOwner(turn.owner),
+          workspaceId,
           turnId,
           now,
         });
@@ -1475,8 +1532,8 @@ async function deliverWorkerOutcome(
         );
       }
       try {
-        if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-          await store.completeTurn(turnId, {
+        if (!isSealedTurnTerminal(store.getTurn(workspaceId, threadId, turnId).status))
+          await store.completeWorkspaceTurn(workspaceId, threadId, turnId, {
             status: 'failed',
             completedAt: now,
             error: refusal
@@ -1695,7 +1752,8 @@ async function admitInvalidations(
   store: FsStore,
   dependencies: PendingRequestDatabase,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  boot = false
 ): Promise<boolean> {
   const waiting = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
@@ -1714,24 +1772,26 @@ async function admitInvalidations(
     invalidationTurnId: turnId,
     updatedAt: now,
   }));
-  await store.publishPendingRequestServiceTurn(workspaceId, threadId, {
-    turnId,
-    summary: 'Person grant invalidations',
-    actor: pendingRequestSystemActor(null),
-    now,
-    items: projected.map((record) => pendingInvalidationItem(record, turnId, now)),
-    pending: [
-      {
-        action: 'associate-invalidation',
-        workspaceId,
-        threadId,
-        requestIds: waiting.map((record) => record.requestId),
-        turnId,
-        now,
-        expected: pendingSources(waiting),
-      },
-    ],
-  });
+  await postWorkspace(boot, () =>
+    store.publishPendingRequestServiceTurn(workspaceId, threadId, {
+      turnId,
+      summary: 'Person grant invalidations',
+      actor: pendingRequestSystemActor(null),
+      now,
+      items: projected.map((record) => pendingInvalidationItem(record, turnId, now)),
+      pending: [
+        {
+          action: 'associate-invalidation',
+          workspaceId,
+          threadId,
+          requestIds: waiting.map((record) => record.requestId),
+          turnId,
+          now,
+          expected: pendingSources(waiting),
+        },
+      ],
+    })
+  );
   return true;
 }
 
@@ -1759,22 +1819,18 @@ function withWorkspace<T>(
   }
 }
 
-/** Accepts only canonical absence; an unreadable scope cannot prove that no Turn exists. */
-function storeProvesTurnAbsent(store: FsStore, turnId: string): boolean {
+/** Accepts only the admitting Thread's canonical absence; an unreadable scope proves no absence. */
+function provesTurnAbsent(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): boolean {
   try {
-    store.getTurnById(turnId);
+    store.getTurn(workspaceId, threadId, turnId);
     return false;
   } catch (error) {
     return error instanceof StoreRecordNotFoundError;
-  }
-}
-
-function storeHasTurn(store: FsStore, turnId: string): boolean {
-  try {
-    store.getTurnById(turnId);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -1838,7 +1894,7 @@ function assertPendingAssociations(
       const pendingActor =
         turn.triggerActor.kind === 'system' && turn.triggerActor.id === 'nanocore-pending-request';
       const executor =
-        store.getTurnExecutor(turn.id) ??
+        store.getWorkspaceTurnExecutor(workspaceId, turn.id) ??
         executorKindForTurn(turn) ??
         (!turn.agentId && !turn.agentSessionId ? 'person' : null);
       const unprovedOutcome =
