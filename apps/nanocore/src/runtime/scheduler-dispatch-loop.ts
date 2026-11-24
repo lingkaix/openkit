@@ -207,7 +207,10 @@ interface SchedulerSelectionWork {
 
 type SchedulerPreparationInput = ReturnType<typeof schedulerPreparationInput>;
 type DispatchEvent = HandoffEvent<RunSchedulerDispatchLoopInput, SchedulerDispatchLoopStartedTurn>;
-type DispatchEffect = HandoffEffect<RunSchedulerDispatchLoopInput, SchedulerDispatchLoopStartedTurn>;
+type DispatchEffect = HandoffEffect<
+  RunSchedulerDispatchLoopInput,
+  SchedulerDispatchLoopStartedTurn
+>;
 
 /**
  * The executor of the Main selection handoff of one Core data root. It runs the effects that the
@@ -266,12 +269,17 @@ export function registerSchedulerDispatchWake(coreDb: CoreDb, wake: () => void):
 }
 
 /**
- * An owner release edge of the holds table. It queues one `released` event on each root and
- * awaits nothing, so an owner can call it while it holds the gate that it releases.
+ * An owner release edge of the holds table. It queues one `released` event on the root of this
+ * Core data root and awaits nothing, so an owner can call it while it holds the gate that it
+ * releases.
  */
-export function releaseSchedulerDispatchHold(hold: HandoffHold, key?: HandoffCapacityKey): void {
-  for (const root of schedulerDispatchHandoffs.values())
-    feedSchedulerDispatch(root, { kind: 'released', hold, ...(key ? { key } : {}) });
+export function releaseSchedulerDispatchHold(
+  coreDb: CoreDb,
+  hold: HandoffHold,
+  key?: HandoffCapacityKey
+): void {
+  const root = schedulerDispatchHandoffs.get(coreDb.dataRoot);
+  if (root) feedSchedulerDispatchLater(root, { kind: 'released', hold, ...(key ? { key } : {}) });
 }
 
 /**
@@ -479,7 +487,8 @@ function schedulerProposalCheck(
   // An incomplete cross-store publication fences only its own request/Thread. Continue
   // selecting eligible FIFO work; a receipt gap on A cannot veto independent Thread B.
   const turnInput = readScheduledAdmissionText(input.coreDb, entry);
-  if (turnInput === null) return { kind: 'skip', hold: 'publication-pending', sourceRecovery: true };
+  if (turnInput === null)
+    return { kind: 'skip', hold: 'publication-pending', sourceRecovery: true };
   if (!schedulerEntryPublicationComplete(input, entry, turnInput))
     return {
       kind: 'skip',
@@ -606,7 +615,12 @@ function readSchedulerDispatchSelection(
     if (disposition === 'immediate-replay' && replay) {
       root.handles.set(entryId, replay.release);
       root.work = replay.work;
-      return selected({ kind: 'claim', entry: entryId, identity: claimIdentity(claim), retained: true });
+      return selected({
+        kind: 'claim',
+        entry: entryId,
+        identity: claimIdentity(claim),
+        retained: true,
+      });
     }
     replay?.release();
     if (disposition === 'discharge-recovery') recovered.push(entryId);
@@ -636,7 +650,9 @@ function readSchedulerDispatchSelection(
     const qualified = schedulerAdmissionQualified(db, entry);
     const skip = (hold: HandoffHold, sourceRecovery = false) => {
       if (qualified) prefix.add(entry);
-      skipped.push(sourceRecovery ? { entry: entryId, hold, sourceRecovery } : { entry: entryId, hold });
+      skipped.push(
+        sourceRecovery ? { entry: entryId, hold, sourceRecovery } : { entry: entryId, hold }
+      );
     };
     let release: (() => void) | undefined;
     try {
@@ -692,7 +708,12 @@ function readSchedulerDispatchSelection(
           root.handles.set(entryId, release!);
           release = undefined;
           root.work = work;
-          return selected({ kind: 'claim', entry: entryId, identity: claimIdentity(claim), retained: true });
+          return selected({
+            kind: 'claim',
+            entry: entryId,
+            identity: claimIdentity(claim),
+            retained: true,
+          });
         }
         if (disposition === 'barrier') return selected({ kind: 'barrier', covered: covered() });
         skip('unresolved-claim');
@@ -719,7 +740,10 @@ function readSchedulerDispatchSelection(
     }
   }
   failure.entry = null;
-  return selected({ kind: 'none', queuedRemain: listQueuedSchedulerAdmissionEntries(db).length > 0 });
+  return selected({
+    kind: 'none',
+    queuedRemain: listQueuedSchedulerAdmissionEntries(db).length > 0,
+  });
 }
 
 function claimIdentity(claim: HandoffClaimIdentity): HandoffClaimIdentity {
@@ -869,7 +893,8 @@ function denySchedulerAdmission(root: SchedulerDispatchHandoff, entryId: string)
       queueEntryId: entryId,
       denialReason: 'authority-denied',
     }).then((result) => {
-      if (result.kind !== 'queue') throw new Error('Scheduler publication returned another family.');
+      if (result.kind !== 'queue')
+        throw new Error('Scheduler publication returned another family.');
       return result.entry;
     });
   } catch (error) {

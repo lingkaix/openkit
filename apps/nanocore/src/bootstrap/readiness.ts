@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { OperationError } from '../operation-error-core.js';
+import { releaseSchedulerHold } from '../scheduler-hold-release.js';
 
 /** A refused authority or unavailable projection; never persisted or used as replacement truth. */
 export interface ScopeAdmissionFailure {
@@ -50,6 +51,7 @@ export function settleWorkspaceRecoveryScope(input: {
   )
     throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
   failures.delete(key);
+  releaseSchedulerHold('scope-not-admitted');
 }
 
 /** Tests admission without opening or reconstructing a refused scope. */

@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
+import { releaseSchedulerHold } from '../scheduler-hold-release.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { ControlExecutionAttemptCommand } from '../storage/execution-attempt-codecs.js';
@@ -75,7 +76,16 @@ async function publishAttempt(
   });
   if (clock && snapshot.kind !== 'observe') snapshot.observedAt = clock();
   if (stage) stage.current = 'create';
-  return client.executionAttempt(database, snapshot);
+  const result = await client.executionAttempt(database, snapshot);
+  // The active-preparation release edge: the attempt left `open` with no deadline at this ACK.
+  if (
+    snapshot.kind === 'closing' ||
+    snapshot.kind === 'close-without-effects' ||
+    snapshot.kind === 'close-with-fence' ||
+    (snapshot.kind === 'record-operation' && snapshot.submission === true)
+  )
+    releaseSchedulerHold('active-preparation');
+  return result;
 }
 /** Acquires the original admission and complete attempt atomically on the Core writer. */
 export async function createSchedulerExecutionAttempt(

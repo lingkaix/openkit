@@ -80,6 +80,7 @@ import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { PolicyInterception } from '../policy/interception.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
+import { releaseSchedulerHold } from '../scheduler-hold-release.js';
 import {
   findSchedulerAdmissionForTurn,
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -1079,6 +1080,8 @@ export async function withPreparedWorkerSubmission<Value>(
       !attempt.deadline
     )
       throw new NanoHostSubmissionHeld();
+    // The active-preparation release edge: the native first-submit commit is acknowledged.
+    releaseSchedulerHold('active-preparation');
     return await submit(attempt);
   }
   const attempt = await recordSchedulerExecutionOperation(input.coreDb, {
