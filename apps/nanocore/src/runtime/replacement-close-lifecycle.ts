@@ -16,6 +16,8 @@ export type CloseCause =
   | 'close-allowance'
   | 'startup-deadline'
   | 'authority-expired'
+  /** Native refused the private deadline slot. Main answers the limiting clock instead. */
+  | 'deadline'
   | 'request'
   | 'audience'
   | 'idle-proof'
@@ -38,14 +40,22 @@ export interface ClosePremises {
   readonly idleReceipt: boolean;
   /** S: the selected storage revision is unchanged. */
   readonly storage: boolean;
-  /** N: the Native placement is unchanged. */
-  readonly placement: boolean;
+  /** N: read from the Native owner facts, not from a copy. */
+  readonly placement: PlacementFacts;
   /** X: the authenticated connection is current. */
   readonly connection: boolean;
-  /** Wall expiry of each clock, compared as absolute values. */
-  readonly expired: Readonly<Record<CloseClock, boolean>>;
-  /** Tc on the monotonic clock. */
+  /** The original absolute wall deadline of each clock. */
+  readonly deadlines: Readonly<Record<CloseClock, number>>;
+  /** The current wall instant. */
+  readonly now: number;
+  /** Tc on the monotonic clock. It is independent of the wall Tc. */
   readonly closeMonotonicExpired: boolean;
+}
+
+/** The facts that the Native placement selector reads (N:1415-1424). */
+export interface PlacementFacts {
+  readonly harness: 'open' | 'failed';
+  readonly sandbox: SandboxFacts;
 }
 
 export interface HarnessFacts {
@@ -53,7 +63,17 @@ export interface HarnessFacts {
   readonly drain: 'accepting' | 'draining';
   /** The strictly advancing claim revision (`updated_at`). */
   readonly revision: number;
-  readonly operation: null | 'session.close' | 'harness.drain';
+  /**
+   * The last operation of the cell. `other` stands for every kind that the Native queue admits on a
+   * draining Harness. Only `session.open` and `turn.start` refuse a draining Harness (N:1348-1353).
+   */
+  readonly operation:
+    | null
+    | 'session.open'
+    | 'turn.start'
+    | 'session.close'
+    | 'harness.drain'
+    | 'other';
   readonly cell: 'idle' | 'queued' | 'dispatched' | 'settled' | 'unknown';
   readonly key: string | null;
   readonly sequence: number | null;
@@ -118,6 +138,7 @@ export type ColdFence =
   | 'result-bytes'
   | 'abandon'
   | 'unproved'
+  | 'ambiguous-drain'
   | 'live-producer';
 
 export interface ReplacementCloseTable {
@@ -135,8 +156,11 @@ export interface ReplacementCloseTable {
   ) => { readonly revision: number } | CloseCause;
   /** RC3 refusal after RC2: the Workspace no-source record stays at P1. */
   readonly losingClaimRecord: 'keep' | 'erase';
-  /** RC6: how long the Core and successor Workspace holds pin R, A and B. */
-  readonly holdUntil: 'queue-reply' | 'post';
+  /** RC6: how long the Core hold (R, B) and the successor Workspace hold (A) pin their premises. */
+  readonly holdUntil: {
+    readonly core: 'queue-reply' | 'post';
+    readonly workspace: 'queue-reply' | 'post';
+  };
   /** RC6-RC8: the applied Workspace policy install waits for the successor Workspace hold. */
   readonly policyOrder: 'workspace-hold' | 'none';
   /** RC7, in the Main turn that posts the worker frame. */
@@ -150,8 +174,10 @@ export interface ReplacementCloseTable {
     readonly key: CloseKey;
     readonly slotExpired: boolean;
     readonly storage: boolean;
-    readonly placement: boolean;
+    readonly sandbox: SandboxFacts;
   }) => CloseCause | null;
+  /** Main maps the Native deadline refusal to the original limiting clock. */
+  readonly slotCause: (premises: ClosePremises) => CloseCause;
   /** RC9: dispatch for one authenticated poll. A reserved cell refuses another poll. */
   readonly dispatch: (input: {
     readonly harness: HarnessFacts;
@@ -200,11 +226,37 @@ const CLOCK_CAUSE: Readonly<Record<CloseClock, CloseCause>> = {
   Ta: 'authority-expired',
 };
 
+const CLOCKS: readonly CloseClock[] = ['Tc', 'Ts', 'Ta'];
+
+const passed = (p: ClosePremises, clock: CloseClock) => p.deadlines[clock] <= p.now;
+
+/**
+ * The limiting clock: the earliest original wall deadline that has passed. When no wall deadline
+ * has passed, only the monotonic Tc can have failed.
+ */
+export function limitingClock(p: ClosePremises): CloseClock {
+  let limit: CloseClock | null = null;
+  for (const clock of CLOCKS)
+    if (passed(p, clock) && (limit === null || p.deadlines[clock] < p.deadlines[limit]))
+      limit = clock;
+  return limit ?? 'Tc';
+}
+
+/** A clock refusal among the checked clocks, answered with the cause of the limiting clock. */
+function clockRefusal(p: ClosePremises, checked: readonly CloseClock[]): CloseCause | null {
+  const fails =
+    checked.some((clock) => passed(p, clock)) ||
+    (checked.includes('Tc') && p.closeMonotonicExpired);
+  return fails ? CLOCK_CAUSE[limitingClock(p)] : null;
+}
+
+export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sandboxOpen(p.sandbox);
+
 /** RC7: the original pending owner, Tc on both clocks, Ta, R, A with the P14 cause, and B. */
 export function decidePost(p: ClosePremises): CloseCause | null {
   if (!p.pendingOwner) return 'pending-owner';
-  if (p.expired.Tc || p.closeMonotonicExpired) return CLOCK_CAUSE.Tc;
-  if (p.expired.Ta) return CLOCK_CAUSE.Ta;
+  const clock = clockRefusal(p, ['Tc', 'Ta']);
+  if (clock) return clock;
   if (!p.request) return 'request';
   if (!p.audience.thread || !p.audience.policy) return 'audience';
   if (!p.idleReceipt) return 'idle-proof';
@@ -216,14 +268,13 @@ export function decideFirstBytes(p: ClosePremises): FirstBytesDecision {
   const refuse = (cause: CloseCause): FirstBytesDecision => ({ kind: 'refuse', cause });
   if (!p.connection) return refuse('delivery');
   if (!p.pendingOwner) return refuse('pending-owner');
-  for (const clock of ['Tc', 'Ts', 'Ta'] as const)
-    if (p.expired[clock]) return refuse(CLOCK_CAUSE[clock]);
-  if (p.closeMonotonicExpired) return refuse(CLOCK_CAUSE.Tc);
+  const clock = clockRefusal(p, CLOCKS);
+  if (clock) return refuse(clock);
   if (!p.request) return refuse('request');
   if (!p.idleReceipt) return refuse('idle-proof');
   if (!p.audience.thread || !p.audience.policy) return refuse('audience');
   if (!p.storage) return refuse('storage');
-  if (!p.placement) return refuse('placement');
+  if (!placementOpen(p.placement)) return refuse('placement');
   return { kind: 'write' };
 }
 
@@ -241,6 +292,19 @@ export function restorable(h: HarnessFacts, s: SandboxFacts): boolean {
       h.cell === 'idle' ||
       h.result === 'succeeded' ||
       h.result === 'stale')
+  );
+}
+
+/**
+ * The cell's last operation proves that the current drain began after it. The Native queue refuses
+ * `session.open` and `turn.start` on a draining Harness, and a `harness.drain` result is itself the
+ * last operation until a later queue replaces it. Any other last operation can have replaced the
+ * marker of a Harness-only drain (N:1892-1897), so it proves nothing about the drain.
+ */
+export function drainFollowsLastOperation(h: HarnessFacts): boolean {
+  return (
+    (h.cell === 'idle' && h.operation === null) ||
+    (h.cell === 'settled' && (h.operation === 'session.open' || h.operation === 'turn.start'))
   );
 }
 
@@ -313,13 +377,8 @@ export const COLD_RULES: readonly ColdRule[] = [
     decide: (f) => (f.harness.cell === 'dispatched' ? fence('possible-contact') : undefined),
   },
   {
-    // P7: the close key and its settle revision prove the latch.
-    id: 'p7-success',
-    decide: (f) => p7(f, 'succeeded'),
-  },
-  { id: 'p7-stale', decide: (f) => p7(f, 'stale') },
-  {
-    // P2/P3: the quiescent Harness exit needs every anchor, all settled and none abandoned.
+    // Every restore below needs every anchor, all settled and none abandoned. An older claim can
+    // leave the revision and the settled cell unchanged (c1), so P7 alone cannot exclude it.
     id: 'anchors',
     decide: (f) =>
       f.bindings.some((b) => b.capture === undefined) ? fence('unproved') : undefined,
@@ -330,6 +389,12 @@ export const COLD_RULES: readonly ColdRule[] = [
       f.bindings.some((b) => b.capture === 'abandoned') ? fence('abandon') : undefined,
   },
   {
+    // P7: the close key and its settle revision prove the latch.
+    id: 'p7-success',
+    decide: (f) => p7(f, 'succeeded'),
+  },
+  { id: 'p7-stale', decide: (f) => p7(f, 'stale') },
+  {
     // A drain with no open capture can be a Harness-only drain whose marker a later operation
     // replaced. Only an accepted capture that no close consumed is evidence of a capture claim.
     id: 'claim-evidence',
@@ -337,6 +402,12 @@ export const COLD_RULES: readonly ColdRule[] = [
       f.bindings.some((b) => b.present && b.capture === 'receipt' && b.consumed === null)
         ? undefined
         : fence('unproved'),
+  },
+  {
+    // Fail closed: without a claimant, only the last operation can exclude a replaced
+    // Harness-only drain marker.
+    id: 'drain-after-op',
+    decide: (f) => (drainFollowsLastOperation(f.harness) ? undefined : fence('ambiguous-drain')),
   },
   {
     id: 'quiescent',
@@ -391,14 +462,14 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
       ? { revision: harness.revision + 1 }
       : 'capacity',
   losingClaimRecord: 'keep',
-  holdUntil: 'queue-reply',
+  holdUntil: { core: 'queue-reply', workspace: 'queue-reply' },
   policyOrder: 'workspace-hold',
   post: decidePost,
   deadlineSlot: ['Tc', 'Ts', 'Ta'],
-  queue: ({ harness, claimRevision, key, slotExpired, storage, placement }) => {
-    if (slotExpired) return 'close-allowance';
+  queue: ({ harness, claimRevision, key, slotExpired, storage, sandbox }) => {
+    if (slotExpired) return 'deadline';
     if (!storage) return 'storage';
-    if (!placement) return 'placement';
+    if (!placementOpen({ harness: harness.life, sandbox })) return 'placement';
     if (
       claimRevision === null ||
       harness.drain !== 'draining' ||
@@ -412,6 +483,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
       return 'sequence';
     return null;
   },
+  slotCause: (p) => CLOCK_CAUSE[limitingClock(p)],
   dispatch: ({ harness, key, reservedBy, poll }) =>
     harness.cell === 'queued' && harness.key === key
       ? null
