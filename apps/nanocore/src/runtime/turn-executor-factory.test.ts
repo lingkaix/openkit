@@ -7320,7 +7320,13 @@ describe('createConfiguredTurnExecutor', () => {
    * Leaves one warm idle predecessor (optionally beside an idle co-resident sibling) through the real
    * executor closeout, then persists its successor's pre-submit attempt on the predecessor's Thread.
    */
-  async function admitNativeReplacementClose(label: string, options: { sibling?: boolean } = {}) {
+  async function admitNativeReplacementClose(
+    label: string,
+    options: {
+      sibling?: boolean;
+      beforeSuccessor?: (coreDb: CoreDb, store: FsStore, ownerUserId: string) => Promise<void>;
+    } = {}
+  ) {
     const manifest = createTestAgentSetup({
       imageRef: `sha256:${'a'.repeat(64)}`,
       requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -7447,6 +7453,7 @@ describe('createConfiguredTurnExecutor', () => {
       ? (await store.createThread(DEMO_WORKSPACE_ID, 'Idle co-resident', testEntityId('th', `${label}_sibling`))).id
       : undefined;
     const sibling = siblingThread ? await admit('sibling', siblingThread) : undefined;
+    await options.beforeSuccessor?.(coreDb, store, ownerUserId);
     let successor = await admitFactoryReplacement(coreDb, predecessor.admission.pkg, label, {
       store,
       requestedAgentId: manifest.id,
@@ -8338,42 +8345,42 @@ describe('createConfiguredTurnExecutor', () => {
   // FIX 4 F4 / AMEND 3.3: a later same-Harness claim committed after the restore decision was
   // read and before its Native post survives the exact restore.
   it('keeps a later same-Harness capture claim through the predecessor close latch restore', async () => {
-    const f = await admitNativeReplacementClose('p23_restore_later_claim');
-    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
-    // An idle co-resident on the predecessor's Harness, with its own closed Core attempt, seeded
-    // through the production session-binding writer while the Harness still admits.
-    const coThread = (
-      await f.store.createThread(
-        DEMO_WORKSPACE_ID,
-        'Later co-resident',
-        testEntityId('th', 'p23_later_claim')
-      )
-    ).id;
+    const coThread = testEntityId('th', 'p23_later_claim');
     const coSession = testEntityId('as', 'p23_later_claim');
     const coBinding = 'agent-session-binding-p23-later-claim';
-    const entry = await createTestQueueEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: 'queue:p23_later_claim',
-      requestedAgentId: 'agent_worker',
-      text: 'Earlier Turn of the later co-resident.',
-      threadId: coThread,
-      triggerActor: { kind: 'user', id: f.ownerUserId },
-      turnId: testEntityId('tu', 'p23_later_claim'),
-      workspaceId: DEMO_WORKSPACE_ID,
+    const coAttempt = testEntityId('attempt', 'p23_later_claim');
+    const f = await admitNativeReplacementClose('p23_restore_later_claim', {
+      async beforeSuccessor(coreDb, store, ownerUserId) {
+        // Close the co-resident's earlier attempt before the successor claims this Workspace.
+        await store.createThread(DEMO_WORKSPACE_ID, 'Later co-resident', coThread);
+        const entry = await createTestQueueEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: 'queue:p23_later_claim',
+          requestedAgentId: 'agent_worker',
+          text: 'Earlier Turn of the later co-resident.',
+          threadId: coThread,
+          triggerActor: { kind: 'user', id: ownerUserId },
+          turnId: testEntityId('tu', 'p23_later_claim'),
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        await nativeAttemptOwners.createSchedulerExecutionAttempt(coreDb, {
+          attemptId: coAttempt,
+          entry,
+          preparationInput: { admission: entry },
+        });
+        await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(coreDb, {
+          attemptId: coAttempt,
+          agentSessionId: coSession,
+        });
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          attemptId: coAttempt,
+          cause: 'worker-final-phase',
+          noOutstandingEffects: true,
+        });
+      },
     });
-    const { attemptId: coAttempt } = await nativeAttemptOwners.createSchedulerExecutionAttempt(
-      f.coreDb,
-      { entry, preparationInput: { admission: entry } }
-    );
-    await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(f.coreDb, {
-      attemptId: coAttempt,
-      agentSessionId: coSession,
-    });
-    await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
-      attemptId: coAttempt,
-      cause: 'worker-final-phase',
-      noOutstandingEffects: true,
-    });
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    // The production session-binding writer adds the idle co-resident to this exact Harness.
     await openNanoHostAgentSessionBinding(f.coreDb, {
       agentSessionCompatibilityKey: 'c'.repeat(64),
       agentSessionId: coSession,
