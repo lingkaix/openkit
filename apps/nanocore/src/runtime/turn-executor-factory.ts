@@ -949,6 +949,18 @@ interface PendingNanoHostHarnessOperation {
     fence?: Promise<void>;
     /** The admission fence of a failed dispatched close is acknowledged; its Thread may read clear. */
     fenceAcknowledged?: true;
+    /** Row 15: queue publication started, so the queue or first dispatch can still win. */
+    queueStarted?: true;
+    /** Row 15: the queued-expiry CAS ACK proves that the original close was never dispatched. */
+    neverDispatched?: true;
+    /** Row 15: a positive succeeded result without a latched failure. */
+    succeeded?: true;
+    /** Row 15: the fresh absence proof of a fenced predecessor Epoch settled this close. */
+    epochFenced?: true;
+    /** Row 15: the proof retired the exact slots once. */
+    retired?: true;
+    /** Row 15: local unwinds of the original callers, deferred until the proof. */
+    unwind?: Array<() => void>;
   };
   /** Existing public receipt producer; no prompt or extra durable state is retained here. */
   steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl };
@@ -2003,20 +2015,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
     }
     if (pending.timeout) clearTimeout(pending.timeout);
-    const clearedSlot =
-      session?.pendingHarnessOperation === pending || closeOwner?.pending === pending;
-    if (session?.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
-    if (closeOwner?.pending === pending) {
-      closeOwner.pending = null;
+    // Row 15: only positive success proves a Login close here. Any other result keeps both
+    // slots; its rejection below joins the exact admission fence, which retires them.
+    if (departure && result.disposition === 'succeeded' && !departure.failure)
+      departure.succeeded = true;
+    if (this.loginCloseProved(pending)) {
+      const ownedByCloseOwner = closeOwner?.pending === pending;
+      this.retireLoginClose(pending);
       if (
-        this.agentSessionCloseOwners.get(closeOwner.inspection.agentSessionRuntimeBindingId) ===
-        closeOwner
+        ownedByCloseOwner &&
+        this.agentSessionCloseOwners.get(closeOwner!.inspection.agentSessionRuntimeBindingId) ===
+          closeOwner
       )
-        this.agentSessionCloseOwners.delete(closeOwner.inspection.agentSessionRuntimeBindingId);
+        this.agentSessionCloseOwners.delete(closeOwner!.inspection.agentSessionRuntimeBindingId);
     }
-    // Only a succeeded close clears here. A failed dispatched close reports at its fence ACK.
-    if (clearedSlot && result.disposition === 'succeeded' && !pending.closeDeparture?.failure)
-      this.reportLoginCloseCleared(pending);
     if (result.disposition === 'succeeded') {
       pending.resolve(result.body);
       return;
@@ -2048,10 +2060,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           );
     if (session && result.disposition === 'refused' && reason === 'cleanup_required') {
       session.cleanupOwnershipRequired = true;
-      await drainNanoHostHarnessAdmission(this.harnessWriter(), {
-        harnessBindingRef: session.harnessBindingRef,
-        timestamp: new Date().toISOString(),
-      });
+      try {
+        await drainNanoHostHarnessAdmission(this.harnessWriter(), {
+          harnessBindingRef: session.harnessBindingRef,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        // Row 15: a retained Login close still needs its rejection to join the exact fence.
+        pending.reject(
+          error instanceof Error ? error : new Error('NanoHost cleanup admission drain failed.')
+        );
+        throw error;
+      }
     }
     pending.reject(
       Object.assign(
@@ -2843,10 +2863,56 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       releaseSchedulerCapacity(this.coreDb.dataRoot, { kind: 'login-close', ...thread });
   }
 
-  /** A slot clear after a failed dispatched close reports the edge only after its fence ACK. */
-  private reportLoginCloseSlotCleared(pending: PendingNanoHostHarnessOperation): void {
-    if (pending.operationId === null || pending.closeDeparture?.fenceAcknowledged)
-      this.reportLoginCloseCleared(pending);
+  /**
+   * Row 15: a Login close keeps both reader-visible slots until positive success, a proved
+   * never-dispatched unwind, the exact admission fence ACK or a fenced predecessor Epoch. A null
+   * local operation ID is no proof while the queue or first dispatch can still win.
+   */
+  private loginCloseProved(pending: PendingNanoHostHarnessOperation): boolean {
+    const departure = pending.closeDeparture;
+    return (
+      departure?.expectedReferenceId == null ||
+      departure.queueStarted !== true ||
+      departure.neverDispatched === true ||
+      departure.succeeded === true ||
+      departure.fenceAcknowledged === true ||
+      departure.epochFenced === true
+    );
+  }
+
+  /** Row 15: the proof retires the exact slots and deferred unwinds once, then reads the owner. */
+  private retireLoginClose(pending: PendingNanoHostHarnessOperation): void {
+    const departure = pending.closeDeparture;
+    if (departure?.retired) return;
+    if (departure) departure.retired = true;
+    for (const session of this.sessions.values())
+      if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
+    for (const owner of this.agentSessionCloseOwners.values())
+      if (owner.pending === pending) owner.pending = null;
+    for (const unwind of departure?.unwind?.splice(0) ?? []) unwind();
+    this.reportLoginCloseCleared(pending);
+  }
+
+  /** Row 15: runs one local unwind now, or after the proof of the Login close that it holds. */
+  private unwindAfterLoginClose(
+    pending: PendingNanoHostHarnessOperation | null | undefined,
+    unwind: () => void
+  ): void {
+    const departure = pending?.closeDeparture;
+    if (!pending || !departure || this.loginCloseProved(pending)) {
+      unwind();
+      return;
+    }
+    departure.unwind ??= [];
+    departure.unwind.push(unwind);
+  }
+
+  /** Row 15: deletes one Turn handle now, or after the proof of the Login close that it holds. */
+  private deleteSessionAfterLoginClose(snapshotId: string): void {
+    const session = this.sessions.get(snapshotId);
+    this.unwindAfterLoginClose(session?.pendingHarnessOperation, () => {
+      if (this.sessions.get(snapshotId) === session) this.sessions.delete(snapshotId);
+    });
   }
 
   private schedulerBackendKey(): SchedulerCapacityKey {
@@ -3475,7 +3541,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       await this.idleCleanup.join(identity);
       this.workerControlGateway?.unregisterSession(identity.packageSnapshotId);
-      this.sessions.delete(identity.packageSnapshotId);
+      this.deleteSessionAfterLoginClose(identity.packageSnapshotId);
       return;
     }
     const durableSandbox = this.findDurableSandboxBinding(identity);
@@ -3774,7 +3840,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           session?.turnStarted &&
           session.terminalInspectionComplete &&
           requireSchedulerExecutionAttempt(this.coreDb, attemptId).phase !== 'closed';
-        if (!retainForRelease) this.sessions.delete(identity.packageSnapshotId);
+        if (!retainForRelease) this.deleteSessionAfterLoginClose(identity.packageSnapshotId);
       }
       this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     }
@@ -4906,7 +4972,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         pending.reject(error);
         session.pendingHarnessOperation = null;
-        this.reportLoginCloseSlotCleared(pending);
+        // Row 15: the fenced predecessor Epoch is the later exit of an unproved close or of a
+        // cached rejected fence. It retires the exact slots first, then reads the Thread owner.
+        if (pending.closeDeparture) pending.closeDeparture.epochFenced = true;
+        this.retireLoginClose(pending);
       }
       this.failHarnessLoginDeliveries(session);
       await this.joinHarnessLoginDeliveries(session);
@@ -4924,7 +4993,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       pending?.reject(error);
       closeOwner.pending = null;
       this.agentSessionCloseOwners.delete(binding.agentSessionRuntimeBindingId);
-      if (pending) this.reportLoginCloseSlotCleared(pending);
+      if (pending?.closeDeparture) pending.closeDeparture.epochFenced = true;
+      if (pending) this.retireLoginClose(pending);
     }
   }
 
@@ -9851,8 +9921,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       // Idle close restores a Turn handle only for collection and close, not active occupancy.
       // Sandbox identities repeat on later compatible creation, so retaining it can block admission.
-      this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
-      this.sessions.delete(packageSnapshotId);
+      // Row 15: an unproved Login close keeps both handles until its proof retires them.
+      this.unwindAfterLoginClose(session.pendingHarnessOperation ?? closeOwner.pending, () => {
+        if (
+          this.agentSessionCloseOwners.get(inspection.agentSessionRuntimeBindingId) === closeOwner
+        )
+          this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
+        if (this.sessions.get(packageSnapshotId) === session)
+          this.sessions.delete(packageSnapshotId);
+      });
     }
   }
 
@@ -9938,28 +10015,46 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sequence: null,
       operationId: null,
       reject: (error) => {
-        if (pending.closeDeparture?.expectedReferenceId != null && pending.operationId !== null) {
-          pending.closeDeparture.failure ??= error;
+        const departure = pending.closeDeparture;
+        if (departure && !this.loginCloseProved(pending)) {
+          departure.failure ??= error;
           const failure = new NanoHostLoginDepartureIncompleteError(error);
-          // Expiry stops departure effects immediately. Join the existing admission fence before
-          // releasing the bounded caller; a lost fence ACK remains unknown and cannot restore it.
-          const departure = pending.closeDeparture;
+          const unknown = (cause: unknown) =>
+            new NanoHostLoginDepartureIncompleteError(
+              new AggregateError(
+                [error, cause],
+                'NanoHost Login departure admission fence is unknown.'
+              )
+            );
+          // Expiry stops departure effects immediately. Row 15: the queue or first dispatch can
+          // still win, so only the exact admission fence ACK retires the slots. The waiter keeps
+          // its original bound. A cached rejected fence keeps the slots until a fenced
+          // predecessor Epoch or a restart; a lost fence ACK cannot restore admission.
+          const bound = setTimeout(
+            () =>
+              rejectResult(
+                unknown(new Error('NanoHost Login departure fence is unresolved at its bound.'))
+              ),
+            Math.max(
+              0,
+              Math.min(
+                pending.deadlineUnixMs - Date.now(),
+                pending.deadlineMonotonicMs - performance.now()
+              )
+            )
+          );
           void this.fenceHarnessLoginDeparture(departure).then(
             () => {
-              // The fence ACK of a failed dispatched close: its Thread may now read clear.
+              clearTimeout(bound);
+              // The fence ACK retires the exact slots first, then reads the last Thread owner.
               departure.fenceAcknowledged = true;
-              this.reportLoginCloseCleared(pending);
+              this.retireLoginClose(pending);
               rejectResult(failure);
             },
-            (fenceError: unknown) =>
-              rejectResult(
-                new NanoHostLoginDepartureIncompleteError(
-                  new AggregateError(
-                    [error, fenceError],
-                    'NanoHost Login departure admission fence is unknown.'
-                  )
-                )
-              )
+            (fenceError: unknown) => {
+              clearTimeout(bound);
+              rejectResult(unknown(fenceError));
+            }
           );
         } else rejectResult(error);
         if (session.initialHarnessLogin?.pending === pending)
@@ -10017,6 +10112,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             timestamp: new Date().toISOString(),
           });
           pending.coreIdleClose!.prepared = prepared;
+          // Row 15: from here the queue or first dispatch can win; a null operation ID is no proof.
+          if (pending.closeDeparture) pending.closeDeparture.queueStarted = true;
           pending.sequence = await queueNanoHostHarnessOperation(
             this.coreDb,
             {
@@ -10032,11 +10129,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         });
       } finally {
         if (pending.timeout) clearTimeout(pending.timeout);
-        const clearedSlot =
-          session.pendingHarnessOperation === pending || closeOwner?.pending === pending;
-        if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
-        if (closeOwner?.pending === pending) closeOwner.pending = null;
-        if (clearedSlot) this.reportLoginCloseSlotCleared(pending);
+        // Row 15: this unwind is no proof. An unproved Login close keeps both slots.
+        if (this.loginCloseProved(pending)) this.retireLoginClose(pending);
       }
     }
     const admittedDb = openAdmittedWorkspaceReadDb(
@@ -10167,6 +10261,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           performance.now() >= pending.deadlineMonotonicMs
         )
           throw new Error('NanoHost original Harness allowance ended before queue publication.');
+        // Row 15: from here the queue or first dispatch can win; a null operation ID is no proof.
+        if (pending.closeDeparture) pending.closeDeparture.queueStarted = true;
         pending.sequence = await queueNanoHostHarnessOperation(
           this.coreDb,
           {
@@ -10226,12 +10322,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw error;
     } finally {
       if (pending.timeout) clearTimeout(pending.timeout);
-      const clearedSlot =
-        session.pendingHarnessOperation === pending || closeOwner?.pending === pending;
-      if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
-      if (closeOwner?.pending === pending) closeOwner.pending = null;
-      // The ordinary live close unwinds here too (A8 r7-step3 finding 5).
-      if (clearedSlot) this.reportLoginCloseSlotCleared(pending);
+      // The ordinary live close unwinds here too. Row 15: an unproved Login close keeps both slots.
+      if (this.loginCloseProved(pending)) this.retireLoginClose(pending);
       const exchange = session.initialHarnessLogin;
       if (exchange?.pending === pending) {
         if (!exchange.completed) this.failHarnessLoginDeliveries(session);
@@ -10292,6 +10384,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               harnessBindingRef,
               timestamp: new Date().toISOString(),
             });
+            // Row 15: the queued-expiry CAS ACK proves that the original was never dispatched.
+            if (pending.closeDeparture && pending.operationId === null)
+              pending.closeDeparture.neverDispatched = true;
           }
         } catch (error) {
           timeoutError = new Error(
