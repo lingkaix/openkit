@@ -21,12 +21,13 @@ import {
   listWorkerBackendSessions,
   readNanoHostWorkerRouteBinding,
 } from './worker-backend-session-records.js';
-import type {
-  WorkerControlArtifactNotice,
-  WorkerControlGateway,
-  WorkerControlLineage,
-  WorkerControlSessionRestoreInput,
-  WorkerControlSupplyRefreshAck,
+import {
+  assertWorkerControlRestoreRecords,
+  type WorkerControlArtifactNotice,
+  type WorkerControlGateway,
+  type WorkerControlLineage,
+  type WorkerControlSessionRestoreInput,
+  type WorkerControlSupplyRefreshAck,
 } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
@@ -136,9 +137,10 @@ function planWorkerControlRestore(
       )
     )
       continue;
-    // Native accepted records are shared authority: an unreadable one holds the whole plan, so it is
-    // read before any owner-local hold can skip this lease.
+    // Native accepted records are shared authority. Read and validate them before either
+    // owner-local skip so an unreadable or schema-invalid record holds the whole restore plan.
     const records = readAcceptedRecords(owner, lineage);
+    assertWorkerControlRestoreRecords(records);
     // Closed exact-replay branch only (a closed lease qualifies only through its accepted final). A
     // closing first-final candidate keeps the shared hold. The replay's own Workspace is checked
     // before executable admission: a quarantined or retired owner holds only this replay; its exit

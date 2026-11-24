@@ -22,6 +22,7 @@ import {
   openWorkspaceDb,
 } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
 import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
@@ -47,6 +48,7 @@ import {
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
   hashWorkerRouteToken,
@@ -470,6 +472,8 @@ describe('worker control gateway restart hydration', () => {
 type ClosedPredecessorFault =
   | 'none'
   | 'retired'
+  | 'quarantined'
+  | 'malformed-package'
   | 'package-unreadable'
   | 'shared-final-record'
   | 'retired+shared-event-record'
@@ -501,7 +505,7 @@ function predecessorFinal(controlToken: string, lineage: WorkerControlLineage) {
  */
 async function createClosedPredecessorFixture(
   fault: ClosedPredecessorFault,
-  stage: 'closed' | 'closing' = 'closed'
+  stage: 'closed' | 'closing' | 'open' = 'closed'
 ) {
   // Native storage keeps its real clock; align Core's clock with it, as the cancellation tests do.
   const now = vi.getRealSystemTime();
@@ -672,10 +676,11 @@ async function createClosedPredecessorFixture(
       },
     },
   });
-  markSchedulerExecutionAttemptClosing(coreDb, {
-    attemptId: predecessor.attemptId,
-    cause: 'turn-cancelled',
-  });
+  if (stage !== 'open')
+    markSchedulerExecutionAttemptClosing(coreDb, {
+      attemptId: predecessor.attemptId,
+      cause: 'turn-cancelled',
+    });
   if (stage === 'closed') {
     // Its first final is accepted, then only Core's release proof closes the attempt.
     expect(
@@ -722,6 +727,9 @@ async function createClosedPredecessorFixture(
   // Faults follow the real history. None of them can be produced by the replay path itself.
   if (fault.startsWith('retired'))
     refuseScope(dataRoot, { scope: 'workspace', id: DEMO_WORKSPACE_ID, check: 'retired' });
+  if (fault === 'quarantined')
+    refuseScope(dataRoot, { scope: 'workspace', id: DEMO_WORKSPACE_ID, check: 'database' });
+  if (fault === 'malformed-package') writeFileSync(predecessorPackagePath, '{');
   if (fault.startsWith('package-unreadable'))
     // A historical retained format this build cannot decode; the record is otherwise intact.
     writeFileSync(
@@ -752,6 +760,7 @@ async function createClosedPredecessorFixture(
     'req_isolation_new_session'
   );
   return {
+    coreDb,
     storage,
     predecessor,
     healthy,
@@ -807,12 +816,14 @@ describe('closed predecessor restore isolation', () => {
   /** Every owner is held: no new Session registers and no live Turn authenticates. */
   const expectSharedHold = (f: Fixture, hydrated: ReturnType<Fixture['hydrate']>) => {
     expect(hydrated.holds).toEqual([]);
+    expect(hydrated.gateway.restoreHeld()).toBe(true);
     expect(() => hydrated.gateway.registerSession(f.newSession)).toThrow(
       expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
     );
-    expect(() =>
-      hydrated.gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)
-    ).toThrow();
+    for (const token of [f.healthy.tokens[0], f.predecessor.tokens[0]])
+      expect(() => hydrated.gateway.authenticatePackageToken(`Bearer ${token}`)).toThrow(
+        expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+      );
     expect(hydrated.gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
   };
 
@@ -821,6 +832,7 @@ describe('closed predecessor restore isolation', () => {
     const { gateway, holds } = f.hydrate();
 
     expect(holds).toEqual([]);
+    expect(gateway.restoreHeld()).toBe(false);
     expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toMatchObject({
       packageSnapshotId: f.predecessor.lineage.packageSnapshotId,
     });
@@ -828,10 +840,19 @@ describe('closed predecessor restore isolation', () => {
     expect(gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toEqual(
       redactAgentEnvironmentPackageSnapshot(f.healthy.environmentPackage)
     );
+    // The closed token can replay its exact final; ordinary package requests still require a live lease.
+    expect(() => gateway.authenticatePackageToken(`Bearer ${f.predecessor.tokens[0]}`)).toThrow(
+      expect.objectContaining({ code: 'worker_control_lease_not_live', status: 403 })
+    );
+    expect(gateway.registerSession(f.newSession)).toMatchObject({
+      packageSnapshotId: f.newSession.snapshotId,
+    });
   });
 
   it.each([
     ['retired', 'workspace-not-admitted'],
+    ['quarantined', 'workspace-not-admitted'],
+    ['malformed-package', 'package-unreadable'],
     ['package-unreadable', 'package-unreadable'],
   ] as const)(
     'holds only the closed predecessor whose own Workspace cannot prove its replay: %s',
@@ -840,13 +861,20 @@ describe('closed predecessor restore isolation', () => {
       const { gateway, holds } = f.hydrate();
 
       // The old route is not restored, so its exact replay stays refused.
+      expect(() => gateway.authenticatePackageToken(`Bearer ${f.predecessor.tokens[0]}`)).toThrow(
+        expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+      );
       expect(gateway.getSessionSnapshot(f.predecessor.lineage.packageSnapshotId)).toBeNull();
       await expect(gateway.recordFinalStatus(predecessorFinalFor(f))).rejects.toMatchObject({
         code: 'worker_control_unauthorized',
         status: 401,
       });
       // The healthy Workspace keeps serving: its live Turn restores and a new Session registers.
-      expect(gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`)).toEqual(
+      let siblingPackage: ReturnType<WorkerControlGateway['authenticatePackageToken']> | undefined;
+      expect(() => {
+        siblingPackage = gateway.authenticatePackageToken(`Bearer ${f.healthy.tokens[0]}`);
+      }, 'healthy Workspace sibling authenticates after restore').not.toThrow();
+      expect(siblingPackage).toEqual(
         redactAgentEnvironmentPackageSnapshot(f.healthy.environmentPackage)
       );
       expect(gateway.registerSession(f.newSession)).toMatchObject({
@@ -862,10 +890,12 @@ describe('closed predecessor restore isolation', () => {
           workspaceId: DEMO_WORKSPACE_ID,
         },
       ]);
-      if (fault === 'package-unreadable') {
+      if (fault === 'package-unreadable' || fault === 'malformed-package') {
         // Hydration never rewrites the retained record. Its exit is same-owner repair: the next
         // hydration of the repaired record serves the exact replay again.
-        expect(JSON.parse(readFileSync(f.predecessorPackagePath, 'utf8')).schemaVersion).toBe(2);
+        const retained = readFileSync(f.predecessorPackagePath, 'utf8');
+        if (fault === 'malformed-package') expect(retained).toBe('{');
+        else expect(JSON.parse(retained).schemaVersion).toBe(2);
         writeFileSync(f.predecessorPackagePath, f.acceptedPackageBytes);
         const repaired = f.hydrate();
         expect(repaired.holds).toEqual([]);
@@ -907,6 +937,72 @@ describe('closed predecessor restore isolation', () => {
 
       // The valid final qualifies the replay; the shared Native read must still decide first.
       expectSharedHold(f, f.hydrate());
+    }
+  );
+
+  it.each([
+    ['retired', 'artifact_notice', '{'],
+    ['malformed-package', 'artifact_notice', '{'],
+    ['retired', 'event_append', '{"event":{"type":"turn.completed"}}'],
+    ['malformed-package', 'event_append', '{"event":{"type":"turn.completed"}}'],
+    ['retired', 'capability_summary', '{}'],
+    ['retired', 'supply_refresh_ack', '{}'],
+  ] as const)(
+    'holds every owner for a malformed shared receipt beside a closed replay fault: %s %s (#987)',
+    async (fault, operation, recordJson) => {
+      const f = await createClosedPredecessorFixture(fault);
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            acceptedAt: new Date().toISOString(),
+            lineage: f.predecessor.lineage,
+            operation: 'artifact_notice',
+            record: { artifactId: 'artifact_predecessor' },
+            recordKey: 'artifact_predecessor',
+            sequence: null,
+          }
+        );
+        sqlite
+          .prepare(
+            `UPDATE worker_control_records SET operation = ?, record_json = ?
+             WHERE package_snapshot_id = ? AND operation = 'artifact_notice' AND record_key = ?`
+          )
+          .run(
+            operation,
+            recordJson,
+            f.predecessor.lineage.packageSnapshotId,
+            'artifact_predecessor'
+          );
+      });
+      expectSharedHold(f, f.hydrate());
+    }
+  );
+
+  it.each(['retired', 'malformed-package'] as const)(
+    'holds boot Worker Control for an open lease with a Workspace fault: %s (#987)',
+    async (fault) => {
+      const f = await createClosedPredecessorFixture(fault, 'open');
+      const advanceIdleCleanup = vi.fn(async () => {});
+      expectSharedHold(f, f.hydrate());
+      await expect(
+        new ExecutionReconciler({
+          coreDb: f.coreDb,
+          nanoHost: createNanoHostCoreReads(f.storage.value.owner),
+          advanceIdleCleanup,
+        }).runOnce()
+      ).resolves.toBeUndefined();
+      expect(advanceIdleCleanup).not.toHaveBeenCalled();
+      expect(f.durableReceipts()).toEqual(f.acceptedReceipts);
+
+      if (fault === 'malformed-package') {
+        writeFileSync(f.predecessorPackagePath, f.acceptedPackageBytes);
+        const { gateway, holds } = f.hydrate();
+        expect(gateway.restoreHeld()).toBe(false);
+        expect(holds).toEqual([]);
+        expect(gateway.authenticatePackageToken(`Bearer ${f.predecessor.tokens[0]}`)).toBeTruthy();
+        expect(f.durableReceipts()).toEqual(f.acceptedReceipts);
+      }
     }
   );
 

@@ -54,6 +54,7 @@ export async function createNativeTaskAdmissionFixture(
     | 'policyInterception'
     | 'goalTaskPolicy'
     | 'nanoHostSessionDispatch'
+    | 'workerControlGateway'
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
@@ -108,7 +109,8 @@ export async function createNativeTaskAdmissionFixture(
   const admitted = await reopenAdmittedTestNanoHost(coreDb);
   const { owner } = admitted.value;
   const harnessWriter = owner.harnessTurnLifecycle;
-  const workerControlGateway = createDefaultWorkerControlGateway(coreDb, undefined, admitted);
+  const workerControlGateway =
+    options.workerControlGateway ?? createDefaultWorkerControlGateway(coreDb, undefined, admitted);
   const readFinal = (lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1]) =>
     readAdmittedTestNanoHost(coreDb, (sqlite) =>
       getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)

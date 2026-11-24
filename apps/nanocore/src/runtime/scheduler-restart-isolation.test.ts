@@ -2,12 +2,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createDefaultWorkerControlGateway } from '../app.js';
 import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { runBootPhases } from '../bootstrap/phases.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
 import {
   openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
@@ -29,6 +31,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attempts from './execution-attempt-records.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempts.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
@@ -39,6 +42,7 @@ import {
   runSchedulerRestartRecovery,
 } from './scheduler-restart-recovery.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const now = () => '2026-07-05T00:01:00.000Z';
@@ -109,7 +113,13 @@ function attempt(db: CoreDb, suffix: string, submitted = false, backendId = 'nan
 }
 
 /** Retains the original submitted Native lease used by isolation's recovery censuses. */
-function retainedLease(db: CoreDb, suffix: string, workspace: string, backendId = 'nanohost') {
+function retainedLease(
+  db: CoreDb,
+  suffix: string,
+  workspace: string,
+  backendId = 'nanohost',
+  workerControlTokenHash = 'a'.repeat(64)
+) {
   const admission = isolationAdmission(db, suffix, backendId, workspace);
   const agentSessionId = testEntityId('as', suffix);
   return submitTestNanoHostWorkerLease(
@@ -119,7 +129,7 @@ function retainedLease(db: CoreDb, suffix: string, workspace: string, backendId 
     {
       agentSessionId,
       packageSnapshotId: `aepsnap_${admission.turnId}_${agentSessionId}`,
-      workerControlTokenHash: 'a'.repeat(64),
+      workerControlTokenHash,
       workerInferenceTokenHash: 'b'.repeat(64),
       workerCapabilityTokenHash: 'c'.repeat(64),
     },
@@ -229,6 +239,71 @@ describe('restart classification fault isolation (T4)', () => {
     await runSchedulerRestartRecovery(db, input);
     expect(attempts.requireSchedulerExecutionAttempt(db, preEffect.attemptId)).toEqual(preEffect);
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
+  });
+
+  it('boots past an open lease in a quarantined Workspace through a Worker Control hold (#987)', async () => {
+    const { db, input } = await fixture();
+    const storage = await openAdmittedTestNanoHost(db);
+    const token = 'G'.repeat(43);
+    const lease = retainedLease(
+      db,
+      'held-open',
+      workspaceId,
+      'nanohost',
+      hashWorkerRouteToken(token)
+    );
+    refuseScope(db.dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
+    let gateway: WorkerControlGateway | undefined;
+    const listenAdmission = vi.fn();
+    const boot = await runBootPhases({
+      bootId: 'boot-held-open-lease',
+      phases: [
+        {
+          name: 'scheduler-restart-recovery',
+          subsystem: 'scheduler',
+          critical: true,
+          run: async () => {
+            gateway = createDefaultWorkerControlGateway(db, undefined, storage);
+            await runSchedulerRestartRecovery(db, input);
+            // The reconciler pass of the same boot reads idle-cleanup residents, not Worker Control sessions.
+            await new ExecutionReconciler({
+              coreDb: db,
+              nanoHost: createNanoHostCoreReads(storage.value.owner),
+              advanceIdleCleanup: vi.fn(async () => {}),
+            }).runOnce();
+            return { status: 'ok' };
+          },
+        },
+        {
+          name: 'listen-admission',
+          subsystem: 'config',
+          critical: true,
+          run: () => {
+            listenAdmission();
+            return { status: 'ok' };
+          },
+        },
+      ],
+    });
+    expect(boot.outcomes.map(({ name, outcome }) => [name, outcome.status])).toEqual([
+      ['scheduler-restart-recovery', 'ok'],
+      ['listen-admission', 'ok'],
+    ]);
+    expect(listenAdmission).toHaveBeenCalledOnce();
+    expect(gateway!.restoreHeld()).toBe(true);
+    expect(() => gateway!.registerSession({} as never)).toThrow(
+      expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
+    );
+    expect(() => gateway!.authenticatePackageToken(`Bearer ${token}`)).toThrow(
+      expect.objectContaining({ code: 'worker_control_unauthorized', status: 401 })
+    );
+    expect(attempts.requireSchedulerExecutionAttempt(db, lease.attemptId)).toMatchObject({
+      phase: 'open',
+    });
+    expect(readTestNanoHostWorkerLease(db, lease.attemptId)).toMatchObject({
+      phase: 'open',
+      fenceRef: null,
+    });
   });
 
   it('skips product publication for a closed no-effect attempt belonging to a different backend', async () => {

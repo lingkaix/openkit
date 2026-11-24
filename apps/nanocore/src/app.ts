@@ -791,6 +791,10 @@ class HeldWorkerControlGateway extends WorkerControlGateway {
     });
   }
 
+  override restoreHeld(): boolean {
+    return true;
+  }
+
   override registerSession(): never {
     return requireWorkerControlStorage();
   }

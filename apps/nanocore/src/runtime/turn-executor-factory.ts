@@ -2817,6 +2817,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async prepareAgentSessionContinuity(
     input: WorkerGovernanceAgentSessionContinuityInput
   ): Promise<WorkerGovernanceAgentSessionContinuityDisposition> {
+    // Same boot hold as the capacity inspection: refuse before any launch effect exists.
+    if (this.workerControlGateway?.restoreHeld())
+      throw new WorkerGovernanceCapacityUnavailableError('Worker Control restore is held.');
     const closing =
       [...this.sessions.values()].some(
         (session) =>
@@ -4123,6 +4126,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async inspectMaterializationCapacity(
     environmentPackage: AgentEnvironmentPackagePreview
   ): Promise<'available' | 'capacity-saturated'> {
+    // A held Worker Control restore can only refuse registration. Report the existing unavailable
+    // result here, before any dispatch commit, Workspace intent or Sandbox effect exists to unwind.
+    if (this.workerControlGateway?.restoreHeld()) return 'capacity-saturated';
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
