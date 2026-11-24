@@ -24,6 +24,7 @@ import { applyNanoHostWorkerSubmission } from '../storage/nanohost-recovery-nati
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
 import {
+  inspectCoreHarnessConsumption,
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
 } from './core-journal-records.js';
@@ -453,11 +454,19 @@ export interface NanoHostReplacementCloseSelection {
   >;
   readonly bindingRevision: string;
   readonly bindingLifecycleState: string;
+  /** The successor attempt's original absolute startup expiry, compared at this mutation. */
+  readonly startupDeadline?: string | undefined;
+  /** The explicit storage selection's planned revision; any Native storage write advances it. */
+  readonly storage?: { readonly storageRef: string; readonly revision: number } | undefined;
 }
 
 /** Domain refusal of a replacement close whose selection changed before its queue commit. */
 export const NANO_HOST_REPLACEMENT_SELECTION_CHANGED =
   'NanoHost replacement close selection changed before enqueue.';
+
+/** Domain refusal of a replacement close whose selected storage changed before its queue commit. */
+export const NANO_HOST_REPLACEMENT_STORAGE_CHANGED =
+  'NanoHost replacement close storage selection changed before enqueue.';
 
 /** Input for dispatching the next exact Harness operation. */
 export interface DispatchNanoHostHarnessOperationInput {
@@ -1429,9 +1438,19 @@ function requireReplacementCloseSelection(
     target.connectionGeneration !== selection.target.connectionGeneration ||
     target.physicalEpoch !== selection.target.physicalEpoch ||
     binding?.revision !== selection.bindingRevision ||
-    binding.lifecycleState !== selection.bindingLifecycleState
+    binding.lifecycleState !== selection.bindingLifecycleState ||
+    // The original startup clock is sampled at this deciding mutation, never restarted.
+    (selection.startupDeadline !== undefined &&
+      new Date().toISOString() >= selection.startupDeadline)
   )
     throw new Error(NANO_HOST_REPLACEMENT_SELECTION_CHANGED);
+  if (selection.storage) {
+    const storage = owner.sqlite
+      .prepare('SELECT revision FROM worker_storage_bindings WHERE storage_ref=?')
+      .get(selection.storage.storageRef) as { revision: number } | undefined;
+    if (storage?.revision !== selection.storage.revision)
+      throw new Error(NANO_HOST_REPLACEMENT_STORAGE_CHANGED);
+  }
 }
 
 /** Observes pending dispatch for one current Integration on the admitted Native reader. */
@@ -2404,6 +2423,35 @@ export function inspectNanoHostIdleCloseConsumption(
   const result = requireHarnessResult('session.close', incoming, harness.max_active_turns);
   const consumer = idleHarnessConsumer(coreDb, owner, harness, command);
   return consumer === null ? null : { key: idleHarnessConsumptionKey(harness, result), consumer };
+}
+
+/**
+ * Reads the Core consumption clock of an exact settled idle close still current on its Harness
+ * row. The idle settle writes that same clock as the row's `updated_at`.
+ */
+export function readNanoHostSettledIdleCloseConsumedAt(
+  coreDb: CoreDb,
+  owner: NanoHostHarnessDb,
+  harnessInstanceId: string,
+  close: { readonly operationId: string; readonly sequence: number }
+): string | null {
+  const harness = requireHarness(owner, harnessInstanceId);
+  const receipt = readRetainedHarnessResult(harness);
+  if (
+    !receipt ||
+    harness.operation !== 'session.close' ||
+    harness.operation_state !== 'settled' ||
+    harness.operation_id !== close.operationId ||
+    harness.operation_sequence !== close.sequence ||
+    receipt.result.operationId !== close.operationId ||
+    receipt.result.sequence !== close.sequence
+  )
+    return null;
+  const result = requireHarnessResult('session.close', receipt.result, harness.max_active_turns);
+  return (
+    inspectCoreHarnessConsumption(coreDb, idleHarnessConsumptionKey(harness, result))
+      ?.acknowledgedAt ?? null
+  );
 }
 
 /** Validates the close command retained by the same dispatch slot. */

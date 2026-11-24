@@ -262,6 +262,8 @@ async function fixture(capture = false, drain = true, idle = false) {
     attemptId,
     sandboxBindingRef,
     originPhysicalEpoch: physicalEpoch,
+    // The claim's own clock, strictly later than the Harness row's last write, as the factory picks.
+    claimedAt: '2098-08-21T00:00:01.000Z',
   };
   if (drain) await claimNanoHostIdleSandboxDrain(db, claim, drainJoin);
   expect(
@@ -487,8 +489,28 @@ it('claims only the exact idle-capture Harness and persists its drain after reop
   );
   const expected = {
     sandbox: before.sandbox,
-    harness: before.harness.map((row) => ({ ...(row as object), drain_state: 'draining' })),
+    harness: before.harness.map((row) => ({
+      ...(row as object),
+      drain_state: 'draining',
+      updated_at: f.idleClaim.claimedAt,
+    })),
   };
   expect(tuple(f.db)).toEqual(expected);
   expect(await coldTuple(f)).toEqual(expected);
+});
+
+it('refuses an idle-capture claim whose clock is not later than the Harness revision', async () => {
+  const f = await fixture(false, false, true);
+  const before = tuple(f.db);
+  // An equal clock would give two writes one revision, so an exact latch restore could not
+  // tell the later claim from the earlier write.
+  await expect(
+    claimNanoHostIdleCaptureDrain(
+      f.db,
+      { ...f.idleClaim, claimedAt: timestamp },
+      f.owner.harnessTurnLifecycle
+    )
+  ).rejects.toThrow('Idle capture drain ownership changed.');
+  expect(tuple(f.db)).toEqual(before);
+  expect(await coldTuple(f)).toEqual(before);
 });

@@ -113,6 +113,8 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
       attemptId: identity,
       sandboxBindingRef: identity,
       originPhysicalEpoch: identity,
+      // The claim's own clock becomes the Harness revision an exact restore compares.
+      claimedAt: timestamp,
     })
     .strict(),
   z
@@ -135,7 +137,25 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
       version: RuntimeEnvCheckVersionInputSchema.refine((value) => value.targetPath !== undefined),
     })
     .strict(),
-  z.object({ kind: z.literal('sandbox.restore-admission'), sandboxRuntimeId: identity }).strict(),
+  z
+    .object({
+      kind: z.literal('sandbox.restore-admission'),
+      sandboxRuntimeId: identity,
+      // A capture latch restore names its one Harness and the write that must still be current.
+      harness: z
+        .object({
+          harnessInstanceId: identity,
+          harnessBindingRef: identity,
+          close: z
+            .object({ operationId: identity, sequence: z.number().int().nonnegative().safe() })
+            .strict()
+            .optional(),
+          claimedAt: timestamp.optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal('sandbox.remove-for-harness'), harnessInstanceId: identity }).strict(),
   z.object({ kind: z.literal('sandbox.remove-by-binding'), sandboxBindingRef: identity }).strict(),
   z.object({ kind: z.literal('harness.drain'), harnessBindingRef: identity, timestamp }).strict(),
@@ -205,6 +225,11 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
             .strict(),
           bindingRevision: timestamp,
           bindingLifecycleState: identity,
+          startupDeadline: timestamp.optional(),
+          storage: z
+            .object({ storageRef: identity, revision: z.number().int().nonnegative().safe() })
+            .strict()
+            .optional(),
         })
         .strict()
         .optional(),
