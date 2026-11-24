@@ -88,6 +88,7 @@ import {
 } from './auth/nanohost-transport-session.js';
 import { evaluateProductAuthorization } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import * as capabilityLedger from './capability/usage-ledger.js';
 import {
   finishCapabilityCall,
@@ -179,7 +180,7 @@ import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import * as canonicalWrites from './storage/canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { transitionAdmittedNanoHostRuntimeTarget } from './storage/nanohost-transport-owner.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './storage/recurring-records.js';
@@ -6779,6 +6780,8 @@ describe('worker MCP routes', () => {
         }))
       );
       const coreDb = openCoreDb(dataRoot);
+      // Boot walks only registered Workspaces; the registry is the common owner it revalidates.
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: ensureLocalUser(coreDb), workspaceId });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       const packages: AgentEnvironmentPackage[] = [];
       const calls: Awaited<ReturnType<typeof startCapabilityCall>>[] = [];
@@ -7005,11 +7008,18 @@ describe('worker MCP routes', () => {
             status: 'completed',
           });
         } else {
-          await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toBeInstanceOf(Error);
+          // A corrupt named snapshot is this Workspace's own record: Boot holds it before any write.
+          const retained = retainedWorkspaceRows(workspaceDb);
           expect(store.listAllItems()).toEqual(beforeItems);
           packages.forEach((pkg, index) => {
             expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
           });
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+          expect(scopeAdmissionFailures(dataRoot)).toEqual([
+            { scope: 'workspace', id: workspaceId, check: 'records', stage: 'mcp-item-backfill' },
+          ]);
+          // The held Workspace refuses Store reads; its retained rows, Items and events included, are unchanged.
+          expect(retainedWorkspaceRows(workspaceDb)).toEqual(retained);
         }
         expect(inspections).toBeGreaterThan(0);
         if (
@@ -7022,12 +7032,13 @@ describe('worker MCP routes', () => {
         restoreRead?.();
         restoreRead = undefined;
         await shutdownControlStoreWorkerClient();
-        const reopened = openWorkspaceDb(dataRoot, workspaceId);
+        // A held Workspace refuses a new handle; its already-open handle reads the same committed rows.
+        const reopened = unavailable ? openWorkspaceDb(dataRoot, workspaceId) : workspaceDb;
         try {
           expect(listWorkspaceCapabilityCalls(reopened, workspaceId)).toEqual(beforeCalls);
           expect(listWorkspaceUsageRecords(reopened, workspaceId)).toEqual(beforeUsage);
         } finally {
-          reopened.sqlite.close();
+          if (reopened !== workspaceDb) reopened.sqlite.close();
         }
       } finally {
         if (unavailableDirectory) chmodSync(unavailableDirectory, 0o700);
@@ -11251,3 +11262,17 @@ it('withholds a completed Tool result after authority loss without reopening its
     await f.close();
   }
 });
+
+/** Reads every retained Workspace table row through SQLite, independent of Store admission. */
+function retainedWorkspaceRows(workspaceDb: WorkspaceDb): Record<string, unknown[]> {
+  const tables = workspaceDb.sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+    .pluck()
+    .all() as string[];
+  return Object.fromEntries(
+    tables.map((table) => [
+      table,
+      workspaceDb.sqlite.prepare(`SELECT * FROM "${table}"`).raw().all(),
+    ])
+  );
+}

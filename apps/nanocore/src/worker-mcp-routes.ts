@@ -50,6 +50,10 @@ import {
   readThreadPolicyAncestors,
   readThreadPolicyFacts,
 } from './auth/thread-visibility.js';
+import {
+  BootWorkspaceConflict,
+  withinBootWorkspaceBoundary,
+} from './bootstrap/boot-workspace-walk.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import {
   type FinishCapabilityCallInput,
@@ -1451,79 +1455,112 @@ function mcpBootDecidedPublicationEqual(
   );
 }
 
-/** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
+/**
+ * Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot.
+ * Each Workspace is validated in full before its first publication; a conflict holds only that Workspace.
+ */
 export async function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): Promise<number> {
   let recovered = 0;
+  // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
-    try {
-      const rows = workspaceDb.sqlite
-        .prepare(
-          `SELECT
-             schema_version,
-             agent_id,
-             agent_session_id,
-             call_id,
-             completed_at,
-             error_code,
-             item_id,
-             package_snapshot_id,
-             provider_ref,
-             service_ref,
-             started_at,
-             status,
-             thread_id,
-             turn_id,
-             workspace_id
-           FROM capability_calls
-           WHERE family = 'mcp'
-             AND capability_id = 'mcp.call-tool'
-             AND operation = 'mcp.call-tool'
-             AND status NOT IN ('queued', 'running')
-             AND item_id IS NOT NULL
-             AND provider_ref IS NOT NULL
-             AND service_ref LIKE 'mcp-tool:%'
-             AND thread_id IS NOT NULL
-             AND turn_id IS NOT NULL
-             AND completed_at IS NOT NULL
-           ORDER BY completed_at, call_id`
-        )
-        .all() as DecidedMcpPublicationRow[];
-      const storedItems = new Map(store.listAllItems().map((item) => [item.id, item]));
-      for (const row of rows) {
-        readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
-        const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
-        const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
-        const existing = storedItems.get(row.item_id);
-        // The canonical Item owns its body; the ledger can reconstruct only missing metadata.
-        const parsed = decidedMcpPublicationItem(
-          workspaceId,
-          row,
-          parentItemId,
-          existing?.type === 'tool-call' ? existing : undefined
-        );
-        if (existing) {
-          if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.kind === 'decided')) {
-            throw new Error(
-              `MCP boot backfill conflicts with already-decided Item: ${row.item_id}`
-            );
-          }
-          continue;
-        }
-        if (decidedParent.kind === 'snapshot-unreadable') {
-          // This row names a snapshot that cannot be opened, so the decided publication cannot be
-          // rebuilt. Publishing an Item without its parent would substitute a different record for
-          // the one the grid admits filling. Leave the row for a later boot instead.
-          continue;
-        }
-        storedItems.set(parsed.id, await store.publishSettledTurnItem(parsed));
-        recovered += 1;
+    await withinBootWorkspaceBoundary(
+      { dataRoot, workspaceId, stage: 'mcp-item-backfill' },
+      async () => {
+        recovered += await reconcileWorkspaceMcpItems(dataRoot, store, workspaceId);
       }
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+    );
   }
   return recovered;
+}
+
+/** Validates one Workspace's decided MCP rows against its own Items, then fills only the missing ones. */
+async function reconcileWorkspaceMcpItems(
+  dataRoot: string,
+  store: FsStore,
+  workspaceId: string
+): Promise<number> {
+  store.getWorkspace(workspaceId);
+  const decided = new Map<string, ReturnType<FsStore['listAllItems']>[number]>();
+  const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
+  try {
+    const rows = workspaceDb.sqlite
+      .prepare(
+        `SELECT
+           schema_version,
+           agent_id,
+           agent_session_id,
+           call_id,
+           completed_at,
+           error_code,
+           item_id,
+           package_snapshot_id,
+           provider_ref,
+           service_ref,
+           started_at,
+           status,
+           thread_id,
+           turn_id,
+           workspace_id
+         FROM capability_calls
+         WHERE family = 'mcp'
+           AND capability_id = 'mcp.call-tool'
+           AND operation = 'mcp.call-tool'
+           AND status NOT IN ('queued', 'running')
+           AND item_id IS NOT NULL
+           AND provider_ref IS NOT NULL
+           AND service_ref LIKE 'mcp-tool:%'
+           AND thread_id IS NOT NULL
+           AND turn_id IS NOT NULL
+           AND completed_at IS NOT NULL
+         ORDER BY completed_at, call_id`
+      )
+      .all() as DecidedMcpPublicationRow[];
+    for (const row of rows) {
+      readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+      const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
+      const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
+      // Compare inside the original Workspace only; a sibling's records never decide this row.
+      const existing =
+        decided.get(row.item_id) ?? storedWorkspaceItem(store, workspaceId, row.item_id);
+      // The canonical Item owns its body; the ledger can reconstruct only missing metadata.
+      const parsed = decidedMcpPublicationItem(
+        workspaceId,
+        row,
+        parentItemId,
+        existing?.type === 'tool-call' ? existing : undefined
+      );
+      if (existing) {
+        if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.kind === 'decided')) {
+          throw new BootWorkspaceConflict(
+            'records',
+            `MCP boot backfill conflicts with already-decided Item: ${row.item_id}`
+          );
+        }
+        continue;
+      }
+      if (decidedParent.kind === 'snapshot-unreadable') {
+        // This row names a snapshot that cannot be opened, so the decided publication cannot be
+        // rebuilt. Publishing an Item without its parent would substitute a different record for
+        // the one the grid admits filling. Leave the row for a later boot instead.
+        continue;
+      }
+      decided.set(parsed.id, parsed);
+    }
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  for (const item of decided.values()) await store.publishSettledTurnItem(item);
+  return decided.size;
+}
+
+/** Reads one Item by ID inside its Workspace without listing sibling Workspaces. */
+function storedWorkspaceItem(
+  store: FsStore,
+  workspaceId: string,
+  itemId: string
+): ReturnType<FsStore['listAllItems']>[number] | undefined {
+  const lineage = store.getItemLineage(workspaceId, itemId);
+  return lineage ? store.getThreadItem(workspaceId, lineage.threadId, itemId) : undefined;
 }
 
 /** Executes one governed tool call and writes its existing durable projections. */
