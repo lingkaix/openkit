@@ -268,7 +268,6 @@ describe('handoff transitions', () => {
         entry: 'c',
         invocation: 'c#1',
         outcome: 'backend-busy',
-        backendId: 'nh',
         capacity: { key: { kind: 'login-close', workspaceId: 'w1', threadId: 't1' }, held: true },
       },
     ]);
@@ -297,5 +296,37 @@ describe('handoff transitions', () => {
     );
     expect(own.record.busy).toEqual({});
     expect(own.effects).toEqual([{ kind: 'wake' }]);
+  });
+
+  it('keeps a backend busy mark until its owner names the entry as read clear', () => {
+    const backend = { kind: 'backend', backendId: 'nh' } as const;
+    const busy = run([
+      trigger('u', null, 3),
+      claim('c', 'c#1'),
+      { kind: 'reply', replyClass: 'claimed' },
+      {
+        kind: 'settled',
+        entry: 'c',
+        invocation: 'c#1',
+        outcome: 'backend-busy',
+        capacity: { key: backend, held: true },
+      },
+    ]);
+    expect(busy.record.busy.c).toEqual(backend);
+    const unproved = run(
+      [
+        { kind: 'released', hold: 'backend-capacity', key: backend },
+        { kind: 'released', hold: 'backend-capacity', key: backend, cleared: ['d'] },
+      ],
+      busy.record
+    );
+    expect(unproved.record.busy.c).toEqual(backend);
+    expect(unproved.effects).toEqual([]);
+    const proved = run(
+      [{ kind: 'released', hold: 'backend-capacity', key: backend, cleared: ['c'] }],
+      busy.record
+    );
+    expect(proved.record.busy).toEqual({});
+    expect(proved.effects).toEqual([{ kind: 'wake' }]);
   });
 });

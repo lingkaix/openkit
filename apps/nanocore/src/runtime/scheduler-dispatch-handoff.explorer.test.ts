@@ -42,6 +42,8 @@ interface EntrySpec {
   readonly thread: string;
   readonly published?: boolean;
   readonly deniable?: boolean;
+  /** The Harness of the backend that the entry needs. Default: `h1`. */
+  readonly harness?: string;
 }
 
 interface Faults {
@@ -77,10 +79,16 @@ export interface World {
   readonly owner?: readonly string[];
   readonly callbacks?: 1 | 2;
   readonly recoverySettle?: boolean;
+  /** The backend owner facts: the RuntimeTarget starts not ready (owner `target`). */
+  readonly targetUnready?: boolean;
+  /** Harnesses whose open sessions are full (owner `sessions:<harness>`). */
+  readonly sessionsFull?: readonly string[];
+  /** A failed Turn after its ACK leaves its Core attempt closing until recovery closes it. */
+  readonly fenceOnFail?: boolean;
 }
 
 /** Take-outs applied to the environment adapters instead of the pure tables. */
-type EnvMutation = 'no-login-release' | 'stale-held-fact' | 'no-barrier';
+type EnvMutation = 'no-login-release' | 'stale-held-fact' | 'no-barrier' | 'turn-held-fact';
 
 interface Inv {
   entry: string;
@@ -134,6 +142,10 @@ interface Env {
   barrierFailed: boolean;
   /** A second settlement callback that is still to come for a retired invocation. */
   late: { entry: string; invocation: string } | null;
+  /** Backend owner facts read by its refusal predicate. */
+  target: boolean;
+  fence: string[];
+  sessionsFull: string[];
 }
 
 /** The raw facts that one synchronous selection read sees at its emission. */
@@ -157,6 +169,8 @@ interface Ctx {
   violations: string[];
   bound: boolean;
   rows?: Set<string>;
+  /** The capacity schedules that the exploration reached. */
+  cover?: Set<string>;
 }
 
 const scopeOf = (world: World, entry: string) => {
@@ -211,6 +225,9 @@ function initialEnv(world: World): Env {
     heldBy: {},
     barrierFailed: false,
     late: null,
+    target: world.targetUnready !== true,
+    fence: [],
+    sessionsFull: [...(world.sessionsFull ?? [])],
   };
 }
 
@@ -692,21 +709,59 @@ function insertRow(env: Env, op: { attemptId: string; entry: string; digest: str
 type Action = { label: string; run: (env: Env, ctx: Ctx) => void; internal: boolean };
 
 const loginKey = (scope: string) => `login:${scope}`;
-/** The capacity owner's held fact: the Login close still holds the Thread, or another Turn holds the slot. */
-const keyHeld = (env: Env, key: string) =>
-  key.startsWith('login:') ? env.login.includes(key.slice(6)) : backendFull(env);
-function backendFull(env: Facts): boolean {
-  return Object.values(env.inv).some((inv) => inv.stage === 'acked');
+const harnessOf = (world: World, entry: string) =>
+  world.entries.find((spec) => spec.id === entry)?.harness ?? 'h1';
+/** A Turn that holds the one backend slot. */
+const turnHeld = (env: Env) => Object.values(env.inv).some((inv) => inv.stage === 'acked');
+/**
+ * The backend owner's side-effect-free refusal predicate for one entry: the RuntimeTarget is not
+ * ready, an ACKed Turn or a closing Core attempt holds the one slot, or the Harness of the entry
+ * is full.
+ */
+function backendRefuses(env: Env, world: World, entry: string): boolean {
+  return (
+    !env.target ||
+    turnHeld(env) ||
+    env.fence.length > 0 ||
+    env.sessionsFull.includes(harnessOf(world, entry))
+  );
 }
+/** The capacity owner's held fact for one refused entry. */
+const keyHeld = (env: Env, world: World, key: string, entry: string) =>
+  key.startsWith('login:') ? env.login.includes(key.slice(6)) : backendRefuses(env, world, entry);
 
-/** The capacity owner returns the one backend slot. */
-function returnBackend(env: Env) {
-  for (const entry of Object.keys(env.busyHeld))
-    if (env.busyHeld[entry] === 'backend:nh') {
-      delete env.busyHeld[entry];
-      env.successors[entry] = 0;
-      owe(env, 'backend-capacity', (value) => value === entry);
-    }
+/**
+ * An acknowledged backend owner change: the owner reads the refusal predicate again for each
+ * entry with a busy mark or a queued busy settlement on the backend, and releases the clear ones.
+ */
+function backendChanged(
+  env: Env,
+  ctx: Ctx,
+  change: 'settlement' | 'recovery' | 'target' | 'sessions'
+) {
+  const cleared = Object.keys(env.busyHeld)
+    .filter((entry) => env.busyHeld[entry] === 'backend:nh')
+    .filter((entry) => !backendRefuses(env, ctx.world, entry))
+    .sort();
+  if (
+    Object.keys(env.busyHeld).some(
+      (entry) => env.busyHeld[entry] === 'backend:nh' && !cleared.includes(entry)
+    )
+  )
+    ctx.cover?.add(`kept-at-${change}`);
+  if (cleared.length === 0) return;
+  ctx.cover?.add(`cleared-at-${change}`);
+  for (const entry of cleared) {
+    delete env.busyHeld[entry];
+    env.successors[entry] = 0;
+    owe(env, 'backend-capacity', (value) => value === entry);
+  }
+  feed(env, ctx, {
+    kind: 'released',
+    hold: 'backend-capacity',
+    key: { kind: 'backend', backendId: 'nh' },
+    cleared,
+  });
 }
 
 /** Every enabled action of the environment, internal completions first. */
@@ -844,7 +899,6 @@ function actions(env: Env, world: World): Action[] {
           entry: late.entry,
           invocation: late.invocation,
           outcome: 'dispatched',
-          backendId: 'nh',
           turn: `turn:${late.invocation}`,
         });
       },
@@ -854,7 +908,12 @@ function actions(env: Env, world: World): Action[] {
     const { scope } = scopeOf(world, inv.entry);
     const turn = `turn:${invocation}`;
     const loginHeld = env.login.includes(scope);
-    if (inv.stage === 'preparing' && env.pending === null && !loginHeld && !backendFull(env))
+    if (
+      inv.stage === 'preparing' &&
+      env.pending === null &&
+      !loginHeld &&
+      !backendRefuses(env, world, inv.entry)
+    )
       list.push({
         label: `ack:${invocation}`,
         internal: true,
@@ -865,7 +924,7 @@ function actions(env: Env, world: World): Action[] {
           feed(next, ctx, { kind: 'released', hold: 'active-preparation' });
         },
       });
-    if (inv.stage === 'preparing' && (loginHeld || backendFull(env)))
+    if (inv.stage === 'preparing' && (loginHeld || backendRefuses(env, world, inv.entry)))
       list.push({
         label: `refuse:${invocation}`,
         internal: true,
@@ -898,13 +957,31 @@ function actions(env: Env, world: World): Action[] {
           const key = inv.key!;
           delete next.inv[invocation];
           owe(next, 'local-invocation', (entry) => overlaps(world, entry, inv.entry));
-          const trueHeld = keyHeld(next, key);
+          const trueHeld = keyHeld(next, world, key, inv.entry);
           const held =
-            ctx.envMutation === 'stale-held-fact' ? inv.heldAtRefusal === true : trueHeld;
+            ctx.envMutation === 'stale-held-fact'
+              ? inv.heldAtRefusal === true
+              : ctx.envMutation === 'turn-held-fact' && key === 'backend:nh'
+                ? turnHeld(next)
+                : trueHeld;
+          if (
+            key === 'backend:nh' &&
+            trueHeld &&
+            !next.target &&
+            !turnHeld(next) &&
+            next.fence.length === 0
+          )
+            ctx.cover?.add('unready-zero-turns');
           if (trueHeld) {
             next.busyHeld[inv.entry] = key;
             observe(next, inv.entry, 'backend-capacity');
-          } else if (!next.owed.includes(inv.entry)) next.owed.push(inv.entry);
+          } else {
+            ctx.cover?.add(
+              key === 'backend:nh' ? 'release-before-enqueue' : 'login-release-before-enqueue'
+            );
+            next.successors[inv.entry] = 0;
+            if (!next.owed.includes(inv.entry)) next.owed.push(inv.entry);
+          }
           const capacityKey = key.startsWith('login:')
             ? {
                 kind: 'login-close' as const,
@@ -917,7 +994,6 @@ function actions(env: Env, world: World): Action[] {
             entry: inv.entry,
             invocation,
             outcome: 'backend-busy',
-            backendId: 'nh',
             capacity: { key: capacityKey, held },
           });
         },
@@ -940,7 +1016,6 @@ function actions(env: Env, world: World): Action[] {
           next.ent[inv.entry]!.s = 'x';
           delete next.inv[invocation];
           owe(next, 'local-invocation', (entry) => overlaps(world, entry, inv.entry));
-          returnBackend(next);
           if (next.faults.duplicate > 0 && next.late === null) {
             next.faults.duplicate -= 1;
             next.late = { entry: inv.entry, invocation };
@@ -950,9 +1025,10 @@ function actions(env: Env, world: World): Action[] {
             entry: inv.entry,
             invocation,
             outcome: 'dispatched',
-            backendId: 'nh',
             turn,
           });
+          // The Core attempt closes with the Turn: an acknowledged backend owner change.
+          backendChanged(next, ctx, 'settlement');
         },
       });
     if ((inv.stage === 'preparing' || inv.stage === 'acked') && env.faults.settle > 0)
@@ -965,16 +1041,19 @@ function actions(env: Env, world: World): Action[] {
           next.ent[inv.entry]!.s = 'x';
           delete next.inv[invocation];
           owe(next, 'local-invocation', (entry) => overlaps(world, entry, inv.entry));
-          if (inv.stage === 'acked') returnBackend(next);
+          const fenced = inv.stage === 'acked' && world.fenceOnFail === true;
+          if (fenced) next.fence.push(invocation);
           feed(next, ctx, {
             kind: 'settled',
             entry: inv.entry,
             invocation,
             outcome: 'failed',
-            backendId: 'nh',
-            returnsCapacity: inv.stage === 'acked',
             cause: { of: inv.entry, tag: 'settle' },
           });
+          if (fenced) {
+            if (Object.values(next.busyHeld).includes('backend:nh'))
+              ctx.cover?.add('fence-closing');
+          } else if (inv.stage === 'acked') backendChanged(next, ctx, 'settlement');
         },
       });
     if (inv.stage === 'preparing' && world.recoverySettle)
@@ -989,11 +1068,20 @@ function actions(env: Env, world: World): Action[] {
             entry: inv.entry,
             invocation,
             outcome: 'recovery-required',
-            backendId: 'nh',
           });
         },
       });
   }
+  for (const attempt of env.fence)
+    list.push({
+      label: `recover:${attempt}`,
+      internal: true,
+      run: (next, ctx) => {
+        // Recovery closes the failed Turn's Core attempt: an acknowledged backend owner change.
+        next.fence = next.fence.filter((value) => value !== attempt);
+        backendChanged(next, ctx, 'recovery');
+      },
+    });
   for (const caller of env.callers) {
     const spec = world.callers.find((candidate) => candidate.id === caller)!;
     list.push({
@@ -1058,6 +1146,14 @@ function actions(env: Env, world: World): Action[] {
           next.foreign = false;
           return;
         }
+        if (kind === 'target') {
+          next.target = true;
+          return backendChanged(next, ctx, 'target');
+        }
+        if (kind === 'sessions') {
+          next.sessionsFull = next.sessionsFull.filter((value) => value !== subject);
+          return backendChanged(next, ctx, 'sessions');
+        }
         if (kind === 'login') {
           next.login = next.login.filter((value) => value !== subject);
           for (const entry of Object.keys(next.busyHeld))
@@ -1065,6 +1161,7 @@ function actions(env: Env, world: World): Action[] {
               delete next.busyHeld[entry];
               next.successors[entry] = 0;
               owe(next, 'backend-capacity', (value) => value === entry);
+              ctx.cover?.add('login-release-after-enqueue');
             }
           if (ctx.envMutation === 'no-login-release') return;
           const [workspaceId, threadId] = subject.split('/') as [string, string];
@@ -1226,6 +1323,7 @@ export interface ExploreReport {
   readonly cycles: number;
   readonly traces: Readonly<Record<string, readonly string[]>>;
   readonly rows: readonly string[];
+  readonly schedules: readonly string[];
 }
 
 interface ExploreOptions {
@@ -1256,6 +1354,8 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
   const traces: Record<string, string[]> = {};
   const rows = new Set<string>();
   ctx.rows = rows;
+  const cover = new Set<string>();
+  ctx.cover = cover;
   let edges = 0;
   let quiescent = 0;
   let boundCuts = 0;
@@ -1306,6 +1406,7 @@ export function explore(world: World, options: ExploreOptions = {}): ExploreRepo
     cycles: countCycles(queue.length, from, to),
     traces,
     rows: [...rows].sort(),
+    schedules: [...cover].sort(),
   };
 }
 
@@ -1637,6 +1738,23 @@ const EMPTY_BUSY_ON_DISPATCH = rowsWith({
   }) as unknown as AnyRow,
 });
 
+/** The superseded R3 rule: a dispatched or failed settlement releases the backend marks. */
+const clearOnSettlement = (id: 'T17' | 'T18') =>
+  handoffRow(id, 'settled', base(id).guard as never, (draft, event) => {
+    const outcome = (event as { outcome: string }).outcome;
+    if (outcome === 'dispatched' || outcome === 'failed')
+      for (const entry of Object.keys(draft.busy))
+        if (draft.busy[entry]!.kind === 'backend') {
+          delete draft.busy[entry];
+          draft.holdObserved = true;
+        }
+    base(id).apply(draft as never, event as never);
+  }) as unknown as AnyRow;
+const CLEAR_ON_SETTLEMENT = rowsWith({
+  T17: clearOnSettlement('T17'),
+  T18: clearOnSettlement('T18'),
+});
+
 // ---------------------------------------------------------------------------------------------
 // Worlds. Entries b and c overlap on one Workspace and Thread; d is disjoint. FIFO is b, c, d.
 
@@ -1725,6 +1843,30 @@ export const WORLDS = {
     owner: ['login:w1/t1', 'publish:d'],
     faults: { settle: 1 },
   },
+  /**
+   * R3: the backend refuses C with no Turn (RuntimeTarget not ready) and on its full Harness h2
+   * while D settles on h1. Timer and intake held.
+   */
+  backendCapacity: {
+    name: 'backend-capacity',
+    entries: [
+      { ...C, harness: 'h2' },
+      { ...D, published: false },
+    ],
+    targetUnready: true,
+    sessionsFull: ['h2'],
+    callers: [{ id: 'u', entry: null, max: 3 }],
+    owner: ['target', 'sessions:h2', 'publish:d'],
+  },
+  /** R3: a failed Turn after its ACK leaves its Core attempt closing; recovery closes it. */
+  backendFence: {
+    name: 'backend-fence',
+    entries: [C, { ...D, published: false }],
+    fenceOnFail: true,
+    callers: [{ id: 'u', entry: null, max: 3 }],
+    owner: ['publish:d'],
+    faults: { settle: 1 },
+  },
   /** A2: older B gains publication between C's uncommitted ambiguous post and the next selection. */
   order: {
     name: 'order',
@@ -1798,6 +1940,25 @@ describe('Main selection handoff model check', () => {
     keep('rows-unreached', unreached);
     // T6b is the issuance guard behind the resume budget check; control 1 reaches it.
     expect(unreached).toEqual(['T6b']);
+    const schedules = Object.fromEntries(reports.map((report) => [report.world, report.schedules]));
+    keep('schedules', schedules);
+    // R3: every backend refusal schedule is in the gate, with a release on either side of enqueue.
+    expect(schedules['backend-capacity']).toEqual(
+      expect.arrayContaining([
+        'unready-zero-turns',
+        'kept-at-settlement',
+        'kept-at-target',
+        'cleared-at-target',
+        'cleared-at-sessions',
+        'release-before-enqueue',
+      ])
+    );
+    expect(schedules['backend-fence']).toEqual(
+      expect.arrayContaining(['fence-closing', 'cleared-at-recovery', 'release-before-enqueue'])
+    );
+    expect(schedules.capacity).toEqual(
+      expect.arrayContaining(['login-release-after-enqueue', 'login-release-before-enqueue'])
+    );
   });
 
   it('M1 fails I3 when a late lookup gives the caller of C the pass result', () => {
@@ -1861,6 +2022,25 @@ describe('Main selection handoff model check', () => {
     const report = explore(WORLDS.capacity, { table: EMPTY_BUSY_ON_DISPATCH });
     expect(named(report)).toContain('I7.busy-reclaim');
     keep('D2-empty', [report.traces['I7.busy-reclaim']]);
+  }, 600_000);
+
+  it('R3: a backend mark released at a settlement claims C again while its owner still refuses it', () => {
+    // An unrelated settlement on the same backend while the Harness of C stays full.
+    const harness = explore(WORLDS.backendCapacity, { table: CLEAR_ON_SETTLEMENT });
+    expect(named(harness)).toContain('I7.busy-reclaim');
+    // A failed Turn whose Core attempt is still closing.
+    const fence = explore(WORLDS.backendFence, { table: CLEAR_ON_SETTLEMENT });
+    expect(named(fence)).toContain('I7.busy-reclaim');
+    keep('R3-clear-on-settlement', [
+      harness.traces['I7.busy-reclaim'],
+      fence.traces['I7.busy-reclaim'],
+    ]);
+  }, 600_000);
+
+  it('R3: a held fact read as Turn occupancy claims C again behind an unready target with zero Turns', () => {
+    const report = explore(WORLDS.backendCapacity, { envMutation: 'turn-held-fact' });
+    expect(named(report)).toContain('I7.busy-reclaim');
+    keep('R3-turn-held-fact', [report.traces['I7.busy-reclaim']]);
   }, 600_000);
 
   it('A2: a no-row replay ahead of the walk claims C before older eligible B', () => {
