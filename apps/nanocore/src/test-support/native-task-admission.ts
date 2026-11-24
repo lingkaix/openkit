@@ -812,7 +812,11 @@ export async function createNativeTaskAdmissionFixture(
         executionBackend,
         agentManifests: configuration.agentManifests,
         // The trigger carries the version of its snapshot, as each production caller does.
-        configVersion: configuration.version,
+        // The reader is typed as its public subset; the live snapshot carries the version.
+        configVersion:
+          'version' in configuration && typeof configuration.version === 'number'
+            ? configuration.version
+            : null,
         gatewayConfig: configuration.gatewayConfig,
         providerRegistry: configuration.providerRegistry,
         workspaceConfigs: configuration.workspaceConfigs,
