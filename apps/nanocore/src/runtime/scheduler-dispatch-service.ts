@@ -7,6 +7,7 @@ import {
   releaseSchedulerBackendCapacity,
   releaseSchedulerDispatchHold,
   runSchedulerDispatchLoop,
+  type SchedulerDispatchCurrentConfig,
   type SchedulerDispatchLoopResult,
 } from './scheduler-dispatch-loop.js';
 
@@ -48,6 +49,20 @@ export interface SchedulerDispatchRetryService {
   readonly stop: () => void;
 }
 
+/** The configuration fields of one runtime snapshot that a dispatch selection uses. */
+function currentDispatchConfig(snapshot: RuntimeConfigSnapshot): SchedulerDispatchCurrentConfig {
+  return {
+    agentManifests: snapshot.agentManifests,
+    configVersion: snapshot.version,
+    gatewayConfig: snapshot.gatewayConfig,
+    providerRegistry: snapshot.providerRegistry,
+    userConfigs: snapshot.userConfigs,
+    workspaceConfigs: snapshot.workspaceConfigs,
+    workspaceDataSourceCatalogs: snapshot.workspaceDataSourceCatalogs,
+    workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+  };
+}
+
 /**
  * Starts periodic scheduler dispatch retry for queued admissions.
  *
@@ -70,19 +85,11 @@ export function startSchedulerDispatchRetryService(
     }
 
     try {
-      const snapshot = input.runtimeConfigSnapshot();
       return await runSchedulerDispatchLoop({
         ...input,
         agentWorkPaused: () =>
           input.runtimeConfigSnapshot().openKitConfig.security?.pauseAgentWork === true,
-        agentManifests: snapshot.agentManifests,
-        configVersion: snapshot.version,
-        gatewayConfig: snapshot.gatewayConfig,
-        providerRegistry: snapshot.providerRegistry,
-        userConfigs: snapshot.userConfigs,
-        workspaceConfigs: snapshot.workspaceConfigs,
-        workspaceDataSourceCatalogs: snapshot.workspaceDataSourceCatalogs,
-        workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+        ...currentDispatchConfig(input.runtimeConfigSnapshot()),
         dispatchSource: source,
       });
     } catch (error) {
@@ -97,18 +104,26 @@ export function startSchedulerDispatchRetryService(
 
   // A handoff wake starts one run with source `wake`. Startup and the timer stay fallbacks for a
   // lost wake and for the first scan after restart.
-  const unregisterWake = registerSchedulerDispatchWake(input.coreDb, () => {
-    void runOnce('wake');
-  });
-  // The owner release edges of the holds table reach the handoff of this Core data root.
-  const removeHoldReleases = addSchedulerHoldReleaseListener({
+  // A5: each selection also reads the configuration that the owner reports as current.
+  const unregisterWake = registerSchedulerDispatchWake(
+    input.coreDb,
+    () => {
+      void runOnce('wake');
+    },
+    () => currentDispatchConfig(input.runtimeConfigSnapshot())
+  );
+  // The owner release edges of this Core data root reach only its own handoff.
+  const removeHoldReleases = addSchedulerHoldReleaseListener(input.coreDb.dataRoot, {
     hold: (hold) => releaseSchedulerDispatchHold(input.coreDb, hold),
     capacity: (change) => {
       if (change.kind === 'login-close')
         releaseSchedulerDispatchHold(input.coreDb, 'backend-capacity', change);
       // A cleared Login close or a backend owner change is an acknowledged change of the backend
-      // owner, so its backend marks read the refusal predicate again.
-      releaseSchedulerBackendCapacity(input.coreDb);
+      // owner, so the marks of that backend read their carried refusal again.
+      releaseSchedulerBackendCapacity(
+        input.coreDb,
+        change.kind === 'backend-changed' ? change.backendId : undefined
+      );
     },
   });
   void runOnce();

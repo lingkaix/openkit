@@ -51,7 +51,7 @@ export function settleWorkspaceRecoveryScope(input: {
   )
     throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
   failures.delete(key);
-  releaseSchedulerHold('scope-not-admitted');
+  releaseSchedulerHold(input.dataRoot, 'scope-not-admitted');
 }
 
 /** Tests admission without opening or reconstructing a refused scope. */

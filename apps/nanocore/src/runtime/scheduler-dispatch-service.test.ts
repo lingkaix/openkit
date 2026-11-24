@@ -6,6 +6,7 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry';
+import { releaseSchedulerCapacity, releaseSchedulerHold } from '../scheduler-hold-release.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
@@ -21,6 +22,7 @@ import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './idempotent-command.js';
+import * as dispatchLoop from './scheduler-dispatch-loop.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
@@ -432,6 +434,65 @@ describe('scheduler dispatch service', () => {
       // Submission can return before the simulator finishes writing the Turn outcome.
       await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
       await disposeTestStore(coreDb.dataRoot, coreDb);
+    }
+  });
+
+  it('sends each owner release only to the dispatch owner of its deciding Data Root', async () => {
+    const roots = [createMigratedCoreDb(), createMigratedCoreDb()] as const;
+    const run = vi
+      .spyOn(dispatchLoop, 'runSchedulerDispatchLoop')
+      .mockResolvedValue({ startedTurns: [], terminalResult: null } as never);
+    const hold = vi
+      .spyOn(dispatchLoop, 'releaseSchedulerDispatchHold')
+      .mockImplementation(() => {});
+    const capacity = vi
+      .spyOn(dispatchLoop, 'releaseSchedulerBackendCapacity')
+      .mockImplementation(() => {});
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([]),
+    });
+    const services = roots.map((coreDb) =>
+      startSchedulerDispatchRetryService({
+        clearInterval: () => {},
+        coreDb,
+        intervalMs: 60_000,
+        runtimeConfigSnapshot: () => snapshot,
+        setInterval: () => ({ timer: 'test' }),
+        store: createTestStore({ dataRoot: coreDb.dataRoot }),
+        turnExecutor: {} as TurnExecutor,
+        executionBackend: {} as never,
+      })
+    );
+    try {
+      const [a, b] = roots;
+      // Both roots hold a Login close for the same Workspace and Thread IDs. A's close clears.
+      const thread = { workspaceId: 'ws_same', threadId: 'th_same' };
+      releaseSchedulerCapacity(a.dataRoot, { kind: 'login-close', ...thread });
+      releaseSchedulerHold(a.dataRoot, 'frozen-workspace');
+      releaseSchedulerCapacity(b.dataRoot, { kind: 'backend-changed', backendId: 'nanohost' });
+      // A's edges reach only A's handoff, and B's backend change reaches only B's marks.
+      expect(hold.mock.calls).toEqual([
+        [a, 'backend-capacity', { kind: 'login-close', ...thread }],
+        [a, 'frozen-workspace'],
+      ]);
+      expect(capacity.mock.calls).toEqual([
+        [a, undefined],
+        [b, 'nanohost'],
+      ]);
+      // After A stops, a release of A reaches no listener, and B still gets its own.
+      services[0]!.stop();
+      releaseSchedulerHold(a.dataRoot, 'frozen-workspace');
+      releaseSchedulerHold(b.dataRoot, 'scope-not-admitted');
+      expect(hold.mock.calls.slice(2)).toEqual([[b, 'scope-not-admitted']]);
+    } finally {
+      for (const service of services) service.stop();
+      run.mockRestore();
+      hold.mockRestore();
+      capacity.mockRestore();
+      for (const coreDb of roots) await disposeTestStore(coreDb.dataRoot, coreDb);
     }
   });
 });

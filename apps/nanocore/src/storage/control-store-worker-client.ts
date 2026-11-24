@@ -1248,6 +1248,8 @@ interface WorkspaceMutationLease {
 
 /** Ordinary Workspace mutation and exclusive lifecycle gates of one logical scope. */
 interface WorkspaceMutationScope {
+  /** The resolved Core data root that owns these gates. */
+  readonly dataRoot: string;
   readonly gates: Map<string, WorkspaceMutationGateState>;
   readonly deletionTails: Map<string, Promise<void>>;
 }
@@ -1322,7 +1324,7 @@ class ControlStoreWorkerClient {
     const root = resolve(dataRoot);
     let owner = workspaceMutationOwners.get(root);
     if (!owner) {
-      owner = { gates: new Map(), deletionTails: new Map() };
+      owner = { dataRoot: root, gates: new Map(), deletionTails: new Map() };
       workspaceMutationOwners.set(root, owner);
     }
     return owner;
@@ -1698,7 +1700,8 @@ class ControlStoreWorkerClient {
    * Workspace is open again. A partial thaw under another closure stays held and reports nothing.
    */
   private reportWorkspaceAdmissionOpen(owner: WorkspaceMutationScope, workspaceId: string): void {
-    if (!this.isScopeClosed(owner, workspaceId)) releaseSchedulerHold('frozen-workspace');
+    if (!this.isScopeClosed(owner, workspaceId))
+      releaseSchedulerHold(owner.dataRoot, 'frozen-workspace');
   }
 
   /** Restores an owned closure without clearing a different lifecycle owner's exclusion. */
