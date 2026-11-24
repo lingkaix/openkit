@@ -84,10 +84,10 @@ async function publishAttempt(
     snapshot.kind === 'close-with-fence' ||
     (snapshot.kind === 'record-operation' && snapshot.submission === true)
   )
-    releaseSchedulerHold('active-preparation');
+    releaseSchedulerHold(db.dataRoot, 'active-preparation');
   // The backend owner edge (E7): a Core attempt closed, including its recovery after a failed Turn.
   if (snapshot.kind === 'close-without-effects' || snapshot.kind === 'close-with-fence')
-    releaseSchedulerCapacity({ kind: 'backend-changed' });
+    releaseSchedulerCapacity(db.dataRoot, { kind: 'backend-changed' });
   return result;
 }
 /** Acquires the original admission and complete attempt atomically on the Core writer. */

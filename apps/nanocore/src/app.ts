@@ -1445,7 +1445,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const pending = reloadRuntimeConfig(input);
     const response = pending instanceof Promise ? await pending : pending;
     if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork) {
-      releaseSchedulerHold('agent-work-paused');
+      if (options.coreDb) releaseSchedulerHold(options.coreDb.dataRoot, 'agent-work-paused');
       await resumeAgentWork?.();
     }
     return response;

@@ -5729,4 +5729,178 @@ describe('scheduler FIFO class closure in the dispatch pass', () => {
       f.coreDb.sqlite.close();
     }
   });
+
+  it('A5: an unknown claim replays only under the configuration that the owner reports as current', async () => {
+    const f = await setup();
+    const client = getControlStoreWorkerClient();
+    const apply = client.executionAttempt.bind(client);
+    const create = attemptCommands.createSchedulerExecutionAttempt;
+    const posts: { attemptId: string | undefined; configVersion: unknown }[] = [];
+    const base = f.input();
+    let current = 1;
+    // The configuration owner of this root reports its current snapshot to each selection.
+    const unregister = schedulerDispatchLoop.registerSchedulerDispatchWake(
+      f.coreDb,
+      () => {},
+      () => ({
+        agentManifests: base.agentManifests,
+        gatewayConfig: base.gatewayConfig,
+        providerRegistry: base.providerRegistry,
+        configVersion: current,
+      })
+    );
+    const spy = vi
+      .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+      .mockImplementation(async (db, args) => {
+        posts.push({
+          attemptId: args.attemptId,
+          configVersion: (args.preparationInput as { configVersion?: unknown }).configVersion,
+        });
+        return create(db, args);
+      });
+    let lose = 1;
+    const reply = vi.spyOn(client, 'executionAttempt').mockImplementation(async (...args) => {
+      const [, command] = args;
+      if (command.kind === 'create' && lose > 0) {
+        lose -= 1;
+        // The reload v1 -> v2 lands while C's claim reply is outstanding. The pause does not
+        // change, and no trigger follows. The request is lost, so Core has no row.
+        current = 2;
+        throw new ControlStoreWorkerError('unavailable', 'unknown');
+      }
+      return apply(...args);
+    });
+    try {
+      const c = await f.queue('a5-c', await f.workspace('A5 reload'));
+      await runSchedulerDispatchLoop(f.input({ configVersion: 1 })).catch(
+        (error: unknown) => error
+      );
+      // The first post carries v1. No later post of C carries v1: the immediate replay of the v1
+      // proposal is not a first insert after the owner already reports v2.
+      expect(posts[0]).toEqual({
+        attemptId: testEntityId('attempt', 'attempt_fifo_1'),
+        configVersion: 1,
+      });
+      expect(posts.slice(1).map((post) => post.configVersion)).toEqual(posts.slice(1).map(() => 2));
+      // C gets one claim, and its preparation input is the v2 snapshot.
+      if (f.attemptsFor(c).length === 0)
+        expect(started(await runSchedulerDispatchLoop(f.input({ configVersion: 1 })))).toEqual([
+          c.queueEntryId,
+        ]);
+      expect(f.attemptsFor(c)).toHaveLength(1);
+      expect(posts.length).toBeGreaterThan(1);
+      expect(posts.at(-1)?.configVersion).toBe(2);
+    } finally {
+      unregister();
+      reply.mockRestore();
+      spy.mockRestore();
+      await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('E3: a proposal that throws at the attempt ID allocator keeps no Workspace admission', async () => {
+    const f = await setup();
+    const client = getControlStoreWorkerClient();
+    const failure = new Error('The attempt ID allocator failed.');
+    try {
+      const c = await f.queue('e3-c', await f.workspace('E3 allocator'));
+      const outcome = await runSchedulerDispatchLoop(
+        f.input({
+          createAttemptId: () => {
+            throw failure;
+          },
+        })
+      ).catch((error: unknown) => error);
+      expect(outcome).toBe(failure);
+      expect(executionAttempts(f.coreDb)).toEqual([]);
+      // The failed selection holds no handle: a freeze of C's Workspace starts and drains.
+      const inspect = vi.fn(() => []);
+      const freeze = client.tryFreezeWorkspace(f.coreDb.dataRoot, c.workspaceId, inspect);
+      expect(freeze.status).toBe('frozen');
+      if (freeze.status === 'frozen') freeze.release();
+      // The next pass claims C.
+      expect(started(await runSchedulerDispatchLoop(f.input()))).toEqual([c.queueEntryId]);
+    } finally {
+      await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('E7: a refusal keeps its own key and re-check through the awaited requeue', async () => {
+    const f = await setup();
+    const close = attemptCommands.closeSchedulerExecutionAttemptWithoutEffects;
+    const prepare = f.turnExecutor.prepareAgentSessionForTurn.bind(f.turnExecutor);
+    const loginMessage = 'The original Login close still owns Thread admission.';
+    const backendKey = { kind: 'backend', backendId: f.turnExecutor.executionBackend.id } as const;
+    let loginOwns = false;
+    let clearDuringRequeue = false;
+    // The last refusal record of the Thread, as a Thread-level read finds it later.
+    let lastRecord: 'opaque' | null = null;
+    let prepareCalls = 0;
+    f.turnExecutor.prepareAgentSessionForTurn = async (store, input) => {
+      prepareCalls += 1;
+      if (prepareCalls === 1) {
+        // An earlier attempt of the same Thread: an opaque refusal with no re-check.
+        lastRecord = 'opaque';
+        throw new WorkerGovernanceCapacityUnavailableError(
+          'Cleanup proof is required before the incompatible resident is replaced.',
+          { key: backendKey, stillRefused: null }
+        );
+      }
+      // The two Thread admission refusals attach nothing and record nothing.
+      if (loginOwns) throw new WorkerGovernanceCapacityUnavailableError(loginMessage);
+      return prepare(store, input);
+    };
+    Object.assign(f.turnExecutor, {
+      // The owner maps its exact Login close refusal to the Login close key and its own check.
+      schedulerCapacityRefusal: (
+        error: unknown,
+        thread: { workspaceId: string; threadId: string }
+      ) =>
+        error instanceof WorkerGovernanceCapacityUnavailableError && error.message === loginMessage
+          ? { key: { kind: 'login-close', ...thread }, stillRefused: () => loginOwns }
+          : null,
+      // A Thread-level read at settlement: it no longer sees the Login close, so it finds the
+      // stale record of the earlier attempt.
+      readSchedulerCapacityHold: (thread: { workspaceId: string; threadId: string }) =>
+        loginOwns ? { kind: 'login-close', ...thread } : lastRecord ? backendKey : null,
+    });
+    const closeSpy = vi
+      .spyOn(attemptCommands, 'closeSchedulerExecutionAttemptWithoutEffects')
+      .mockImplementation(async (db, args) => {
+        const closed = await close(db, args);
+        // The Login close clears while the busy requeue is awaited, before its settlement.
+        if (clearDuringRequeue) loginOwns = false;
+        return closed;
+      });
+    const wakes: Promise<unknown>[] = [];
+    const unregister = schedulerDispatchLoop.registerSchedulerDispatchWake(f.coreDb, () => {
+      wakes.push(runSchedulerDispatchLoop(f.input()).catch((error: unknown) => error));
+    });
+    try {
+      const c = await f.queue('e7-c', await f.workspace('E7 refusal'));
+      expect(started(await runSchedulerDispatchLoop(f.input()))).toEqual([]);
+      expect(f.attemptsFor(c)).toHaveLength(1);
+      // A Login close starts, and intake retries C. The Login close refuses C and then clears.
+      loginOwns = true;
+      clearDuringRequeue = true;
+      expect(started(await runSchedulerDispatchLoop(f.input()))).toEqual([]);
+      expect(f.attemptsFor(c)).toHaveLength(2);
+      // The settlement reads the Login close key and its own check: clear. The owner wake claims
+      // C with no further intake or timer pass.
+      await vi.waitFor(
+        () => expect(f.turnExecutor.calls.map((call) => call.turnId)).toEqual([c.turnId]),
+        { timeout: 3000 }
+      );
+      expect(wakes.length).toBeGreaterThan(0);
+      expect(f.attemptsFor(c)).toHaveLength(3);
+    } finally {
+      unregister();
+      closeSpy.mockRestore();
+      await Promise.allSettled(wakes);
+      await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
+      f.coreDb.sqlite.close();
+    }
+  });
 });

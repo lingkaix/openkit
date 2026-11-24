@@ -29,6 +29,7 @@ import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-han
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import type { SchedulerCapacityRefusal } from '../scheduler-hold-release.js';
 import {
   type CoreSchedulerQueueEntry,
   listQueuedSchedulerAdmissionEntries,
@@ -235,7 +236,30 @@ interface SchedulerDispatchHandoff {
 const schedulerDispatchHandoffs = new Map<string, SchedulerDispatchHandoff>();
 /** The callers of one pass share one result value, as they share one pass. */
 const schedulerPassResults = new WeakMap<object, SchedulerDispatchLoopResult>();
-const schedulerDispatchWakes = new Map<string, () => void>();
+/** The configuration fields that the configuration owner reports as current (A5). */
+export type SchedulerDispatchCurrentConfig = Pick<
+  RunSchedulerDispatchLoopInput,
+  | 'agentManifests'
+  | 'gatewayConfig'
+  | 'providerRegistry'
+  | 'userConfigs'
+  | 'workspaceConfigs'
+  | 'workspaceDataSourceCatalogs'
+  | 'workspaceMcpServerCatalogs'
+> & { readonly configVersion: number };
+
+/** The dispatch owner of one Core data root: its wake run and its current configuration read. */
+interface SchedulerDispatchOwner {
+  readonly wake: () => void;
+  readonly currentConfig?: () => SchedulerDispatchCurrentConfig;
+}
+
+const schedulerDispatchOwners = new Map<string, SchedulerDispatchOwner>();
+/** The capacity refusal that each backend-busy invocation result carries in process (E7). */
+const schedulerCapacityRefusals = new WeakMap<
+  SchedulerDispatchLoopResult,
+  SchedulerCapacityRefusal | null
+>();
 /** The attempt ID of each published invocation promise, for an exact join and retire. */
 const schedulerInvocationIds = new WeakMap<Promise<SchedulerDispatchLoopResult>, string>();
 
@@ -261,13 +285,19 @@ function schedulerDispatchHandoff(coreDb: CoreDb): SchedulerDispatchHandoff {
 
 /**
  * Registers the one dispatch retry run that a `wake` effect starts for this Core data root. The
- * effect does not await it.
+ * effect does not await it. The optional configuration read gives each selection the snapshot
+ * that the configuration owner reports as current (A5).
  */
-export function registerSchedulerDispatchWake(coreDb: CoreDb, wake: () => void): () => void {
-  schedulerDispatchWakes.set(coreDb.dataRoot, wake);
+export function registerSchedulerDispatchWake(
+  coreDb: CoreDb,
+  wake: () => void,
+  currentConfig?: () => SchedulerDispatchCurrentConfig
+): () => void {
+  const owner: SchedulerDispatchOwner = currentConfig ? { wake, currentConfig } : { wake };
+  schedulerDispatchOwners.set(coreDb.dataRoot, owner);
   return () => {
-    if (schedulerDispatchWakes.get(coreDb.dataRoot) === wake)
-      schedulerDispatchWakes.delete(coreDb.dataRoot);
+    if (schedulerDispatchOwners.get(coreDb.dataRoot) === owner)
+      schedulerDispatchOwners.delete(coreDb.dataRoot);
   };
 }
 
@@ -291,22 +321,27 @@ export function releaseSchedulerDispatchHold(
  * again, without effects. It releases only the entries that read clear, so the remaining entries
  * keep their marks.
  */
-export function releaseSchedulerBackendCapacity(coreDb: CoreDb): void {
+export function releaseSchedulerBackendCapacity(coreDb: CoreDb, backendId?: string): void {
   const root = schedulerDispatchHandoffs.get(coreDb.dataRoot);
   if (root) {
+    // Only the marks of the backend whose fact changed read again, when the owner names it.
+    const changed = (key: HandoffCapacityKey) =>
+      key.kind === 'backend' && (backendId === undefined || key.backendId === backendId);
     const marked = new Map<string, string>();
     for (const [entry, key] of Object.entries(root.record.busy))
-      if (key.kind === 'backend') marked.set(entry, key.backendId);
+      if (key.kind === 'backend' && changed(key)) marked.set(entry, key.backendId);
     for (const event of root.events)
       if (
         event.kind === 'settled' &&
         event.outcome === 'backend-busy' &&
         event.capacity.held &&
-        event.capacity.key.kind === 'backend'
+        event.capacity.key.kind === 'backend' &&
+        changed(event.capacity.key)
       )
         marked.set(event.entry, event.capacity.key.backendId);
-    for (const entry of root.capacityReads.keys())
-      if (!marked.has(entry)) root.capacityReads.delete(entry);
+    if (backendId === undefined)
+      for (const entry of root.capacityReads.keys())
+        if (!marked.has(entry)) root.capacityReads.delete(entry);
     const cleared = new Map<string, string[]>();
     for (const [entry, backendId] of marked) {
       const read = root.capacityReads.get(entry);
@@ -410,7 +445,7 @@ function runSchedulerDispatchEffect(
       resolveSchedulerDispatchCaller(root, effect.caller, effect.result);
       return;
     case 'wake': {
-      const wake = schedulerDispatchWakes.get(root.dataRoot);
+      const wake = schedulerDispatchOwners.get(root.dataRoot)?.wake;
       if (wake) queueMicrotask(wake);
       return;
     }
@@ -585,6 +620,15 @@ function readSchedulerClaimRow(
     : 'other';
 }
 
+/** The Workspace admission handle and work that a selection hands to the cycle (E3). */
+interface SchedulerSelectionTransfer {
+  value: {
+    readonly entry: string;
+    readonly release: () => void;
+    readonly work: SchedulerSelectionWork;
+  } | null;
+}
+
 /** The `select` effect: one synchronous Core read transaction that ends before any post. */
 function selectSchedulerDispatch(
   root: SchedulerDispatchHandoff,
@@ -592,13 +636,23 @@ function selectSchedulerDispatch(
 ): DispatchEvent {
   // An inspection snapshot that cannot open fails the inspection of every unresolved claim.
   const failure = { entry: null as string | null, inspections: Object.keys(effect.unresolved) };
+  const transfer: SchedulerSelectionTransfer = { value: null };
   try {
-    const input = effect.snapshot;
-    if (!input) throw new Error('The scheduler selection has no trigger snapshot.');
-    return input.coreDb.sqlite
-      .transaction(() => readSchedulerDispatchSelection(root, input, effect, failure))
+    const trigger = effect.snapshot;
+    if (!trigger) throw new Error('The scheduler selection has no trigger snapshot.');
+    const input = currentSchedulerSelectionInput(root, trigger);
+    const event = input.coreDb.sqlite
+      .transaction(() => readSchedulerDispatchSelection(root, input, effect, failure, transfer))
       .deferred();
+    // E3: the cycle takes the handle only after the read transaction and the proposal succeed.
+    if (transfer.value) {
+      root.handles.set(transfer.value.entry, transfer.value.release);
+      root.work = transfer.value.work;
+      transfer.value = null;
+    }
+    return event;
   } catch (cause) {
+    transfer.value?.release();
     return {
       kind: 'failed',
       stage: 'select',
@@ -609,11 +663,26 @@ function selectSchedulerDispatch(
   }
 }
 
+/**
+ * A5: each selection, the immediate replay included, uses the newest configuration snapshot that
+ * the root holds or that the configuration owner reports as current.
+ */
+function currentSchedulerSelectionInput(
+  root: SchedulerDispatchHandoff,
+  trigger: RunSchedulerDispatchLoopInput
+): RunSchedulerDispatchLoopInput {
+  const current = schedulerDispatchOwners.get(root.dataRoot)?.currentConfig?.();
+  return current && current.configVersion > (trigger.configVersion ?? -1)
+    ? { ...trigger, ...current }
+    : trigger;
+}
+
 function readSchedulerDispatchSelection(
   root: SchedulerDispatchHandoff,
   input: RunSchedulerDispatchLoopInput,
   effect: Extract<DispatchEffect, { kind: 'select' }>,
-  failure: { entry: string | null; inspections: string[] }
+  failure: { entry: string | null; inspections: string[] },
+  transfer: SchedulerSelectionTransfer
 ): DispatchEvent {
   failure.inspections = [];
   const db = input.coreDb;
@@ -668,8 +737,7 @@ function readSchedulerDispatchSelection(
       barrierAllowed: effect.barrierAllowed,
     });
     if (disposition === 'immediate-replay' && replay) {
-      root.handles.set(entryId, replay.release);
-      root.work = replay.work;
+      transfer.value = { entry: entryId, release: replay.release, work: replay.work };
       return selected({
         kind: 'claim',
         entry: entryId,
@@ -760,9 +828,8 @@ function readSchedulerDispatchSelection(
                 barrierAllowed: effect.barrierAllowed,
               });
         if (disposition === 'replay') {
-          root.handles.set(entryId, release!);
+          transfer.value = { entry: entryId, release: release!, work };
           release = undefined;
-          root.work = work;
           return selected({
             kind: 'claim',
             entry: entryId,
@@ -774,22 +841,20 @@ function readSchedulerDispatchSelection(
         skip('unresolved-claim');
         continue;
       }
-      // The authority read can fail on its source owner, so the Workspace admission transfers to
-      // the proposal only after the read returns.
-      root.handles.set(entryId, release!);
+      // The authority read, the ID allocator and the digest can throw, so the Workspace admission
+      // transfers to the proposal only after the proposal is complete (E3).
+      const identity =
+        check.kind === 'deny'
+          ? null
+          : {
+              attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
+              inputHash: entry.inputHash,
+              preparationDigest: preparationDigestOf(work),
+            };
+      transfer.value = { entry: entryId, release: release!, work };
       release = undefined;
-      root.work = work;
-      if (check.kind === 'deny') return selected({ kind: 'deny', entry: entryId });
-      return selected({
-        kind: 'claim',
-        entry: entryId,
-        identity: {
-          attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
-          inputHash: entry.inputHash,
-          preparationDigest: preparationDigestOf(work),
-        },
-        retained: false,
-      });
+      if (identity === null) return selected({ kind: 'deny', entry: entryId });
+      return selected({ kind: 'claim', entry: entryId, identity, retained: false });
     } finally {
       release?.();
     }
@@ -1028,6 +1093,26 @@ function publishSchedulerInvocation(
   return start;
 }
 
+/** The refusal that a capacity error of the backend carries, read at the refusal (E7). */
+function schedulerCapacityRefusalOf(
+  input: RunSchedulerDispatchLoopInput,
+  error: WorkerGovernanceCapacityUnavailableError,
+  entry: CoreSchedulerQueueEntry
+): SchedulerCapacityRefusal | null {
+  try {
+    return (
+      input.executionBackend.schedulerCapacityRefusal?.(error, {
+        workspaceId: entry.workspaceId,
+        threadId: entry.threadId,
+      }) ??
+      error.schedulerCapacity ??
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** Maps the full closeout of one invocation to its settlement event. */
 function schedulerSettlement(
   root: SchedulerDispatchHandoff,
@@ -1045,7 +1130,15 @@ function schedulerSettlement(
   if (reason === 'recovery-required') return { ...base, outcome: 'recovery-required' };
   if (reason === 'backend-busy' && work)
     // E7: the held fact of the refusing key, read in the same synchronous step that queues it.
-    return { ...base, outcome: 'backend-busy', capacity: readSchedulerCapacityHold(root, work) };
+    return {
+      ...base,
+      outcome: 'backend-busy',
+      capacity: readSchedulerCapacityHold(
+        root,
+        work,
+        schedulerCapacityRefusals.get(result) ?? null
+      ),
+    };
   return {
     ...base,
     outcome: 'failed',
@@ -1054,30 +1147,31 @@ function schedulerSettlement(
 }
 
 /**
- * The refusing capacity key of a busy entry and whether its owner still holds it, read from the
- * side-effect-free refusal predicate of the backend owner. A backend without the predicate, or a
- * predicate that throws, reads as held, so only a timer or intake pass retries the entry.
+ * The refusing capacity key of a busy entry and whether its owner still holds it. The key and the
+ * re-check are the ones that the original refusal carried, so the read never reclassifies the
+ * refusal and changes nothing. A refusal with no re-check, an unknown refusal, or a re-check that
+ * throws reads as held, so only a timer or intake pass retries the entry.
  */
 function readSchedulerCapacityHold(
   root: SchedulerDispatchHandoff,
-  work: SchedulerSelectionWork
+  work: SchedulerSelectionWork,
+  carried: SchedulerCapacityRefusal | null
 ): {
   readonly key: HandoffCapacityKey;
   readonly held: boolean;
 } {
-  const backend: HandoffCapacityKey = { kind: 'backend', backendId: work.entry.backendId };
-  const executionBackend = work.input.executionBackend;
-  const thread = { workspaceId: work.entry.workspaceId, threadId: work.entry.threadId };
+  const key: HandoffCapacityKey = carried?.key ?? {
+    kind: 'backend',
+    backendId: work.entry.backendId,
+  };
+  const stillRefused = carried?.stillRefused ?? null;
   const read = (): HandoffCapacityKey | null =>
-    executionBackend.readSchedulerCapacityHold
-      ? executionBackend.readSchedulerCapacityHold(thread)
-      : backend;
+    stillRefused === null || stillRefused() ? key : null;
   root.capacityReads.set(work.entry.queueEntryId, read);
   try {
-    const key = read();
-    return key === null ? { key: backend, held: false } : { key, held: true };
+    return { key, held: read() !== null };
   } catch {
-    return { key: backend, held: true };
+    return { key, held: true };
   }
 }
 
@@ -1451,13 +1545,20 @@ async function continueSchedulerAdmission(
         .listThreadAgentSessions(entry.workspaceId, entry.threadId)
         .some((session) => session.id === current.agentSessionId && session.status === 'busy')
     ) {
+      // E7: keep the key and re-check of this exact refusal across the awaited requeue.
+      const refusal = schedulerCapacityRefusalOf(input, error, entry);
       await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
         attemptId: attempt.attemptId,
         noOutstandingEffects: true,
         cause: 'backend-busy',
         requeue: true,
       });
-      return { startedTurns: [], terminalResult: { status: 'queued', reason: 'backend-busy' } };
+      const busy: SchedulerDispatchLoopResult = {
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'backend-busy' },
+      };
+      schedulerCapacityRefusals.set(busy, refusal);
+      return busy;
     }
     if (current.operationId === null)
       await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
