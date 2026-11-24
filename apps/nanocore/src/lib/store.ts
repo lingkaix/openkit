@@ -4178,8 +4178,12 @@ export class FsStore {
     if (turn.agentId || turn.agentSessionId || turn.threadId !== threadId)
       throw new Error('Pending service publication requires its original Core-local Turn.');
     const entries = await this.prepareNativeItems(scope, input.items);
+    // The publication names its Workspace and Thread; sibling Workspaces are never read.
     const priorEvent = existing
-      ? this.getTurnEventsForExport(turn.id).find((event) => event.data.type === 'turn-completed')
+      ? readWorkspaceTurnEvents(
+          this.workspaceRootPath(workspaceId),
+          this.getTurn(workspaceId, threadId, turn.id)
+        ).find((event) => event.data.type === 'turn-completed')
       : undefined;
     const event =
       priorEvent ??
@@ -4275,7 +4279,7 @@ export class FsStore {
         execution: null,
       },
     });
-    return this.getTurnById(turn.id);
+    return this.getTurn(workspaceId, threadId, turn.id);
   }
 
   /** Commits one existing Workspace execution intent before its actual effect. */
@@ -6029,6 +6033,30 @@ export class FsStore {
     );
   }
 
+  /**
+   * Completes a Turn already read in its known Workspace and Thread through the same terminal
+   * owner, without discovering its owner across sibling Workspaces.
+   *
+   * @param workspaceId Workspace whose own records named the Turn.
+   * @param threadId Thread that owns the Turn.
+   * @param turnId Turn to complete.
+   * @param patch Terminal metadata patch.
+   * @returns The authoritative Turn after FULL COMMIT.
+   */
+  public async completeWorkspaceTurn(
+    workspaceId: string,
+    threadId: string,
+    turnId: string,
+    patch: Parameters<FsStore['updateTurn']>[1]
+  ): Promise<Turn> {
+    this.getTurn(workspaceId, threadId, turnId);
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const args: Parameters<FsStore['completeTurnPublication']> = [turnId, patch, {}, owner];
+    return this.publishTurnMutation(owner, turnId, args, (owned) =>
+      this.completeTurnPublication(...owned)
+    );
+  }
+
   /** Reuses the original staging frame only for the same Turn metadata and complete event bytes. */
   private recoverServerTurnSettlement(
     deploymentId: string,
@@ -6066,13 +6094,17 @@ export class FsStore {
   private async completeTurnPublication(
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1],
-    publication: TerminalTurnPublication = {}
+    publication: TerminalTurnPublication = {},
+    knownOwner?: Extract<ControlProductOwner, { kind: 'workspace' }>
   ): Promise<{ turn: Turn; notify: boolean }> {
-    const owner = this.dataRoot
-      ? this.findNativeOwner('turn', turnId)?.owner
-      : this.serverTurns.has(turnId)
-        ? { kind: 'server' as const }
-        : this.turns.get(turnId)?.owner;
+    // A Boot walk carries the Workspace whose own records named this Turn.
+    const owner =
+      knownOwner ??
+      (this.dataRoot
+        ? this.findNativeOwner('turn', turnId)?.owner
+        : this.serverTurns.has(turnId)
+          ? { kind: 'server' as const }
+          : this.turns.get(turnId)?.owner);
     if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     if (owner.kind === 'server') this.assertServerWorkMutationAvailable();
     const scope = this.dataRoot ? this.nativeScope(owner) : undefined;

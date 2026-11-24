@@ -52,6 +52,7 @@ import {
 } from './auth/thread-visibility.js';
 import {
   BootWorkspaceConflict,
+  bootWorkspaceWrite,
   withinBootWorkspaceBoundary,
 } from './bootstrap/boot-workspace-walk.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
@@ -74,6 +75,7 @@ import {
   type WorkspaceNotebookSelection,
 } from './knowledge/notebook-workspace-selection.js';
 import type { FsStore } from './lib/store.js';
+import { StoreRecordNotFoundError } from './lib/store-errors.js';
 import { serveStatelessMcp } from './mcp-stateless-http.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
@@ -1517,6 +1519,12 @@ async function reconcileWorkspaceMcpItems(
       .all() as DecidedMcpPublicationRow[];
     for (const row of rows) {
       readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+      // The physical Workspace owns its ledger; a contradicting owner column decides nothing here.
+      if (row.workspace_id !== workspaceId)
+        throw new BootWorkspaceConflict(
+          'records',
+          `MCP boot backfill ledger names another Workspace: ${row.call_id}`
+        );
       const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
       const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
       // Compare inside the original Workspace only; a sibling's records never decide this row.
@@ -1544,12 +1552,23 @@ async function reconcileWorkspaceMcpItems(
         // the one the grid admits filling. Leave the row for a later boot instead.
         continue;
       }
+      // The writer's exact Turn and Thread check, before any publication into this Workspace.
+      try {
+        store.getTurn(workspaceId, parsed.threadId, parsed.turnId);
+      } catch (error) {
+        if (!(error instanceof StoreRecordNotFoundError)) throw error;
+        throw new BootWorkspaceConflict(
+          'records',
+          `MCP boot backfill names a Turn outside its Thread: ${row.call_id}`
+        );
+      }
       decided.set(parsed.id, parsed);
     }
   } finally {
     workspaceDb.sqlite.close();
   }
-  for (const item of decided.values()) await store.publishSettledTurnItem(item);
+  for (const item of decided.values())
+    await bootWorkspaceWrite(() => store.publishSettledTurnItem(item));
   return decided.size;
 }
 

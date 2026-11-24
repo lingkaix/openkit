@@ -30,9 +30,10 @@ export class BootWorkspaceConflict extends Error {
  * A failure attributed to the Workspace holds it through scope admission and lets Boot continue.
  * A shared writer failure, or a failure the common owners cannot exclude, stops Boot.
  *
+ * The hold is observed through the existing scoped readiness entry; completion returns nothing.
+ *
  * @param input Rooted data, the walked Workspace and the Boot walk stage.
  * @param step The Workspace's own recovery reads and writes, including its record read.
- * @returns Whether the step completed; false when the Workspace is now held.
  */
 export async function withinBootWorkspaceBoundary(
   input: {
@@ -41,18 +42,17 @@ export async function withinBootWorkspaceBoundary(
     readonly stage: BootWorkspaceWalkStage;
   },
   step: () => Promise<void> | void
-): Promise<boolean> {
+): Promise<void> {
   const { dataRoot, workspaceId, stage } = input;
   // An unrooted Store has no scoped admission owner to hold a Workspace.
   if (!dataRoot) {
     await step();
-    return true;
+    return;
   }
   // A sibling's owner discovery can hold this Workspace after the census; refuse before any effect.
-  if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId)) return false;
+  if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId)) return;
   try {
     await step();
-    return true;
   } catch (error) {
     const check = attributedCheck(error);
     if (check === 'shared') throw error;
@@ -72,7 +72,29 @@ export async function withinBootWorkspaceBoundary(
       `Boot recovery held Workspace ${workspaceId} during ${stage}.`,
       error instanceof Error ? error.message : String(error)
     );
-    return false;
+  }
+}
+
+/**
+ * Runs one Boot recovery write addressed only to the walked Workspace's own writer.
+ * That writer's definite precondition noncommit names this Workspace's records; any other
+ * writer result, including an uncertain commit, keeps its shared or unclassified disposition.
+ *
+ * @param write One publication or command on the walked Workspace's database.
+ * @returns The write's result.
+ */
+export async function bootWorkspaceWrite<Value>(write: () => Promise<Value>): Promise<Value> {
+  try {
+    return await write();
+  } catch (error) {
+    if (
+      error instanceof ControlStoreWorkerError &&
+      !error.domain &&
+      error.code === 'precondition' &&
+      error.commit === 'not-committed'
+    )
+      throw new BootWorkspaceConflict('records', 'The Workspace writer refused Boot recovery.');
+    throw error;
   }
 }
 

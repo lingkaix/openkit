@@ -85,6 +85,30 @@ export function writePendingPublication(
   }
 }
 
+/**
+ * Rewrites one retained MCP CapabilityCall column while NanoCore is stopped.
+ * It injects the stopped ledger fault, or restores the original verified value.
+ * @returns Number of changed rows.
+ */
+export function writeCapabilityCallColumn(
+  dataRoot: string,
+  workspaceId: string,
+  callId: string,
+  column: 'turn_id' | 'workspace_id',
+  value: string
+): number {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite
+      .prepare(`UPDATE capability_calls SET ${column} = ? WHERE call_id = ?`)
+      .run(value, callId).changes;
+  } finally {
+    sqlite.close();
+  }
+}
+
 /** Counts retained capability calls, so a replay that calls upstream again is visible. */
 export function capabilityCallCount(dataRoot: string, workspaceId: string): number {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
