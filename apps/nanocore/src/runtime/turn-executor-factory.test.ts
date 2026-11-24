@@ -14687,7 +14687,11 @@ describe('createConfiguredTurnExecutor', () => {
         store,
         env: {},
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n),
-        workerControlGateway: createDefaultWorkerControlGateway(coreDb),
+        workerControlGateway: createDefaultWorkerControlGateway(
+          coreDb,
+          undefined,
+          await reopenAdmittedTestNanoHost(coreDb)
+        ),
         nanoHostSessionDispatch: {
           async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
             const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
