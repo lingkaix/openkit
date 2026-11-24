@@ -4,6 +4,7 @@ import type { HandoffSource } from './scheduler-dispatch-handoff.js';
 import {
   type RunSchedulerDispatchLoopInput,
   registerSchedulerDispatchWake,
+  releaseSchedulerBackendCapacity,
   releaseSchedulerDispatchHold,
   runSchedulerDispatchLoop,
   type SchedulerDispatchLoopResult,
@@ -105,6 +106,9 @@ export function startSchedulerDispatchRetryService(
     capacity: (change) => {
       if (change.kind === 'login-close')
         releaseSchedulerDispatchHold(input.coreDb, 'backend-capacity', change);
+      // A cleared Login close or a backend owner change is an acknowledged change of the backend
+      // owner, so its backend marks read the refusal predicate again.
+      releaseSchedulerBackendCapacity(input.coreDb);
     },
   });
   void runOnce();
