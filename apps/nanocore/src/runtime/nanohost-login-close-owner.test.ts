@@ -1,10 +1,11 @@
 /**
- * r7 c1 witnesses, row 15 of the owner-edge class closure.
+ * r7 c1 witnesses, rows 15 and 14 of the owner-edge class closure.
  *
  * Row 15: the original Login close keeps both reader-visible slots through positive success, a
  * proved never-dispatched unwind, the exact admission fence ACK or a fenced predecessor Epoch.
- * The owner methods run with controlled native ACKs. The #604 departure fixtures stay untouched
- * (row 16 is deferred).
+ * Row 14: a changed resident carries the current admission read, and materialization keeps the
+ * causal capacity refusal. The owner methods run with controlled native ACKs. The #604 departure
+ * fixtures stay untouched (row 16 is deferred).
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,7 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
+  claimNanoHostIdleSandboxDrain,
   drainNanoHostHarnessAdmission,
   expireNanoHostHarnessQueuedOperation,
   markNanoHostHarnessOperationUnknown,
@@ -37,6 +39,8 @@ vi.mock('./nanohost-harness.js', async (importOriginal) => {
       return control.budgetMs;
     },
     acknowledgeNanoHostHarnessResult: vi.fn(async () => {}),
+    claimNanoHostIdleSandboxDrain: vi.fn(async () => {}),
+    deriveNanoHostAgentSessionCompatibilityKey: vi.fn(() => 'session-key'),
     drainNanoHostHarnessAdmission: vi.fn(),
     expireNanoHostHarnessQueuedOperation: vi.fn(),
     markNanoHostHarnessOperationUnknown: vi.fn(),
@@ -49,6 +53,7 @@ vi.mock('./execution-attempts.js', async (importOriginal) => ({
 }));
 vi.mock('./worker-governance-turn-executor.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./worker-governance-turn-executor.js')>()),
+  agentSessionCompatibilityKeyFromPackage: vi.fn(() => 'session-key'),
   beginWorkerTurnJournalStep: vi.fn(async () => ({
     control: { deadlineUnixNano: null },
     execution: { ref: { owner: 'owner', executionId: 'execution' } },
@@ -69,6 +74,23 @@ vi.mock('../storage/db.js', async (importOriginal) => ({
     workspaceId,
     sqlite: { close: () => {} },
   })),
+}));
+vi.mock('./workspace-source-admission.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./workspace-source-admission.js')>()),
+  assertCurrentWorkspaceSources: vi.fn(),
+}));
+vi.mock('./nanohost-compatibility.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./nanohost-compatibility.js')>()),
+  nanoHostHarnessCompatibilityKey: vi.fn(() => 'harness-key'),
+  nanoHostSandboxCompatibilityKey: vi.fn(() => 'sandbox-key'),
+}));
+vi.mock('./provider-credential-binding.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./provider-credential-binding.js')>()),
+  requireWorkerProviderBindings: vi.fn(() => []),
+}));
+vi.mock('./worker-governance-backend.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./worker-governance-backend.js')>()),
+  prepareNanoHostContextPackageImports: vi.fn(async () => []),
 }));
 
 const WORKSPACE = 'ws_00000000-0000-7000-8000-000000000001';
@@ -140,6 +162,12 @@ interface Backend {
   acceptHarnessResult(result: Record<string, unknown>): Promise<void>;
   failHarnessDelivery(command: Record<string, unknown>, failure?: unknown): void;
   invalidatePhysicallyAbsentSandbox(eviction: Record<string, unknown>): Promise<void>;
+  evictIncompatibleIdleSandbox(
+    environmentPackage: unknown,
+    forceRetirement?: boolean,
+    replacementSelection?: Record<string, unknown>
+  ): Promise<unknown>;
+  materialize(environmentPackage: unknown, context?: Record<string, unknown>): Promise<unknown>;
   schedulerCapacityRefusal(
     error: unknown,
     thread: { readonly workspaceId: string; readonly threadId: string }
@@ -172,6 +200,7 @@ beforeEach(() => {
   vi.mocked(drainNanoHostHarnessAdmission).mockReset();
   vi.mocked(expireNanoHostHarnessQueuedOperation).mockReset();
   vi.mocked(markNanoHostHarnessOperationUnknown).mockReset();
+  vi.mocked(claimNanoHostIdleSandboxDrain).mockClear();
 });
 
 afterEach(() => {
@@ -574,5 +603,164 @@ describe('Row 15: the original Login close keeps both slots until its proof', ()
     await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
     expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
     expect(loginCloseOwns(a)).toBe(false);
+  });
+});
+
+describe('Row 14: a changed resident carries the current admission read', () => {
+  const environmentPackage = {
+    snapshotId: 'pkg_incoming',
+    scope: {
+      workspaceId: WORKSPACE,
+      threadId: 'th_incoming',
+      agentSessionId: 'as_incoming',
+      turnId: 'tu_incoming',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    },
+    runtime: { image: { kind: 'reference' } },
+    control: { adapter: { targetRuntime: 'codex' } },
+    agent: { runtimeVersion: '1.0.0' },
+    credentials: { declarations: [] },
+  };
+  const resident = (name: string) => ({
+    sandboxRuntimeId: `sr_${name}`,
+    sandboxBindingRef: `sb_${name}`,
+    sandboxCompatibilityKey: `key_${name}`,
+    originPhysicalEpoch: 'e'.repeat(64),
+    physicalAbsent: false,
+    target: { targetId: 'rt_local', physicalEpoch: 'e'.repeat(64) },
+    bindings: [{ agentSessionRuntimeBindingId: `asrb_${name}` }],
+  });
+
+  /** Runs the eviction to its changed-resident refusal and returns the carried refusal. */
+  async function changedResidentRefusal(
+    current: { value: unknown },
+    storage: { value: unknown },
+    replacementSelection?: Record<string, unknown>
+  ): Promise<SchedulerCapacityRefusal> {
+    const target = backend as unknown as Record<string, (...args: never[]) => unknown>;
+    const old = resident('a');
+    let inspections = 0;
+    vi.spyOn(target, 'inspectIncompatibleIdleSandbox' as never).mockImplementation((() => {
+      inspections += 1;
+      if (inspections === 1) return old;
+      if (current.value instanceof Error) throw current.value;
+      return current.value;
+    }) as never);
+    vi.spyOn(target, 'handoffDurableAgentSessionProof' as never).mockResolvedValue(
+      undefined as never
+    );
+    vi.spyOn(target, 'validateWorkerStorageSelection' as never).mockReturnValue({
+      storageRef: 'storage_selected',
+      revision: 3,
+      currentSandboxBindingRef: old.sandboxBindingRef,
+    } as never);
+    vi.spyOn(target, 'readNanoHost' as never).mockImplementation((() => storage.value) as never);
+    // The resident changes under the suspended proof handoff.
+    current.value = null;
+    const error = await backend
+      .evictIncompatibleIdleSandbox(environmentPackage, false, replacementSelection)
+      .then(
+        () => {
+          throw new Error('The changed resident was not refused.');
+        },
+        (refusal: unknown) => refusal
+      );
+    // The old-effect guard stops the stale drain post before any refusal shape is read.
+    expect(claimNanoHostIdleSandboxDrain).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
+    return (error as WorkerGovernanceCapacityUnavailableError).schedulerCapacity!;
+  }
+
+  it('stops the stale drain and reads the current capacity for requeue', async () => {
+    const current = { value: null as unknown };
+    const refusal = await changedResidentRefusal(current, { value: undefined });
+    expect(refusal.key).toEqual({ kind: 'backend', backendId: expect.any(String) });
+    // Proved empty: one fresh claim may follow.
+    current.value = null;
+    expect(refusal.stillRefused!()).toBe(false);
+    // An eligible replacement resident: one fresh claim may follow.
+    current.value = resident('b');
+    expect(refusal.stillRefused!()).toBe(false);
+    // An occupied replacement or an unreadable target stays held.
+    current.value = 'capacity-saturated';
+    expect(refusal.stillRefused!()).toBe(true);
+    current.value = new Error('target unreadable');
+    expect(refusal.stillRefused!()).toBe(true);
+  });
+
+  it('reads the selected-storage attachment fact of the same refusal', async () => {
+    const current = { value: null as unknown };
+    const storage = { value: undefined as unknown };
+    const refusal = await changedResidentRefusal(current, storage, {
+      storageRef: 'storage_selected',
+      expectedRevision: 3,
+    });
+    // The old resident's attachment is unresolved: no claim.
+    current.value = null;
+    storage.value = { state: 'attached', currentSandboxBindingRef: 'sb_a' };
+    expect(refusal.stillRefused!()).toBe(true);
+    storage.value = { state: 'unknown', currentSandboxBindingRef: null };
+    expect(refusal.stillRefused!()).toBe(true);
+    // The exact attachment ACK made it selectable.
+    storage.value = { state: 'idle', currentSandboxBindingRef: null };
+    expect(refusal.stillRefused!()).toBe(false);
+    // Attached to the replacement resident that this admission replaces.
+    current.value = resident('b');
+    storage.value = { state: 'attached', currentSandboxBindingRef: 'sb_b' };
+    expect(refusal.stillRefused!()).toBe(false);
+    // A stale selection keeps its existing disposition: it is no capacity fact.
+    current.value = null;
+    storage.value = undefined;
+    expect(refusal.stillRefused!()).toBe(false);
+    storage.value = { state: 'purged', currentSandboxBindingRef: null };
+    expect(refusal.stillRefused!()).toBe(false);
+  });
+
+  it('keeps the causal capacity refusal through materialization', async () => {
+    control.attemptPhase = 'open';
+    const target = backend as unknown as Record<string, (...args: never[]) => unknown>;
+    vi.spyOn(target, 'planSession' as never).mockReturnValue({
+      packageSnapshotId: environmentPackage.snapshotId,
+      runtimeTargetId: 'rt_local',
+    } as never);
+    vi.spyOn(target, 'requireAttemptId' as never).mockReturnValue('attempt_incoming' as never);
+    vi.spyOn(target, 'workerStorageAudienceAuthorizer' as never).mockReturnValue(
+      (() => true) as never
+    );
+    vi.spyOn(target, 'requireCurrentBackendPhysicalEpoch' as never).mockReturnValue(
+      'e'.repeat(64) as never
+    );
+    vi.spyOn(target, 'inspectIncompatibleIdleSandbox' as never).mockReturnValue(null as never);
+    const causal: SchedulerCapacityRefusal = {
+      key: { kind: 'backend', backendId: 'nanohost' },
+      stillRefused: () => false,
+    };
+    const evict = vi.spyOn(target, 'evictIncompatibleIdleSandbox' as never);
+    evict.mockRejectedValueOnce(
+      new WorkerGovernanceCapacityUnavailableError(
+        'NanoHost one-Sandbox capacity is occupied or unproved.',
+        causal
+      ) as never
+    );
+    const refused = await backend.materialize(environmentPackage).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(refused).toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
+      message: 'Incompatible resident cleanup requires exact deletion or Epoch fence proof.',
+    });
+    expect((refused as WorkerGovernanceCapacityUnavailableError).schedulerCapacity).toBe(causal);
+
+    // A cause without a structured refusal still reads as held.
+    evict.mockRejectedValueOnce(new Error('resident cleanup reply lost') as never);
+    const held = await backend.materialize(environmentPackage).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect((held as WorkerGovernanceCapacityUnavailableError).schedulerCapacity).toEqual({
+      key: { kind: 'backend', backendId: expect.any(String) },
+      stillRefused: null,
+    });
   });
 });
