@@ -1150,11 +1150,25 @@ describe('SimulatedTurnExecutor', () => {
       let candidateTurnId: string | undefined;
       let lookupUnavailable = false;
       let lookupRefusals = 0;
-      const getTurnById = store.getTurnById.bind(store);
-      const lookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
-        if (lookupUnavailable && turnId === candidateTurnId) {
+      // The losing admission proves its candidate absent in its own Workspace and Thread.
+      const getTurn = store.getTurn.bind(store);
+      const lookups = vi.spyOn(store, 'getTurn').mockImplementation((...args) => {
+        if (lookupUnavailable && args[2] === candidateTurnId) {
           lookupRefusals += 1;
           throw new Error('The losing Turn lookup is unavailable.');
+        }
+        return getTurn(...args);
+      });
+      // Neither the candidate's absence nor the winner is discovered through every Workspace.
+      let globalAdmissionReads = 0;
+      const getTurnById = store.getTurnById.bind(store);
+      const globalLookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
+        const limit = Error.stackTraceLimit;
+        Error.stackTraceLimit = 100;
+        try {
+          if (String(new Error().stack).includes('admitNextOutcome')) globalAdmissionReads += 1;
+        } finally {
+          Error.stackTraceLimit = limit;
         }
         return getTurnById(turnId);
       });
@@ -1320,6 +1334,7 @@ describe('SimulatedTurnExecutor', () => {
             .map((result) => result.value)
         );
         expect(lookupRefusals).toBe(unknownLookup ? 1 : 0);
+        expect(globalAdmissionReads).toBe(0);
         if (unknownLookup) {
           expect(original[0]!.status).toBe('rejected');
           if (original[0]!.status === 'rejected')
@@ -1343,6 +1358,7 @@ describe('SimulatedTurnExecutor', () => {
         terminalWake.mockRestore();
         creates.mockRestore();
         lookups.mockRestore();
+        globalLookups.mockRestore();
         commands.mockRestore();
         executions.mockRestore();
         await new Promise<void>((resolve) => setImmediate(resolve));

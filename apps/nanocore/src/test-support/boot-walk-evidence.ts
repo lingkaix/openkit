@@ -41,7 +41,7 @@ export function raiseSeedPendingRequest(
   return raiseRecordedPendingRequest(store, db.sqlite, input);
 }
 
-/** Reads one retained Pending row's claim, disposition and publication pointer. */
+/** Reads one retained Pending row's claim, disposition, publication pointer and delivery. */
 export function readPendingRow(
   dataRoot: string,
   workspaceId: string,
@@ -54,7 +54,7 @@ export function readPendingRow(
   try {
     return sqlite
       .prepare(
-        'SELECT claim, disposition, disposition_reason, publication_turn_id FROM pending_requests WHERE request_id = ?'
+        'SELECT claim, disposition, disposition_reason, publication_turn_id, delivery, delivery_turn_id, invalidation_turn_id FROM pending_requests WHERE request_id = ?'
       )
       .get(requestId) as Record<string, unknown>;
   } finally {
@@ -80,6 +80,31 @@ export function writePendingPublication(
     return sqlite
       .prepare('UPDATE pending_requests SET publication_turn_id = ? WHERE request_id = ?')
       .run(turnId, requestId).changes;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Writes one stopped root's Pending disposition, as the closeout writer leaves a granted request
+ * whose requester lost authority before its executor claimed it.
+ */
+export function writePendingDisposition(
+  dataRoot: string,
+  workspaceId: string,
+  requestId: string,
+  disposition: string,
+  reason: string
+): number {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite
+      .prepare(
+        'UPDATE pending_requests SET disposition = ?, disposition_reason = ? WHERE request_id = ?'
+      )
+      .run(disposition, reason, requestId).changes;
   } finally {
     sqlite.close();
   }
