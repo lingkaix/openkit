@@ -203,6 +203,7 @@ import {
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -8022,13 +8023,17 @@ describe('createConfiguredTurnExecutor', () => {
     90_000
   );
 
-  it.each(['core', 'workspace'] as const)(
-    'keeps a %s writer that starts after the queue decision out until the Native queue commit',
-    async (file) => {
-      const f = await admitNativeReplacementClose(`p23_queue_pin_${file}`);
+  // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
+  // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.
+  it.each(['core-user-disable', 'workspace-thread-edit'] as const)(
+    'keeps a %s that starts after the queue decision out until the Native queue reply',
+    async (writer) => {
+      const f = await admitNativeReplacementClose(`p23_queue_pin_${writer}`);
       const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
       const queue = owner.harnessTurnLifecycle.queue;
+      const prefix = writer === 'core-user-disable' ? 'core:' : 'workspace:';
       const frames: string[] = [];
+      let queueId: unknown;
       let competitorStarted = false;
       let competitorPosted = false;
       const post = NativeWorker.prototype.postMessage;
@@ -8037,23 +8042,54 @@ describe('createConfiguredTurnExecutor', () => {
         ...args: Parameters<NativeWorker['postMessage']>
       ) {
         const frame = args[0] as {
+          id?: unknown;
           database?: string;
           mutation?: { input?: { kind?: string; operation?: string } };
         };
         if (
           frame?.mutation?.input?.kind === 'operation.queue' &&
           frame.mutation.input.operation === 'session.close'
-        )
+        ) {
+          queueId = frame.id;
           frames.push('native-queue');
-        else if (typeof frame?.database === 'string' && competitorStarted && !competitorPosted) {
-          if (frame.database.startsWith(file === 'core' ? 'core:' : 'workspace:')) {
-            competitorPosted = true;
-            frames.push('competitor');
-          }
+        } else if (
+          competitorStarted &&
+          !competitorPosted &&
+          typeof frame?.database === 'string' &&
+          frame.database.startsWith(prefix)
+        ) {
+          competitorPosted = true;
+          frames.push('competitor');
         }
         return Reflect.apply(post, this, args);
       });
       onTestFinished(() => posts.mockRestore());
+      // Hold the queue reply back until the later writer posted (no hold) or 1.5 s passed (held).
+      const emit = NativeWorker.prototype.emit;
+      let replyHeld = false;
+      const emits = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['emit']>
+      ) {
+        const [event, value] = args as [unknown, { id?: unknown } | undefined];
+        if (event !== 'message' || replyHeld || queueId === undefined || value?.id !== queueId)
+          return Reflect.apply(emit, this, args);
+        replyHeld = true;
+        void (async () => {
+          const until = Date.now() + 1_500;
+          while (!competitorPosted && Date.now() < until)
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          frames.push('native-queue-reply');
+          Reflect.apply(emit, this, args);
+        })();
+        return true;
+      });
+      onTestFinished(() => emits.mockRestore());
+      const sharing = createWorkspaceSharingOperationImplementations({
+        coreDb: f.coreDb,
+        store: f.store,
+        inflightCommands: new WeakMap(),
+      });
       let competitor: Promise<unknown> | undefined;
       vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
         if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
@@ -8061,17 +8097,19 @@ describe('createConfiguredTurnExecutor', () => {
           ...authority,
           verifyBeforePost: (native) => {
             const decided = authority.verifyBeforePost(native);
-            // A real writer of the pinned file starts after the successful observation.
             if (decided && !competitor) {
               competitorStarted = true;
               competitor =
-                file === 'core'
-                  ? nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
-                      attemptId: f.successor.attemptId,
-                      noOutstandingEffects: true,
-                      cause: 'backend-busy',
-                      requeue: true,
-                    })
+                writer === 'core-user-disable'
+                  ? sharing['user.disable'](
+                      { targetUserId: f.ownerUserId, requestId: randomUUID() },
+                      {
+                        kind: 'public',
+                        actor: { kind: 'local', userId: f.ownerUserId },
+                        actorRef: { kind: 'user', id: f.ownerUserId },
+                        scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+                      }
+                    )
                   : f.store.updateThread(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, {
                       name: 'renamed during the queue decision',
                     });
@@ -8086,8 +8124,9 @@ describe('createConfiguredTurnExecutor', () => {
         (error: unknown) => error
       );
       await expect(competitor).resolves.toBeDefined();
-      // The decision's Native commit is posted before the later writer of the held file.
-      expect(frames).toEqual(['native-queue', 'competitor']);
+      expect(replyHeld).toBe(true);
+      // The later writer of the held file posts nothing before the decision's Native commit returns.
+      expect(frames).toEqual(['native-queue', 'native-queue-reply', 'competitor']);
       expect(
         readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
           sqlite.prepare("SELECT 1 AS queued FROM harness_instance_records WHERE operation='session.close'").all()
