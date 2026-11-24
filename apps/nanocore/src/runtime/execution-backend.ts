@@ -5,7 +5,7 @@ import {
   type WorkerCredentialReceipt,
   WorkerCredentialReceiptSchema,
 } from '@openkit/config-schema';
-import type { SchedulerCapacityKey } from '../scheduler-hold-release.js';
+import type { SchedulerCapacityRefusal } from '../scheduler-hold-release.js';
 
 /** Exact durable correlation shared by every execution backend operation. */
 export interface ExecutionBackendCorrelation {
@@ -42,13 +42,14 @@ export interface ExecutionReleaseProof {
 export interface ExecutionBackend {
   readonly id: string;
   /**
-   * The side-effect-free refusal predicate of this backend owner for one Thread (E7): the capacity
-   * key that still refuses it, or null when it reads clear. It changes nothing.
+   * The capacity refusal that one refusal error of this backend carries (E7): the key of the
+   * check that refused the Thread and its side-effect-free re-check. It changes nothing. Null when
+   * the error carries no known refusal; the entry then reads as held.
    */
-  readSchedulerCapacityHold?(thread: {
-    readonly workspaceId: string;
-    readonly threadId: string;
-  }): SchedulerCapacityKey | null;
+  schedulerCapacityRefusal?(
+    error: unknown,
+    thread: { readonly workspaceId: string; readonly threadId: string }
+  ): SchedulerCapacityRefusal | null;
   /** Reports the installed private Login path, independent of current placement or Vault authority. */
   supportsHarnessLogin?(): boolean;
   submit(
