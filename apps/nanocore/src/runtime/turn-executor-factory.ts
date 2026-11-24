@@ -170,10 +170,12 @@ import {
   initializeNanoHostRuntimeCheckVersions,
   inspectNanoHostAgentSessionContinuity,
   markNanoHostHarnessOperationUnknown,
+  NANO_HOST_FIRST_CARRIAGE,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
   NANO_HOST_REPLACEMENT_STORAGE_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
+  type NanoHostFirstCarriage,
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
@@ -1486,43 +1488,44 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // First carriage issues no command bytes before this recheck; repeated carriage may have.
       const unsent = pending.operationId === null;
       pending.operationId = command.operationId;
-      try {
-        await this.afterWorkerControlAcknowledgement(() => {
-          if (idleClose.drain) this.requireIdleSandboxCloseDrain(session, idleClose.drain);
-          if (idleClose.replacement)
-            this.requireAgentSessionReplacementClose(session, idleClose.replacement);
-          const currentReceipt = this.readIdleCloseAuthority({
-            harnessInstanceId: command.harnessInstanceId,
-            harnessBindingRef: session.harnessBindingRef,
-            agentSessionId: session.environmentPackage.scope.agentSessionId,
-            agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-          });
-          const dispatched = this.readNanoHost(({ sqlite }) =>
-            sqlite
-              .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
+      const recheck = () => {
+        if (idleClose.drain) this.requireIdleSandboxCloseDrain(session, idleClose.drain);
+        if (idleClose.replacement)
+          this.requireAgentSessionReplacementClose(session, idleClose.replacement);
+        const currentReceipt = this.readIdleCloseAuthority({
+          harnessInstanceId: command.harnessInstanceId,
+          harnessBindingRef: session.harnessBindingRef,
+          agentSessionId: session.environmentPackage.scope.agentSessionId,
+          agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        });
+        const dispatched = this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
               WHERE harness_instance_id = ? AND harness_binding_ref = ? AND operation = 'session.close'
                 AND operation_state = 'dispatched' AND operation_id = ? AND operation_sequence = ?`)
-              .get(
-                command.harnessInstanceId,
-                session.harnessBindingRef,
-                command.operationId,
-                command.sequence
-              )
+            .get(
+              command.harnessInstanceId,
+              session.harnessBindingRef,
+              command.operationId,
+              command.sequence
+            )
+        );
+        if (
+          !dispatched ||
+          !isDeepStrictEqual(currentReceipt, idleClose.authority) ||
+          session.pendingHarnessOperation !== pending ||
+          this.sessions.get(session.environmentPackage.snapshotId) !== session ||
+          Date.now() < pending.admittedUnixMs ||
+          Date.now() >= pending.deadlineUnixMs ||
+          performance.now() >= pending.deadlineMonotonicMs
+        )
+          throw new Error(
+            'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
           );
-          if (
-            !dispatched ||
-            !isDeepStrictEqual(currentReceipt, idleClose.authority) ||
-            session.pendingHarnessOperation !== pending ||
-            this.sessions.get(session.environmentPackage.snapshotId) !== session ||
-            Date.now() < pending.admittedUnixMs ||
-            Date.now() >= pending.deadlineUnixMs ||
-            performance.now() >= pending.deadlineMonotonicMs
-          )
-            throw new Error(
-              'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
-            );
-          readRetainedV1(dispatched, () => dispatched);
-        }, signal);
+        readRetainedV1(dispatched, () => dispatched);
+      };
+      try {
+        await this.afterWorkerControlAcknowledgement(recheck, signal);
       } catch (error) {
         if (unsent && error instanceof Error && this.replacementRefusals.has(error))
           return await this.refuseUnsentIdleClose(command, session, pending, error);
@@ -1534,7 +1537,32 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           sharedHarness.knownLoginClose.sequence !== command.sequence)
       )
         delete sharedHarness.knownLoginClose;
-      return { ...command, body: prepared.wireBody };
+      const carried: NanoHostHarnessCommand = { ...command, body: prepared.wireBody };
+      const replacement = idleClose.replacement;
+      if (!unsent || !replacement) return carried;
+      // FIX 4 F3: the route decides again in the turn that writes the first command bytes.
+      const first: NanoHostFirstCarriage = {
+        attemptId: replacement.request.attemptId,
+        decide: recheck,
+        refuse: async (error) => {
+          if (
+            session.pendingHarnessOperation !== pending ||
+            pending.operationId !== command.operationId
+          )
+            throw error ?? new Error('NanoHost first carriage lost its live idle close producer.');
+          let refusal: Error;
+          if (error === undefined) {
+            // The holds were unavailable: the unsent close issues no bytes and refuses as stale.
+            refusal = new AgentSessionReplacementSelectionChanged();
+            this.replacementRefusals.add(refusal);
+          } else if (error instanceof Error && this.replacementRefusals.has(error)) refusal = error;
+          else throw error;
+          await this.refuseUnsentIdleClose(command, session, pending, refusal);
+        },
+      };
+      // Not enumerable: absent from the wire bytes and from exact command comparisons.
+      Object.defineProperty(carried, NANO_HOST_FIRST_CARRIAGE, { value: first });
+      return carried;
     }
     const journal = pending.journal;
     if (!journal?.child || !journal.prepared)
@@ -3171,7 +3199,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         inspection,
         undefined,
         replacement && validateStorage
-          ? { ...replacement, validateStorage, ...(selectedStorage ? { storage: selectedStorage } : {}) }
+          ? {
+              ...replacement,
+              validateStorage,
+              ...(selectedStorage ? { storage: selectedStorage } : {}),
+            }
           : replacement
       );
     } catch (error) {
@@ -10247,7 +10279,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 try {
                   replacement.request.validateStorage?.();
                 } catch (cause) {
-                  if (typeof cause === 'object' && cause !== null) this.replacementRefusals.add(cause);
+                  if (typeof cause === 'object' && cause !== null)
+                    this.replacementRefusals.add(cause);
                   throw cause;
                 }
                 throw new AgentSessionReplacementSelectionChanged();

@@ -69,7 +69,9 @@ import {
   type AdmittedNanoHostHarnessTurnLifecycle,
   dispatchNanoHostHarnessOperation,
   markNanoHostHarnessOperationUnknown,
+  NANO_HOST_FIRST_CARRIAGE,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
+  type NanoHostFirstCarriage,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
   type NanoHostHarnessResultSettlement,
@@ -570,7 +572,8 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   readonly nativeHarnessLifecycle?: Pick<
     AdmittedNanoHostHarnessTurnLifecycle,
     'dispatch' | 'settle'
-  >;
+  > &
+    Partial<Pick<AdmittedNanoHostHarnessTurnLifecycle, 'carry'>>;
   /** Dispatcher shared with effect producers and native transport routes. */
   readonly dispatch: NanoHostSessionDispatch;
   /** Live runtime owner that binds dispatch-time Turn credentials before carriage. */
@@ -2473,75 +2476,90 @@ export function registerNanoHostSessionSemanticRoutes(
           if (delivery && delivery.wire !== wire)
             throw new Error('NanoHost Harness repeated carriage changed its exact command.');
           const encodedAt = performance.now();
-          if (!delivery && progress?.get(command.harnessInstanceId) === command.sequence) {
-            const selected = command;
-            const releaseTimer = setTimeout(() => {
-              const current = deliveries.get(selected.harnessInstanceId);
-              if (current?.command.operationId === selected.operationId) releaseDelivery(current);
-            }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
-            releaseTimer.unref();
-            delivery = {
-              command,
-              wire,
-              integrationBindingRef: sandboxIntegrationBindingRef,
-              releaseTimer,
-              carriage: 0,
-            };
-            deliveries.set(command.harnessInstanceId, delivery);
-          }
-          if (delivery?.proofTimer) clearTimeout(delivery.proofTimer);
-          if (delivery) {
-            delete delivery.proofTimer;
-            delete delivery.proofExpiresAt;
-          }
-          const selectedDelivery = delivery;
-          const carriage = delivery ? ++delivery.carriage : 0;
           const selected = command;
-          try {
-            console.error(
-              JSON.stringify({
-                event: 'worker.harness.dispatched',
-                harnessInstanceId: command.harnessInstanceId,
-                operationId: command.operationId,
-                operation: command.operation,
-                sequence: command.sequence,
-                bodyBytes: Buffer.byteLength(wire),
-                redelivered: carriage > 1,
-                dispatchMs: Math.round(committedAt - dispatchStarted),
-                bindingMs: Math.round(boundAt - committedAt),
-                encodingMs: Math.round(encodedAt - boundAt),
-                at: new Date().toISOString(),
-              })
-            );
-          } catch {
-            /* Diagnostic sink failure has no execution authority. */
-          }
-          observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
-            if (!selectedDelivery) {
-              void failDelivery(selected);
-              return;
+          /** Records this carriage and observes its response; the caller writes the bytes. */
+          const carry = () => {
+            if (!delivery && progress?.get(command.harnessInstanceId) === command.sequence) {
+              const selected = command;
+              const releaseTimer = setTimeout(() => {
+                const current = deliveries.get(selected.harnessInstanceId);
+                if (current?.command.operationId === selected.operationId) releaseDelivery(current);
+              }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
+              releaseTimer.unref();
+              delivery = {
+                command,
+                wire,
+                integrationBindingRef: sandboxIntegrationBindingRef,
+                releaseTimer,
+                carriage: 0,
+              };
+              deliveries.set(command.harnessInstanceId, delivery);
             }
-            const isCurrentCarriage = () =>
-              deliveries.get(selected.harnessInstanceId) === selectedDelivery &&
-              selectedDelivery.carriage === carriage;
-            if (!isCurrentCarriage() || selectedDelivery.proofExpiresAt !== undefined) return;
-            selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
-            selectedDelivery.proofTimer = setTimeout(
-              () => void failDelivery(selected),
-              HARNESS_DELIVERY_PROOF_MS
-            );
-            selectedDelivery.proofTimer.unref();
-            void pendingDelivery(selected).then(
-              (pending) => {
-                if (!pending && isCurrentCarriage()) releaseDelivery(selectedDelivery);
-              },
-              () => {
-                // An exact refusal still settles the live waiter through its existing owner.
-                if (isCurrentCarriage()) void failDelivery(selected);
+            if (delivery?.proofTimer) clearTimeout(delivery.proofTimer);
+            if (delivery) {
+              delete delivery.proofTimer;
+              delete delivery.proofExpiresAt;
+            }
+            const selectedDelivery = delivery;
+            const carriage = delivery ? ++delivery.carriage : 0;
+            try {
+              console.error(
+                JSON.stringify({
+                  event: 'worker.harness.dispatched',
+                  harnessInstanceId: command.harnessInstanceId,
+                  operationId: command.operationId,
+                  operation: command.operation,
+                  sequence: command.sequence,
+                  bodyBytes: Buffer.byteLength(wire),
+                  redelivered: carriage > 1,
+                  dispatchMs: Math.round(committedAt - dispatchStarted),
+                  bindingMs: Math.round(boundAt - committedAt),
+                  encodingMs: Math.round(encodedAt - boundAt),
+                  at: new Date().toISOString(),
+                })
+              );
+            } catch {
+              /* Diagnostic sink failure has no execution authority. */
+            }
+            observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
+              if (!selectedDelivery) {
+                void failDelivery(selected);
+                return;
               }
-            );
+              const isCurrentCarriage = () =>
+                deliveries.get(selected.harnessInstanceId) === selectedDelivery &&
+                selectedDelivery.carriage === carriage;
+              if (!isCurrentCarriage() || selectedDelivery.proofExpiresAt !== undefined) return;
+              selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
+              selectedDelivery.proofTimer = setTimeout(
+                () => void failDelivery(selected),
+                HARNESS_DELIVERY_PROOF_MS
+              );
+              selectedDelivery.proofTimer.unref();
+              void pendingDelivery(selected).then(
+                (pending) => {
+                  if (!pending && isCurrentCarriage()) releaseDelivery(selectedDelivery);
+                },
+                () => {
+                  // An exact refusal still settles the live waiter through its existing owner.
+                  if (isCurrentCarriage()) void failDelivery(selected);
+                }
+              );
+            });
+          };
+          const first = (
+            selected as { readonly [NANO_HOST_FIRST_CARRIAGE]?: NanoHostFirstCarriage }
+          )[NANO_HOST_FIRST_CARRIAGE];
+          if (!first) {
+            carry();
+            return context.body(wire, 200, { 'content-type': 'application/json' });
+          }
+          return await carryFirstCommand(context, first, wire, nativeHarness, () => {
+            // The final decision and the command bytes share this turn under both holds.
+            input.dispatch.assertHarnessCarriage(physicalConnection, harnessRoute);
+            if (cancelled()) return false;
+            return { decide: first.decide, carry };
           });
-          return context.body(wire, 200, { 'content-type': 'application/json' });
         }
         const result = HarnessResultEnvelopeReaderSchema.parse(value);
         if (input.nativeStorage && !nativeHarness)
@@ -2673,6 +2691,70 @@ function resetHarnessResponseDelayAfterSample(): void {
   harnessResponseDelayWindowStartedAt = checkedAt;
   harnessResponseDelayReportedMax = 0;
   harnessResponseDelayResetPending = false;
+}
+
+/**
+ * Writes an unsent replacement close's first command bytes in the turn that decides it, while the
+ * Core and successor Workspace holds keep later writers out (FIX 4 F3).
+ * @param prepare Checks carriage and cancellation; false answers 204 with no decision.
+ * @returns The adapter's already-sent sentinel after a direct write, or 204 after a refusal.
+ */
+async function carryFirstCommand(
+  context: Context,
+  first: NanoHostFirstCarriage,
+  wire: string,
+  lifecycle: Partial<Pick<AdmittedNanoHostHarnessTurnLifecycle, 'carry'>> | undefined,
+  prepare: () => false | { readonly decide: () => void; readonly carry: () => void }
+): Promise<Response> {
+  const outgoing = (
+    context.env as { outgoing?: import('node:http2').Http2ServerResponse } | undefined
+  )?.outgoing;
+  let outcome:
+    | { readonly kind: 'sent' | 'cancelled' }
+    | { readonly kind: 'refused' | 'failed'; readonly error: unknown }
+    | undefined;
+  const decideAndWrite = () => {
+    let step: ReturnType<typeof prepare>;
+    try {
+      step = prepare();
+    } catch (error) {
+      outcome = { kind: 'failed', error };
+      return;
+    }
+    if (!step) {
+      outcome = { kind: 'cancelled' };
+      return;
+    }
+    try {
+      step.decide();
+    } catch (error) {
+      outcome = { kind: 'refused', error };
+      return;
+    }
+    step.carry();
+    outcome = { kind: 'sent' };
+    outgoing?.writeHead(200, {
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(wire),
+    });
+    outgoing?.end(wire);
+  };
+  if (lifecycle?.carry) {
+    try {
+      await lifecycle.carry(first.attemptId, decideAndWrite);
+    } catch {
+      // No hold, no decision: the unsent close refuses below without bytes.
+    }
+  }
+  // An unsent close without the holds refuses as stale rather than decide outside them.
+  outcome ??= { kind: 'refused', error: undefined };
+  if (outcome.kind === 'sent')
+    return outgoing
+      ? RESPONSE_ALREADY_SENT
+      : context.body(wire, 200, { 'content-type': 'application/json' });
+  if (outcome.kind === 'failed') throw outcome.error;
+  if (outcome.kind === 'refused') await first.refuse(outcome.error);
+  return context.body(null, 204);
 }
 
 /** Fences known incomplete delivery once; completed native writes remain evidence, never receipt. */

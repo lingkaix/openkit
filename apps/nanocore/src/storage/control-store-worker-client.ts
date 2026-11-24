@@ -4211,6 +4211,20 @@ class ControlStoreWorkerClient {
           });
           if (result !== null) throw new ControlStoreWorkerError('integrity', 'unknown');
         },
+        carry: async (attemptId, run) => {
+          // A first carriage waits behind a held queue commit instead of failing beside it.
+          for (
+            let held = opening.nanoHostCoreHoldPending;
+            held;
+            held = opening.nanoHostCoreHoldPending
+          )
+            await held;
+          await withCoreHold(() =>
+            withWorkspaceForAttempt(attemptId, async () => {
+              run();
+            })
+          );
+        },
       };
 
       opening.prepareNanoHostBackend = async (input) => {

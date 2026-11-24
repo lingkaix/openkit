@@ -171,6 +171,28 @@ export interface AdmittedNanoHostHarnessTurnLifecycle {
   ): Promise<'settled' | 'replayed'>;
   acknowledge(input: Parameters<typeof Records.acknowledgeNanoHostHarnessResult>[1]): Promise<void>;
   claimIdleCaptureDrain(input: NanoHostIdleCaptureDrainInput): Promise<void>;
+  /**
+   * Runs `run` synchronously after the Core and the attempt's Workspace holds drained earlier
+   * writers; later writers of both files wait until it returns.
+   */
+  carry(attemptId: string, run: () => void): Promise<void>;
+}
+
+/** Process-local final decision a replacement close's first carriage makes with its bytes. */
+export const NANO_HOST_FIRST_CARRIAGE: unique symbol = Symbol('nanohost-first-carriage');
+
+/** The unsent replacement close's successor authority, decided in the turn that writes it. */
+export interface NanoHostFirstCarriage {
+  /** The successor attempt whose Workspace is held with Core while the bytes are written. */
+  readonly attemptId: string;
+  /** Throws when the successor request, idle Core proof or cleanup allowance changed. */
+  readonly decide: () => void;
+  /**
+   * Settles the unsent close as stale through its existing result owners, issuing no bytes.
+   * @param error The decision's refusal (any other failure is rethrown), or undefined when the
+   *   holds were unavailable before any decision.
+   */
+  readonly refuse: (error: unknown) => Promise<void>;
 }
 
 /** Process-local successor authority for one replacement close queue commit. */

@@ -8248,6 +8248,92 @@ describe('createConfiguredTurnExecutor', () => {
     ]);
   }, 90_000);
 
+  // FIX 4 F3: the last change before the first bytes lands after the acknowledgement recheck.
+  it.each(['requeued', 'startup-expired'] as const)(
+    'decides an unsent replacement close again in the turn that writes its first carriage (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`p23_first_carriage_${change}`);
+      let expiresAt = 0;
+      if (change === 'startup-expired') {
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+        const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+        const createdAt = new Date(Date.now() - budget + 8_000).toISOString();
+        await f.retry('aged', { now: () => createdAt });
+        expiresAt = Date.parse(nanoHostStartupDeadline({ createdAt }));
+      }
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const ref = f.native.outside.integrationBindingRef!;
+      // The real poll route is this close's only carrier: the fixture peer stops polling.
+      f.native.outside.integrationBindingRef = undefined;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const carry = owner.harnessTurnLifecycle.carry;
+      let changed = false;
+      vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+        if (!changed) {
+          changed = true;
+          // The acknowledgement recheck passed; the change commits before the final decision.
+          if (change === 'requeued')
+            await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+              attemptId,
+              noOutstandingEffects: true,
+              cause: 'backend-busy',
+              requeue: true,
+            });
+          else
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, expiresAt - Date.now() + 100))
+            );
+        }
+        return await carry(attemptId, run);
+      });
+      const rows = () =>
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT operation, operation_state AS state,
+            json_extract(result_json, '$.disposition') AS disposition,
+            json_extract(result_json, '$.body.reasonCode') AS reasonCode FROM harness_instance_records`)
+            .all()
+        );
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await vi.waitFor(
+        () =>
+          expect(rows()).toEqual([
+            expect.objectContaining({ operation: 'session.close', state: 'queued' }),
+          ]),
+        { timeout: 30_000 }
+      );
+      // The poll issues no command bytes: 204 with an empty body.
+      expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(changed).toBe(true);
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      // Accepted for carriage before the final decision; refused before any byte.
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toHaveLength(1);
+      expect(rows()).toEqual([
+        { operation: 'session.close', state: 'settled', disposition: 'refused', reasonCode: 'stale' },
+      ]);
+      expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+        binding: before.binding,
+        digest: before.digest,
+        revision: before.revision,
+        harnessDrain: 'accepting',
+        sandboxDrain: 'accepting',
+      });
+    },
+    90_000
+  );
+
   it('retains a lost close acknowledgement across reopen without stale contact or early successor', async () => {
     const f = await admitNativeReplacementClose('p23_lost_ack');
     f.loseClose();
@@ -26317,7 +26403,10 @@ async function postNativeHarnessPoll(
     coreDb,
     nativeStorage: { state: 'ready', value: currentAdmittedTestNanoHostStorage(coreDb)! },
     nativeHarnessLifecycle: currentAdmittedTestNanoHostOwner(coreDb)!.harnessTurnLifecycle,
-    dispatch: { route: async () => undefined } as unknown as NanoHostSessionDispatch,
+    dispatch: {
+      route: async () => undefined,
+      assertHarnessCarriage: () => undefined,
+    } as unknown as NanoHostSessionDispatch,
     harnessCommandDispatched: (command, signal) =>
       runtime.acceptNanoHostHarnessCommand(command, signal),
     harnessResultSettled: (result, settlement) =>
