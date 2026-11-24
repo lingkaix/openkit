@@ -14,7 +14,10 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
-import { withinBootWorkspaceBoundary } from '../bootstrap/boot-workspace-walk.js';
+import {
+  bootWorkspaceWrite,
+  withinBootWorkspaceBoundary,
+} from '../bootstrap/boot-workspace-walk.js';
 import type { FsStore } from '../lib/store.js';
 
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
@@ -385,12 +388,30 @@ export async function recoverPendingRequestsAtBoot(
               return [];
             }
           });
-          await mutatePending(store, db.sqlite, {
-            action: 'settle-unfinished',
-            workspaceId: workspace.id,
-            now,
-            expected: pendingSources(usable),
-          });
+          // Every Turn the delivery and publication steps read is resolved before the first write.
+          const turns = new Map<string, ReturnType<FsStore['getTurn']>>();
+          for (const record of usable)
+            for (const turnId of [
+              record.deliveryTurnId,
+              record.publicationTurnId,
+              record.invalidationTurnId,
+            ])
+              if (turnId && !turns.has(turnId))
+                turns.set(turnId, recordTurn(store, record, turnId));
+          // Settlement changes only claim and disposition, so these Turns remain the loaded ones'.
+          const turnOf = (turnId: string) => {
+            const turn = turns.get(turnId);
+            if (!turn) throw associationGap();
+            return turn;
+          };
+          await bootWorkspaceWrite(() =>
+            mutatePending(store, db.sqlite, {
+              action: 'settle-unfinished',
+              workspaceId: workspace.id,
+              now,
+              expected: pendingSources(usable),
+            })
+          );
           const loaded = usable.flatMap((source) => {
             const record = readPendingRequest(db.sqlite, source.requestId);
             return record ? [record] : [];
@@ -401,48 +422,58 @@ export async function recoverPendingRequestsAtBoot(
               record.delivery === 'frozen' &&
               record.deliveryTurnId &&
               record.requesterKind !== 'person' &&
-              store.getTurnById(record.deliveryTurnId).status !== 'pending'
-            )
-              await store.applyPendingRequestCommand(workspace.id, {
-                action: 'delivery-unknown',
-                workspaceId: workspace.id,
-                turnId: record.deliveryTurnId,
-                now,
-              });
+              turnOf(record.deliveryTurnId).status !== 'pending'
+            ) {
+              const turnId = record.deliveryTurnId;
+              await bootWorkspaceWrite(() =>
+                store.applyPendingRequestCommand(workspace.id, {
+                  action: 'delivery-unknown',
+                  workspaceId: workspace.id,
+                  turnId,
+                  now,
+                })
+              );
+            }
             for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
               if (!turnId) continue;
-              const publication = store.getTurnById(turnId);
+              const publication = turnOf(turnId);
               if (!publication.agentId && !publication.agentSessionId)
                 localPublications.add(turnId);
-              else await publishOutcomeItems(store, [record], turnId, now, true);
+              else
+                await bootWorkspaceWrite(() =>
+                  publishOutcomeItems(store, [record], turnId, now, true)
+                );
             }
           }
           for (const turnId of localPublications) {
-            const publication = store.getTurnById(turnId);
+            const publication = turnOf(turnId);
             const records = loaded.filter(
               (record) =>
                 record.publicationTurnId === turnId || record.invalidationTurnId === turnId
             );
-            await store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, {
-              turnId,
-              summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
-              actor: publication.triggerActor,
-              now: publication.completedAt ?? now,
-              items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map(
-                (item) => {
-                  const retained = publication.items.find((current) => current.id === item.id);
-                  // Replay validates semantic fields while retaining the original projection clocks.
-                  return retained
-                    ? ItemSchema.parse({
-                        ...item,
-                        createdAt: retained.createdAt,
-                        completedAt: retained.completedAt,
-                      })
-                    : item;
-                }
-              ),
-              pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
-            });
+            await bootWorkspaceWrite(() =>
+              store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, {
+                turnId,
+                summary:
+                  publication.triggerSource?.summary ?? 'Finish original Pending publication',
+                actor: publication.triggerActor,
+                now: publication.completedAt ?? now,
+                items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map(
+                  (item) => {
+                    const retained = publication.items.find((current) => current.id === item.id);
+                    // Replay validates semantic fields while retaining the original projection clocks.
+                    return retained
+                      ? ItemSchema.parse({
+                          ...item,
+                          createdAt: retained.createdAt,
+                          completedAt: retained.completedAt,
+                        })
+                      : item;
+                  }
+                ),
+                pending: [{ action: 'delivery-prove', workspaceId: workspace.id, turnId, now }],
+              })
+            );
           }
         } finally {
           db.sqlite.close();
@@ -1482,7 +1513,13 @@ async function publishOutcomeItems(
 }
 
 async function writeItem(store: FsStore, item: Item, restart = false): Promise<void> {
-  if (store.listAllItems().some((candidate) => candidate.id === item.id)) return;
+  // Boot replay looks only inside the Item's own Workspace; a sibling's records never decide it.
+  if (
+    restart && item.owner.kind === 'workspace'
+      ? store.getItemLineage(item.owner.workspaceId, item.id) !== undefined
+      : store.listAllItems().some((candidate) => candidate.id === item.id)
+  )
+    return;
   if (restart) await store.publishSettledTurnItem(item);
   else await store.createItem(item);
 }
@@ -1777,16 +1814,8 @@ function assertPendingAssociations(
     })
     .filter((record) => threadId === undefined || record.threadId === threadId);
   for (const record of records) {
-    for (const id of [record.publicationTurnId, record.deliveryTurnId, record.invalidationTurnId]) {
-      if (!id) continue;
-      if (!storeHasTurn(store, id)) throw associationGap();
-      const turn = store.getTurnById(id);
-      if (
-        workspaceIdForOwner(turn.owner) !== record.workspaceId ||
-        turn.threadId !== record.threadId
-      )
-        throw associationGap();
-    }
+    for (const id of [record.publicationTurnId, record.deliveryTurnId, record.invalidationTurnId])
+      if (id) recordTurn(store, record, id);
   }
   const threads =
     threadId === undefined
@@ -1819,6 +1848,22 @@ function assertPendingAssociations(
       // These facts only refuse uncertain work. No title, clock, suffix or current-list match creates an owner.
       if (pendingActor || unprovedOutcome) throw associationGap();
     }
+  }
+}
+
+/**
+ * Reads one associated Turn inside its record's own Workspace and Thread; sibling Workspaces are
+ * never read. Absence, another owner or Thread, or an unreadable Turn is the existing gap.
+ */
+function recordTurn(
+  store: FsStore,
+  record: Pick<PendingRequestRecord, 'workspaceId' | 'threadId'>,
+  turnId: string
+): ReturnType<FsStore['getTurn']> {
+  try {
+    return store.getTurn(record.workspaceId, record.threadId, turnId);
+  } catch {
+    throw associationGap();
   }
 }
 

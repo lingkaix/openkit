@@ -38,7 +38,10 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
-import { withinBootWorkspaceBoundary } from './bootstrap/boot-workspace-walk.js';
+import {
+  bootWorkspaceWrite,
+  withinBootWorkspaceBoundary,
+} from './bootstrap/boot-workspace-walk.js';
 import {
   findWorkspaceConfig,
   type RuntimeConfigManager,
@@ -2652,6 +2655,15 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
       { dataRoot, workspaceId, stage: 'assistant-turn-recovery' },
       async () => {
         store.getWorkspace(workspaceId);
+        // Every read precedes the first interruption, so a refused read leaves this Workspace unchanged.
+        const orphans: {
+          readonly threadId: string;
+          readonly turnId: string;
+          readonly error: {
+            readonly code: 'observation_limit_reached' | 'recovery_required';
+            readonly message: string;
+          };
+        }[] = [];
         for (const thread of store.listThreads(workspaceId)) {
           if (thread.entryPath !== 'conversation') continue;
           const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
@@ -2670,9 +2682,9 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
               threadId: thread.id,
               turnId: activeTurn.id,
             });
-          await store.completeTurn(activeTurn.id, {
-            status: 'interrupted',
-            completedAt: new Date().toISOString(),
+          orphans.push({
+            threadId: thread.id,
+            turnId: activeTurn.id,
             error: cutoff
               ? {
                   code: 'observation_limit_reached',
@@ -2685,6 +2697,15 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
                 },
           });
         }
+        // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
+        for (const orphan of orphans)
+          await bootWorkspaceWrite(() =>
+            store.completeWorkspaceTurn(workspaceId, orphan.threadId, orphan.turnId, {
+              status: 'interrupted',
+              completedAt: new Date().toISOString(),
+              error: orphan.error,
+            })
+          );
       }
     );
   }

@@ -28,6 +28,7 @@ import {
   type WorkspaceEvidence,
   withSeedWorkspaceDb,
   workspaceEvidence,
+  writeCapabilityCallColumn,
   writePendingPublication,
 } from '../test-support/boot-walk-evidence.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -43,10 +44,14 @@ const COMPLETED_AT = '2026-09-22T00:00:00.000Z';
 const children: ChildProcess[] = [];
 const roots: string[] = [];
 
-/** Real-Boot fault fixture: one Workspace read refused in Main, keyed by its own SQL. */
+/** Real-Boot fault fixture: one Workspace read refused in Main, keyed by its own SQL and stack. */
 interface BootWalkFault {
   readonly workspaceId?: string;
   readonly fail?: string;
+  readonly within?: string;
+  readonly outside?: string | readonly string[];
+  readonly after?: number;
+  readonly writer?: 'missing-head' | 'busy';
   readonly arm?: string;
   readonly shared?: boolean;
   readonly census?: 'walk' | 'lost';
@@ -61,6 +66,15 @@ const TURN_TIMELINE_SQL = 'WHERE thread_id=? AND admission_order>?';
 const PENDING_WALK_SQL = 'SELECT request_id FROM pending_requests WHERE workspace_id=?';
 /** Statement text that only the MCP Boot walk issues on a Workspace database. */
 const MCP_WALK_SQL = "WHERE family = 'mcp'";
+/** Statement text of a Workspace's own record read. */
+const WORKSPACE_RECORD_SQL = 'SELECT * FROM control_workspaces WHERE id=?';
+/** Statement text of owner discovery's Turn selector, which scans every admitted Workspace. */
+const TURN_SELECTOR_SQL = 'SELECT schema_version,thread_id FROM control_turns WHERE id=?';
+/** Statement text of owner discovery's Item selector, which scans every admitted Workspace. */
+const ITEM_SELECTOR_SQL =
+  "SELECT schema_version,turn_id,identity_json FROM control_product_entries WHERE kind='item' AND id=? LIMIT 1";
+/** Statement text of a Workspace's own Turn record read. */
+const TURN_RECORD_SQL = 'SELECT * FROM control_turns WHERE id=?';
 
 /**
  * ARCH-REVIEW B5, docs/core/fault-tolerance.md "Attribute Boot recovery to its Workspace".
@@ -94,6 +108,7 @@ describe('B5 attributed Boot recovery', () => {
 
       const server = await startServer(root, fault);
       expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
       await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
       await expectServed(server, [before, after], held);
       await stopServer(server);
@@ -184,6 +199,7 @@ describe('B5 attributed Boot recovery', () => {
       ).toBe(1);
       const corrected = await startServer(root);
       await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
       await stopServer(corrected);
       expect(readPendingRow(root.dataRoot, held, heldRequest.requestId)).toMatchObject({
         claim: 'finished',
@@ -232,6 +248,7 @@ describe('B5 attributed Boot recovery', () => {
           expect(item).toMatchObject({
             id: call.itemId,
             causationId: call.callId,
+            parentItemId: seeded[index]!.parentItemId,
             turnId: seeded[index]!.turnId,
             type: 'tool-call',
             status: 'completed',
@@ -267,6 +284,384 @@ describe('B5 attributed Boot recovery', () => {
         expect(store.getThreadItem(held, seeded[1]!.threadId, heldConflict.itemId)).toMatchObject({
           createdAt: '1999-01-01T00:00:00.000Z',
         });
+      });
+      // Zero upstream calls: the ledgers hold exactly the seeded calls.
+      expect(root.workspaceIds.map((id) => capabilityCallCount(root.dataRoot, id))).toEqual(
+        callCounts
+      );
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'holds the Workspace whose own record read fails after the census before any interruption',
+    async () => {
+      const root = await seedRoot(['Healthy before', 'Unreadable record']);
+      const [before, held] = root.workspaceIds as [string, string];
+      const orphans = await withSeedStore(root, (store) =>
+        Promise.all(root.workspaceIds.map((id) => seedOrphanAssistantTurn(store, root, id)))
+      );
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: WORKSPACE_RECORD_SQL,
+        within: 'recoverWorkspaceAssistantTurns',
+        label: 'assistant-workspace-record',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
+      await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
+      await expectServed(server, [before], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        expect(store.getTurnById(orphans[1]!.turnId).status).toBe('running');
+        expect(store.getTurnById(orphans[0]!.turnId)).toMatchObject({
+          status: 'interrupted',
+          error: { code: 'recovery_required' },
+        });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each([
+    { walk: 'Assistant', within: 'recoverWorkspaceAssistantTurns', fail: TURN_SELECTOR_SQL },
+    { walk: 'Pending', within: 'recoverPendingRequestsAtBoot', fail: TURN_SELECTOR_SQL },
+    { walk: 'MCP', within: 'reconcileWorkerMcpItems', fail: ITEM_SELECTOR_SQL },
+  ] as const)(
+    'recovers the Workspace scanned first from its own records while a later sibling owner selector is unreadable ($walk)',
+    async ({ walk, within, fail }) => {
+      const root = await seedRoot(['Healthy first', 'Unreadable selector']);
+      const [healthy, unreadable] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const out: {
+          readonly turnId: string;
+          readonly threadId: string;
+          readonly requestId?: string;
+          readonly calls?: readonly { readonly callId: string; readonly itemId: string }[];
+        }[] = [];
+        for (const id of root.workspaceIds)
+          out.push(
+            walk === 'Assistant'
+              ? await seedOrphanAssistantTurn(store, root, id)
+              : walk === 'Pending'
+                ? await seedClaimedPending(store, root, id)
+                : await seedMcpCalls(store, root, id, [{ existing: false }])
+          );
+        return out;
+      });
+      // Owner discovery would read this selector in every Workspace, including the sibling.
+      const fault: BootWalkFault = {
+        workspaceId: unreadable,
+        fail,
+        within,
+        label: `${walk.toLowerCase()}-sibling-selector`,
+      };
+
+      const server = await startServer(root, fault);
+      expectListening(server);
+      await expectNotHeld(server, healthy);
+      await expectServed(server, [healthy], null);
+      await stopServer(server);
+      const own = seeded[0]!;
+      if (walk === 'Pending')
+        expect(readPendingRow(root.dataRoot, healthy, own.requestId!)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
+      else
+        await withSeedStore(root, (store) => {
+          if (walk === 'Assistant')
+            expect(store.getTurnById(own.turnId)).toMatchObject({
+              status: 'interrupted',
+              error: { code: 'recovery_required' },
+            });
+          else
+            expect(store.getThreadItem(healthy, own.threadId, own.calls![0]!.itemId)).toMatchObject(
+              { causationId: own.calls![0]!.callId, status: 'completed' }
+            );
+        });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'holds only the Workspace whose own writer refuses its MCP Item publication with a definite precondition',
+    async () => {
+      const root = await seedRoot(['Healthy before', 'Writer refusal', 'Healthy after']);
+      const [before, held, after] = root.workspaceIds as [string, string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const out = [];
+        for (const id of root.workspaceIds)
+          out.push(await seedMcpCalls(store, root, id, [{ existing: false }]));
+        return out;
+      });
+      // The walk's own publication request reaches A's writer, which observes no Turn head.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        writer: 'missing-head',
+        label: 'mcp-writer-missing-head',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
+      await expectHeld(server, held, 'check=records; stage=mcp-item-backfill');
+      await expectServed(server, [before, after], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        for (const [index, id] of root.workspaceIds.entries()) {
+          const call = seeded[index]!.calls[0]!;
+          if (id === held) expect(store.getItemLineage(id, call.itemId)).toBeUndefined();
+          else
+            expect(store.getThreadItem(id, seeded[index]!.threadId, call.itemId)).toMatchObject({
+              causationId: call.callId,
+              parentItemId: seeded[index]!.parentItemId,
+              status: 'completed',
+            });
+        }
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'stops Boot without binding a listener when the Workspace writer is busy during MCP Item publication',
+    async () => {
+      const root = await seedRoot(['Healthy before', 'Busy writer', 'Healthy after']);
+      const busy = root.workspaceIds[1]!;
+      await withSeedStore(root, async (store) => {
+        for (const id of root.workspaceIds)
+          await seedMcpCalls(store, root, id, [{ existing: false }]);
+      });
+      const fault: BootWalkFault = { workspaceId: busy, writer: 'busy', label: 'mcp-writer-busy' };
+      const outcome = await runUntilBootDecision(root, fault);
+      expect(outcome.output).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expect(outcome.running).toBe(false);
+      expect(outcome.exitCode).not.toBe(0);
+      expect(outcome.output).toContain('ControlStoreWorkerError');
+      // The shared writer result is not attributed to the Workspace whose publication was current.
+      expect(outcome.output).not.toContain('Boot recovery held Workspace');
+      expect(outcome.output).not.toContain('App server is running');
+      expect(outcome.output).not.toContain('NanoHost server is running');
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'leaves every Assistant Turn of a held Workspace running when a later Thread is unreadable after a valid one',
+    async () => {
+      const root = await seedRoot(['Two conversations', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const orphans = await withSeedStore(root, async (store) => [
+        await seedOrphanAssistantTurn(store, root, held),
+        await seedOrphanAssistantTurn(store, root, held),
+        await seedOrphanAssistantTurn(store, root, healthy),
+      ]);
+      // The first Thread's navigation read succeeds; the second Thread's read fails.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: ACTIVE_TURN_SQL,
+        within: 'recoverWorkspaceAssistantTurns',
+        after: 1,
+        label: 'assistant-later-thread',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
+      await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        expect(
+          orphans.slice(0, 2).map((orphan) => store.getTurnById(orphan.turnId).status)
+        ).toEqual(['running', 'running']);
+        expect(store.getTurnById(orphans[2]!.turnId)).toMatchObject({ status: 'interrupted' });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'publishes no MCP Item into a held Workspace when a later missing Item names a Turn outside its Thread',
+    async () => {
+      const root = await seedRoot(['Two missing Items', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const heldCalls = await seedMcpCalls(store, root, held, [
+          { existing: false },
+          { existing: false },
+        ]);
+        const thread = await store.createThread(held, 'Other Thread');
+        const other = await store.createTurn(held, thread.id, 'Other', root.actor, null);
+        await store.updateTurn(other.id, { status: 'completed', completedAt: COMPLETED_AT });
+        const healthyCalls = await seedMcpCalls(store, root, healthy, [{ existing: false }]);
+        return { heldCalls, otherTurnId: other.id, healthyCalls };
+      });
+      // Stopped retained-record fault: the later Call names a Turn in another Thread of A.
+      expect(
+        writeCapabilityCallColumn(
+          root.dataRoot,
+          held,
+          seeded.heldCalls.calls[1]!.callId,
+          'turn_id',
+          seeded.otherTurnId
+        )
+      ).toBe(1);
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=mcp-item-backfill');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        // The valid first Item stayed unwritten too.
+        for (const call of seeded.heldCalls.calls)
+          expect(store.getItemLineage(held, call.itemId)).toBeUndefined();
+        expect(
+          store.getThreadItem(
+            healthy,
+            seeded.healthyCalls.threadId,
+            seeded.healthyCalls.calls[0]!.itemId
+          )
+        ).toMatchObject({ causationId: seeded.healthyCalls.calls[0]!.callId });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'commits no Pending settlement in a held Workspace when a Turn read after its association check fails',
+    async () => {
+      const root = await seedRoot(['Valid first', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const pending = await withSeedStore(root, async (store) => [
+        await seedClaimedPending(store, root, held),
+        await seedClaimedPending(store, root, healthy),
+      ]);
+      // Settlement is valid for A; its next own Turn read after the association check fails.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_RECORD_SQL,
+        within: 'recoverPendingRequestsAtBoot',
+        // Association and usability checks read the same Turn records before settlement.
+        outside: ['assertPendingAssociations', 'canonicalRecordIsUsable'],
+        label: 'pending-turn-after-association',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expectListening(server);
+      await expectHeld(server, held, 'check=recovery; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, pending[0]!.requestId)).toMatchObject({
+        claim: 'claimed',
+        disposition: null,
+      });
+      expect(readPendingRow(root.dataRoot, healthy, pending[1]!.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'holds the Workspace whose MCP ledger names another owner, fills it once after correction and keeps the live duplicate refused',
+    async () => {
+      const root = await seedRoot(['Healthy before', 'Contradicting owner', 'Healthy after']);
+      const [before, held, after] = root.workspaceIds as [string, string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const out = [];
+        for (const id of root.workspaceIds)
+          out.push(await seedMcpCalls(store, root, id, [{ existing: false }, { existing: true }]));
+        return out;
+      });
+      const missing = seeded[1]!.calls[0]!;
+      // Stopped retained-record fault: A's Call names a sibling as its owner.
+      expect(
+        writeCapabilityCallColumn(root.dataRoot, held, missing.callId, 'workspace_id', before)
+      ).toBe(1);
+      const published = await withSeedStore(root, (store) =>
+        root.workspaceIds.map((id, index) =>
+          store.getThreadItem(id, seeded[index]!.threadId, seeded[index]!.calls[1]!.itemId)
+        )
+      );
+      const callCounts = root.workspaceIds.map((id) => capabilityCallCount(root.dataRoot, id));
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const first = await startServer(root);
+      await expectHeld(first, held, 'check=records; stage=mcp-item-backfill');
+      await expectServed(first, [before, after], held);
+      await stopServer(first);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      await withSeedStore(root, (store) => {
+        expect(store.getItemLineage(held, missing.itemId)).toBeUndefined();
+        expect(store.getItemLineage(before, missing.itemId)).toBeUndefined();
+        for (const index of [0, 2]) {
+          const id = root.workspaceIds[index]!;
+          const { threadId, calls, parentItemId } = seeded[index]!;
+          // The filled Item names the retained AEP's decided parent; the published body is kept.
+          expect(store.getThreadItem(id, threadId, calls[0]!.itemId)).toMatchObject({
+            causationId: calls[0]!.callId,
+            parentItemId,
+          });
+          expect(store.getThreadItem(id, threadId, calls[1]!.itemId)).toEqual(published[index]);
+        }
+      });
+
+      // Correct the owner column while stopped: the next Boot fills A's Item once and serves A.
+      expect(
+        writeCapabilityCallColumn(root.dataRoot, held, missing.callId, 'workspace_id', held)
+      ).toBe(1);
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      // A duplicate of the settled call through the Worker's live capability route keeps the
+      // existing refusal: the call's Turn is terminal and no Worker session survives the restart.
+      const duplicate = await nanoHostPost(
+        corrected.nanoHostPort,
+        '/capabilities/mcp/echo',
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'echo', arguments: {} },
+        })
+      );
+      expect(duplicate.status, duplicate.body).toBe(409);
+      expect(JSON.parse(duplicate.body)).toMatchObject({
+        code: 'nanohost_transport_effect_rejected',
+      });
+      await stopServer(corrected);
+      await withSeedStore(root, (store) => {
+        expect(store.getThreadItem(held, seeded[1]!.threadId, missing.itemId)).toMatchObject({
+          causationId: missing.callId,
+          parentItemId: seeded[1]!.parentItemId,
+          status: 'completed',
+        });
+        expect(
+          store
+            .listWorkspaceItemRevisions(held)
+            .filter((revision) => revision.id === missing.itemId)
+        ).toHaveLength(1);
+        expect(store.getThreadItem(held, seeded[1]!.threadId, seeded[1]!.calls[1]!.itemId)).toEqual(
+          published[1]
+        );
       });
       // Zero upstream calls: the ledgers hold exactly the seeded calls.
       expect(root.workspaceIds.map((id) => capabilityCallCount(root.dataRoot, id))).toEqual(
@@ -604,6 +999,20 @@ async function seedMcpCalls(
   const created = await store.createTurn(workspaceId, thread.id, 'Call MCP', root.actor, null, {
     startedAt: COMPLETED_AT,
   });
+  // The retained AEP names this Item as the decided parent of every call in the Turn.
+  const parentItemId = testEntityId('it', `it_b5_parent_${workspaceId.slice(-12)}`);
+  await store.createItem({
+    id: parentItemId,
+    owner: { kind: 'workspace', workspaceId },
+    threadId: thread.id,
+    turnId: created.id,
+    type: 'user-message',
+    actor: root.actor,
+    text: 'Call MCP',
+    status: 'completed',
+    createdAt: COMPLETED_AT,
+    completedAt: COMPLETED_AT,
+  });
   const turn = await store.updateTurn(created.id, {
     status: 'completed',
     completedAt: COMPLETED_AT,
@@ -614,6 +1023,7 @@ async function seedMcpCalls(
       for (const [index] of rows.entries()) {
         const suffix = `b5_${workspaceId.slice(-12)}_${index}`;
         const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
+          itemId: parentItemId,
           suffix,
           triggerActor: turn.triggerActor,
           workspaceInputIds: [],
@@ -665,6 +1075,7 @@ async function seedMcpCalls(
       durationMs: 0,
       error: null,
       id: calls[index]!.itemId,
+      parentItemId,
       result: null,
       server: 'echo',
       status: 'completed',
@@ -675,7 +1086,7 @@ async function seedMcpCalls(
       owner: { kind: 'workspace', workspaceId },
     });
   }
-  return { threadId: thread.id, turnId: turn.id, calls };
+  return { threadId: thread.id, turnId: turn.id, parentItemId, calls };
 }
 
 /** Compares path by path and table by table, so a changed retained byte names its owner. */
@@ -696,25 +1107,32 @@ interface RunningServer {
   readonly baseUrl: string;
   readonly nanoHostPort: number;
   readonly output: () => string;
+  /** Boot's listener decision: both configured listeners bound, or Boot ended first. */
+  readonly listening: boolean;
 }
 
+/** Boots the real entry and returns its listener decision; the test asserts that decision. */
 async function startServer(root: SeededRoot, fault?: BootWalkFault): Promise<RunningServer> {
   const child = spawnServer(root, fault);
   const output = capture(child);
-  try {
-    await waitFor(child, output, /App server is running on http:\/\//);
-    await waitFor(child, output, /NanoHost server is running on http:\/\//);
-  } catch (error) {
-    throw new Error(
-      `Expected the server to boot.\n${output()}\n${error instanceof Error ? error.message : String(error)}`
+  const listening = await waitFor(child, output, /App server is running on http:\/\//)
+    .then(() => waitFor(child, output, /NanoHost server is running on http:\/\//))
+    .then(
+      () => true,
+      () => false
     );
-  }
   return {
     child,
     baseUrl: `http://127.0.0.1:${root.appPort}`,
     nanoHostPort: root.nanoHostPort,
     output,
+    listening,
   };
+}
+
+/** Both configured listeners bound after Boot. */
+function expectListening(server: RunningServer): void {
+  expect(server.listening, server.output()).toBe(true);
 }
 
 async function stopServer(server: RunningServer): Promise<void> {
@@ -759,13 +1177,16 @@ function spawnServer(root: SeededRoot, fault?: BootWalkFault): ChildProcess {
 
 /** Readiness names A with the Boot stage and failed check, and product admission stays open. */
 async function expectHeld(server: RunningServer, workspaceId: string, cause: string) {
+  expectListening(server);
   const reasons = await storageReasons(server);
   const reason = reasons.find((candidate) => candidate.blocks.includes(`workspace:${workspaceId}`));
-  expect(reason, JSON.stringify(reasons)).toMatchObject({
+  expect(reason, bootDecisionLines(server)).toMatchObject({
     code: 'storage.scope-quarantined',
     blocks: [`workspace:${workspaceId}`],
   });
-  expect(reason!.message).toContain(`storage: workspace ${workspaceId}; ${cause}.`);
+  expect(reason!.message, bootDecisionLines(server)).toContain(
+    `storage: workspace ${workspaceId}; ${cause}.`
+  );
   // The existing typed refusal holds the dependent operation before any effect.
   for (const [id, body] of [
     ['workspace.read', { workspaceId }],
@@ -778,8 +1199,20 @@ async function expectHeld(server: RunningServer, workspaceId: string, cause: str
 }
 
 async function expectNotHeld(server: RunningServer, workspaceId: string) {
+  expectListening(server);
   const reasons = await storageReasons(server);
-  expect(JSON.stringify(reasons)).not.toContain(`workspace:${workspaceId}`);
+  expect(JSON.stringify(reasons), bootDecisionLines(server)).not.toContain(
+    `workspace:${workspaceId}`
+  );
+}
+
+/** Boot's hold and fault lines, so a wrong attribution names its owner in the failure. */
+function bootDecisionLines(server: RunningServer): string {
+  return server
+    .output()
+    .split('\n')
+    .filter((line) => line.includes('Boot recovery held') || line.includes('[boot-walk-fault]'))
+    .join('\n');
 }
 
 async function storageReasons(server: RunningServer) {
@@ -803,6 +1236,7 @@ async function expectServed(
   workspaceIds: readonly string[],
   held: string | null
 ) {
+  expectListening(server);
   for (const workspaceId of workspaceIds) {
     const read = await operation(server.baseUrl, 'workspace.read', { workspaceId });
     expect(read.status, JSON.stringify(read.body)).toBe(200);
@@ -819,6 +1253,39 @@ async function expectServed(
     expect(JSON.stringify(reasons)).not.toContain(`workspace:${workspaceId}`);
   if (held) expect(JSON.stringify(reasons)).toContain(`workspace:${held}`);
   expect(await nanoHostResponseStatus(server.nanoHostPort)).toEqual(expect.any(Number));
+}
+
+/** Sends one POST on a NanoHost listener HTTP/2 session and reads its status and body. */
+function nanoHostPost(
+  port: number,
+  path: string,
+  body: string
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const session = connectHttp2(`http://127.0.0.1:${port}`);
+    session.once('error', reject);
+    const request = session.request({
+      ':method': 'POST',
+      ':path': path,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    });
+    let status = 0;
+    let text = '';
+    request.once('response', (headers) => {
+      status = Number(headers[':status']);
+    });
+    request.setEncoding('utf8');
+    request.on('data', (chunk: string) => {
+      text += chunk;
+    });
+    request.once('end', () => {
+      resolve({ status, body: text });
+      session.close();
+    });
+    request.once('error', reject);
+    request.end(body);
+  });
 }
 
 /** Opens an HTTP/2 session on the NanoHost listener and reads one response status. */
