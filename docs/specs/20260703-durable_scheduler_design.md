@@ -56,7 +56,7 @@ This specification is the single owner of NanoCore's single-writer Worker Turn a
   Main supplies one observation of publication, input availability, Workspace admission and caller ownership. Changes to these facts trigger a fresh scan with bounded retry.
   Under its write lock Core checks the observed predecessor ordering, current authority, live attempts and exact surviving scope exclusions. Changed selection commits no attempt.
   Claim protects the original preparation scopes until submission takes ownership atomically or the existing close owner proves release. An unresolved effect keeps its fence.
-  Foreground and background dispatch share the selection handoff and the exact caller's invocation. A queued receipt grants no execution authority.
+  Foreground and background dispatch share the [selection handoff](#main-selection-handoff) and the exact caller's invocation. A queued receipt grants no execution authority.
   A pass has a fixed claim-attempt budget. Unresolved older work permits disjoint eligible work to proceed.
 - **Single-flight exclusion (`1` non-closed attempt)**: the private execution attempt grants one bounded Turn. Its phase and disposition sets are the types named under Components, and their transition meaning is the table under [Attempt, Reconnect, And Cleanup](#attempt-reconnect-and-cleanup). An idle resident binding holds no open or closing attempt and grants no right to begin work. At most `1` non-closed (`open` or `closing`, including `unknown`) attempt may exist per Turn, per Thread, and per assigned AgentSession (`apps/nanocore/src/storage/schema/scheduler-execution-attempts.ts:69,75`); a second live attempt for that Turn, Thread, or AgentSession is refused, and neither backend refusal bypasses Core authority nor Core admission manufactures physical capacity.
 - **Recurring per-schedule waiting bound (`1` queued occurrence)**: each recurring schedule may retain at most `1` accepted occurrence whose linked scheduler entry is currently `queued` (`apps/nanocore/src/storage/recurring-attempt-native.ts:206`, `scheduler-records.ts:405,415`); an earlier occurrence of the same schedule may already be `admitted`/running, and distinct schedules targeting the same Thread may each hold `1` queued row while Thread single-flight serializes execution. A recurring occurrence's `10-minute` (`600,000 ms` current default) admission deadline bounds only pre-admission retry: once its scheduler queue row commits, it remains accepted even if not executed within `10 minutes`, and later queue denial, dispatch delay, Turn failure, interruption, or unknown worker effect never cancels accepted queue work or authorizes recurring resubmission.
@@ -66,6 +66,174 @@ This specification is the single owner of NanoCore's single-writer Worker Turn a
 The kernel admission record keeps `queue_entry_id`, a unique integer `enqueue_seq`, `status`, the Workspace/Thread/Turn tuple with unique Turn, `actor_ref`, optional `credential_ref`, the selected immutable open-string `backend_id`, and `input_hash`. The queue represents the input by identity and digest. The Turn resolves exact bytes and immutable preparation choices from work-owned Items or a frozen batch, including structured delegation and recurrence. Keep enqueue time, correlation, denial and reconstruction inputs in their deciding receipt or work owner. Hold dispatch if the owner or exact bytes are missing. Neither a claim, cancel nor termination can discard an outstanding input obligation.
 
 Claim the queue and create the attempt atomically. The attempt's `attempt_id` and `queue_entry_id` bind the same admission scope by file-local FK. Keep a unique live Turn, Workspace/Thread and bound AgentSession through closing. Keep creation time, a once-set absolute deadline, package `input_ref` and binding generation ref when applicable. Phase, current operation, disposition and first terminal cause carry the decision. The operation ID is the original invocation ID. Keep adapter affinity handles, heartbeat, reconnect and Worker credential verifiers in the adapter. Do not duplicate backend, preparation payload or fence/outcome copies on the attempt. Revoke predecessor grants and Vault holders before a successor can become ready. [Durable Execution](20261019-durable_execution_and_control_store.md#retained-kernel-step-carriage) owns input-specific steps that survive progress on the attempt's current operation.
+
+### Main Selection Handoff
+
+Main runs one selection handoff for each Core data root. The handoff decides which Main pass may select and post a claim, which caller gets which result, and when a cleared hold starts a scan. Core still decides the oldest satisfiable entry at the create commit, with the selection prefix digest, the per-entry preparation claim and the real scope exclusions. The handoff adds no durable coordination, retained field, status value, queue retry or effect authorization. It is process-local and is never persisted or recovered across restart.
+
+#### Handoff Record And Transition
+
+- Main MUST decide every handoff change in one synchronous pure transition. The transition takes the handoff record and one event, and returns the next record and a list of effects.
+- The rows below are the closed transition set. Each pair of record and event MUST have exactly one row.
+- An executor MUST run the effects and feed each result back as one event. An effect MUST NOT call the transition. It queues its event instead.
+- The executor MUST NOT keep its own copy of a fact that the record holds.
+
+| Record field | Meaning |
+| --- | --- |
+| Cycle | At most one. It names the pass that owns selection and post, its stage (`select`, `barrier`, `deny` or `post`), its entry, the Workspace admission handle that it holds, whether it already selected again after an unknown reply, and the barrier proof that it holds. |
+| Ready queue | The FIFO of passes that wait for the cycle. At most one pass in it is fresh, which means not started. |
+| Pass | Its posts issued, its Turns dispatched, its largest allowed dispatch count, whether only wakes requested it, its started Turns, its recovery entries, its observed source-recovery and publication-pending facts, whether an unresolved claim left it undecided, the invocation that it is parked on, and whether it used its barrier. |
+| Waiter | One registration for each caller: its pass and its optional entry. |
+| Live invocation | Entry to the attempt ID of its published invocation. The invocation promise itself stays in the existing in-process preparation claim set. |
+| Unresolved claim | Entry to its retained claim identity: the attempt ID, the admission input hash and the digest of the serialized preparation input. |
+| Busy set | Entries requeued for backend capacity since the last capacity change. |
+| Hold observed | True when a scan skipped an entry, or was turned away, for a Main-only hold since the last wake. |
+| Newest snapshot | One reference to the trigger snapshot with the newest configuration version. Main copies no property out of it. |
+
+The claim-post budget of a pass is a current default of `20` posts. It bounds the Core writes that one pass can spend on refusals and recovery.
+
+#### Events, Effects And Reply Classes
+
+| Event | Producer |
+| --- | --- |
+| `trigger` with an optional caller, an optional entry, a snapshot, an allowed dispatch count and a source (`external` or `wake`) | Product enqueue, the dispatch retry service at startup and on its timer, and the `wake` effect |
+| `selected`: `paused`, `preparing`, `none`, `deny(e)`, `claim(e, new or retained)` or `barrier`, with its skipped and discharged entries | The `select` effect |
+| `reply` with its reply class | The `post` effect |
+| `barrier` acknowledged, or failed or ambiguous | The `barrier` effect |
+| `denied` | The `deny` effect |
+| `failed` with its stage, its entry when known, its held handle and its cause | The `select` or `deny` effect when it throws |
+| `submitted(inv)` | The first-submission callback of an invocation. The Worker can call it two times for one invocation. |
+| `settled(inv, outcome)` with outcome `dispatched`, `backend-busy`, `recovery-required` or `failed` | The invocation promise. A publish or continuation failure after a claim is a `failed` settlement of that invocation. |
+| `released(hold)` | An owner release edge in the holds table below |
+
+The effects are:
+
+- `select`: the pause read, the active-preparation probe, the readback of every unresolved claim, and the queue walk, in one synchronous Core read transaction.
+- `post`: the claim command for the entry, with a new identity or the retained identity, and the current selection prefix.
+- `barrier`: the existing null backend observation, sent through the same admitted Core writer and ordered after every earlier post of the root.
+- `deny`: the existing queued denial of the entry.
+- `publish`, `release`, `retire`, `resolve` and `wake`. `release` returns the exact Workspace admission handle that the selection acquired. `retire` deletes the live invocation of an entry only if it is that same invocation. `wake` starts one run of the dispatch retry service with source `wake` and does not await it.
+
+The claim command MUST report the stage of its failure (open or create) to the executor. The reply class is a function of that stage and the outcome. The classification adds no wire field and sends no error type on a wire.
+
+| Reply class | Claim command outcome |
+| --- | --- |
+| `claimed` | Core returned an attempt that is open with no deadline, operation or session. |
+| `stale-original` | Core returned any other attempt. |
+| `refused-rescan` | Core refused with reason `placement-held` or `selection-changed`. |
+| `refused-final` | Core refused with no reason. |
+| `not-run` | The command failed before Main posted create: the open step failed with any certainty, serialization or the supplied clock failed, or the writer answered that create did not commit. |
+| `unknown` | The writer answered that the create commit is unknown, or an untyped error came at the create stage. |
+
+#### Transitions
+
+In the rows, P is the pass of the cycle, e is the entry of the cycle, and the budget is the claim-post budget. These rules apply to every row:
+
+- **Pass end.** When P ends with a result, the cycle ends if P owns it, P leaves the ready queue, and each remaining waiter of P resolves under the keyed-caller rules and is removed. Then the drain runs.
+- **Resume.** A pass with no waiter ends with no result. Otherwise, when its dispatched count reaches its allowed count, it ends with `max-dispatches`. Otherwise, when its posts reach the budget, it ends with `recovery-required` if it is undecided and with `thread-busy` if not. It keeps its started Turns and emits no wake. Otherwise it goes to the tail of the ready queue.
+- **Drain.** After every row, while there is no cycle and the ready queue is not empty, take its head. A head with no waiter ends with no result. Any other head gets the cycle and emits `select`. The drain awaits nothing and consumes no event.
+- **Wake.** If hold observed is true, set it to false and emit `wake`.
+- **Selection first.** Every `selected` event first removes its discharged entries from the unresolved claims and sets hold observed when it reports a skip. Its row applies after that.
+
+| # | Event | Guard | Next record | Effects |
+| --- | --- | --- | --- | --- |
+| T1 | `trigger(e)` | e has a live invocation | None | Resolve the caller with a join of that invocation |
+| T2 | `trigger` | Otherwise | Register the waiter on the fresh pass. Create that pass at the tail of the ready queue if none exists. Keep the newer snapshot and the larger allowed count. The pass stays wake-only only if the source is `wake`. | None |
+| T3 | `selected` `paused`, `preparing` or `none` | | P ends. `paused` gives `agent-work-paused` and `preparing` gives `thread-busy`; both set hold observed. `none` gives `recovery-required` if P is undecided or observed source recovery, else `entry-publication-pending` if P observed pending publication, else `thread-busy` if queued entries remain, else `no-queued-entry`. | Resolve |
+| T4 | `selected` `deny(e)` | | The cycle stage becomes `deny` with e and its handle | `deny(e)` |
+| T5 | `denied` | | P ends with the denial | `release(e)`; resolve |
+| T6 | `selected` `claim(e)` | P posts are below the budget | Add one to P posts. The cycle stage becomes `post` with e and its handle. | `post(e)` with the new or the retained identity |
+| T6b | `selected` `claim(e)` | P posts equal the budget | The cycle ends; resume P | `release(e)` |
+| T7 | `reply` `claimed` | | Remove e from the unresolved claims. Record the invocation as the live invocation of e. The waiters of e leave their passes. P parks on the invocation. The cycle ends. | `publish(e, inv)`; resolve each waiter of e with a join of the invocation |
+| T8 | `reply` `stale-original` or `refused-rescan` | | For `stale-original`, remove e from the unresolved claims. The cycle ends; resume P. | `release(e)` |
+| T9 | `reply` `refused-final` | The post carried a new identity | P ends with the refusal | `release(e)`; resolve |
+| T9r | `reply` `refused-final` | The post carried the retained identity | Keep the unresolved claim. Add e to P recovery entries. P is undecided. The cycle ends; resume P. | `release(e)`; resolve the waiters of e with `recovery-required` |
+| T10 | `reply` `not-run` | e has no unresolved claim | P ends with the cause | `release(e)`; resolve |
+| T11 | `reply` `not-run` | e has an unresolved claim | Keep it. Add e to P recovery entries. P is undecided. The cycle ends; resume P. | `release(e)`; resolve the waiters of e with `recovery-required` |
+| T12 | `reply` `unknown` | The cycle did not select again, and P posts are below the budget | Record the posted identity as the unresolved claim of e if none exists. The cycle notes that it selected again, and its stage becomes `select`. | `release(e)`; `select` |
+| T13 | `reply` `unknown` | The cycle already selected again, or P posts equal the budget | Record the unresolved claim as in T12. Add e to P recovery entries. P is undecided. The cycle ends; resume P. | `release(e)`; resolve the waiters of e with `recovery-required` |
+| T14 | `failed` at the `select` or `deny` stage | A cycle exists | P ends with the cause, attributed to its stage and entry. A deny failure creates no unresolved claim. | Release the held handle one time, if one is held; resolve |
+| T15 | `submitted(inv)` | P is parked on inv | P is no longer parked. Add the submission result to P started Turns and one to P dispatched. Resume P. | None |
+| T16 | `submitted(inv)` | No pass is parked on inv | None | None |
+| T17 | `settled(inv, outcome)` | A pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation; the pass is no longer parked. `dispatched`: as T15, and empty the busy set. `recovery-required`: add the entry to the pass recovery entries, set the observed facts, resume the pass. `backend-busy`: add the entry to the busy set; the pass ends with it. `failed`: the pass ends with the cause. | `retire(e, inv)`; `release(e)`; Wake |
+| T18 | `settled(inv, outcome)` | No pass is parked on inv, and inv is the live invocation of its entry | Remove the live invocation. `dispatched` empties the busy set. `backend-busy` adds the entry to the busy set. | `retire(e, inv)`; `release(e)`; Wake |
+| T18s | `settled(inv, outcome)` | inv is not the live invocation of its entry | None | None |
+| T19 | `released(hold)` | | None | Wake |
+| T20 | `selected` `barrier` | | The cycle stage becomes `barrier`. The barrier covers every unresolved claim that has no row. P has used its barrier. | `barrier` |
+| T21 | `barrier` acknowledged | | The cycle holds the barrier proof for the covered claims. The cycle stage becomes `select`. | `select` in a new read snapshot |
+| T22 | `barrier` failed or ambiguous | | Keep every covered claim. Add each covered entry to P recovery entries. P is undecided. The cycle ends; resume P. | Resolve the waiters of each covered entry with `recovery-required`. No wake. |
+
+A `dispatched` settlement is the capacity change that empties the busy set, because the closeout of that Turn returned the backend capacity that it held. A settlement of an invocation that never held capacity changes no capacity.
+
+#### Keyed Caller
+
+A caller with entry e resolves at the first of these events, and its waiter is removed when it resolves:
+
+- **K1.** e is published, by its own pass or by another pass. The caller gets the full-closeout promise of that exact invocation (T1, T7).
+- **K2.** A cycle gives e its own disposition (T5, T9, T9r, T10, T11, T13, T14, T22). The caller gets that disposition.
+- **K3.** Its pass ends while e is not published. The caller gets `queued` with zero started Turns. The reason is `recovery-required` when e has an unresolved claim or is a recovery entry of the pass. Otherwise it is `thread-busy` when the pass ended on the denial, the error or the unresolved claim of another entry. Otherwise it is the queued reason of the pass.
+
+An unkeyed caller gets the pass result: the terminal result and every started Turn of the pass. No caller gets the result, Turn handle or error of another entry. The submission result of a pass and the full-closeout promise of an invocation stay distinct.
+
+#### Unresolved Claim Identity
+
+While e has an unresolved claim, Main posts no other identity for e. Each selection reads every unresolved claim by attempt ID in its read snapshot, before and apart from the queue walk, because a committed original is already admitted and is no longer in the queued rows. A replay compares only the retained identity, and Core decides it under its write lock. A replay posts the current selection prefix, because Core checks the prefix only when no row exists.
+
+The walk skips the recovery entries of its pass, the busy set when only wakes requested the pass, and every entry under an unresolved-claim hold. Each skip of a queued entry for a Main-only hold is a reported skip.
+
+| Readback in the selection snapshot | Disposition |
+| --- | --- |
+| The cycle selects again after an unknown reply for e, no row with another tuple exists, and the pause, eligibility and proposal-digest checks pass for e | Immediate replay: `claim(e, retained)` with the retained attempt ID and the current prefix, ahead of the walk. Core returns the original if it committed. The queued status of e is not checked, because a committed original admitted e. |
+| Otherwise, a row with the exact attempt, entry, input hash and preparation claim | Discharge. The durable row is the holder. Main publishes no invocation, adds e to the recovery entries of the pass, and sets its observed source recovery. Its exits are the preparation-deadline maintenance and the restart classification. |
+| A row with another tuple | Integrity hold. Skip e as `recovery-required`. Its exit is the restart classification. |
+| No row, and the barrier proof of the cycle covers the claim | Discharge. e is a normal candidate again. |
+| No row, e is the walk candidate, and the current proposal has the same preparation digest | Replay: `claim(e, retained)` with the retained attempt ID and the current prefix. |
+| No row, e is the walk candidate with another preparation digest or is no longer queued, and the pass has not used its barrier | `barrier`. |
+| No row, in any other case | Hold. Skip e as `recovery-required` until a later pass or restart. |
+
+- Each selection, the immediate replay included, MUST apply the current eligibility, pause and proposal-digest checks. A pause or a configuration change during an ambiguous post therefore stops a stale replay from becoming the first insert.
+- The current proposal MUST use the newest configuration snapshot that the root holds or that the configuration owner reports as current.
+- A failed or ambiguous barrier keeps the retained identity and gives typed recovery. A pass issues at most one barrier, which covers every earlier post of the root. A barrier failure emits no wake. Restart stays the exit for an unavailable writer.
+
+#### Executor Obligations
+
+- **E1.** `publish` installs the invocation promise in the existing preparation claim set, resolves the waiters with it, and only then starts the claimed continuation, in one synchronous step.
+- **E2.** No await comes between the pause read of a selection and the start of its post.
+- **E3.** Each acquired handle is released one time. The walk keeps its existing release of a handle that it does not hand to the cycle.
+- **E4.** The zero-effect gates after a claim, the exact expiry callback and its proved-close readback stay unchanged.
+- **E5.** An effect never calls the transition again while it runs. It queues its event.
+- **E6.** The submission result and the full-closeout promise stay distinct.
+
+#### Holds And Release Edges
+
+The holds below form a closed set. Main MUST map each hold to its exit and MUST cover every member. Each owner emits `released` after its edge through a callback slot that composition sets. An owner MUST NOT await dispatch while it holds the gate that it releases. Storage imports no runtime module. A wake carries its source through the single run of the dispatch retry service. A pass that only wakes requested skips the busy set. The dispatch retry timer keeps a current default of `30 s`, so that a lost wake and the first scan after restart still dispatch.
+
+| Hold (fact the scan reads) | Release edge | Production owner |
+| --- | --- | --- |
+| A local invocation of the entry | The invocation settles. | This handoff (T17, T18) |
+| Active preparation: an attempt of a live invocation is open with no deadline | The attempt leaves that state: the first-submit commit, acknowledged on the native first-submission path and on the generic operation-record path before the backend submit, or the closing or close commit at its Main-side acknowledgement. The release fires at the acknowledgement or at an exact readback. | The submission owner on both paths and the attempt maintenance owner. The first-submission callback is not the release edge. |
+| Frozen Workspace | Ordinary Workspace admission becomes open: the end of a mutation, the private release of the freeze handle, or a capture rollback. A partial thaw under a deletion fence stays held. | The Workspace mutation gate |
+| Scope not admitted | The exact admission failure is removed. | Scope recovery in [bootstrap readiness](20260704-nanocore_bootstrap_readiness.md) |
+| Agent work paused | An applied reload that is not a dry run clears the pause. | The runtime configuration reload owner |
+| Input or publication pending | The last owner acknowledgement that completes the input and publication facts. A recurring occurrence releases at its initial and its deferred Workspace publication. An external event uses its existing product-start trigger and adds no second trigger. | The command owner and the recurring schedule service |
+| Unresolved claim identity | A readback discharge or restart. | This handoff and the restart classification |
+| Backend capacity (the busy set) | A `dispatched` settlement, intake, or the timer. The busy entry stays skipped on a wake from any other settlement until its capacity owner changes the exhausted fact. | This handoff and the dispatch retry service |
+| Writer unavailable (`not-run`) | Owner recovery or restart, then the startup scan. | Restart |
+
+#### Handoff Invariants
+
+| # | Invariant | Take-out that MUST fail it |
+| --- | --- | --- |
+| I1 | One handoff: at most one cycle and one outstanding post or barrier for each root. | A second cycle |
+| I2 | Budget: each pass issues at most the budget of posts on every path, counted at issuance. | A replay without the debit; a resume without the budget check |
+| I3 | Exact caller: K1 to K3 hold. No caller gets the result, Turn handle or error of another entry. No caller stays unresolved after its pass ends. | A late caller lookup after its pass ends while another entry is held; a denial delivered to every waiter |
+| I4 | No execution under the handoff: a cycle waits only for `selected`, `reply`, `barrier`, `denied` or `failed`. | A pass parked inside its cycle |
+| I5 | One identity: (a) an unresolved claim leaves only by adoption (T7), a stale original (T8) or a readback discharge. (b) While it exists, the disposition of e is `recovery-required`, and every post for e carries the retained identity with the same preparation digest. | Forgetting the first unknown claim when the inspection cannot post, red on (a) and on (b); a new identity while unresolved; a discharge on no row without a barrier proof |
+| I6 | No lost wake: with the timer off, after an owner releases a hold that a scan observed, the entry is selected with no other external trigger. | A thaw release edge with no wake |
+| I7 | No self-sustaining work: with fixed capacity and no external event, the number of claims is finite. A busy entry is not claimed again before a capacity change, intake or the timer. | A wake-only pass that ignores the busy set; a settlement with no capacity that empties the busy set |
+| I8 | Handle balance: the acquired handles equal the handle of the cycle plus the live invocations, a denial in flight included. Each handle is released one time. | T14 or T11 without `release` |
+| I9 | Coalescing and fairness: at most one fresh pass, with the newest snapshot and the largest allowed count. Each ready pass gets the cycle within as many handoffs as the ready queue holds passes. | A pass for each trigger; the fresh pass always first |
+| I10 | Totality: each pair of record and event has a row. A stale invocation changes nothing. | Deleting T16 or T18s |
 
 ## Scheduling Rules
 
@@ -143,6 +311,7 @@ Phase and disposition membership are `SchedulerExecutionAttemptPhase` and `Sched
 ## Acceptance
 
 - **L1 admission, identifier, startup-stage, and checkpoint-maintenance conformance**: under [Test Strategy](20260529-test_strategy.md), verify idempotent command-identity insertion, changed-input conflict, fixed `20`-row queued bound on insert and denied-entry retry, FIFO dispatch, atomic recurring occurrence + queue acceptance without resubmission, single in-process preparation claim across synchronous/background dispatch with foreign-error isolation and `not_accepted` busy requeue, `reservedTurnId` pass-through and stable fallback `tu` UUIDv5 derivation across reopen, `20` simultaneous native cold starts under the CPU-quota/affinity startup stage (`max(1, min(2, affinity, floor(quota / period)))`) with fresh post-wait RPC budgets and queued cancellation without launch, live cancelled-first-admission checkpoint removal, and stopped-server `task-checkpoint:clean` dry-run/lock/backup/Tuple-A-or-B/refusal conformance. Also verify own-failure cancellation that keeps the original failure, background transient retry, the L1 subjects in [Scheduling Rules](#scheduling-rules) before `submit` (the immutable finalized launch package, the accepted Workspace baseline, exact compatibility, and launch authority) and the L1 subjects in [Attempt, Reconnect, And Cleanup](#attempt-reconnect-and-cleanup) (Core-held process-key adoption and reconnect refusal), per-Turn, per-Thread, and per-AgentSession exclusion while unknown or closing, stale-response rejection, cancellation-versus-dispatch ownership, backend bounds, deadline, revocation, and liveness refusal, release fencing, one configured backend identity, a running occurrence plus one waiting occurrence, distinct schedules under single-flight, no post-acceptance expiry cancellation, fresh per-Turn checks, and no Goal-pin writer.
+- **L1 Main selection handoff model and owner wake conformance**: verify the [Main Selection Handoff](#main-selection-handoff) transitions with a pure model and an independent environment model before any executor change. The environment model derives legal selections and replies from raw facts: each entry queued, admitted or closed; held input and gate; live invocation; submission and settlement; the writer's posted, committed and reachable state; and the configuration version. It generates owner changes apart from trigger delivery. Explore every reachable state within these bounds: three entries (two overlapping and one disjoint), two keyed callers plus the unkeyed timer, a model budget of `3` posts, two attempt identities for a requeued entry, two configuration versions, allowed counts `1` and `2`, an earlier and a later owner acknowledgement, two submission callbacks for one invocation, and bounded triggers and pending events with canonical identifiers. The schedules include an unrelated settlement of another entry, a skip followed by a denial, and a lone entry whose proposal changes on a healthy writer. Report the state and edge counts, the shortest failing trace for each mutation, and every cycle. The oracle compares the deposited Turn handle with the keyed caller. Liveness assumes fair completions: a backend that waits is not a defect, and a quiescent root with a ready pass or an unresolved waiter is a defect. The unmodified model passes. Each of these mutations fails at its named assertion: a late caller lookup after its pass ends while another entry is held (I3); forgetting the first unknown claim when the inspection cannot post, on both the retained identity and the typed recovery result (I5); a replay without the budget debit (I2); and a thaw release edge with no wake while the timer is off (I6). Two controls fail as well: a refusal, a refusal, a claim and a submit with no fourth post (I2), and the backend-busy feedback (I7). Removing the barrier strands an uncommitted original of a changed proposal. After wiring, each mutation fails again through the real owner adapters, and each row of the holds table is proved through its real production owner with the timer held and one successor claim. Fixed seeds on real SQLite add coverage and do not prove wake wiring.
 - **L2 queued `202`, administrator provenance, and multi-Harness/concurrent-Turn conformance**: verify two independent Tasks against one active slot where the second receives HTTP `202` queued without native start until proved release, a nonmember administrator Task completing through the real Worker authority chain while a reloaded revoked/expired/rebound credential denies the next governed effect (and ordinary callers remain denied foreign private conversation access), at least `2` compatibility-distinct Harnesses and `2` retained Thread-bound AgentSessions in one Sandbox, and overlapping active Turns on distinct Threads within one compatible Harness and Sandbox with independent routes, capture roots, interruption, completion, cleanup, and declared-bound refusal. Also verify queued replay across restart, changed-input conflict, a later preparation failure on that same Turn, exact control credential, hash, and sequence, complete-versus-partial terminal-tuple proof, no secret-bearing control state, exact release and local close, a wider fence until definite cleanup, and sibling noninterference. This is the qualification limit for those Harness and overlap proofs. It does not require two runtime families or simultaneous execution across them.
 - **L3 deterministic restart and L5 / opt-in A1 live-host conformance**: verify deterministic Core kill/restart with predecessor-fenced exact process-key/lineage/sequence adoption without duplicate launch or Sandbox recreation (or failed-proof cleanup followed only by new authorized work and native successor resume), and L5 / opt-in A1 local or remote NanoHost runs proving ordinary shared-Sandbox-preserving release, definite physical cleanup, uncertain-cleanup Runtime Epoch invalidation, and post-fence fresh readiness using existing runners.
 
@@ -158,6 +327,7 @@ Phase and disposition membership are `SchedulerExecutionAttemptPhase` and `Sched
 ## Implementation Gaps
 
 - Kernel scheduling and restart convergence - The v0.2.0 queue and attempt shapes, exact work-owned payload reconstruction and ordinary reconciler recovery have not qualified - #947, #767
+- Main selection handoff - The handoff transition, its executor, the owner release edges and the handoff model check have not landed; Main still runs the earlier per-pass handoff - #951
 - End-to-end propagated Core deadlines replace independent nested stage allowances across worker lifecycle operations - On main, Core enforces the fixed `7,200 s` attempt deadline while Worker Shim stages retain independent lifecycle allowances - #535
 
 ## Decisions
