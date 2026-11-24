@@ -166,38 +166,41 @@ This section owns the decision points of one **local close** of an idle predeces
 | R | The successor request is open, pre-submit and authorized. | Backend, attempt, Workspace, Thread, Turn, AgentSession, admission, trigger actor and credential | RC7, RC10 | Scheduler requeue, cancel and submission. Core user disable, credential expiry or revocation and membership. Workspace lifecycle. |
 | Tc | The close allowance is live. | Original enqueue wall and monotonic instants, and the absolute wall deadline | RC7, RC8, RC10 | Time |
 | Ts | The successor startup allowance is live. | Attempt creation plus `nanoHostStartupDeadline`, as an absolute wall deadline | RC8, RC10 | Time |
-| S | The selected storage is still eligible. | Storage ref and revision, purpose, caller, scope, adjudication and work slot | RC7 (P14 recheck), RC8 (revision CAS) | Native attachment, release, purge, mark-unknown and contributor writers |
-| A | The contributor audience still admits the Thread. | The Thread audience decision for the selected storage | RC7, under the successor Workspace hold | Workspace contributor-audience and Thread edits. Core membership. |
-| B | Core proves the predecessor idle. | Binding, closed attempt, no current Turn, no competing owner | RC7 under the Core hold, RC11 | Core admissions and attempt transitions. Another closer. |
+| Ta | The request authority has not expired. | The earliest absolute expiry of the trigger and request credentials | RC7, RC8 (through the deadline slot), RC10 | Time. A held Core writer does not stop an expiry. |
+| S | The selected storage is still eligible. | Storage ref and revision, purpose, caller, scope, adjudication and work slot | RC7 (P14 recheck), RC8 (revision CAS), RC10 | Native attachment, release, purge, mark-unknown and contributor writers |
+| A | The contributor audience still admits the Thread. | The Thread audience decision for the selected storage, from the Thread rows and the applied Workspace policy | RC7 under the successor Workspace hold, RC10 | Workspace contributor-audience and Thread edits. The applied Workspace policy publisher. Core membership. |
+| B | Core proves the predecessor idle. | The exact Core idle receipt: binding, closed attempt, no current Turn, no competing owner | RC7 under the Core hold, RC10, RC11 | Core admissions and attempt transitions. Another closer. |
 | N | The Native placement is unchanged. | Binding ref and revision, Harness id and ref, Sandbox id and ref, Integration, target, deployment, connection generation and origin Epoch | RC5, RC8, RC9, RC10 | Native open, rebind, handoff, occupancy, reconnect, generation or Epoch change, revoke, drain, delete and fence |
-| L | This close owns the Harness latch. | The claim and the prefix that it guards. The Native claim records no claimant. | RC8 (transfer to the key), RC13 | Another same-Harness claim. A whole-Sandbox drain. An old restore. |
+| L | This close owns the Harness latch. | The Main Harness exclusion, the claim revision and the prefix that it guards. The Native claim records no claimant. | RC3 (accepting to draining), RC8 (transfer to the key), RC13 | Another same-Harness claim. A whole-Sandbox drain. A Harness-only drain. Native queued expiry and dispatched unknown. An old restore. |
 | C | The capture is accepted for this close. | Capture anchor, source, storage, work slot, attachment generation, collection disposition and resume pair | RC4, RC13 | Workspace claim, publication, recovery and abandon |
 | K | One keyed command exists. | Harness binding, op id, sequence, prepared body and fingerprint | RC8 to RC12 | Other producers on the slot. Native expiry. Cold readers. |
 | X | The first delivery is exclusive. | Authenticated Integration, connection, poll and cancellation | RC9, RC10 | A second poll, disconnect, rotation and revocation |
 | W | The caller has a bound. | The original deadline of the waiter | Its timer | None. It ends the wait only. |
 
-**Clocks.** Three clocks run independently. No lock or wait stops a clock. No poll, reopen or retry restarts a clock.
+**Clocks.** Four clocks run independently. No lock or wait stops a clock. No poll, reopen or retry restarts a clock.
 
-- **Tc, the close allowance**, starts at the original enqueue. Main checks it at the actual post with the wall clock and the monotonic clock. Native checks the carried absolute wall deadline inside the queue transaction, because a monotonic instant does not compare across workers or restarts. The first carriage checks it again.
-- **Ts, the successor startup deadline.** Native checks it inside the queue transaction. The first carriage checks it again.
+- **Tc, the close allowance**, starts at the original enqueue. Main checks it at the actual post with the wall clock and the monotonic clock. The first carriage checks it again.
+- **Ts, the successor startup deadline.** The first carriage checks it again.
+- **Ta, the authority expiry.** Main checks it at the actual post. The first carriage checks it again.
+- **The deciding queue cutoff.** Native compares one absolute wall value inside the queue transaction, because a monotonic instant does not compare across workers or restarts. Main puts the earliest of Tc, Ts and Ta in the existing private replacement deadline slot. The queue frame gets no new field. Main keeps each original clock and the limiting cause, so that the typed refusal, the P14 order, the monotonic checks and W stay the same.
 - **W, the caller bound**, rejects the caller with its typed cause at the original deadline. It does not wait for a writer reply and it gives no release. The owner keeps both slots and the writer outcome until proof.
 
-If Tc or Ts expires before the deciding queue commit, the result is zero queued rows and zero close bytes. A cold reader uses only absolute wall values.
+If Tc, Ts or Ta expires before the deciding queue commit, the result is zero queued rows and zero close bytes. If one of them expires after the queue commit and before the first bytes, the result is zero close bytes. Each expiry is tested with the other limits live. The queue timestamp, command bytes, fingerprint and receipt stay the same. A cold reader uses only absolute wall values.
 
 **Boundaries and edges.** Each row is one cut. The edge is a lock, post, commit, ACK or the handoff of bytes. "Observed by" names the production entry that finds the cut after it occurs.
 
 | # | Boundary | Edge | Deciding owner and check | Observed by | Exit if stopped here |
 | --- | --- | --- | --- | --- | --- |
 | RC1 | Select the predecessor for R, Ts and S | None | Factory selection, with no effect | Fresh admission | Fresh admission |
-| RC2 | Workspace capture claim | Commit, ACK | Workspace claim on the original anchor | Workspace recovery; the factory capture boundary | P1 |
-| RC3 | Native latch claim | Commit, ACK | Native claim CAS on the idle Harness and the closed attempt | Capacity inspection (cold entry) | P2 |
+| RC2 | Workspace capture claim | Commit, ACK | Before the claim, Main registers the existing Harness exclusion once. If another close already holds the Harness, Main refuses with the existing typed capacity cause and makes no Workspace claim. Then Workspace claims on the original anchor. | Workspace recovery; the factory capture boundary | P1 |
+| RC3 | Native latch claim | Commit, ACK | Native claim CAS from accepting to draining on the idle Harness and the closed attempt. A draining Harness refuses the claim. | Capacity inspection (cold entry) | P2. A refusal after RC2 keeps the Workspace no-source record at P1 with the original cause. |
 | RC4 | Capture publication | Commit, ACK | Workspace publishes the exact collection | The factory capture boundary; capacity inspection | P3 |
 | RC5 | Harness slot admission | Lock | Main orders local producers, prepares the id, sequence and body, and compares R, Ts, S and N | The live owner only | The slot is volatile. Use the capture exit. |
 | RC6 | Holds | Lock | The Core hold, then the successor Workspace hold. Reads R, A and B. | The live owner only | Release in `finally`. A definite noncommit. |
-| RC7 | Actual post | Post | Main, in the turn that posts the worker frame: the original pending owner, Tc on both clocks, R, A with the P14 cause, and B | The worker post hook | A definite noncommit when the post did not run |
-| RC8 | Native queue | Commit, ACK | The Native transaction: Tc as an absolute wall value, Ts, the S revision, N, the L transfer, K and the next sequence | The queue reply; an exact readback of the original key | A known refusal leaves zero queued rows. A lost reply goes to P4. |
+| RC7 | Actual post | Post | Main, in the turn that posts the worker frame: the original pending owner, Tc on both clocks, Ta, R, A with the P14 cause, and B | The worker post hook | A definite noncommit when the post did not run |
+| RC8 | Native queue | Commit, ACK | The Native transaction: the deadline slot (the earliest of Tc, Ts and Ta), the S revision, N, the L transfer, K and the next sequence | The queue reply; an exact readback of the original key | A known refusal leaves zero queued rows. A lost reply goes to P4. |
 | RC9 | Dispatch | Commit | Native CAS from queued to dispatched for the authenticated Integration | The poll route | P5 |
-| RC10 | First bytes | Bytes | The poll owner, in one synchronous run after the last authentication: R, Tc, Ts, S, N, K still dispatched and X, then the write | The poll route and its response writer | Before bytes: settle `refused`/`stale` and answer 204. After a possible handoff: P5. |
+| RC10 | First bytes | Bytes | The poll owner, in one synchronous run after the last authentication and under the pins: R, Tc, Ts, Ta, the original pending owner, B as the exact Core idle receipt, A, S, N, K still dispatched and X, then the write | The poll route and its response writer | A product refusal that is exclusively reserved and proved unsent settles `refused`/`stale` and answers 204. A transport failure keeps its own refusal. After a possible handoff: P5. |
 | RC11 | Core consumption | Commit, ACK | The Core receipt keyed by Harness binding, op id, sequence, normalized fingerprint and receiver | The result route; capacity inspection | P6 |
 | RC12 | Native settle | Commit, ACK | Native result, sequence and occupancy in one commit | The result route; capacity inspection | P7 |
 | RC13 | Restore or removal | Commit, ACK | The Native restore CAS on the exact Harness, latch, close key or proved pre-queue ownership, on an accepting Sandbox. Or the removal of the exact binding. | Capacity inspection; the removal callers | A lost ACK reads back by key. A later claim makes the restore a no-op. |
@@ -209,47 +212,57 @@ If Tc or Ts expires before the deciding queue commit, the result is zero queued 
 | --- | --- | --- | --- |
 | Core user disable or membership (named) | R, B | The Core hold, from RC6 to the RC8 reply | Earlier: zero queued rows and zero bytes. Later: it waits, then advances. |
 | Workspace contributor-audience edit (named) | A | The successor Workspace hold, with the Native revision unchanged | Earlier: the original P14 refusal, zero queued rows and zero bytes. Later: it waits, then advances. |
-| B's same-Harness claim while A's admitted cold restore is paused after its read of A (named) | L | The restore CAS on the Harness revision | The CAS preserves B. |
-| B's same-Harness claim before A's queue | L | The Native claim precondition and the RC8 transfer check | A's queue refuses. B keeps its latch. |
+| Applied Workspace policy publisher | A | The Main turn of the RC7 read and the synchronous RC10 run. The Native queue does not read the policy. | Installed before RC7: the P14 refusal and zero queued rows. Installed after RC7 and before RC10: zero bytes. Installed after the write: it advances. |
+| B's same-Harness claim while A's admitted cold restore is paused after its positive read of A (named) | L | The restore CAS on the Harness revision | A legitimate release makes the Harness accepting, B's admitted claim advances the revision, then A's stale CAS posts. The CAS preserves B. |
+| B's admission while A holds the Harness | L | The Main Harness exclusion before RC2; the Native claim CAS at RC3; the RC8 transfer check | B gets the typed capacity cause and makes no Workspace claim. If another writer wins RC3 after B's RC2, B's Workspace record stays at P1 with the original cause. After A's proved release, B claims again. |
+| Legacy double claims in an existing data root | L | The cold `decide` only | No live owner. The cold exits below apply. |
+| Core idle owner change between the queue and the poll | B | The RC10 recheck of the exact Core idle receipt | Zero close bytes |
 | Scheduler requeue or cancel | R | The Core hold; the RC10 recheck | Zero queued rows, or 204 with `stale` |
-| Credential expiry or revocation | R | RC7; RC10 | Zero queued rows, or 204 with `stale` |
+| Credential revocation | R | RC7; RC10 | Zero queued rows, or 204 with `stale` |
+| Credential expiry | Ta | RC7; the RC8 deadline slot; RC10 | Before RC8: zero queued rows. Only before RC10: zero bytes. |
+| Native queued expiry | L, K | The Native expiry transaction. It commits `unknown`, `failed` and `draining` before its ACK. | The fence stays. An old expiry against a newer queue key has zero effects. |
+| Native dispatched unknown | L, K | The Native result transaction. It can keep an exact `unknown` result. | The fence stays. No cold reader settles it as unsent. |
+| Harness-only drain | L | The Native drain state | The drain survives every restore that it did not make. |
 | Native storage mark-unknown, release, purge or rebind | S | The RC8 revision CAS | The P14 cause and zero queued rows |
 | Target generation or Epoch change, reconnect | N | RC8, RC9, RC10 | Zero queued rows, or 204 with `stale` |
 | Whole-Sandbox drain | L, N | The Native drain state; the restore CAS | The drain survives. |
 | Second poll, disconnect or rotation | X | The delivery reservation at RC9; RC10 | At most one first send |
-| Time | Tc, Ts | Absolute compares at RC7, RC8 and RC10 | Zero queued rows and zero bytes |
+| Time | Tc, Ts, Ta | Absolute compares at RC7, RC8 and RC10 | Zero queued rows and zero bytes |
 | A Login close or another closer on the Thread | Main slots | Identity-keyed slots | Each owner retires only its own slots. |
 
 **Pins.** The Core hold and the successor Workspace hold pin R, A and B from RC6 until the RC8 reply reaches Main. If the worker can still commit, Main joins the worker exit before it reopens. At first carriage the poll owner holds the pins through the synchronous write. On a definite refusal it reserves the unsent delivery against other polls, releases the short pins, and then calls the settlement owner, which acquires them again. Pins release in `finally`. A pin never outlives the decision that it serves. A caller bound never releases a pin and never waits for one.
 
 **Unknown outcomes.** An unknown outcome is not unsent, and it is not a noncommit until an owner proves it.
 
-- **RC7 or RC8 reply lost.** Join writer quiescence, then read the original slot, id and sequence. Proved absence is a definite noncommit. A queued row keeps the slot and goes to the exact inspect, expire or fence through Native.
+- **RC7 or RC8 reply lost.** Join writer quiescence, then read the original slot, id and sequence. A later queue can reuse the Harness cell, so writer quiescence and a different current key do not prove that the original never committed. Absence is proved only when the cell is idle or settled and its next sequence is still the original sequence, or when the exact receipt at the original sequence names another key. That is a definite noncommit. Otherwise keep the fence. A queued row of the original key keeps the slot and goes to the exact inspect, expire or fence through Native.
 - **RC9 with no result, or RC10 after the write starts.** Contact is possible. Wait for the exact result or a physical fence. No cold reader sends bytes or builds the command again.
 - **RC11, RC12 or RC13 ACK lost.** Read back by the same key and fingerprint. Changed bytes or a changed receiver refuse.
 
-**Cold projection and exits.** On reopen, discard the live delivery authority, guards, waiters, monotonic instants, the Harness slot and the Main maps. Rebuild only the obligations that have durable proof: the Workspace claim, collection and attachment; the Core attempt, receiver and consumption step; the Native binding, Harness drain, queue cell and result; and the physical journal. The admitted effect path runs the cold `decide` before the capacity early return.
+**Cold projection and exits.** On reopen, discard the live delivery authority, guards, waiters, monotonic instants, the Harness slot, the Main maps and every live claimant. Rebuild only the obligations that have durable proof: the Workspace claim, preserved raw source, accepted receipt, collection and attachment; the Core attempt, receiver and consumption step; the Native binding, Harness lifecycle, drain, revision, queue cell, next sequence and result; and the physical journal. A preserved raw source before RC4 is not an accepted Workspace receipt. The admitted effect path runs the cold `decide` before the capacity early return, after the existing guard for a held restore.
 
 | Prefix | Durable facts | Exit |
 | --- | --- | --- |
 | P0 | No claim | None |
-| P1 | Workspace claim only | Workspace recovery of the original capture by anchor. An abandon permits only the original cleanup or a sufficient physical fence. |
+| P1 | Workspace claim only, with or without a preserved raw source | Workspace recovery of the original capture by anchor. An abandon permits only the original cleanup or a sufficient physical fence. |
 | P2 | P1 plus the Native latch, with the capture not published | P1, then the quiescent Harness exit |
-| P3 | Latch and published capture, with no queue cell | The quiescent Harness exit, or a held fence |
-| P4 | Queued, reply lost | The exact inspect, expire or fence of the original key through Native |
+| P3 | Latch and accepted Workspace receipt, with no queue cell of the close | The quiescent Harness exit, or a held fence |
+| P4 | Queued, reply lost | The exact inspect, expire or fence of the original key through Native. A reused cell needs the original sequence or receipt evidence (see Unknown outcomes), or the fence stays. |
 | P5 | Dispatched, with no result | The exact result or a physical fence |
 | P6 | Core consumption only | For the canonical local `refused`/`stale`, derive the candidate from the retained command. If the fingerprint and receiver are equal, the existing writer completes the Native result only. Other results need the exact bytes or a physical recovery. A fingerprint match proves the disposition, not zero bytes. |
-| P7 | Core and Native both committed | A scoped restore with no peer. Success decrements occupancy once. `stale` keeps the binding and the resume pair. A private Login keeps its departure ACK. `cleanup_required` keeps its wider cleanup. |
+| P7 | Core and Native both committed | A scoped restore with no peer. The success decrements occupancy once, at RC12. A restore or a replay decrements nothing. `stale` keeps the binding and the resume pair. A private Login keeps its departure ACK. `cleanup_required` keeps its wider cleanup. |
 | P8 | Restored | E7 |
+| PF | A Native fence: queued expiry or dispatched unknown (`unknown`, `failed`, `draining`), or a Harness-only drain | The fence stays. Only its existing exact cleanup or a physical fence exits. |
 
-- **Quiescent Harness exit (P2, P3).** The Native claim records no claimant, so a cold reader cannot name the latch owner. Restore a draining Harness only when all of these are true:
-  - no live owner in this process holds or posts a claim or a close on the Harness;
-  - no queue cell of a binding on the Harness is queued, dispatched or unsettled;
-  - every Workspace capture of its bindings is settled, and none is abandoned;
-  - no whole-Sandbox drain holds;
+- **Quiescent Harness exit (P2, P3).** The Native claim records no claimant, so a cold reader cannot name the latch owner. The cold `decide` compares full durable values, including the Harness revision. It restores a draining Harness only if every candidate history with the same durable values allows the same restore. All of these must be true at the post:
+  - no new or outstanding producer: no live owner in this process holds the Harness slot or posts a claim, a close or a queue on the Harness;
+  - every ambiguous writer is joined;
+  - no queue cell of a binding on the Harness is queued, dispatched, unknown or unsettled;
+  - the reader has the complete set of original capture anchors and dispositions on the Harness, under the owner order, and each is settled and none is abandoned. An unreadable or missing anchor keeps the fence;
+  - the positive predicates of the existing scoped restore hold: the Sandbox is accepting, open, ready and clean on the current Epoch; the Harness is open, not failed, and draining; the operation is idle or settled with no `harness.drain`;
   - the restore CAS reads the same Harness revision.
 
-  Otherwise keep the fence. A reachable prefix with no exit keeps its fence for an engineer ruling.
+  Otherwise keep the fence. A failed Harness with an idle or settled cell on a clean accepting Sandbox keeps its drain. A reachable prefix with no exit keeps its fence for an engineer ruling.
+- **Healthy-Epoch no-source abandon.** RC3 commits, then the process stops before the capture source or publication, then Workspace makes the governed no-source abandon. The Sandbox is accepting, the Harness is open and draining, and no cleanup intent exists. Capacity refuses it, the same-Epoch retirement refuses it, and the original cleanup reservation needs a draining Sandbox. An independently authorized cleanup that is already under way, or proved absence in a later fenced Epoch, exits only its own case. This prefix keeps its fence and its evidence and goes to an engineer ruling. An abandon alone grants no local restore and no wider delete.
 - **E7.** The owner that makes the last local change requests the root reread after that change. A no-op restore or an intervening drain requests nothing. If another independent owner still blocks, that owner requests the reread at its own edge.
 
 **Invariants.**
@@ -257,16 +270,16 @@ If Tc or Ts expires before the deciding queue commit, the result is zero queued 
 | # | Invariant | Take-out that MUST fail it |
 | --- | --- | --- |
 | CL1 | Effect-local decision: each effect decides all of its premises at its own deciding mutation. Earlier checks only avoid effects or keep the P14 order. | Remove the RC7 check; remove the RC8 Tc compare |
-| CL2 | Independent clocks: Tc and Ts expire independently and neither restarts. W ends only the wait. | Check only Ts at RC8 |
-| CL3 | One latch owner: a claim excludes later claims on its Harness until transfer or rollback. A queue transfers only its own claim. A replay without a claim transfers nothing. A restore clears only a latch that it proves. | Accept a later claim on a draining Harness; restore with no latch compare |
+| CL2 | Independent clocks: Tc, Ts and Ta expire independently and none restarts. The deadline slot carries the earliest. W ends only the wait. | Put only Ts in the deadline slot; drop Ta at RC10 |
+| CL3 | One latch owner: the Main Harness exclusion and the accepting-to-draining claim exclude later claims on the Harness until transfer or rollback. A losing claim keeps its Workspace record. A queue transfers only its own claim. A replay without a claim transfers nothing. A restore clears only a latch that it proves. | Accept a later claim on a draining Harness; drop the exclusion before RC2; restore with no revision compare |
 | CL4 | Writer order: a competing writer commits before the read under the hold, or waits until the effect is durable or handed off. | Release the Core hold before the post |
-| CL5 | Unknown is not unsent: possible contact never settles as unsent. A lost reply is not a noncommit without quiescence and readback. | Settle `stale` from a cold dispatched row |
-| CL6 | Every durable prefix has an exit with no peer, or a held named fence. | Remove one cold exit (P3, P6 or P7) |
+| CL5 | Unknown is not unsent: possible contact never settles as unsent. A lost reply is not a noncommit without quiescence and the original sequence evidence. A transport failure keeps its own refusal. | Settle `stale` from a cold dispatched row; treat a different current key as absence |
+| CL6 | Every durable prefix has an exit with no peer, or a held named fence. A cold exit is safe for every history with the same full durable values. | Remove one cold exit (P3, P6 or P7); drop one positive restore predicate |
 | CL7 | Ownership through proof: the original owner stays in both admission-visible slots until success, a definite noncommit, a never-dispatched unwind, the exact fence or a later fenced Epoch. | Clear a slot in `finally` |
 | CL8 | Independent caller bound: W fires at the original deadline with every writer reply withheld. | Arm the bound only after a writer reply |
 | CL9 | Carried cause: a refusal keeps its first structured cause through every catch. A fallback only reads. | Replace the cause with a Sandbox-only read |
 | CL10 | Scope: a restore or removal changes only the named Harness or binding. Siblings, a later claim, a same-key successor and a whole-Sandbox drain survive. | Remove by compatibility key |
-| CL11 | Core and Native stay separate: a Core receipt frees no capacity, and a Native restore closes no Core attempt. | Free capacity at the Core receipt |
+| CL11 | Core and Native stay separate: a Core receipt frees no capacity, and a Native restore closes no Core attempt. Occupancy decrements once, at RC12. | Free capacity at the Core receipt; decrement at the restore |
 | CL12 | Last-change wake: E7 follows the last local change, and a no-op requests nothing. | Remove the E7 request at RC14 |
 
 ### Physical Epoch Identity And Recovery
@@ -328,9 +341,9 @@ The Epoch Invalidation Report is NanoHost-private, non-product, non-authorizing 
 
 ### Replacement Close Lifecycle Conformance
 
-- **Model and explorer before executor changes.** Verify the [Replacement Close Lifecycle](#replacement-close-lifecycle) with the pure `decide` table and an independent environment model. The environment generates only the writes that a real owner can make. It records posts, commits, ACKs, committed captures, receipts and occupancy, and handed-off bytes as separate facts. The oracle checks the original owner, the contact count and the available capacity from those raw facts, not from the table under test.
-- **Bounds.** Two bindings A and B on one Harness. One binding on another Harness of the same Sandbox as a control. Two competing polls. Two target generations. One whole-Sandbox drain. Tc and Ts advance independently. At each reachable commit, the explorer also generates a lost ACK, a stopped producer and a reopen with no peer, and runs the same `decide` on the durable projection. Report the state and edge counts, the shortest failing trace for each mutation and every runnable state with no successor. Liveness assumes that owners recover and that legal operations are scheduled. A cold step must be safe for every history with the same durable evidence.
-- **Mutations.** The unmodified model passes. Each mutation fails at its named assertion: the actual-post Tc and identity check, the Native Tc compare, the claim-to-queue transfer, each independently recoverable cold exit and the last E7 request. Keep the controls: A queues before B, B claims before A's queue or after A settles, two Harnesses, and a whole-Sandbox drain. After wiring, each mutation fails again at a production assertion. A setup failure, an escaping injected exception or a timeout earns no credit.
+- **Model and explorer before executor changes.** Verify the [Replacement Close Lifecycle](#replacement-close-lifecycle) with the pure `decide` table and an independent environment model. The environment generates only the writes that a real owner can make. It records posts, commits, ACKs, committed captures, preserved raw sources, accepted receipts and occupancy, and handed-off bytes as separate facts. The oracle checks the original owner, the contact count and the available capacity from those raw facts, not from the table under test.
+- **Bounds.** Two bindings A and B on one Harness. One binding on another Harness of the same Sandbox as a control. Two competing polls. Two target generations. One whole-Sandbox drain, one Harness-only drain, one Native queued expiry and one dispatched unknown. Tc, Ts and Ta advance independently. At each reachable commit, the explorer also generates a lost ACK, a stopped producer and a reopen with no peer, and runs the same `decide` on the durable projection. Report the state and edge counts, the shortest failing trace for each mutation and every runnable state with no successor. Liveness assumes that owners recover and that legal operations are scheduled. A cold step must be safe for every history with the same full durable values, including the Harness revision, with every live claimant discarded.
+- **Mutations and controls.** The unmodified model passes. Count red mutations and green controls separately. Each mutation fails at its named assertion: the actual-post clocks and identity check, the deciding queue cutoff, the RC10 rechecks, the claim-to-queue transfer, each independently recoverable cold exit, each positive restore predicate and the last E7 request. Green controls stay green: CL3's two winner orders, the legacy double-claim traces, B's fresh claim after A's proved release, two Harnesses, a whole-Sandbox drain, a failed Harness and a redundant earlier notification. After wiring, each mutation fails again at a production assertion. A setup failure, an escaping injected exception or a timeout earns no credit.
 
 ### Epoch Rebuild Cost Budget
 
