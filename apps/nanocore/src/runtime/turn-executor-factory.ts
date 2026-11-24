@@ -2953,6 +2953,36 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
   }
 
+  /**
+   * Row 14: the current admission read of a changed resident, without effects (E7). It reads the
+   * authoritative target and current capacity, then the selected-storage attachment fact of this
+   * refusal. A stale selection or a denied audience is no capacity fact: its fresh claim keeps
+   * its existing disposition. An unreadable fact reads as held.
+   */
+  private changedResidentStillRefused(
+    environmentPackage: AgentEnvironmentPackagePreview,
+    forceRetirement: boolean,
+    replacementSelection: { readonly storageRef: string } | undefined
+  ): boolean {
+    try {
+      const current = this.inspectIncompatibleIdleSandbox(environmentPackage, forceRetirement);
+      if (current === 'capacity-saturated') return true;
+      if (!replacementSelection) return false;
+      const selected = this.readNanoHost((owner) =>
+        getWorkerStorageBinding(owner, { storageRef: replacementSelection.storageRef })
+      );
+      if (!selected || selected.state === 'idle' || selected.state === 'purged') return false;
+      // Attached to the resident that this admission replaces: the replacement path owns it.
+      return !(
+        selected.state === 'attached' &&
+        current !== null &&
+        selected.currentSandboxBindingRef === current.sandboxBindingRef
+      );
+    } catch {
+      return true;
+    }
+  }
+
   /** Projects the exact selected-storage authorization used before one Sandbox replacement. */
   private workerStorageReplacementSelection(
     environmentPackage: AgentEnvironmentPackagePreview,
@@ -4735,13 +4765,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     for (const binding of eviction.bindings)
       await this.handoffDurableAgentSessionProof(binding, undefined, eviction);
     if (this.residentChangedAfterHandoff(environmentPackage, forceRetirement, eviction)) {
-      // The re-check is the same exact resident and target comparison (E7).
+      // The old-effect comparison only stops this stale drain. Row 14: requeue carries the
+      // current admission read of the changed resident, without effects (E7).
       throw new WorkerGovernanceCapacityUnavailableError(
         'NanoHost one-Sandbox capacity is occupied or unproved.',
         {
           key: this.schedulerBackendKey(),
           stillRefused: () =>
-            this.residentChangedAfterHandoff(environmentPackage, forceRetirement, eviction),
+            this.changedResidentStillRefused(
+              environmentPackage,
+              forceRetirement,
+              replacementSelection
+            ),
         }
       );
     }
@@ -5087,9 +5122,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       // Eviction owns the resident's fence; this incoming attempt created no Sandbox or bridge.
       this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
       if (error instanceof WorkerStorageBindingError) throw error;
+      // Row 14: keep the causal capacity refusal. A cause without one reads as held (E7).
       throw new WorkerGovernanceCapacityUnavailableError(
         'Incompatible resident cleanup requires exact deletion or Epoch fence proof.',
-        this.schedulerHeldRefusal()
+        (error instanceof WorkerGovernanceCapacityUnavailableError && error.schedulerCapacity) ||
+          this.schedulerHeldRefusal()
       );
     }
     let sharedHarness = this.restoreSharedHarness(
