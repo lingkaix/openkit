@@ -3167,8 +3167,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   const pendingWorkerDelivery = {
-    async startTurn(store: FsStore, turnId: string) {
-      const turn = store.getTurnById(turnId);
+    async startTurn(
+      store: FsStore,
+      turnId: string,
+      scope: { readonly workspaceId: string; readonly threadId: string }
+    ) {
+      // The admitting Workspace and Thread name the outcome Turn; sibling Workspaces are not read.
+      const turn = store.getTurn(scope.workspaceId, scope.threadId, turnId);
       if (!turn.agentId) throw new Error('Outcome Turn has no worker Agent.');
       // An existing queued admission belongs to the scheduler dispatch loop after restart.
       if (
