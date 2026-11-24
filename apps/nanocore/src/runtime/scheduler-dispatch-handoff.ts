@@ -139,6 +139,8 @@ export type HandoffSelection =
 export interface HandoffSkip {
   readonly entry: string;
   readonly hold: HandoffHold;
+  /** A pending publication whose source owner must recover it (missing input, recurring or external source). */
+  readonly sourceRecovery?: boolean;
 }
 
 export type HandoffReplyClass =
@@ -1048,8 +1050,15 @@ function applySelectionFirst<S extends HandoffSnapshot, T>(
   }
   for (const skip of event.skipped) {
     draft.holdObserved = true;
-    if (skip.hold === 'publication-pending') pass.observedPublication = true;
-    if (skip.hold === 'unresolved-claim') pass.observedSource = true;
+    // A scope that is not admitted is both a source recovery and a pending publication.
+    if (skip.hold === 'publication-pending' || skip.hold === 'scope-not-admitted')
+      pass.observedPublication = true;
+    if (
+      skip.hold === 'unresolved-claim' ||
+      skip.hold === 'scope-not-admitted' ||
+      skip.sourceRecovery === true
+    )
+      pass.observedSource = true;
   }
 }
 
