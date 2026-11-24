@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type CaptureState,
   type CloseCause,
+  type CloseClock,
   type ClosePremises,
   COLD_RULES,
   type ColdAction,
@@ -27,17 +28,19 @@ import {
  * under test never reads `p`. The oracles read only the raw facts and `p`.
  */
 
-type Clock = 'Tc' | 'Ts' | 'Ta' | 'W';
 type Env =
-  | Clock
+  | CloseClock
+  | 'TcMono'
+  | 'W'
   | 'thread'
   | 'policy'
   | 'R'
   | 'idle'
+  | 'core'
   | 'pend'
   | 'S'
-  | 'N'
   | 'X'
+  | 'open'
   | 'hdrain'
   | 'sbdrain'
   | 'fail'
@@ -58,6 +61,7 @@ type Phase =
   | 'published'
   | 'held'
   | 'posted'
+  | 'replying'
   | 'queued'
   | 'unknown-reply'
   | 'settled'
@@ -74,6 +78,7 @@ const ACTIVE: readonly Phase[] = [
   'published',
   'held',
   'posted',
+  'replying',
   'queued',
   'unknown-reply',
   'settled',
@@ -85,7 +90,11 @@ interface Closer {
   claimRev: number | null;
   seq: number | null;
   slot: boolean;
-  holds: boolean;
+  /** The Core hold pins R and B; the successor Workspace hold pins A. */
+  coreHold: boolean;
+  wsHold: boolean;
+  /** The Native queue decision whose reply has not reached Main yet. */
+  decision: CloseCause | 'commit' | null;
   answer: string | null;
   cause: CloseCause | null;
   settleRev: number | null;
@@ -116,10 +125,13 @@ interface State {
     idle: boolean;
     pend: boolean;
     S: boolean;
-    N: boolean;
     X: boolean;
   };
-  exp: Record<Clock, boolean>;
+  /**
+   * Wall deadlines pass in this order; a live deadline is later than every passed one. The
+   * monotonic Tc and the caller bound W are separate.
+   */
+  clock: { passed: CloseClock[]; mono: boolean; W: boolean };
   cold: Record<string, number | null>;
   used: string[];
   after: boolean;
@@ -154,6 +166,8 @@ interface World {
   /** Phases that the live closers may reach. Undefined: all. */
   readonly stopAt?: Phase;
   readonly init?: (s: State) => void;
+  /** Named histories: the explorer reports their count, fence classes and first trace. */
+  readonly probes?: Readonly<Record<string, (s: State) => boolean>>;
 }
 
 const sandboxFacts = (s: State): SandboxFacts => ({ ...s.sb });
@@ -187,7 +201,9 @@ function initial(world: World): State {
           claimRev: null,
           seq: null,
           slot: false,
-          holds: false,
+          coreHold: false,
+          wsHold: false,
+          decision: null,
           answer: null,
           cause: null,
           settleRev: null,
@@ -205,10 +221,9 @@ function initial(world: World): State {
       idle: true,
       pend: true,
       S: true,
-      N: true,
       X: true,
     },
-    exp: { Tc: false, Ts: false, Ta: false, W: false },
+    clock: { passed: [], mono: false, W: false },
     cold: Object.fromEntries((world.splitCold ?? []).map((k) => [k, null])),
     used: [],
     after: world.legacy === undefined,
@@ -253,6 +268,13 @@ const violate = (ctx: Ctx, name: string, detail: string) => ctx.violations.push(
 const liveTable = (ctx: Ctx, s: State) =>
   s.after || !ctx.world.legacy ? ctx.table : legacyTable(ctx.table, ctx.world.legacy);
 
+const LIVE_DEADLINE = 1_000_000;
+const deadlineOf = (s: State, clock: CloseClock) => {
+  const at = s.clock.passed.indexOf(clock);
+  return at < 0 ? LIVE_DEADLINE : at + 1;
+};
+const wallPassed = (s: State, clock: CloseClock) => s.clock.passed.includes(clock);
+
 function premises(s: State, pendingOwner: boolean): ClosePremises {
   return {
     pendingOwner,
@@ -260,12 +282,30 @@ function premises(s: State, pendingOwner: boolean): ClosePremises {
     audience: { thread: s.prem.thread, policy: s.prem.policy },
     idleReceipt: s.prem.idle,
     storage: s.prem.S,
-    placement: s.prem.N,
+    placement: { harness: s.h.life, sandbox: sandboxFacts(s) },
     connection: s.prem.X,
-    expired: { Tc: s.exp.Tc, Ts: s.exp.Ts, Ta: s.exp.Ta },
-    closeMonotonicExpired: s.exp.Tc,
+    deadlines: { Tc: deadlineOf(s, 'Tc'), Ts: deadlineOf(s, 'Ts'), Ta: deadlineOf(s, 'Ta') },
+    now: s.clock.passed.length,
+    closeMonotonicExpired: s.clock.mono,
   };
 }
+
+/** Oracle facts, read from the raw state only. */
+const rawPlacement = (s: State) =>
+  s.h.life === 'open' && s.sb.accepting && s.sb.clean && s.sb.currentEpoch;
+const ORACLE_CLOCK_CAUSE: Readonly<Record<CloseClock, CloseCause>> = {
+  Tc: 'close-allowance',
+  Ts: 'startup-deadline',
+  Ta: 'authority-expired',
+};
+const CLOCK_CAUSES: readonly CloseCause[] = [
+  'close-allowance',
+  'startup-deadline',
+  'authority-expired',
+  'deadline',
+];
+/** The first wall deadline that passed; otherwise only the monotonic Tc can have failed. */
+const expectedClockCause = (s: State) => ORACLE_CLOCK_CAUSE[s.clock.passed[0] ?? 'Tc'];
 
 /** Applies one Native restore and checks it against the raw drain provenance. */
 function applyRestore(
@@ -310,7 +350,8 @@ function applyRestore(
 function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause): void {
   const c = s.c[b]!;
   const t = liveTable(ctx, s);
-  c.holds = false;
+  c.coreHold = false;
+  c.wsHold = false;
   if (t.liveRefusalLatch === 'restore' && c.claimRev !== null)
     applyRestore(ctx, s, t, c.claimRev, b, 'rollback');
   if (
@@ -326,7 +367,9 @@ function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause): void {
   }
   c.cause = cause;
   c.answer = t.carryCause(cause, 'capacity');
-  if (c.answer !== cause) violate(ctx, 'O.cause', `${b} answered ${c.answer} for ${cause}`);
+  // A clock refusal answers the original limiting clock; every other refusal keeps its cause.
+  const expected = CLOCK_CAUSES.includes(cause) ? expectedClockCause(s) : cause;
+  if (c.answer !== expected) violate(ctx, 'O.cause', `${b} answered ${c.answer} for ${expected}`);
   c.phase = 'refused';
 }
 
@@ -368,8 +411,9 @@ function nativeSettle(ctx: Ctx, s: State, t: ReplacementCloseTable, key: string)
     s.p.succ += 1;
   }
   const c = s.c[b];
-  if (c && keyOf(b, c) === key && c.phase === 'queued') {
-    c.phase = 'settled';
+  if (c && keyOf(b, c) === key && (c.phase === 'queued' || c.phase === 'replying')) {
+    // A settle can come before the queue reply reaches Main; the reply then finds it.
+    if (c.phase === 'queued') c.phase = 'settled';
     c.settleRev = s.h.revision;
   }
   return true;
@@ -434,7 +478,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     if (f(n, ctx) === false) return;
     out.push({ label, env, next: n, violations: ctx.violations });
   };
-  const anyHolds = Object.values(s.c).some((c) => c.holds);
+  const coreHeld = Object.values(s.c).some((c) => c.coreHold);
+  const wsHeld = Object.values(s.c).some((c) => c.wsHold);
   const midFlight = Object.values(s.c).some((c) => ACTIVE.includes(c.phase));
   const reach = (p: Phase) =>
     world.stopAt === undefined ||
@@ -472,6 +517,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         x.answer = null;
         x.cause = null;
         x.claimRev = null;
+        x.settleRev = null;
         x.phase = 'registered';
         void ctx;
       });
@@ -515,7 +561,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     if (c.phase === 'published' && reach('held'))
       add(`hold:${b}`, false, (n) => {
         const x = n.c[b]!;
-        x.holds = true;
+        x.coreHold = true;
+        x.wsHold = true;
         x.seq = n.h.nextSequence;
         x.phase = 'held';
       });
@@ -525,54 +572,71 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         const cause = t.post(premises(n, n.prem.pend));
         if (cause) return liveRefuse(ctx, n, b, cause);
         const q = n.prem;
-        if (!(q.pend && q.R && q.thread && q.policy && q.idle && !n.exp.Tc && !n.exp.Ta))
+        const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ta') || n.clock.mono;
+        if (!(q.pend && q.R && q.thread && q.policy && q.idle) || clocks)
           violate(ctx, 'O.frame', `${b} posted with a failed premise`);
-        if (t.holdUntil === 'post') x.holds = false;
+        if (t.holdUntil.core === 'post') x.coreHold = false;
+        if (t.holdUntil.workspace === 'post') x.wsHold = false;
         x.phase = 'posted';
       });
     if (c.phase === 'posted' && reach('queued'))
+      // RC8: the Native transaction decides. Its reply reaches Main in a separate step, and the
+      // pins stay held until then.
+      add(`queue:${b}`, false, (n, ctx) => {
+        const x = n.c[b]!;
+        const key = keyOf(b, x);
+        const slotExpired = t.deadlineSlot.some((clock) => wallPassed(n, clock));
+        const cause = t.queue({
+          harness: n.h,
+          claimRevision: x.claimRev,
+          key: { binding: b, key, sequence: x.seq! },
+          slotExpired,
+          storage: n.prem.S,
+          sandbox: sandboxFacts(n),
+        });
+        if (!cause) {
+          const q = n.prem;
+          const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
+          const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || wallPassed(n, 'Ta');
+          if (clocks || !rawPlacement(n) || !(q.S && q.R && q.thread && q.policy && q.idle) || !own)
+            violate(ctx, 'O.queue', `${key} committed with a failed premise or latch`);
+          n.h = {
+            ...n.h,
+            cell: 'queued',
+            key,
+            sequence: x.seq,
+            operation: 'session.close',
+            result: null,
+            revision: n.h.revision + 1,
+          };
+          // A new queue cell has no delivery reservation yet.
+          n.reserved = null;
+          n.p.committed.push(key);
+        }
+        x.decision = cause ?? 'commit';
+        x.phase = 'replying';
+      });
+    if (c.phase === 'replying')
       for (const reply of world.lostReply ? ['ack', 'lost'] : ['ack'])
-        add(`queue:${b}:${reply}`, false, (n, ctx) => {
+        add(`reply:${b}:${reply}`, false, (n, ctx) => {
           const x = n.c[b]!;
-          const key = keyOf(b, x);
-          const slotExpired = t.deadlineSlot.some((clock) => n.exp[clock]);
-          const cause = t.queue({
-            harness: n.h,
-            claimRevision: x.claimRev,
-            key: { binding: b, key, sequence: x.seq! },
-            slotExpired,
-            storage: n.prem.S,
-            placement: n.prem.N,
-          });
-          if (!cause) {
-            const q = n.prem;
-            const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
-            if (
-              n.exp.Tc ||
-              n.exp.Ts ||
-              n.exp.Ta ||
-              !(q.S && q.N && q.R && q.thread && q.policy && q.idle) ||
-              !own
-            )
-              violate(ctx, 'O.queue', `${key} committed with a failed premise or latch`);
-            n.h = {
-              ...n.h,
-              cell: 'queued',
-              key,
-              sequence: x.seq,
-              operation: 'session.close',
-              result: null,
-              revision: n.h.revision + 1,
-            };
-            n.p.committed.push(key);
-          }
-          x.holds = false;
+          const decision = x.decision!;
+          x.decision = null;
+          x.coreHold = false;
+          x.wsHold = false;
           if (reply === 'lost') {
             x.phase = 'unknown-reply';
+            x.settleRev = null;
             return;
           }
-          if (cause) return liveRefuse(ctx, n, b, cause);
-          x.phase = 'queued';
+          if (decision !== 'commit')
+            return liveRefuse(
+              ctx,
+              n,
+              b,
+              decision === 'deadline' ? t.slotCause(premises(n, n.prem.pend)) : decision
+            );
+          x.phase = x.settleRev !== null ? 'settled' : 'queued';
         });
     if (c.phase === 'unknown-reply')
       add(`readback:${b}`, false, (n, ctx) => {
@@ -610,11 +674,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         x.phase = 'done';
       });
     if (
-      s.exp.W &&
+      s.clock.W &&
       c.answer === null &&
       ACTIVE.includes(c.phase) &&
       (t.callerBound === 'original-deadline' ||
-        !['posted', 'unknown-reply', 'queued'].includes(c.phase))
+        !['posted', 'replying', 'unknown-reply', 'queued'].includes(c.phase))
     )
       add(`bound:${b}`, false, (n) => {
         n.c[b]!.answer = 'bound';
@@ -643,7 +707,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               x !== undefined &&
               keyOf(b, x) === key &&
               x.slot &&
-              ['queued', 'unknown-reply'].includes(x.phase);
+              ['replying', 'queued', 'unknown-reply'].includes(x.phase);
             const d = t.firstBytes(premises(n, pending));
             if (d.kind === 'refuse') {
               n.p.unsent.push(key);
@@ -652,20 +716,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               return;
             }
             const q = n.prem;
+            const clocks = n.clock.passed.length > 0 || n.clock.mono;
             if (
-              !(
-                pending &&
-                q.R &&
-                q.thread &&
-                q.policy &&
-                q.idle &&
-                q.S &&
-                q.N &&
-                q.X &&
-                !n.exp.Tc &&
-                !n.exp.Ts &&
-                !n.exp.Ta
-              )
+              !(pending && q.R && q.thread && q.policy && q.idle && q.S && q.X) ||
+              !rawPlacement(n) ||
+              clocks
             )
               violate(ctx, 'O.bytes', `${key} first bytes with a failed premise`);
             if (variant === 'transport') {
@@ -712,7 +767,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     const action = table.cold(facts);
     const split = world.splitCold !== undefined && action.kind === 'restore';
     if (!split && action.kind !== 'none' && action.kind !== 'fence')
-      add(`cold:${action.kind}`, false, (n, ctx) => applyCold(ctx, n, action));
+      add(
+        action.kind === 'restore' ? `cold:restore:${action.scope}` : `cold:${action.kind}`,
+        false,
+        (n, ctx) => applyCold(ctx, n, action)
+      );
     if (split)
       for (const k of world.splitCold!)
         if (s.cold[k] === null)
@@ -740,45 +799,89 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         case 'Tc':
         case 'Ts':
         case 'Ta':
+          // A held Core writer does not stop a clock.
+          env((n) => {
+            n.clock.passed.push(e);
+          });
+          break;
+        case 'TcMono':
+          // The monotonic Tc passes while the wall Tc is still live.
+          if (!wallPassed(s, 'Tc'))
+            env((n) => {
+              n.clock.mono = true;
+            });
+          break;
         case 'W':
           env((n) => {
-            n.exp[e] = true;
+            n.clock.W = true;
           });
           break;
         case 'thread':
+          if (!wsHeld)
+            env((n) => {
+              n.prem.thread = false;
+            });
+          break;
         case 'R':
         case 'idle':
-          if (!anyHolds)
+          if (!coreHeld)
             env((n) => {
               n.prem[e] = false;
             });
           break;
+        case 'core':
+          // Core user disable or membership: it writes R and B under the Core hold.
+          if (!coreHeld)
+            env((n) => {
+              n.prem.R = false;
+              n.prem.idle = false;
+            });
+          break;
         case 'policy':
-          if (!(anyHolds && table.policyOrder === 'workspace-hold'))
+          if (!(wsHeld && table.policyOrder === 'workspace-hold'))
             env((n) => {
               n.prem.policy = false;
             });
           break;
         case 'pend':
         case 'S':
-        case 'N':
         case 'X':
           env((n) => {
             n.prem[e] = false;
           });
           break;
-        case 'hdrain':
+        case 'open':
+          // session.open or turn.start: the Native queue refuses both on a draining Harness.
           if (
+            s.h.life === 'open' &&
             s.h.drain === 'accepting' &&
-            (s.h.cell === 'idle' || s.h.cell === 'settled') &&
-            s.p.drainBy.length === 0
+            (s.h.cell === 'idle' || s.h.cell === 'settled')
           )
+            env((n) => {
+              n.h = {
+                ...n.h,
+                cell: 'settled',
+                key: 'Z8',
+                sequence: n.h.nextSequence,
+                operation: 'session.open',
+                result: 'succeeded',
+                nextSequence: n.h.nextSequence + 1,
+                revision: n.h.revision + 1,
+              };
+            });
+          break;
+        case 'hdrain':
+          // A Harness-only drain is an operation on the cell. Its result also lands on a row
+          // that a local claim already drains (N:1892-1897).
+          if (s.h.cell === 'idle' || s.h.cell === 'settled')
             env((n) => {
               n.h = {
                 ...n.h,
                 drain: 'draining',
                 operation: 'harness.drain',
                 cell: 'settled',
+                key: 'Z7',
+                sequence: n.h.nextSequence,
                 result: 'succeeded',
                 revision: n.h.revision + 1,
                 nextSequence: n.h.nextSequence + 1,
@@ -818,7 +921,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
                 cell: 'settled',
                 key: 'Z9',
                 sequence: n.h.nextSequence,
-                operation: null,
+                operation: 'other',
                 result: 'succeeded',
                 nextSequence: n.h.nextSequence + 1,
                 revision: n.h.revision + 1,
@@ -840,8 +943,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               x.phase = restart ? 'idle' : 'dead';
               x.gen += 1;
               x.slot = false;
-              x.holds = false;
+              x.coreHold = false;
+              x.wsHold = false;
+              x.decision = null;
               x.claimRev = null;
+              x.settleRev = null;
               x.answer = null;
             }
             n.excl = null;
@@ -858,7 +964,9 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           if (
             s.present.B &&
             s.cap.B === 'none' &&
-            !['queued', 'unknown-reply', 'settled', 'done'].includes(s.c.A?.phase ?? 'idle')
+            !['replying', 'queued', 'unknown-reply', 'settled', 'done'].includes(
+              s.c.A?.phase ?? 'idle'
+            )
           )
             env((n) => {
               n.cap.B = 'claimed';
@@ -904,14 +1012,33 @@ function fenceClass(world: World, s: State): string | null {
     s.h.operation === 'session.close' &&
     key !== null &&
     claimOwners.includes(ownerOfKey(key));
+  // ENGINEER (b) and (d): an abandon fences every restore, because an older claim can leave the
+  // same durable values as a sibling that never held the latch.
   const abandoned = world.bindings.filter((b) => s.cap[b] === 'abandoned');
-  if (abandoned.length > 0 && !settledClose)
+  if (abandoned.length > 0)
     return abandoned.some((b) => claimOwners.includes(b)) ? 'abandon-own' : 'abandon-sibling';
-  // ENGINEER gap: a later operation reused the cell of a settled close, so neither the P7
+  // The two gaps below are cold exits; a live owner still decides its own close.
+  if (Object.values(s.c).some((c) => ACTIVE.includes(c.phase))) return null;
+  // ENGINEER (c): a later operation reused the cell of a settled close, so neither the P7
   // settle revision nor an open capture proves the claim any more.
   if (claimOwners.some((o) => s.core[o] && (key === null || ownerOfKey(key) !== o)))
     return 'gap-reused-cell';
+  // ENGINEER (a), failed closed: the last operation does not exclude a replaced Harness-only
+  // drain marker, so the local claim is not positively attributed.
+  const opProves =
+    (s.h.cell === 'idle' && s.h.operation === null) ||
+    (s.h.cell === 'settled' && ['session.open', 'turn.start'].includes(s.h.operation ?? ''));
+  // A settled close of a claimant whose settle revision still matches has its own exit, P7.
+  const p7Proof =
+    settledClose && key !== null && s.core[ownerOfKey(key)]?.revision === s.h.revision;
+  if (!opProves && !p7Proof) return 'ambiguous-drain';
   return null;
+}
+
+interface Projections {
+  total: number;
+  ambiguous: number;
+  histories: Record<string, number>;
 }
 
 interface Report {
@@ -921,9 +1048,20 @@ interface Report {
   quiescent: number;
   fences: Record<string, number>;
   traces: Record<string, string[]>;
-  projections?: { total: number; ambiguous: number; histories: Record<string, number> };
+  /** Restores that made the Harness accepting, by edge kind, and how many admit a fresh close. */
+  exits: Record<string, number>;
+  fresh: number;
+  /** F3: `crash` counts the durable projection at each crash edge only; `after` counts every
+   * state after the restart, including later owner steps. */
+  projections?: { crash: Projections; after: Projections };
+  probes: Record<
+    string,
+    { states: number; quiescent: Record<string, number>; trace: string[] | null }
+  >;
   truncated: boolean;
 }
+
+const EXIT_KINDS = ['cold:restore:quiescent', 'cold:restore:close', 'restore:', 'cold-post:'];
 
 function explore(
   world: World,
@@ -943,10 +1081,26 @@ function explore(
     quiescent: 0,
     fences: {},
     traces: {},
+    exits: {},
+    fresh: 0,
+    probes: {},
     truncated: false,
   };
-  const projections = new Map<string, Set<string>>();
-  const histories: Record<string, number> = {};
+  const projections = {
+    crash: { sets: new Map<string, Set<string>>(), histories: {} as Record<string, number> },
+    after: { sets: new Map<string, Set<string>>(), histories: {} as Record<string, number> },
+  };
+  const project = (kind: 'crash' | 'after', s: State) => {
+    const projection = JSON.stringify([s.sb, s.h, s.occ, s.present, s.cap, s.core]);
+    const history = historyOf(s);
+    const p = projections[kind];
+    p.histories[history] = (p.histories[history] ?? 0) + 1;
+    const set = p.sets.get(projection) ?? new Set<string>();
+    set.add(`${history}|${[...s.p.drainBy].sort().join(',')}`);
+    p.sets.set(projection, set);
+  };
+  // In a legacy world the older writers run before the restart. Only the new code is checked.
+  const checked = (s: State) => !world.legacy || s.after;
   const trace = (key: string, last?: string): string[] => {
     const out: string[] = last ? [last] : [];
     let at = parent.get(key);
@@ -966,44 +1120,74 @@ function explore(
     report.states += 1;
     const next = steps(world, table, s);
     report.edges += next.length;
-    for (const step of next)
-      for (const v of step.violations) record(v.name, key, `${step.label} -> ${v.detail}`);
-    if (options.stopOn && report.traces[options.stopOn]) break;
-    // State-local oracles.
-    for (const [b, c] of Object.entries(s.c))
-      if (
-        s.exp.W &&
-        c.answer === null &&
-        ACTIVE.includes(c.phase) &&
-        !next.some((step) => step.label === `bound:${b}`)
-      )
-        record('O.bound', key, `${b} unanswered at the caller bound`);
-    if (s.occ !== s.p.occ0 - s.p.succ) record('O.occupancy', key, `occupancy ${s.occ}`);
-    // The F3 projection compare: full durable values right after a crash.
-    if (s.used.includes('crash') && s.used.at(-1) === 'crash' && world.closers.length > 1) {
-      const projection = JSON.stringify([s.sb, s.h, s.occ, s.present, s.cap, s.core]);
-      const history = historyOf(s);
-      histories[history] = (histories[history] ?? 0) + 1;
-      const set = projections.get(projection) ?? new Set<string>();
-      set.add(`${history}|${[...s.p.drainBy].sort().join(',')}`);
-      projections.set(projection, set);
+    for (const step of next) {
+      if (checked(s))
+        for (const v of step.violations) record(v.name, key, `${step.label} -> ${v.detail}`);
+      // Positive endpoint: each restore that makes the Harness accepting admits a fresh close.
+      const kind = EXIT_KINDS.find((k) => step.label.startsWith(k));
+      if (kind && checked(s) && s.h.drain === 'draining' && step.next.h.drain === 'accepting') {
+        report.exits[kind] = (report.exits[kind] ?? 0) + 1;
+        const n = step.next;
+        const admitted =
+          table.admit({
+            exclusionHolder: n.excl,
+            self: 'fresh',
+            harness: n.h,
+            sandbox: sandboxFacts(n),
+          }) === null && typeof table.claim(n.h, sandboxFacts(n)) !== 'string';
+        if (admitted) report.fresh += 1;
+        else record('L.fresh', key, `${step.label} -> no fresh admission`);
+      }
+      if (step.label === 'env:crash' && world.closers.length > 1) project('crash', step.next);
     }
+    if (options.stopOn && report.traces[options.stopOn]) break;
+    for (const [name, probe] of Object.entries(world.probes ?? {}))
+      if (probe(s)) {
+        report.probes[name] ??= { states: 0, quiescent: {}, trace: null };
+        const entry = report.probes[name]!;
+        entry.states += 1;
+        entry.trace ??= trace(key);
+      }
+    if (checked(s)) {
+      // State-local oracles.
+      for (const [b, c] of Object.entries(s.c))
+        if (
+          s.clock.W &&
+          c.answer === null &&
+          ACTIVE.includes(c.phase) &&
+          !next.some((step) => step.label === `bound:${b}`)
+        )
+          record('O.bound', key, `${b} unanswered at the caller bound`);
+      if (s.occ !== s.p.occ0 - s.p.succ) record('O.occupancy', key, `occupancy ${s.occ}`);
+    }
+    if (s.used.includes('crash') && s.used.at(-1) === 'crash' && world.closers.length > 1)
+      project('after', s);
     const owner = next.filter((step) => !step.env && JSON.stringify(step.next) !== key);
     if (owner.length === 0) {
       report.quiescent += 1;
       const cls = fenceClass(world, s);
+      for (const [name, probe] of Object.entries(world.probes ?? {}))
+        if (probe(s)) {
+          const q = report.probes[name]!.quiescent;
+          const label = cls ?? (s.h.drain === 'accepting' ? 'accepting' : 'unclassified');
+          q[label] = (q[label] ?? 0) + 1;
+        }
       const active = Object.values(s.c).some((c) => ACTIVE.includes(c.phase));
-      if (cls !== null) {
+      if (!checked(s)) {
+        // Older writers only: no liveness claim.
+      } else if (cls !== null) {
         report.fences[cls] = (report.fences[cls] ?? 0) + 1;
         record(`fence:${cls}`, key);
       } else if (active && world.stopAt === undefined)
         record('L.stuck', key, 'a live owner has no next step');
       else if (s.h.drain === 'draining' && !active)
         record('L.exit', key, `stranded latch: ${s.p.drainBy.join(',')}`);
-      if (s.p.owed > 0) record('L.e7', key, 'a restore owes its E7 request');
-      for (const [b, c] of Object.entries(s.c))
-        if (c.slot && (c.phase === 'refused' || c.phase === 'done'))
-          record('L.slot', key, `${b} keeps its slots after the proof`);
+      if (checked(s)) {
+        if (s.p.owed > 0) record('L.e7', key, 'a restore owes its E7 request');
+        for (const [b, c] of Object.entries(s.c))
+          if (c.slot && (c.phase === 'refused' || c.phase === 'done'))
+            record('L.slot', key, `${b} keeps its slots after the proof`);
+      }
     }
     for (const step of next) {
       const nk = JSON.stringify(step.next);
@@ -1017,14 +1201,15 @@ function explore(
       queue.push(nk);
     }
   }
-  if (projections.size > 0)
-    report.projections = {
-      total: projections.size,
-      ambiguous: [...projections.values()].filter(
-        (set) => new Set([...set].map((h) => h.split('|')[1])).size > 1
-      ).length,
-      histories,
-    };
+  const summary = (p: (typeof projections)['crash']): Projections => ({
+    total: p.sets.size,
+    ambiguous: [...p.sets.values()].filter(
+      (set) => new Set([...set].map((h) => h.split('|')[1])).size > 1
+    ).length,
+    histories: p.histories,
+  });
+  if (projections.after.sets.size > 0)
+    report.projections = { crash: summary(projections.crash), after: summary(projections.after) };
   return report;
 }
 
@@ -1044,18 +1229,29 @@ const LIVE_ENV: readonly Env[] = [
   'Tc',
   'Ts',
   'Ta',
+  'TcMono',
   'W',
   'thread',
   'policy',
   'R',
   'idle',
+  'core',
   'pend',
   'S',
-  'N',
   'X',
   'sbdrain',
+  'fail',
   'crash',
 ];
+
+/** V1-P: A settled; B's older claim committed; the stop came before B's source; B abandoned. */
+const unsafeLegacyP7 = (s: State) =>
+  s.after &&
+  s.core.A?.result === 'succeeded' &&
+  s.h.operation === 'session.close' &&
+  s.h.key === s.core.A.key &&
+  s.cap.B === 'abandoned' &&
+  s.p.drainBy.includes('claim:B');
 
 const startPublished =
   (rev = 1) =>
@@ -1111,7 +1307,10 @@ const WORLDS = {
     polls: ['p1'],
     stopAt: 'latched',
   },
-  /** Older double claims (c1: no revision change) in a data root, then the new cold decide. */
+  /**
+   * Older double claims (c1: no revision change) in a data root, then the new cold decide. The
+   * older writers run every phase before the restart.
+   */
   legacyC1: {
     name: 'legacy-c1',
     closers: ['A', 'B'],
@@ -1120,7 +1319,7 @@ const WORLDS = {
     budget: 1,
     polls: ['p1'],
     legacy: 'c1',
-    stopAt: 'published',
+    probes: { 'v1p-unsafe-p7': unsafeLegacyP7 },
   },
   legacyR2: {
     name: 'legacy-r2',
@@ -1130,7 +1329,61 @@ const WORLDS = {
     budget: 1,
     polls: ['p1'],
     legacy: 'r2',
-    stopAt: 'published',
+  },
+  /** CL3 to completion: each winner order, then the other's fresh claim after the release. */
+  cl3full: {
+    name: 'cl3-full',
+    closers: ['A', 'B'],
+    bindings: ['A', 'B'],
+    env: [],
+    budget: 0,
+    polls: ['p1'],
+    retry: true,
+    probes: {
+      G1: (s: State) => s.c.A!.phase === 'done' && s.c.B!.gen > 1 && s.c.B!.claimRev !== null,
+      G2: (s: State) => s.c.B!.phase === 'done' && s.c.A!.gen > 1 && s.c.A!.claimRev !== null,
+    },
+  },
+  /** A Core writer and a Workspace writer, each under its own hold. */
+  pins: {
+    name: 'pins',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['core', 'thread'],
+    budget: 1,
+    polls: ['p1'],
+    stopAt: 'queued',
+  },
+  /** An independent Harness-only drain lands on a Harness that A's claim already drains. */
+  overdrain: {
+    name: 'overdrain',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['hdrain', 'reuse', 'crash'],
+    budget: 3,
+    polls: ['p1'],
+    probes: {
+      'independent-on-marker': (s: State) =>
+        s.p.drainBy.includes('claim:A') && s.p.drainBy.includes('hdrain'),
+    },
+  },
+  /**
+   * F3-HD: A's receipt is still open after an earlier restore. A Harness-only drain follows, then
+   * a later operation replaces its `harness.drain` marker. The exit fails closed.
+   */
+  staleReceipt: {
+    name: 'stale-receipt',
+    closers: [],
+    bindings: ['A'],
+    env: ['open', 'hdrain', 'reuse'],
+    budget: 3,
+    polls: ['p1'],
+    init: (s: State) => {
+      s.cap.A = 'receipt';
+    },
+    probes: {
+      'f3-hd': (s: State) => s.p.drainBy.includes('hdrain') && s.h.operation === 'other',
+    },
   },
   /** A's cold restore paused after its positive read; B's admitted claim advances. */
   pausedRestore: {
@@ -1190,6 +1443,7 @@ const WORLDS = {
         cell: 'settled',
         key: 'Z0',
         sequence: 0,
+        operation: 'turn.start',
         result: 'succeeded',
         nextSequence: 1,
       };
@@ -1221,7 +1475,11 @@ const WORLDS = {
       s.p.drainBy = ['claim:B'];
     },
   },
-  /** A completes P6/P7 while sibling B has an abandoned capture. */
+  /**
+   * ENGINEER (b): A completes P6/P7 while sibling B, which never held the latch, has an abandoned
+   * capture. The live owner releases once. After a restart the cold decide keeps the fence,
+   * because the legacy c1 history leaves the same durable values.
+   */
   sibling: {
     name: 'sibling',
     closers: ['A'],
@@ -1233,25 +1491,19 @@ const WORLDS = {
       startPublished()(s);
       s.cap.B = 'abandoned';
     },
+    probes: {
+      'genuine-sibling': (s: State) =>
+        s.after &&
+        s.used.includes('crash') &&
+        s.h.cell === 'settled' &&
+        s.h.operation === 'session.close' &&
+        s.cap.B === 'abandoned' &&
+        !s.p.drainBy.includes('claim:B') &&
+        s.h.drain === 'draining',
+      'live-release': (s: State) => s.c.A!.phase === 'done' && s.h.drain === 'accepting',
+    },
   },
 } satisfies Record<string, World>;
-
-/**
- * ENGINEER F3-HD: A's earlier receipt is still open after a quiescent restore. A Harness-only
- * drain follows, then a later operation replaces its `harness.drain` marker. Kept apart from the
- * baseline: the explorer must keep finding this until a durable claim marker exists.
- */
-const STALE_RECEIPT: World = {
-  name: 'stale-receipt',
-  closers: [],
-  bindings: ['A'],
-  env: ['hdrain', 'reuse'],
-  budget: 2,
-  polls: ['p1'],
-  init: (s: State) => {
-    s.cap.A = 'receipt';
-  },
-};
 
 /* ---------------------------------------------------------------- mutations */
 
@@ -1272,22 +1524,38 @@ const restoreWithout =
       drop === 'sandbox' ? { accepting: true, clean: true, currentEpoch: true } : s
     ) &&
     (drop === 'revision' || h.revision === revision);
-const postWithout = (field: 'Tc' | 'pendingOwner' | 'thread' | 'policy') => (p: ClosePremises) =>
-  T.post({
-    ...p,
-    ...(field === 'Tc'
-      ? { expired: { ...p.expired, Tc: false }, closeMonotonicExpired: false }
-      : {}),
-    ...(field === 'pendingOwner' ? { pendingOwner: true } : {}),
-    ...(field === 'thread' ? { audience: { ...p.audience, thread: true } } : {}),
-    ...(field === 'policy' ? { audience: { ...p.audience, policy: true } } : {}),
-  });
+const OPEN_SANDBOX: SandboxFacts = { accepting: true, clean: true, currentEpoch: true };
+const postWithout =
+  (field: 'Tc' | 'mono' | 'pendingOwner' | 'thread' | 'policy') => (p: ClosePremises) =>
+    T.post({
+      ...p,
+      ...(field === 'Tc'
+        ? { deadlines: { ...p.deadlines, Tc: LIVE_DEADLINE }, closeMonotonicExpired: false }
+        : {}),
+      ...(field === 'mono' ? { closeMonotonicExpired: false } : {}),
+      ...(field === 'pendingOwner' ? { pendingOwner: true } : {}),
+      ...(field === 'thread' ? { audience: { ...p.audience, thread: true } } : {}),
+      ...(field === 'policy' ? { audience: { ...p.audience, policy: true } } : {}),
+    });
 const bytesWithout =
-  (field: 'Ta' | 'idleReceipt' | 'pendingOwner' | 'thread' | 'policy' | 'storage' | 'connection') =>
+  (
+    field:
+      | 'Ta'
+      | 'mono'
+      | 'placement'
+      | 'idleReceipt'
+      | 'pendingOwner'
+      | 'thread'
+      | 'policy'
+      | 'storage'
+      | 'connection'
+  ) =>
   (p: ClosePremises) =>
     T.firstBytes({
       ...p,
-      ...(field === 'Ta' ? { expired: { ...p.expired, Ta: false } } : {}),
+      ...(field === 'Ta' ? { deadlines: { ...p.deadlines, Ta: LIVE_DEADLINE } } : {}),
+      ...(field === 'mono' ? { closeMonotonicExpired: false } : {}),
+      ...(field === 'placement' ? { placement: { ...p.placement, sandbox: OPEN_SANDBOX } } : {}),
       ...(field === 'idleReceipt' ? { idleReceipt: true } : {}),
       ...(field === 'pendingOwner' ? { pendingOwner: true } : {}),
       ...(field === 'thread' ? { audience: { ...p.audience, thread: true } } : {}),
@@ -1296,12 +1564,22 @@ const bytesWithout =
       ...(field === 'connection' ? { connection: true } : {}),
     });
 
+/** The cold rules with `ids` moved in front of `before`. */
+function moveBefore(ids: readonly string[], before: string): ColdRule[] {
+  const moved = COLD_RULES.filter((r) => ids.includes(r.id));
+  const rest = COLD_RULES.filter((r) => !ids.includes(r.id));
+  const at = rest.findIndex((r) => r.id === before);
+  return [...rest.slice(0, at), ...moved, ...rest.slice(at)];
+}
+
 interface MutationRow {
   readonly id: string;
   readonly world: World;
   readonly oracle: string;
   readonly table: Partial<ReplacementCloseTable>;
   readonly takeOut: string;
+  /** The named writer: the failing trace must contain this edge. */
+  readonly via?: string;
 }
 
 const M: readonly MutationRow[] = [
@@ -1413,21 +1691,21 @@ const M: readonly MutationRow[] = [
   },
   {
     id: 'M-F3d',
-    world: WORLDS.sibling,
+    world: WORLDS.live,
     oracle: 'L.exit',
     takeOut: 'remove the P6 result-only completion',
     table: { cold: withRules(['p6-stale']) },
   },
   {
     id: 'M-F3e',
-    world: WORLDS.sibling,
+    world: WORLDS.live,
     oracle: 'L.exit',
     takeOut: 'remove the P7 stale exit',
     table: { cold: withRules(['p7-stale']) },
   },
   {
     id: 'M-F3f',
-    world: WORLDS.sibling,
+    world: WORLDS.live,
     oracle: 'L.exit',
     takeOut: 'remove the P7 success exit',
     table: { cold: withRules(['p7-success']) },
@@ -1454,10 +1732,19 @@ const M: readonly MutationRow[] = [
   },
   {
     id: 'M-F4b',
-    world: WORLDS.live,
+    world: WORLDS.pins,
     oracle: 'O.queue',
     takeOut: 'release the Core hold at the post',
-    table: { holdUntil: 'post' },
+    table: { holdUntil: { core: 'post', workspace: 'queue-reply' } },
+    via: 'env:core',
+  },
+  {
+    id: 'M-F4i',
+    world: WORLDS.pins,
+    oracle: 'O.queue',
+    takeOut: 'release the successor Workspace hold at the post',
+    table: { holdUntil: { core: 'queue-reply', workspace: 'post' } },
+    via: 'env:thread',
   },
   {
     id: 'M-F4c',
@@ -1663,7 +1950,13 @@ const M: readonly MutationRow[] = [
                 decide: (f: ColdFacts) =>
                   r.decide({ ...f, harness: { ...f.harness, operation: null } }),
               }
-            : r
+            : r.id === 'drain-after-op'
+              ? {
+                  id: r.id,
+                  decide: (f: ColdFacts) =>
+                    f.harness.operation === 'harness.drain' ? undefined : r.decide(f),
+                }
+              : r
         )
       ),
       restore: restoreWithout('harness-drain'),
@@ -1739,6 +2032,79 @@ const M: readonly MutationRow[] = [
     takeOut: 'restore on the readable anchors only',
     table: { cold: withRules(['anchors']) },
   },
+  {
+    id: 'M-T1',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'answer close-allowance for every deadline-slot refusal',
+    table: { slotCause: () => 'close-allowance' },
+  },
+  {
+    id: 'M-T2',
+    world: WORLDS.live,
+    oracle: 'O.frame',
+    takeOut: 'RC7 reads only the wall Tc',
+    table: { post: postWithout('mono') },
+    via: 'env:TcMono',
+  },
+  {
+    id: 'M-T3',
+    world: WORLDS.live,
+    oracle: 'O.bytes',
+    takeOut: 'RC10 reads only the wall Tc',
+    table: { firstBytes: bytesWithout('mono') },
+    via: 'env:TcMono',
+  },
+  {
+    id: 'M-T4',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'RC7 answers Tc before an earlier limiting clock',
+    table: {
+      post: (p) =>
+        p.pendingOwner && (p.deadlines.Tc <= p.now || p.closeMonotonicExpired)
+          ? 'close-allowance'
+          : T.post(p),
+    },
+  },
+  {
+    id: 'M-N1',
+    world: WORLDS.live,
+    oracle: 'O.queue',
+    takeOut: 'RC8 does not read the Sandbox owner facts',
+    table: { queue: (i) => T.queue({ ...i, sandbox: OPEN_SANDBOX }) },
+    via: 'env:sbdrain',
+  },
+  {
+    id: 'M-N2',
+    world: WORLDS.live,
+    oracle: 'O.bytes',
+    takeOut: 'RC10 does not read the Sandbox owner facts',
+    table: { firstBytes: bytesWithout('placement') },
+    via: 'env:sbdrain',
+  },
+  {
+    id: 'M-HD1',
+    world: WORLDS.staleReceipt,
+    oracle: 'O.restore.foreign',
+    takeOut: 'the quiescent exit accepts any last operation (F3-HD)',
+    table: { cold: withRules(['drain-after-op']) },
+  },
+  {
+    id: 'M-HD2',
+    world: WORLDS.overdrain,
+    oracle: 'O.restore.foreign',
+    takeOut: 'the quiescent exit accepts any last operation (drain on a local marker)',
+    table: { cold: withRules(['drain-after-op']) },
+    via: 'env:hdrain',
+  },
+  {
+    id: 'M-P7a',
+    world: WORLDS.legacyC1,
+    oracle: 'O.restore.abandon',
+    takeOut: 'P7 runs before the anchor and abandon fences (the S2 order)',
+    table: { cold: composeCold(moveBefore(['p7-success', 'p7-stale'], 'anchors')) },
+  },
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -1753,14 +2119,38 @@ const keep = (name: string, value: unknown) => {
 
 const SAFETY = (name: string) => name.startsWith('O.') || name.startsWith('L.');
 
-describe('replacement close lifecycle model check', () => {
-  const reports: Report[] = [];
+const cache = new Map<string, Report>();
+const reportOf = (world: World): Report => {
+  let report = cache.get(world.name);
+  if (!report) {
+    report = explore(world, T);
+    cache.set(world.name, report);
+  }
+  return report;
+};
 
+/** Follows one directed schedule. Each edge must be enabled and violate nothing. */
+function run(world: World, labels: readonly string[], table = T): State {
+  let s = initial(world);
+  for (const [i, label] of labels.entries()) {
+    const step = steps(world, table, s).find((x) => x.label === label);
+    if (!step)
+      throw new Error(`${label} is not enabled after ${labels.slice(0, i).join(' | ') || 'start'}`);
+    expect(step.violations).toEqual([]);
+    s = step.next;
+  }
+  return s;
+}
+const enabled = (world: World, s: State) => steps(world, T, s).map((x) => x.label);
+
+const TO_POST = ['admit:A', 'ws:A', 'claim:A', 'raw:A', 'pub:A', 'hold:A', 'post:A'];
+const TO_QUEUED = [...TO_POST, 'queue:A', 'reply:A:ack'];
+
+describe('replacement close lifecycle model check', () => {
   it.each(Object.values(WORLDS))(
     'the unmodified table holds every invariant in $name',
     (world) => {
-      const report = explore(world, T);
-      reports.push(report);
+      const report = reportOf(world);
       keep(`baseline:${world.name}`, report);
       expect(report.truncated).toBe(false);
       expect(Object.keys(report.traces).filter(SAFETY)).toEqual([]);
@@ -1771,6 +2161,7 @@ describe('replacement close lifecycle model check', () => {
   );
 
   it('reports state and edge counts and the named fences', () => {
+    const reports = Object.values(WORLDS).map(reportOf);
     const totals = {
       states: reports.reduce((n, r) => n + r.states, 0),
       edges: reports.reduce((n, r) => n + r.edges, 0),
@@ -1780,31 +2171,166 @@ describe('replacement close lifecycle model check', () => {
     expect(totals.states).toBeGreaterThan(1000);
   });
 
-  it('F3: full durable values cannot name the claimant, and every cold step is safe for all of them', () => {
-    const c1 = explore(WORLDS.legacyC1, T);
-    const r2 = explore(WORLDS.legacyR2, T);
-    const cl3 = explore(WORLDS.cl3, T);
+  it('F3: full durable values cannot name the claimant, at the crash edge and after the restart', () => {
+    const c1 = reportOf(WORLDS.legacyC1);
+    const r2 = reportOf(WORLDS.legacyR2);
+    const cl3 = reportOf(WORLDS.cl3);
     keep('f3', {
       c1: c1.projections,
       r2: r2.projections,
       cl3: cl3.projections,
       fences: { c1: c1.fences, r2: r2.fences, cl3: cl3.fences },
     });
-    // Older writers leave equal projections for different latch owners.
-    expect(c1.projections!.ambiguous).toBeGreaterThan(0);
-    expect(r2.projections!.ambiguous).toBeGreaterThan(0);
-    expect(c1.projections!.histories.H2).toBeGreaterThan(0);
+    // Older writers leave equal projections for different latch owners at the crash edge itself.
+    expect(c1.projections!.crash.ambiguous).toBeGreaterThan(0);
+    expect(c1.projections!.after.ambiguous).toBeGreaterThan(0);
+    // The lifted phase cap reaches every legacy history.
+    for (const h of ['H1', 'H2', 'H3'])
+      expect(
+        (c1.projections!.after.histories[h] ?? 0) + (r2.projections!.after.histories[h] ?? 0)
+      ).toBeGreaterThan(0);
     // CL3 produces no double claim.
-    expect(cl3.projections?.histories.H2 ?? 0).toBe(0);
-    // The cold decide stays safe on every history with the same values.
-    for (const report of [c1, r2, cl3])
-      expect(Object.keys(report.traces).filter(SAFETY)).toEqual([]);
+    expect(cl3.projections?.after.histories.H2 ?? 0).toBe(0);
+    expect(cl3.projections?.crash.histories.H2 ?? 0).toBe(0);
   }, 600_000);
 
-  it('ENGINEER F3-HD: the claimant-free exit still clears a Harness-only drain after cell reuse', () => {
-    const report = explore(STALE_RECEIPT, T);
-    keep('engineer:f3-hd', report.traces['O.restore.foreign']);
-    expect(Object.keys(report.traces)).toContain('O.restore.foreign');
+  it('V1-P: the legacy P7 history over an abandoned later claim stays fenced', () => {
+    const probe = reportOf(WORLDS.legacyC1).probes['v1p-unsafe-p7'];
+    keep('v1p-unsafe-p7', probe);
+    expect(probe?.states).toBeGreaterThan(0);
+    expect(Object.keys(probe!.quiescent)).toEqual(['abandon-own']);
+  }, 600_000);
+
+  it('ENGINEER (b): the genuine sibling keeps its fence after a restart; the live owner releases once', () => {
+    const report = reportOf(WORLDS.sibling);
+    keep('sibling', report.probes);
+    expect(Object.keys(report.probes['genuine-sibling']!.quiescent)).toEqual(['abandon-sibling']);
+    expect(report.probes['live-release']!.states).toBeGreaterThan(0);
+    expect(report.exits['restore:']).toBeGreaterThan(0);
+  }, 600_000);
+
+  it('ENGINEER F3-HD fails closed: a stale receipt never clears a foreign drain', () => {
+    const report = reportOf(WORLDS.staleReceipt);
+    keep('engineer:f3-hd', { fences: report.fences, probes: report.probes, exits: report.exits });
+    expect(Object.keys(report.traces).filter(SAFETY)).toEqual([]);
+    expect(Object.keys(report.probes['f3-hd']!.quiescent)).toEqual(['harness-drain']);
+    expect(report.exits).toEqual({});
+  });
+
+  it('an independent drain that lands on a local claim survives every exit', () => {
+    const report = reportOf(WORLDS.overdrain);
+    const probe = report.probes['independent-on-marker']!;
+    keep('overdrain', { fences: report.fences, probe });
+    expect(probe.states).toBeGreaterThan(0);
+    expect(Object.keys(probe.quiescent)).toEqual(['harness-drain']);
+  });
+
+  it('positive endpoints: each exit admits one fresh close, and CL3 runs both winner orders', () => {
+    const exits = Object.fromEntries(
+      Object.values(WORLDS).map((w) => [w.name, { ...reportOf(w).exits, fresh: reportOf(w).fresh }])
+    );
+    keep('exits', exits);
+    for (const w of Object.values(WORLDS)) {
+      const r = reportOf(w);
+      expect(r.fresh).toBe(Object.values(r.exits).reduce((n, x) => n + x, 0));
+    }
+    expect(reportOf(WORLDS.prefix).exits['cold:restore:quiescent']).toBeGreaterThan(0);
+    expect(reportOf(WORLDS.live).exits['cold:restore:close']).toBeGreaterThan(0);
+    expect(reportOf(WORLDS.live).exits['restore:']).toBeGreaterThan(0);
+    expect(reportOf(WORLDS.census).exits['cold:restore:quiescent']).toBeGreaterThan(0);
+    const cl3 = reportOf(WORLDS.cl3full);
+    keep('cl3-full', cl3.probes);
+    // G1/G2: each winner order ends with the other's fresh claim and an accepting Harness.
+    expect(cl3.fences).toEqual({});
+    for (const g of ['G1', 'G2']) {
+      expect(cl3.probes[g]?.states).toBeGreaterThan(0);
+      expect(cl3.probes[g]?.quiescent).toEqual({ accepting: 1 });
+    }
+  }, 600_000);
+
+  describe('directed schedules', () => {
+    const live = WORLDS.live;
+
+    it.each([
+      ['Ta', 'authority-expired'],
+      ['Ts', 'startup-deadline'],
+      ['Tc', 'close-allowance'],
+    ] as const)(
+      '%s alone before RC8 answers %s with zero queued rows and zero bytes',
+      (clock, cause) => {
+        const s = run(live, [...TO_POST, `env:${clock}`, 'queue:A', 'reply:A:ack']);
+        expect(s.c.A!.answer).toBe(cause);
+        expect(s.p.committed).toEqual([]);
+        expect(s.p.bytes).toEqual({});
+      }
+    );
+
+    it.each(['Ta', 'Ts', 'Tc'] as const)('%s alone after RC8 gives zero bytes', (clock) => {
+      const s = run(live, [...TO_QUEUED, `env:${clock}`, 'dispatch:p1', 'write:p1:ok']);
+      expect(s.p.committed).toEqual(['A1']);
+      expect(s.p.bytes).toEqual({});
+      expect(s.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+    });
+
+    it('the monotonic Tc refuses at RC7 and RC10 while the wall Tc is live', () => {
+      const atPost = run(live, [...TO_POST.slice(0, -1), 'env:TcMono', 'post:A']);
+      expect(atPost.c.A!.answer).toBe('close-allowance');
+      expect(atPost.p.committed).toEqual([]);
+      // Native compares only the wall slot, so the queue commits; RC10 sends nothing.
+      const atBytes = run(live, [
+        ...TO_POST,
+        'env:TcMono',
+        'queue:A',
+        'reply:A:ack',
+        'dispatch:p1',
+        'write:p1:ok',
+      ]);
+      expect(atBytes.p.committed).toEqual(['A1']);
+      expect(atBytes.p.bytes).toEqual({});
+      expect(atBytes.clock.passed).toEqual([]);
+    });
+
+    it('a Sandbox drain before RC8 gives zero rows; after the queue, zero bytes; the drain stays', () => {
+      const before = run(live, [...TO_POST, 'env:sbdrain', 'queue:A', 'reply:A:ack']);
+      expect(before.c.A!.answer).toBe('placement');
+      expect(before.p.committed).toEqual([]);
+      expect(before.sb.accepting).toBe(false);
+      const after = run(live, [
+        ...TO_QUEUED,
+        'env:sbdrain',
+        'dispatch:p1',
+        'write:p1:ok',
+        'nsettle:A1',
+        'restore:A',
+      ]);
+      expect(after.p.bytes).toEqual({});
+      expect(after.sb.accepting).toBe(false);
+      expect(after.h.drain).toBe('draining');
+    });
+
+    it('the pins hold until the queue reply; the Core writer then advances (G8) and RC10 refuses', () => {
+      const pins = WORLDS.pins;
+      const held = run(pins, [...TO_POST, 'queue:A']);
+      expect(held.c.A!.phase).toBe('replying');
+      expect(enabled(pins, held)).not.toContain('env:core');
+      expect(enabled(pins, held)).not.toContain('env:thread');
+      const replied = run(pins, [...TO_QUEUED, 'env:core', 'dispatch:p1', 'write:p1:ok']);
+      expect(replied.p.bytes).toEqual({});
+      const audience = run(pins, [...TO_QUEUED, 'env:thread', 'dispatch:p1', 'write:p1:ok']);
+      expect(audience.p.bytes).toEqual({});
+    });
+
+    it('a stopped producer releases the pins; a commit with a pending reply does not', () => {
+      const pending = run(live, [...TO_POST, 'queue:A']);
+      const labels = enabled(live, pending);
+      for (const writer of ['env:core', 'env:thread', 'env:policy', 'env:R', 'env:idle'])
+        expect(labels).not.toContain(writer);
+      expect(labels.filter((l) => l.startsWith('cold:'))).toEqual([]);
+      const stopped = run(live, [...TO_POST, 'queue:A', 'env:crash']);
+      const after = enabled(live, stopped);
+      expect(after).toContain('env:core');
+      expect(after).toContain('cold:expire-key');
+    });
   });
 
   it.each(M)(
@@ -1813,6 +2339,7 @@ describe('replacement close lifecycle model check', () => {
       const report = explore(row.world, tableOf(row), { stopOn: row.oracle });
       keep(row.id, { oracle: row.oracle, trace: report.traces[row.oracle], states: report.states });
       expect(Object.keys(report.traces)).toContain(row.oracle);
+      if (row.via) expect(report.traces[row.oracle]).toContain(row.via);
     },
     600_000
   );
