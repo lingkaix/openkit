@@ -974,6 +974,9 @@ startTelemetry({
   serviceVersion: releaseIdentity?.releaseTag ?? releaseIdentity?.sourceCommit ?? undefined,
   deploymentEnvironment: mode,
 });
+// Each startup Pending handoff reaches its first admission decision before either listener
+// binds: a shared writer failure stops Boot here, with neither the App nor NanoHost serving.
+await store.startupPendingDeliveryDecisions();
 appServer = appTlsListen
   ? serve(
       {
