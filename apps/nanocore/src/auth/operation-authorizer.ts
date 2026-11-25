@@ -628,6 +628,33 @@ export function currentScheduledTurnWorkspaceAuthority(
   return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
 }
 
+/**
+ * CLOSE-LC Ta: the absolute wall instant at which the admission's own presented credential stops
+ * being usable, from the rows that the authority read compares. It decides nothing. A loss that
+ * this instant does not cover (a revocation, a rotation, a missing row) still refuses through the
+ * authority read. Without a presented credential, Ta never passes.
+ */
+export function scheduledTurnCredentialExpiry(
+  coreDb: CoreDb,
+  lineage: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
+): number {
+  const credential = findSchedulerAdmissionForTurn(coreDb, lineage)?.credentialRef;
+  if (!credential) return Number.POSITIVE_INFINITY;
+  if (credential.kind === 'token') {
+    const token = getOpenKitAccessTokenRecord(coreDb, credential.id);
+    if (!token) return Number.POSITIVE_INFINITY;
+    const grace =
+      token.status === 'rotated' && token.rotatedGraceExpiresAt
+        ? Date.parse(token.rotatedGraceExpiresAt)
+        : Number.POSITIVE_INFINITY;
+    return Math.min(Date.parse(token.expiresAt), grace);
+  }
+  const session = coreDb.sqlite
+    .prepare('SELECT expires_at AS expiresAt FROM session WHERE id = ?')
+    .get(credential.id) as { expiresAt: number } | undefined;
+  return session ? session.expiresAt : Number.POSITIVE_INFINITY;
+}
+
 /** Compares immutable ActorRef fields without relying on JSON key order. */
 function sameActorRef(left: ActorRef, right: ActorRef): boolean {
   return (

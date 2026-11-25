@@ -42,6 +42,7 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
   readCurrentWorkspacePolicy,
+  scheduledTurnCredentialExpiry,
 } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -177,6 +178,7 @@ import {
   markNanoHostHarnessOperationUnknown,
   NANO_HOST_FIRST_CARRIAGE,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
+  NANO_HOST_REPLACEMENT_DEADLINE_PASSED,
   NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
   NANO_HOST_REPLACEMENT_STORAGE_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
@@ -220,6 +222,15 @@ import {
   type WorkerProviderProtectionProof,
 } from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
+import {
+  type CloseCause,
+  type CloseClock,
+  type PlacementFacts,
+  type QueueHarnessFacts,
+  REPLACEMENT_CLOSE_TABLE,
+  type SandboxFacts,
+  slotClock,
+} from './replacement-close-lifecycle.js';
 import { taskSteerRefusal } from './task-steer-receipt.js';
 import type {
   TaskSteerAvailability,
@@ -1073,6 +1084,14 @@ interface AgentSessionReplacementClose {
     readonly storage?: { readonly storageRef: string; readonly revision: number };
   };
   readonly selection: AgentSessionCloseSelection;
+  /**
+   * RC8: the original deadline of each clock and the clock of their minimum, fixed when Main
+   * folds the minimum into the private slot. It stays in this process.
+   */
+  posted?: {
+    readonly deadlines: Readonly<Record<CloseClock, number>>;
+    readonly clock: CloseClock;
+  };
 }
 
 /** The selected binding's observed revision and idle lifecycle on its authenticated target Epoch. */
@@ -1084,8 +1103,12 @@ interface AgentSessionCloseSelection {
 
 /** The selected predecessor changed before its replacement close was queued; nothing was contacted. */
 class AgentSessionReplacementSelectionChanged extends WorkerGovernanceCapacityUnavailableError {
-  public constructor() {
+  /** The first structured close cause (CLOSE-LC). It stays in this process and is never serialized. */
+  public readonly closeCause: CloseCause;
+
+  public constructor(closeCause: CloseCause) {
     super('The selected predecessor binding changed before its replacement close.');
+    this.closeCause = closeCause;
   }
 }
 
@@ -1094,6 +1117,8 @@ interface NanoHostAgentSessionCloseOwner {
   readonly inspection: NanoHostAgentSessionContinuityInspection;
   readonly drain?: IdleSandboxCloseDrain;
   replacement?: AgentSessionReplacementClose;
+  /** RC3: the Harness revision that this close's own capture latch claim wrote. */
+  claimRevision?: string;
   pending: PendingNanoHostHarnessOperation | null;
   /** The exact queued close identity for receipt-scoped restore. */
   closeKey?: { readonly operationId: string; readonly sequence: number };
@@ -1511,14 +1536,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       pending.operationId = command.operationId;
       const recheck = () => {
         if (idleClose.drain) this.requireIdleSandboxCloseDrain(session, idleClose.drain);
-        if (idleClose.replacement)
-          this.requireAgentSessionReplacementClose(session, idleClose.replacement);
         const currentReceipt = this.readIdleCloseAuthority({
           harnessInstanceId: command.harnessInstanceId,
           harnessBindingRef: session.harnessBindingRef,
           agentSessionId: session.environmentPackage.scope.agentSessionId,
           agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         });
+        if (idleClose.replacement)
+          this.decideAgentSessionReplacementFirstBytes(
+            session,
+            pending,
+            idleClose.replacement,
+            isDeepStrictEqual(currentReceipt, idleClose.authority)
+          );
         const dispatched = this.readNanoHost(({ sqlite }) =>
           sqlite
             .prepare(`SELECT schema_version AS schemaVersion FROM harness_instance_records
@@ -1533,12 +1563,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
         if (
           !dispatched ||
-          !isDeepStrictEqual(currentReceipt, idleClose.authority) ||
-          session.pendingHarnessOperation !== pending ||
-          this.sessions.get(session.environmentPackage.snapshotId) !== session ||
-          Date.now() < pending.admittedUnixMs ||
-          Date.now() >= pending.deadlineUnixMs ||
-          performance.now() >= pending.deadlineMonotonicMs
+          (!idleClose.replacement &&
+            (!isDeepStrictEqual(currentReceipt, idleClose.authority) ||
+              session.pendingHarnessOperation !== pending ||
+              this.sessions.get(session.environmentPackage.snapshotId) !== session ||
+              Date.now() < pending.admittedUnixMs ||
+              Date.now() >= pending.deadlineUnixMs ||
+              performance.now() >= pending.deadlineMonotonicMs))
         )
           throw new Error(
             'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
@@ -1574,7 +1605,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           let refusal: Error;
           if (error === undefined) {
             // The holds were unavailable: the unsent close issues no bytes and refuses as stale.
-            refusal = new AgentSessionReplacementSelectionChanged();
+            refusal = new AgentSessionReplacementSelectionChanged('delivery');
             this.replacementRefusals.add(refusal);
           } else if (error instanceof Error && this.replacementRefusals.has(error)) refusal = error;
           else throw error;
@@ -8570,33 +8601,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             // After Workspace ACK, join the exact Harness drain already committed by retirement.
             if (idleCloseDrain) this.requireIdleSandboxCloseDrain(session, idleCloseDrain);
-            else {
-              // A strictly later clock than the Harness row's last write keys this claim.
-              const previous = this.readNanoHost(({ sqlite }) =>
-                sqlite
-                  .prepare(
-                    'SELECT updated_at AS revision FROM harness_instance_records WHERE harness_instance_id=?'
-                  )
-                  .get(session.harnessInstanceId)
-              ) as { revision: string } | undefined;
-              const claimedAt = new Date(
-                Math.max(Date.now(), previous ? Date.parse(previous.revision) + 1 : 0)
-              ).toISOString();
-              await claimNanoHostIdleCaptureDrain(
-                this.coreDb,
-                {
-                  harnessBindingRef: session.harnessBindingRef,
-                  harnessInstanceId: session.harnessInstanceId,
-                  agentSessionId: session.environmentPackage.scope.agentSessionId,
-                  agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-                  attemptId: session.attemptId,
-                  sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
-                  originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
-                  claimedAt,
-                },
-                this.harnessTurnLifecycle()
-              );
-            }
+            else await this.claimIdleCaptureLatch(session);
           } catch (error) {
             if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
               throw new WorkspaceCaptureRecoveryRequired(error.message);
@@ -8662,12 +8667,60 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           }
           throw error;
         }
+      } else if (
+        boundary === 'successor' &&
+        !idleCloseDrain &&
+        this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId)?.replacement &&
+        requireSchedulerExecutionAttempt(this.coreDb, session.attemptId).phase === 'closed'
+      ) {
+        // RC3 on a replayed receipt: a retried replacement close claims its own latch again, so
+        // that RC8 transfers a claim of this close. The receipt itself is not rescanned.
+        try {
+          await this.claimIdleCaptureLatch(session);
+        } catch (error) {
+          if (error instanceof Error && error.message === 'Idle capture drain ownership changed.')
+            throw new WorkspaceCaptureRecoveryRequired(error.message);
+          throw error;
+        }
       }
       // Captured Sandbox bytes remain evidence; no NanoCore host repository is an apply target.
       return [];
     } finally {
       db.sqlite.close();
     }
+  }
+
+  /**
+   * RC3: claims the idle capture latch from accepting to draining with a strictly later clock
+   * than the Harness row's last write. The live close owner keeps that clock as its claim revision.
+   */
+  private async claimIdleCaptureLatch(session: NanoHostBackendTurnSession): Promise<void> {
+    const previous = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(
+          'SELECT updated_at AS revision FROM harness_instance_records WHERE harness_instance_id=?'
+        )
+        .get(session.harnessInstanceId)
+    ) as { revision: string } | undefined;
+    const claimedAt = new Date(
+      Math.max(Date.now(), previous ? Date.parse(previous.revision) + 1 : 0)
+    ).toISOString();
+    await claimNanoHostIdleCaptureDrain(
+      this.coreDb,
+      {
+        harnessBindingRef: session.harnessBindingRef,
+        harnessInstanceId: session.harnessInstanceId,
+        agentSessionId: session.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        attemptId: session.attemptId,
+        sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
+        originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+        claimedAt,
+      },
+      this.harnessTurnLifecycle()
+    );
+    const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
+    if (closeOwner) closeOwner.claimRevision = claimedAt;
   }
 
   /**
@@ -10110,7 +10163,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   private isAgentSessionReplacementRequestCurrent(
-    request: AgentSessionReplacementClose['request']
+    request: AgentSessionReplacementClose['request'],
+    clocks = true
   ): boolean {
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, request.attemptId);
     return (
@@ -10123,7 +10177,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       attempt.workspaceId === request.workspaceId &&
       attempt.threadId === request.threadId &&
       // The original live admission and its absolute startup clock, as pre-submit storage uses.
-      nanoHostStartupDeadline(attempt) > new Date().toISOString() &&
+      // A close owner that decides through the lifecycle table gives the clocks to the table.
+      (!clocks || nanoHostStartupDeadline(attempt) > new Date().toISOString()) &&
       currentScheduledTurnWorkspaceAuthority(this.coreDb, request, 'runtime.launch', true) !== null
     );
   }
@@ -10169,19 +10224,184 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Rechecks the successor request and compares-and-sets its selected binding before contact. */
   private requireAgentSessionReplacementClose(
     session: NanoHostBackendTurnSession,
-    close: AgentSessionReplacementClose
+    pending: PendingNanoHostHarnessOperation,
+    close: AgentSessionReplacementClose,
+    identity: Parameters<typeof readNanoHostIdleCloseAuthority>[1],
+    authority: ReturnType<typeof readNanoHostIdleCloseAuthority>
   ): void {
     try {
-      if (!this.isAgentSessionReplacementRequestCurrent(close.request))
-        throw new AgentSessionReplacementSelectionChanged();
-      // The explicit selection keeps its own refusal.
-      close.request.validateStorage?.();
+      this.decideAgentSessionReplacementPost(session, pending, close, () =>
+        isDeepStrictEqual(this.readIdleCloseAuthority(identity), authority)
+      );
+      // N, early: Native compares the same selection again in the RC8 commit.
       if (!isDeepStrictEqual(this.readAgentSessionCloseSelection(session), close.selection))
-        throw new AgentSessionReplacementSelectionChanged();
+        throw new AgentSessionReplacementSelectionChanged('placement');
     } catch (error) {
       if (typeof error === 'object' && error !== null) this.replacementRefusals.add(error);
       throw error;
     }
+  }
+
+  /**
+   * RC7: gathers the original pending owner, Tc on both clocks, Ta, R, A and B on the given
+   * committed state. The lifecycle table decides. The selection's own P14 refusal keeps its type.
+   */
+  private decideAgentSessionReplacementPost(
+    session: NanoHostBackendTurnSession,
+    pending: PendingNanoHostHarnessOperation,
+    close: AgentSessionReplacementClose,
+    idleReceipt: () => boolean,
+    native?: Pick<CoreDb, 'sqlite'>
+  ): void {
+    const posted = close.posted;
+    if (!posted) throw new Error('NanoHost replacement close has no posted deadline slot.');
+    let p14: { readonly error: unknown } | undefined;
+    try {
+      close.request.validateStorage?.(native);
+    } catch (error) {
+      p14 = { error };
+    }
+    const cause = REPLACEMENT_CLOSE_TABLE.post({
+      pendingOwner: session.pendingHarnessOperation === pending,
+      deadlines: posted.deadlines,
+      now: Date.now(),
+      closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
+      request: this.isAgentSessionReplacementRequestCurrent(close.request, false),
+      audience: { thread: p14 === undefined, policy: p14 === undefined },
+      idleReceipt: idleReceipt(),
+    });
+    if (cause === 'audience' && p14) throw p14.error;
+    if (cause) throw new AgentSessionReplacementSelectionChanged(cause);
+  }
+
+  /**
+   * RC10: gathers every premise again in the synchronous run that writes the first bytes. The
+   * route asserts X (the carriage) in the same run before this decision. The table decides.
+   */
+  private decideAgentSessionReplacementFirstBytes(
+    session: NanoHostBackendTurnSession,
+    pending: PendingNanoHostHarnessOperation,
+    close: AgentSessionReplacementClose,
+    idleReceipt: boolean
+  ): void {
+    try {
+      const posted = close.posted;
+      if (!posted) throw new Error('NanoHost replacement close has no posted deadline slot.');
+      let p14: { readonly error: unknown } | undefined;
+      try {
+        close.request.validateStorage?.();
+      } catch (error) {
+        p14 = { error };
+      }
+      const planned = close.request.storage;
+      const decision = REPLACEMENT_CLOSE_TABLE.firstBytes({
+        connection: true,
+        pendingOwner:
+          session.pendingHarnessOperation === pending &&
+          this.sessions.get(session.environmentPackage.snapshotId) === session,
+        deadlines: posted.deadlines,
+        now: Date.now(),
+        closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
+        request: this.isAgentSessionReplacementRequestCurrent(close.request, false),
+        idleReceipt,
+        audience: { thread: p14 === undefined, policy: p14 === undefined },
+        storage:
+          !planned ||
+          this.readNanoHost(
+            ({ sqlite }) =>
+              sqlite
+                .prepare('SELECT 1 FROM worker_storage_bindings WHERE storage_ref=? AND revision=?')
+                .get(planned.storageRef, planned.revision) !== undefined
+          ),
+        placement: this.readAgentSessionReplacementPlacement(session, close.selection),
+      });
+      if (decision.kind === 'write') return;
+      if (decision.cause === 'audience' && p14) throw p14.error;
+      throw new AgentSessionReplacementSelectionChanged(decision.cause);
+    } catch (error) {
+      if (typeof error === 'object' && error !== null) this.replacementRefusals.add(error);
+      throw error;
+    }
+  }
+
+  /**
+   * N at RC10 from the Native owner facts: the selected binding on its open Harness, and the
+   * Sandbox on the current target Epoch. A changed selection (binding ref or revision) is not
+   * the open Harness.
+   */
+  private readAgentSessionReplacementPlacement(
+    session: NanoHostBackendTurnSession,
+    selection: AgentSessionCloseSelection
+  ): PlacementFacts {
+    const facts = this.readNanoHost((owner) =>
+      this.readAgentSessionReplacementOwnerFacts(session, owner)
+    );
+    const selected = isDeepStrictEqual(this.readAgentSessionCloseSelection(session), selection);
+    return {
+      harness: facts.harness?.life === 'open' && selected ? 'open' : 'failed',
+      sandbox: facts.sandbox,
+    };
+  }
+
+  /** Reads the Harness cell and the Sandbox placement facts of a close from one Native reader. */
+  private readAgentSessionReplacementOwnerFacts(
+    session: NanoHostBackendTurnSession,
+    owner: Pick<CoreDb, 'sqlite'>
+  ): { readonly harness: QueueHarnessFacts | null; readonly sandbox: SandboxFacts } {
+    const sandbox = session.sharedHarness.sandbox;
+    const row = owner.sqlite
+      .prepare(`SELECT h.lifecycle_state AS harness, h.drain_state AS harnessDrain,
+        h.updated_at AS revision, h.operation_state AS cell, h.next_sequence AS nextSequence,
+        s.lifecycle_state AS life, s.health_state AS health, s.drain_state AS drain,
+        s.cleanup_state AS cleanup, s.origin_physical_epoch AS epoch
+        FROM harness_instance_records h
+        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+        WHERE h.harness_instance_id=? AND h.harness_binding_ref=? AND s.sandbox_runtime_id=?
+        AND s.sandbox_binding_ref=? AND s.runtime_target_id=?`)
+      .get(
+        session.harnessInstanceId,
+        session.harnessBindingRef,
+        sandbox.sandboxRuntimeId,
+        sandbox.sandboxBindingRef,
+        sandbox.runtimeTargetId
+      ) as
+      | {
+          harness: string;
+          harnessDrain: string;
+          revision: string;
+          cell: string;
+          nextSequence: number;
+          life: string;
+          health: string;
+          drain: string;
+          cleanup: string;
+          epoch: string;
+        }
+      | undefined;
+    const target = getNanoHostRuntimeTarget(owner, sandbox.runtimeTargetId);
+    const cells = ['idle', 'queued', 'dispatched', 'settled', 'unknown'] as const;
+    const cell = cells.find((known) => known === row?.cell);
+    return {
+      harness:
+        row && cell
+          ? {
+              life: row.harness === 'open' ? 'open' : 'failed',
+              drain: row.harnessDrain === 'accepting' ? 'accepting' : 'draining',
+              revision: Date.parse(row.revision),
+              cell,
+              nextSequence: row.nextSequence,
+            }
+          : null,
+      sandbox: {
+        accepting: row?.drain === 'accepting' && row.life === 'open' && row.health === 'ready',
+        clean: row?.cleanup === 'clean',
+        currentEpoch:
+          row !== undefined &&
+          target?.ready === true &&
+          target.predecessorFenced === true &&
+          target.physicalEpoch === row.epoch,
+      },
+    };
   }
 
   /**
@@ -10190,18 +10410,65 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * The Native commit itself compares the selected binding, startup clock and storage revision.
    */
   private verifyAgentSessionReplacementQueue(
+    session: NanoHostBackendTurnSession,
+    pending: PendingNanoHostHarnessOperation,
+    closeOwner: NanoHostAgentSessionCloseOwner | undefined,
     close: AgentSessionReplacementClose,
     identity: Parameters<typeof readNanoHostIdleCloseAuthority>[1],
     authority: ReturnType<typeof readNanoHostIdleCloseAuthority>,
     native: Pick<CoreDb, 'sqlite'>
   ): void {
     try {
-      if (
-        !this.isAgentSessionReplacementRequestCurrent(close.request) ||
-        !isDeepStrictEqual(readNanoHostIdleCloseAuthority(this.coreDb, identity, native), authority)
-      )
-        throw new AgentSessionReplacementSelectionChanged();
-      close.request.validateStorage?.(native);
+      this.decideAgentSessionReplacementPost(
+        session,
+        pending,
+        close,
+        () =>
+          isDeepStrictEqual(
+            readNanoHostIdleCloseAuthority(this.coreDb, identity, native),
+            authority
+          ),
+        native
+      );
+      // RC8: NanoHost owner writes are single flight, so this post-turn read is the committed
+      // state that the queue transaction starts from. The table decides the slot, S, N, the L
+      // transfer of this close's own claim and K. The Native transaction repeats its wall slot,
+      // S, binding and K compares as the commit CAS, with the same causes.
+      const posted = close.posted!;
+      const facts = this.readAgentSessionReplacementOwnerFacts(session, native);
+      const planned = close.request.storage;
+      const cause = REPLACEMENT_CLOSE_TABLE.queue({
+        harness: facts.harness ?? {
+          life: 'failed',
+          drain: 'draining',
+          revision: Number.NaN,
+          cell: 'unknown',
+          nextSequence: Number.NaN,
+        },
+        claimRevision:
+          closeOwner?.claimRevision === undefined ? null : Date.parse(closeOwner.claimRevision),
+        key: {
+          binding: session.agentSessionRuntimeBindingId,
+          key: pending.coreIdleClose?.prepared?.command.operationId ?? '',
+          sequence: pending.coreIdleClose?.prepared?.command.sequence ?? Number.NaN,
+        },
+        slotExpired: posted.deadlines[posted.clock] <= Date.now(),
+        storage:
+          !planned ||
+          native.sqlite
+            .prepare('SELECT 1 FROM worker_storage_bindings WHERE storage_ref=? AND revision=?')
+            .get(planned.storageRef, planned.revision) !== undefined,
+        sandbox: facts.sandbox,
+      });
+      if (cause === 'storage') {
+        // The selection's own P14 refusal keeps its type.
+        close.request.validateStorage?.(native);
+        throw new AgentSessionReplacementSelectionChanged('storage');
+      }
+      if (cause)
+        throw new AgentSessionReplacementSelectionChanged(
+          cause === 'deadline' ? REPLACEMENT_CLOSE_TABLE.slotCause(posted.clock) : cause
+        );
     } catch (error) {
       if (typeof error === 'object' && error !== null) this.replacementRefusals.add(error);
       throw error;
@@ -10316,7 +10583,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (replacement) {
         // Without a drain claim the close is local: siblings and the shared Sandbox stay intact.
         const selection = this.readAgentSessionCloseSelection(session);
-        if (!selection) throw new AgentSessionReplacementSelectionChanged();
+        if (!selection) throw new AgentSessionReplacementSelectionChanged('placement');
         closeOwner.replacement = { request: replacement, selection };
       }
       await this.collectWorkspaceSnapshot(session, 'successor', idleCloseDrain);
@@ -10537,9 +10804,30 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         return await this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
           if (drain) this.requireIdleSandboxCloseDrain(session, drain);
           const enqueue = async () => {
-            // Slot CAS: the request and its selected binding are compared before any queue write.
-            if (replacement) this.requireAgentSessionReplacementClose(session, replacement);
-            if (
+            const successor = replacement
+              ? requireSchedulerExecutionAttempt(this.coreDb, replacement.request.attemptId)
+              : undefined;
+            if (replacement && successor) {
+              // RC8: the original deadlines. Main folds their minimum into the existing private
+              // slot and keeps the clock of that minimum for the reply.
+              const deadlines = {
+                Tc: deadlineUnixMs,
+                Ts: Date.parse(nanoHostStartupDeadline(successor)),
+                Ta: scheduledTurnCredentialExpiry(this.coreDb, replacement.request),
+              };
+              replacement.posted = {
+                deadlines,
+                clock: slotClock(deadlines, REPLACEMENT_CLOSE_TABLE.deadlineSlot),
+              };
+              // Slot CAS: the request and its selected binding are compared before any queue write.
+              this.requireAgentSessionReplacementClose(
+                session,
+                pending,
+                replacement,
+                identity,
+                consumerReceipt
+              );
+            } else if (
               session.pendingHarnessOperation !== pending ||
               Date.now() < admittedUnixMs ||
               Date.now() >= deadlineUnixMs ||
@@ -10557,9 +10845,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             });
             pending.coreIdleClose!.prepared = prepared;
             let refusal: { readonly error: unknown } | undefined;
-            const successor = replacement
-              ? requireSchedulerExecutionAttempt(this.coreDb, replacement.request.attemptId)
-              : undefined;
+            const posted = replacement?.posted;
             try {
               // Row 15: from here the queue or first dispatch can win; a null operation ID is no proof.
               if (pending.closeDeparture) pending.closeDeparture.queueStarted = true;
@@ -10571,11 +10857,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                   harnessInstanceId: session.harnessInstanceId,
                   operation,
                   timestamp: new Date().toISOString(),
-                  ...(replacement && successor
+                  ...(replacement && posted
                     ? {
                         replacement: {
                           ...replacement.selection,
-                          startupDeadline: nanoHostStartupDeadline(successor),
+                          // The slot carries min(Tc, Ts, Ta). No new field.
+                          startupDeadline: new Date(posted.deadlines[posted.clock]).toISOString(),
                           ...(replacement.request.storage
                             ? { storage: replacement.request.storage }
                             : {}),
@@ -10590,6 +10877,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                       verifyBeforePost: (native) => {
                         try {
                           this.verifyAgentSessionReplacementQueue(
+                            session,
+                            pending,
+                            closeOwner,
                             replacement,
                             identity,
                             consumerReceipt,
@@ -10637,13 +10927,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                     this.replacementRefusals.add(cause);
                   throw cause;
                 }
-                throw new AgentSessionReplacementSelectionChanged();
+                throw new AgentSessionReplacementSelectionChanged('storage');
               }
               if (
                 error instanceof Error &&
                 error.message === NANO_HOST_REPLACEMENT_SELECTION_CHANGED
               )
-                throw new AgentSessionReplacementSelectionChanged();
+                throw new AgentSessionReplacementSelectionChanged('placement');
+              // The acknowledged slot refusal answers the clock fixed at the post, not the wall.
+              if (
+                error instanceof Error &&
+                error.message === NANO_HOST_REPLACEMENT_DEADLINE_PASSED &&
+                replacement.posted
+              )
+                throw new AgentSessionReplacementSelectionChanged(
+                  REPLACEMENT_CLOSE_TABLE.slotCause(replacement.posted.clock)
+                );
               throw error;
             }
           }

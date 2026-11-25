@@ -8012,6 +8012,8 @@ describe('createConfiguredTurnExecutor', () => {
       ).rejects.toMatchObject({
         name: 'WorkerGovernanceCapacityUnavailableError',
         message: 'The selected predecessor binding changed before its replacement close.',
+        // CLOSE-LC: the slot refusal answers the posted minimum (Tc here); S keeps its cause.
+        closeCause: moved === 'startup-deadline' ? 'close-allowance' : 'storage',
       });
       expect(decided).toBe(true);
       expect(
@@ -8030,6 +8032,62 @@ describe('createConfiguredTurnExecutor', () => {
     },
     90_000
   );
+
+  // CLOSE-LC S3a (S2-r2 item 2): Main maps an acknowledged Native slot refusal to the clock of the
+  // minimum that it posted. Ts is that minimum here, and Main's own wall shows no passed clock.
+  it('answers the posted limiting clock for an acknowledged Native slot refusal', async () => {
+    const f = await admitNativeReplacementClose('p23_queue_slot_clock');
+    await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+      attemptId: f.successor.attemptId,
+      noOutstandingEffects: true,
+      cause: 'backend-busy',
+      requeue: true,
+    });
+    const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+    const createdAt = new Date(Date.now() - budget + 120_000).toISOString();
+    await f.retry('aged', { now: () => createdAt });
+    const startupDeadline = nanoHostStartupDeadline({ createdAt });
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+    const queue = owner.harnessTurnLifecycle.queue;
+    const posted: Array<string | undefined> = [];
+    vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+      if (input.operation !== 'session.close' || !input.replacement || !authority)
+        return await queue(input, authority);
+      posted.push(input.replacement.startupDeadline);
+      // Native's wall reaches the slot after the post-turn decision; Main's wall does not.
+      return await queue(
+        {
+          ...input,
+          replacement: {
+            ...input.replacement,
+            startupDeadline: new Date(Date.now() - 1).toISOString(),
+          },
+        },
+        authority
+      );
+    });
+    await expect(f.close()).rejects.toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
+      closeCause: 'startup-deadline',
+    });
+    // The slot carried the earliest original deadline: Ts (120 s) before Tc (300 s).
+    expect(posted).toEqual([startupDeadline]);
+    expect(Date.now()).toBeLessThan(Date.parse(startupDeadline));
+    expect(
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite.prepare('SELECT operation FROM harness_instance_records').all()
+      )
+    ).not.toContainEqual({ operation: 'session.close' });
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    // The latch rollback of a refusal before the queue is the S3b claim-clock exit (Q6).
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before.binding,
+      digest: before.digest,
+      revision: before.revision,
+      sandboxDrain: 'accepting',
+    });
+  }, 90_000);
 
   // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
   // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.

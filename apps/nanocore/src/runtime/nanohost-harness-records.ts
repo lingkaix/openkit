@@ -454,11 +454,19 @@ export interface NanoHostReplacementCloseSelection {
   >;
   readonly bindingRevision: string;
   readonly bindingLifecycleState: string;
-  /** The successor attempt's original absolute startup expiry, compared at this mutation. */
+  /**
+   * The private deadline slot: the earliest original absolute deadline among the close allowance,
+   * the successor startup deadline and the request authority expiry, compared at this mutation.
+   * Main keeps which clock gave it and maps a slot refusal to that clock's cause.
+   */
   readonly startupDeadline?: string | undefined;
   /** The explicit storage selection's planned revision; any Native storage write advances it. */
   readonly storage?: { readonly storageRef: string; readonly revision: number } | undefined;
 }
+
+/** Domain refusal of a replacement close whose private deadline slot passed before its queue commit. */
+export const NANO_HOST_REPLACEMENT_DEADLINE_PASSED =
+  'NanoHost replacement close deadline passed before enqueue.';
 
 /** Domain refusal of a replacement close whose selection changed before its queue commit. */
 export const NANO_HOST_REPLACEMENT_SELECTION_CHANGED =
@@ -1408,6 +1416,13 @@ function requireReplacementCloseSelection(
   body: Readonly<Record<string, unknown>>
 ): void {
   const selection = input.replacement!;
+  // The original deadline slot is sampled at this deciding mutation, never restarted. It decides
+  // first, so Main can answer the clock that limited it.
+  if (
+    selection.startupDeadline !== undefined &&
+    new Date().toISOString() >= selection.startupDeadline
+  )
+    throw new Error(NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
   const target = getNanoHostRuntimeTarget(owner, selection.target.targetId);
   const binding =
     input.operation === 'session.close'
@@ -1438,10 +1453,7 @@ function requireReplacementCloseSelection(
     target.connectionGeneration !== selection.target.connectionGeneration ||
     target.physicalEpoch !== selection.target.physicalEpoch ||
     binding?.revision !== selection.bindingRevision ||
-    binding.lifecycleState !== selection.bindingLifecycleState ||
-    // The original startup clock is sampled at this deciding mutation, never restarted.
-    (selection.startupDeadline !== undefined &&
-      new Date().toISOString() >= selection.startupDeadline)
+    binding.lifecycleState !== selection.bindingLifecycleState
   )
     throw new Error(NANO_HOST_REPLACEMENT_SELECTION_CHANGED);
   if (selection.storage) {

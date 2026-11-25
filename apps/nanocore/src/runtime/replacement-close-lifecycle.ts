@@ -4,8 +4,9 @@
  * P0-P8 and the Native fences PF. Each entry is the check of one deciding owner. Nothing here
  * performs an effect, reads a store or keeps a clock.
  *
- * CLOSE-LC S2: this table is not wired. `replacement-close-lifecycle.explorer.test.ts` checks it
- * against an independent environment model before any executor change.
+ * `replacement-close-lifecycle.explorer.test.ts` checks it against an independent environment
+ * model. CLOSE-LC S3 wires the owners to these entries: each owner gathers its facts and applies
+ * the effect, and the entry here is the only decider.
  */
 
 export type CloseClock = 'Tc' | 'Ts' | 'Ta';
@@ -52,6 +53,13 @@ export interface ClosePremises {
   readonly closeMonotonicExpired: boolean;
 }
 
+/** The clock facts. */
+export type ClockPremises = Pick<ClosePremises, 'deadlines' | 'now' | 'closeMonotonicExpired'>;
+
+/** RC7 reads these facts only. Placement and storage are Native's at RC8, X is RC10's. */
+export type PostPremises = ClockPremises &
+  Pick<ClosePremises, 'pendingOwner' | 'request' | 'audience' | 'idleReceipt'>;
+
 /** The facts that the Native placement selector reads (N:1415-1424). */
 export interface PlacementFacts {
   readonly harness: 'open' | 'failed';
@@ -80,6 +88,12 @@ export interface HarnessFacts {
   readonly result: null | 'succeeded' | 'stale' | 'unknown';
   readonly nextSequence: number;
 }
+
+/** RC8 reads these Harness facts only. */
+export type QueueHarnessFacts = Pick<
+  HarnessFacts,
+  'life' | 'drain' | 'revision' | 'cell' | 'nextSequence'
+>;
 
 export interface SandboxFacts {
   readonly accepting: boolean;
@@ -165,12 +179,12 @@ export interface ReplacementCloseTable {
   /** RC6-RC8: the applied Workspace policy install waits for the successor Workspace hold. */
   readonly policyOrder: 'workspace-hold' | 'none';
   /** RC7, in the Main turn that posts the worker frame. */
-  readonly post: (premises: ClosePremises) => CloseCause | null;
+  readonly post: (premises: PostPremises) => CloseCause | null;
   /** RC8: the clocks that Main folds into the existing private replacement deadline slot. */
   readonly deadlineSlot: readonly CloseClock[];
   /** RC8: the Native queue transaction. */
   readonly queue: (input: {
-    readonly harness: HarnessFacts;
+    readonly harness: QueueHarnessFacts;
     readonly claimRevision: number | null;
     readonly key: CloseKey;
     readonly slotExpired: boolean;
@@ -234,13 +248,13 @@ const CLOCK_CAUSE: Readonly<Record<CloseClock, CloseCause>> = {
 
 const CLOCKS: readonly CloseClock[] = ['Tc', 'Ts', 'Ta'];
 
-const passed = (p: ClosePremises, clock: CloseClock) => p.deadlines[clock] <= p.now;
+const passed = (p: ClockPremises, clock: CloseClock) => p.deadlines[clock] <= p.now;
 
 /**
  * The limiting clock: the earliest original wall deadline that has passed. When no wall deadline
  * has passed, only the monotonic Tc can have failed.
  */
-export function limitingClock(p: ClosePremises): CloseClock {
+export function limitingClock(p: ClockPremises): CloseClock {
   let limit: CloseClock | null = null;
   for (const clock of CLOCKS)
     if (passed(p, clock) && (limit === null || p.deadlines[clock] < p.deadlines[limit]))
@@ -262,7 +276,7 @@ export function slotClock(
 }
 
 /** A clock refusal among the checked clocks, answered with the cause of the limiting clock. */
-function clockRefusal(p: ClosePremises, checked: readonly CloseClock[]): CloseCause | null {
+function clockRefusal(p: ClockPremises, checked: readonly CloseClock[]): CloseCause | null {
   const fails =
     checked.some((clock) => passed(p, clock)) ||
     (checked.includes('Tc') && p.closeMonotonicExpired);
@@ -271,8 +285,18 @@ function clockRefusal(p: ClosePremises, checked: readonly CloseClock[]): CloseCa
 
 export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sandboxOpen(p.sandbox);
 
+/**
+ * RC8, L: the queue transfers only the close's own claim. The Harness still drains, and its
+ * revision is still the claim revision, so no later claim, queue, drain or restore wrote the row.
+ * A close with no claim of its own (a replayed receipt) transfers nothing.
+ */
+export const transfersLatch = (
+  harness: Pick<HarnessFacts, 'drain' | 'revision'>,
+  claimRevision: number | null
+) => claimRevision !== null && harness.drain === 'draining' && harness.revision === claimRevision;
+
 /** RC7: the original pending owner, Tc on both clocks, Ta, R, A with the P14 cause, and B. */
-export function decidePost(p: ClosePremises): CloseCause | null {
+export function decidePost(p: PostPremises): CloseCause | null {
   if (!p.pendingOwner) return 'pending-owner';
   const clock = clockRefusal(p, ['Tc', 'Ta']);
   if (clock) return clock;
@@ -496,12 +520,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
     if (slotExpired) return 'deadline';
     if (!storage) return 'storage';
     if (!placementOpen({ harness: harness.life, sandbox })) return 'placement';
-    if (
-      claimRevision === null ||
-      harness.drain !== 'draining' ||
-      harness.revision !== claimRevision
-    )
-      return 'latch';
+    if (!transfersLatch(harness, claimRevision)) return 'latch';
     if (
       (harness.cell !== 'idle' && harness.cell !== 'settled') ||
       harness.nextSequence !== key.sequence
