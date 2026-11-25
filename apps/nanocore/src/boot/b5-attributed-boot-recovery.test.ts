@@ -40,6 +40,7 @@ import {
 import { createApp as createSimulatedApp } from '../test-support/app.js';
 import {
   capabilityCallCount,
+  contradictTurnCompletionStopReason,
   contradictTurnRecord,
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
@@ -309,9 +310,13 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
-  it.each(['first', 'last'] as const)(
-    'proves every service publication before the restart settlement and holds A unchanged when its %s publication contradicts its completion',
-    async (position) => {
+  it.each([
+    { position: 'first', contradiction: 'record', only: '' },
+    { position: 'last', contradiction: 'record', only: '' },
+    { position: 'last', contradiction: 'stop reason', only: ' only in its stop reason' },
+  ] as const)(
+    'proves every service publication before the restart settlement and holds A unchanged when its $position publication contradicts its completion$only',
+    async ({ position, contradiction }) => {
       const root = await seedRoot(['Healthy', 'Contradicted publication']);
       const [healthy, held] = root.workspaceIds as [string, string];
       const pending = await withSeedStore(root, async (store) => {
@@ -327,15 +332,13 @@ describe('B5 attributed Boot recovery', () => {
           readPendingRow(root.dataRoot, held, request.requestId).publication_turn_id as string
       );
       expect(new Set(publications).size).toBe(2);
-      // Stopped retained-record fault: one sealed service Turn no longer matches its completion.
+      // Stopped retained fault: one sealed service Turn no longer matches its completion, either in
+      // its record or only in the completion's stop reason, which the writer maps to the status.
       const contradicted = publications[position === 'first' ? 0 : 1]!;
-      const restore = contradictTurnRecord(
-        root.dataRoot,
-        held,
-        contradicted,
-        'durationMs',
-        987_654
-      );
+      const restore =
+        contradiction === 'record'
+          ? contradictTurnRecord(root.dataRoot, held, contradicted, 'durationMs', 987_654)
+          : contradictTurnCompletionStopReason(root.dataRoot, held, contradicted, 'error');
       const original = workspaceEvidence(root.dataRoot, held);
 
       const server = await startServer(root);

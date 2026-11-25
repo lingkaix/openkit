@@ -262,6 +262,7 @@ import {
   checkControlItemAppend,
   eventAgreesWithSealedTurnOutcome,
   eventConflictsWithSealedTurnOutcome,
+  terminalEventMatchesTerminal,
   terminalSnapshotItemMatches,
   terminalSnapshotMatchesRecord,
   turnHeadSessionAdmits,
@@ -4165,6 +4166,14 @@ export class FsStore {
     if (
       !snapshot ||
       !terminalSnapshotMatchesRecord(snapshot, record, sealed ? record : undefined) ||
+      // The retained completion is reposted as is: the writer's envelope rule, stop reason included.
+      (priorEvent &&
+        !terminalEventMatchesTerminal(
+          priorEvent.data,
+          turn.id,
+          record,
+          sealed ? record : undefined
+        )) ||
       // A sealed Turn without its completion accepts only the exact next original completion.
       (sealed &&
         !priorEvent &&
