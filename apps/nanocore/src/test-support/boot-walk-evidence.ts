@@ -159,6 +159,51 @@ export function hideWorkspaceTurnSelector(dataRoot: string, workspaceId: string)
   };
 }
 
+/**
+ * Rewrites one field of one retained Turn record while NanoCore is stopped, so a readable record
+ * contradicts its own sealed completion snapshot.
+ * @returns Writes the original record bytes back.
+ */
+export function contradictTurnRecord(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  field: string,
+  value: unknown
+): () => void {
+  const write = (record: string) => {
+    const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+      fileMustExist: true,
+    });
+    try {
+      return sqlite
+        .prepare('UPDATE control_turns SET record_json = ? WHERE id = ?')
+        .run(record, turnId).changes;
+    } finally {
+      sqlite.close();
+    }
+  };
+  const reader = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  let original: string;
+  try {
+    original = reader
+      .prepare('SELECT record_json FROM control_turns WHERE id = ?')
+      .pluck()
+      .get(turnId) as string;
+  } finally {
+    reader.close();
+  }
+  if (typeof original !== 'string') throw new Error(`Turn not found: ${turnId}`);
+  if (write(JSON.stringify({ ...JSON.parse(original), [field]: value })) !== 1)
+    throw new Error(`Turn not rewritten: ${turnId}`);
+  return () => {
+    if (write(original) !== 1) throw new Error(`Turn not restored: ${turnId}`);
+  };
+}
+
 /** Counts retained capability calls, so a replay that calls upstream again is visible. */
 export function capabilityCallCount(dataRoot: string, workspaceId: string): number {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {

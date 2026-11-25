@@ -30,6 +30,7 @@ import {
 import { createApp as createSimulatedApp } from '../test-support/app.js';
 import {
   capabilityCallCount,
+  contradictTurnRecord,
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
   readPendingRow,
@@ -245,6 +246,122 @@ describe('B5 attributed Boot recovery', () => {
         disposition: 'outcome-unknown',
         disposition_reason: 'restart',
       });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'holds A before any write when an owner read fails while proving a request usable, instead of skipping that request',
+    async () => {
+      const root = await seedRoot(['Healthy', 'Usability read fails']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const pending = await withSeedStore(root, async (store) => {
+        const seeded: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds)
+          for (let index = 0; index < 2; index++)
+            seeded.push(await seedClaimedPending(store, root, id));
+        return seeded;
+      });
+      const requests = { [healthy]: pending.slice(0, 2), [held]: pending.slice(2) };
+      // A's first usability proof cannot read its Turn timeline; the row itself decodes.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_TIMELINE_SQL,
+        within: 'canonicalRecordIsUsable',
+        times: 1,
+        label: 'pending-usability-read',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      for (const request of requests[held]!)
+        expect(readPendingRow(root.dataRoot, held, request.requestId)).toMatchObject({
+          claim: 'claimed',
+          disposition: null,
+        });
+      for (const request of requests[healthy]!)
+        expect(readPendingRow(root.dataRoot, healthy, request.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each(['first', 'last'] as const)(
+    'proves every service publication before the restart settlement and holds A unchanged when its %s publication contradicts its completion',
+    async (position) => {
+      const root = await seedRoot(['Healthy', 'Contradicted publication']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const pending = await withSeedStore(root, async (store) => {
+        const seeded: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds)
+          for (let index = 0; index < 2; index++)
+            seeded.push(await seedClaimedPending(store, root, id));
+        return seeded;
+      });
+      const requests = { [healthy]: pending.slice(0, 2), [held]: pending.slice(2) };
+      const publications = requests[held]!.map(
+        (request) =>
+          readPendingRow(root.dataRoot, held, request.requestId).publication_turn_id as string
+      );
+      expect(new Set(publications).size).toBe(2);
+      // Stopped retained-record fault: one sealed service Turn no longer matches its completion.
+      const contradicted = publications[position === 'first' ? 0 : 1]!;
+      const restore = contradictTurnRecord(
+        root.dataRoot,
+        held,
+        contradicted,
+        'durationMs',
+        987_654
+      );
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // No settlement or publication reached A: its rows, Items and files are the stopped ones.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      for (const request of requests[held]!)
+        expect(readPendingRow(root.dataRoot, held, request.requestId)).toMatchObject({
+          claim: 'claimed',
+          disposition: null,
+        });
+      for (const request of requests[healthy]!)
+        expect(readPendingRow(root.dataRoot, healthy, request.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
+      // The refusal is A's own proof of that publication, not its writer's later refusal.
+      expect(bootDecisionLines(server)).toContain(
+        `Turn ${contradicted} is terminal and the publication conflicts with the already-decided record.`
+      );
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // Repairing the original record while stopped lets the next Boot recover A once.
+      restore();
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      for (const request of requests[held]!)
+        expect(readPendingRow(root.dataRoot, held, request.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
     },
     CASE_TIMEOUT_MS
   );
