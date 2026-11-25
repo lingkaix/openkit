@@ -1134,22 +1134,7 @@ async function prepareEntries(
       data.type === 'turn-completed' ||
       ('turn' in data && data.turn.status !== 'pending' && data.turn.status !== 'running') ||
       (data.type === 'turn-started' && data.status !== 'pending' && data.status !== 'running');
-    if (
-      terminalEvent &&
-      (!terminal ||
-        terminal.id !== input.turnId ||
-        !('turn' in data) ||
-        data.turn.status !== terminal.status ||
-        !terminalSnapshotFieldMatches('error', data.turn.error, terminal.error, sealedTurn) ||
-        !terminalSnapshotFieldMatches(
-          'completedAt',
-          data.turn.completedAt,
-          terminal.completedAt,
-          sealedTurn
-        ) ||
-        (data.type === 'turn-completed' &&
-          !terminalStopReasonMatches(data.stopReason, terminal.status)))
-    )
+    if (terminalEvent && !terminalEventMatchesTerminal(data, input.turnId, terminal, sealedTurn))
       throw new ControlProductPreconditionError();
     const referencedItemIds = new Set<string>();
     if ('item' in data) referencedItemIds.add(data.item.id);
@@ -2379,6 +2364,33 @@ export function terminalSnapshotItemMatches(payload: unknown, snapshotItem: unkn
   return isDeepStrictEqual(
     StoredItemPayloadV1Schema.parse(payload),
     StoredItemPayloadV1Schema.parse(snapshotItem)
+  );
+}
+
+/**
+ * The terminal tuple's completion-envelope rule: a terminal event names its tuple's terminal Turn
+ * and carries that Turn's status, error and completion time, and a completion's stop reason maps
+ * to that status. A sealed record may still fill a fillable field that the event leaves empty.
+ *
+ * @param data Decoded payload of one terminal event.
+ * @param turnId Turn that the event entry is addressed to.
+ * @param terminal Terminal Turn record of the same tuple, absent when the post carries none.
+ * @param sealedTurn The retained record when the Turn was already sealed.
+ */
+export function terminalEventMatchesTerminal(
+  data: object & { readonly type: string },
+  turnId: string,
+  terminal: Record<string, unknown> | undefined,
+  sealedTurn: Record<string, unknown> | undefined
+): boolean {
+  if (!terminal || terminal.id !== turnId || !('turn' in data)) return false;
+  const turn = data.turn as { status?: unknown; error?: unknown; completedAt?: unknown };
+  return (
+    turn.status === terminal.status &&
+    terminalSnapshotFieldMatches('error', turn.error, terminal.error, sealedTurn) &&
+    terminalSnapshotFieldMatches('completedAt', turn.completedAt, terminal.completedAt, sealedTurn) &&
+    (data.type !== 'turn-completed' ||
+      terminalStopReasonMatches((data as { stopReason?: unknown }).stopReason, terminal.status))
   );
 }
 
