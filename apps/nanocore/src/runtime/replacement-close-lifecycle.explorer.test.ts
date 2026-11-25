@@ -64,7 +64,8 @@ type Env =
   | 'hide'
   | 'crash'
   | 'foreign-claim'
-  | 'replay';
+  | 'replay'
+  | 'requeue';
 
 type Phase =
   | 'idle'
@@ -112,6 +113,8 @@ interface Closer {
   answer: string | null;
   cause: CloseCause | null;
   settleRev: number | null;
+  /** F-b: this generation replays its published capture receipt. RC3 claims again; no new Workspace claim. */
+  replay?: boolean;
 }
 
 interface State {
@@ -149,6 +152,8 @@ interface State {
   clock: { passed: ModelClock[]; back: boolean; mono: boolean; W: boolean };
   /** The policy publisher has its activation ACK; the Main swap of the applied policy waits. */
   install: boolean;
+  /** The successor request was requeued: this attempt fails R, and the retry carries a fresh request. */
+  requeued?: boolean;
   cold: Record<string, number | null>;
   used: string[];
   after: boolean;
@@ -177,6 +182,8 @@ interface World {
   readonly resultLost?: boolean;
   readonly restart?: boolean;
   readonly retry?: boolean;
+  /** F-b: a refused closer with a published receipt retries by replaying it (RC3 claims again). */
+  readonly replay?: boolean;
   readonly splitCold?: readonly string[];
   /** Older writers before the crash: c1 claims leave the revision; r2 claims advance it. */
   readonly legacy?: 'c1' | 'r2';
@@ -674,14 +681,18 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
   for (const b of world.closers) {
     const c = s.c[b]!;
     const t = s.after || !world.legacy ? table : legacyTable(table, world.legacy);
+    // F-b: a refused closer with a published receipt retries by replaying it, at most twice.
+    const replays =
+      world.replay === true && c.phase === 'refused' && s.cap[b] === 'receipt' && c.gen < 3;
     if (
-      (c.phase === 'idle' || (world.retry && c.phase === 'refused')) &&
       s.present[b] &&
-      s.cap[b] !== 'abandoned' &&
-      s.cap[b] !== 'receipt' &&
-      s.cap[b] !== 'claimed'
+      (replays ||
+        ((c.phase === 'idle' || (world.retry && c.phase === 'refused')) &&
+          s.cap[b] !== 'abandoned' &&
+          s.cap[b] !== 'receipt' &&
+          s.cap[b] !== 'claimed'))
     )
-      add(`admit:${b}`, false, (n, ctx) => {
+      add(replays ? `readmit:${b}` : `admit:${b}`, false, (n, ctx) => {
         const x = n.c[b]!;
         const cause = t.admit({
           exclusionHolder: n.excl,
@@ -696,7 +707,15 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           x.phase = 'refused';
           return;
         }
-        if (x.phase === 'refused') x.gen += 1;
+        if (x.phase === 'refused') {
+          x.gen += 1;
+          // A retry carries a fresh successor request.
+          if (n.requeued) {
+            n.prem.R = true;
+            delete n.requeued;
+          }
+        }
+        if (replays) x.replay = true;
         if (n.excl === null) n.excl = b;
         x.slot = true;
         x.answer = null;
@@ -711,7 +730,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         for (const [o, y] of Object.entries(n.c))
           if (n.after && o !== b && ACTIVE.includes(y.phase) && y.slot)
             violate(ctx, 'O.ws-exclusive', `${b} claimed Workspace while ${o} holds the Harness`);
-        n.cap[b] = 'claimed';
+        // A replay keeps its published receipt: it makes no new Workspace claim.
+        if (!n.c[b]!.replay) n.cap[b] = 'claimed';
         n.c[b]!.phase = 'ws';
       });
     if (c.phase === 'ws' && reach('latched'))
@@ -731,7 +751,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         n.h = { ...n.h, drain: 'draining', revision: r.revision };
         x.claimRev = r.revision;
         n.p.drainBy.push(`claim:${b}`);
-        x.phase = 'latched';
+        // A replay already holds its receipt: it goes on from the published state.
+        x.phase = x.replay ? 'published' : 'latched';
       });
     if (c.phase === 'latched' && reach('raw'))
       add(`raw:${b}`, false, (n) => {
@@ -1050,6 +1071,15 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           if (!coreHeld)
             env((n) => {
               n.prem[e] = false;
+            });
+          break;
+        case 'requeue':
+          // F-b: the successor request is requeued before the Core hold. This attempt fails R; the
+          // retry carries a fresh request (the factory case `request-requeued`).
+          if (!coreHeld)
+            env((n) => {
+              n.prem.R = false;
+              n.requeued = true;
             });
           break;
         case 'core':
@@ -1699,6 +1729,44 @@ const WORLDS = {
       s.h = { ...s.h, drain: 'draining', revision: 1 };
       s.p.drainBy = ['claim:B'];
       s.after = true;
+    },
+  },
+  /**
+   * F-b: A publishes, its successor request is requeued, and A refuses before the queue (the live
+   * rollback restores its claim). The retry replays A's receipt: RC3 claims again, and RC8
+   * transfers that claim of its own.
+   */
+  receiptReplay: {
+    name: 'receipt-replay',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['requeue'],
+    budget: 1,
+    polls: ['p1'],
+    retry: true,
+    replay: true,
+    probes: {
+      'replay-transfer': (s: State) =>
+        s.c.A!.replay === true && s.c.A!.gen > 1 && s.c.A!.phase === 'done',
+    },
+  },
+  /**
+   * F-b with CL3: A refused before the queue after its publication, and its claim was rolled back.
+   * An independent Harness-only drain may win before A's replayed claim. That claim must refuse.
+   */
+  receiptReplayDrain: {
+    name: 'receipt-replay-drain',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['hdrain'],
+    budget: 1,
+    polls: ['p1'],
+    retry: true,
+    replay: true,
+    stopAt: 'queued',
+    init: (s: State) => {
+      s.cap.A = 'receipt';
+      Object.assign(s.c.A!, { phase: 'refused', cause: 'request', answer: 'request' });
     },
   },
   /** The Native fences, cell reuse, an old expiry and an unreadable anchor. */
@@ -2501,6 +2569,14 @@ const M: readonly MutationRow[] = [
     },
     via: 'env:Ta',
   },
+  {
+    id: 'M-Fb',
+    world: WORLDS.receiptReplayDrain,
+    oracle: 'O.one-claim',
+    takeOut: 'accept the replayed claim on a draining Harness (F-b: the legacy RC3 CAS)',
+    table: { claim: (h) => ({ revision: h.revision + 1 }) },
+    via: 'readmit:A',
+  },
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -2585,6 +2661,17 @@ describe('replacement close lifecycle model check', () => {
     keep('totals', totals);
     for (const r of reports) expect(r.edges).toBeGreaterThanOrEqual(r.states - 1);
     expect(totals.states).toBeGreaterThan(1000);
+  });
+
+  it('F-b: a retry replays its published receipt, claims again, and RC8 transfers that claim', () => {
+    const report = reportOf(WORLDS.receiptReplay);
+    keep('F-b', { probes: report.probes });
+    const probe = report.probes['replay-transfer'];
+    expect(probe?.states).toBeGreaterThan(0);
+    // The live refusal rolls the first claim back. The replay claims again and closes.
+    expect(probe!.trace).toContain('env:requeue');
+    expect(probe!.trace).toContain('readmit:A');
+    expect(probe!.trace!.filter((step) => step === 'claim:A')).toHaveLength(2);
   });
 
   it('F3: full durable values cannot name the claimant, at the crash edge and after the restart', () => {
