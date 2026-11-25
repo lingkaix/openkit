@@ -19058,11 +19058,18 @@ describe('createConfiguredTurnExecutor', () => {
   // writer that the sibling setup uses.
   it('fences a suite hook shutdown that resumes during a sibling suite setup (S3a-r2d A8 finding 1)', async () => {
     const work = Promise.withResolvers<void>();
+    const tried = Promise.withResolvers<void>();
     const stale = writerOwner.runHook(async () => {
       expect(writerOwner.owns()).toBe(true);
       await work.promise;
       await shutdownOwnedWriter();
+      tried.resolve();
     }, 50);
+    // S3a-r2e: the owner completes the old hook at its bound, while the hook's own code still runs.
+    const outcome = stale.then(
+      () => 'settled',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
     // The runner's timeout of the old hook passes.
     await new Promise((resolve) => setTimeout(resolve, 100));
     await writerOwner.runHook(async () => {
@@ -19070,12 +19077,15 @@ describe('createConfiguredTurnExecutor', () => {
       const client = getControlStoreWorkerClient();
       expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
       work.resolve();
-      await stale;
+      await tried.promise;
       expect({ closed: client.isClosed, current: getControlStoreWorkerClient() === client }).toEqual(
         { closed: false, current: true }
       );
       await expect(client.runOperation(async () => 'accepted')).resolves.toBe('accepted');
     }, 60_000);
+    expect(await outcome).toBe(
+      'Suite hook timed out in 50 ms: the writer owner ended it and revoked its writer token.'
+    );
   });
 
   // S3a-r2d A8 finding 1, end to end through Vitest's suite hooks: the first suite's hook leaves
