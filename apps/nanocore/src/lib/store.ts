@@ -263,6 +263,7 @@ import {
   controlTerminalTaskTurn,
   eventAgreesWithSealedTurnOutcome,
   eventConflictsWithSealedTurnOutcome,
+  loadControlTerminalOwners,
   terminalEventMatchesTerminal,
   terminalSnapshotItemMatches,
   terminalSnapshotMatchesRecord,
@@ -320,7 +321,6 @@ import {
 } from '../storage/server-work-intents.js';
 import { serverWorkProductScope } from '../storage/server-work-product-reads.js';
 import { storageRequestId } from '../storage/storage-owner.js';
-import { readControlTurnReapDependency } from '../storage/work-observations.js';
 import {
   AgentSessionRecordSchema,
   assertCanonicalDirectory,
@@ -1152,12 +1152,6 @@ export function assertThreadUpdatePrecondition(
 
 /** Live native references share their physical scope across Store views; failed imports cannot erase them. */
 const pendingArtifactReferences = new Map<string, number>();
-
-/** The Task owner's read-only terminal fact check, which a Boot walk supplies to a terminal proof. */
-type TerminalTaskFactProof = (
-  db: Pick<WorkspaceDb, 'sqlite'>,
-  turn: ReturnType<typeof controlTerminalTaskTurn>
-) => unknown;
 
 /** The retained Turn record a Workspace terminal publishes: its history metadata with the decided patch, without Items. */
 function workspaceTerminalTurnRecord(
@@ -4168,17 +4162,16 @@ export class FsStore {
    * record and Items that the publication would post. It stages no content and writes nothing;
    * the Workspace writer still rechecks the same dependencies when the publication commits.
    *
-   * It then reads the terminal's Task terminal fact through the Task owner the caller supplies
-   * (that owner imports this Store), on the writer's exact Turn record.
+   * It then reads the terminal's Task terminal fact through the terminal writer's own Task owner,
+   * on the writer's exact Turn record.
    *
    * @throws terminal publication conflict when a retained completion contradicts the proposal.
    */
-  public provePendingRequestServiceTurn(
+  public async provePendingRequestServiceTurn(
     workspaceId: string,
     threadId: string,
-    input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2],
-    proveTaskFact: TerminalTaskFactProof
-  ): void {
+    input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2]
+  ): Promise<void> {
     const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
       workspaceId,
       threadId,
@@ -4220,9 +4213,26 @@ export class FsStore {
     const taskTurn = controlTerminalTaskTurn(
       decodeControlProduct('turn', this.pendingServiceTerminalRecord(existing, turn), scope.owner)
     );
+    const { task } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
     try {
-      proveTaskFact(db, taskTurn);
+      task.prepareTaskTerminalFact(db, taskTurn);
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /**
+   * Reads, through the terminal writer's own Task owner, the Goal that a Thread's next Task terminal
+   * fact would advance. A Boot walk runs it before its first write for a Turn it creates and closes
+   * later in the walk, which has no committed fact yet. It writes nothing.
+   */
+  public async proveTaskThreadGoal(workspaceId: string, threadId: string): Promise<void> {
+    if (!this.dataRoot) return;
+    const { task } = await loadControlTerminalOwners();
+    const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
+    try {
+      task.readTaskThreadGoal(db, threadId);
     } finally {
       db.sqlite.close();
     }
@@ -6286,16 +6296,15 @@ export class FsStore {
    * writing: the preparation `completeWorkspaceTurn` runs before its writer. It then reads the
    * terminal's retained dependencies through their owners on the writer's exact Turn record: the
    * reap dependency through the native observation owner, and the Task terminal fact through the
-   * Task owner the caller supplies (that owner imports this Store). A Boot walk proves them before
-   * it stages the first terminal; the terminal transaction reads both again.
+   * Task owner, both as the terminal writer loads them. A Boot walk proves them before it stages
+   * the first terminal; the terminal transaction reads both again.
    */
-  public proveWorkspaceTurnCompletion(
+  public async proveWorkspaceTurnCompletion(
     workspaceId: string,
     threadId: string,
     turnId: string,
-    patch: Parameters<FsStore['updateTurn']>[1],
-    proveTaskFact: TerminalTaskFactProof
-  ): void {
+    patch: Parameters<FsStore['updateTurn']>[1]
+  ): Promise<void> {
     this.getTurn(workspaceId, threadId, turnId);
     const owner = { kind: 'workspace' as const, workspaceId };
     const { history, turn } = this.prepareTurnCompletion(turnId, patch, {}, owner);
@@ -6307,10 +6316,11 @@ export class FsStore {
         owner
       )
     );
+    const { observations, task } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
     try {
-      readControlTurnReapDependency(db.sqlite, owner, { threadId, turnId });
-      proveTaskFact(db, taskTurn);
+      observations.readControlTurnReapDependency(db.sqlite, owner, { threadId, turnId });
+      task.prepareTaskTerminalFact(db, taskTurn);
     } finally {
       db.sqlite.close();
     }
