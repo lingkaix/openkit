@@ -2754,16 +2754,19 @@ describe('B5 attributed Boot recovery', () => {
           expect(entries()).toEqual([]);
           expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
         } else if (decision === 'ACK with parked completion') {
-          // The original admission ACK settles the decision while the completion is parked.
+          // The original admission ACK settles the decision while the completion is parked: no
+          // release or unknown moved the batch, which stays frozen on the admitted Turn.
           expect(settled).toBe('settled');
           expect(entries()).toHaveLength(1);
-          expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
-            delivery: 'delivered',
-            delivery_turn_id: turnId,
-          });
+          expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toEqual(frozen);
           parked.resolve();
           await expect(admission.mock.results[0]!.value).resolves.toMatchObject({
             turn: { id: turnId, status: 'completed' },
+          });
+          // The Worker's terminal then proves the batch delivered to that Turn.
+          expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+            delivery: 'delivered',
+            delivery_turn_id: turnId,
           });
         } else {
           // A possibly committed post never resends: the batch is unknown and the Turn failed.
@@ -2798,10 +2801,14 @@ describe('B5 attributed Boot recovery', () => {
 
   // V1-P: a clean preflight buys no authority over a changed dependency. A dependency the walk
   // proved changes after its proof and before A's first write; the walk's second read of every
-  // input differs, so A is held with no write entered and no file added.
-  it(
-    "holds A with no prefix when a proved Pending dependency changes before the walk's first write",
-    async () => {
+  // input differs, so A is held with no write entered and no file added. The unchanged control
+  // runs the same walk through its settlement and posts each publication it proved once.
+  it.each([
+    { dependency: 'changed', outcome: 'a changed dependency holds A with no prefix' },
+    { dependency: 'unchanged', outcome: 'an unchanged one publishes each proved publication once' },
+  ] as const)(
+    "rechecks A's proved Pending dependencies before the walk's first write: $outcome",
+    async ({ dependency }) => {
       const root = await seedRoot(['Changed dependency']);
       const [workspaceId] = root.workspaceIds as [string];
       const claim = await withSeedStore(root, (store) =>
@@ -2820,39 +2827,65 @@ describe('B5 attributed Boot recovery', () => {
         openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
       };
       const prove = store.provePendingRequestServiceTurn.bind(store);
-      let changed = 0;
+      const proved: string[] = [];
+      let touched = 0;
       vi.spyOn(store, 'provePendingRequestServiceTurn').mockImplementation(async (...args) => {
-        const proved = await prove(...args);
-        // After the closeout's own proof, its waiting row changes while the walk still plans.
-        if (changed++ === 0)
+        const terminal = await prove(...args);
+        proved.push(args[2].turnId);
+        // After the walk's first proof, the waiting row changes while the walk still plans.
+        if (dependency === 'changed' && touched === 0) {
+          touched++;
           expect(
             touchPendingRow(root.dataRoot, workspaceId, waitingId, new Date().toISOString())
           ).toBe(1);
-        return proved;
+        }
+        return terminal;
       });
       const writes = vi.spyOn(store, 'applyPendingRequestCommand');
       const publications = vi.spyOn(store, 'publishPendingRequestServiceTurn');
       const warnings = vi.spyOn(console, 'warn');
       try {
         await recoverPendingRequestsAtBoot(store, pending);
-        expect(changed).toBe(1);
-        expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
-        expect(warnings).toHaveBeenCalledWith(
-          `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
-          'The Pending records changed while the Boot walk proved them.'
-        );
-        // No write was entered: neither the settlement nor the closeout reached A's writer.
-        expect(writes).not.toHaveBeenCalled();
-        expect(publications).not.toHaveBeenCalled();
+        if (dependency === 'changed') {
+          expect(touched).toBe(1);
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+          expect(warnings).toHaveBeenCalledWith(
+            `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
+            'The Pending records changed while the Boot walk proved them.'
+          );
+          // No write was entered: neither the settlement nor the closeout reached A's writer.
+          expect(writes).not.toHaveBeenCalled();
+          expect(publications).not.toHaveBeenCalled();
+        } else {
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+          expect(warnings).not.toHaveBeenCalledWith(
+            `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
+            expect.anything()
+          );
+          expect(writes).toHaveBeenCalled();
+          // Every publication the walk proved posts exactly once, and nothing unproved posts.
+          const published = publications.mock.calls.map((call) => call[2].turnId);
+          expect(published.length).toBeGreaterThan(0);
+          expect(new Set(published).size).toBe(published.length);
+          expect(new Set(published)).toEqual(new Set(proved));
+        }
       } finally {
         vi.restoreAllMocks();
         closeTestCoreDb(coreDb);
         await shutdownControlStoreWorkerClient();
         closeWorkspaceProductReadHandles(root.dataRoot);
       }
-      // Zero prefix: the earlier claim keeps its bytes, and no file was added.
-      expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toEqual(claimRow);
-      expect(workspaceEvidence(root.dataRoot, workspaceId).files).toEqual(original.files);
+      if (dependency === 'changed') {
+        // Zero prefix: the earlier claim keeps its bytes, and no file was added.
+        expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toEqual(claimRow);
+        expect(workspaceEvidence(root.dataRoot, workspaceId).files).toEqual(original.files);
+      } else {
+        // The same walk settles the claim and closes the waiting approval out once.
+        expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).not.toEqual(claimRow);
+        expect(readPendingRow(root.dataRoot, workspaceId, waitingId)).toMatchObject({
+          delivery: 'closed-out',
+        });
+      }
     },
     CASE_TIMEOUT_MS
   );
