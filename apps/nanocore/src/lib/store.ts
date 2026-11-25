@@ -4422,6 +4422,7 @@ export class FsStore {
           | { schema_version: number; identity_json: string; turn_id: string }
           | { schema_version: number; thread_id: string | null }
           | undefined;
+        let selector: { threadId: string | null; turnId?: string } | undefined;
         try {
           row =
             kind === 'item'
@@ -4439,6 +4440,16 @@ export class FsStore {
                   .get(id) as { schema_version: number; thread_id: string | null } | undefined);
           if (row && row.schema_version !== 1)
             throw new Error('Unsupported native product selector format.');
+          // The whole selector decode answers for this owner alone. A second readable owner is a
+          // conflict whatever its key, so only the first one is decoded.
+          if (row && !result) {
+            const threadId =
+              'identity_json' in row ? JSON.parse(row.identity_json).threadId : row.thread_id;
+            selector = {
+              threadId: threadId === null ? null : ThreadIdSchema.parse(threadId),
+              ...('turn_id' in row ? { turnId: row.turn_id as string } : {}),
+            };
+          }
         } catch (error) {
           // A sibling that cannot answer a creation's uniqueness read is held like an unopenable
           // one; its failure is never charged to the creating Workspace.
@@ -4464,13 +4475,7 @@ export class FsStore {
             }
             throw new Error('Conflicting native product owner; recovery_required.');
           }
-          const threadId =
-            'identity_json' in row ? JSON.parse(row.identity_json).threadId : row.thread_id;
-          result = {
-            owner,
-            threadId: threadId === null ? null : ThreadIdSchema.parse(threadId),
-            ...('turn_id' in row ? { turnId: row.turn_id as string } : {}),
-          };
+          if (selector) result = { owner, ...selector };
         }
       } catch (error) {
         if (owner.kind === 'workspace') closeWorkspaceProductReadHandles(path);
@@ -9413,6 +9418,31 @@ export class FsStore {
     this.assertTurnPublicationAcknowledged(turnId);
     // Subscription owns live delivery only; the caller already selected its bounded replay.
     if (!this.getTurnLineage(turnId)) this.getTurnEventWindow(turnId);
+    const stream = this.turnStream(turnId);
+    stream.listeners.add(listener);
+    return () => {
+      stream.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Subscribes to one Turn of a known Workspace and Thread; only that Workspace's own records
+   * are read, so a sibling Workspace never decides the subscription.
+   *
+   * @param workspaceId Workspace whose own records named the Turn.
+   * @param threadId Thread that owns the Turn.
+   * @param turnId Turn to observe.
+   * @param listener Live event listener.
+   * @returns Unsubscribe callback.
+   */
+  public addWorkspaceTurnListener(
+    workspaceId: string,
+    threadId: string,
+    turnId: string,
+    listener: EventListener
+  ): () => void {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+    this.getTurn(workspaceId, threadId, turnId);
     const stream = this.turnStream(turnId);
     stream.listeners.add(listener);
     return () => {

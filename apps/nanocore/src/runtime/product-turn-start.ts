@@ -476,9 +476,11 @@ export async function startProductTurn(input: StartProductTurnInput) {
   // This listener observes the existing product owner; it grants neither execution nor recovery.
   // Durable admission/checkpoint classification remains usable without this HTTP invocation.
   let unsubscribe: () => void = () => {};
+  // The admitted Workspace and Thread name this Turn; sibling Workspaces are never read.
+  const workspaceId = workspaceIdForOwner(turn.owner);
   const completion = new Promise<import('./orchestrator.js').TurnHandle>((resolve, reject) => {
     const observe = () => {
-      const current = input.store.getTurnById(turnId);
+      const current = input.store.getTurn(workspaceId, turn.threadId, turnId);
       if (!['completed', 'failed', 'interrupted', 'cancelled'].includes(current.status)) return;
       const invocation = getSchedulerPreparationClaims(input.coreDb!).get(queueEntryId);
       if (invocation) {
@@ -495,7 +497,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       // A restarted or cancelled invocation has no live owner to join. Its canonical
       // terminal event and closed attempt must already establish the lifecycle result.
       const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb!, {
-        workspaceId: workspaceIdForOwner(turn.owner),
+        workspaceId,
         threadId: turn.threadId,
         turnId,
       });
@@ -515,7 +517,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
         agentSetupDiagnostics: setup.diagnostics,
       });
     };
-    unsubscribe = input.store.addTurnListener(turnId, observe);
+    unsubscribe = input.store.addWorkspaceTurnListener(workspaceId, turn.threadId, turnId, observe);
     observe();
   });
   // Observe rejection even if admission publication is still awaiting its caller; the original completion promise still rejects for its lifecycle owner.
