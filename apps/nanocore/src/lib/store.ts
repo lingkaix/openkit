@@ -256,11 +256,14 @@ import {
 } from '../storage/control-store-product-records.js';
 import {
   type ControlItemAppend,
+  ControlItemAppendError,
   type ControlPublicationInput,
   type ControlTerminalTransition,
   checkControlItemAppend,
   eventAgreesWithSealedTurnOutcome,
   eventConflictsWithSealedTurnOutcome,
+  terminalSnapshotItemMatches,
+  terminalSnapshotMatchesRecord,
 } from '../storage/control-store-products.js';
 import {
   type ControlStorePublicationGuard,
@@ -4134,22 +4137,83 @@ export class FsStore {
     );
   }
 
-  /** Applies the original checks inside the admitted same-Turn boundary. */
-  private async publishPendingRequestServiceTurnPublication(
-    workspaceId: string,
-    threadId: string,
-    input: {
-      turnId: string;
-      summary: string;
-      actor: ActorRef;
-      now: string;
-      items: readonly Item[];
-      pending: readonly ControlPendingCommandInput[];
-      admission?: ControlAdmission;
-      archive?: boolean;
-      triggerSource?: { kind: 'automation'; summary: string };
-    }
-  ): Promise<Turn> {
+  /**
+   * Proves one Core-local Pending service publication before its Boot walk writes anything.
+   * It runs the publication's own proposal and the terminal tuple's snapshot proof on the exact
+   * record and Items that the publication would post. It stages no content and writes nothing;
+   * the Workspace writer still rechecks the same dependencies when the publication commits.
+   *
+   * @throws terminal publication conflict when a retained completion contradicts the proposal.
+   */
+  public provePendingRequestServiceTurn(
+    ...args: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>
+  ): void {
+    const [workspaceId, threadId, input] = args;
+    const { existing, turn, priorEvent } = this.pendingServiceTurnProposal(
+      workspaceId,
+      threadId,
+      input
+    );
+    const sealed = existing && !['pending', 'running'].includes(existing.turn.status);
+    const snapshot = (priorEvent?.data.type === 'turn-completed' ? priorEvent.data.turn : turn) as
+      | Turn
+      | undefined;
+    const record = { ...(existing?.metadata ?? {}), ...turn, items: [] };
+    const supplied = new Map(input.items.map((item) => [item.id, item]));
+    const retained = new Map((existing?.turn.items ?? []).map((item) => [item.id, item]));
+    if (
+      !snapshot ||
+      !terminalSnapshotMatchesRecord(snapshot, record, sealed ? record : undefined) ||
+      // A sealed Turn without its completion accepts only the exact next original completion.
+      (sealed &&
+        !priorEvent &&
+        readWorkspaceTurnEvents(
+          this.workspaceRootPath(workspaceId),
+          this.getTurn(workspaceId, threadId, turn.id)
+        ).length > 0) ||
+      snapshot.items.some((item) => {
+        const payload = supplied.get(item.id) ?? retained.get(item.id);
+        return !payload || !terminalSnapshotItemMatches(payload, item);
+      }) ||
+      [...supplied.keys()].some((id) => !snapshot.items.some((item) => item.id === id))
+    )
+      throw terminalTurnPublicationConflict(turn.id);
+  }
+
+  /**
+   * Proves that the Item's own Turn writer admits one new Workspace Item before a Boot walk writes
+   * anything. It applies the writer's append decision and, for an open Turn, the Session check of
+   * its head mutation. It writes nothing; the writer rechecks both when the Item commits.
+   *
+   * @param item New Item, absent from its Workspace.
+   * @param category Original publication category of the post.
+   * @throws ControlItemAppendError when that writer would refuse the Item.
+   */
+  public proveWorkspaceItemAppend(item: Item, category: ControlItemAppend['category']): void {
+    const workspaceId = workspaceIdForOwner(item.owner);
+    if (this.getItemLineage(workspaceId, item.id))
+      throw new ControlItemAppendError(`Item already exists: ${item.id}`);
+    const turn = this.getTurn(workspaceId, item.threadId, item.turnId);
+    checkControlItemAppend(item, turn, undefined, turn.items, category);
+    if (!['pending', 'running'].includes(turn.status) || !turn.agentSessionId) return;
+    const session = this.listWorkspaceAgentSessions(workspaceId).find(
+      (candidate) => candidate.id === turn.agentSessionId
+    );
+    if (
+      !session ||
+      session.threadId !== turn.threadId ||
+      session.status === 'closed' ||
+      session.status === 'failed'
+    )
+      throw new ControlItemAppendError(`Turn ${turn.id} has no open Session in its Thread.`);
+  }
+
+  /** The exact Turn and retained completion that one Pending service publication proposes. */
+  private pendingServiceTurnProposal(
+    ...[workspaceId, threadId, input]: Parameters<
+      FsStore['publishPendingRequestServiceTurnPublication']
+    >
+  ) {
     const scope = this.nativeScope({ kind: 'workspace', workspaceId });
     const existing = readNativeTurnHistory(scope, input.turnId);
     if (input.triggerSource && existing) throw terminalTurnPublicationConflict(input.turnId);
@@ -4177,7 +4241,6 @@ export class FsStore {
     });
     if (turn.agentId || turn.agentSessionId || turn.threadId !== threadId)
       throw new Error('Pending service publication requires its original Core-local Turn.');
-    const entries = await this.prepareNativeItems(scope, input.items);
     // The publication names its Workspace and Thread; sibling Workspaces are never read.
     const priorEvent = existing
       ? readWorkspaceTurnEvents(
@@ -4185,6 +4248,31 @@ export class FsStore {
           this.getTurn(workspaceId, threadId, turn.id)
         ).find((event) => event.data.type === 'turn-completed')
       : undefined;
+    return { scope, existing, turn, priorEvent };
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async publishPendingRequestServiceTurnPublication(
+    workspaceId: string,
+    threadId: string,
+    input: {
+      turnId: string;
+      summary: string;
+      actor: ActorRef;
+      now: string;
+      items: readonly Item[];
+      pending: readonly ControlPendingCommandInput[];
+      admission?: ControlAdmission;
+      archive?: boolean;
+      triggerSource?: { kind: 'automation'; summary: string };
+    }
+  ): Promise<Turn> {
+    const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
+      workspaceId,
+      threadId,
+      input
+    );
+    const entries = await this.prepareNativeItems(scope, input.items);
     const event =
       priorEvent ??
       SseEventEnvelopeSchema.parse({
