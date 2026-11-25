@@ -1252,6 +1252,99 @@ export function freezeReadyOutcomes(
   return freeze();
 }
 
+/**
+ * The state `freezeReadyOutcomes` leaves one selected row in. A Boot proof projects the freeze
+ * with it before the freeze is written.
+ */
+export function projectOutcomeFreezeMove(
+  record: PendingRequestRecord,
+  input: { readonly turnId: string; readonly cause: PendingDeliveryCause; readonly now: string }
+): PendingRequestRecord {
+  return {
+    ...record,
+    delivery: 'frozen',
+    deliveryTurnId: input.turnId,
+    deliveryCause: input.cause,
+    publicationTurnId: record.publicationTurnId ?? input.turnId,
+    updatedAt: input.now,
+  };
+}
+
+/**
+ * The freeze writer's selection rule on its delivering Turn and the Thread's usable rows. It
+ * requires an active Thread, the Turn's own executor and agent, and the exact planned selection,
+ * none of it raised on the delivering Turn.
+ *
+ * @returns The selection in readiness order and the delivering Turn's responsible principal.
+ */
+export function decideOutcomeFreezeSelection(
+  command: Extract<ControlPendingCommandInput, { action: 'freeze' }>,
+  delivering: Record<string, unknown>,
+  threadStatus: unknown,
+  usable: readonly PendingRequestRecord[]
+): { readonly selected: PendingRequestRecord[]; readonly responsibleUserId: string | null } {
+  const executor = executorKindForTurn(delivering as unknown as Turn) ?? 'person';
+  if (
+    threadStatus !== 'active' ||
+    executor !== command.executor ||
+    (command.executor === 'worker' && delivering.agentId !== (command.agentId ?? null))
+  )
+    pendingNativeConflict('The delivering Turn does not match its current native executor.');
+  const responsibleUserId = responsibleUserIdForActor((delivering as unknown as Turn).triggerActor);
+  const selected = selectReadyOutcomes(usable, {
+    executor: command.executor,
+    agentId: command.agentId ?? null,
+    cause: command.cause,
+    responsibleUserId,
+  });
+  if (
+    !isDeepStrictEqual(
+      selected.map((record) => record.requestId),
+      command.expectedSelection
+    ) ||
+    selected.some((record) => record.raisingTurnId === command.turnId)
+  )
+    pendingNativeConflict('The current native outcome selection differs from preparation.');
+  return { selected, responsibleUserId };
+}
+
+/**
+ * Runs the freeze writer's decision on one planned freeze without writing: its selection rule on
+ * the delivering Turn, then the projection check on every row it decides on, each selected row in
+ * its frozen state. A Boot walk runs it on the Turn it will create, before its first write.
+ *
+ * @param census The Thread's rows in the state the walk's preceding planned commands leave them.
+ * @returns The frozen rows.
+ */
+export function decideOutcomeFreezeCommand(
+  command: Extract<ControlPendingCommandInput, { action: 'freeze' }>,
+  input: {
+    readonly delivering: Record<string, unknown>;
+    readonly threadStatus: unknown;
+    readonly census: readonly PendingRequestRecord[];
+    readonly evidence: (
+      record: PendingRequestRecord
+    ) => Parameters<typeof decidePendingProjection>[1];
+  }
+): PendingRequestRecord[] {
+  const expected = new Set((command.expected ?? []).map((source) => source.requestId));
+  const usable = input.census.filter((record) => expected.has(record.requestId));
+  const { selected } = decideOutcomeFreezeSelection(
+    command,
+    input.delivering,
+    input.threadStatus,
+    usable
+  );
+  const frozen = new Map(
+    selected.map((record) => [record.requestId, projectOutcomeFreezeMove(record, command)])
+  );
+  for (const record of usable) {
+    const decided = frozen.get(record.requestId) ?? record;
+    decidePendingProjection(decided, input.evidence(decided), command.now);
+  }
+  return [...frozen.values()];
+}
+
 /** Builds structured native input from the delivering Turn's durable frozen associations, including references to its original publication. */
 export function frozenPendingOutcomeInput(
   sqlite: Database.Database,
@@ -3377,34 +3470,12 @@ export function applyControlPendingCommand(
     }
     case 'freeze': {
       const usable = selection();
-      const delivering = turn(command.turnId, command.threadId);
-      const executor = executorKindForTurn(delivering as unknown as Turn) ?? 'person';
-      if (
-        thread(command.threadId).status !== 'active' ||
-        executor !== command.executor ||
-        (command.executor === 'worker' && delivering.agentId !== (command.agentId ?? null))
-      )
-        pendingNativeConflict('The delivering Turn does not match its current native executor.');
-      const responsibleUserId = responsibleUserIdForActor(
-        (delivering as unknown as Turn).triggerActor
+      const { selected, responsibleUserId } = decideOutcomeFreezeSelection(
+        command,
+        turn(command.turnId, command.threadId),
+        thread(command.threadId).status,
+        listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId).filter(usable)
       );
-      const selected = selectReadyOutcomes(
-        listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId).filter(usable),
-        {
-          executor: command.executor,
-          agentId: command.agentId ?? null,
-          cause: command.cause,
-          responsibleUserId,
-        }
-      );
-      if (
-        !isDeepStrictEqual(
-          selected.map((record) => record.requestId),
-          command.expectedSelection
-        ) ||
-        selected.some((record) => record.raisingTurnId === command.turnId)
-      )
-        pendingNativeConflict('The current native outcome selection differs from preparation.');
       if (command.executor === 'worker') {
         const batch = pendingOutcomeBatchDraft(command, selected);
         const staged = prepared.workerInputs?.get(command.turnId);

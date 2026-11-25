@@ -46,6 +46,7 @@ import {
   archiveSelects,
   compareReadiness,
   decideFrozenDeliveryCommand,
+  decideOutcomeFreezeCommand,
   type decidePendingProjection,
   executorKindForTurn,
   isBlockingPendingRequest,
@@ -65,6 +66,7 @@ import {
   preflightPendingRequest,
   projectApprovalRequest,
   projectFrozenDeliveryMove,
+  projectOutcomeFreezeMove,
   projectUnfinishedSettlement,
   type RaisePendingRequestInput,
   readPendingRequest,
@@ -333,14 +335,9 @@ function buildPendingOutcomeFreeze(
     cause,
     responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
   });
-  const frozen = selected.map((record) => ({
-    ...record,
-    delivery: 'frozen' as const,
-    deliveryTurnId: turn.id,
-    deliveryCause: cause,
-    publicationTurnId: record.publicationTurnId ?? turn.id,
-    updatedAt: now,
-  }));
+  const frozen = selected.map((record) =>
+    projectOutcomeFreezeMove(record, { turnId: turn.id, cause, now })
+  );
   return {
     turnId: turn.id,
     triggerSource: pendingOutcomeTrigger(selected),
@@ -970,13 +967,44 @@ async function planPendingBootTailStep(
     now
   );
   if (!freeze.frozen.length) throw associationGap();
+  const owner = { kind: 'workspace' as const, workspaceId };
+  // The Turn this admission creates, as its freeze decides on it.
+  const created = {
+    id: turnId,
+    owner,
+    threadId,
+    status: choice.executor === 'worker' ? 'pending' : 'running',
+    agentId: outcomeTurnAgentId(choice),
+    agentSessionId: null,
+    triggerActor: outcomeTriggerActor(choice),
+    triggerSource: freeze.triggerSource,
+    startedAt: now,
+  };
+  const [command] = freeze.pending;
+  if (command?.action !== 'freeze') throw associationGap();
+  // The freeze writer's own decision, on that Turn and the Items the admission supplies, over
+  // every row it decides on in the planned census. A row the walk's earlier posts leave usable
+  // only after they commit is not usable here, so the freeze names it neither way.
+  decideOutcomeFreezeCommand(command, {
+    delivering: created,
+    threadStatus: readProduct(sqlite, owner, 'thread', threadId)?.record.status,
+    census,
+    evidence: pendingProjectionEvidence(
+      store,
+      sqlite,
+      workspaceId,
+      census,
+      freeze.items,
+      new Map([[turnId, created]])
+    ),
+  });
   if (choice.executor !== 'person')
     return { kind: 'outcome', threadId, choice, freeze, startedAt: now, provedAt: null };
   // A person batch is admitted and closed at Boot. Its new Turn has no fact yet, so the Task owner
   // reads the Thread's Goal that its terminal would advance; the close's delivery proof runs on
   // the batch the freeze publishes.
   await store.proveTaskThreadGoal(workspaceId, threadId);
-  const owner = { kind: 'workspace' as const, workspaceId };
+  const closed = { ...created, status: 'completed', completedAt: now };
   proveFrozenDeliveryCommand(
     store,
     sqlite,
@@ -985,23 +1013,7 @@ async function planPendingBootTailStep(
       turnThreadId: (id) => (id === turnId ? threadId : turnThreadId(id)),
       frozen: freeze.frozen,
       planned: freeze.items,
-      turns: new Map([
-        [
-          turnId,
-          {
-            id: turnId,
-            owner,
-            threadId,
-            status: 'completed',
-            agentId: outcomeTurnAgentId(choice),
-            agentSessionId: null,
-            triggerActor: outcomeTriggerActor(choice),
-            triggerSource: freeze.triggerSource,
-            startedAt: now,
-            completedAt: now,
-          },
-        ],
-      ]),
+      turns: new Map([[turnId, closed]]),
     }
   );
   return { kind: 'outcome', threadId, choice, freeze, startedAt: now, provedAt: now };
