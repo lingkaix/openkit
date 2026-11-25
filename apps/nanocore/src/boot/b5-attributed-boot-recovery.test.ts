@@ -3,6 +3,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -17,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OperationId } from '@openkit/app-api-schemas';
+import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -380,6 +382,86 @@ describe('B5 attributed Boot recovery', () => {
           disposition: 'outcome-unknown',
           disposition_reason: 'restart',
         });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "proves the idle tail's derived invalidation publication before the restart settlement, holds A unchanged until a verified restore while stopped, then recovers it",
+    async () => {
+      const root = await seedRoot(['Healthy', 'Invalidation conflict']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const claimed = await withSeedStore(root, (store) => seedClaimedPending(store, root, held));
+      const [invalidated] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [held], {
+          services: 'none',
+          requesterKind: 'person',
+          decision: 'granted',
+          governedIntent: true,
+        })
+      );
+      const requestId = invalidated!.requestIds[0]!;
+      expect(
+        writePendingDisposition(
+          root.dataRoot,
+          held,
+          requestId,
+          'denied-not-executed',
+          'membership-revoked'
+        )
+      ).toBe(1);
+      // The operator's verified recovery source: A's stopped bytes at this consistency point.
+      const workspaceRoot = join(root.dataRoot, 'workspaces', held);
+      const source = mkdtempSync(join(tmpdir(), 'openkit-b5-restore-'));
+      roots.push(source);
+      cpSync(workspaceRoot, join(source, held), { recursive: true });
+      const sourceEvidence = workspaceEvidence(root.dataRoot, held);
+      // A later retained fact on another Thread holds the tail's derived invalidation Turn ID.
+      const derived = deriveEntityId('tu', ['invalidation', requestId]);
+      await withSeedStore(root, async (store) => {
+        const other = await store.createThread(held, 'Earlier work');
+        await store.createTurn(held, other.id, 'Earlier', root.actor, null, { turnId: derived });
+        await store.updateTurn(derived, { status: 'completed', completedAt: COMPLETED_AT });
+      });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const claim = readPendingRow(root.dataRoot, held, claimed.requestId);
+      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // A's own proof of the tail's publication refused it: nothing of A's walk committed, so the
+      // unfinished claim and the conflicting Turn keep their stopped bytes.
+      expect(bootDecisionLines(server)).toContain(
+        'Pending service publication requires its original Core-local Turn.'
+      );
+      expect(readPendingRow(root.dataRoot, held, claimed.requestId)).toEqual(claim);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // A restart alone repeats the same hold on the same evidence.
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // The exit: restore A from its verified recovery source while stopped, then restart.
+      rmSync(workspaceRoot, { recursive: true });
+      cpSync(join(source, held), workspaceRoot, { recursive: true });
+      expectEvidenceUnchanged(root.dataRoot, held, sourceEvidence);
+      const restored = await startServer(root);
+      await expectNotHeld(restored, held);
+      await expectServed(restored, root.workspaceIds, null);
+      await stopServer(restored);
+      // Exact revalidation recovered A once: the claim settled and the invalidation published.
+      expect(readPendingRow(root.dataRoot, held, claimed.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
+      });
+      expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({
+        invalidation_turn_id: derived,
+      });
     },
     CASE_TIMEOUT_MS
   );
