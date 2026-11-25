@@ -11,8 +11,11 @@ import {
   type ColdRule,
   type CredentialCutoff,
   composeCold,
+  decideFirstBytes,
+  decidePost,
   type HarnessFacts,
   limitingClock,
+  type PostPremises,
   REPLACEMENT_CLOSE_TABLE,
   type ReplacementCloseTable,
   restorable,
@@ -276,6 +279,8 @@ interface Ctx {
   readonly world: World;
   readonly table: ReplacementCloseTable;
   readonly violations: Violation[];
+  /** The RC10 decision of this edge, for directed checks. It is no state. */
+  decided?: string;
 }
 
 const violate = (ctx: Ctx, name: string, detail: string) => ctx.violations.push({ name, detail });
@@ -300,17 +305,22 @@ type ClockView = State['clock'];
 const nowOf = (clock: ClockView) => (clock.back ? ADMITTED - 1 : clock.passed.length);
 
 /**
- * The premises of one decision. `view.sample` is the clock sample of the decision and
- * `view.audience` the clock of the P14 read. Both default to the current clock.
+ * The clocks of one decision. `sample` is the clock sample of the decision. Two reads also check a
+ * clock themselves: the P14 owner refuses an elapsed Ts, and the R reader (F
+ * `isAgentSessionReplacementRequestCurrent`) refuses an elapsed credential, issuer grace included.
  */
+interface ClockViews {
+  readonly sample: ClockView;
+  readonly audience: ClockView;
+  readonly request: ClockView;
+}
+
+/** The premises of one decision. Every view defaults to the current clock. */
 function premises(
   s: State,
   pendingOwner: boolean,
   t: ReplacementCloseTable,
-  view: { readonly sample: ClockView; readonly audience: ClockView } = {
-    sample: s.clock,
-    audience: s.clock,
-  }
+  view: ClockViews = { sample: s.clock, audience: s.clock, request: s.clock }
 ): ClosePremises {
   const cutoffs: CredentialCutoff[] = [
     { credential: 'presented', at: deadlineOf(s, 'Ta') },
@@ -318,7 +328,10 @@ function premises(
   ];
   return {
     pendingOwner,
-    request: s.prem.R,
+    request:
+      s.prem.R &&
+      deadlineOf(s, 'Ta') > nowOf(view.request) &&
+      deadlineOf(s, 'Ti') > nowOf(view.request),
     // The P14 owner reports A. Its contributor authorizer also refuses an elapsed Ts (A8-2).
     audience: {
       thread: s.prem.thread && deadlineOf(s, 'Ts') > nowOf(view.audience),
@@ -370,6 +383,18 @@ const EFFECT_READS = {
 } as const;
 type EffectSite = keyof typeof EFFECT_READS;
 
+/**
+ * Native can compare the slot inside its deciding update. A wall instant that Native sampled after
+ * its last read still precedes that update, so a clock can also pass between that sample and the
+ * update (`~sample:`). Main cannot compare inside a frame post or a socket write: its sample and the
+ * effect share one synchronous run (the accepted residual).
+ */
+const SAMPLE_GAP: Readonly<Record<EffectSite, boolean>> = {
+  post: false,
+  queue: true,
+  firstBytes: false,
+};
+
 /** One gather of an effect: no clock event, or one clock event after the read `after`. */
 interface Gather {
   readonly suffix: string;
@@ -387,31 +412,36 @@ function gathers(world: World, s: State, site: EffectSite): Gather[] {
     EFFECT_READS[site].forEach((read, after) => {
       out.push({ suffix: `~${read}:${e}`, after, event: e });
     });
+    if (SAMPLE_GAP[site])
+      out.push({ suffix: `~sample:${e}`, after: EFFECT_READS[site].length, event: e });
   }
   return out;
 }
 
 /**
  * Applies the clock event of one gather and returns the clock views of the decision: its sample at
- * the position that the table names, and the clock of the P14 read. The raw clock is the clock at
- * the effect.
+ * the position that the table names, and the clocks of the P14 read and the R read. The raw clock is
+ * the clock at the effect. An `after-reads` sample precedes the Native sample gap; an `in-write`
+ * compare follows it.
  */
-function gatherViews(
-  n: State,
-  g: Gather,
-  site: EffectSite,
-  t: ReplacementCloseTable
-): { readonly sample: ClockView; readonly audience: ClockView } {
+function gatherViews(n: State, g: Gather, site: EffectSite, t: ReplacementCloseTable): ClockViews {
   const before = JSON.parse(JSON.stringify(n.clock)) as ClockView;
   if (g.event) {
     n.used.push(g.event);
     applyClockEvent(n, g.event);
   }
   const reads: readonly string[] = EFFECT_READS[site];
-  const audienceAt = reads.indexOf('audience');
+  const readClock = (read: string) => {
+    const at = reads.indexOf(read);
+    return g.event && at >= 0 && at <= g.after ? before : n.clock;
+  };
+  const position = t.clockSample[site];
+  const early =
+    position === 'before-reads' || (position === 'after-reads' && g.after >= reads.length);
   return {
-    sample: t.clockSample[site] === 'before-reads' ? before : n.clock,
-    audience: g.event && audienceAt >= 0 && audienceAt <= g.after ? before : n.clock,
+    sample: g.event && early ? before : n.clock,
+    audience: readClock('audience'),
+    request: readClock('R'),
   };
 }
 
@@ -508,17 +538,23 @@ function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause, mainWall =
   }
   c.cause = cause;
   c.answer = t.carryCause(cause, 'capacity');
-  // A clock refusal answers the original limiting clock; every other refusal keeps its cause. A
-  // P14 audience refusal while the Thread rows and the policy admit can only come from a clock.
-  const clockCause =
-    CLOCK_CAUSES.includes(cause) || (cause === 'audience' && s.prem.thread && s.prem.policy);
-  const expected = !clockCause
-    ? cause
-    : mainWall && s.clock.back
-      ? ORACLE_CLOCK_CAUSE.Tc
-      : expectedClockCause(s);
+  const expected = expectedCause(s, cause, mainWall);
   if (c.answer !== expected) violate(ctx, 'O.cause', `${b} answered ${c.answer} for ${expected}`);
   c.phase = 'refused';
+}
+
+/**
+ * Oracle: a clock refusal answers the original limiting clock; every other refusal keeps its cause.
+ * A P14 audience refusal while the Thread rows and the policy admit, and an R refusal while the
+ * request is open, can only come from a clock.
+ */
+function expectedCause(s: State, cause: CloseCause, mainWall: boolean): CloseCause {
+  const clockCause =
+    CLOCK_CAUSES.includes(cause) ||
+    (cause === 'audience' && s.prem.thread && s.prem.policy) ||
+    (cause === 'request' && s.prem.R);
+  if (!clockCause) return cause;
+  return mainWall && s.clock.back ? ORACLE_CLOCK_CAUSE.Tc : expectedClockCause(s);
 }
 
 function setUnknown(s: State, from: 'queued' | 'dispatched'): void {
@@ -616,6 +652,7 @@ interface Step {
   readonly env: boolean;
   readonly next: State;
   readonly violations: readonly Violation[];
+  readonly decided?: string | undefined;
 }
 
 function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
@@ -624,7 +661,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     const n = clone(s);
     const ctx: Ctx = { world, table, violations: [] };
     if (f(n, ctx) === false) return;
-    out.push({ label, env, next: n, violations: ctx.violations });
+    out.push({ label, env, next: n, violations: ctx.violations, decided: ctx.decided });
   };
   const coreHeld = Object.values(s.c).some((c) => c.coreHold);
   const wsHeld = Object.values(s.c).some((c) => c.wsHold);
@@ -720,8 +757,9 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           const x = n.c[b]!;
           const view = gatherViews(n, g, 'post', t);
           const cause = t.post(premises(n, n.prem.pend, t, view));
-          if (cause) return liveRefuse(ctx, n, b, cause, true);
+          // A refusal is a decision too: an early sample can answer a wrong cause.
           checkSample(ctx, n, 'post', view.sample, `post:${b}`);
+          if (cause) return liveRefuse(ctx, n, b, cause, true);
           const q = n.prem;
           const clocks =
             wallPassed(n, 'Tc') ||
@@ -754,8 +792,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
             storage: n.prem.S,
             sandbox: sandboxFacts(n),
           });
+          checkSample(ctx, n, 'queue', view.sample, `queue:${b}`);
           if (!cause) {
-            checkSample(ctx, n, 'queue', view.sample, `queue:${b}`);
             const q = n.prem;
             const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
             const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || authorityPassed(n);
@@ -878,13 +916,22 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
                 x.slot &&
                 ['replying', 'queued', 'unknown-reply'].includes(x.phase);
               const d = t.firstBytes(premises(n, pending, t, view));
+              checkSample(ctx, n, 'firstBytes', view.sample, `write:${poll}`);
+              ctx.decided = d.kind === 'refuse' ? d.cause : 'write';
               if (d.kind === 'refuse') {
+                // The exact unsent settlement keeps the refusal cause for the close answer.
+                const expected = expectedCause(n, d.cause, true);
+                if (d.cause !== expected)
+                  violate(
+                    ctx,
+                    'O.cause',
+                    `${key} refused first bytes as ${d.cause} for ${expected}`
+                  );
                 n.p.unsent.push(key);
                 n.core[b] = { key, result: 'stale', revision: null };
                 n.settling.push(key);
                 return;
               }
-              checkSample(ctx, n, 'firstBytes', view.sample, `write:${poll}`);
               const q = n.prem;
               const clocks = n.clock.passed.length > 0 || n.clock.mono || n.clock.back;
               if (
@@ -2425,6 +2472,35 @@ const M: readonly MutationRow[] = [
     table: { clockSample: { ...T.clockSample, firstBytes: 'before-reads' } },
     via: 'write:p1:ok~drain:Tc',
   },
+  {
+    id: 'M-S8w',
+    world: WORLDS.live,
+    oracle: 'O.queue',
+    takeOut: 'RC8 compares a Native sample taken after its reads, outside the deciding update',
+    table: { clockSample: { ...T.clockSample, queue: 'after-reads' } },
+    via: 'queue:A~sample:Tc',
+  },
+  {
+    id: 'M-R7',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'RC7 answers R before the clocks (an elapsed credential answers request)',
+    table: { post: (p) => (p.pendingOwner && !p.request ? 'request' : decidePost(p)) },
+    via: 'env:Ta',
+  },
+  {
+    id: 'M-R10',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'RC10 answers R before the clocks (an elapsed credential answers request)',
+    table: {
+      firstBytes: (p) =>
+        p.connection && p.pendingOwner && !p.request
+          ? { kind: 'refuse', cause: 'request' }
+          : decideFirstBytes(p),
+    },
+    via: 'env:Ta',
+  },
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -2655,12 +2731,17 @@ describe('replacement close lifecycle model check', () => {
     };
     const eventsAt = (site: EffectSite) =>
       CLOCK_EVENTS.filter((clock) => site !== 'queue' || clock !== 'TcMono');
+    /** The gather positions: after each fact read, and after the Native sample. */
+    const positionsAt = (site: EffectSite): readonly string[] => [
+      ...EFFECT_READS[site],
+      ...(SAMPLE_GAP[site] ? ['sample'] : []),
+    ];
 
     it.each(SITES)(
       '$site: a clock that passes after any fact read refuses the effect',
       ({ site, to, effect }) => {
         let cases = 0;
-        for (const read of EFFECT_READS[site])
+        for (const read of positionsAt(site))
           for (const clock of eventsAt(site)) {
             const label = `${effect}~${read}:${clock}`;
             // `run` also requires every edge to violate nothing, O.sample included.
@@ -2681,9 +2762,11 @@ describe('replacement close lifecycle model check', () => {
             } else {
               expect(s.p.bytes).toEqual({});
               expect(s.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+              const step = steps(live, T, run(live, to)).find((x) => x.label === label);
+              expect(step?.decided).toBe(CAUSE[clock]);
             }
           }
-        expect(cases).toBe(EFFECT_READS[site].length * eventsAt(site).length);
+        expect(cases).toBe(positionsAt(site).length * eventsAt(site).length);
       }
     );
 
@@ -2692,18 +2775,13 @@ describe('replacement close lifecycle model check', () => {
       ({ site, to, effect }) => {
         const early = { ...T, clockSample: { ...T.clockSample, [site]: 'before-reads' } };
         const at = run(live, to);
-        const reads: readonly string[] = EFFECT_READS[site];
-        for (const [i, read] of reads.entries())
+        for (const read of positionsAt(site))
           for (const clock of eventsAt(site)) {
             const step = steps(live, early, at).find(
               (x) => x.label === `${effect}~${read}:${clock}`
             );
-            // The P14 read checks Ts itself: an elapsed Ts before that read refuses the effect.
-            if (clock === 'Ts' && i < reads.indexOf('audience')) {
-              expect(step?.violations).toEqual([]);
-              expect(step?.next.p.bytes).toEqual({});
-              continue;
-            }
+            // A refusal is a decision too. An elapsed Ts before the P14 read sends nothing, but
+            // the early sample answers the audience for the startup deadline.
             expect(step?.violations.map((v) => v.name)).toContain('O.sample');
           }
         // Without a clock event inside the gather, the early sample equals the raw clock.
@@ -2711,6 +2789,114 @@ describe('replacement close lifecycle model check', () => {
         expect(plain?.violations).toEqual([]);
       }
     );
+
+    describe('RC8 compares the slot inside the deciding update (AMEND 1)', () => {
+      const afterReads: ReplacementCloseTable = {
+        ...T,
+        clockSample: { ...T.clockSample, queue: 'after-reads' },
+      };
+
+      it.each(['Tc', 'Ts', 'Ta', 'Ti'] as const)(
+        'a Native sample of 99 after the reads, then %s at 100 before the update: zero rows',
+        (clock) => {
+          const label = `queue:A~sample:${clock}`;
+          const s = run(live, [...TO_POST, label]);
+          expect(s.p.committed).toEqual([]);
+          expect(s.h.cell).toBe('idle');
+          // The ACK maps the deadline refusal to the posted limiting clock.
+          const answered = run(live, [...TO_POST, label, 'reply:A:ack']);
+          expect(answered.c.A!.answer).toBe(CAUSE[clock]);
+          expect(answered.p.bytes).toEqual({});
+          // A compare outside the update permits the row on the stale sample.
+          const step = steps(live, afterReads, run(live, TO_POST)).find((x) => x.label === label);
+          expect(step?.next.p.committed).toEqual(['A1']);
+          expect(step?.violations.map((v) => v.name)).toEqual(
+            expect.arrayContaining(['O.queue', 'O.sample'])
+          );
+        }
+      );
+
+      it('a wall step back at the update keeps the signed Native limit: commit, then zero bytes', () => {
+        const label = 'queue:A~sample:Wback';
+        const s = run(live, [...TO_POST, label]);
+        expect(s.p.committed).toEqual(['A1']);
+        const sent = run(live, [...TO_POST, label, 'reply:A:ack', 'dispatch:p1', 'write:p1:ok']);
+        expect(sent.p.bytes).toEqual({});
+        expect(sent.p.unsent).toEqual(['A1']);
+        expect(sent.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+      });
+    });
+
+    describe('R reads its own clock (AMEND 2)', () => {
+      const rFirstPost = {
+        ...T,
+        post: (p: PostPremises) => (p.pendingOwner && !p.request ? 'request' : decidePost(p)),
+      } as ReplacementCloseTable;
+      const rFirstBytes = {
+        ...T,
+        firstBytes: (p: ClosePremises) =>
+          p.connection && p.pendingOwner && !p.request
+            ? ({ kind: 'refuse', cause: 'request' } as const)
+            : decideFirstBytes(p),
+      } as ReplacementCloseTable;
+      const SIDES = [
+        ['Ta', 'before R', 'Ta'],
+        ['Ta', 'after R', 'R'],
+        ['Ti', 'before R', 'Ta'],
+        ['Ti', 'after R', 'R'],
+      ] as const;
+
+      it.each(SIDES)(
+        'RC7: %s passes %s; the answer is authority-expired with zero frames',
+        (clock, _side, read) => {
+          const label = `post:A~${read}:${clock}`;
+          const s = run(live, [...TO_POST.slice(0, -1), label]);
+          expect(s.c.A!.answer).toBe('authority-expired');
+          expect(s.c.A!.phase).toBe('refused');
+          expect(s.p.committed).toEqual([]);
+          const step = steps(live, rFirstPost, run(live, TO_POST.slice(0, -1))).find(
+            (x) => x.label === label
+          );
+          if (read === 'Ta') {
+            // The R reader saw the elapsed credential: R before the clocks answers request.
+            expect(step?.next.c.A?.answer).toBe('request');
+            expect(step?.violations.map((v) => v.name)).toContain('O.cause');
+          } else expect(step?.violations).toEqual([]);
+        }
+      );
+
+      it.each(SIDES)(
+        'RC10: %s passes %s; zero bytes and the exact unsent settlement as authority-expired',
+        (clock, _side, read) => {
+          const to = [...TO_QUEUED, 'dispatch:p1'];
+          const label = `write:p1:ok~${read}:${clock}`;
+          const s = run(live, [...to, label]);
+          expect(s.p.bytes).toEqual({});
+          expect(s.p.unsent).toEqual(['A1']);
+          expect(s.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+          const at = run(live, to);
+          expect(steps(live, T, at).find((x) => x.label === label)?.decided).toBe(
+            'authority-expired'
+          );
+          const step = steps(live, rFirstBytes, at).find((x) => x.label === label);
+          if (read === 'Ta') {
+            expect(step?.decided).toBe('request');
+            expect(step?.violations.map((v) => v.name)).toContain('O.cause');
+          } else expect(step?.violations).toEqual([]);
+        }
+      );
+
+      it('a live-clock revocation still answers request at RC7 and RC10 (control)', () => {
+        const revoked = run(live, [...TO_POST.slice(0, 5), 'env:R', 'hold:A', 'post:A']);
+        expect(revoked.c.A!.answer).toBe('request');
+        expect(revoked.p.committed).toEqual([]);
+        const at = run(live, [...TO_QUEUED, 'env:R', 'dispatch:p1']);
+        const step = steps(live, T, at).find((x) => x.label === 'write:p1:ok');
+        expect(step?.decided).toBe('request');
+        expect(step?.violations).toEqual([]);
+        expect(step?.next.p.bytes).toEqual({});
+      });
+    });
   });
 
   describe('directed schedules', () => {
