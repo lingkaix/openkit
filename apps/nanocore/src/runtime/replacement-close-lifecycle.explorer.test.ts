@@ -18,7 +18,9 @@ import {
   type PostPremises,
   REPLACEMENT_CLOSE_TABLE,
   type ReplacementCloseTable,
+  type RestoreFrame,
   restorable,
+  restoresFrame,
   type SandboxFacts,
   sandboxOpen,
   settledCloseProof,
@@ -65,7 +67,20 @@ type Env =
   | 'crash'
   | 'foreign-claim'
   | 'replay'
-  | 'requeue';
+  | 'requeue'
+  // G3 reuse writers on a released row, relative to the revision P of a pending restore frame:
+  // `session.open` settles at P-1 or P+1, a binding opens at P-1 with no sequence change, or the
+  // same-name Harness is recreated at P-1.
+  | 'open@99'
+  | 'open@101'
+  | 'bind@99'
+  | 'recreate'
+  /** S3b H4-1: the wall steps back below the last passed deadline, above the enqueue instant. */
+  | 'Wpart'
+  /** S3b H4-2: after the queue ACK, an issuer rotation shortens the grace cutoff Ti. */
+  | 'rotate'
+  /** S3b H4-3: Native commits, loses its reply and exits; Main keeps its waiter and exclusion. */
+  | 'wcrash';
 
 type Phase =
   | 'idle'
@@ -113,8 +128,12 @@ interface Closer {
   answer: string | null;
   cause: CloseCause | null;
   settleRev: number | null;
+  /** G3: the claim generation that this closer's RC3 wrote. */
+  claimGen: string | null;
   /** F-b: this generation replays its published capture receipt. RC3 claims again; no new Workspace claim. */
   replay?: boolean;
+  /** H4-2: this closer posted after the rotation. */
+  rotatedAtPost?: boolean;
 }
 
 interface State {
@@ -149,12 +168,16 @@ interface State {
    * wall clock stepped back before the original enqueue instant, so before every deadline. The
    * monotonic Tc and the caller bound W are separate.
    */
-  clock: { passed: ModelClock[]; back: boolean; mono: boolean; W: boolean };
+  clock: { passed: ModelClock[]; back: boolean; part: boolean; mono: boolean; W: boolean };
   /** The policy publisher has its activation ACK; the Main swap of the applied policy waits. */
   install: boolean;
   /** The successor request was requeued: this attempt fails R, and the retry carries a fresh request. */
   requeued?: boolean;
-  cold: Record<string, number | null>;
+  cold: Record<string, RestoreFrame | null>;
+  /** G3: restore frames whose first delivery committed and that can arrive again (a lost ACK). */
+  dup: { frame: RestoreFrame; by: string }[];
+  /** H4-2: `pending` until the rotation after the queue ACK. */
+  rotation?: 'pending' | 'done';
   used: string[];
   after: boolean;
   /** Provenance for the oracles only. */
@@ -167,6 +190,10 @@ interface State {
     succ: number;
     owed: number;
     occ0: number;
+    /** Closers whose claim wrote no generation (older writers). */
+    ungen: string[];
+    /** Duplicate restore deliveries. */
+    redelivered: number;
   };
 }
 
@@ -189,6 +216,12 @@ interface World {
   readonly legacy?: 'c1' | 'r2';
   /** Phases that the live closers may reach. Undefined: all. */
   readonly stopAt?: Phase;
+  /** The same, for one closer. */
+  readonly stop?: Readonly<Record<string, Phase>>;
+  /** G3: a committed restore frame can be delivered again later. */
+  readonly redeliver?: boolean;
+  /** H4-1: two clock moves in one gather. */
+  readonly multiMove?: boolean;
   readonly init?: (s: State) => void;
   /** Named histories: the explorer reports their count, fence classes and first trace. */
   readonly probes?: Readonly<Record<string, (s: State) => boolean>>;
@@ -209,6 +242,7 @@ function initial(world: World): State {
       sequence: null,
       result: null,
       nextSequence: 0,
+      claimGeneration: null,
     },
     occ: world.bindings.length,
     present: Object.fromEntries(world.bindings.map((b) => [b, true])),
@@ -231,6 +265,7 @@ function initial(world: World): State {
           answer: null,
           cause: null,
           settleRev: null,
+          claimGen: null,
         },
       ])
     ),
@@ -247,9 +282,10 @@ function initial(world: World): State {
       S: true,
       X: true,
     },
-    clock: { passed: [], back: false, mono: false, W: false },
+    clock: { passed: [], back: false, part: false, mono: false, W: false },
     install: false,
     cold: Object.fromEntries((world.splitCold ?? []).map((k) => [k, null])),
+    dup: [],
     used: [],
     after: world.legacy === undefined,
     p: {
@@ -261,6 +297,8 @@ function initial(world: World): State {
       succ: 0,
       owed: 0,
       occ0: world.bindings.length,
+      ungen: [],
+      redelivered: 0,
     },
   };
   world.init?.(s);
@@ -270,13 +308,19 @@ function initial(world: World): State {
 const clone = (s: State): State => JSON.parse(JSON.stringify(s)) as State;
 const keyOf = (b: string, c: Closer) => `${b}${c.gen}`;
 const ownerOfKey = (key: string) => key.slice(0, 1);
+/** G3: the fresh identifier of one acquisition. A closer generation claims at most once. */
+const generationOf = (b: string, c: Closer) => `g${b}${c.gen}`;
 
-/** The older claim, for data roots that older writers produced. */
+/**
+ * The older claim and restore, for data roots that older writers produced. The claim writes no
+ * generation, and the older restore compares the revision alone.
+ */
 function legacyTable(t: ReplacementCloseTable, kind: 'c1' | 'r2'): ReplacementCloseTable {
   return {
     ...t,
     admit: () => null,
-    claim: (h) => ({ revision: kind === 'r2' ? h.revision + 1 : h.revision }),
+    claim: (h) => ({ revision: kind === 'r2' ? h.revision + 1 : h.revision, generation: null }),
+    restore: (h, s, frame) => restorable(h, s) && h.revision === frame.revision,
   };
 }
 
@@ -302,14 +346,17 @@ const deadlineOf = (s: State, clock: ModelClock) => {
   const at = s.clock.passed.indexOf(clock);
   return at < 0 ? LIVE_DEADLINE : at + 1;
 };
-const wallNow = (s: State) => (s.clock.back ? ADMITTED - 1 : s.clock.passed.length);
+/** After `Wpart` the wall reads between the last two passed deadlines. */
+const wallNow = (s: State) => nowOf(s.clock);
 const wallPassed = (s: State, clock: ModelClock) => deadlineOf(s, clock) <= wallNow(s);
 /** Oracle: an expiring credential that the admission requires has passed on the wall. */
 const authorityPassed = (s: State) => wallPassed(s, 'Ta') || wallPassed(s, 'Ti');
 
 /** The clock as one read sees it. The deadlines are fixed facts; only the sample moves. */
 type ClockView = State['clock'];
-const nowOf = (clock: ClockView) => (clock.back ? ADMITTED - 1 : clock.passed.length);
+function nowOf(clock: ClockView): number {
+  return clock.back ? ADMITTED - 1 : clock.passed.length - (clock.part ? 0.5 : 0);
+}
 
 /**
  * The clocks of one decision. `sample` is the clock sample of the decision. Two reads also check a
@@ -333,15 +380,19 @@ function premises(
     { credential: 'presented', at: deadlineOf(s, 'Ta') },
     { credential: 'issuer', at: deadlineOf(s, 'Ti') },
   ];
+  const credentialsLive =
+    deadlineOf(s, 'Ta') > nowOf(view.request) && deadlineOf(s, 'Ti') > nowOf(view.request);
   return {
     pendingOwner,
-    request:
-      s.prem.R &&
-      deadlineOf(s, 'Ta') > nowOf(view.request) &&
-      deadlineOf(s, 'Ti') > nowOf(view.request),
+    // The R reader refuses a closed request first, then an elapsed credential with its reason.
+    request: !s.prem.R ? false : credentialsLive ? true : 'expired',
     // The P14 owner reports A. Its contributor authorizer also refuses an elapsed Ts (A8-2).
     audience: {
-      thread: s.prem.thread && deadlineOf(s, 'Ts') > nowOf(view.audience),
+      thread: !s.prem.thread
+        ? false
+        : deadlineOf(s, 'Ts') > nowOf(view.audience)
+          ? true
+          : 'expired',
       policy: s.prem.policy,
     },
     idleReceipt: s.prem.idle,
@@ -361,16 +412,26 @@ function premises(
 
 /* ------------------------------------------------- CL2: clock events inside an effect gather */
 
-/** The clock writers. Each passes once within the budget. After a step back the wall stays behind. */
-const CLOCK_EVENTS = ['Tc', 'Ts', 'Ta', 'Ti', 'Wback', 'TcMono'] as const;
+/**
+ * The clock writers. Each passes once within the budget. After a step back the wall stays behind.
+ * `Wpart` is no environment step: it moves only inside a gather (H4-1, see `gathers`).
+ */
+const CLOCK_EVENTS = ['Tc', 'Ts', 'Ta', 'Ti', 'Wback', 'TcMono', 'Wpart'] as const;
 type ClockEvent = (typeof CLOCK_EVENTS)[number];
 const isClockEvent = (e: Env): e is ClockEvent => (CLOCK_EVENTS as readonly Env[]).includes(e);
-const clockEventEnabled = (s: State, e: ClockEvent) =>
+function clockEventEnabled(s: State, e: ClockEvent): boolean {
   // The monotonic Tc passes while the wall Tc is still live.
-  e === 'TcMono' ? !wallPassed(s, 'Tc') : !s.clock.back;
+  if (e === 'TcMono') return !wallPassed(s, 'Tc');
+  if (e === 'Wback') return !s.clock.back;
+  if (e === 'Wpart') return !s.clock.back && !s.clock.part && s.clock.passed.length > 0;
+  // H4-2: the shortened grace cutoff passes only after the rotation.
+  if (e === 'Ti' && s.rotation === 'pending') return false;
+  return !s.clock.back && !s.clock.part;
+}
 function applyClockEvent(n: State, e: ClockEvent): void {
   if (e === 'Wback') n.clock.back = true;
   else if (e === 'TcMono') n.clock.mono = true;
+  else if (e === 'Wpart') n.clock.part = true;
   else n.clock.passed.push(e);
 }
 
@@ -402,26 +463,53 @@ const SAMPLE_GAP: Readonly<Record<EffectSite, boolean>> = {
   firstBytes: false,
 };
 
-/** One gather of an effect: no clock event, or one clock event after the read `after`. */
+/** One gather of an effect: its clock events in order. Each passes after the read `after`. */
 interface Gather {
   readonly suffix: string;
-  readonly after: number;
-  readonly event: ClockEvent | null;
+  readonly events: readonly { readonly after: number; readonly event: ClockEvent }[];
 }
 
+/** H4-1: the read of an effect that checks a clock itself (the R reader, the P14 owner). */
+const OBSERVER: Partial<Record<ClockEvent, string>> = { Ta: 'R', Ti: 'R', Ts: 'audience' };
+const observes = (reads: readonly string[], e: ClockEvent, from: number, to: number) =>
+  reads.some((read, at) => at >= from && at <= to && read === OBSERVER[e]);
+
 function gathers(world: World, s: State, site: EffectSite): Gather[] {
-  const out: Gather[] = [{ suffix: '', after: -1, event: null }];
-  if (s.used.length >= world.budget) return out;
+  const out: Gather[] = [{ suffix: '', events: [] }];
+  const left = world.budget - s.used.length;
+  if (left <= 0) return out;
+  const reads: readonly string[] = EFFECT_READS[site];
+  // H4-1 (V1-P): a second move, the wall back below the deadline that a clock-checking read of the
+  // same gather saw pass. RC8 is excluded: Native reads no fact that checks a clock. A step back
+  // that no read observed is the in-window rollback exposure (H2, #996); it is not generated.
+  const partial = world.multiMove === true && site !== 'queue' && !s.used.includes('Wpart');
   for (const e of world.env) {
     if (!isClockEvent(e) || s.used.includes(e) || !clockEventEnabled(s, e)) continue;
     // Native compares its own wall only.
     if (site === 'queue' && e === 'TcMono') continue;
-    EFFECT_READS[site].forEach((read, after) => {
-      out.push({ suffix: `~${read}:${e}`, after, event: e });
+    reads.forEach((read, after) => {
+      out.push({ suffix: `~${read}:${e}`, events: [{ after, event: e }] });
+      if (!partial || left < 2 || OBSERVER[e] === undefined) return;
+      for (let back = after + 1; back < reads.length; back++)
+        if (observes(reads, e, after + 1, back))
+          out.push({
+            suffix: `~${read}:${e}~${reads[back]}:Wpart`,
+            events: [
+              { after, event: e },
+              { after: back, event: 'Wpart' },
+            ],
+          });
     });
     if (SAMPLE_GAP[site])
-      out.push({ suffix: `~sample:${e}`, after: EFFECT_READS[site].length, event: e });
+      out.push({ suffix: `~sample:${e}`, events: [{ after: reads.length, event: e }] });
   }
+  // H4-1: the last pass before the gather, seen by a read of the gather, then the wall steps back.
+  const last = s.clock.passed.at(-1);
+  if (partial && last !== undefined && clockEventEnabled(s, 'Wpart'))
+    reads.forEach((read, back) => {
+      if (observes(reads, last, 0, back))
+        out.push({ suffix: `~${read}:Wpart`, events: [{ after: back, event: 'Wpart' }] });
+    });
   return out;
 }
 
@@ -432,21 +520,29 @@ function gathers(world: World, s: State, site: EffectSite): Gather[] {
  * compare follows it.
  */
 function gatherViews(n: State, g: Gather, site: EffectSite, t: ReplacementCloseTable): ClockViews {
-  const before = JSON.parse(JSON.stringify(n.clock)) as ClockView;
-  if (g.event) {
-    n.used.push(g.event);
-    applyClockEvent(n, g.event);
+  const snapshot = () => JSON.parse(JSON.stringify(n.clock)) as ClockView;
+  // views[m]: the clock after the first m events of the gather.
+  const views = [snapshot()];
+  for (const { event } of g.events) {
+    n.used.push(event);
+    applyClockEvent(n, event);
+    views.push(snapshot());
   }
   const reads: readonly string[] = EFFECT_READS[site];
+  // A read at index `at` sees each event that passed after an earlier read.
+  const seenAt = (at: number) => views[g.events.filter((e) => e.after < at).length]!;
   const readClock = (read: string) => {
     const at = reads.indexOf(read);
-    return g.event && at >= 0 && at <= g.after ? before : n.clock;
+    return at >= 0 ? seenAt(at) : n.clock;
   };
   const position = t.clockSample[site];
-  const early =
-    position === 'before-reads' || (position === 'after-reads' && g.after >= reads.length);
   return {
-    sample: g.event && early ? before : n.clock,
+    sample:
+      position === 'before-reads'
+        ? views[0]!
+        : position === 'after-reads'
+          ? seenAt(reads.length)
+          : n.clock,
     audience: readClock('audience'),
     request: readClock('R'),
   };
@@ -458,7 +554,7 @@ function gatherViews(n: State, g: Gather, site: EffectSite, t: ReplacementCloseT
  * own wall only.
  */
 function checkSample(ctx: Ctx, n: State, site: EffectSite, sample: ClockView, label: string): void {
-  const wall = (c: ClockView) => JSON.stringify([c.passed, c.back]);
+  const wall = (c: ClockView) => JSON.stringify([c.passed, c.back, c.part]);
   const stale =
     wall(sample) !== wall(n.clock) || (site !== 'queue' && sample.mono !== n.clock.mono);
   if (stale) violate(ctx, 'O.sample', `${label} decided on a clock sample before its last read`);
@@ -482,16 +578,27 @@ const CLOCK_CAUSES: readonly CloseCause[] = [
 /** The first wall deadline that passed; otherwise only the monotonic Tc can have failed. */
 const expectedClockCause = (s: State) => ORACLE_CLOCK_CAUSE[s.clock.passed[0] ?? 'Tc'];
 
-/** Applies one Native restore and checks it against the raw drain provenance. */
+/**
+ * Applies one Native restore and checks it against the raw drain provenance. `duplicate`: a later
+ * delivery of a frame whose first delivery committed (G3). It must change no row.
+ */
 function applyRestore(
   ctx: Ctx,
   s: State,
   t: ReplacementCloseTable,
-  revision: number,
+  frame: RestoreFrame,
   restorer: string | null,
-  site: 'rollback' | 'completion'
+  site: 'rollback' | 'completion',
+  duplicate = false
 ): void {
-  const changed = t.restore(s.h, sandboxFacts(s), revision);
+  const changed = t.restore(s.h, sandboxFacts(s), frame);
+  if (changed && duplicate)
+    violate(
+      ctx,
+      'O.restore.dup',
+      `a second delivery of ${restorer}'s ${frame.arm} frame changed a row`
+    );
+  if (changed && !duplicate && ctx.world.redeliver) s.dup.push({ frame, by: restorer ?? 'cold' });
   if (changed) {
     if (!sandboxOpen(s.sb)) violate(ctx, 'O.restore.sandbox', 'restore on a draining Sandbox');
     for (const reason of s.p.drainBy) {
@@ -510,8 +617,9 @@ function applyRestore(
     }
     if (s.h.cell === 'queued' || s.h.cell === 'dispatched' || s.h.cell === 'unknown')
       violate(ctx, 'O.restore.cell', `restore with a ${s.h.cell} cell`);
-    s.h = { ...s.h, drain: 'accepting' };
+    s.h = { ...s.h, drain: 'accepting', claimGeneration: null };
     s.p.drainBy = [];
+    s.p.ungen = [];
     s.occ -= t.restoreDecrement;
     s.p.owed += 1;
   }
@@ -530,12 +638,22 @@ function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause, mainWall =
   const t = liveTable(ctx, s);
   c.coreHold = false;
   c.wsHold = false;
+  // The rollback is the claim arm: the frame's own claim, before any queue commit.
   if (t.liveRefusalLatch === 'restore' && c.claimRev !== null)
-    applyRestore(ctx, s, t, c.claimRev, b, 'rollback');
+    applyRestore(
+      ctx,
+      s,
+      t,
+      { arm: 'claim', revision: c.claimRev, generation: c.claimGen },
+      b,
+      'rollback'
+    );
   if (
     s.p.drainBy.includes(`claim:${b}`) &&
     c.claimRev !== null &&
     s.h.revision === c.claimRev &&
+    c.claimGen !== null &&
+    s.h.claimGeneration === c.claimGen &&
     restorable(s.h, sandboxFacts(s))
   )
     violate(ctx, 'O.live-rollback', `${b} refused live and kept its latch`);
@@ -572,6 +690,7 @@ function setUnknown(s: State, from: 'queued' | 'dispatched'): void {
     drain: 'draining',
     result: from === 'dispatched' ? 'unknown' : null,
     revision: s.h.revision + 1,
+    claimGeneration: null,
   };
   s.sb = { accepting: false, clean: false, currentEpoch: true };
   s.p.drainBy.push('fence');
@@ -646,7 +765,7 @@ function applyCold(ctx: Ctx, s: State, a: ColdAction): boolean {
     }
     case 'restore': {
       const before = JSON.stringify(s.h);
-      applyRestore(ctx, s, t, a.revision, null, 'completion');
+      applyRestore(ctx, s, t, a.frame, null, 'completion');
       return JSON.stringify(s.h) !== before || ctx.violations.length > 0;
     }
     default:
@@ -673,13 +792,12 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
   const coreHeld = Object.values(s.c).some((c) => c.coreHold);
   const wsHeld = Object.values(s.c).some((c) => c.wsHold);
   const midFlight = Object.values(s.c).some((c) => ACTIVE.includes(c.phase));
-  const reach = (p: Phase) =>
-    world.stopAt === undefined ||
-    ([...ACTIVE, 'done'] as Phase[]).indexOf(p) <=
-      ([...ACTIVE, 'done'] as Phase[]).indexOf(world.stopAt);
-
   for (const b of world.closers) {
     const c = s.c[b]!;
+    const stop = stopOf(world, b);
+    const reach = (p: Phase) =>
+      stop === undefined ||
+      ([...ACTIVE, 'done'] as Phase[]).indexOf(p) <= ([...ACTIVE, 'done'] as Phase[]).indexOf(stop);
     const t = s.after || !world.legacy ? table : legacyTable(table, world.legacy);
     // F-b: a refused closer with a published receipt retries by replaying it, at most twice.
     const replays =
@@ -721,6 +839,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         x.answer = null;
         x.cause = null;
         x.claimRev = null;
+        x.claimGen = null;
         x.settleRev = null;
         x.phase = 'registered';
         void ctx;
@@ -737,7 +856,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     if (c.phase === 'ws' && reach('latched'))
       add(`claim:${b}`, false, (n, ctx) => {
         const x = n.c[b]!;
-        const r = t.claim(n.h, sandboxFacts(n));
+        const r = t.claim(n.h, sandboxFacts(n), generationOf(b, x));
         if (typeof r === 'string') {
           if (t.losingClaimRecord === 'erase') {
             n.cap[b] = 'none';
@@ -748,9 +867,12 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         }
         if (n.after && n.p.drainBy.length > 0)
           violate(ctx, 'O.one-claim', `${b} claimed over ${n.p.drainBy.join(',')}`);
-        n.h = { ...n.h, drain: 'draining', revision: r.revision };
+        // G3: the claim CAS writes the generation with the revision.
+        n.h = { ...n.h, drain: 'draining', revision: r.revision, claimGeneration: r.generation };
         x.claimRev = r.revision;
+        x.claimGen = r.generation;
         n.p.drainBy.push(`claim:${b}`);
+        if (r.generation === null) n.p.ungen.push(b);
         // A replay already holds its receipt: it goes on from the published state.
         x.phase = x.replay ? 'published' : 'latched';
       });
@@ -782,14 +904,17 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           checkSample(ctx, n, 'post', view.sample, `post:${b}`);
           if (cause) return liveRefuse(ctx, n, b, cause, true);
           const q = n.prem;
+          // A wall that stepped back over a passed deadline still has that deadline passed.
           const clocks =
             wallPassed(n, 'Tc') ||
             wallPassed(n, 'Ts') ||
             authorityPassed(n) ||
             n.clock.mono ||
-            n.clock.back;
+            n.clock.back ||
+            n.clock.part;
           if (!(q.pend && q.R && q.thread && q.policy && q.idle) || clocks)
             violate(ctx, 'O.frame', `${b} posted with a failed premise`);
+          if (n.rotation === 'done') x.rotatedAtPost = true;
           if (t.holdUntil.core === 'post') x.coreHold = false;
           if (t.holdUntil.workspace === 'post') x.wsHold = false;
           x.phase = 'posted';
@@ -893,7 +1018,14 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     if (c.phase === 'settled')
       add(`restore:${b}`, false, (n, ctx) => {
         const x = n.c[b]!;
-        applyRestore(ctx, n, t, x.settleRev!, b, 'completion');
+        // The completion is the close arm: the exact settled close key.
+        const frame: RestoreFrame = {
+          arm: 'close',
+          key: keyOf(b, x),
+          revision: x.settleRev!,
+          generation: x.claimGen,
+        };
+        applyRestore(ctx, n, t, frame, b, 'completion');
         x.slot = false;
         if (n.excl === b) n.excl = null;
         if (x.answer === null) x.answer = 'ok';
@@ -936,7 +1068,25 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
                 keyOf(b, x) === key &&
                 x.slot &&
                 ['replying', 'queued', 'unknown-reply'].includes(x.phase);
-              const d = t.firstBytes(premises(n, pending, t, view));
+              const p = premises(n, pending, t, view);
+              // H4-2: the posted Ta folded the cutoffs at RC7. A rotation after it can only
+              // shorten Ta, so RC10 folds the current cutoffs too (F `recheck`).
+              const posted =
+                x === undefined
+                  ? p.deadlines.Ta
+                  : t.authorityDeadline([
+                      { credential: 'presented', at: deadlineOf(n, 'Ta') },
+                      {
+                        credential: 'issuer',
+                        at:
+                          n.rotation === 'done' && !x.rotatedAtPost
+                            ? LIVE_DEADLINE
+                            : deadlineOf(n, 'Ti'),
+                      },
+                    ]);
+              const Ta =
+                t.firstBytesAuthority === 'posted' ? posted : Math.min(posted, p.deadlines.Ta);
+              const d = t.firstBytes({ ...p, deadlines: { ...p.deadlines, Ta } });
               checkSample(ctx, n, 'firstBytes', view.sample, `write:${poll}`);
               ctx.decided = d.kind === 'refuse' ? d.cause : 'write';
               if (d.kind === 'refuse') {
@@ -1014,7 +1164,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
       for (const k of world.splitCold!)
         if (s.cold[k] === null)
           add(`cold-read:${k}`, false, (n) => {
-            n.cold[k] = action.revision;
+            n.cold[k] = action.frame;
           });
   }
   for (const k of world.splitCold ?? [])
@@ -1023,6 +1173,13 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         applyRestore(ctx, n, table, n.cold[k]!, null, 'completion');
         n.cold[k] = null;
       });
+  // G3: a committed frame arrives again at any later point (a lost restore ACK and its retry).
+  for (const [i, d] of s.dup.entries())
+    add(`redeliver:${d.by}:${d.frame.arm}`, false, (n, ctx) => {
+      n.dup.splice(i, 1);
+      n.p.redelivered += 1;
+      applyRestore(ctx, n, table, d.frame, d.by, 'completion', true);
+    });
 
   // F-e: the Main swap of the applied policy. It revalidates and swaps under the canonical Core
   // posting hold, so it waits while a close holds that hold. It is no budgeted writer.
@@ -1139,6 +1296,8 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
                 result: 'succeeded',
                 revision: n.h.revision + 1,
                 nextSequence: n.h.nextSequence + 1,
+                // G3: an independent drain invalidates the claim generation.
+                claimGeneration: null,
               };
               n.p.drainBy.push('hdrain');
             });
@@ -1152,7 +1311,13 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         case 'fail':
           if (s.h.life === 'open' && s.h.cell !== 'queued' && s.h.cell !== 'dispatched')
             env((n) => {
-              n.h = { ...n.h, life: 'failed', drain: 'draining', revision: n.h.revision + 1 };
+              n.h = {
+                ...n.h,
+                life: 'failed',
+                drain: 'draining',
+                revision: n.h.revision + 1,
+                claimGeneration: null,
+              };
               n.p.drainBy.push('fail');
             });
           break;
@@ -1201,6 +1366,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               x.wsHold = false;
               x.decision = null;
               x.claimRev = null;
+              x.claimGen = null;
               x.settleRev = null;
               x.answer = null;
             }
@@ -1229,7 +1395,13 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           )
             env((n) => {
               n.cap.B = 'claimed';
-              n.h = { ...n.h, drain: 'draining', revision: n.h.revision + 1 };
+              // A claim in this process writes its own generation.
+              n.h = {
+                ...n.h,
+                drain: 'draining',
+                revision: n.h.revision + 1,
+                claimGeneration: 'gF',
+              };
               n.p.drainBy.push('claim:B');
             });
           break;
@@ -1240,13 +1412,92 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               const x = n.c.A!;
               x.slot = true;
               x.claimRev = null;
+              x.claimGen = null;
               x.phase = 'published';
             });
+          break;
+        case 'open@99':
+        case 'open@101':
+        case 'bind@99':
+        case 'recreate': {
+          // G3 (V1-P): the wall stamps of a released row can go back, so a later claim can recur
+          // at the revision P of a pending frame. Each writer needs an accepting row.
+          const pending = pendingRevision(s);
+          if (
+            pending !== null &&
+            s.h.life === 'open' &&
+            s.h.drain === 'accepting' &&
+            (s.h.cell === 'idle' || s.h.cell === 'settled')
+          )
+            env((n) => {
+              n.h = rewound(n.h, e, pending);
+            });
+          break;
+        }
+        case 'rotate':
+          // H4-2: after the queue ACK, while R stays live.
+          if (s.rotation === 'pending' && Object.values(s.c).some((c) => c.phase === 'queued'))
+            env((n) => {
+              n.rotation = 'done';
+            });
+          break;
+        case 'wcrash':
+          // H4-3: Native commits and exits before its reply. Main keeps its waiter, its slots and
+          // the exclusion; only the reply and Native's memory are lost.
+          for (const [b, c] of Object.entries(s.c))
+            if (c.phase === 'replying' && c.decision === 'commit')
+              env((n) => {
+                const x = n.c[b]!;
+                x.decision = null;
+                x.coreHold = false;
+                x.wsHold = false;
+                x.settleRev = null;
+                x.phase = 'unknown-reply';
+                n.reserved = null;
+              });
           break;
       }
     }
   return out;
 }
+
+/** The lowest revision of a restore frame that is still pending: paused cold, or in flight. */
+function pendingRevision(s: State): number | null {
+  const frames = [...Object.values(s.cold), ...s.dup.map((d) => d.frame)].filter(
+    (f): f is RestoreFrame => f !== null
+  );
+  return frames.length === 0 ? null : Math.min(...frames.map((f) => f.revision));
+}
+
+/** G3 reuse writers on a released row, relative to the pending revision P. */
+function rewound(h: HarnessFacts, e: Env, pending: number): HarnessFacts {
+  if (e === 'bind@99') return { ...h, revision: pending - 1 };
+  if (e === 'recreate')
+    return {
+      life: 'open',
+      drain: 'accepting',
+      revision: pending - 1,
+      operation: null,
+      cell: 'idle',
+      key: null,
+      sequence: null,
+      result: null,
+      nextSequence: 0,
+      claimGeneration: null,
+    };
+  return {
+    ...h,
+    cell: 'settled',
+    key: 'Z8',
+    sequence: h.nextSequence,
+    operation: 'session.open',
+    result: 'succeeded',
+    nextSequence: h.nextSequence + 1,
+    revision: e === 'open@99' ? pending - 1 : pending + 1,
+  };
+}
+
+const stopOf = (world: World, b: string) => world.stop?.[b] ?? world.stopAt;
 
 /** Raw classification of an owner-quiescent state with a draining Harness. */
 function fenceClass(world: World, s: State): string | null {
@@ -1293,6 +1544,8 @@ function fenceClass(world: World, s: State): string | null {
     settledClose && key !== null && s.core[ownerOfKey(key)]?.revision === s.h.revision;
   if (p7Proof) return 'unattributed-claim';
   if (!opProves) return 'ambiguous-drain';
+  // G3: an older writer's claim wrote no generation, so its history stays ambiguous.
+  if (claimOwners.some((o) => s.p.ungen.includes(o))) return 'legacy-claim';
   return null;
 }
 
@@ -1401,7 +1654,7 @@ function explore(
             self: 'fresh',
             harness: n.h,
             sandbox: sandboxFacts(n),
-          }) === null && typeof table.claim(n.h, sandboxFacts(n)) !== 'string';
+          }) === null && typeof table.claim(n.h, sandboxFacts(n), 'fresh') !== 'string';
         if (admitted) report.fresh += 1;
         else record('L.fresh', key, `${step.label} -> no fresh admission`);
       }
@@ -1453,7 +1706,11 @@ function explore(
       } else if (cls !== null) {
         report.fences[cls] = (report.fences[cls] ?? 0) + 1;
         record(`fence:${cls}`, key);
-      } else if (active && world.stopAt === undefined)
+      } else if (
+        Object.entries(s.c).some(
+          ([b, c]) => ACTIVE.includes(c.phase) && stopOf(world, b) === undefined
+        )
+      )
         record('L.stuck', key, 'a live owner has no next step');
       else if (s.h.drain === 'draining' && !active)
         record('L.exit', key, `stranded latch: ${s.p.drainBy.join(',')}`);
@@ -1557,12 +1814,64 @@ const LEGACY_PROBES = {
 const startPublished =
   (rev = 1) =>
   (s: State) => {
-    s.h = { ...s.h, drain: 'draining', revision: rev };
+    s.h = { ...s.h, drain: 'draining', revision: rev, claimGeneration: 'gA1' };
     s.cap.A = 'receipt';
     s.p.drainBy = ['claim:A'];
     s.excl = 'A';
-    Object.assign(s.c.A!, { phase: 'published', claimRev: rev, slot: true });
+    Object.assign(s.c.A!, { phase: 'published', claimRev: rev, claimGen: 'gA1', slot: true });
   };
+
+/** A's cold restore paused after its positive read; B's admitted claim advances. */
+const PAUSED_RESTORE: World = {
+  name: 'paused-restore',
+  closers: ['A', 'B'],
+  bindings: ['A', 'B'],
+  env: [],
+  budget: 0,
+  polls: ['p1'],
+  splitCold: ['k1', 'k2'],
+  stopAt: 'latched',
+  init: (s: State) => {
+    startPublished()(s);
+    Object.assign(s.c.A!, { phase: 'dead', slot: false, claimRev: null, claimGen: null });
+    s.excl = null;
+  },
+};
+
+/** G3: B, a later claimant, holds its own generation after a duplicate of A's frame arrived. */
+const ownGeneration = (s: State) =>
+  s.p.redelivered > 0 &&
+  ACTIVE.includes(s.c.B!.phase) &&
+  s.c.B!.claimGen !== null &&
+  s.h.drain === 'draining' &&
+  s.h.claimGeneration === s.c.B!.claimGen;
+
+/**
+ * G3 (V1-P generation witness): A holds a published claim. A releases legitimately, by the
+ * rollback (the claim arm, after a request refusal) or the completion (the close arm). Its frame
+ * can arrive again at any later point. A reuse writer then moves the released row, B claims, and
+ * the duplicate arrives; or it arrives before B claims (the opposite order).
+ */
+function reuseWorld(
+  name: string,
+  rewind: Env,
+  extra: readonly Env[] = [],
+  /** A claims through RC3 of the table under test, not from a published start. */
+  fromStart = false
+): World {
+  return {
+    name,
+    closers: ['A', 'B'],
+    bindings: ['A', 'B'],
+    env: ['R', rewind, ...extra],
+    budget: 2 + extra.length,
+    polls: ['p1'],
+    redeliver: true,
+    stop: { B: 'latched' },
+    ...(fromStart ? {} : { init: startPublished() }),
+    probes: { 'own-generation': ownGeneration },
+  };
+}
 
 const WORLDS = {
   /** One close through every boundary with every premise writer, clock and a crash. */
@@ -1688,20 +1997,73 @@ const WORLDS = {
       'f3-hd': (s: State) => s.p.drainBy.includes('hdrain') && s.h.operation === 'other',
     },
   },
-  /** A's cold restore paused after its positive read; B's admitted claim advances. */
-  pausedRestore: {
-    name: 'paused-restore',
-    closers: ['A', 'B'],
-    bindings: ['A', 'B'],
-    env: [],
-    budget: 0,
+  pausedRestore: PAUSED_RESTORE,
+  /**
+   * G3 with the cold arm: A's cold restore is paused after its proof (k2), k1 releases A, then
+   * `session.open` settles at 99 and B claims at 100 before k2 commits.
+   */
+  pausedReuse: { ...PAUSED_RESTORE, name: 'paused-reuse', env: ['open@99'], budget: 1 },
+  /** G3 (V1-P generation witness), the 99 settlement: B's claim recurs at A's frame revision. */
+  reuse99: reuseWorld('reuse-99', 'open@99'),
+  /** The 101 settlement control: the revision alone tells the claims apart. */
+  reuse101: reuseWorld('reuse-101', 'open@101'),
+  /** The no-sequence binding open at 99 (V1-P G2): it needs no settlement. */
+  reuseBind: reuseWorld('reuse-bind', 'bind@99'),
+  /** A same-name recreation of the Harness at 99. */
+  reuseRecreate: reuseWorld('reuse-recreate', 'recreate'),
+  /** The 99 settlement, then an independent drain. */
+  reuseHdrain: reuseWorld('reuse-hdrain', 'open@99', ['hdrain']),
+  /** The 99 settlement with A's own RC3 claim from the start. */
+  reuseClaim99: reuseWorld('reuse-claim-99', 'open@99', [], true),
+  /**
+   * H4-1 (V1-P): two clock moves in one gather. A deadline passes, a read that checks it sees it
+   * pass, and the wall then steps back below it, above the enqueue instant.
+   */
+  h4gather: {
+    name: 'h4-gather',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['Ts', 'Ta', 'Ti'],
+    budget: 2,
     polls: ['p1'],
-    splitCold: ['k1', 'k2'],
-    stopAt: 'latched',
+    multiMove: true,
+    probes: {
+      'stepped-back-refusal': (s: State) =>
+        s.clock.part && s.c.A!.phase === 'refused' && s.p.committed.length === 0,
+      'stepped-back-unsent': (s: State) =>
+        s.clock.part && s.p.unsent.includes('A1') && (s.p.bytes.A1 ?? 0) === 0,
+    },
+  },
+  /** H4-2 (V1-P): after the queue ACK, a rotation shortens the issuer grace while R stays live. */
+  rotate: {
+    name: 'rotate',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['rotate', 'Ti'],
+    budget: 2,
+    polls: ['p1'],
     init: (s: State) => {
-      startPublished()(s);
-      Object.assign(s.c.A!, { phase: 'dead', slot: false, claimRev: null });
-      s.excl = null;
+      s.rotation = 'pending';
+    },
+    probes: {
+      'rotated-grace': (s: State) =>
+        s.rotation === 'done' &&
+        s.clock.passed.includes('Ti') &&
+        s.p.unsent.includes('A1') &&
+        (s.p.bytes.A1 ?? 0) === 0,
+    },
+  },
+  /** H4-3 (V1-P): Native exits after its commit; Main keeps its waiter and exclusion. */
+  wcrash: {
+    name: 'wcrash',
+    closers: ['A'],
+    bindings: ['A'],
+    env: ['wcrash', 'crash'],
+    budget: 2,
+    polls: ['p1'],
+    probes: {
+      'worker-exit-readback': (s: State) =>
+        s.used[0] === 'wcrash' && s.c.A!.phase === 'done' && s.p.committed.length === 1,
     },
   },
   /** A live; an older same-process claim path for B advances the revision. */
@@ -1726,7 +2088,7 @@ const WORLDS = {
     init: (s: State) => {
       s.cap.A = 'receipt';
       s.cap.B = 'receipt';
-      s.h = { ...s.h, drain: 'draining', revision: 1 };
+      s.h = { ...s.h, drain: 'draining', revision: 1, claimGeneration: 'gB1' };
       s.p.drainBy = ['claim:B'];
       s.after = true;
     },
@@ -1812,7 +2174,7 @@ const WORLDS = {
     init: (s: State) => {
       s.cap.A = 'receipt';
       s.cap.B = 'claimed';
-      s.h = { ...s.h, drain: 'draining', revision: 2 };
+      s.h = { ...s.h, drain: 'draining', revision: 2, claimGeneration: 'gB1' };
       s.p.drainBy = ['claim:B'];
     },
   },
@@ -1853,18 +2215,24 @@ const withRules = (drop: readonly string[], add: readonly ColdRule[] = []) =>
   composeCold([...add, ...COLD_RULES.filter((rule) => !drop.includes(rule.id))]);
 const replaceRule = (id: string, rule: ColdRule['decide']) =>
   composeCold(COLD_RULES.map((r) => (r.id === id ? { id, decide: rule } : r)));
+type RestoreTakeOut = 'revision' | 'life' | 'harness-drain' | 'sandbox' | 'generation';
+/** The G3 restore CAS with predicates taken out. `generation`: the pre-G3 CAS, with no compare. */
 const restoreWithout =
-  (drop: 'revision' | 'life' | 'harness-drain' | 'sandbox') =>
-  (h: HarnessFacts, s: SandboxFacts, revision: number) =>
-    restorable(
+  (...drop: readonly RestoreTakeOut[]) =>
+  (h: HarnessFacts, s: SandboxFacts, frame: RestoreFrame) =>
+    restoresFrame(
       {
         ...h,
-        ...(drop === 'life' ? { life: 'open' as const } : {}),
-        ...(drop === 'harness-drain' && h.operation === 'harness.drain' ? { operation: null } : {}),
+        ...(drop.includes('life') ? { life: 'open' as const } : {}),
+        ...(drop.includes('harness-drain') && h.operation === 'harness.drain'
+          ? { operation: null }
+          : {}),
+        ...(drop.includes('revision') ? { revision: frame.revision } : {}),
+        ...(drop.includes('generation') ? { claimGeneration: 'any' } : {}),
       },
-      drop === 'sandbox' ? { accepting: true, clean: true, currentEpoch: true } : s
-    ) &&
-    (drop === 'revision' || h.revision === revision);
+      drop.includes('sandbox') ? { accepting: true, clean: true, currentEpoch: true } : s,
+      drop.includes('generation') ? { ...frame, generation: 'any' } : frame
+    );
 const OPEN_SANDBOX: SandboxFacts = { accepting: true, clean: true, currentEpoch: true };
 const postWithout =
   (field: 'Tc' | 'Ts' | 'edge' | 'mono' | 'pendingOwner' | 'thread' | 'policy') =>
@@ -1929,7 +2297,16 @@ const S2R1_P7_RULES: readonly ColdRule[] = COLD_RULES.map((r) =>
         id: r.id,
         decide: (f: ColdFacts): ColdAction | undefined =>
           settledCloseProof(f, r.id === 'p7-success' ? 'succeeded' : 'stale')
-            ? { kind: 'restore', scope: 'close', revision: f.harness.revision }
+            ? {
+                kind: 'restore',
+                scope: 'close',
+                frame: {
+                  arm: 'close',
+                  key: f.harness.key!,
+                  revision: f.harness.revision,
+                  generation: f.harness.claimGeneration,
+                },
+              }
             : undefined,
       }
     : r
@@ -1944,6 +2321,162 @@ interface MutationRow {
   /** The named writer: the failing trace must contain this edge. */
   readonly via?: string;
 }
+
+/**
+ * S3b-m: older single take-outs that G3 now stops. The cold decide fences a row that no claim of
+ * this lifecycle holds (a null generation), and Native compares the generation, so each take-out
+ * below reaches no violation of its oracle under G3. `preG3` removes G3 too: the cold decide sees
+ * no null generation, and Native compares no generation. M runs each such double take-out, which
+ * shows that the older fence still holds alone.
+ */
+const SUBSUMED: readonly MutationRow[] = [
+  {
+    id: 'M-F2c',
+    world: WORLDS.pausedRestore,
+    oracle: 'O.restore.live-latch',
+    takeOut: 'restore CAS without the revision',
+    table: { restore: restoreWithout('revision') },
+  },
+  {
+    id: 'M-F2d',
+    world: WORLDS.pausedRestore,
+    oracle: 'O.restore.live-latch',
+    takeOut: 'accept an equal claim clock',
+    table: {
+      claim: (h, s, fresh) => {
+        const r = T.claim(h, s, fresh);
+        return typeof r === 'string' ? r : { ...r, revision: h.revision };
+      },
+    },
+  },
+  {
+    id: 'M-F4h',
+    world: WORLDS.pausedRestore,
+    oracle: 'O.restore.live-latch',
+    takeOut: 'restore CAS without the revision (paused after the read)',
+    table: { restore: restoreWithout('revision') },
+  },
+  {
+    id: 'M-F4g',
+    world: WORLDS.legacyC1,
+    oracle: 'O.restore.abandon',
+    takeOut: 'restore on an abandon',
+    table: { cold: withRules(['abandon']) },
+  },
+  {
+    id: 'M-C3',
+    world: WORLDS.quiet,
+    oracle: 'O.restore.foreign',
+    takeOut: 'the quiescent exit clears a Harness-only drain',
+    table: {
+      cold: composeCold(
+        COLD_RULES.filter((r) => r.id !== 'harness-drain').map((r) =>
+          r.id === 'quiescent'
+            ? {
+                id: r.id,
+                decide: (f: ColdFacts) =>
+                  r.decide({ ...f, harness: { ...f.harness, operation: null } }),
+              }
+            : r.id === 'drain-after-op'
+              ? {
+                  id: r.id,
+                  decide: (f: ColdFacts) =>
+                    f.harness.operation === 'harness.drain' ? undefined : r.decide(f),
+                }
+              : r
+        )
+      ),
+      restore: restoreWithout('harness-drain'),
+    },
+  },
+  {
+    id: 'M-V2a',
+    world: WORLDS.quiet,
+    oracle: 'O.restore.foreign',
+    takeOut: 'drop the Harness lifecycle predicate',
+    table: {
+      cold: composeCold(
+        COLD_RULES.map((r) =>
+          r.id === 'native-fence'
+            ? {
+                id: r.id,
+                decide: (f: ColdFacts) =>
+                  f.harness.cell === 'unknown'
+                    ? ({ kind: 'fence', reason: 'native-fence' } as const)
+                    : undefined,
+              }
+            : r.id === 'quiescent'
+              ? {
+                  id: r.id,
+                  decide: (f: ColdFacts) =>
+                    r.decide({ ...f, harness: { ...f.harness, life: 'open' } }),
+                }
+              : r
+        )
+      ),
+      restore: restoreWithout('life'),
+    },
+  },
+  {
+    id: 'M-HD1',
+    world: WORLDS.staleReceipt,
+    oracle: 'O.restore.foreign',
+    takeOut: 'the quiescent exit accepts any last operation (F3-HD)',
+    table: { cold: withRules(['drain-after-op']) },
+  },
+  {
+    id: 'M-HD2',
+    world: WORLDS.overdrain,
+    oracle: 'O.restore.foreign',
+    takeOut: 'the quiescent exit accepts any last operation (drain on a local marker)',
+    table: { cold: withRules(['drain-after-op']) },
+    via: 'env:hdrain',
+  },
+  {
+    id: 'M-P7a',
+    world: WORLDS.legacyC1,
+    oracle: 'O.restore.abandon',
+    takeOut: 'the S2-r1 P7 restore runs before the anchor and abandon fences (the S2 order)',
+    table: {
+      cold: composeCold(moveBefore(['p7-success', 'p7-stale'], 'anchors', S2R1_P7_RULES)),
+    },
+  },
+  {
+    id: 'M-P7b',
+    world: WORLDS.legacyC1,
+    oracle: 'O.restore.foreign',
+    takeOut: 'P7 restores on the settle revision alone (S2-r1), c1 claim over an independent drain',
+    table: { cold: composeCold(S2R1_P7_RULES) },
+    via: 'env:hdrain',
+  },
+  {
+    id: 'M-P7c',
+    world: WORLDS.legacyR2,
+    oracle: 'O.restore.foreign',
+    takeOut: 'P7 restores on the settle revision alone (S2-r1), r2 claim over an independent drain',
+    table: { cold: composeCold(S2R1_P7_RULES) },
+    via: 'env:hdrain',
+  },
+];
+
+const preG3 = (row: MutationRow): MutationRow => {
+  const cold = row.table.cold ?? T.cold;
+  const restore = row.table.restore ?? T.restore;
+  return {
+    ...row,
+    takeOut: `${row.takeOut}, and before G3`,
+    table: {
+      ...row.table,
+      cold: (f) =>
+        cold({
+          ...f,
+          harness: { ...f.harness, claimGeneration: f.harness.claimGeneration ?? 'old' },
+        }),
+      restore: (h, sb, frame) =>
+        restore({ ...h, claimGeneration: 'any' }, sb, { ...frame, generation: 'any' }),
+    },
+  };
+};
 
 const M: readonly MutationRow[] = [
   {
@@ -2006,30 +2539,11 @@ const M: readonly MutationRow[] = [
     },
   },
   {
-    id: 'M-F2c',
-    world: WORLDS.pausedRestore,
-    oracle: 'O.restore.live-latch',
-    takeOut: 'restore CAS without the revision',
-    table: { restore: restoreWithout('revision') },
-  },
-  {
-    id: 'M-F2d',
-    world: WORLDS.pausedRestore,
-    oracle: 'O.restore.live-latch',
-    takeOut: 'accept an equal claim clock',
-    table: {
-      claim: (h, s) => {
-        const r = T.claim(h, s);
-        return typeof r === 'string' ? r : { revision: h.revision };
-      },
-    },
-  },
-  {
     id: 'M-F2e',
     world: WORLDS.losing,
     oracle: 'O.one-claim',
     takeOut: 'accept the claim on a draining Harness',
-    table: { claim: (h) => ({ revision: h.revision + 1 }) },
+    table: { claim: (h, _s, fresh) => ({ revision: h.revision + 1, generation: fresh }) },
   },
   {
     id: 'M-F3a',
@@ -2127,20 +2641,6 @@ const M: readonly MutationRow[] = [
     oracle: 'O.unsent',
     takeOut: 'settle as unsent after a lost response',
     table: { afterContact: 'settle-stale' },
-  },
-  {
-    id: 'M-F4g',
-    world: WORLDS.legacyC1,
-    oracle: 'O.restore.abandon',
-    takeOut: 'restore on an abandon',
-    table: { cold: withRules(['abandon']) },
-  },
-  {
-    id: 'M-F4h',
-    world: WORLDS.pausedRestore,
-    oracle: 'O.restore.live-latch',
-    takeOut: 'restore CAS without the revision (paused after the read)',
-    table: { restore: restoreWithout('revision') },
   },
   {
     id: 'M-D1a',
@@ -2287,32 +2787,6 @@ const M: readonly MutationRow[] = [
     },
   },
   {
-    id: 'M-C3',
-    world: WORLDS.quiet,
-    oracle: 'O.restore.foreign',
-    takeOut: 'the quiescent exit clears a Harness-only drain',
-    table: {
-      cold: composeCold(
-        COLD_RULES.filter((r) => r.id !== 'harness-drain').map((r) =>
-          r.id === 'quiescent'
-            ? {
-                id: r.id,
-                decide: (f: ColdFacts) =>
-                  r.decide({ ...f, harness: { ...f.harness, operation: null } }),
-              }
-            : r.id === 'drain-after-op'
-              ? {
-                  id: r.id,
-                  decide: (f: ColdFacts) =>
-                    f.harness.operation === 'harness.drain' ? undefined : r.decide(f),
-                }
-              : r
-        )
-      ),
-      restore: restoreWithout('harness-drain'),
-    },
-  },
-  {
     id: 'M-C4',
     world: WORLDS.census,
     oracle: 'O.expiry-key',
@@ -2346,34 +2820,6 @@ const M: readonly MutationRow[] = [
     oracle: 'O.ws-record',
     takeOut: 'erase the losing Workspace record',
     table: { losingClaimRecord: 'erase' },
-  },
-  {
-    id: 'M-V2a',
-    world: WORLDS.quiet,
-    oracle: 'O.restore.foreign',
-    takeOut: 'drop the Harness lifecycle predicate',
-    table: {
-      cold: composeCold(
-        COLD_RULES.map((r) =>
-          r.id === 'native-fence'
-            ? {
-                id: r.id,
-                decide: (f: ColdFacts) =>
-                  f.harness.cell === 'unknown'
-                    ? ({ kind: 'fence', reason: 'native-fence' } as const)
-                    : undefined,
-              }
-            : r.id === 'quiescent'
-              ? {
-                  id: r.id,
-                  decide: (f: ColdFacts) =>
-                    r.decide({ ...f, harness: { ...f.harness, life: 'open' } }),
-                }
-              : r
-        )
-      ),
-      restore: restoreWithout('life'),
-    },
   },
   {
     id: 'M-V2b',
@@ -2432,46 +2878,6 @@ const M: readonly MutationRow[] = [
     takeOut: 'RC10 does not read the Sandbox owner facts',
     table: { firstBytes: bytesWithout('placement') },
     via: 'env:sbdrain',
-  },
-  {
-    id: 'M-HD1',
-    world: WORLDS.staleReceipt,
-    oracle: 'O.restore.foreign',
-    takeOut: 'the quiescent exit accepts any last operation (F3-HD)',
-    table: { cold: withRules(['drain-after-op']) },
-  },
-  {
-    id: 'M-HD2',
-    world: WORLDS.overdrain,
-    oracle: 'O.restore.foreign',
-    takeOut: 'the quiescent exit accepts any last operation (drain on a local marker)',
-    table: { cold: withRules(['drain-after-op']) },
-    via: 'env:hdrain',
-  },
-  {
-    id: 'M-P7a',
-    world: WORLDS.legacyC1,
-    oracle: 'O.restore.abandon',
-    takeOut: 'the S2-r1 P7 restore runs before the anchor and abandon fences (the S2 order)',
-    table: {
-      cold: composeCold(moveBefore(['p7-success', 'p7-stale'], 'anchors', S2R1_P7_RULES)),
-    },
-  },
-  {
-    id: 'M-P7b',
-    world: WORLDS.legacyC1,
-    oracle: 'O.restore.foreign',
-    takeOut: 'P7 restores on the settle revision alone (S2-r1), c1 claim over an independent drain',
-    table: { cold: composeCold(S2R1_P7_RULES) },
-    via: 'env:hdrain',
-  },
-  {
-    id: 'M-P7c',
-    world: WORLDS.legacyR2,
-    oracle: 'O.restore.foreign',
-    takeOut: 'P7 restores on the settle revision alone (S2-r1), r2 claim over an independent drain',
-    table: { cold: composeCold(S2R1_P7_RULES) },
-    via: 'env:hdrain',
   },
   {
     id: 'M-T5',
@@ -2553,7 +2959,7 @@ const M: readonly MutationRow[] = [
     world: WORLDS.live,
     oracle: 'O.cause',
     takeOut: 'RC7 answers R before the clocks (an elapsed credential answers request)',
-    table: { post: (p) => (p.pendingOwner && !p.request ? 'request' : decidePost(p)) },
+    table: { post: (p) => (p.pendingOwner && p.request !== true ? 'request' : decidePost(p)) },
     via: 'env:Ta',
   },
   {
@@ -2563,7 +2969,7 @@ const M: readonly MutationRow[] = [
     takeOut: 'RC10 answers R before the clocks (an elapsed credential answers request)',
     table: {
       firstBytes: (p) =>
-        p.connection && p.pendingOwner && !p.request
+        p.connection && p.pendingOwner && p.request !== true
           ? { kind: 'refuse', cause: 'request' }
           : decideFirstBytes(p),
     },
@@ -2574,9 +2980,117 @@ const M: readonly MutationRow[] = [
     world: WORLDS.receiptReplayDrain,
     oracle: 'O.one-claim',
     takeOut: 'accept the replayed claim on a draining Harness (F-b: the legacy RC3 CAS)',
-    table: { claim: (h) => ({ revision: h.revision + 1 }) },
+    table: { claim: (h, _s, fresh) => ({ revision: h.revision + 1, generation: fresh }) },
     via: 'readmit:A',
   },
+  // G3 (S3b-m): removing the generation compare reopens B in each reuse schedule.
+  {
+    id: 'M-G3a',
+    world: WORLDS.reuse99,
+    oracle: 'O.restore.dup',
+    takeOut: 'restore CAS without the generation compare (session.open settles at 99)',
+    table: { restore: restoreWithout('generation') },
+    via: 'env:open@99',
+  },
+  {
+    id: 'M-G3b',
+    world: WORLDS.reuseBind,
+    oracle: 'O.restore.dup',
+    takeOut: 'restore CAS without the generation compare (a binding opens at 99, no sequence)',
+    table: { restore: restoreWithout('generation') },
+    via: 'env:bind@99',
+  },
+  {
+    id: 'M-G3c',
+    world: WORLDS.reuseRecreate,
+    oracle: 'O.restore.dup',
+    takeOut: 'restore CAS without the generation compare (same-name recreation)',
+    table: { restore: restoreWithout('generation') },
+    via: 'env:recreate',
+  },
+  {
+    id: 'M-G3d',
+    world: WORLDS.pausedReuse,
+    oracle: 'O.restore.live-latch',
+    takeOut: 'restore CAS without the generation compare (the paused cold restore)',
+    table: { restore: restoreWithout('generation') },
+    via: 'env:open@99',
+  },
+  {
+    id: 'M-G3e',
+    world: WORLDS.reuseClaim99,
+    oracle: 'O.restore.dup',
+    takeOut: 'a claim generation derived from the claim clock, so it recurs',
+    table: {
+      claim: (h, s, fresh) => {
+        const r = T.claim(h, s, fresh);
+        return typeof r === 'string' ? r : { ...r, generation: `r${r.revision}` };
+      },
+    },
+    via: 'env:open@99',
+  },
+  // H4-1 (S3b-m): the read carries its clock to the decision. Production F passes a boolean R and A
+  // today, so it behaves as these take-outs.
+  {
+    id: 'M-H4a',
+    world: WORLDS.h4gather,
+    oracle: 'O.cause',
+    takeOut: 'RC10 drops the expiry that the R reader carries (a boolean R)',
+    table: { firstBytes: (p) => decideFirstBytes({ ...p, request: p.request === true }) },
+    via: 'env:Wpart',
+  },
+  {
+    id: 'M-H4b',
+    world: WORLDS.h4gather,
+    oracle: 'O.cause',
+    takeOut: 'RC7 drops the expiry that the R reader carries (a boolean R)',
+    table: { post: (p) => decidePost({ ...p, request: p.request === true }) },
+    via: 'env:Wpart',
+  },
+  {
+    id: 'M-H4c',
+    world: WORLDS.h4gather,
+    oracle: 'O.cause',
+    takeOut: 'RC10 drops the Ts expiry that the P14 owner carries (a boolean A)',
+    table: {
+      firstBytes: (p) =>
+        decideFirstBytes({ ...p, audience: { ...p.audience, thread: p.audience.thread === true } }),
+    },
+    via: 'env:Wpart',
+  },
+  {
+    id: 'M-H4d',
+    world: WORLDS.h4gather,
+    oracle: 'O.cause',
+    takeOut: 'RC7 drops the Ts expiry that the P14 owner carries (a boolean A)',
+    table: {
+      post: (p) =>
+        decidePost({ ...p, audience: { ...p.audience, thread: p.audience.thread === true } }),
+    },
+    via: 'env:Wpart',
+  },
+  {
+    // H4-2: the R reader and the current-Ta fold read the same rotation independently. Either
+    // alone keeps the typed cause, so the take-out removes both.
+    id: 'M-H4e',
+    world: WORLDS.rotate,
+    oracle: 'O.cause',
+    takeOut: 'RC10 checks the posted Ta only and drops the expiry that the R reader carries',
+    table: {
+      firstBytesAuthority: 'posted',
+      firstBytes: (p) => decideFirstBytes({ ...p, request: p.request === true }),
+    },
+    via: 'env:rotate',
+  },
+  {
+    id: 'M-H4f',
+    world: WORLDS.wcrash,
+    oracle: 'O.noncommit',
+    takeOut: 'a Native exit after the commit releases the claim as a noncommit',
+    table: { lostReply: 'noncommit' },
+    via: 'env:wcrash',
+  },
+  ...SUBSUMED.map(preG3),
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -2808,7 +3322,8 @@ describe('replacement close lifecycle model check', () => {
       { site: 'queue', to: TO_POST, effect: 'queue:A' },
       { site: 'firstBytes', to: [...TO_QUEUED, 'dispatch:p1'], effect: 'write:p1:ok' },
     ] as const;
-    const CAUSE: Readonly<Record<ClockEvent, CloseCause>> = {
+    // `Wpart` moves only in an H4-1 gather (the h4-gather world), never in the live world.
+    const CAUSE: Readonly<Record<Exclude<ClockEvent, 'Wpart'>, CloseCause>> = {
       Tc: 'close-allowance',
       Ts: 'startup-deadline',
       Ta: 'authority-expired',
@@ -2817,7 +3332,10 @@ describe('replacement close lifecycle model check', () => {
       Wback: 'close-allowance',
     };
     const eventsAt = (site: EffectSite) =>
-      CLOCK_EVENTS.filter((clock) => site !== 'queue' || clock !== 'TcMono');
+      CLOCK_EVENTS.filter(
+        (clock): clock is Exclude<ClockEvent, 'Wpart'> =>
+          clock !== 'Wpart' && (site !== 'queue' || clock !== 'TcMono')
+      );
     /** The gather positions: after each fact read, and after the Native sample. */
     const positionsAt = (site: EffectSite): readonly string[] => [
       ...EFFECT_READS[site],
@@ -2917,12 +3435,13 @@ describe('replacement close lifecycle model check', () => {
     describe('R reads its own clock (AMEND 2)', () => {
       const rFirstPost = {
         ...T,
-        post: (p: PostPremises) => (p.pendingOwner && !p.request ? 'request' : decidePost(p)),
+        post: (p: PostPremises) =>
+          p.pendingOwner && p.request !== true ? 'request' : decidePost(p),
       } as ReplacementCloseTable;
       const rFirstBytes = {
         ...T,
         firstBytes: (p: ClosePremises) =>
-          p.connection && p.pendingOwner && !p.request
+          p.connection && p.pendingOwner && p.request !== true
             ? ({ kind: 'refuse', cause: 'request' } as const)
             : decideFirstBytes(p),
       } as ReplacementCloseTable;
@@ -3045,6 +3564,7 @@ describe('replacement close lifecycle model check', () => {
         sequence: null,
         result: null,
         nextSequence: 0,
+        claimGeneration: 'gA1',
       };
       // Native refuses the existing slot at wall 101.
       expect(
@@ -3203,6 +3723,219 @@ describe('replacement close lifecycle model check', () => {
       const after = enabled(live, stopped);
       expect(after).toContain('env:core');
       expect(after).toContain('cold:expire-key');
+    });
+  });
+
+  describe('G3: the claim generation (S3b-m, V1-P generation witness)', () => {
+    const noCompare = { ...T, restore: restoreWithout('generation') };
+    const ROLLBACK = ['env:R', 'hold:A', 'post:A'];
+    const COMPLETION = [
+      'hold:A',
+      'post:A',
+      'queue:A',
+      'reply:A:ack',
+      'dispatch:p1',
+      'write:p1:ok',
+      'result:A1',
+      'nsettle:A1',
+      'restore:A',
+    ];
+    const B_CLAIMS = ['admit:B', 'ws:B', 'claim:B'];
+    /** The duplicate changes no row; B keeps its claim and its own generation. */
+    const expectZeroRows = (world: World, labels: readonly string[], frame: string) => {
+      const before = run(world, labels);
+      const after = run(world, [...labels, frame]);
+      expect(after.h).toEqual(before.h);
+      expect(after.h.drain).toBe('draining');
+      expect(after.h.claimGeneration).toBe(after.c.B!.claimGen);
+      expect(after.c.B!.claimGen).toBe('gB1');
+      expect(after.occ).toBe(after.p.occ0 - after.p.succ);
+      expect(after.p.owed).toBe(0);
+      // Removing the compare reopens B.
+      const step = steps(world, noCompare, before).find((x) => x.label === frame);
+      expect(step?.next.h.drain).toBe('accepting');
+      expect(step?.violations.map((v) => v.name)).toEqual(
+        expect.arrayContaining(['O.restore.dup', 'O.restore.live-latch'])
+      );
+    };
+
+    it('99 settlement after the rollback: B claims at the revision of A in flight; zero rows', () => {
+      const labels = [...ROLLBACK, 'env:open@99', ...B_CLAIMS];
+      const at = run(WORLDS.reuse99, labels);
+      expect(at.c.A!.answer).toBe('request');
+      // The recurrence: B's claim revision is the revision of A's claim-arm frame.
+      expect(at.dup).toEqual([
+        { frame: { arm: 'claim', revision: 1, generation: 'gA1' }, by: 'A' },
+      ]);
+      expect(at.h.revision).toBe(1);
+      expectZeroRows(WORLDS.reuse99, labels, 'redeliver:A:claim');
+    });
+
+    it('no-sequence binding open at 99 after the completion: the close key matches too; zero rows', () => {
+      const labels = [...COMPLETION, 'env:bind@99', ...B_CLAIMS];
+      const at = run(WORLDS.reuseBind, labels);
+      // Revision, close key, settled cell and operation all equal A's close-arm frame.
+      expect(at.dup).toEqual([
+        { frame: { arm: 'close', key: 'A1', revision: 3, generation: 'gA1' }, by: 'A' },
+      ]);
+      expect(at.h).toMatchObject({
+        revision: 3,
+        key: 'A1',
+        cell: 'settled',
+        operation: 'session.close',
+      });
+      expectZeroRows(WORLDS.reuseBind, labels, 'redeliver:A:close');
+    });
+
+    it('same-name recreation at 99: zero rows', () => {
+      const labels = [...ROLLBACK, 'env:recreate', ...B_CLAIMS];
+      expect(run(WORLDS.reuseRecreate, labels).h.revision).toBe(1);
+      expectZeroRows(WORLDS.reuseRecreate, labels, 'redeliver:A:claim');
+    });
+
+    it('the paused cold restore: k1 releases A, then 99 and B claim before k2; zero rows', () => {
+      const w = WORLDS.pausedReuse;
+      const labels = ['cold-read:k1', 'cold-read:k2', 'cold-post:k1', 'env:open@99', ...B_CLAIMS];
+      const before = run(w, labels);
+      expect(before.cold.k2).toEqual({ arm: 'claim', revision: 1, generation: 'gA1' });
+      expect(before.h.revision).toBe(1);
+      const after = run(w, [...labels, 'cold-post:k2']);
+      expect(after.h).toEqual(before.h);
+      expect(after.h.claimGeneration).toBe('gB1');
+      const step = steps(w, noCompare, before).find((x) => x.label === 'cold-post:k2');
+      expect(step?.violations.map((v) => v.name)).toContain('O.restore.live-latch');
+    });
+
+    it('an independent drain after the 99 settlement: zero rows, and the drain stays', () => {
+      const labels = [...ROLLBACK, 'env:open@99', 'env:hdrain'];
+      const before = run(WORLDS.reuseHdrain, labels);
+      expect(before.h).toMatchObject({ drain: 'draining', claimGeneration: null, revision: 1 });
+      const after = run(WORLDS.reuseHdrain, [...labels, 'redeliver:A:claim']);
+      expect(after.h).toEqual(before.h);
+    });
+
+    it('the opposite order: A releases once, its duplicate changes zero rows, then B claims', () => {
+      const released = run(WORLDS.reuse99, ROLLBACK);
+      expect(released.h.drain).toBe('accepting');
+      const duplicate = run(WORLDS.reuse99, [...ROLLBACK, 'redeliver:A:claim']);
+      expect(duplicate.h).toEqual(released.h);
+      expect(duplicate.p.owed).toBe(0);
+      const claimed = run(WORLDS.reuse99, [...ROLLBACK, 'redeliver:A:claim', ...B_CLAIMS]);
+      expect(claimed.h).toMatchObject({ drain: 'draining', claimGeneration: 'gB1' });
+    });
+
+    it('the 101 settlement control: the revision alone refuses the duplicate', () => {
+      const report = explore(WORLDS.reuse101, noCompare);
+      expect(report.truncated).toBe(false);
+      expect(Object.keys(report.traces).filter(SAFETY)).toEqual([]);
+    });
+
+    it('each reuse world reaches B holding its own generation after a duplicate arrived', () => {
+      for (const w of [
+        WORLDS.reuse99,
+        WORLDS.reuseBind,
+        WORLDS.reuseRecreate,
+        WORLDS.reuseHdrain,
+        WORLDS.reuseClaim99,
+      ])
+        expect(reportOf(w).probes['own-generation']?.states ?? 0).toBeGreaterThan(0);
+    });
+
+    it.each(SUBSUMED)(
+      'G3 stops the single take-out of $id ($takeOut)',
+      (row) => {
+        const report = explore(row.world, tableOf(row));
+        expect(report.truncated).toBe(false);
+        expect(Object.keys(report.traces)).not.toContain(row.oracle);
+      },
+      600_000
+    );
+  });
+
+  describe('H4: three bounded schedules (S3b-m, V1-P first-principles review)', () => {
+    it('H4-1 RC10: P14 reads live, R sees Ta pass, the wall steps back before the bytes', () => {
+      const w = WORLDS.h4gather;
+      const to = [...TO_QUEUED, 'dispatch:p1'];
+      const label = 'write:p1:ok~audience:Ta~R:Wpart';
+      const at = run(w, to);
+      const step = steps(w, T, at).find((x) => x.label === label);
+      expect(step?.decided).toBe('authority-expired');
+      expect(step?.violations).toEqual([]);
+      expect(step?.next.p.bytes).toEqual({});
+      expect(step?.next.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+      // The sample itself shows Ta live: only the carried R expiry decides the cause.
+      expect(step?.next.clock).toMatchObject({ passed: ['Ta'], part: true });
+      const boolean = {
+        ...T,
+        firstBytes: (p: ClosePremises) => decideFirstBytes({ ...p, request: p.request === true }),
+      };
+      const old = steps(w, boolean, at).find((x) => x.label === label);
+      expect(old?.decided).toBe('request');
+      expect(old?.violations.map((v) => v.name)).toContain('O.cause');
+    });
+
+    it('H4-1 RC7: the same two moves in the posting turn answer authority-expired with zero frames', () => {
+      const s = run(WORLDS.h4gather, [...TO_POST.slice(0, -1), 'post:A~audience:Ta~R:Wpart']);
+      expect(s.c.A!.answer).toBe('authority-expired');
+      expect(s.p.committed).toEqual([]);
+    });
+
+    it('H4-1: a Ts pass that the P14 owner saw before the step back answers startup-deadline', () => {
+      const w = WORLDS.h4gather;
+      const at = run(w, [...TO_QUEUED, 'dispatch:p1']);
+      const step = steps(w, T, at).find((x) => x.label === 'write:p1:ok~drain:Ts~audience:Wpart');
+      expect(step?.decided).toBe('startup-deadline');
+      expect(step?.violations).toEqual([]);
+    });
+
+    it('H4-2: rotation after the ACK shortens the issuer grace; RC10 owes authority-expired', () => {
+      const w = WORLDS.rotate;
+      const at = run(w, [...TO_QUEUED, 'env:rotate', 'env:Ti', 'dispatch:p1']);
+      const decide = (table: ReplacementCloseTable) =>
+        steps(w, table, at).find((x) => x.label === 'write:p1:ok');
+      const base = decide(T);
+      expect(base?.decided).toBe('authority-expired');
+      expect(base?.next.p.bytes).toEqual({});
+      // Two independent readers of the same rotation. Each alone keeps the cause.
+      const dropR = (p: ClosePremises) => decideFirstBytes({ ...p, request: p.request === true });
+      expect(decide({ ...T, firstBytesAuthority: 'posted' })?.decided).toBe('authority-expired');
+      expect(decide({ ...T, firstBytes: dropR })?.decided).toBe('authority-expired');
+      const both = decide({ ...T, firstBytesAuthority: 'posted', firstBytes: dropR });
+      expect(both?.decided).toBe('request');
+      expect(both?.violations.map((v) => v.name)).toContain('O.cause');
+      expect(reportOf(w).probes['rotated-grace']?.states ?? 0).toBeGreaterThan(0);
+    });
+
+    it('H4-3: Native exits after its commit; Main keeps its exclusion and reads the key back', () => {
+      const w = WORLDS.wcrash;
+      const exited = run(w, [...TO_POST, 'queue:A', 'env:wcrash']);
+      expect(exited.c.A).toMatchObject({ phase: 'unknown-reply', slot: true });
+      expect(exited.excl).toBe('A');
+      expect(exited.p.committed).toEqual(['A1']);
+      // The channel failure alone releases nothing: the only exits are the readback and the bound.
+      expect(enabled(w, exited).filter((l) => l.endsWith(':A') && !l.startsWith('env:'))).toEqual([
+        'readback:A',
+      ]);
+      const back = run(w, [...TO_POST, 'queue:A', 'env:wcrash', 'readback:A']);
+      expect(back.c.A!.phase).toBe('queued');
+      const done = run(w, [
+        ...TO_POST,
+        'queue:A',
+        'env:wcrash',
+        'readback:A',
+        'dispatch:p1',
+        'write:p1:ok',
+        'result:A1',
+        'nsettle:A1',
+        'restore:A',
+      ]);
+      expect(done.c.A!.phase).toBe('done');
+      expect(done.p.committed).toEqual(['A1']);
+      const step = steps(w, { ...T, lostReply: 'noncommit' }, exited).find(
+        (x) => x.label === 'readback:A'
+      );
+      expect(step?.violations.map((v) => v.name)).toContain('O.noncommit');
+      expect(reportOf(w).probes['worker-exit-readback']?.states ?? 0).toBeGreaterThan(0);
     });
   });
 
