@@ -33,6 +33,7 @@ import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { WorkInputRef } from '../storage/control-kernel-port.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
+import type { ControlStorePublicationGuard } from '../storage/control-store-worker-client.js';
 import {
   type ExternalSourceSchema,
   WorkspaceQueueInputRefSchema,
@@ -112,6 +113,11 @@ interface StartProductTurnInput
   readonly externalAdmission?: z.infer<typeof ExternalSourceSchema>;
   /** Rechecks current readonly source facts after native open while the source admission remains held. */
   readonly validateAdmissionSource?: () => void;
+  /**
+   * The Core scheduler writer's own posting record for this admission. It is set only once the
+   * post began, so a refusal while it is unset proves that nothing was submitted.
+   */
+  readonly schedulerPublicationGuard?: ControlStorePublicationGuard;
   /** Observes only the already FULL-acknowledged original admission; never writes Core. */
   readonly onAdmissionCommitted?: (
     entry: CoreSchedulerQueueEntry,
@@ -420,7 +426,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
         requireAvailableThread();
         if (input.fileInputs?.length) input.assertFileInputAdmission?.();
         return request;
-      }
+      },
+      input.schedulerPublicationGuard
     );
     if (result.kind !== 'queue') throw new Error('Scheduler publication returned another family.');
     input.onAdmissionCommitted?.(result.entry, result.external);

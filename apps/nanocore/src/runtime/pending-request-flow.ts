@@ -27,7 +27,10 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  type ControlStorePublicationGuard,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -165,13 +168,14 @@ export interface PendingWorkerDelivery {
    * Optional synchronous pre-submit proof of one outcome Turn. It submits nothing, so its failure
    * proves no submission.
    *
-   * @returns The submission of the proved Turn, or undefined when an existing owner holds it.
+   * @returns The submission of the proved Turn, or undefined when an existing owner holds it. The
+   * submission hands the guard to the Core scheduler writer, which records on it when its post began.
    */
   prepareTurn?(
     store: FsStore,
     turnId: string,
     scope: PendingOutcomeScope
-  ): (() => Promise<void>) | undefined;
+  ): ((posting?: ControlStorePublicationGuard) => Promise<void>) | undefined;
 }
 
 /** The admitted Workspace and Thread of one outcome Turn, carried to its real submission. */
@@ -185,7 +189,9 @@ interface PendingOutcome extends PendingOutcomeScope {
   readonly turnId: string;
   readonly executor: PendingExecutorKind | null;
   /** The delivery owner's proved submission when the startup scan already ran its proof. */
-  readonly prepared?: { readonly submit: (() => Promise<void>) | undefined };
+  readonly prepared?: {
+    readonly submit: ((posting?: ControlStorePublicationGuard) => Promise<void>) | undefined;
+  };
 }
 
 /** Selects the real delivery owner of one outcome executor. */
@@ -1491,6 +1497,30 @@ async function admitNextOutcome(
 }
 
 /**
+ * Attributes a startup submission that failed before its Core post began. An owned failure holds
+ * the Workspace; a shared cause names none. Either way the frozen Turn and its batch stay
+ * untouched for the Boot that admits the Workspace again.
+ */
+function holdUnpostedStartupOutcome(
+  store: FsStore,
+  workspaceId: string,
+  turnId: string,
+  error: unknown
+): void {
+  const dataRoot = store.getDataRoot();
+  try {
+    if (dataRoot)
+      holdBootWorkspaceFailure({ dataRoot, workspaceId, stage: 'pending-request-recovery' }, error);
+  } catch {
+    // A shared cause is not this Workspace's; the next Boot resumes the frozen Turn.
+  }
+  console.error(
+    `Outcome delivery for Turn ${turnId} failed before submission; leaving it for boot resume.`,
+    error
+  );
+}
+
+/**
  * Delivers an outcome without allowing submission or recovery failures to reject detached callers.
  * The admitting caller supplies the Turn's Workspace, Thread and executor, so nothing is read
  * before the real delivery owner takes the Turn; without that owner the frozen Turn stays pending.
@@ -1510,6 +1540,11 @@ async function deliverWorkerOutcome(
   const deliver = async () => {
     let refusal: TurnStartValidationError | undefined;
     let submitted = false;
+    // Never aborted and without a deadline: the Core writer only records whether its post began.
+    const posting: ControlStorePublicationGuard = {
+      signal: new AbortController().signal,
+      deadline: Number.POSITIVE_INFINITY,
+    };
     try {
       try {
         if (dependencies.agentWorkPaused?.())
@@ -1520,7 +1555,7 @@ async function deliverWorkerOutcome(
           );
         submitted = true;
         await (outcome.prepared
-          ? outcome.prepared.submit?.()
+          ? outcome.prepared.submit?.(posting)
           : delivery.startTurn(store, turnId, { workspaceId, threadId }));
         // The worker execution owner records delivery at native acceptance, before completion.
       } catch (error) {
@@ -1543,6 +1578,12 @@ async function deliverWorkerOutcome(
               error: { code: error.code, message: error.message },
             });
           await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId);
+          return;
+        }
+        // The startup owner's reads and final recheck ran before its Core post began: nothing was
+        // submitted, so this stays a startup failure of the Workspace, not an uncertain delivery.
+        if (outcome.prepared && !posting.postedSettlement) {
+          holdUnpostedStartupOutcome(store, workspaceId, turnId, error);
           return;
         }
         await store.applyPendingRequestCommand(workspaceId, {
