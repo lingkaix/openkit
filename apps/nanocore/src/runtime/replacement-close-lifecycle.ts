@@ -118,11 +118,15 @@ export interface HarnessFacts {
   readonly claimGeneration: string | null;
 }
 
-/** RC8 reads these Harness facts only. */
+/**
+ * RC8 reads these Harness facts only. G3 (S3b-m-r2): the queue also reads the row's claim
+ * generation. It is optional only until the S3b code passes it from the owner read.
+ */
 export type QueueHarnessFacts = Pick<
   HarnessFacts,
   'life' | 'drain' | 'revision' | 'cell' | 'nextSequence'
->;
+> &
+  Partial<Pick<HarnessFacts, 'claimGeneration'>>;
 
 export interface SandboxFacts {
   readonly accepting: boolean;
@@ -268,6 +272,12 @@ export interface ReplacementCloseTable {
   readonly queue: (input: {
     readonly harness: QueueHarnessFacts;
     readonly claimRevision: number | null;
+    /**
+     * G3 (S3b-m-r2, V1-P FIX 2 item 1): the generation that the close pinned at its own claim, read
+     * through the existing owner read and kept through the commit. Undefined: a caller from before
+     * G3 (production F until the S3b code). The S3b code passes it and makes it required.
+     */
+    readonly claimGeneration?: string | null | undefined;
     readonly key: CloseKey;
     readonly slotExpired: boolean;
     readonly storage: boolean;
@@ -311,6 +321,11 @@ export interface ReplacementCloseTable {
   readonly settle: (harness: HarnessFacts, key: string) => boolean;
   /** RC13: the Native restore CAS on one restore frame. */
   readonly restore: (harness: HarnessFacts, sandbox: SandboxFacts, frame: RestoreFrame) => boolean;
+  /**
+   * RC13 (G3): the row that a committed restore writes. It accepts again and clears the claim
+   * generation, so no later delivery of the same frame matches (S3b-m-r2).
+   */
+  readonly restoreRow: (harness: HarnessFacts) => HarnessFacts;
   /** Occupancy change at a restore. Success decrements once, at RC12. */
   readonly restoreDecrement: number;
   /** Native queued expiry: whether it applies to the current cell. */
@@ -378,16 +393,21 @@ const carriedExpiry = (p: PostPremises, clock: CloseClock) =>
 /**
  * A clock refusal among the checked clocks, answered with the cause of the limiting clock. Tc fails
  * on its wall deadline, on the monotonic clock, and on a wall sample before the original enqueue
- * instant. Such a sample can hide each passed deadline, so Main refuses it as the lower Tc edge. A
- * clock fails also when a read of the decision carries its expiry (S3b H4-1). The limiting clock is
- * then the earliest original deadline among the failed clocks.
+ * instant. Such a sample can hide each passed deadline, so Main refuses it as the lower Tc edge and
+ * answers the limiting clock. A clock fails also when a read of the decision carries its expiry
+ * (S3b H4-1). The limiting clock is then the earliest original deadline among the failed clocks. A
+ * failed monotonic check puts Tc among them (S3b-m-r2, V1-P FIX 2 item 2): the wall can step back
+ * below the Tc deadline after a read carried a later expiry.
  */
 function clockRefusal(p: PostPremises, checked: readonly CloseClock[]): CloseCause | null {
-  const failed = checked.filter((clock) => passed(p, clock) || carriedExpiry(p, clock));
-  const lowerEdge = checked.includes('Tc') && (p.closeMonotonicExpired || p.now < p.admitted);
+  const failed = checked.filter(
+    (clock) =>
+      passed(p, clock) || carriedExpiry(p, clock) || (clock === 'Tc' && p.closeMonotonicExpired)
+  );
+  const lowerEdge = checked.includes('Tc') && p.now < p.admitted;
   if (failed.length === 0 && !lowerEdge) return null;
   if (p.now < p.admitted) return CLOCK_CAUSE[limitingClock(p)];
-  return CLOCK_CAUSE[slotClock(p.deadlines, failed.length > 0 ? failed : ['Tc'])];
+  return CLOCK_CAUSE[slotClock(p.deadlines, failed)];
 }
 
 export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sandboxOpen(p.sandbox);
@@ -395,12 +415,24 @@ export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sand
 /**
  * RC8, L: the queue transfers only the close's own claim. The Harness still drains, and its
  * revision is still the claim revision, so no later claim, queue, drain or restore wrote the row.
- * A close with no claim of its own (a replayed receipt) transfers nothing.
+ * A close with no claim of its own (a replayed receipt) transfers nothing. G3 (S3b-m-r2, V1-P FIX 2
+ * item 1): the revision is a wall stamp. An independent drain that settles at the claim's own
+ * instant leaves it equal, so the queue also compares the generation that the close pinned at its
+ * claim with the row's generation. Null matches nothing. A match transfers that generation
+ * unchanged. A caller with no pinned generation (undefined: production F before the S3b code) keeps
+ * the revision compare alone.
  */
 export const transfersLatch = (
-  harness: Pick<HarnessFacts, 'drain' | 'revision'>,
-  claimRevision: number | null
-) => claimRevision !== null && harness.drain === 'draining' && harness.revision === claimRevision;
+  harness: Pick<HarnessFacts, 'drain' | 'revision'> &
+    Partial<Pick<HarnessFacts, 'claimGeneration'>>,
+  claimRevision: number | null,
+  claimGeneration?: string | null
+) =>
+  claimRevision !== null &&
+  harness.drain === 'draining' &&
+  harness.revision === claimRevision &&
+  (claimGeneration === undefined ||
+    (claimGeneration !== null && harness.claimGeneration === claimGeneration));
 
 /**
  * RC7: the original pending owner, every slot clock (Tc on both clocks and its lower edge, Ts, Ta),
@@ -664,11 +696,11 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
     cutoffs.reduce((earliest, cutoff) => Math.min(earliest, cutoff.at), Number.POSITIVE_INFINITY),
   post: decidePost,
   deadlineSlot: ['Tc', 'Ts', 'Ta'],
-  queue: ({ harness, claimRevision, key, slotExpired, storage, sandbox }) => {
+  queue: ({ harness, claimRevision, claimGeneration, key, slotExpired, storage, sandbox }) => {
     if (slotExpired) return 'deadline';
     if (!storage) return 'storage';
     if (!placementOpen({ harness: harness.life, sandbox })) return 'placement';
-    if (!transfersLatch(harness, claimRevision)) return 'latch';
+    if (!transfersLatch(harness, claimRevision, claimGeneration)) return 'latch';
     if (
       (harness.cell !== 'idle' && harness.cell !== 'settled') ||
       harness.nextSequence !== key.sequence
@@ -701,6 +733,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
           : harness.sequence === original.sequence && harness.key !== null,
   settle: (harness, key) => harness.cell === 'dispatched' && harness.key === key,
   restore: restoresFrame,
+  restoreRow: (harness) => ({ ...harness, drain: 'accepting', claimGeneration: null }),
   restoreDecrement: 0,
   expiryApplies: (harness, target) => harness.cell === 'queued' && harness.key === target,
   callerBound: 'original-deadline',
