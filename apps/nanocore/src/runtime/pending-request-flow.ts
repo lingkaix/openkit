@@ -40,6 +40,7 @@ import { PendingRequestCommandError } from './pending-request-error.js';
 import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
   archiveSelects,
+  assertFrozenDeliveryScope,
   compareReadiness,
   executorKindForTurn,
   isBlockingPendingRequest,
@@ -499,6 +500,18 @@ export async function recoverPendingRequestsAtBoot(
           // The writer's own settlement of these records: every later post is decided and proved
           // on the exact records it publishes, before the settlement or any other write commits.
           const loaded = usable.map((record) => projectUnfinishedSettlement(record, now));
+          // A delivery post moves every row frozen on its Turn, including one this walk skipped:
+          // the writer's own scope rule proves them all, here through this Workspace's Turns.
+          const turnThreads = new Map(
+            store
+              .listThreads(workspace.id)
+              .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id))
+              .map((turn) => [turn.id, turn.threadId])
+          );
+          const proveDelivery = (turnId: string) =>
+            assertFrozenDeliveryScope(db.sqlite, workspace.id, turnId, (id) =>
+              turnThreads.get(id)
+            );
           const posts: (() => Promise<unknown>)[] = [];
           const planned = new Set<string>();
           const localPublications = new Set<string>();
@@ -510,6 +523,7 @@ export async function recoverPendingRequestsAtBoot(
               turnOf(record.deliveryTurnId).status !== 'pending'
             ) {
               const turnId = record.deliveryTurnId;
+              proveDelivery(turnId);
               posts.push(() =>
                 store.applyPendingRequestCommand(workspace.id, {
                   action: 'delivery-unknown',
@@ -565,6 +579,7 @@ export async function recoverPendingRequestsAtBoot(
               ],
             };
             store.provePendingRequestServiceTurn(workspace.id, publication.threadId, input);
+            proveDelivery(turnId);
             posts.push(() =>
               store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, input)
             );
