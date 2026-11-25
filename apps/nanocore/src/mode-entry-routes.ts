@@ -2697,14 +2697,29 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
                 },
           });
         }
+        const completedAt = new Date().toISOString();
+        const interruption = (orphan: (typeof orphans)[number]) => ({
+          status: 'interrupted' as const,
+          completedAt,
+          error: orphan.error,
+        });
+        // Every orphan's history and transcript prove its terminal write before the first one commits.
+        for (const orphan of orphans)
+          store.proveWorkspaceTurnCompletion(
+            workspaceId,
+            orphan.threadId,
+            orphan.turnId,
+            interruption(orphan)
+          );
         // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
         for (const orphan of orphans)
           await bootWorkspaceWrite(() =>
-            store.completeWorkspaceTurn(workspaceId, orphan.threadId, orphan.turnId, {
-              status: 'interrupted',
-              completedAt: new Date().toISOString(),
-              error: orphan.error,
-            })
+            store.completeWorkspaceTurn(
+              workspaceId,
+              orphan.threadId,
+              orphan.turnId,
+              interruption(orphan)
+            )
           );
       }
     );

@@ -552,7 +552,6 @@ export async function recoverPendingRequestsAtBoot(
                     );
                   continue;
                 }
-                store.proveWorkspaceItemAppend(item, 'already-decided-publication');
                 posts.push(() => store.publishSettledTurnItem(item));
               }
             }
