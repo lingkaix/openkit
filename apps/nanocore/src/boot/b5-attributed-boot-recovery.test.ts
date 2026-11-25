@@ -23,6 +23,7 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
 import * as productTurns from '../runtime/product-turn-start.js';
@@ -1663,6 +1664,120 @@ describe('B5 attributed Boot recovery', () => {
         await shutdownControlStoreWorkerClient();
         closeWorkspaceProductReadHandles(root.dataRoot);
       }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each([
+    { read: 'Workspace', method: 'getWorkspace', within: 'startProductTurn' },
+    { read: 'Thread', method: 'listThreadTurns', within: 'requireAvailableThread' },
+    { read: 'final recheck', method: 'getWorkspace', within: 'admitCoreScheduler' },
+  ] as const)(
+    "holds only the Workspace whose configured Worker outcome fails its owner's $read read before the Core post at startup, with no submission",
+    async ({ method, within }) => {
+      const root = await seedRoot(['Pre-post read fails', 'Configured Worker']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const frozen = root.workspaceIds.map((id, index) =>
+        readPendingRow(root.dataRoot, id, seeded[index]!.requestIds[0]!)
+      );
+      for (const row of frozen)
+        expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+      const [heldTurn, healthyTurn] = frozen.map((row) => row.delivery_turn_id as string) as [
+        string,
+        string,
+      ];
+      await withSeedStore(root, (seed) => {
+        expect(seed.getTurn(held, seeded[0]!.threadId, heldTurn).status).toBe('pending');
+      });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const admission = vi.spyOn(productTurns, 'startProductTurn');
+      const warnings = vi.spyOn(console, 'warn');
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      // After the scan and App's prepareTurn, A's own scoped read fails once; the post is later.
+      let hits = 0;
+      const read = store[method].bind(store) as (...args: unknown[]) => unknown;
+      vi.spyOn(store, method).mockImplementation(((...args: unknown[]) => {
+        const limit = Error.stackTraceLimit;
+        Error.stackTraceLimit = 50;
+        const stack = String(new Error().stack);
+        Error.stackTraceLimit = limit;
+        if (
+          args[0] === held &&
+          hits === 0 &&
+          stack.includes(within) &&
+          (within === 'admitCoreScheduler' || !stack.includes('admitCoreScheduler'))
+        ) {
+          hits++;
+          throw Object.assign(new Error('database disk image is malformed'), {
+            code: 'SQLITE_CORRUPT',
+          });
+        }
+        return read(...args);
+      }) as never);
+      try {
+        const manifest = createTestAgentSetup({ agentId: WORKER_AGENT_ID }).manifest;
+        await recordTestNativeRuntimeTarget(coreDb);
+        const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+        createSimulatedApp({
+          coreDb,
+          store,
+          dataRoot: root.dataRoot,
+          nanoHostStorage,
+          agentManifests: [manifest],
+        });
+        await vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(2), {
+          timeout: 30_000,
+          interval: 100,
+        });
+        await vi.waitFor(
+          () => expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false),
+          { timeout: 30_000, interval: 100 }
+        );
+        expect(hits).toBe(1);
+        expect(warnings).toHaveBeenCalledWith(
+          `Boot recovery held Workspace ${held} during pending-request-recovery.`,
+          'database disk image is malformed'
+        );
+        // The sibling progresses through its own original admission, delivery and terminal.
+        const sibling = admission.mock.calls.findIndex(
+          ([input]) => input.reservedTurnId === healthyTurn
+        );
+        await expect(admission.mock.results[sibling]!.value).resolves.toMatchObject({
+          turn: { id: healthyTurn, status: 'completed' },
+        });
+        expect(readPendingRow(root.dataRoot, healthy, seeded[1]!.requestIds[0]!)).toMatchObject({
+          delivery: 'delivered',
+          delivery_turn_id: healthyTurn,
+        });
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', healthy)).toBe(true);
+        // Nothing reached Core for A: no scheduler admission names its outcome Turn.
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: held,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          }).filter((entry) => entry.turnId === heldTurn)
+        ).toEqual([]);
+      } finally {
+        admission.mockRestore();
+        warnings.mockRestore();
+        vi.unstubAllEnvs();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
+      }
+      // No release, unknown or terminal post reached A: every table still holds its seeded bytes,
+      // so its frozen batch and pending Turn remain for the Boot that admits A again.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded[0]!.requestIds[0]!)).toEqual(frozen[0]);
     },
     CASE_TIMEOUT_MS
   );
