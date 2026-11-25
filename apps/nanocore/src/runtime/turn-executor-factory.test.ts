@@ -7686,6 +7686,47 @@ describe('createConfiguredTurnExecutor', () => {
     90_000
   );
 
+  it(
+    'rolls back its own capture claim through the claim arm when the selection changes before slot admission (S3b G3)',
+    async () => {
+      const f = await admitNativeReplacementClose('p23_selection_claim_arm');
+      const harness = () =>
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT h.drain_state AS drain, h.updated_at AS revision,
+            h.claim_generation AS generation
+            FROM agent_session_runtime_bindings b
+            JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+            WHERE b.agent_session_id = ?`)
+            .get(f.predecessor.agentSessionId)
+        ) as { drain: string; revision: string; generation: string | null };
+      expect(harness()).toMatchObject({ drain: 'accepting', generation: null });
+      f.gate();
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await f.entered;
+      // The capture is in flight: this close's own RC3 claim holds the latch with a fresh generation.
+      const claimed = harness();
+      expect(claimed).toMatchObject({ drain: 'draining', generation: expect.stringMatching(/^cg_/) });
+      await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId: f.successor.attemptId,
+        noOutstandingEffects: true,
+        cause: 'backend-busy',
+        requeue: true,
+      });
+      f.release();
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        message: 'The selected predecessor binding changed before its replacement close.',
+      });
+      // Q6: a definite refusal before any queue commit rolls back this close's own claim (the claim
+      // arm with the pinned revision and generation). The release clears the generation.
+      expect(harness()).toEqual({ drain: 'accepting', revision: claimed.revision, generation: null });
+      expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    },
+    90_000
+  );
+
   it.each(['duplicate-request', 'sandbox-drain'] as const)(
     'keeps one original close when a replacement races a competing close (%s)',
     async (competitor) => {
@@ -9833,6 +9874,45 @@ describe('createConfiguredTurnExecutor', () => {
     ).toBeDefined();
     expect(c.frames).toEqual([]);
     expect(c.row()).toEqual(latched);
+  }, 120_000);
+
+  it('restores a stopped capture latch through the cold quiescent exit when its drain follows the last operation (S3b P3 wiring)', async () => {
+    const c = await admitCoResidentClose('p23_g3_cold_exit');
+    const { f } = c;
+    c.observeLatch();
+    const queue = f.backend as unknown as {
+      queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
+      new Error('NanoCore stopped before its close queue.')
+    );
+    await expect(f.close()).rejects.toThrow();
+    const latched = c.row();
+    expect(latched).toMatchObject({ drain: 'draining', generation: c.original!.claimGeneration });
+    expect(c.frames).toEqual([]);
+    // Through Main a completed Turn ends with the settled inspection (the P3 control above). This
+    // written state names the settled open as the last operation, so the drain follows it. It
+    // witnesses the wiring of the cold exit: the first read pins the pair, the table answers
+    // quiescent, and the exit posts the claim arm.
+    expect(
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`UPDATE harness_instance_records SET operation='session.open'
+          WHERE harness_instance_id=? AND operation='session.inspect' AND operation_state='settled'`)
+          .run(c.harnessInstanceId)
+      ).changes
+    ).toBe(1);
+    await f.reopen();
+    c.observeLatch();
+    await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage);
+    expect(c.frames).toHaveLength(1);
+    expect(c.frames[0]![2]).toEqual({
+      harnessInstanceId: c.harnessInstanceId,
+      harnessBindingRef: c.original!.harnessBindingRef,
+      claim: { revision: c.original!.claimedAt },
+      generation: c.original!.claimGeneration,
+    });
+    expect(c.row()).toEqual({ ...latched, drain: 'accepting', generation: null });
   }, 120_000);
 
   it('keeps the fence of a stopped capture latch that an independent drain lands on (S3b cold control)', async () => {
