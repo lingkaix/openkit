@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import type { FsStore } from '../lib/store.js';
 import { StoredGoalCardTaskV1Schema, StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
+import { type PendingRequestRecord, readPendingRequest } from '../runtime/pending-requests.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 
@@ -58,6 +59,23 @@ export function readPendingRow(
         'SELECT claim, disposition, disposition_reason, publication_turn_id, delivery, delivery_turn_id, invalidation_turn_id FROM pending_requests WHERE request_id = ?'
       )
       .get(requestId) as Record<string, unknown>;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Reads one retained Pending record through the production record reader. */
+export function readPendingRecord(
+  dataRoot: string,
+  workspaceId: string,
+  requestId: string
+): PendingRequestRecord | null {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return readPendingRequest(sqlite, requestId);
   } finally {
     sqlite.close();
   }
