@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
 import {
   allocateEntityId,
   deriveEntityId,
@@ -16,7 +15,6 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
-  BootWorkspaceConflict,
   bootWorkspaceWrite,
   holdBootWorkspaceFailure,
   withinBootWorkspaceBoundary,
@@ -525,33 +523,9 @@ export async function recoverPendingRequestsAtBoot(
               for (const item of pendingOutcomeItems([record], turnId, now)) {
                 if (planned.has(item.id)) continue;
                 planned.add(item.id);
-                const lineage = store.getItemLineage(workspace.id, item.id);
-                if (lineage) {
-                  // An Item this Workspace already holds is published only when it is this exact
-                  // Item in its own Turn, with its original projection clocks.
-                  const retained =
-                    lineage.threadId === item.threadId && lineage.turnId === item.turnId
-                      ? store
-                          .getTurn(workspace.id, item.threadId, item.turnId)
-                          .items.find((current) => current.id === item.id)
-                      : undefined;
-                  if (
-                    !retained ||
-                    !isDeepStrictEqual(
-                      retained,
-                      ItemSchema.parse({
-                        ...item,
-                        createdAt: retained.createdAt,
-                        completedAt: retained.completedAt,
-                      })
-                    )
-                  )
-                    throw new BootWorkspaceConflict(
-                      'records',
-                      `Pending outcome Item conflicts with its published record: ${item.id}`
-                    );
-                  continue;
-                }
+                // An Item this Workspace already holds is the settlement's to prove: its writer's
+                // decided-tuple check refuses an inexact retained Item at this walk's first write.
+                if (store.getItemLineage(workspace.id, item.id)) continue;
                 posts.push(() => store.publishSettledTurnItem(item));
               }
             }
