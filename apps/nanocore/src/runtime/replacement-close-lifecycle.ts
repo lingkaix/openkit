@@ -267,8 +267,11 @@ export interface ReplacementCloseTable {
   readonly expiryApplies: (harness: HarnessFacts, target: string) => boolean;
   /** W: armed at the original deadline, independent of every writer reply. */
   readonly callerBound: 'original-deadline' | 'after-reply';
-  /** CL9: the refusal keeps its first structured cause through every catch. */
-  readonly carryCause: (first: CloseCause, fallback: CloseCause) => CloseCause;
+  /**
+   * CL9: the refusal keeps its first structured cause through every catch. A cause is a close
+   * cause or a structured refusal with its own re-check.
+   */
+  readonly carryCause: <C>(first: C, fallback: C) => C;
   /** RC14: the E7 request after a restore. */
   readonly e7: (input: {
     readonly changed: boolean;
