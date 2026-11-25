@@ -25,10 +25,10 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
-import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
 import * as productTurns from '../runtime/product-turn-start.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
@@ -48,7 +48,9 @@ import {
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
   readPendingRow,
+  removeGoal,
   removeWorkObservation,
+  seedEndedGoalTask,
   type WorkspaceEvidence,
   withSeedWorkspaceDb,
   workspaceEvidence,
@@ -698,6 +700,13 @@ describe('B5 attributed Boot recovery', () => {
       failure: 'observation history has a gap',
       cause: 'check=records; stage=assistant-turn-recovery',
     },
+    // The second orphan's Thread is a Goal card Task whose Goal row is gone while stopped. No
+    // earlier reader resolves a Task link's Goal; the Task owner refuses it inside the terminal.
+    {
+      input: 'goal',
+      failure: 'is a Task whose Goal is gone',
+      cause: 'check=records; stage=assistant-turn-recovery',
+    },
   ] as const)(
     'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan $failure',
     async ({ input, cause }) => {
@@ -759,6 +768,18 @@ describe('B5 attributed Boot recovery', () => {
           roots.push(aside);
           renameSync(join(heldRoot, bodies[0]!), join(aside, 'body'));
           repair = () => renameSync(join(aside, 'body'), join(heldRoot, bodies[0]!));
+        } else if (input === 'goal') {
+          // An ended Goal links the second orphan's Thread as its card's Task.
+          const goalThreadId = await withSeedStore(
+            root,
+            async (store) => (await store.createThread(held, 'Goal coordination')).id
+          );
+          const goalId = seedEndedGoalTask(root.dataRoot, held, {
+            taskThreadId: second.threadId,
+            goalThreadId,
+            userId: root.actor.id,
+          });
+          repair = removeGoal(root.dataRoot, held, goalId);
         } else {
           // The second orphan's runtime recorded three observations through their native owner.
           await withSeedStore(root, () =>
@@ -799,6 +820,10 @@ describe('B5 attributed Boot recovery', () => {
       await stopServer(server);
       if (input === 'observation')
         expect(bootDecisionLines(server)).toContain('native observation sequence gap');
+      if (input === 'goal')
+        expect(bootDecisionLines(server)).toContain(
+          'Task terminal fact requires its linked Goal owner'
+        );
       // The first orphan was not interrupted ahead of the second orphan's refused proof.
       expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(largeFiles(heldRoot).sort()).toEqual(bodies);
@@ -861,7 +886,10 @@ describe('B5 attributed Boot recovery', () => {
             readPendingRow(root.dataRoot, workspaceId, requestId)
           );
           // One batch: both requests are frozen on the same delivery Turn.
-          expect(rows[0]).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+          expect(rows[0]).toMatchObject({
+            delivery: 'frozen',
+            delivery_turn_id: expect.any(String),
+          });
           expect(rows[1]!.delivery_turn_id).toBe(rows[0]!.delivery_turn_id);
           return {
             workspaceId,
