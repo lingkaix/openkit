@@ -159,6 +159,17 @@ export interface PendingWorkerDelivery {
    * @param scope The Workspace and Thread whose own records admitted the Turn.
    */
   startTurn(store: FsStore, turnId: string, scope: PendingOutcomeScope): Promise<void>;
+  /**
+   * Optional synchronous pre-submit proof of one outcome Turn. It submits nothing, so its failure
+   * proves no submission.
+   *
+   * @returns The submission of the proved Turn, or undefined when an existing owner holds it.
+   */
+  prepareTurn?(
+    store: FsStore,
+    turnId: string,
+    scope: PendingOutcomeScope
+  ): (() => Promise<void>) | undefined;
 }
 
 /** The admitted Workspace and Thread of one outcome Turn, carried to its real submission. */
@@ -171,6 +182,20 @@ export interface PendingOutcomeScope {
 interface PendingOutcome extends PendingOutcomeScope {
   readonly turnId: string;
   readonly executor: PendingExecutorKind | null;
+  /** The delivery owner's proved submission when the startup scan already ran its proof. */
+  readonly prepared?: { readonly submit: (() => Promise<void>) | undefined };
+}
+
+/** Selects the real delivery owner of one outcome executor. */
+function outcomeDelivery(
+  dependencies: PendingAdmissionDependencies,
+  executor: PendingExecutorKind | null
+): PendingWorkerDelivery | undefined {
+  return executor === 'coordinator'
+    ? dependencies.coordinatorDelivery
+    : executor === 'assistant'
+      ? dependencies.assistantDelivery
+      : dependencies.workerDelivery;
 }
 
 /** Posts one Workspace write; Boot recovery attributes its definite local noncommit to that Workspace. */
@@ -371,14 +396,30 @@ export function resumeFrozenPendingDelivery(
             )
               continue;
             const turn = recordTurn(store, record, record.deliveryTurnId);
-            if (turn.status === 'pending')
-              found.push({
-                workspaceId,
-                threadId: turn.threadId,
-                turnId: turn.id,
-                executor:
-                  store.getWorkspaceTurnExecutor(workspaceId, turn.id) ?? executorKindForTurn(turn),
-              });
+            if (turn.status !== 'pending') continue;
+            const outcome: PendingOutcome = {
+              workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+              executor:
+                store.getWorkspaceTurnExecutor(workspaceId, turn.id) ?? executorKindForTurn(turn),
+            };
+            const delivery = outcomeDelivery(dependencies, outcome.executor);
+            // At startup the owner's pre-submit proof stays inside this Workspace's boundary:
+            // its failure holds the Workspace and leaves the frozen Turn and batch untouched.
+            found.push(
+              startup && delivery?.prepareTurn
+                ? {
+                    ...outcome,
+                    prepared: {
+                      submit: delivery.prepareTurn(store, turn.id, {
+                        workspaceId,
+                        threadId: turn.threadId,
+                      }),
+                    },
+                  }
+                : outcome
+            );
           }
         }
       });
@@ -1449,12 +1490,7 @@ async function deliverWorkerOutcome(
   outcome: PendingOutcome
 ): Promise<void> {
   const { workspaceId, threadId, turnId, executor } = outcome;
-  const delivery =
-    executor === 'coordinator'
-      ? dependencies.coordinatorDelivery
-      : executor === 'assistant'
-        ? dependencies.assistantDelivery
-        : dependencies.workerDelivery;
+  const delivery = outcomeDelivery(dependencies, executor);
   if (!delivery) return;
   const deliver = async () => {
     let refusal: TurnStartValidationError | undefined;
@@ -1468,7 +1504,9 @@ async function deliverWorkerOutcome(
             503
           );
         submitted = true;
-        await delivery.startTurn(store, turnId, { workspaceId, threadId });
+        await (outcome.prepared
+          ? outcome.prepared.submit?.()
+          : delivery.startTurn(store, turnId, { workspaceId, threadId }));
         // The worker execution owner records delivery at native acceptance, before completion.
       } catch (error) {
         const now = new Date().toISOString();

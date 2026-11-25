@@ -1497,42 +1497,63 @@ describe('FsStore borrowed native owner binding', () => {
     }
   }, 30_000);
 
-  it('refuses a duplicate Turn identity from its own or a readable sibling scope and holds only a sibling that cannot answer', async () => {
-    const f = await workspaceFixture();
-    const sibling = await f.store.createWorkspace('Sibling owner');
-    const siblingThread = await f.store.createThread(sibling.id, 'Sibling Thread');
-    const siblingTurn = await f.store.createTurn(sibling.id, siblingThread.id, 'Sibling', actor);
-    const creating = await f.store.createThread(f.workspace.id, 'Creating Thread');
-    // The creating Workspace answers in its own scope; a readable sibling still refuses its identity.
-    for (const turnId of [f.turn.id, siblingTurn.id])
-      await expect(
-        f.store.createTurn(f.workspace.id, creating.id, 'Duplicate', actor, null, { turnId })
-      ).rejects.toThrow(`Turn already exists: ${turnId}`);
-    expect(f.store.listThreadTurns(f.workspace.id, creating.id)).toEqual([]);
-    await shutdownControlStoreWorkerClient();
-    const corruptor = openWorkspaceDb(f.root, sibling.id);
-    try {
-      // Admit only this exact unsupported-header fault; restore CHECK enforcement before reads.
-      corruptor.sqlite.pragma('ignore_check_constraints = ON');
+  it.each([
+    {
+      header: 'an unsupported selector version',
+      corrupt: 'UPDATE control_turns SET schema_version=999 WHERE id=?',
+    },
+    // A v1 selector whose retained Thread key cannot be decoded answers for that sibling alone.
+    {
+      header: 'an invalid Thread key',
+      corrupt: "UPDATE control_turns SET thread_id='not-a-thread-key' WHERE id=?",
+    },
+  ])(
+    'refuses a duplicate Turn identity from its own or a readable sibling scope and holds only a sibling that cannot answer: $header',
+    async ({ corrupt }) => {
+      const f = await workspaceFixture();
+      const sibling = await f.store.createWorkspace('Sibling owner');
+      const siblingThread = await f.store.createThread(sibling.id, 'Sibling Thread');
+      const siblingTurn = await f.store.createTurn(sibling.id, siblingThread.id, 'Sibling', actor);
+      const creating = await f.store.createThread(f.workspace.id, 'Creating Thread');
+      // The creating Workspace answers in its own scope; a readable sibling still refuses its identity.
+      for (const turnId of [f.turn.id, siblingTurn.id])
+        await expect(
+          f.store.createTurn(f.workspace.id, creating.id, 'Duplicate', actor, null, { turnId })
+        ).rejects.toThrow(`Turn already exists: ${turnId}`);
+      expect(f.store.listThreadTurns(f.workspace.id, creating.id)).toEqual([]);
+      await shutdownControlStoreWorkerClient();
+      const corruptor = openWorkspaceDb(f.root, sibling.id);
       try {
-        corruptor.sqlite
-          .prepare('UPDATE control_turns SET schema_version=999 WHERE id=?')
-          .run(siblingTurn.id);
+        // Admit only this exact selector-header fault; restore enforcement before reads.
+        corruptor.sqlite.pragma('ignore_check_constraints = ON');
+        corruptor.sqlite.pragma('foreign_keys = OFF');
+        try {
+          corruptor.sqlite.prepare(corrupt).run(siblingTurn.id);
+        } finally {
+          corruptor.sqlite.pragma('foreign_keys = ON');
+          corruptor.sqlite.pragma('ignore_check_constraints = OFF');
+        }
       } finally {
-        corruptor.sqlite.pragma('ignore_check_constraints = OFF');
+        corruptor.sqlite.close();
       }
-    } finally {
-      corruptor.sqlite.close();
-    }
-    // The sibling cannot answer this identity: it is held, and the creating Workspace proceeds.
-    const created = await f.store.createTurn(f.workspace.id, creating.id, 'Created', actor, null, {
-      turnId: siblingTurn.id,
-    });
-    expect(created).toMatchObject({ id: siblingTurn.id, threadId: creating.id });
-    expect(isScopeAdmitted(f.root, 'workspace', sibling.id)).toBe(false);
-    expect(isScopeAdmitted(f.root, 'workspace', f.workspace.id)).toBe(true);
-    expect(f.store.getTurn(f.workspace.id, creating.id, siblingTurn.id).id).toBe(siblingTurn.id);
-  }, 30_000);
+      // The sibling cannot answer this identity: it is held, and the creating Workspace proceeds.
+      const created = await f.store.createTurn(
+        f.workspace.id,
+        creating.id,
+        'Created',
+        actor,
+        null,
+        {
+          turnId: siblingTurn.id,
+        }
+      );
+      expect(created).toMatchObject({ id: siblingTurn.id, threadId: creating.id });
+      expect(isScopeAdmitted(f.root, 'workspace', sibling.id)).toBe(false);
+      expect(isScopeAdmitted(f.root, 'workspace', f.workspace.id)).toBe(true);
+      expect(f.store.getTurn(f.workspace.id, creating.id, siblingTurn.id).id).toBe(siblingTurn.id);
+    },
+    30_000
+  );
 
   it('keeps known healthy opaque reads beside quarantine and refuses an unprovable opaque miss', async () => {
     const f = await workspaceFixture();

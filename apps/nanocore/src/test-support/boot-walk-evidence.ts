@@ -134,6 +134,31 @@ export function writeCapabilityCallColumn(
   }
 }
 
+/**
+ * Makes one Workspace unable to answer any Turn selector read until the returned restore runs:
+ * its Turn table is renamed, so every read of it fails rather than observing a miss.
+ * @returns Restores the original table name.
+ */
+export function hideWorkspaceTurnSelector(dataRoot: string, workspaceId: string): () => void {
+  const rename = (from: string, to: string) => {
+    const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+      fileMustExist: true,
+    });
+    try {
+      sqlite.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+    } finally {
+      sqlite.close();
+    }
+  };
+  rename('control_turns', 'b5_unreadable_control_turns');
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    rename('b5_unreadable_control_turns', 'control_turns');
+  };
+}
+
 /** Counts retained capability calls, so a replay that calls upstream again is visible. */
 export function capabilityCallCount(dataRoot: string, workspaceId: string): number {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
