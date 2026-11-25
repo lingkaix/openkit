@@ -1537,17 +1537,11 @@ describe('FsStore borrowed native owner binding', () => {
         corruptor.sqlite.close();
       }
       // The sibling cannot answer this identity: it is held, and the creating Workspace proceeds.
-      const created = await f.store.createTurn(
-        f.workspace.id,
-        creating.id,
-        'Created',
-        actor,
-        null,
-        {
+      await expect(
+        f.store.createTurn(f.workspace.id, creating.id, 'Created', actor, null, {
           turnId: siblingTurn.id,
-        }
-      );
-      expect(created).toMatchObject({ id: siblingTurn.id, threadId: creating.id });
+        })
+      ).resolves.toMatchObject({ id: siblingTurn.id, threadId: creating.id });
       expect(isScopeAdmitted(f.root, 'workspace', sibling.id)).toBe(false);
       expect(isScopeAdmitted(f.root, 'workspace', f.workspace.id)).toBe(true);
       expect(f.store.getTurn(f.workspace.id, creating.id, siblingTurn.id).id).toBe(siblingTurn.id);
