@@ -160,6 +160,78 @@ export function hideWorkspaceTurnSelector(dataRoot: string, workspaceId: string)
 }
 
 /**
+ * Rewrites the stop reason of one Turn's retained inline completion while NanoCore is stopped.
+ * The completion stays a readable, digest-consistent retained event; only that field changes.
+ * @returns Writes the original entry descriptor back.
+ */
+export function contradictTurnCompletionStopReason(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  stopReason: string
+): () => void {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), { fileMustExist: true });
+  const write = (rowid: number, content: string) => {
+    const writer = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+      fileMustExist: true,
+    });
+    try {
+      return writer
+        .prepare('UPDATE control_product_entries SET content_json = ? WHERE rowid = ?')
+        .run(content, rowid).changes;
+    } finally {
+      writer.close();
+    }
+  };
+  let rowid: number | undefined;
+  let original: string | undefined;
+  let changed: string | undefined;
+  try {
+    const rows = sqlite
+      .prepare(
+        "SELECT rowid, content_json FROM control_product_entries WHERE kind = 'event' AND turn_id = ?"
+      )
+      .all(turnId) as { rowid: number; content_json: string }[];
+    for (const row of rows) {
+      const content = JSON.parse(row.content_json) as {
+        reference: { representation?: string; body?: string; contentDigest?: string };
+        byteLength: number;
+      };
+      if (content.reference.representation !== 'inline' || !content.reference.body) continue;
+      const event = JSON.parse(content.reference.body) as {
+        data?: { type?: string; stopReason?: string };
+      };
+      if (event.data?.type !== 'turn-completed') continue;
+      if (rowid !== undefined) throw new Error(`Turn has two completions: ${turnId}`);
+      event.data.stopReason = stopReason;
+      const body = JSON.stringify(event);
+      const bytes = Buffer.from(body, 'utf8');
+      rowid = row.rowid;
+      original = row.content_json;
+      changed = JSON.stringify({
+        ...content,
+        reference: {
+          ...content.reference,
+          body,
+          contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        },
+        byteLength: bytes.length,
+      });
+    }
+  } finally {
+    sqlite.close();
+  }
+  if (rowid === undefined || !original || !changed)
+    throw new Error(`Turn has no inline completion: ${turnId}`);
+  const entry = rowid;
+  const retained = original;
+  if (write(entry, changed) !== 1) throw new Error(`Completion not rewritten: ${turnId}`);
+  return () => {
+    if (write(entry, retained) !== 1) throw new Error(`Completion not restored: ${turnId}`);
+  };
+}
+
+/**
  * Rewrites one field of one retained Turn record while NanoCore is stopped, so a readable record
  * contradicts its own sealed completion snapshot.
  * @returns Writes the original record bytes back.
