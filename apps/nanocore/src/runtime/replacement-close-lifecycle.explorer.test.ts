@@ -295,7 +295,23 @@ const wallPassed = (s: State, clock: ModelClock) => deadlineOf(s, clock) <= wall
 /** Oracle: an expiring credential that the admission requires has passed on the wall. */
 const authorityPassed = (s: State) => wallPassed(s, 'Ta') || wallPassed(s, 'Ti');
 
-function premises(s: State, pendingOwner: boolean, t: ReplacementCloseTable): ClosePremises {
+/** The clock as one read sees it. The deadlines are fixed facts; only the sample moves. */
+type ClockView = State['clock'];
+const nowOf = (clock: ClockView) => (clock.back ? ADMITTED - 1 : clock.passed.length);
+
+/**
+ * The premises of one decision. `view.sample` is the clock sample of the decision and
+ * `view.audience` the clock of the P14 read. Both default to the current clock.
+ */
+function premises(
+  s: State,
+  pendingOwner: boolean,
+  t: ReplacementCloseTable,
+  view: { readonly sample: ClockView; readonly audience: ClockView } = {
+    sample: s.clock,
+    audience: s.clock,
+  }
+): ClosePremises {
   const cutoffs: CredentialCutoff[] = [
     { credential: 'presented', at: deadlineOf(s, 'Ta') },
     { credential: 'issuer', at: deadlineOf(s, 'Ti') },
@@ -304,7 +320,10 @@ function premises(s: State, pendingOwner: boolean, t: ReplacementCloseTable): Cl
     pendingOwner,
     request: s.prem.R,
     // The P14 owner reports A. Its contributor authorizer also refuses an elapsed Ts (A8-2).
-    audience: { thread: s.prem.thread && !wallPassed(s, 'Ts'), policy: s.prem.policy },
+    audience: {
+      thread: s.prem.thread && deadlineOf(s, 'Ts') > nowOf(view.audience),
+      policy: s.prem.policy,
+    },
     idleReceipt: s.prem.idle,
     storage: s.prem.S,
     placement: { harness: s.h.life, sandbox: sandboxFacts(s) },
@@ -315,9 +334,97 @@ function premises(s: State, pendingOwner: boolean, t: ReplacementCloseTable): Cl
       Ta: t.authorityDeadline(cutoffs),
     },
     admitted: ADMITTED,
-    now: wallNow(s),
-    closeMonotonicExpired: s.clock.mono,
+    now: nowOf(view.sample),
+    closeMonotonicExpired: view.sample.mono,
   };
+}
+
+/* ------------------------------------------------- CL2: clock events inside an effect gather */
+
+/** The clock writers. Each passes once within the budget. After a step back the wall stays behind. */
+const CLOCK_EVENTS = ['Tc', 'Ts', 'Ta', 'Ti', 'Wback', 'TcMono'] as const;
+type ClockEvent = (typeof CLOCK_EVENTS)[number];
+const isClockEvent = (e: Env): e is ClockEvent => (CLOCK_EVENTS as readonly Env[]).includes(e);
+const clockEventEnabled = (s: State, e: ClockEvent) =>
+  // The monotonic Tc passes while the wall Tc is still live.
+  e === 'TcMono' ? !wallPassed(s, 'Tc') : !s.clock.back;
+function applyClockEvent(n: State, e: ClockEvent): void {
+  if (e === 'Wback') n.clock.back = true;
+  else if (e === 'TcMono') n.clock.mono = true;
+  else n.clock.passed.push(e);
+}
+
+/**
+ * The fact reads of each effect that a clock decides, in production order (the node inventory).
+ * A fact read reads durable or worker state. An in-memory identity compare in the same synchronous
+ * run is no fact read. The clock can pass or the wall can step back after any read: between two
+ * reads, or between the last read and the effect. A pass before the first read is an `env:` step.
+ */
+const EFFECT_READS = {
+  /** RC7, F `verifyAgentSessionReplacementQueue` in the posting turn under the Core hold. */
+  post: ['audience', 'Ta', 'R', 'idle', 'owner', 'storage'],
+  /** RC8, N `queueNanoHostHarnessOperation`: every read before the deciding update. */
+  queue: ['harness', 'lineage', 'target', 'binding', 'storage'],
+  /** RC10, F `recheck` in the route run that writes the first bytes. */
+  firstBytes: ['drain', 'receipt', 'audience', 'Ta', 'R', 'storage', 'placement', 'dispatched'],
+} as const;
+type EffectSite = keyof typeof EFFECT_READS;
+
+/** One gather of an effect: no clock event, or one clock event after the read `after`. */
+interface Gather {
+  readonly suffix: string;
+  readonly after: number;
+  readonly event: ClockEvent | null;
+}
+
+function gathers(world: World, s: State, site: EffectSite): Gather[] {
+  const out: Gather[] = [{ suffix: '', after: -1, event: null }];
+  if (s.used.length >= world.budget) return out;
+  for (const e of world.env) {
+    if (!isClockEvent(e) || s.used.includes(e) || !clockEventEnabled(s, e)) continue;
+    // Native compares its own wall only.
+    if (site === 'queue' && e === 'TcMono') continue;
+    EFFECT_READS[site].forEach((read, after) => {
+      out.push({ suffix: `~${read}:${e}`, after, event: e });
+    });
+  }
+  return out;
+}
+
+/**
+ * Applies the clock event of one gather and returns the clock views of the decision: its sample at
+ * the position that the table names, and the clock of the P14 read. The raw clock is the clock at
+ * the effect.
+ */
+function gatherViews(
+  n: State,
+  g: Gather,
+  site: EffectSite,
+  t: ReplacementCloseTable
+): { readonly sample: ClockView; readonly audience: ClockView } {
+  const before = JSON.parse(JSON.stringify(n.clock)) as ClockView;
+  if (g.event) {
+    n.used.push(g.event);
+    applyClockEvent(n, g.event);
+  }
+  const reads: readonly string[] = EFFECT_READS[site];
+  const audienceAt = reads.indexOf('audience');
+  return {
+    sample: t.clockSample[site] === 'before-reads' ? before : n.clock,
+    audience: g.event && audienceAt >= 0 && audienceAt <= g.after ? before : n.clock,
+  };
+}
+
+/**
+ * Oracle: an effect is decided on a clock sample taken after its last successful fact read, or
+ * inside the deciding write. The sample must equal the raw clock at the effect. Native reads its
+ * own wall only.
+ */
+function checkSample(ctx: Ctx, n: State, site: EffectSite, sample: ClockView, label: string): void {
+  const wall = (c: ClockView) => JSON.stringify([c.passed, c.back]);
+  const stale =
+    wall(sample) !== wall(n.clock) || (site !== 'queue' && sample.mono !== n.clock.mono);
+  if (stale) violate(ctx, 'O.sample', `${label} decided on a clock sample before its last read`);
 }
 
 /** Oracle facts, read from the raw state only. */
@@ -608,62 +715,73 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         x.phase = 'held';
       });
     if (c.phase === 'held' && reach('posted'))
-      add(`post:${b}`, false, (n, ctx) => {
-        const x = n.c[b]!;
-        const cause = t.post(premises(n, n.prem.pend, t));
-        if (cause) return liveRefuse(ctx, n, b, cause, true);
-        const q = n.prem;
-        const clocks =
-          wallPassed(n, 'Tc') ||
-          wallPassed(n, 'Ts') ||
-          authorityPassed(n) ||
-          n.clock.mono ||
-          n.clock.back;
-        if (!(q.pend && q.R && q.thread && q.policy && q.idle) || clocks)
-          violate(ctx, 'O.frame', `${b} posted with a failed premise`);
-        if (t.holdUntil.core === 'post') x.coreHold = false;
-        if (t.holdUntil.workspace === 'post') x.wsHold = false;
-        x.phase = 'posted';
-      });
+      for (const g of gathers(world, s, 'post'))
+        add(`post:${b}${g.suffix}`, false, (n, ctx) => {
+          const x = n.c[b]!;
+          const view = gatherViews(n, g, 'post', t);
+          const cause = t.post(premises(n, n.prem.pend, t, view));
+          if (cause) return liveRefuse(ctx, n, b, cause, true);
+          checkSample(ctx, n, 'post', view.sample, `post:${b}`);
+          const q = n.prem;
+          const clocks =
+            wallPassed(n, 'Tc') ||
+            wallPassed(n, 'Ts') ||
+            authorityPassed(n) ||
+            n.clock.mono ||
+            n.clock.back;
+          if (!(q.pend && q.R && q.thread && q.policy && q.idle) || clocks)
+            violate(ctx, 'O.frame', `${b} posted with a failed premise`);
+          if (t.holdUntil.core === 'post') x.coreHold = false;
+          if (t.holdUntil.workspace === 'post') x.wsHold = false;
+          x.phase = 'posted';
+        });
     if (c.phase === 'posted' && reach('queued'))
       // RC8: the Native transaction decides. Its reply reaches Main in a separate step, and the
       // pins stay held until then.
-      add(`queue:${b}`, false, (n, ctx) => {
-        const x = n.c[b]!;
-        const key = keyOf(b, x);
-        // Main folds the slot from the original clocks; Native compares it with its own wall.
-        const p = premises(n, n.prem.pend, t);
-        const slotExpired = t.deadlineSlot.some((clock) => p.deadlines[clock] <= p.now);
-        const cause = t.queue({
-          harness: n.h,
-          claimRevision: x.claimRev,
-          key: { binding: b, key, sequence: x.seq! },
-          slotExpired,
-          storage: n.prem.S,
-          sandbox: sandboxFacts(n),
+      for (const g of gathers(world, s, 'queue'))
+        add(`queue:${b}${g.suffix}`, false, (n, ctx) => {
+          const x = n.c[b]!;
+          const key = keyOf(b, x);
+          // Main folds the slot from the original clocks; Native compares it with its own wall.
+          const view = gatherViews(n, g, 'queue', t);
+          const p = premises(n, n.prem.pend, t, view);
+          const slotExpired = t.deadlineSlot.some((clock) => p.deadlines[clock] <= p.now);
+          const cause = t.queue({
+            harness: n.h,
+            claimRevision: x.claimRev,
+            key: { binding: b, key, sequence: x.seq! },
+            slotExpired,
+            storage: n.prem.S,
+            sandbox: sandboxFacts(n),
+          });
+          if (!cause) {
+            checkSample(ctx, n, 'queue', view.sample, `queue:${b}`);
+            const q = n.prem;
+            const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
+            const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || authorityPassed(n);
+            if (
+              clocks ||
+              !rawPlacement(n) ||
+              !(q.S && q.R && q.thread && q.policy && q.idle) ||
+              !own
+            )
+              violate(ctx, 'O.queue', `${key} committed with a failed premise or latch`);
+            n.h = {
+              ...n.h,
+              cell: 'queued',
+              key,
+              sequence: x.seq,
+              operation: 'session.close',
+              result: null,
+              revision: n.h.revision + 1,
+            };
+            // A new queue cell has no delivery reservation yet.
+            n.reserved = null;
+            n.p.committed.push(key);
+          }
+          x.decision = cause ?? 'commit';
+          x.phase = 'replying';
         });
-        if (!cause) {
-          const q = n.prem;
-          const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
-          const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || authorityPassed(n);
-          if (clocks || !rawPlacement(n) || !(q.S && q.R && q.thread && q.policy && q.idle) || !own)
-            violate(ctx, 'O.queue', `${key} committed with a failed premise or latch`);
-          n.h = {
-            ...n.h,
-            cell: 'queued',
-            key,
-            sequence: x.seq,
-            operation: 'session.close',
-            result: null,
-            revision: n.h.revision + 1,
-          };
-          // A new queue cell has no delivery reservation yet.
-          n.reserved = null;
-          n.p.committed.push(key);
-        }
-        x.decision = cause ?? 'commit';
-        x.phase = 'replying';
-      });
     if (c.phase === 'replying')
       for (const reply of world.lostReply ? ['ack', 'lost'] : ['ack'])
         add(`reply:${b}:${reply}`, false, (n, ctx) => {
@@ -748,41 +866,44 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         });
       if (s.h.cell === 'dispatched' && s.reserved === poll && !s.polled.includes(`${key}:${poll}`))
         for (const variant of world.transport ? ['ok', 'transport'] : ['ok'])
-          add(`write:${poll}:${variant}`, false, (n, ctx) => {
-            n.polled.push(`${key}:${poll}`);
-            const x = n.c[b];
-            const pending =
-              n.prem.pend &&
-              x !== undefined &&
-              keyOf(b, x) === key &&
-              x.slot &&
-              ['replying', 'queued', 'unknown-reply'].includes(x.phase);
-            const d = t.firstBytes(premises(n, pending, t));
-            if (d.kind === 'refuse') {
-              n.p.unsent.push(key);
-              n.core[b] = { key, result: 'stale', revision: null };
-              n.settling.push(key);
-              return;
-            }
-            const q = n.prem;
-            const clocks = n.clock.passed.length > 0 || n.clock.mono || n.clock.back;
-            if (
-              !(pending && q.R && q.thread && q.policy && q.idle && q.S && q.X) ||
-              !rawPlacement(n) ||
-              clocks
-            )
-              violate(ctx, 'O.bytes', `${key} first bytes with a failed premise`);
-            if (variant === 'transport') {
-              n.p.contact.push(key);
-              if (t.transportFailure === 'settle-stale') {
+          for (const g of gathers(world, s, 'firstBytes'))
+            add(`write:${poll}:${variant}${g.suffix}`, false, (n, ctx) => {
+              n.polled.push(`${key}:${poll}`);
+              const view = gatherViews(n, g, 'firstBytes', t);
+              const x = n.c[b];
+              const pending =
+                n.prem.pend &&
+                x !== undefined &&
+                keyOf(b, x) === key &&
+                x.slot &&
+                ['replying', 'queued', 'unknown-reply'].includes(x.phase);
+              const d = t.firstBytes(premises(n, pending, t, view));
+              if (d.kind === 'refuse') {
+                n.p.unsent.push(key);
                 n.core[b] = { key, result: 'stale', revision: null };
-                nativeSettle(ctx, n, t, key);
+                n.settling.push(key);
+                return;
               }
-              return;
-            }
-            n.p.bytes[key] = (n.p.bytes[key] ?? 0) + 1;
-            if (n.p.bytes[key]! > 1) violate(ctx, 'O.one-send', `${key} sent twice`);
-          });
+              checkSample(ctx, n, 'firstBytes', view.sample, `write:${poll}`);
+              const q = n.prem;
+              const clocks = n.clock.passed.length > 0 || n.clock.mono || n.clock.back;
+              if (
+                !(pending && q.R && q.thread && q.policy && q.idle && q.S && q.X) ||
+                !rawPlacement(n) ||
+                clocks
+              )
+                violate(ctx, 'O.bytes', `${key} first bytes with a failed premise`);
+              if (variant === 'transport') {
+                n.p.contact.push(key);
+                if (t.transportFailure === 'settle-stale') {
+                  n.core[b] = { key, result: 'stale', revision: null };
+                  nativeSettle(ctx, n, t, key);
+                }
+                return;
+              }
+              n.p.bytes[key] = (n.p.bytes[key] ?? 0) + 1;
+              if (n.p.bytes[key]! > 1) violate(ctx, 'O.one-send', `${key} sent twice`);
+            });
     }
     if (
       s.h.cell === 'dispatched' &&
@@ -857,26 +978,13 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         case 'Ts':
         case 'Ta':
         case 'Ti':
-          // A held Core writer does not stop a clock. After a step back the wall stays behind.
-          if (!s.clock.back)
-            env((n) => {
-              n.clock.passed.push(e);
-            });
-          break;
         case 'Wback':
-          // The wall clock steps back before the original enqueue instant, at any point: before
-          // RC7, between RC7 and RC8, while a Native refusal is in transit to Main, or after the
-          // queue commit. Main refuses such a sample at RC7 and RC10 as the lower Tc edge (A8-1).
-          if (!s.clock.back)
-            env((n) => {
-              n.clock.back = true;
-            });
-          break;
         case 'TcMono':
-          // The monotonic Tc passes while the wall Tc is still live.
-          if (!wallPassed(s, 'Tc'))
+          // A held Core writer does not stop a clock. The wall steps back before the original
+          // enqueue instant at any point (A8-1). Inside an effect gather, see `gathers`.
+          if (clockEventEnabled(s, e))
             env((n) => {
-              n.clock.mono = true;
+              applyClockEvent(n, e);
             });
           break;
         case 'W':
@@ -2293,6 +2401,30 @@ const M: readonly MutationRow[] = [
     },
     via: 'env:Ti',
   },
+  {
+    id: 'M-S7',
+    world: WORLDS.live,
+    oracle: 'O.frame',
+    takeOut: 'RC7 samples the clock before its fact reads (S3a-r1 order)',
+    table: { clockSample: { ...T.clockSample, post: 'before-reads' } },
+    via: 'post:A~audience:Tc',
+  },
+  {
+    id: 'M-S8',
+    world: WORLDS.live,
+    oracle: 'O.queue',
+    takeOut: 'RC8 samples the Native wall before its reads and the deciding update (S3a-r1 order)',
+    table: { clockSample: { ...T.clockSample, queue: 'before-reads' } },
+    via: 'queue:A~harness:Tc',
+  },
+  {
+    id: 'M-S10',
+    world: WORLDS.live,
+    oracle: 'O.bytes',
+    takeOut: 'RC10 samples the clock before its fact reads and the dispatched key (S3a-r1 order)',
+    table: { clockSample: { ...T.clockSample, firstBytes: 'before-reads' } },
+    via: 'write:p1:ok~drain:Tc',
+  },
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -2315,6 +2447,23 @@ const reportOf = (world: World): Report => {
     cache.set(world.name, report);
   }
   return report;
+};
+
+/**
+ * The named writer edge of a failing trace. A clock writer `env:X` can also pass inside an effect
+ * gather (CL2): the gather edge `<effect>~<read>:X` names the same writer after that read.
+ */
+const isViaEdge = (traced: string, via: string) => {
+  // The last edge of a trace also carries the violation detail.
+  const label = traced.split(' -> ')[0]!;
+  const clock = via.startsWith('env:') ? via.slice(4) : null;
+  return (
+    label === via ||
+    (clock !== null &&
+      isClockEvent(clock as Env) &&
+      label.includes('~') &&
+      label.endsWith(`:${clock}`))
+  );
 };
 
 /**
@@ -2488,6 +2637,81 @@ describe('replacement close lifecycle model check', () => {
       expect(cl3.probes[g]?.quiescent).toEqual({ accepting: 1 });
     }
   }, 600_000);
+
+  describe('CL2: the clock sample follows the last fact read (S3a-r2)', () => {
+    const live = WORLDS.live;
+    const SITES = [
+      { site: 'post', to: TO_POST.slice(0, -1), effect: 'post:A' },
+      { site: 'queue', to: TO_POST, effect: 'queue:A' },
+      { site: 'firstBytes', to: [...TO_QUEUED, 'dispatch:p1'], effect: 'write:p1:ok' },
+    ] as const;
+    const CAUSE: Readonly<Record<ClockEvent, CloseCause>> = {
+      Tc: 'close-allowance',
+      Ts: 'startup-deadline',
+      Ta: 'authority-expired',
+      Ti: 'authority-expired',
+      TcMono: 'close-allowance',
+      Wback: 'close-allowance',
+    };
+    const eventsAt = (site: EffectSite) =>
+      CLOCK_EVENTS.filter((clock) => site !== 'queue' || clock !== 'TcMono');
+
+    it.each(SITES)(
+      '$site: a clock that passes after any fact read refuses the effect',
+      ({ site, to, effect }) => {
+        let cases = 0;
+        for (const read of EFFECT_READS[site])
+          for (const clock of eventsAt(site)) {
+            const label = `${effect}~${read}:${clock}`;
+            // `run` also requires every edge to violate nothing, O.sample included.
+            const s = run(live, [...to, label]);
+            cases += 1;
+            if (site === 'post') {
+              expect(s.c.A!.answer).toBe(CAUSE[clock]);
+              expect(s.p.committed).toEqual([]);
+            } else if (site === 'queue' && clock === 'Wback') {
+              // Native has no lower edge (signed limit). RC10 then sends nothing.
+              expect(s.p.committed).toEqual(['A1']);
+              const sent = run(live, [...to, label, 'reply:A:ack', 'dispatch:p1', 'write:p1:ok']);
+              expect(sent.p.bytes).toEqual({});
+              expect(sent.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+            } else if (site === 'queue') {
+              expect(s.p.committed).toEqual([]);
+              expect(run(live, [...to, label, 'reply:A:ack']).c.A!.answer).toBe(CAUSE[clock]);
+            } else {
+              expect(s.p.bytes).toEqual({});
+              expect(s.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+            }
+          }
+        expect(cases).toBe(EFFECT_READS[site].length * eventsAt(site).length);
+      }
+    );
+
+    it.each(SITES)(
+      '$site: a sample before a fact read fails O.sample after every read',
+      ({ site, to, effect }) => {
+        const early = { ...T, clockSample: { ...T.clockSample, [site]: 'before-reads' } };
+        const at = run(live, to);
+        const reads: readonly string[] = EFFECT_READS[site];
+        for (const [i, read] of reads.entries())
+          for (const clock of eventsAt(site)) {
+            const step = steps(live, early, at).find(
+              (x) => x.label === `${effect}~${read}:${clock}`
+            );
+            // The P14 read checks Ts itself: an elapsed Ts before that read refuses the effect.
+            if (clock === 'Ts' && i < reads.indexOf('audience')) {
+              expect(step?.violations).toEqual([]);
+              expect(step?.next.p.bytes).toEqual({});
+              continue;
+            }
+            expect(step?.violations.map((v) => v.name)).toContain('O.sample');
+          }
+        // Without a clock event inside the gather, the early sample equals the raw clock.
+        const plain = steps(live, early, at).find((x) => x.label === effect);
+        expect(plain?.violations).toEqual([]);
+      }
+    );
+  });
 
   describe('directed schedules', () => {
     const live = WORLDS.live;
@@ -2715,7 +2939,10 @@ describe('replacement close lifecycle model check', () => {
       const report = explore(row.world, tableOf(row), { stopOn: row.oracle });
       keep(row.id, { oracle: row.oracle, trace: report.traces[row.oracle], states: report.states });
       expect(Object.keys(report.traces)).toContain(row.oracle);
-      if (row.via) expect(report.traces[row.oracle]).toContain(row.via);
+      if (row.via)
+        expect(
+          report.traces[row.oracle]!.filter((label) => isViaEdge(label, row.via!))
+        ).not.toEqual([]);
     },
     600_000
   );

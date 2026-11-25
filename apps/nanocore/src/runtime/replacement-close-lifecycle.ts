@@ -29,6 +29,12 @@ export type CloseCause =
   | 'delivery'
   | 'transport';
 
+/**
+ * The position of a clock sample at one effect site. `after-reads`: after the last successful fact
+ * read. `in-write`: inside the deciding write. `before-reads`: before a fact read; a take-out only.
+ */
+export type ClockSample = 'after-reads' | 'in-write' | 'before-reads';
+
 /** Premises as the deciding owner reads them at its own mutation. */
 export interface ClosePremises {
   /** The original pending owner still holds the admission-visible slots. */
@@ -201,6 +207,13 @@ export interface ReplacementCloseTable {
    * waits while a close holds it. Publication I/O and the lost-ACK inspection run outside it.
    */
   readonly policyOrder: 'core-hold' | 'none';
+  /**
+   * CL2 (S3a-r2): where each effect that a clock decides takes its clock sample. The clock can pass
+   * or the wall can step back between any two fact reads of the effect, and between its last read
+   * and the effect. So RC7 and RC10 sample after their last successful fact read, in the
+   * synchronous run of the effect, and RC8 compares inside its deciding write.
+   */
+  readonly clockSample: Readonly<Record<'post' | 'queue' | 'firstBytes', ClockSample>>;
   /** Ta: the clock that Main folds from the cutoffs of the credentials that the admission requires. */
   readonly authorityDeadline: (cutoffs: readonly CredentialCutoff[]) => number;
   /** RC7, in the Main turn that posts the worker frame. */
@@ -547,6 +560,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
   losingClaimRecord: 'keep',
   holdUntil: { core: 'queue-reply', workspace: 'queue-reply' },
   policyOrder: 'core-hold',
+  clockSample: { post: 'after-reads', queue: 'in-write', firstBytes: 'after-reads' },
   authorityDeadline: (cutoffs) =>
     cutoffs.reduce((earliest, cutoff) => Math.min(earliest, cutoff.at), Number.POSITIVE_INFINITY),
   post: decidePost,
