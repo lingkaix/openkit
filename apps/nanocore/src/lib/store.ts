@@ -264,6 +264,7 @@ import {
   eventConflictsWithSealedTurnOutcome,
   terminalSnapshotItemMatches,
   terminalSnapshotMatchesRecord,
+  turnHeadSessionAdmits,
 } from '../storage/control-store-products.js';
 import {
   type ControlStorePublicationGuard,
@@ -4195,16 +4196,12 @@ export class FsStore {
       throw new ControlItemAppendError(`Item already exists: ${item.id}`);
     const turn = this.getTurn(workspaceId, item.threadId, item.turnId);
     checkControlItemAppend(item, turn, undefined, turn.items, category);
+    // Only an open Turn's append mutates its head (the writer publishes into a sealed one).
     if (!['pending', 'running'].includes(turn.status) || !turn.agentSessionId) return;
     const session = this.listWorkspaceAgentSessions(workspaceId).find(
       (candidate) => candidate.id === turn.agentSessionId
     );
-    if (
-      !session ||
-      session.threadId !== turn.threadId ||
-      session.status === 'closed' ||
-      session.status === 'failed'
-    )
+    if (!turnHeadSessionAdmits(session, turn, false))
       throw new ControlItemAppendError(`Turn ${turn.id} has no open Session in its Thread.`);
   }
 
