@@ -3235,14 +3235,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   const pendingWorkerDelivery = {
-    async startTurn(
+    /**
+     * Proves one frozen outcome Turn on its admitted Workspace and Thread. It submits nothing,
+     * so a failure here proves that no submission happened.
+     */
+    prepareTurn(
       store: FsStore,
       turnId: string,
       scope: { readonly workspaceId: string; readonly threadId: string }
-    ) {
+    ): (() => Promise<void>) | undefined {
       // The admitting Workspace and Thread name the outcome Turn; sibling Workspaces are not read.
       const turn = store.getTurn(scope.workspaceId, scope.threadId, turnId);
-      if (!turn.agentId) throw new Error('Outcome Turn has no worker Agent.');
+      const agentId = turn.agentId;
+      if (!agentId) throw new Error('Outcome Turn has no worker Agent.');
       // An existing queued admission belongs to the scheduler dispatch loop after restart.
       if (
         options.coreDb?.sqlite
@@ -3251,64 +3256,73 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           )
           .get(turn.id)
       )
-        return;
-      const workspaceId = workspaceIdForOwner(turn.owner);
-      const identity = createHash('sha256')
-        .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
-        .digest('hex');
-      const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
+        return undefined;
+      return async () => {
+        const workspaceId = workspaceIdForOwner(turn.owner);
+        const identity = createHash('sha256')
+          .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
+          .digest('hex');
+        const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
-      const admitted = Promise.withResolvers<void>();
-      const execution = startProductTurn({
-        agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
-        ...setupProviderSupply,
-        input: {
-          input: PENDING_WORKER_TRIGGER_INPUT,
-          requestId,
-          workspaceId,
-          threadId: turn.threadId,
-        },
-        frozenOutcomeBatch: true,
-        requestedAgentId: turn.agentId,
-        reservedTurnId: turn.id,
-        onTurnCreated: () => admitted.resolve(),
-        providerCredentialResolver,
-        snapshot: runtimeConfig(),
-        store,
-        triggerActor: turn.triggerActor,
-        turnExecutor,
-        workerPlacement,
-        ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      })
-        .catch(async (error: unknown) => {
-          // Only this refused outcome attempt retires its still-queued scheduler ownership.
-          if (
-            options.coreDb &&
-            error instanceof TurnStartValidationError &&
-            error.code !== 'recovery_required'
-          ) {
-            const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
-              workspaceId,
-              statuses: ['queued'],
-            }).find(
-              (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
-            );
-            if (entry)
-              await cancelOwnedQueuedAdmission(options.coreDb, {
-                queueEntryId: entry.queueEntryId,
-                workspaceId,
-              });
-          }
-          throw error;
+        const admitted = Promise.withResolvers<void>();
+        const execution = startProductTurn({
+          agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
+          ...setupProviderSupply,
+          input: {
+            input: PENDING_WORKER_TRIGGER_INPUT,
+            requestId,
+            workspaceId,
+            threadId: turn.threadId,
+          },
+          frozenOutcomeBatch: true,
+          requestedAgentId: agentId,
+          reservedTurnId: turn.id,
+          onTurnCreated: () => admitted.resolve(),
+          providerCredentialResolver,
+          snapshot: runtimeConfig(),
+          store,
+          triggerActor: turn.triggerActor,
+          turnExecutor,
+          workerPlacement,
+          ...(options.coreDb ? { coreDb: options.coreDb } : {}),
         })
-        .then((handle) => markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn));
-      // The native producer owns the original durable admission ACK, not future Worker completion.
-      // Keep the real execution/terminal bookkeeping observed under its existing Worker owner.
-      void execution.catch((error: unknown) => {
-        admitted.reject(error);
-        console.error(`Pending outcome Worker ${turn.id} failed.`, error);
-      });
-      await admitted.promise;
+          .catch(async (error: unknown) => {
+            // Only this refused outcome attempt retires its still-queued scheduler ownership.
+            if (
+              options.coreDb &&
+              error instanceof TurnStartValidationError &&
+              error.code !== 'recovery_required'
+            ) {
+              const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
+                workspaceId,
+                statuses: ['queued'],
+              }).find(
+                (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
+              );
+              if (entry)
+                await cancelOwnedQueuedAdmission(options.coreDb, {
+                  queueEntryId: entry.queueEntryId,
+                  workspaceId,
+                });
+            }
+            throw error;
+          })
+          .then((handle) => markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn));
+        // The native producer owns the original durable admission ACK, not future Worker completion.
+        // Keep the real execution/terminal bookkeeping observed under its existing Worker owner.
+        void execution.catch((error: unknown) => {
+          admitted.reject(error);
+          console.error(`Pending outcome Worker ${turn.id} failed.`, error);
+        });
+        await admitted.promise;
+      };
+    },
+    async startTurn(
+      store: FsStore,
+      turnId: string,
+      scope: { readonly workspaceId: string; readonly threadId: string }
+    ) {
+      await pendingWorkerDelivery.prepareTurn(store, turnId, scope)?.();
     },
   };
 
