@@ -17692,6 +17692,12 @@ describe('createConfiguredTurnExecutor', () => {
         }
       });
     let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    // This test owns the process-wide writer only until Vitest finishes it. A body that resumes
+    // after a timeout runs its teardown under a later test, so it must not close that writer.
+    let ownsWriter = true;
+    onTestFinished(() => {
+      ownsWriter = false;
+    });
     try {
       const firstResponse = await post(0);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
@@ -17882,7 +17888,7 @@ describe('createConfiguredTurnExecutor', () => {
       admissions.mockRestore();
       dispatches.mockRestore();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      if (ownsWriter) await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
       },
