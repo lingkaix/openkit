@@ -18,6 +18,7 @@ import {
   type ProductAccessTarget,
   type ProductPolicyInput,
 } from '../policy/workspace-access.js';
+import type { CredentialCutoff } from '../runtime/replacement-close-lifecycle.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import {
   type CoreSchedulerQueueEntry,
@@ -629,30 +630,55 @@ export function currentScheduledTurnWorkspaceAuthority(
 }
 
 /**
- * CLOSE-LC Ta: the absolute wall instant at which the admission's own presented credential stops
- * being usable, from the rows that the authority read compares. It decides nothing. A loss that
- * this instant does not cover (a revocation, a rotation, a missing row) still refuses through the
- * authority read. Without a presented credential, Ta never passes.
+ * CLOSE-LC Ta facts: the absolute cutoffs of every expiring credential that R requires for this
+ * exact admission, matched to its immutable trigger actor as R matches it. It decides nothing: the
+ * close lifecycle table folds them. A bare actor or a terminal human issuer gives no cutoff. A
+ * missing, revoked, mismatched or invalid credential gives no cutoff and stays under R. The issuer
+ * walk keeps R's bound and cycle guard but not its usability gate, so an elapsed cutoff keeps its
+ * own clock when R already refuses.
  */
-export function scheduledTurnCredentialExpiry(
+export function scheduledTurnCredentialCutoffs(
   coreDb: CoreDb,
-  lineage: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
-): number {
-  const credential = findSchedulerAdmissionForTurn(coreDb, lineage)?.credentialRef;
-  if (!credential) return Number.POSITIVE_INFINITY;
-  if (credential.kind === 'token') {
-    const token = getOpenKitAccessTokenRecord(coreDb, credential.id);
-    if (!token) return Number.POSITIVE_INFINITY;
-    const grace =
-      token.status === 'rotated' && token.rotatedGraceExpiresAt
-        ? Date.parse(token.rotatedGraceExpiresAt)
-        : Number.POSITIVE_INFINITY;
-    return Math.min(Date.parse(token.expiresAt), grace);
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly triggerActor: ActorRef;
   }
-  const session = coreDb.sqlite
-    .prepare('SELECT expires_at AS expiresAt FROM session WHERE id = ?')
-    .get(credential.id) as { expiresAt: number } | undefined;
-  return session ? session.expiresAt : Number.POSITIVE_INFINITY;
+): CredentialCutoff[] {
+  const admission = findSchedulerAdmissionForTurn(coreDb, lineage);
+  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) return [];
+  const cutoffs: CredentialCutoff[] = [];
+  const token = (credential: CredentialCutoff['credential'], tokenId: string) => {
+    let current = getOpenKitAccessTokenRecord(coreDb, tokenId);
+    const visited = new Set<string>();
+    for (let depth = 0; current && depth < 64 && !visited.has(current.tokenId); depth++) {
+      visited.add(current.tokenId);
+      cutoffs.push({
+        credential: depth === 0 ? credential : 'issuer',
+        at: Date.parse(current.expiresAt),
+      });
+      // While rotated, the grace cutoff is a second cutoff of the same Token.
+      if (current.status === 'rotated' && current.rotatedGraceExpiresAt)
+        cutoffs.push({
+          credential: depth === 0 ? credential : 'issuer',
+          at: Date.parse(current.rotatedGraceExpiresAt),
+        });
+      const issuer = current.issuerRef;
+      current =
+        issuer && issuer.kind !== 'user' ? getOpenKitAccessTokenRecord(coreDb, issuer.id) : null;
+    }
+  };
+  const credential = admission.credentialRef;
+  if (credential?.kind === 'token') token('presented', credential.id);
+  else if (credential) {
+    const session = coreDb.sqlite
+      .prepare('SELECT expires_at AS expiresAt FROM session WHERE id = ?')
+      .get(credential.id) as { expiresAt: number } | undefined;
+    if (session) cutoffs.push({ credential: 'session', at: session.expiresAt });
+    if (admission.serverAdminTokenId) token('projected-admin', admission.serverAdminTokenId);
+  } else if (admission.serverAdminTokenId) token('admin-only', admission.serverAdminTokenId);
+  return cutoffs;
 }
 
 /** Compares immutable ActorRef fields without relying on JSON key order. */

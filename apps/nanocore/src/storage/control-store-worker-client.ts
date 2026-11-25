@@ -6127,6 +6127,24 @@ class ControlStoreWorkerClient {
     );
   }
 
+  /**
+   * Runs one synchronous Main swap under the canonical data-root Core posting hold.
+   *
+   * A replacement close holds the same per-database hold from RC6 to its Native queue ACK, so the
+   * swap lands before RC7 or after that ACK. The swap must not wait for a Core command.
+   */
+  async withCorePostingHold<Value>(coreDb: CoreDb, swap: () => Value): Promise<Value> {
+    const root = await realpath(coreDb.dataRoot);
+    const resume = await this.pauseForDataRootBackup(
+      `core:${serverStoragePath(root, 'control-kernel')}`
+    );
+    try {
+      return swap();
+    } finally {
+      resume();
+    }
+  }
+
   /** Publishes or inspects only the actual canonical Core owner's disposable loaded-Policy readiness. */
   async runtimePolicyPublication(
     db: CoreDb,

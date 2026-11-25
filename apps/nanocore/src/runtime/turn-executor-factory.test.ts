@@ -65,7 +65,11 @@ import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import * as appOwner from '../app.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { listSqliteAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
-import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  getOpenKitAccessTokenRecord,
+  rotateOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -119,7 +123,12 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  serverStoragePath,
+} from '../storage/db.js';
 import { ensureLayout, readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -7325,6 +7334,16 @@ describe('createConfiguredTurnExecutor', () => {
     options: {
       sibling?: boolean;
       beforeSuccessor?: (coreDb: CoreDb, store: FsStore, ownerUserId: string) => Promise<void>;
+      /** CLOSE-LC S3a-r1 F-e: serve the snapshot through the actual bound Policy publisher. */
+      manager?: boolean;
+      /** CLOSE-LC S3a-r1 F-c: the successor admission's own credential facts. */
+      successorCredential?: (
+        coreDb: CoreDb,
+        ownerUserId: string
+      ) => {
+        readonly credentialRef?: { readonly kind: 'token' | 'session'; readonly id: string };
+        readonly serverAdminTokenId?: string;
+      };
     } = {}
   ) {
     const manifest = createTestAgentSetup({
@@ -7349,8 +7368,12 @@ describe('createConfiguredTurnExecutor', () => {
         },
       ]),
     });
-    const runtimeOptions = { readRuntimeConfig: () => configuration };
+    const manager = options.manager
+      ? createRuntimeConfigManager({ dataRoot, initialSnapshot: configuration })
+      : undefined;
+    const runtimeOptions = { readRuntimeConfig: () => manager?.current() ?? configuration };
     let native = await createNativeTaskAdmissionFixture(coreDb, store, runtimeOptions);
+    if (manager) await manager.bindNativePolicyPublication(coreDb);
     const admissions: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
     const capture = Promise.withResolvers<void>();
     onTestFinished(async () => {
@@ -7457,6 +7480,9 @@ describe('createConfiguredTurnExecutor', () => {
     let successor = await admitFactoryReplacement(coreDb, predecessor.admission.pkg, label, {
       store,
       requestedAgentId: manifest.id,
+      ...(options.successorCredential
+        ? { credential: options.successorCredential(coreDb, ownerUserId) }
+        : {}),
     });
     const readRows = (agentSessionId: string) =>
       readAdmittedTestNanoHost(coreDb, (sqlite) =>
@@ -7488,6 +7514,8 @@ describe('createConfiguredTurnExecutor', () => {
         return store;
       },
       commands,
+      configuration,
+      manager,
       predecessor,
       sibling,
       siblingThread,
@@ -8088,6 +8116,510 @@ describe('createConfiguredTurnExecutor', () => {
       sandboxDrain: 'accepting',
     });
   }, 90_000);
+
+  // CLOSE-LC S3a-r1: the owner-path witnesses of A8-1, A8-2, F-e and F-c.
+  const replacementCloseRows = (coreDb: CoreDb) =>
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(`SELECT operation, operation_state AS state,
+        json_extract(result_json, '$.disposition') AS disposition,
+        json_extract(result_json, '$.body.reasonCode') AS reasonCode FROM harness_instance_records
+        WHERE operation = 'session.close'`)
+        .all()
+    );
+  const UNSENT_CLOSE = [
+    { operation: 'session.close', state: 'settled', disposition: 'refused', reasonCode: 'stale' },
+  ];
+  const selectedRetainedStorage = (f: Awaited<ReturnType<typeof admitNativeReplacementClose>>) => {
+    const selected = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      getWorkerStorageBinding(
+        { sqlite },
+        f.store.getAgentSession(f.predecessor.agentSessionId).retainedStorage!
+      )
+    )!;
+    return {
+      kind: 'selected',
+      storageRef: selected.storageRef,
+      expectedRevision: selected.revision,
+      purpose: 'work',
+      goalId: null,
+      taskId: null,
+    } as const;
+  };
+  /** The current Thread audience excludes the Agent: a managed boundary with no permission. */
+  const restrictiveWorkspaceConfig = (config: ReturnType<typeof WorkspaceConfigSchema.parse>, ownerUserId: string) =>
+    WorkspaceConfigSchema.parse({
+      ...config,
+      requiredFeatures: [...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE],
+      workspace: {
+        ...config.workspace,
+        policy: {
+          mediation: managedThreadPolicy({
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: DEMO_THREAD_ID,
+            userId: ownerUserId,
+          }),
+        },
+      },
+    });
+  /**
+   * The resume pair is intact. A refusal after the queue commit also restores the capture latch.
+   * The latch rollback of a refusal before the commit is the S3b claim-clock exit (Q6).
+   */
+  const expectReplacementPairIntact = (
+    f: Awaited<ReturnType<typeof admitNativeReplacementClose>>,
+    before: Record<string, unknown>,
+    committed: boolean
+  ) =>
+    expect(f.readRows(f.predecessor.agentSessionId)).toMatchObject({
+      binding: before.binding,
+      digest: before.digest,
+      revision: before.revision,
+      ...(committed ? { harnessDrain: 'accepting' } : {}),
+      sandboxDrain: 'accepting',
+    });
+  /** The P14 refusal: typed under the Core hold, else its Native read (as the storage witness). */
+  const isP14Refusal = (error: { code?: string }) =>
+    error instanceof WorkerStorageBindingError
+      ? error.code === 'authorization_denied'
+      : error.code === 'operation_storage_unavailable';
+  const replacementCloses = (f: Awaited<ReturnType<typeof admitNativeReplacementClose>>) =>
+    f.commands.filter(({ operation }) => operation === 'session.close');
+
+  // A8-1: the original enqueue wall instant is the lower Tc edge at RC7 and at RC10.
+  it.each(['pre-queue', 'post-commit'] as const)(
+    'refuses a replacement close whose wall steps back before its enqueue instant (%s)',
+    async (order) => {
+      const f = await admitNativeReplacementClose(`r1_a8_1_${order}`);
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      // Every Main wall sample in the stepped window lies before the original enqueue instant.
+      const back = Date.now() - 60_000;
+      let stepped = false;
+      const stepBack = async <Value>(run: () => Promise<Value>) => {
+        stepped = true;
+        const wall = vi.spyOn(Date, 'now').mockReturnValue(back);
+        try {
+          return await run();
+        } finally {
+          wall.mockRestore();
+        }
+      };
+      const ref = f.native.outside.integrationBindingRef!;
+      if (order === 'pre-queue') {
+        const queue = owner.harnessTurnLifecycle.queue;
+        vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+          if (input.operation !== 'session.close' || !authority || stepped)
+            return await queue(input, authority);
+          // The early slot checks passed. The deciding RC7 under the Core hold reads this wall.
+          return await stepBack(() => queue(input, authority));
+        });
+      } else {
+        // The real poll route is this close's only carrier: the fixture peer stops polling.
+        f.native.outside.integrationBindingRef = undefined;
+        const carry = owner.harnessTurnLifecycle.carry;
+        vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+          if (stepped) return await carry(attemptId, run);
+          // The queue committed. RC10 in the held carriage turn reads this wall.
+          return await stepBack(() => carry(attemptId, run));
+        });
+      }
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      if (order === 'post-commit') {
+        await vi.waitFor(
+          () =>
+            expect(replacementCloseRows(f.coreDb)).toEqual([
+              expect.objectContaining({ state: 'queued' }),
+            ]),
+          { timeout: 30_000 }
+        );
+        expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+          status: 204,
+          body: '',
+        });
+      }
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: 'close-allowance',
+      });
+      expect(stepped).toBe(true);
+      // Pre-queue: zero queue rows. Post-commit: zero bytes and the exact unsent settlement.
+      expect(replacementCloseRows(f.coreDb)).toEqual(order === 'pre-queue' ? [] : UNSENT_CLOSE);
+      expect(replacementCloses(f)).toHaveLength(order === 'pre-queue' ? 0 : 1);
+      expectReplacementPairIntact(f, before, order === 'post-commit');
+    },
+    90_000
+  );
+
+  // A8-2: the known expired slot answers before P14; a genuine audience denial keeps P14.
+  it.each(['startup-expired', 'audience-denied'] as const)(
+    'decides a selected-storage replacement post on its expired slot before P14 (%s)',
+    async (change) => {
+      const f = await admitNativeReplacementClose(`r1_a8_2_${change}`);
+      let expiresAt = 0;
+      if (change === 'startup-expired') {
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+          attemptId: f.successor.attemptId,
+          noOutstandingEffects: true,
+          cause: 'backend-busy',
+          requeue: true,
+        });
+        const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+        const createdAt = new Date(Date.now() - budget + 10_000).toISOString();
+        await f.retry('aged', { now: () => createdAt });
+        expiresAt = Date.parse(nanoHostStartupDeadline({ createdAt }));
+      }
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const choice = selectedRetainedStorage(f);
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let changed = false;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority || changed)
+          return await queue(input, authority);
+        changed = true;
+        // The early slot checks passed on the same storage revision. Before the deciding post,
+        // only Ts lapses, or only the current Thread audience changes with every clock live.
+        if (change === 'startup-expired') {
+          expect(Date.now()).toBeLessThan(expiresAt);
+          await new Promise((resolve) => setTimeout(resolve, expiresAt - Date.now() + 100));
+        } else {
+          const entry = f.configuration.workspaceConfigs.find(
+            ({ workspaceId }) => workspaceId === DEMO_WORKSPACE_ID
+          )!;
+          entry.config = restrictiveWorkspaceConfig(entry.config, f.ownerUserId);
+        }
+        return await queue(input, authority);
+      });
+      const operation = f.close(choice);
+      if (change === 'startup-expired')
+        await expect(operation).rejects.toMatchObject({
+          name: 'WorkerGovernanceCapacityUnavailableError',
+          closeCause: 'startup-deadline',
+        });
+      else
+        await expect(operation).rejects.toMatchObject({
+          name: 'WorkerStorageBindingError',
+          code: 'authorization_denied',
+        });
+      expect(changed).toBe(true);
+      expect(replacementCloseRows(f.coreDb)).toEqual([]);
+      expect(replacementCloses(f)).toEqual([]);
+      expectReplacementPairIntact(f, before, false);
+    },
+    90_000
+  );
+
+  // F-e: the publisher's audience-changing swap waits for the Core posting hold of a close.
+  it.each(['unchanged-audience', 'swap-first', 'close-first'] as const)(
+    'orders a restrictive Policy install against the replacement close Core hold (%s)',
+    async (order) => {
+      const f = await admitNativeReplacementClose(`r1_fe_${order}`, { manager: true });
+      const manager = f.manager!;
+      const original = manager.current();
+      const loaded = original.workspaceConfigs.find(
+        ({ workspaceId }) => workspaceId === DEMO_WORKSPACE_ID
+      )!;
+      // The saved Workspace Policy now excludes the Agent from the selected storage's Thread. The
+      // control saves only a new Workspace name: the same install keeps the audience.
+      writeFileSync(
+        loaded.path,
+        JSON.stringify(
+          order === 'unchanged-audience'
+            ? { ...loaded.config, workspace: { ...loaded.config.workspace, name: 'Renamed' } }
+            : restrictiveWorkspaceConfig(loaded.config, f.ownerUserId),
+          null,
+          2
+        )
+      );
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const choice = selectedRetainedStorage(f);
+      if (order !== 'close-first') {
+        f.gate();
+        const operation = f.close(choice);
+        void operation.catch(() => undefined);
+        await f.entered;
+        // The whole install wins before RC7: publication, activation and the swap.
+        expect(await manager.reload({ dryRun: false, mode: 'safe' })).toMatchObject({
+          status: 'applied',
+        });
+        expect(manager.current()).not.toBe(original);
+        f.release();
+        if (order === 'unchanged-audience') {
+          expect(await operation).toBe('closed');
+          expect(replacementCloses(f)).toHaveLength(1);
+          return;
+        }
+        await expect(operation).rejects.toSatisfy(isP14Refusal);
+        expect(replacementCloseRows(f.coreDb)).toEqual([]);
+        expect(replacementCloses(f)).toEqual([]);
+        expectReplacementPairIntact(f, before, false);
+        return;
+      }
+      // The actual publisher pauses after its activation ACK and before the Main swap.
+      const client = getControlStoreWorkerClient();
+      const publish = client.runtimePolicyPublication.bind(client);
+      const activated = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      vi.spyOn(client, 'runtimePolicyPublication').mockImplementation(async (db, input) => {
+        const result = await publish(db, input);
+        if (input.kind === 'activate') {
+          activated.resolve();
+          await resume.promise;
+        }
+        return result;
+      });
+      const reloading = manager.reload({ dryRun: false, mode: 'safe' });
+      await activated.promise;
+      expect(manager.current()).toBe(original);
+      // Native pauses after RC7 and before its commit: the queue frame is posted late. The
+      // publisher resumes in that window. Its swap must wait for the Core hold.
+      let swappedBeforeCommit: boolean | undefined;
+      const post = NativeWorker.prototype.postMessage;
+      const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const frame = args[0] as { mutation?: { input?: { kind?: string; operation?: string } } };
+        if (
+          swappedBeforeCommit !== undefined ||
+          frame?.mutation?.input?.kind !== 'operation.queue' ||
+          frame.mutation.input.operation !== 'session.close'
+        )
+          return Reflect.apply(post, this, args);
+        swappedBeforeCommit = false;
+        void (async () => {
+          const until = Date.now() + 1_500;
+          while (manager.current() === original && Date.now() < until)
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          swappedBeforeCommit = manager.current() !== original;
+          Reflect.apply(post, this, args);
+        })();
+      });
+      onTestFinished(() => posts.mockRestore());
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const decided = authority.verifyBeforePost(native);
+            if (decided) resume.resolve();
+            return decided;
+          },
+        });
+      });
+      const ref = f.native.outside.integrationBindingRef!;
+      f.native.outside.integrationBindingRef = undefined;
+      const operation = f.close(choice);
+      void operation.catch(() => undefined);
+      await vi.waitFor(
+        () =>
+          expect(replacementCloseRows(f.coreDb)).toEqual([
+            expect.objectContaining({ state: 'queued' }),
+          ]),
+        { timeout: 30_000 }
+      );
+      // Queue order: the old applied snapshot holds through the Native commit and its ACK.
+      expect(swappedBeforeCommit).toBe(false);
+      expect(await reloading).toMatchObject({ status: 'applied' });
+      expect(manager.current()).not.toBe(original);
+      // The swap completed before RC10: zero bytes, the exact unsent settlement, scoped release.
+      expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+        status: 204,
+        body: '',
+      });
+      await expect(operation).rejects.toSatisfy(isP14Refusal);
+      expect(replacementCloseRows(f.coreDb)).toEqual(UNSENT_CLOSE);
+      expectReplacementPairIntact(f, before, true);
+    },
+    90_000
+  );
+
+  // F-c: Ta is the earliest cutoff of every credential that R requires for the successor.
+  const SESSION_ID = 'auth_00000000-0000-7000-8000-000000000951';
+  const successorCredentials = {
+    /** A live presented Token whose issuer Token is required by R. */
+    'issuer-grace': (coreDb: CoreDb, ownerUserId: string) => {
+      const issuer = closeCredentialToken(coreDb, ownerUserId, 'workspace');
+      const presented = closeCredentialToken(coreDb, ownerUserId, 'workspace', issuer);
+      return { credentialRef: { kind: 'token', id: presented } as const, limiting: issuer };
+    },
+    /** A live session whose projected server administrator Token is required by R. */
+    'projected-admin': (coreDb: CoreDb, ownerUserId: string) => {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO session (id, expires_at, token, created_at, updated_at, user_id)
+           VALUES (?, ?, 'close-lc-session', ?, ?, ?)`
+        )
+        .run(SESSION_ID, Date.now() + 3_600_000, Date.now(), Date.now(), ownerUserId);
+      const admin = closeCredentialToken(coreDb, ownerUserId, 'server-admin');
+      return {
+        credentialRef: { kind: 'session', id: SESSION_ID } as const,
+        serverAdminTokenId: admin,
+        limiting: admin,
+      };
+    },
+    /** The admin-only admission: no presented credential, only the named administrator Token. */
+    'admin-only': (coreDb: CoreDb, ownerUserId: string) => {
+      const admin = closeCredentialToken(coreDb, ownerUserId, 'server-admin');
+      return { serverAdminTokenId: admin, limiting: admin };
+    },
+  } as const;
+
+  it.each(Object.keys(successorCredentials) as (keyof typeof successorCredentials)[])(
+    'refuses a replacement close whose required credential expires in the Native wait (%s)',
+    async (kind) => {
+      let limiting = '';
+      const f = await admitNativeReplacementClose(`r1_fc_${kind}`, {
+        successorCredential: (coreDb, ownerUserId) => {
+          const { limiting: tokenId, ...credential } = successorCredentials[kind](
+            coreDb,
+            ownerUserId
+          );
+          limiting = tokenId;
+          return credential;
+        },
+      });
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      let cutoff = 0;
+      f.gate();
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await f.entered;
+      // Before the slot is prepared, only the required non-presented credential nears its cutoff:
+      // the issuer through its rotation grace, an administrator Token through its own expiry.
+      if (kind === 'issuer-grace') {
+        rotateOpenKitAccessTokenRecord(f.coreDb, limiting, { graceSeconds: 3 });
+        cutoff = Date.parse(getOpenKitAccessTokenRecord(f.coreDb, limiting)!.rotatedGraceExpiresAt!);
+      } else {
+        cutoff = Date.now() + 3_000;
+        f.coreDb.sqlite
+          .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
+          .run(new Date(cutoff).toISOString(), limiting);
+      }
+      // Native pauses after RC7 and before its commit until that cutoff has passed.
+      let decidedAt = Number.POSITIVE_INFINITY;
+      const post = NativeWorker.prototype.postMessage;
+      let delayed = false;
+      const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const frame = args[0] as { mutation?: { input?: { kind?: string; operation?: string } } };
+        if (
+          delayed ||
+          frame?.mutation?.input?.kind !== 'operation.queue' ||
+          frame.mutation.input.operation !== 'session.close'
+        )
+          return Reflect.apply(post, this, args);
+        delayed = true;
+        setTimeout(() => Reflect.apply(post, this, args), Math.max(0, cutoff - Date.now() + 100));
+      });
+      onTestFinished(() => posts.mockRestore());
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const decided = authority.verifyBeforePost(native);
+            if (decided) decidedAt = Date.now();
+            return decided;
+          },
+        });
+      });
+      f.release();
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: 'authority-expired',
+      });
+      // RC7 posted while every credential was live; Native refused the slot after the cutoff.
+      expect(delayed).toBe(true);
+      expect(decidedAt).toBeLessThan(cutoff);
+      expect(replacementCloseRows(f.coreDb)).toEqual([]);
+      expect(replacementCloses(f)).toEqual([]);
+      expectReplacementPairIntact(f, before, false);
+    },
+    90_000
+  );
+
+  it.each(['rotated-after-commit', 'rotated-before-post', 'revoked'] as const)(
+    'decides a replacement close on its presented Token change (%s)',
+    async (change) => {
+      let presented = '';
+      const f = await admitNativeReplacementClose(`r1_fc_${change}`, {
+        successorCredential: (coreDb, ownerUserId) => {
+          presented = closeCredentialToken(coreDb, ownerUserId, 'workspace');
+          return { credentialRef: { kind: 'token', id: presented } as const };
+        },
+      });
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const ref = f.native.outside.integrationBindingRef!;
+      let changed = false;
+      if (change === 'rotated-after-commit') {
+        f.native.outside.integrationBindingRef = undefined;
+        const carry = owner.harnessTurnLifecycle.carry;
+        vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+          if (!changed) {
+            changed = true;
+            // After the commit, a rotation with no grace gives the presented Token a shorter
+            // cutoff than the posted slot. That cutoff has passed at RC10.
+            rotateOpenKitAccessTokenRecord(f.coreDb, presented, { graceSeconds: 0 });
+          }
+          return await carry(attemptId, run);
+        });
+      } else {
+        const queue = owner.harnessTurnLifecycle.queue;
+        vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+          if (input.operation !== 'session.close' || !authority || changed)
+            return await queue(input, authority);
+          changed = true;
+          // The slot is prepared. A live rotation shortens Ta, or a revocation removes R.
+          if (change === 'rotated-before-post')
+            rotateOpenKitAccessTokenRecord(f.coreDb, presented, { graceSeconds: 600 });
+          else
+            f.coreDb.sqlite
+              .prepare(
+                "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+              )
+              .run(new Date().toISOString(), presented);
+          return await queue(input, authority);
+        });
+      }
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      if (change === 'rotated-after-commit') {
+        await vi.waitFor(
+          () =>
+            expect(replacementCloseRows(f.coreDb)).toEqual([
+              expect.objectContaining({ state: 'queued' }),
+            ]),
+          { timeout: 30_000 }
+        );
+        expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+          status: 204,
+          body: '',
+        });
+      }
+      // RC10 honors the shorter cutoff and keeps its clock cause. A stale prepared slot and a
+      // revocation stay under R: the revocation control keeps `request`.
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: change === 'rotated-after-commit' ? 'authority-expired' : 'request',
+      });
+      expect(changed).toBe(true);
+      expect(replacementCloseRows(f.coreDb)).toEqual(
+        change === 'rotated-after-commit' ? UNSENT_CLOSE : []
+      );
+      expectReplacementPairIntact(f, before, change === 'rotated-after-commit');
+    },
+    90_000
+  );
 
   // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
   // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.
@@ -26552,7 +27084,14 @@ async function admitFactoryReplacement(
   coreDb: ReturnType<typeof openCoreDb>,
   predecessor: AgentEnvironmentPackage,
   label: string,
-  options: { readonly store: FsStore; readonly requestedAgentId: string }
+  options: {
+    readonly store: FsStore;
+    readonly requestedAgentId: string;
+    readonly credential?: {
+      readonly credentialRef?: { readonly kind: 'token' | 'session'; readonly id: string };
+      readonly serverAdminTokenId?: string;
+    };
+  }
 ) {
   const attemptId = testEntityId('attempt', `replacement_${label}`);
   const entry = await createTestQueueEntry(coreDb, {
@@ -26565,6 +27104,7 @@ async function admitFactoryReplacement(
     text: 'Replace the selected idle predecessor binding.',
     triggerActor: predecessor.scope.triggerActor,
     workspaceId: predecessor.scope.workspaceId,
+    ...options.credential,
   });
   await publishFactoryAdmission(options.store, entry);
   return {
@@ -26574,6 +27114,22 @@ async function admitFactoryReplacement(
       agentSessionId: testEntityId('as', `replacement_${label}`),
     })),
   };
+}
+
+/** CLOSE-LC F-c: one live Token of the successor's owner, optionally issued by another Token. */
+function closeCredentialToken(
+  coreDb: CoreDb,
+  ownerUserId: string,
+  scope: 'workspace' | 'server-admin',
+  issuer?: string
+) {
+  return createOpenKitAccessTokenRecord(coreDb, {
+    ownerUserId,
+    scope,
+    workspaceIds: scope === 'workspace' ? [DEMO_WORKSPACE_ID] : [],
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    ...(issuer ? { issuerRef: { kind: 'token' as const, id: issuer } } : {}),
+  }).tokenId;
 }
 
 /** Publishes the same pending Turn and ordinary receipt produced by the command owner before dispatch. */

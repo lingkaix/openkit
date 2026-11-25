@@ -724,6 +724,7 @@ export function createRuntimeConfigManager(
         applyCaptureCoverage(current);
       }
     };
+    // Unbound only before the boot binding (index.ts), so before this manager can serve a close.
     if (!publicationBinding) {
       install();
       return;
@@ -775,7 +776,11 @@ export function createRuntimeConfigManager(
       if (!confirmsActivation(activated))
         throw new Error('Native Policy activation could not be confirmed.');
       // Old-snapshot effects with a changed Policy identity remain refused until Main publishes.
-      install();
+      // A changed audience swaps under the Core posting hold that a replacement close keeps from
+      // RC6 to its Native queue ACK. The publication I/O and the lost-ACK inspection stay outside.
+      if (sameRuntimePolicyIdentity(runtimePolicyIdentityForSnapshot(previous), identity))
+        install();
+      else await client.withCorePostingHold(db, install);
     })();
     const pending = handoff.finally(() => {
       if (installation === pending) installation = undefined;

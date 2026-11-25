@@ -42,7 +42,7 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
   readCurrentWorkspacePolicy,
-  scheduledTurnCredentialExpiry,
+  scheduledTurnCredentialCutoffs,
 } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -10242,6 +10242,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
+  /** Ta (F-c): the earliest cutoff of every credential that R requires for the successor. */
+  private readAgentSessionReplacementTa(close: AgentSessionReplacementClose): number {
+    return REPLACEMENT_CLOSE_TABLE.authorityDeadline(
+      scheduledTurnCredentialCutoffs(this.coreDb, close.request)
+    );
+  }
+
   /**
    * RC7: gathers the original pending owner, every slot clock with the lower Tc edge, R, A and B
    * on the given committed state. The lifecycle table decides. The selection's own P14 refusal keeps its type.
@@ -10261,13 +10268,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } catch (error) {
       p14 = { error };
     }
+    // Ta, verified under the drained Core hold: an earlier cutoff than the prepared slot makes
+    // that slot stale, so R refuses its post. An elapsed cutoff answers its own clock first.
+    const Ta = this.readAgentSessionReplacementTa(close);
     const cause = REPLACEMENT_CLOSE_TABLE.post({
       pendingOwner: session.pendingHarnessOperation === pending,
-      deadlines: posted.deadlines,
+      deadlines: { ...posted.deadlines, Ta: Math.min(posted.deadlines.Ta, Ta) },
       admitted: pending.admittedUnixMs,
       now: Date.now(),
       closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
-      request: this.isAgentSessionReplacementRequestCurrent(close.request, false),
+      request:
+        Ta >= posted.deadlines.Ta &&
+        this.isAgentSessionReplacementRequestCurrent(close.request, false),
       audience: { thread: p14 === undefined, policy: p14 === undefined },
       idleReceipt: idleReceipt(),
     });
@@ -10300,7 +10312,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         pendingOwner:
           session.pendingHarnessOperation === pending &&
           this.sessions.get(session.environmentPackage.snapshotId) === session,
-        deadlines: posted.deadlines,
+        // A rotation since the post can only shorten Ta. RC10 honors the shorter cutoff.
+        deadlines: {
+          ...posted.deadlines,
+          Ta: Math.min(posted.deadlines.Ta, this.readAgentSessionReplacementTa(close)),
+        },
         admitted: pending.admittedUnixMs,
         now: Date.now(),
         closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
@@ -10815,7 +10831,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               const deadlines = {
                 Tc: deadlineUnixMs,
                 Ts: Date.parse(nanoHostStartupDeadline(successor)),
-                Ta: scheduledTurnCredentialExpiry(this.coreDb, replacement.request),
+                Ta: this.readAgentSessionReplacementTa(replacement),
               };
               replacement.posted = {
                 deadlines,
