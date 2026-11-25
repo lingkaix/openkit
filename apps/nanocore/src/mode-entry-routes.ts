@@ -163,6 +163,7 @@ import {
   verifyAcceptedTurnLineage,
 } from './runtime/product-turn-start.js';
 import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
+import { prepareTaskTerminalFact } from './runtime/task-terminal-fact.js';
 import type { TurnCommandRuntimeContext } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
@@ -2675,13 +2676,15 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
               'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
           },
         };
-        // Every orphan's history and transcript prove its terminal write before the first one commits.
+        // Every orphan's history, transcript, reap dependency and Task terminal fact prove its
+        // terminal write before the first one commits.
         for (const orphan of orphans)
           store.proveWorkspaceTurnCompletion(
             workspaceId,
             orphan.threadId,
             orphan.turnId,
-            interruption
+            interruption,
+            prepareTaskTerminalFact
           );
         // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
         for (const orphan of orphans)
