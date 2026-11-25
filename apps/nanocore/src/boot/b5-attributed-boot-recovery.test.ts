@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2 } from 'node:http2';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -56,6 +56,8 @@ const faultPreload = fileURLToPath(new URL('../test-support/boot-walk-fault.cjs'
 const BOOT_DEADLINE_MS = 150_000;
 const CASE_TIMEOUT_MS = 600_000;
 const COMPLETED_AT = '2026-09-22T00:00:00.000Z';
+/** One Item body above the inline limit, so its retained bytes are a file-backed digest. */
+const LARGE_BODY = 'B5 file-backed body. '.repeat(4_000);
 const children: ChildProcess[] = [];
 const roots: string[] = [];
 
@@ -420,8 +422,8 @@ describe('B5 attributed Boot recovery', () => {
         delivery: 'delivery-unknown',
       });
       // The bookkeeping did not reach A ahead of its refused publication.
-      expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(readPendingRow(root.dataRoot, held, seeded[1]!.requestId)).toEqual(heldOutcome);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
         claim: 'claimed',
         disposition: null,
@@ -454,7 +456,7 @@ describe('B5 attributed Boot recovery', () => {
   );
 
   it(
-    'counts a retained Pending outcome Item as published only when it is that exact Item, and holds A unchanged when it contradicts its record',
+    'holds A at its first write when a retained Pending outcome Item contradicts its record and keeps the healthy exact Item as published',
     async () => {
       const root = await seedRoot(['Healthy', 'Contradictory outcome Item']);
       const [healthy, held] = root.workspaceIds as [string, string];
@@ -478,7 +480,8 @@ describe('B5 attributed Boot recovery', () => {
         });
       });
       // The freeze published each denial's disposition Item with its outcome Turn. A's Item gets a
-      // later revision whose level its record does not render, a field the usability check skips.
+      // later revision whose level its record does not render. The usability check skips that
+      // field; the settlement's own decided-tuple check refuses it at the walk's first write.
       const healthyItem = await withSeedStore(root, async (store) => {
         await store.publishSettledTurnItem(seeded[1]!.itemId, { level: 'info' });
         const items = store
@@ -491,18 +494,18 @@ describe('B5 attributed Boot recovery', () => {
       const heldOutcome = readPendingRow(root.dataRoot, held, seeded[1]!.requestId);
 
       const server = await startServer(root);
-      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectHeld(server, held, 'check=recovery; stage=pending-request-recovery');
       await expectNotHeld(server, healthy);
       await expectServed(server, [healthy], held);
       await stopServer(server);
       expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(readPendingRow(root.dataRoot, held, seeded[1]!.requestId)).toEqual(heldOutcome);
       expect(bootDecisionLines(server)).toContain(
-        `Pending outcome Item conflicts with its published record: ${seeded[1]!.itemId}`
+        'The decided Pending tuple does not match its exact projected Item.'
       );
 
       const repeated = await startServer(root);
-      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await expectHeld(repeated, held, 'check=recovery; stage=pending-request-recovery');
       await stopServer(repeated);
       expectEvidenceUnchanged(root.dataRoot, held, original);
       // The healthy exact Item stays the published one: no second append, no rewrite.
@@ -585,10 +588,26 @@ describe('B5 attributed Boot recovery', () => {
       const orphans = await withSeedStore(root, async (store) => {
         const seeded: Awaited<ReturnType<typeof seedOrphanAssistantTurn>>[] = [];
         for (const id of root.workspaceIds)
-          for (let index = 0; index < 2; index++)
-            seeded.push(await seedOrphanAssistantTurn(store, root, id));
+          for (let index = 0; index < 2; index++) {
+            const orphan = await seedOrphanAssistantTurn(store, root, id);
+            // Each orphan streamed a body above the inline limit, retained as a digest file.
+            await store.createItem({
+              id: testEntityId('it', `it_b5_large_${id.slice(-12)}_${index}`),
+              owner: { kind: 'workspace', workspaceId: id },
+              threadId: orphan.threadId,
+              turnId: orphan.turnId,
+              type: 'assistant-message',
+              text: LARGE_BODY,
+              status: 'completed',
+              createdAt: COMPLETED_AT,
+              completedAt: COMPLETED_AT,
+            });
+            seeded.push(orphan);
+          }
         return seeded;
       });
+      // A's preexisting body files; a refused attempt may neither remove them nor add its own.
+      expect(largeFiles(join(root.dataRoot, 'workspaces', held)).length).toBeGreaterThanOrEqual(2);
       // A's first orphan transcript reads; the second orphan's transcript then cannot be read.
       const fault: BootWalkFault = {
         workspaceId: held,
@@ -624,6 +643,56 @@ describe('B5 attributed Boot recovery', () => {
             error: { code: 'recovery_required' },
           });
       });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "keeps A's committed person outcome when its feedback file cannot be projected after the terminal acknowledgement",
+    async () => {
+      const root = await seedRoot(['Healthy', 'Feedback unwritable']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await seedPendingBootPost(root, 'outcome');
+      // Stopped retained-state fault: A's Thread can no longer create a Turn feedback file.
+      const turns = join(
+        root.dataRoot,
+        'workspaces',
+        held,
+        'threads',
+        seeded[1]!.threadId,
+        'turns'
+      );
+      chmodSync(turns, 0o500);
+      try {
+        const server = await startServer(root);
+        expect(server.output()).toContain('EACCES');
+        // The acknowledged close stands: A is served, not held as if its close never committed.
+        await expectNotHeld(server, held);
+        await expectServed(server, [healthy, held], null);
+        await stopServer(server);
+        const rows = root.workspaceIds.map((id, index) =>
+          readPendingRow(root.dataRoot, id, seeded[index]!.requestIds[0]!)
+        );
+        for (const row of rows)
+          expect(row).toMatchObject({
+            delivery: 'delivered',
+            delivery_turn_id: expect.any(String),
+          });
+        const committed = workspaceEvidence(root.dataRoot, held);
+
+        // A repeated Boot writes nothing again: no repeated terminal write or outcome.
+        const repeated = await startServer(root);
+        await expectNotHeld(repeated, held);
+        await stopServer(repeated);
+        expectEvidenceUnchanged(root.dataRoot, held, committed);
+        await withSeedStore(root, (store) => {
+          expect(
+            store.getTurn(held, seeded[1]!.threadId, rows[1]!.delivery_turn_id as string)
+          ).toMatchObject({ status: 'completed' });
+        });
+      } finally {
+        chmodSync(turns, 0o700);
+      }
     },
     CASE_TIMEOUT_MS
   );
@@ -2171,6 +2240,14 @@ async function seedMcpCallsAcrossTurns(store: FsStore, root: SeededRoot, workspa
     }
   });
   return { threadId: thread.id, sessionId, calls };
+}
+
+/** Lists retained non-SQLite files at least as large as the file-backed body. */
+function largeFiles(directory: string): string[] {
+  return readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter((path) => {
+    const stats = statSync(join(directory, path));
+    return stats.isFile() && !path.includes('.sqlite') && stats.size >= LARGE_BODY.length;
+  });
 }
 
 /** Compares path by path and table by table, so a changed retained byte names its owner. */
