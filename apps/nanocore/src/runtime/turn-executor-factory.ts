@@ -65,6 +65,7 @@ import {
   readProduct,
 } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -10870,7 +10871,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           () => {
             session.pendingHarnessOperation = null;
             if (closeOwner?.pending === pending) closeOwner.pending = null;
-          }
+          },
+          { result, reject: rejectResult }
         );
         return await this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
           if (drain) this.requireIdleSandboxCloseDrain(session, drain);
@@ -10930,62 +10932,66 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             try {
               // Row 15: from here the queue or first dispatch can win; a null operation ID is no proof.
               if (pending.closeDeparture) pending.closeDeparture.queueStarted = true;
-              pending.sequence = await queueNanoHostHarnessOperation(
-                this.coreDb,
-                {
-                  prepared,
-                  body,
-                  harnessInstanceId: session.harnessInstanceId,
-                  operation,
-                  timestamp: new Date().toISOString(),
-                  ...(replacement && posted
+              pending.sequence = await this.postLoginCloseQueue(
+                pending,
+                result,
+                queueNanoHostHarnessOperation(
+                  this.coreDb,
+                  {
+                    prepared,
+                    body,
+                    harnessInstanceId: session.harnessInstanceId,
+                    operation,
+                    timestamp: new Date().toISOString(),
+                    ...(replacement && posted
+                      ? {
+                          replacement: {
+                            ...replacement.selection,
+                            // The slot carries min(Tc, Ts, Ta). No new field.
+                            startupDeadline: new Date(posted.deadlines[posted.clock]).toISOString(),
+                            ...(replacement.request.storage
+                              ? { storage: replacement.request.storage }
+                              : {}),
+                          },
+                        }
+                      : {}),
+                  },
+                  harnessTurnLifecycle,
+                  replacement
                     ? {
-                        replacement: {
-                          ...replacement.selection,
-                          // The slot carries min(Tc, Ts, Ta). No new field.
-                          startupDeadline: new Date(posted.deadlines[posted.clock]).toISOString(),
-                          ...(replacement.request.storage
-                            ? { storage: replacement.request.storage }
-                            : {}),
+                        attemptId: replacement.request.attemptId,
+                        verifyBeforePost: (native) => {
+                          try {
+                            this.verifyAgentSessionReplacementQueue(
+                              session,
+                              pending,
+                              closeOwner,
+                              replacement,
+                              identity,
+                              consumerReceipt,
+                              native
+                            );
+                            return true;
+                          } catch (error) {
+                            refusal = { error };
+                            return false;
+                          }
                         },
                       }
-                    : {}),
-                },
-                harnessTurnLifecycle,
-                replacement
-                  ? {
-                      attemptId: replacement.request.attemptId,
-                      verifyBeforePost: (native) => {
-                        try {
-                          this.verifyAgentSessionReplacementQueue(
-                            session,
-                            pending,
-                            closeOwner,
-                            replacement,
-                            identity,
-                            consumerReceipt,
-                            native
-                          );
-                          return true;
-                        } catch (error) {
-                          refusal = { error };
-                          return false;
-                        }
-                      },
-                    }
-                  : {
-                      verifyBeforePost: (native) => {
-                        try {
-                          requireOrdinaryQueue(() =>
-                            readNanoHostIdleCloseAuthority(this.coreDb, identity, native)
-                          );
-                          return true;
-                        } catch (error) {
-                          refusal = { error };
-                          return false;
-                        }
-                      },
-                    }
+                    : {
+                        verifyBeforePost: (native) => {
+                          try {
+                            requireOrdinaryQueue(() =>
+                              readNanoHostIdleCloseAuthority(this.coreDb, identity, native)
+                            );
+                            return true;
+                          } catch (error) {
+                            refusal = { error };
+                            return false;
+                          }
+                        },
+                      }
+                )
               );
             } catch (error) {
               // The decision refused before the post: keep its typed request or P14 cause.
@@ -11103,7 +11109,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         () => {
           session.pendingHarnessOperation = null;
           if (closeOwner) closeOwner.pending = null;
-        }
+        },
+        { result, reject: rejectResult }
       );
       const withSlot = steer
         ? async <T>(action: () => Promise<T>) => action()
@@ -11177,16 +11184,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw new Error('NanoHost original Harness allowance ended before queue publication.');
         // Row 15: from here the queue or first dispatch can win; a null operation ID is no proof.
         if (pending.closeDeparture) pending.closeDeparture.queueStarted = true;
-        pending.sequence = await queueNanoHostHarnessOperation(
-          this.coreDb,
-          {
-            prepared,
-            body,
-            harnessInstanceId: session.harnessInstanceId,
-            operation,
-            timestamp: new Date().toISOString(),
-          },
-          harnessTurnLifecycle
+        pending.sequence = await this.postLoginCloseQueue(
+          pending,
+          result,
+          queueNanoHostHarnessOperation(
+            this.coreDb,
+            {
+              prepared,
+              body,
+              harnessInstanceId: session.harnessInstanceId,
+              operation,
+              timestamp: new Date().toISOString(),
+            },
+            harnessTurnLifecycle
+          )
         );
         return await result;
       });
@@ -11256,69 +11267,131 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     pending: PendingNanoHostHarnessOperation,
     harnessBindingRef: string,
     isCurrent: () => boolean,
-    clearOwner: () => void
+    clearOwner: () => void,
+    waiter?: { readonly result: Promise<unknown>; readonly reject: (error: Error) => void }
   ): void {
-    pending.timeout = setTimeout(
-      async () => {
-        if (!isCurrent()) return;
-        const session = [...this.sessions.values()].find(
-          (value) => value.initialHarnessLogin?.pending === pending
-        );
-        if (session) this.failHarnessLoginDeliveries(session);
-        // A Login close keeps its live admission owner until the rejection's physical fence joins.
-        if (pending.closeDeparture?.expectedReferenceId == null) clearOwner();
-        if (pending.closeDeparture?.expectedReferenceId != null)
-          pending.closeDeparture.failure ??= new Error(
-            'NanoHost Login close original allowance expired.'
-          );
-        const retainedResult =
-          pending.journal?.resultFingerprint !== undefined ||
-          (pending.closeDeparture?.expectedReferenceId != null &&
-            pending.closeDeparture.completedAt !== undefined);
-        const phase = retainedResult
-          ? 'awaiting-durable-consumption'
-          : pending.operationId
-            ? 'dispatched-awaiting-result'
-            : 'never-dispatched';
-        let timeoutError = new Error(
-          `NanoHost Harness ${pending.operation} result outage budget expired: ${phase}.`
-        );
-        try {
-          if (retainedResult) {
-            // The exact Core result stays available for result-only recovery. Expiry
-            // ends this caller's wait; it cannot turn observed execution into non-execution.
-          } else if (pending.operationId) {
-            await markNanoHostHarnessOperationUnknown(this.harnessWriter(), {
-              harnessBindingRef,
-              operationId: pending.operationId,
-              timestamp: new Date().toISOString(),
-            });
-          } else if (pending.sequence !== null) {
-            await expireNanoHostHarnessQueuedOperation(this.harnessWriter(), {
-              harnessBindingRef,
-              timestamp: new Date().toISOString(),
-            });
-            // Row 15: the queued-expiry CAS ACK proves that the original was never dispatched.
-            if (pending.closeDeparture && pending.operationId === null)
-              pending.closeDeparture.neverDispatched = true;
-          }
-        } catch (error) {
-          timeoutError = new Error(
-            `NanoHost Harness ${pending.operation} result outage cleanup failed: ${phase}.`,
-            { cause: error }
-          );
-        }
-        pending.reject(timeoutError);
-      },
-      Math.max(
-        0,
-        Math.min(
-          pending.deadlineUnixMs - Date.now(),
-          pending.deadlineMonotonicMs - performance.now()
-        )
-      )
+    const delay = Math.max(
+      0,
+      Math.min(pending.deadlineUnixMs - Date.now(), pending.deadlineMonotonicMs - performance.now())
     );
+    pending.timeout = setTimeout(async () => {
+      if (!isCurrent()) return;
+      const session = [...this.sessions.values()].find(
+        (value) => value.initialHarnessLogin?.pending === pending
+      );
+      if (session) this.failHarnessLoginDeliveries(session);
+      // A Login close keeps its live admission owner until the rejection's physical fence joins.
+      if (pending.closeDeparture?.expectedReferenceId == null) clearOwner();
+      if (pending.closeDeparture?.expectedReferenceId != null)
+        pending.closeDeparture.failure ??= new Error(
+          'NanoHost Login close original allowance expired.'
+        );
+      const retainedResult =
+        pending.journal?.resultFingerprint !== undefined ||
+        (pending.closeDeparture?.expectedReferenceId != null &&
+          pending.closeDeparture.completedAt !== undefined);
+      const phase = retainedResult
+        ? 'awaiting-durable-consumption'
+        : pending.operationId
+          ? 'dispatched-awaiting-result'
+          : 'never-dispatched';
+      let timeoutError = new Error(
+        `NanoHost Harness ${pending.operation} result outage budget expired: ${phase}.`
+      );
+      try {
+        if (retainedResult) {
+          // The exact Core result stays available for result-only recovery. Expiry
+          // ends this caller's wait; it cannot turn observed execution into non-execution.
+        } else if (pending.operationId) {
+          await markNanoHostHarnessOperationUnknown(this.harnessWriter(), {
+            harnessBindingRef,
+            operationId: pending.operationId,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (pending.sequence !== null) {
+          await expireNanoHostHarnessQueuedOperation(this.harnessWriter(), {
+            harnessBindingRef,
+            timestamp: new Date().toISOString(),
+          });
+          // Row 15: the queued-expiry CAS ACK proves that the original was never dispatched.
+          if (pending.closeDeparture && pending.operationId === null)
+            pending.closeDeparture.neverDispatched = true;
+        }
+      } catch (error) {
+        timeoutError = new Error(
+          `NanoHost Harness ${pending.operation} result outage cleanup failed: ${phase}.`,
+          { cause: error }
+        );
+      }
+      pending.reject(timeoutError);
+      // c1 D1: the waiter can unwind at W before this proof. The proof retires the slots once.
+      if (pending.closeDeparture?.neverDispatched) this.retireLoginClose(pending);
+    }, delay);
     pending.timeout.unref();
+    // c1 D1 (CL7, CL8): W rejects the original Login close waiter at its original deadline,
+    // independent of every writer reply. Armed after the timer, it lets a proof that is already
+    // answered settle first. The owner keeps both slots and the writer outcome.
+    if (
+      !waiter ||
+      pending.closeDeparture?.expectedReferenceId == null ||
+      REPLACEMENT_CLOSE_TABLE.callerBound !== 'original-deadline'
+    )
+      return;
+    const departure = pending.closeDeparture;
+    const bound = setTimeout(() => {
+      if (this.loginCloseProved(pending)) return;
+      waiter.reject(
+        new NanoHostLoginDepartureIncompleteError(
+          departure.failure ?? new Error('NanoHost Login close original allowance expired.')
+        )
+      );
+    }, delay);
+    bound.unref();
+    const stop = () => clearTimeout(bound);
+    void waiter.result.then(stop, stop);
+  }
+
+  /**
+   * c1 D1 and D2 (CL5, CL7): the original Login close waiter observes its bound while its queue
+   * post is unanswered. The owner keeps the post outcome. A definite noncommit proves that the
+   * close was never dispatched. A lost reply, or any other refusal, keeps both slots and joins
+   * the exact admission fence.
+   */
+  private postLoginCloseQueue(
+    pending: PendingNanoHostHarnessOperation,
+    result: Promise<unknown>,
+    post: Promise<number>
+  ): Promise<number> {
+    const departure = pending.closeDeparture;
+    if (departure?.expectedReferenceId == null) return post;
+    const owned = post.then(
+      (sequence) => {
+        pending.sequence = sequence;
+        return sequence;
+      },
+      (error: unknown) => {
+        const typed =
+          error instanceof ControlStoreWorkerError
+            ? error
+            : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+              ? error.cause
+              : null;
+        // The table's definiteRefusal 'release' and lostReply 'readback': only the typed
+        // noncommit is a proof. An unknown commit stays with the owner's fence.
+        if (typed?.commit === 'not-committed') {
+          departure.neverDispatched = true;
+          this.retireLoginClose(pending);
+        } else
+          pending.reject(
+            error instanceof Error
+              ? error
+              : new Error('NanoHost Login close queue reply is unknown.')
+          );
+        throw error;
+      }
+    );
+    void owned.catch(() => {});
+    return Promise.race([owned, result.then(() => owned)]);
   }
 
   /**
