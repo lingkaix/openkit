@@ -55,6 +55,7 @@ import {
   writeAgentSessionStatus,
   writeCapabilityCallColumn,
   writePendingDisposition,
+  writePendingHeldResult,
   writePendingPublication,
 } from '../test-support/boot-walk-evidence.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -818,6 +819,105 @@ describe('B5 attributed Boot recovery', () => {
             status: 'interrupted',
             error: { code: 'recovery_required' },
           });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it.each([
+    // A Worker batch whose Turn ended before delivery: the walk posts delivery-unknown for it.
+    { executor: 'Worker', requesterKind: 'worker', settled: 'delivery-unknown' },
+    // A person batch whose close was interrupted: the walk resumes its Core-local publication.
+    { executor: 'person', requesterKind: 'person', settled: 'delivered' },
+  ] as const)(
+    "proves every row of a $executor outcome's frozen batch on the delivery writer's rule before the restart settlement, and holds A unchanged when one no longer decodes",
+    async ({ requesterKind, settled }) => {
+      const root = await seedRoot(['Healthy', 'Undecodable batch row']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        // The claims come first: the freeze is the last seeded effect, as a stopped Core leaves it.
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        // A person batch's close is the write after its freeze: the seeding Core stops before it,
+        // so that write never reaches the disk.
+        const close = store.completeWorkspaceTurn.bind(store);
+        const stop = vi
+          .spyOn(store, 'completeWorkspaceTurn')
+          .mockImplementation(async (...args) =>
+            args[4]?.pending?.some((command) => command.action === 'delivery-prove')
+              ? store.getTurnById(args[2])
+              : close(...args)
+          );
+        const outcomes = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          count: 2,
+          requesterKind,
+          decision: 'denied',
+          services: 'frozen',
+        });
+        stop.mockRestore();
+        return root.workspaceIds.map((workspaceId, index) => {
+          const requestIds = outcomes[index]!.requestIds;
+          const rows = requestIds.map((requestId) =>
+            readPendingRow(root.dataRoot, workspaceId, requestId)
+          );
+          // One batch: both requests are frozen on the same delivery Turn.
+          expect(rows[0]).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+          expect(rows[1]!.delivery_turn_id).toBe(rows[0]!.delivery_turn_id);
+          return {
+            workspaceId,
+            requestIds,
+            deliveryTurnId: rows[0]!.delivery_turn_id as string,
+            claim: claims[index]!,
+          };
+        });
+      });
+      // Stopped retained state: each Worker outcome Turn ended before its delivery was recorded.
+      if (requesterKind === 'worker')
+        await withSeedStore(root, async (store) => {
+          for (const entry of seeded)
+            await store.updateTurn(entry.deliveryTurnId, {
+              status: 'completed',
+              completedAt: COMPLETED_AT,
+            });
+        });
+      // Stopped retained-row fault: A's second batch row no longer decodes; the walk skips it.
+      const repair = writePendingHeldResult(root.dataRoot, held, seeded[1]!.requestIds[1]!, '{');
+      const original = workspaceEvidence(root.dataRoot, held);
+      const claim = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId);
+      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=recovery; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // The sibling's whole batch took the same branch of the same walk.
+      for (const requestId of seeded[0]!.requestIds)
+        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
+          delivery: settled,
+        });
+      // A's delivery writer would refuse that row after the settlement: neither committed.
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toEqual(claim);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=recovery; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // Repairing the row's original bytes while stopped lets the next Boot recover A once.
+      repair();
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      for (const requestId of seeded[1]!.requestIds)
+        expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({
+          delivery: settled,
+        });
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
       });
     },
     CASE_TIMEOUT_MS
