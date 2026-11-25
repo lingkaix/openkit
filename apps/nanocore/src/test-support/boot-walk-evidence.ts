@@ -72,7 +72,7 @@ export function writePendingPublication(
   dataRoot: string,
   workspaceId: string,
   requestId: string,
-  turnId: string
+  turnId: string | null
 ): number {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
     fileMustExist: true,
@@ -148,6 +148,29 @@ export function writePendingDisposition(
         'UPDATE pending_requests SET disposition = ?, disposition_reason = ? WHERE request_id = ?'
       )
       .run(disposition, reason, requestId).changes;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Rewrites one Pending row's update time, as a concurrent writer leaves an otherwise unchanged
+ * row: a dependency a Boot walk proved changes after its proof.
+ * @returns Number of changed rows.
+ */
+export function touchPendingRow(
+  dataRoot: string,
+  workspaceId: string,
+  requestId: string,
+  updatedAt: string
+): number {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite
+      .prepare('UPDATE pending_requests SET updated_at = ? WHERE request_id = ?')
+      .run(updatedAt, requestId).changes;
   } finally {
     sqlite.close();
   }

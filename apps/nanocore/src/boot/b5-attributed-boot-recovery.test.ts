@@ -26,11 +26,16 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
 import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
+import { recoverPendingRequestsAtBoot } from '../runtime/pending-request-flow.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
 import * as productTurns from '../runtime/product-turn-start.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from '../storage/index-rebuild.js';
@@ -51,6 +56,7 @@ import {
   removeGoal,
   removeWorkObservation,
   seedEndedGoalTask,
+  touchPendingRow,
   type WorkspaceEvidence,
   withSeedWorkspaceDb,
   workspaceEvidence,
@@ -92,6 +98,7 @@ interface BootWalkFault {
   readonly writerSql?: string;
   readonly writerWithin?: string;
   readonly writerAfter?: number;
+  readonly writerWatch?: boolean;
   readonly arm?: string;
   readonly live?: string | readonly string[];
   readonly shared?: boolean;
@@ -707,6 +714,13 @@ describe('B5 attributed Boot recovery', () => {
       failure: 'is a Task whose Goal is gone',
       cause: 'check=records; stage=assistant-turn-recovery',
     },
+    // The second orphan's runtime left enough tool calls open that its reap row, which lists each
+    // unresolved call, exceeds the observation owner's row bound: a local refusal of that owner.
+    {
+      input: 'reap',
+      failure: 'reap row exceeds its row bound',
+      cause: 'check=records; stage=assistant-turn-recovery',
+    },
   ] as const)(
     'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan $failure',
     async ({ input, cause }) => {
@@ -780,6 +794,38 @@ describe('B5 attributed Boot recovery', () => {
             userId: root.actor.id,
           });
           repair = removeGoal(root.dataRoot, held, goalId);
+        } else if (input === 'reap') {
+          // Each open call lists its 256-character reference and tool name in the reap row.
+          await withSeedStore(root, () =>
+            withSeedWorkspaceDb(root.dataRoot, held, async (db) => {
+              for (let sequence = 1; sequence <= 160; sequence++)
+                await appendWorkObservation(db, {
+                  threadId: second.threadId,
+                  turnId: second.turnId,
+                  bodies: [],
+                  observation: {
+                    id: `obs_b5_call_${sequence}`,
+                    type: 'runtime.observed',
+                    ts: COMPLETED_AT,
+                    obs: 'worker-shim',
+                    payload: {
+                      observationId: `obs_b5_call_${sequence}`,
+                      sourceRef: 'source_b5',
+                      sourceSequence: sequence,
+                      observedAt: COMPLETED_AT,
+                      fact: {
+                        kind: 'tool',
+                        runtimeOriginRef: 'origin_b5',
+                        phase: 'started',
+                        callRef: `call_${sequence}_`.padEnd(256, 'x'),
+                        toolName: 'tool_b5_'.padEnd(128, 'y'),
+                      },
+                      content: { state: 'not-applicable' },
+                    },
+                  },
+                });
+            })
+          );
         } else {
           // The second orphan's runtime recorded three observations through their native owner.
           await withSeedStore(root, () =>
@@ -824,6 +870,10 @@ describe('B5 attributed Boot recovery', () => {
         expect(bootDecisionLines(server)).toContain(
           'Task terminal fact requires its linked Goal owner'
         );
+      if (input === 'reap')
+        expect(bootDecisionLines(server)).toContain(
+          'Control product transition precondition failed.'
+        );
       // The first orphan was not interrupted ahead of the second orphan's refused proof.
       expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(largeFiles(heldRoot).sort()).toEqual(bodies);
@@ -832,6 +882,8 @@ describe('B5 attributed Boot recovery', () => {
       await expectHeld(repeated, held, cause);
       await stopServer(repeated);
       expectEvidenceUnchanged(root.dataRoot, held, original);
+      // A valid reap past its bound has no repair of the same evidence; its drain is separate.
+      if (input === 'reap') return;
 
       repair();
       const corrected = await startServer(root);
@@ -947,6 +999,229 @@ describe('B5 attributed Boot recovery', () => {
         disposition: 'outcome-unknown',
         disposition_reason: 'restart',
       });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P release witness, input 1: A's second frozen row still decodes and names a real Turn of its
+  // own Thread as its publication, while its decision Item stays on the original Turn. Each Boot
+  // entry of the delivery writer proves its move on every row frozen on the Turn, including the row
+  // its selection skipped, before A's first write.
+  it.each([
+    // The Worker batch's Turn ended before delivery: the Boot walk posts delivery-unknown.
+    { action: 'unknown', requesterKind: 'worker', settled: 'delivery-unknown' },
+    // The person batch's close was interrupted: the Boot walk resumes its Core-local publication.
+    { action: 'prove', requesterKind: 'person', settled: 'delivered' },
+    // The Worker batch's Turn is pending: the startup handoff's refusal releases the batch.
+    { action: 'release', requesterKind: 'worker', settled: 'closed-out' },
+  ] as const)(
+    "proves the delivery $action move on every frozen row before A's first write, and holds A unchanged when a readable row names another Turn's publication",
+    async ({ action, requesterKind, settled }) => {
+      const root = await seedRoot(['Healthy', 'Contradicting batch row']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      // The startup handoff decides after the Boot walk, so only a walk entry carries a claim.
+      const walk = action !== 'release';
+      const seeded = await withSeedStore(root, async (store) => {
+        const claims: (Awaited<ReturnType<typeof seedClaimedPending>> | null)[] = [];
+        for (const id of root.workspaceIds)
+          claims.push(walk ? await seedClaimedPending(store, root, id) : null);
+        // A person batch's close is the write after its freeze: the seeding Core stops before it.
+        const close = store.completeWorkspaceTurn.bind(store);
+        const stop = vi
+          .spyOn(store, 'completeWorkspaceTurn')
+          .mockImplementation(async (...args) =>
+            args[4]?.pending?.some((command) => command.action === 'delivery-prove')
+              ? store.getTurnById(args[2])
+              : close(...args)
+          );
+        const outcomes = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          count: 2,
+          requesterKind,
+          decision: 'denied',
+          services: 'frozen',
+        });
+        stop.mockRestore();
+        return root.workspaceIds.map((workspaceId, index) => {
+          const { requestIds, threadId, raisingTurnId } = outcomes[index]!;
+          const rows = requestIds.map((requestId) =>
+            readPendingRow(root.dataRoot, workspaceId, requestId)
+          );
+          // One batch: both requests are frozen on the same delivery Turn.
+          expect(rows[0]).toMatchObject({
+            delivery: 'frozen',
+            delivery_turn_id: expect.any(String),
+          });
+          expect(rows[1]!.delivery_turn_id).toBe(rows[0]!.delivery_turn_id);
+          return {
+            workspaceId,
+            requestIds,
+            threadId,
+            raisingTurnId,
+            deliveryTurnId: rows[0]!.delivery_turn_id as string,
+            claim: claims[index]!,
+          };
+        });
+      });
+      // Stopped retained state: each Worker outcome Turn ended before its delivery was recorded.
+      if (action === 'unknown')
+        await withSeedStore(root, async (store) => {
+          for (const entry of seeded)
+            await store.updateTurn(entry.deliveryTurnId, {
+              status: 'completed',
+              completedAt: COMPLETED_AT,
+            });
+        });
+      // Stopped retained-row fault: A's second row names the other real Turn of its own Thread.
+      const target = seeded[1]!;
+      const contradicted = target.requestIds[1]!;
+      const publication = readPendingRow(root.dataRoot, held, contradicted).publication_turn_id as
+        | string
+        | null;
+      const other =
+        publication === target.raisingTurnId ? target.deliveryTurnId : target.raisingTurnId;
+      await withSeedStore(root, (store) => {
+        expect(store.getTurn(held, target.threadId, other).threadId).toBe(target.threadId);
+      });
+      expect(writePendingPublication(root.dataRoot, held, contradicted, other)).toBe(1);
+      const frozen = target.requestIds.map((id) => readPendingRow(root.dataRoot, held, id));
+      const claim = target.claim && readPendingRow(root.dataRoot, held, target.claim.requestId);
+      if (claim) expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+      const original = workspaceEvidence(root.dataRoot, held);
+      // A walk entry's refusal precedes A's first dependent write: nothing enters A's writer.
+      const watch: BootWalkFault | undefined = walk
+        ? { workspaceId: held, writerWatch: true, label: `delivery-${action}-contradiction` }
+        : undefined;
+      const healthyServed = async () =>
+        vi.waitFor(
+          () => {
+            for (const requestId of seeded[0]!.requestIds)
+              expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
+                delivery: settled,
+              });
+          },
+          { timeout: 60_000, interval: 250 }
+        );
+
+      const server = await startServer(root, watch);
+      await expectHeld(server, held, 'check=recovery; stage=pending-request-recovery');
+      await expectNotHeld(server, healthy);
+      await healthyServed();
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
+      // A's earlier claim and every frozen row stay byte-identical, with no new file.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      for (const [index, id] of target.requestIds.entries())
+        expect(readPendingRow(root.dataRoot, held, id)).toEqual(frozen[index]);
+      if (claim)
+        expect(readPendingRow(root.dataRoot, held, target.claim!.requestId)).toEqual(claim);
+      if (!walk)
+        await withSeedStore(root, (store) => {
+          // No release, unknown or terminal post reached A's pending outcome Turn.
+          expect(store.getTurn(held, target.threadId, target.deliveryTurnId).status).toBe(
+            'pending'
+          );
+        });
+
+      const repeated = await startServer(root, watch);
+      await expectHeld(repeated, held, 'check=recovery; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expect(repeated.output()).not.toContain('[boot-walk-fault] writer-entered');
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // Restoring the row's verified original publication while stopped recovers A once.
+      expect(writePendingPublication(root.dataRoot, held, contradicted, publication)).toBe(1);
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await vi.waitFor(
+        () => {
+          for (const requestId of target.requestIds)
+            expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({
+              delivery: settled,
+            });
+        },
+        { timeout: 60_000, interval: 250 }
+      );
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      if (claim)
+        expect(readPendingRow(root.dataRoot, held, target.claim!.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P release witness, input 2 (interim form): a busy Worker Thread's 16 denials resolve without
+  // delivery and their requester loses authority before restart. The idle closeout's original
+  // packet carries a decision and a denied-disposition Item per row plus the completion event, 33
+  // entries past the terminal writer's 32-entry bound; that bound refuses before the settlement.
+  it(
+    "proves the idle closeout's packet on the terminal writer's bound before the restart settlement, and holds A unchanged when 16 denials exceed it",
+    async () => {
+      const root = await seedRoot(['Healthy', 'Over-limit closeout']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const { claims, denials } = await withSeedStore(root, async (store) => {
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        const denials = [
+          ...(await seedDecidedApprovals(store, root, [healthy], {
+            requesterKind: 'worker',
+            decision: 'denied',
+            services: 'none',
+          })),
+          ...(await seedDecidedApprovals(store, root, [held], {
+            count: 16,
+            requesterKind: 'worker',
+            decision: 'denied',
+            services: 'none',
+          })),
+        ];
+        return { claims, denials };
+      });
+      // Each denial resolved while its Thread was busy, so none was delivered.
+      for (const [index, id] of root.workspaceIds.entries())
+        for (const requestId of denials[index]!.requestIds)
+          expect(readPendingRow(root.dataRoot, id, requestId)).toMatchObject({
+            delivery: 'undelivered',
+          });
+      const claim = readPendingRow(root.dataRoot, held, claims[1]!.requestId);
+      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const watch: BootWalkFault = {
+        workspaceId: held,
+        writerWatch: true,
+        label: 'closeout-packet',
+      };
+
+      const server = await startServer(root, watch);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expect(bootDecisionLines(server)).toContain(
+        'Control product transition precondition failed.'
+      );
+      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
+      // B proceeds: its claim settles and its denial closes out.
+      expect(readPendingRow(root.dataRoot, healthy, claims[0]!.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+      });
+      expect(readPendingRow(root.dataRoot, healthy, denials[0]!.requestIds[0]!)).toMatchObject({
+        delivery: 'closed-out',
+      });
+      // A's earlier claim and every denial stay byte-identical: the refusal preceded the settlement.
+      expect(readPendingRow(root.dataRoot, held, claims[1]!.requestId)).toEqual(claim);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // The same valid batch repeats the refusal before any write.
+      const repeated = await startServer(root, watch);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expect(repeated.output()).not.toContain('[boot-walk-fault] writer-entered');
+      expectEvidenceUnchanged(root.dataRoot, held, original);
     },
     CASE_TIMEOUT_MS
   );
@@ -2012,6 +2287,47 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
+  // V1-P release witness, input 3 at the entry: Boot joins each startup handoff's first decision
+  // before either listener binds. A shared failure inside that decision, before any Core post,
+  // stops Boot with neither listener bound and no release, unknown or terminal post.
+  it(
+    "stops Boot before either listener binds when the startup handoff's first decision fails on a shared owner, with no release, unknown or terminal post",
+    async () => {
+      const root = await seedRoot(['Shared failure']);
+      const [held] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [held], {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const frozen = readPendingRow(root.dataRoot, held, seeded!.requestIds[0]!);
+      expect(frozen).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+      // The first decision reads the outcome Turn for its failed-terminal proof. That read fails
+      // and every Core read after it fails too, so the common owners cannot exclude a shared cause.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_RECORD_SQL,
+        within: 'proveWorkspaceTurnCompletion',
+        shared: true,
+        label: 'startup-decision-shared',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const decision = await runUntilBootDecision(root, fault);
+      expect(decision.running, decision.output).toBe(false);
+      expect(decision.exitCode).not.toBe(0);
+      expect(decision.output).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      expect(decision.output).toContain('[boot-walk-fault] core-refused');
+      expect(decision.output).not.toMatch(/(App|NanoHost) server is running on http:\/\//);
+      // No release, unknown or terminal post reached the outcome Turn or its frozen batch.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded!.requestIds[0]!)).toEqual(frozen);
+    },
+    CASE_TIMEOUT_MS
+  );
+
   it(
     'admits the configured Worker outcome through its real App owner and keeps the lifecycle observer in that Workspace while a sibling cannot answer a Turn selector',
     async () => {
@@ -2263,14 +2579,11 @@ describe('B5 attributed Boot recovery', () => {
           nanoHostStorage,
           agentManifests: [manifest],
         });
-        // The scan's scope proof holds A synchronously; the terminal proof runs in its delivery.
-        if (fault === 'one no longer decodes')
-          expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false);
-        else
-          await vi.waitFor(
-            () => expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false),
-            { timeout: 30_000, interval: 100 }
-          );
+        // Both proofs run in the outcome's first decision, before its Core post.
+        await vi.waitFor(
+          () => expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false),
+          { timeout: 30_000, interval: 100 }
+        );
         expect(warnings).toHaveBeenCalledWith(
           `Boot recovery held Workspace ${held} during pending-request-recovery.`,
           fault === 'one no longer decodes'
@@ -2309,6 +2622,237 @@ describe('B5 attributed Boot recovery', () => {
       // A's frozen batch and pending Turn remain for the Boot that admits A again.
       expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(readPendingRow(root.dataRoot, held, seeded[0]!.requestIds[0]!)).toEqual(frozen[0]);
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P release witness, input 3: the startup handoff's first Core admission pauses inside its
+  // actual native open. Boot awaits `startupPendingDeliveryDecisions()` before either bind, so that
+  // join stays pending while paused. A shared writer failure then rejects it with no submission and
+  // no release, unknown or terminal post; each control ends the first decision another way.
+  it.each([
+    { decision: 'shared writer failure' },
+    { decision: 'local pre-post refusal' },
+    { decision: 'ACK with parked completion' },
+    { decision: 'lost post ACK' },
+  ] as const)(
+    "keeps the listeners' startup join pending inside the first Core admission's native open, then settles it on its $decision",
+    async ({ decision }) => {
+      const root = await seedRoot(['Configured Worker']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [workspaceId], {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const requestId = seeded!.requestIds[0]!;
+      const frozen = readPendingRow(root.dataRoot, workspaceId, requestId);
+      expect(frozen).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+      const turnId = frozen.delivery_turn_id as string;
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const stack = () => {
+        const limit = Error.stackTraceLimit;
+        Error.stackTraceLimit = 50;
+        try {
+          return String(new Error().stack);
+        } finally {
+          Error.stackTraceLimit = limit;
+        }
+      };
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      const paused = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const parked = Promise.withResolvers<void>();
+      // The original admission owner, captured before the spy replaces the export.
+      const start = productTurns.startProductTurn;
+      const admission = vi.spyOn(productTurns, 'startProductTurn');
+      try {
+        const manifest = createTestAgentSetup({ agentId: WORKER_AGENT_ID }).manifest;
+        await recordTestNativeRuntimeTarget(coreDb);
+        const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+        const client = getControlStoreWorkerClient();
+        const open = client.open.bind(client);
+        let opened = 0;
+        vi.spyOn(client, 'open').mockImplementation(async (...args) => {
+          if (
+            args[0].database.startsWith('core:') &&
+            stack().includes('admitCoreScheduler') &&
+            opened++ === 0
+          ) {
+            paused.resolve();
+            await resume.promise;
+            if (decision === 'shared writer failure')
+              throw new ControlStoreWorkerError('unavailable', 'not-committed');
+          }
+          return open(...args);
+        });
+        if (decision === 'local pre-post refusal') {
+          // After the open, the scheduler's final recheck reads the Workspace, and that read fails.
+          const read = store.getWorkspace.bind(store);
+          let failed = 0;
+          vi.spyOn(store, 'getWorkspace').mockImplementation((...args) => {
+            if (opened > 0 && stack().includes('admitCoreScheduler') && failed++ === 0)
+              throw Object.assign(new Error('database disk image is malformed'), {
+                code: 'SQLITE_CORRUPT',
+              });
+            return read(...args);
+          });
+        }
+        if (decision === 'lost post ACK') {
+          // The Core post commits and its acknowledgement is lost.
+          const transition = client.transition.bind(client) as (...args: unknown[]) => unknown;
+          let lost = 0;
+          vi.spyOn(client, 'transition').mockImplementation((async (...args: unknown[]) => {
+            const result = await transition(...args);
+            if ((args[1] as { kind: string }).kind === 'scheduler-work' && lost++ === 0)
+              throw new ControlStoreWorkerError('unavailable', 'unknown');
+            return result;
+          }) as never);
+        }
+        if (decision === 'ACK with parked completion') {
+          // The Worker's completion is observed only after the decision settles.
+          admission.mockImplementation((input) => {
+            const run = start(input);
+            return parked.promise.then(() => run);
+          });
+        }
+        createSimulatedApp({
+          coreDb,
+          store,
+          dataRoot: root.dataRoot,
+          nanoHostStorage,
+          agentManifests: [manifest],
+        });
+        const join = store.startupPendingDeliveryDecisions().then(
+          () => 'settled',
+          (error: unknown) => error
+        );
+        await paused.promise;
+        // Paused inside the first Core admission's own open: the join Boot awaits is pending.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(await Promise.race([join, Promise.resolve('pending')])).toBe('pending');
+        resume.resolve();
+        const settled = await join;
+        const entries = () =>
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          }).filter((entry) => entry.turnId === turnId);
+        if (decision === 'shared writer failure') {
+          // The original shared failure reaches Boot, which stops before either bind.
+          expect(settled).toBeInstanceOf(ControlStoreWorkerError);
+          expect(settled).toMatchObject({ code: 'unavailable', commit: 'not-committed' });
+          expect(entries()).toEqual([]);
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+        } else if (decision === 'local pre-post refusal') {
+          // A Workspace-owned failure holds the Workspace and lets Boot bind.
+          expect(settled).toBe('settled');
+          expect(entries()).toEqual([]);
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+        } else if (decision === 'ACK with parked completion') {
+          // The original admission ACK settles the decision while the completion is parked.
+          expect(settled).toBe('settled');
+          expect(entries()).toHaveLength(1);
+          expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+            delivery: 'delivered',
+            delivery_turn_id: turnId,
+          });
+          parked.resolve();
+          await expect(admission.mock.results[0]!.value).resolves.toMatchObject({
+            turn: { id: turnId, status: 'completed' },
+          });
+        } else {
+          // A possibly committed post never resends: the batch is unknown and the Turn failed.
+          expect(settled).toBe('settled');
+          expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+            delivery: 'delivery-unknown',
+            delivery_turn_id: turnId,
+          });
+          expect(store.getTurn(workspaceId, seeded!.threadId, turnId)).toMatchObject({
+            status: 'failed',
+            error: { code: 'delivery_unknown' },
+          });
+        }
+        expect(admission).toHaveBeenCalledTimes(1);
+      } finally {
+        resume.resolve();
+        parked.resolve();
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
+      }
+      if (decision === 'shared writer failure' || decision === 'local pre-post refusal') {
+        // No release, unknown or terminal post reached the outcome Turn or its frozen batch.
+        expectEvidenceUnchanged(root.dataRoot, workspaceId, original);
+        expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toEqual(frozen);
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P: a clean preflight buys no authority over a changed dependency. A dependency the walk
+  // proved changes after its proof and before A's first write; the walk's second read of every
+  // input differs, so A is held with no write entered and no file added.
+  it(
+    "holds A with no prefix when a proved Pending dependency changes before the walk's first write",
+    async () => {
+      const root = await seedRoot(['Changed dependency']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const claim = await withSeedStore(root, (store) =>
+        seedClaimedPending(store, root, workspaceId)
+      );
+      // A waiting Worker approval whose agent Boot no longer declares: the idle tail closes it out.
+      const [waiting] = await seedPendingBootPost(root, 'agent-removed');
+      const waitingId = waiting!.requestIds[0]!;
+      const claimRow = readPendingRow(root.dataRoot, workspaceId, claim.requestId);
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      const pending = {
+        coreDb,
+        agentAuthority: () => false,
+        openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+      };
+      const prove = store.provePendingRequestServiceTurn.bind(store);
+      let changed = 0;
+      vi.spyOn(store, 'provePendingRequestServiceTurn').mockImplementation(async (...args) => {
+        const proved = await prove(...args);
+        // After the closeout's own proof, its waiting row changes while the walk still plans.
+        if (changed++ === 0)
+          expect(
+            touchPendingRow(root.dataRoot, workspaceId, waitingId, new Date().toISOString())
+          ).toBe(1);
+        return proved;
+      });
+      const writes = vi.spyOn(store, 'applyPendingRequestCommand');
+      const publications = vi.spyOn(store, 'publishPendingRequestServiceTurn');
+      const warnings = vi.spyOn(console, 'warn');
+      try {
+        await recoverPendingRequestsAtBoot(store, pending);
+        expect(changed).toBe(1);
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(warnings).toHaveBeenCalledWith(
+          `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
+          'The Pending records changed while the Boot walk proved them.'
+        );
+        // No write was entered: neither the settlement nor the closeout reached A's writer.
+        expect(writes).not.toHaveBeenCalled();
+        expect(publications).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
+      }
+      // Zero prefix: the earlier claim keeps its bytes, and no file was added.
+      expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toEqual(claimRow);
+      expect(workspaceEvidence(root.dataRoot, workspaceId).files).toEqual(original.files);
     },
     CASE_TIMEOUT_MS
   );
