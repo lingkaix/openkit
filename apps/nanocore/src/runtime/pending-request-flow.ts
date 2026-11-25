@@ -596,7 +596,7 @@ export async function recoverPendingRequestsAtBoot(
           }
           // The idle tail below selects its first post on each Thread this walk leaves idle with its
           // own rules on the settled census: a closeout when a requester lost authority, else the
-          // derived invalidation publication, whose proposal is proved here before any write. A
+          // derived invalidation publication. Either proposal is proved here before any write. A
           // retained contradiction holds the Workspace; its exit is a verified repair of the same
           // owner's evidence, or a restore, while stopped, and then a restart that revalidates it.
           const settled = new Map(loaded.map((record) => [record.requestId, record]));
@@ -613,14 +613,28 @@ export async function recoverPendingRequestsAtBoot(
             const census = listThreadPendingRequests(db.sqlite, workspace.id, thread.id).map(
               (record) => settled.get(record.requestId) ?? record
             );
-            if (selectUnavailableRequests(store, dependencies, db.sqlite, census).records.length)
-              continue;
-            const waiting = selectWaitingInvalidations(store, db.sqlite, census);
-            if (waiting.length)
+            const unavailable = selectUnavailableRequests(store, dependencies, db.sqlite, census);
+            const waiting = unavailable.records.length
+              ? []
+              : selectWaitingInvalidations(store, db.sqlite, census);
+            // The closeout's new Turn ID is allocated again at its post; its writer reads only
+            // that the ID is absent, which holds for both.
+            const publication = unavailable.records.length
+              ? closeoutPublication(
+                  workspace.id,
+                  thread.id,
+                  unavailable,
+                  allocateEntityId('tu'),
+                  now
+                )
+              : waiting.length
+                ? invalidationPublication(workspace.id, thread.id, waiting, now)
+                : null;
+            if (publication)
               store.provePendingRequestServiceTurn(
                 workspace.id,
                 thread.id,
-                invalidationPublication(workspace.id, thread.id, waiting, now),
+                publication,
                 prepareTaskTerminalFact
               );
           }
@@ -1362,8 +1376,28 @@ async function closeoutUnavailableRequests(
     );
   });
   if (!selection.records.length) return false;
-  const now = new Date().toISOString();
-  const turnId = allocateEntityId('tu');
+  const publication = closeoutPublication(
+    workspaceId,
+    threadId,
+    selection,
+    allocateEntityId('tu'),
+    new Date().toISOString()
+  );
+  // Core authority decided the loss above; only this Workspace's own post is attributed.
+  await postWorkspace(boot, () =>
+    store.publishPendingRequestServiceTurn(workspaceId, threadId, publication)
+  );
+  return true;
+}
+
+/** The closeout's one service publication of a selection, at its new Turn, that closes it. */
+function closeoutPublication(
+  workspaceId: string,
+  threadId: string,
+  selection: ReturnType<typeof selectUnavailableRequests>,
+  turnId: string,
+  now: string
+) {
   const actor = pendingRequestSystemActor(null);
   const events = new Map(selection.events.map((event) => [event.requestId, event.event]));
   const projected = closeoutProjection(
@@ -1373,30 +1407,26 @@ async function closeoutUnavailableRequests(
     now,
     (record) => events.get(record.requestId)!
   );
-  // Core authority decided the loss above; only this Workspace's own post is attributed.
-  await postWorkspace(boot, () =>
-    store.publishPendingRequestServiceTurn(workspaceId, threadId, {
-      turnId,
-      summary: 'Requester authority was lost.',
-      actor,
-      now,
-      items: pendingOutcomeItems(projected, turnId, now),
-      pending: [
-        {
-          action: 'closeout',
-          workspaceId,
-          threadId,
-          closeoutTurnId: turnId,
-          actor: { kind: actor.kind, id: actor.id },
-          now,
-          expected: pendingSources(selection.records),
-          expectedThreadCensus: selection.census.map((record) => record.requestId),
-          invalidatingEvents: selection.events,
-        },
-      ],
-    })
-  );
-  return true;
+  return {
+    turnId,
+    summary: 'Requester authority was lost.',
+    actor,
+    now,
+    items: pendingOutcomeItems(projected, turnId, now),
+    pending: [
+      {
+        action: 'closeout' as const,
+        workspaceId,
+        threadId,
+        closeoutTurnId: turnId,
+        actor: { kind: actor.kind, id: actor.id },
+        now,
+        expected: pendingSources(selection.records),
+        expectedThreadCensus: selection.census.map((record) => record.requestId),
+        invalidatingEvents: selection.events,
+      },
+    ],
+  };
 }
 
 async function admitNextOutcome(
