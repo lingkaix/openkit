@@ -292,6 +292,7 @@ import {
 import { verifyOrdinaryServerGatewayAuthority } from './storage/control-store-server-work-authority.js';
 import {
   type CommunicationOwnerBinding,
+  type ControlStorePublicationGuard,
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
   type NanoHostOwnerBinding,
@@ -3176,7 +3177,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       store: FsStore,
       turnId: string,
       scope: { readonly workspaceId: string; readonly threadId: string }
-    ): (() => Promise<void>) | undefined {
+    ): ((posting?: ControlStorePublicationGuard) => Promise<void>) | undefined {
       // The admitting Workspace and Thread name the outcome Turn; sibling Workspaces are not read.
       const turn = store.getTurn(scope.workspaceId, scope.threadId, turnId);
       const agentId = turn.agentId;
@@ -3190,7 +3191,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           .get(turn.id)
       )
         return undefined;
-      return async () => {
+      return async (posting) => {
         const workspaceId = workspaceIdForOwner(turn.owner);
         // Same bytes as the former local JSON framing: these are well-formed ID strings.
         const identity = sha256CanonicalJson([workspaceId, turn.threadId, turn.id]);
@@ -3209,6 +3210,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           frozenOutcomeBatch: true,
           requestedAgentId: agentId,
           reservedTurnId: turn.id,
+          // The Core scheduler writer records here when its post began.
+          ...(posting ? { schedulerPublicationGuard: posting } : {}),
           onTurnCreated: () => admitted.resolve(),
           providerCredentialResolver,
           snapshot: runtimeConfig(),
