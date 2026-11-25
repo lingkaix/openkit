@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import Database from 'better-sqlite3';
 import type { FsStore } from '../lib/store.js';
+import { StoredGoalCardTaskV1Schema, StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -202,6 +203,100 @@ export function hideWorkspaceTurnSelector(dataRoot: string, workspaceId: string)
 }
 
 /**
+ * Links one Thread as a Goal card Task of an ended Goal while NanoCore is stopped, as Task
+ * admission records the link and its Goal (`control-store-admission.ts`), so a terminal Turn on
+ * that Thread records a Task fact. An ended Goal starts no coordinator Turn.
+ * @returns The Goal ID.
+ */
+export function seedEndedGoalTask(
+  dataRoot: string,
+  workspaceId: string,
+  input: { readonly taskThreadId: string; readonly goalThreadId: string; readonly userId: string }
+): string {
+  const goalId = 'goal_b5_task';
+  const at = '2026-01-01T00:00:00.000Z';
+  const goal = StoredGoalV1Schema.parse({
+    goalId,
+    workspaceId,
+    threadId: input.goalThreadId,
+    responsibleUserId: input.userId,
+    intent: 'Finish the linked Task',
+    intentRevision: 0,
+    responsibleActorContext: { userId: input.userId, kind: 'local' },
+    intentHistory: [],
+    proposedPlanVersionId: null,
+    activePlanVersionId: null,
+    disposition: { kind: 'cancelled', reason: 'Ended', actorId: input.userId, at },
+    changeRevision: 0,
+    consideredRevision: 0,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const link = StoredGoalCardTaskV1Schema.parse({
+    goalId,
+    cardId: 'card_b5_task',
+    threadId: input.taskThreadId,
+    planVersionId: 'plan_b5_task',
+    cardRevision: 0,
+  });
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    sqlite.transaction(() => {
+      sqlite
+        .prepare(
+          'INSERT INTO goals (goal_id,thread_id,payload_json,schema_version) VALUES (?,?,?,1)'
+        )
+        .run(goalId, input.goalThreadId, JSON.stringify(goal));
+      sqlite
+        .prepare(
+          'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,1)'
+        )
+        .run(input.taskThreadId, goalId, link.cardId, JSON.stringify(link));
+    })();
+  } finally {
+    sqlite.close();
+  }
+  return goalId;
+}
+
+/**
+ * Removes one retained Goal row while NanoCore is stopped; its Task links stay in place.
+ * @returns Writes the original row back.
+ */
+export function removeGoal(dataRoot: string, workspaceId: string, goalId: string): () => void {
+  const open = () =>
+    new Database(workspaceDatabasePath(dataRoot, workspaceId), { fileMustExist: true });
+  const sqlite = open();
+  let row: Record<string, unknown> | undefined;
+  try {
+    row = sqlite
+      .prepare(
+        'SELECT goal_id, thread_id, payload_json, schema_version FROM goals WHERE goal_id = ?'
+      )
+      .get(goalId) as Record<string, unknown> | undefined;
+    if (!row || sqlite.prepare('DELETE FROM goals WHERE goal_id = ?').run(goalId).changes !== 1)
+      throw new Error(`Goal not removed: ${goalId}`);
+  } finally {
+    sqlite.close();
+  }
+  const retained = row;
+  return () => {
+    const writer = open();
+    try {
+      writer
+        .prepare(
+          'INSERT INTO goals (goal_id, thread_id, payload_json, schema_version) VALUES (@goal_id, @thread_id, @payload_json, @schema_version)'
+        )
+        .run(retained);
+    } finally {
+      writer.close();
+    }
+  };
+}
+
+/**
  * Removes one retained native observation while NanoCore is stopped, leaving a sequence gap in an
  * otherwise valid observation history.
  * @returns Writes the original row back.
@@ -258,7 +353,9 @@ export function contradictTurnCompletionStopReason(
   turnId: string,
   stopReason: string
 ): () => void {
-  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), { fileMustExist: true });
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
   const write = (rowid: number, content: string) => {
     const writer = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
       fileMustExist: true,

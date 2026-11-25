@@ -260,6 +260,7 @@ import {
   type ControlPublicationInput,
   type ControlTerminalTransition,
   checkControlItemAppend,
+  controlTerminalTaskTurn,
   eventAgreesWithSealedTurnOutcome,
   eventConflictsWithSealedTurnOutcome,
   terminalEventMatchesTerminal,
@@ -1151,6 +1152,21 @@ export function assertThreadUpdatePrecondition(
 
 /** Live native references share their physical scope across Store views; failed imports cannot erase them. */
 const pendingArtifactReferences = new Map<string, number>();
+
+/** The retained Turn record a Workspace terminal publishes: its history metadata with the decided patch, without Items. */
+function workspaceTerminalTurnRecord(
+  metadata: object,
+  patch: Parameters<FsStore['updateTurn']>[1],
+  turn: Pick<Turn, 'completedAt' | 'durationMs'>
+) {
+  return writeRetainedV1({
+    ...metadata,
+    ...patch,
+    completedAt: turn.completedAt,
+    durationMs: turn.durationMs,
+    items: [],
+  });
+}
 
 /**
  * Native product Store with immutable Storage history and independent file-owned resources.
@@ -6238,33 +6254,37 @@ export class FsStore {
 
   /**
    * Proves one Workspace Turn's terminal publication on its own history and transcript without
-   * writing: the preparation `completeWorkspaceTurn` runs before its writer.
+   * writing: the preparation `completeWorkspaceTurn` runs before its writer. It then reads the
+   * terminal's retained dependencies through their owners on the writer's exact Turn record: the
+   * reap dependency through the native observation owner, and the Task terminal fact through the
+   * Task owner the caller supplies (that owner imports this Store). A Boot walk proves them before
+   * it stages the first terminal; the terminal transaction reads both again.
    */
   public proveWorkspaceTurnCompletion(
     workspaceId: string,
     threadId: string,
     turnId: string,
-    patch: Parameters<FsStore['updateTurn']>[1]
+    patch: Parameters<FsStore['updateTurn']>[1],
+    proveTaskFact: (
+      db: Pick<WorkspaceDb, 'sqlite'>,
+      turn: ReturnType<typeof controlTerminalTaskTurn>
+    ) => unknown
   ): void {
     this.getTurn(workspaceId, threadId, turnId);
-    this.prepareTurnCompletion(turnId, patch, {}, { kind: 'workspace', workspaceId });
-    this.proveWorkspaceTurnReap(workspaceId, threadId, turnId);
-  }
-
-  /**
-   * Reads one Workspace Turn's terminal reap dependency through its native observation owner, so
-   * a Boot walk proves the reap before it stages the first terminal. It writes nothing; the
-   * terminal transition reads the same dependency again inside its SQL transaction.
-   */
-  private proveWorkspaceTurnReap(workspaceId: string, threadId: string, turnId: string): void {
-    if (!this.dataRoot) return;
+    const owner = { kind: 'workspace' as const, workspaceId };
+    const { history, turn } = this.prepareTurnCompletion(turnId, patch, {}, owner);
+    if (!this.dataRoot || !history) return;
+    const taskTurn = controlTerminalTaskTurn(
+      decodeControlProduct(
+        'turn',
+        workspaceTerminalTurnRecord(history.metadata, patch, turn),
+        owner
+      )
+    );
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
     try {
-      readControlTurnReapDependency(
-        db.sqlite,
-        { kind: 'workspace', workspaceId },
-        { threadId, turnId }
-      );
+      readControlTurnReapDependency(db.sqlite, owner, { threadId, turnId });
+      proveTaskFact(db, taskTurn);
     } finally {
       db.sqlite.close();
     }
@@ -6625,13 +6645,7 @@ export class FsStore {
         turn: {
           kind: 'turn',
           expectedRevision: history!.revision,
-          record: writeRetainedV1({
-            ...history!.metadata,
-            ...patch,
-            completedAt: turn.completedAt,
-            durationMs: turn.durationMs,
-            items: [],
-          }),
+          record: workspaceTerminalTurnRecord(history!.metadata, patch, turn),
         },
         products,
         entries,

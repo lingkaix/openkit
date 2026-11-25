@@ -2387,7 +2387,12 @@ export function terminalEventMatchesTerminal(
   return (
     turn.status === terminal.status &&
     terminalSnapshotFieldMatches('error', turn.error, terminal.error, sealedTurn) &&
-    terminalSnapshotFieldMatches('completedAt', turn.completedAt, terminal.completedAt, sealedTurn) &&
+    terminalSnapshotFieldMatches(
+      'completedAt',
+      turn.completedAt,
+      terminal.completedAt,
+      sealedTurn
+    ) &&
     (data.type !== 'turn-completed' ||
       terminalStopReasonMatches((data as { stopReason?: unknown }).stopReason, terminal.status))
   );
@@ -2988,6 +2993,14 @@ function assertTerminalItemCoverage(
     throw new ControlProductPreconditionError();
 }
 
+/**
+ * The Turn a Workspace terminal hands to the Task owner: the decoded terminal record without
+ * Items. A Boot walk derives the same Turn to prove the Task fact before its first terminal.
+ */
+export function controlTerminalTaskTurn(turn: Record<string, unknown>) {
+  return { ...StoredTurnV1Schema.parse(turn), items: [] };
+}
+
 /** Applies the complete terminal tuple in its caller's active savepoint. It never commits, publishes or acknowledges. */
 export function applyControlTerminal(
   db: CoreDb | WorkspaceDb,
@@ -3087,10 +3100,7 @@ export function applyControlTerminal(
   assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries);
   if (!terminalOwners) throw new ControlProductPreconditionError();
   if (db.scope === 'workspace')
-    terminalOwners.task.recordTaskTerminalFact(db, {
-      ...StoredTurnV1Schema.parse(turn),
-      items: [],
-    });
+    terminalOwners.task.recordTaskTerminalFact(db, controlTerminalTaskTurn(turn));
   for (const record of input.evidence) {
     if (
       input.owner.kind !== 'workspace' ||
