@@ -2804,10 +2804,11 @@ describe('B5 attributed Boot recovery', () => {
   // input differs, so A is held with no write entered and no file added. The unchanged control
   // runs the same walk through its settlement and posts each publication it proved once.
   it.each([
-    { dependency: 'changed', outcome: 'a changed dependency holds A with no prefix' },
-    { dependency: 'unchanged', outcome: 'an unchanged one publishes each proved publication once' },
+    // Each interpolated value stays within vitest's 40-character title limit.
+    { dependency: 'changed', outcome: 'holds A with no prefix when one changed' },
+    { dependency: 'unchanged', outcome: 'posts each proof once when none changed' },
   ] as const)(
-    "rechecks A's proved Pending dependencies before the walk's first write: $outcome",
+    "rechecks A's proved Pending dependencies before the walk's first write and $outcome",
     async ({ dependency }) => {
       const root = await seedRoot(['Changed dependency']);
       const [workspaceId] = root.workspaceIds as [string];
