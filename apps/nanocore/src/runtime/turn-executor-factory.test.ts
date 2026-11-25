@@ -457,7 +457,8 @@ beforeAll(async () => {
 /**
  * A timed case owns the process-wide writer only while Vitest runs it. Its shutdown can start just
  * before Vitest times the case out and still run under the next case. The suite owner joins that
- * shutdown before the next case starts (A8 FIX 4 finding 4).
+ * shutdown before the next case starts (A8 FIX 4 finding 4). It forgets the shutdown only after the
+ * shutdown settles, so a join that Vitest abandons leaves it for the next setup (S3a-r2b A8-2).
  */
 let timedCaseShutdown: Promise<void> | undefined;
 function shutdownOwnedWriter(owned: () => boolean): Promise<void> {
@@ -468,8 +469,9 @@ function shutdownOwnedWriter(owned: () => boolean): Promise<void> {
 }
 async function joinTimedCaseShutdown(): Promise<void> {
   const crossing = timedCaseShutdown;
-  timedCaseShutdown = undefined;
-  await crossing?.catch(() => undefined);
+  if (!crossing) return;
+  await crossing.catch(() => undefined);
+  if (timedCaseShutdown === crossing) timedCaseShutdown = undefined;
 }
 // Cases that restart the control-store client drop every admitted opening; rejoin the shared root as boot does.
 async function prepareFactoryCase(): Promise<void> {
@@ -8865,6 +8867,315 @@ describe('createConfiguredTurnExecutor', () => {
     expect(replacementCloses(f)).toEqual([]);
     expectReplacementPairIntact(f, before, false);
   }, 90_000);
+
+  /**
+   * CLOSE-LC S3a-r2b: an admitted ordinary idle-drain close. The first Thread's Sandbox is idle.
+   * The second Thread's admission evicts it and closes the first AgentSession through the real
+   * client (the eviction close, F `closeDurableAgentSession` with its idle drain).
+   */
+  async function admitIdleEvictionClose(label: string) {
+    const coreDb = await createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const manifests = ['opencode', 'deepseek'].map(
+      (adapter) =>
+        createTestAgentSetup({
+          adapter,
+          agentId: `agent_${adapter}`,
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest
+    );
+    for (const manifest of manifests) admitFactoryNativeEnvironment(coreDb, manifest);
+    const readRuntimeConfig = () =>
+      createInMemoryRuntimeConfigSnapshot({
+        ...loadRuntimeConfig(coreDb.dataRoot),
+        dataRoot: coreDb.dataRoot,
+        agentManifests: manifests,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Idle eviction close',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
+    const admissions: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
+    // Every Harness command that Main hands to a carrier, in order. Bytes are the poll body only.
+    const commands: { operation: string; agentSessionId: unknown }[] = [];
+    const accept = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+    const received = vi
+      .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+      .mockImplementation(async (command, signal) => {
+        const wire = await accept(command, signal);
+        if (wire) commands.push({ operation: wire.operation, agentSessionId: wire.body.agentSessionId });
+        return wire;
+      });
+    // The teardown joins two admitted Turns and can outlast the default hook timeout under load.
+    // The suite owner joins its writer shutdown before the next case (A8 FIX 4 finding 4).
+    onTestFinished(async () => {
+      for (const admission of admissions) await admission.cleanup();
+      received.mockRestore();
+      await native.restore();
+      await shutdownOwnedWriter(() => true);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    }, 60_000);
+    const admit = async (index: number) => {
+      const manifest = manifests[index]!;
+      const thread = await store.createThread(workspaceId, `Idle eviction ${index}`);
+      const attemptId = testEntityId('attempt', `idle_eviction_${label}_${index}`);
+      const agentSessionId = testEntityId('as', `idle_eviction_${label}_${index}`);
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${attemptId}`,
+        requestId: testEntityId('tu', `idle_eviction_request_${label}_${index}`).slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId,
+        threadId: thread.id,
+        turnId: testEntityId('tu', `idle_eviction_turn_${label}_${index}`),
+        text: 'Complete a reusable Turn',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const admitted = await native.admitTurn(entry, {
+        attemptId,
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      admissions.push(admitted);
+      return { attemptId, agentSessionId, admitted };
+    };
+    const first = await admit(0);
+    await first.admitted.complete();
+    await first.admitted.cleanup();
+    // The eviction close's own outcome. The admission maps a failed eviction to its own refusal.
+    const closing: { error?: unknown } = {};
+    const backend = native.executor.executionBackend as unknown as {
+      closeDurableAgentSession: (...args: never[]) => Promise<void>;
+    };
+    const closeDurable = backend.closeDurableAgentSession.bind(backend);
+    vi.spyOn(backend, 'closeDurableAgentSession').mockImplementation(async (...args) => {
+      try {
+        return await closeDurable(...args);
+      } catch (error) {
+        closing.error = error;
+        throw error;
+      }
+    });
+    return {
+      coreDb,
+      native,
+      commands,
+      closing,
+      predecessor: first.agentSessionId,
+      /** Admits the second Thread. Its admission evicts the idle Sandbox and closes the first. */
+      evict: () => admit(1),
+      closes: () => commands.filter(({ operation }) => operation === 'session.close'),
+      closeRows: () =>
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT operation_state AS state FROM harness_instance_records
+            WHERE operation = 'session.close'`)
+            .all()
+        ),
+    };
+  }
+
+  /** Counts the posted Native queue frames of a session.close. */
+  const countCloseQueueFrames = () => {
+    const counter = { frames: 0 };
+    const post = NativeWorker.prototype.postMessage;
+    const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['postMessage']>
+    ) {
+      const frame = args[0] as { mutation?: { input?: { kind?: string; operation?: string } } };
+      if (
+        frame?.mutation?.input?.kind === 'operation.queue' &&
+        frame.mutation.input.operation === 'session.close'
+      )
+        counter.frames += 1;
+      return Reflect.apply(post, this, args);
+    });
+    onTestFinished(() => posts.mockRestore());
+    return counter;
+  };
+
+  // CLOSE-LC S3a-r2b A8-1, row 5: the admitted ordinary idle-drain close decides its cleanup
+  // allowance in the posting turn through the real client. The wall passes during the idle receipt
+  // read of that turn: the original refusal, zero queue frames and zero rows. The live control
+  // posts one frame.
+  it.each(['passes', 'live'] as const)(
+    'decides an ordinary idle-drain close queue in the posting turn of the real client (S3a-r2b row 5, allowance %s)',
+    async (allowance) => {
+      const f = await admitIdleEvictionClose(`r2b_row5_${allowance}`);
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let receiptReads = 0;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority || 'attemptId' in authority)
+          return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const real = Date.now.bind(Date);
+            const late = real() + 86_400_000;
+            let passed = false;
+            const wall = vi.spyOn(Date, 'now').mockImplementation(() => (passed ? late : real()));
+            const prepare = native.sqlite.prepare.bind(native.sqlite);
+            const reads = vi.spyOn(native.sqlite, 'prepare').mockImplementation(((sql: string) => {
+              // The idle receipt read of the posting turn.
+              if (
+                sql.includes('current_attempt_id AS currentAttemptId') &&
+                sql.includes('WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?')
+              ) {
+                receiptReads += 1;
+                if (allowance === 'passes') passed = true;
+              }
+              return prepare(sql);
+            }) as typeof native.sqlite.prepare);
+            try {
+              return authority.verifyBeforePost(native);
+            } finally {
+              reads.mockRestore();
+              wall.mockRestore();
+            }
+          },
+        });
+      });
+      const frames = countCloseQueueFrames();
+      const evicting = f.evict();
+      if (allowance === 'passes') {
+        const [outcome] = await Promise.allSettled([evicting]);
+        // The effect first: zero queue frames, zero rows and zero close commands.
+        expect(frames.frames).toBe(0);
+        expect(f.closeRows()).toEqual([]);
+        expect(f.closes()).toEqual([]);
+        // The original refusal of the posting turn. The admission answers its own refusal.
+        expect(f.closing.error).toMatchObject({
+          message: 'NanoHost idle Core binding or cleanup allowance changed before queue.',
+        });
+        expect(outcome).toMatchObject({
+          status: 'rejected',
+          reason: { message: 'The AgentSession runtime binding changed after scheduler dispatch.' },
+        });
+      } else {
+        await expect(evicting).resolves.toBeDefined();
+        expect(f.closing.error).toBeUndefined();
+        expect(frames.frames).toBe(1);
+        expect(f.closes()).toEqual([{ operation: 'session.close', agentSessionId: f.predecessor }]);
+      }
+      expect(receiptReads).toBe(1);
+    },
+    120_000
+  );
+
+  // CLOSE-LC S3a-r2b row 6 (V1-P ruling): an ordinary idle-drain close decides its original cleanup
+  // allowance in the run that writes its command bytes, after the real poll's last await. The wall
+  // passes during the delivery check or during the final carriage check: 204 and zero bytes, also on
+  // a later poll. The existing timeout and inspection owner keeps the dispatched row. The live
+  // control sends.
+  it.each(['delivery', 'carriage', 'live'] as const)(
+    'writes an ordinary idle-drain close only inside its cleanup allowance after the last poll await (S3a-r2b row 6, %s)',
+    async (at) => {
+      const f = await admitIdleEvictionClose(`r2b_row6_${at}`);
+      const ref = f.native.outside.integrationBindingRef!;
+      // The real poll route is this close's only carrier: the fixture peer stops polling.
+      f.native.outside.integrationBindingRef = undefined;
+      // The close's existing timeout owner. This case runs it after its polls, not 300 s later.
+      const realSetTimeout = globalThis.setTimeout;
+      let timeoutOwner: { readonly run: () => void; readonly handle: unknown } | undefined;
+      const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        callback: (...values: unknown[]) => void,
+        ms?: number,
+        ...values: unknown[]
+      ) => {
+        const handle = Reflect.apply(realSetTimeout, globalThis, [callback, ms, ...values]);
+        if (
+          !timeoutOwner &&
+          typeof callback === 'function' &&
+          String(callback).includes('result outage budget expired')
+        )
+          timeoutOwner = { run: () => callback(...values), handle };
+        return handle;
+      }) as unknown as typeof setTimeout);
+      onTestFinished(() => timers.mockRestore());
+      const evicting = f.evict();
+      void evicting.catch(() => undefined);
+      await vi.waitFor(() => expect(f.closeRows()).toEqual([{ state: 'queued' }]), {
+        timeout: 30_000,
+      });
+      timers.mockRestore();
+      expect(timeoutOwner).toBeDefined();
+      const real = Date.now.bind(Date);
+      let passed = false;
+      const wall = vi
+        .spyOn(Date, 'now')
+        .mockImplementation(() => (passed ? real() + 86_400_000 : real()));
+      onTestFinished(() => wall.mockRestore());
+      let deliveryReads = 0;
+      const prepare = Database.prototype.prepare;
+      const reads = vi
+        .spyOn(Database.prototype, 'prepare')
+        .mockImplementation(function (this: Database.Database, sql: string) {
+          // The route's delivery check: the exact dispatched operation.
+          if (
+            sql.includes('SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records') &&
+            sql.includes("operation_state = 'dispatched'")
+          ) {
+            deliveryReads += 1;
+            if (at === 'delivery') passed = true;
+          }
+          return Reflect.apply(prepare, this, [sql]);
+        } as typeof Database.prototype.prepare);
+      onTestFinished(() => reads.mockRestore());
+      let carriageChecks = 0;
+      const poll = await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref, {
+        route: async () => {
+          carriageChecks += 1;
+          // The third check is the final carriage check, after the delivery check.
+          if (carriageChecks !== 3) return;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (at === 'carriage') passed = true;
+        },
+      });
+      reads.mockRestore();
+      expect({ deliveryReads, carriageChecks }).toEqual({ deliveryReads: 1, carriageChecks: 3 });
+      // Main handed the exact close to this poll in each case.
+      expect(f.closes()).toEqual([{ operation: 'session.close', agentSessionId: f.predecessor }]);
+      if (at === 'live') {
+        expect(poll.status).toBe(200);
+        expect(JSON.parse(poll.body)).toMatchObject({
+          operation: 'session.close',
+          body: { agentSessionId: f.predecessor },
+        });
+      } else {
+        // Zero command bytes, also on a later poll after the 204.
+        expect(poll).toEqual({ status: 204, body: '' });
+        expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+          status: 204,
+          body: '',
+        });
+      }
+      wall.mockRestore();
+      // The existing timeout and inspection owner keeps the dispatched row.
+      expect(f.closeRows()).toEqual([{ state: 'dispatched' }]);
+      expect(f.closing.error).toBeUndefined();
+      clearTimeout(timeoutOwner!.handle as ReturnType<typeof setTimeout>);
+      timeoutOwner!.run();
+      await expect(evicting).rejects.toThrow('Native admission returned without its Turn.');
+      expect(f.closing.error).toMatchObject({
+        message: 'NanoHost Harness session.close result outage budget expired: dispatched-awaiting-result.',
+      });
+      // The owner fences the exact dispatched close for inspection.
+      expect(f.closeRows()).toEqual([{ state: 'unknown' }]);
+    },
+    120_000
+  );
 
   // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
   // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.
@@ -18692,7 +19003,14 @@ describe('createConfiguredTurnExecutor', () => {
     setTimeout(() => release.resolve(), 200);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect({ closed: client.isClosed, completed }).toEqual({ closed: false, completed: false });
-    await expect(prepareFactoryCase()).resolves.toBeUndefined();
+    // S3a-r2b A8-2: Vitest abandons this first setup while the drain still runs (its hook timed
+    // out). A second setup attempt must join the same pending shutdown, not reuse the stopping client.
+    const abandoned = prepareFactoryCase();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect({ closed: client.isClosed, completed }).toEqual({ closed: false, completed: false });
+    const second = prepareFactoryCase().then(() => completed);
+    await expect(second).resolves.toBe(true);
+    await expect(abandoned).resolves.toBeUndefined();
     // The old shutdown completed first; the next case gets a new, accepting writer.
     expect(completed).toBe(true);
     const next = getControlStoreWorkerClient();
@@ -27308,7 +27626,8 @@ async function postNativeHarnessPoll(
     ConfiguredWorkerLifecycleRuntime,
     'acceptNanoHostHarnessCommand' | 'acceptNanoHostHarnessResult' | 'failNanoHostHarnessDelivery'
   >,
-  sandboxIntegrationBindingRef: string
+  sandboxIntegrationBindingRef: string,
+  options: { readonly route?: () => Promise<void> } = {}
 ) {
   const app = new Hono<{ Variables: AuthVariables }>();
   registerNanoHostSessionSemanticRoutes({
@@ -27318,7 +27637,7 @@ async function postNativeHarnessPoll(
     nativeStorage: { state: 'ready', value: currentAdmittedTestNanoHostStorage(coreDb)! },
     nativeHarnessLifecycle: currentAdmittedTestNanoHostOwner(coreDb)!.harnessTurnLifecycle,
     dispatch: {
-      route: async () => undefined,
+      route: options.route ?? (async () => undefined),
       assertHarnessCarriage: () => undefined,
     } as unknown as NanoHostSessionDispatch,
     harnessCommandDispatched: (command, signal) =>

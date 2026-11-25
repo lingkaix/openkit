@@ -70,8 +70,10 @@ import {
   type AdmittedNanoHostHarnessTurnLifecycle,
   dispatchNanoHostHarnessOperation,
   markNanoHostHarnessOperationUnknown,
+  NANO_HOST_CARRIAGE_ALLOWANCE,
   NANO_HOST_FIRST_CARRIAGE,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
+  type NanoHostCarriageAllowance,
   type NanoHostFirstCarriage,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
@@ -2558,6 +2560,13 @@ export function registerNanoHostSessionSemanticRoutes(
             selected as { readonly [NANO_HOST_FIRST_CARRIAGE]?: NanoHostFirstCarriage }
           )[NANO_HOST_FIRST_CARRIAGE];
           if (!first) {
+            // Row 6 (CL2, S3a-r2b): an ordinary idle close decides its original cleanup allowance
+            // after the last await, before carriage is recorded or bytes are written. Expiry answers
+            // 204. The existing timeout and inspection owner keeps the dispatched row.
+            const allowance = (
+              selected as { readonly [NANO_HOST_CARRIAGE_ALLOWANCE]?: NanoHostCarriageAllowance }
+            )[NANO_HOST_CARRIAGE_ALLOWANCE];
+            if (allowance && !allowance()) return context.body(null, 204);
             carry();
             return context.body(wire, 200, { 'content-type': 'application/json' });
           }

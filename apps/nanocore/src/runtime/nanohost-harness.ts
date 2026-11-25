@@ -198,6 +198,15 @@ export interface NanoHostFirstCarriage {
 }
 
 /**
+ * Process-local check that an ordinary idle close carries to the run that writes its command bytes
+ * (row 6, CL2): its original cleanup allowance on the wall and the monotonic clock.
+ */
+export const NANO_HOST_CARRIAGE_ALLOWANCE: unique symbol = Symbol('nanohost-carriage-allowance');
+
+/** True while the original cleanup allowance is live. False answers 204 and writes no bytes. */
+export type NanoHostCarriageAllowance = () => boolean;
+
+/**
  * A process-local check in the turn that posts one queue commit, on committed Native state; false
  * refuses the queue unposted. An ordinary idle close checks its idle proof and cleanup allowance.
  */

@@ -176,12 +176,14 @@ import {
   initializeNanoHostRuntimeCheckVersions,
   inspectNanoHostAgentSessionContinuity,
   markNanoHostHarnessOperationUnknown,
+  NANO_HOST_CARRIAGE_ALLOWANCE,
   NANO_HOST_FIRST_CARRIAGE,
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   NANO_HOST_REPLACEMENT_DEADLINE_PASSED,
   NANO_HOST_REPLACEMENT_SELECTION_CHANGED,
   NANO_HOST_REPLACEMENT_STORAGE_CHANGED,
   type NanoHostAgentSessionContinuityInspection,
+  type NanoHostCarriageAllowance,
   type NanoHostFirstCarriage,
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
@@ -1595,7 +1597,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         delete sharedHarness.knownLoginClose;
       const carried: NanoHostHarnessCommand = { ...command, body: prepared.wireBody };
       const replacement = idleClose.replacement;
-      if (!unsent || !replacement) return carried;
+      if (!replacement) {
+        // Row 6 (CL2, S3a-r2b): the route decides the original cleanup allowance again after its
+        // last await, in the run that records carriage and writes the bytes. Every poll carries the
+        // check, also a poll after an earlier 204. Not enumerable: absent from the wire bytes.
+        const allowance: NanoHostCarriageAllowance = () => {
+          const now = Date.now();
+          return (
+            now >= pending.admittedUnixMs &&
+            now < pending.deadlineUnixMs &&
+            performance.now() < pending.deadlineMonotonicMs
+          );
+        };
+        Object.defineProperty(carried, NANO_HOST_CARRIAGE_ALLOWANCE, { value: allowance });
+        return carried;
+      }
+      if (!unsent) return carried;
       // FIX 4 F3: the route decides again in the turn that writes the first command bytes.
       const first: NanoHostFirstCarriage = {
         attemptId: replacement.request.attemptId,
