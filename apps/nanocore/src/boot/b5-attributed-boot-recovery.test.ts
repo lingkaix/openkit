@@ -1,7 +1,16 @@
 // openkit-test-platform: posix
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { connect as connectHttp2 } from 'node:http2';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -580,19 +589,35 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
-  it(
-    'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan transcript cannot be read',
-    async () => {
-      const root = await seedRoot(['Healthy', 'Second transcript unreadable']);
+  it.each([
+    {
+      input: 'transcript',
+      failure: 'transcript cannot be read',
+      cause: 'check=records; stage=assistant-turn-recovery',
+    },
+    // A retained body file of the second orphan is gone while stopped (P09 missing body). Scope
+    // admission already refuses A for it, so no walk reaches A's records.
+    {
+      input: 'body',
+      failure: 'body file is missing',
+      cause: 'check=records; stage=scope-admission',
+    },
+  ] as const)(
+    'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan $failure',
+    async ({ input, cause }) => {
+      const root = await seedRoot(['Healthy', `Second ${input} unavailable`]);
       const [healthy, held] = root.workspaceIds as [string, string];
       const orphans = await withSeedStore(root, async (store) => {
-        const seeded: Awaited<ReturnType<typeof seedOrphanAssistantTurn>>[] = [];
+        const seeded: (Awaited<ReturnType<typeof seedOrphanAssistantTurn>> & {
+          bodyItemId: string;
+        })[] = [];
         for (const id of root.workspaceIds)
           for (let index = 0; index < 2; index++) {
             const orphan = await seedOrphanAssistantTurn(store, root, id);
+            const bodyItemId = testEntityId('it', `it_b5_large_${id.slice(-12)}_${index}`);
             // Each orphan streamed a body above the inline limit, retained as a digest file.
             await store.createItem({
-              id: testEntityId('it', `it_b5_large_${id.slice(-12)}_${index}`),
+              id: bodyItemId,
               owner: { kind: 'workspace', workspaceId: id },
               threadId: orphan.threadId,
               turnId: orphan.turnId,
@@ -602,36 +627,58 @@ describe('B5 attributed Boot recovery', () => {
               createdAt: COMPLETED_AT,
               completedAt: COMPLETED_AT,
             });
-            seeded.push(orphan);
+            seeded.push({ ...orphan, bodyItemId });
           }
         return seeded;
       });
+      const heldRoot = join(root.dataRoot, 'workspaces', held);
       // A's preexisting body files; a refused attempt may neither remove them nor add its own.
-      expect(largeFiles(join(root.dataRoot, 'workspaces', held)).length).toBeGreaterThanOrEqual(2);
-      // A's first orphan transcript reads; the second orphan's transcript then cannot be read.
-      const fault: BootWalkFault = {
-        workspaceId: held,
-        fail: TURN_ENTRIES_SQL,
-        within: 'readWorkspaceTurnEvents',
-        after: 1,
-        times: 1,
-        label: 'assistant-second-transcript',
-      };
+      expect(largeFiles(heldRoot).length).toBeGreaterThanOrEqual(2);
+      let fault: BootWalkFault | undefined;
+      let restoreBody = () => {};
+      if (input === 'transcript')
+        // A's first orphan transcript reads; the second orphan's transcript then cannot be read.
+        fault = {
+          workspaceId: held,
+          fail: TURN_ENTRIES_SQL,
+          within: 'readWorkspaceTurnEvents',
+          after: 1,
+          times: 1,
+          label: 'assistant-second-transcript',
+        };
+      else {
+        // The walk proves A's orphans in its own Thread order; the later one loses its body file.
+        const order = await withSeedStore(root, (store) =>
+          store.listThreads(held).map((thread) => thread.id)
+        );
+        const second = orphans
+          .slice(2)
+          .sort((a, b) => order.indexOf(a.threadId) - order.indexOf(b.threadId))[1]!;
+        const bodies = largeFiles(heldRoot).filter((path) =>
+          readFileSync(join(heldRoot, path), 'utf8').includes(second.bodyItemId)
+        );
+        expect(bodies).toHaveLength(1);
+        const aside = mkdtempSync(join(tmpdir(), 'openkit-b5-body-'));
+        roots.push(aside);
+        renameSync(join(heldRoot, bodies[0]!), join(aside, 'body'));
+        restoreBody = () => renameSync(join(aside, 'body'), join(heldRoot, bodies[0]!));
+      }
       const original = workspaceEvidence(root.dataRoot, held);
 
       const server = await startServer(root, fault);
-      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
-      await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
+      if (fault) expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(server, held, cause);
       await expectServed(server, [healthy], held);
       await stopServer(server);
       // The first orphan was not interrupted ahead of the second orphan's refused proof.
       expectEvidenceUnchanged(root.dataRoot, held, original);
 
       const repeated = await startServer(root, fault);
-      await expectHeld(repeated, held, 'check=records; stage=assistant-turn-recovery');
+      await expectHeld(repeated, held, cause);
       await stopServer(repeated);
       expectEvidenceUnchanged(root.dataRoot, held, original);
 
+      restoreBody();
       const corrected = await startServer(root);
       await expectNotHeld(corrected, held);
       await expectServed(corrected, root.workspaceIds, null);
