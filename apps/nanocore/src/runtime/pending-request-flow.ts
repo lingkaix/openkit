@@ -569,6 +569,35 @@ export async function recoverPendingRequestsAtBoot(
               store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, input)
             );
           }
+          // The idle tail below selects its first post on each Thread this walk leaves idle with its
+          // own rules on the settled census: a closeout when a requester lost authority, else the
+          // derived invalidation publication, whose proposal is proved here before any write. A
+          // retained contradiction holds the Workspace; its exit is a verified repair of the same
+          // owner's evidence, or a restore, while stopped, and then a restart that revalidates it.
+          const settled = new Map(loaded.map((record) => [record.requestId, record]));
+          for (const thread of store.listThreads(workspace.id)) {
+            if (
+              thread.status === 'archived' ||
+              store
+                .listThreadTurns(workspace.id, thread.id)
+                .some(
+                  (turn) => !isSealedTurnTerminal(turn.status) && !localPublications.has(turn.id)
+                )
+            )
+              continue;
+            const census = listThreadPendingRequests(db.sqlite, workspace.id, thread.id).map(
+              (record) => settled.get(record.requestId) ?? record
+            );
+            if (selectUnavailableRequests(store, dependencies, db.sqlite, census).records.length)
+              continue;
+            const waiting = selectWaitingInvalidations(store, db.sqlite, census);
+            if (waiting.length)
+              store.provePendingRequestServiceTurn(
+                workspace.id,
+                thread.id,
+                invalidationPublication(workspace.id, thread.id, waiting, now)
+              );
+          }
           await bootWorkspaceWrite(() =>
             store.applyPendingRequestCommand(workspace.id, {
               action: 'settle-unfinished',
@@ -1252,6 +1281,43 @@ export async function admitIfIdle(
   if (!busy) await admitNextOutcome(store, dependencies, workspaceId, threadId);
 }
 
+/**
+ * The closeout's selection on one Thread's Pending census: canonical, unclaimed records whose
+ * requester lost current authority, with the invalidating event of each.
+ */
+function selectUnavailableRequests(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  sqlite: import('better-sqlite3').Database,
+  census: readonly PendingRequestRecord[]
+) {
+  const loss = (record: PendingRequestRecord): string | null =>
+    !(
+      dependencies.requesterAuthority?.(record) ??
+      authorityAllows(dependencies.coreDb, store, record, undefined)
+    )
+      ? 'membership-revoked'
+      : record.requesterKind === 'worker' &&
+          dependencies.agentAuthority &&
+          !dependencies.agentAuthority(record)
+        ? 'agent-authority-revoked'
+        : null;
+  const records = census.filter(
+    (record) =>
+      canonicalRecordIsUsable(store, sqlite, record) &&
+      loss(record) &&
+      record.claim !== 'claimed' &&
+      (record.state === 'pending' ||
+        record.delivery === 'undelivered' ||
+        needsInvalidationPublication(record))
+  );
+  return {
+    census,
+    records,
+    events: records.map((record) => ({ requestId: record.requestId, event: loss(record)! })),
+  };
+}
+
 /** Closes only canonical, unclaimed requests whose requester lost current authority. */
 async function closeoutUnavailableRequests(
   store: FsStore,
@@ -1262,32 +1328,12 @@ async function closeoutUnavailableRequests(
 ): Promise<boolean> {
   const selection = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
-    const census = listThreadPendingRequests(sqlite, workspaceId, threadId);
-    const loss = (record: PendingRequestRecord): string | null =>
-      !(
-        dependencies.requesterAuthority?.(record) ??
-        authorityAllows(dependencies.coreDb, store, record, undefined)
-      )
-        ? 'membership-revoked'
-        : record.requesterKind === 'worker' &&
-            dependencies.agentAuthority &&
-            !dependencies.agentAuthority(record)
-          ? 'agent-authority-revoked'
-          : null;
-    const records = census.filter(
-      (record) =>
-        canonicalRecordIsUsable(store, sqlite, record) &&
-        loss(record) &&
-        record.claim !== 'claimed' &&
-        (record.state === 'pending' ||
-          record.delivery === 'undelivered' ||
-          needsInvalidationPublication(record))
+    return selectUnavailableRequests(
+      store,
+      dependencies,
+      sqlite,
+      listThreadPendingRequests(sqlite, workspaceId, threadId)
     );
-    return {
-      census,
-      records,
-      events: records.map((record) => ({ requestId: record.requestId, event: loss(record)! })),
-    };
   });
   if (!selection.records.length) return false;
   const now = new Date().toISOString();
@@ -1828,42 +1874,70 @@ async function admitInvalidations(
 ): Promise<boolean> {
   const waiting = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
-    return listThreadPendingRequests(sqlite, workspaceId, threadId).filter(
-      (record) =>
-        canonicalRecordIsUsable(store, sqlite, record) &&
-        needsInvalidationPublication(record) &&
-        record.disposition === 'denied-not-executed'
+    return selectWaitingInvalidations(
+      store,
+      sqlite,
+      listThreadPendingRequests(sqlite, workspaceId, threadId)
     );
   });
   if (!waiting.length) return false;
-  const now = new Date().toISOString();
+  const publication = invalidationPublication(
+    workspaceId,
+    threadId,
+    waiting,
+    new Date().toISOString()
+  );
+  await postWorkspace(boot, () =>
+    store.publishPendingRequestServiceTurn(workspaceId, threadId, publication)
+  );
+  return true;
+}
+
+/** The invalidations' selection on one Thread's Pending census: invalidated, unpublished grants. */
+function selectWaitingInvalidations(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  census: readonly PendingRequestRecord[]
+): PendingRequestRecord[] {
+  return census.filter(
+    (record) =>
+      canonicalRecordIsUsable(store, sqlite, record) &&
+      needsInvalidationPublication(record) &&
+      record.disposition === 'denied-not-executed'
+  );
+}
+
+/** The one service publication, at the first waiting request's derived Turn, that associates them. */
+function invalidationPublication(
+  workspaceId: string,
+  threadId: string,
+  waiting: readonly PendingRequestRecord[],
+  now: string
+) {
   const turnId = deriveEntityId('tu', ['invalidation', waiting[0]!.requestId]);
   const projected = waiting.map((record) => ({
     ...record,
     invalidationTurnId: turnId,
     updatedAt: now,
   }));
-  await postWorkspace(boot, () =>
-    store.publishPendingRequestServiceTurn(workspaceId, threadId, {
-      turnId,
-      summary: 'Person grant invalidations',
-      actor: pendingRequestSystemActor(null),
-      now,
-      items: projected.map((record) => pendingInvalidationItem(record, turnId, now)),
-      pending: [
-        {
-          action: 'associate-invalidation',
-          workspaceId,
-          threadId,
-          requestIds: waiting.map((record) => record.requestId),
-          turnId,
-          now,
-          expected: pendingSources(waiting),
-        },
-      ],
-    })
-  );
-  return true;
+  return {
+    turnId,
+    summary: 'Person grant invalidations',
+    actor: pendingRequestSystemActor(null),
+    now,
+    items: projected.map((record) => pendingInvalidationItem(record, turnId, now)),
+    pending: [
+      {
+        action: 'associate-invalidation' as const,
+        workspaceId,
+        threadId,
+        requestIds: waiting.map((record) => record.requestId),
+        turnId,
+        now,
+        expected: pendingSources(waiting),
+      },
+    ],
+  };
 }
 
 function canonicalRecordIsUsable(
