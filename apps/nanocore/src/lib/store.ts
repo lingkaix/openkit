@@ -1153,6 +1153,12 @@ export function assertThreadUpdatePrecondition(
 /** Live native references share their physical scope across Store views; failed imports cannot erase them. */
 const pendingArtifactReferences = new Map<string, number>();
 
+/** The Task owner's read-only terminal fact check, which a Boot walk supplies to a terminal proof. */
+type TerminalTaskFactProof = (
+  db: Pick<WorkspaceDb, 'sqlite'>,
+  turn: ReturnType<typeof controlTerminalTaskTurn>
+) => unknown;
+
 /** The retained Turn record a Workspace terminal publishes: its history metadata with the decided patch, without Items. */
 function workspaceTerminalTurnRecord(
   metadata: object,
@@ -4162,13 +4168,18 @@ export class FsStore {
    * record and Items that the publication would post. It stages no content and writes nothing;
    * the Workspace writer still rechecks the same dependencies when the publication commits.
    *
+   * It then reads the terminal's Task terminal fact through the Task owner the caller supplies
+   * (that owner imports this Store), on the writer's exact Turn record.
+   *
    * @throws terminal publication conflict when a retained completion contradicts the proposal.
    */
   public provePendingRequestServiceTurn(
-    ...args: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>
+    workspaceId: string,
+    threadId: string,
+    input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2],
+    proveTaskFact: TerminalTaskFactProof
   ): void {
-    const [workspaceId, threadId, input] = args;
-    const { existing, turn, priorEvent } = this.pendingServiceTurnProposal(
+    const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
       workspaceId,
       threadId,
       input
@@ -4205,6 +4216,16 @@ export class FsStore {
       [...supplied.keys()].some((id) => !snapshot.items.some((item) => item.id === id))
     )
       throw terminalTurnPublicationConflict(turn.id);
+    if (!this.dataRoot) return;
+    const taskTurn = controlTerminalTaskTurn(
+      decodeControlProduct('turn', this.pendingServiceTerminalRecord(existing, turn), scope.owner)
+    );
+    const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
+    try {
+      proveTaskFact(db, taskTurn);
+    } finally {
+      db.sqlite.close();
+    }
   }
 
   /**
@@ -4272,6 +4293,18 @@ export class FsStore {
         ).find((event) => event.data.type === 'turn-completed')
       : undefined;
     return { scope, existing, turn, priorEvent };
+  }
+
+  /** The retained Turn record one Pending service publication's terminal posts. */
+  private pendingServiceTerminalRecord(
+    existing: ReturnType<FsStore['pendingServiceTurnProposal']>['existing'],
+    turn: Turn
+  ) {
+    return writeRetainedV1({
+      ...(existing?.metadata ?? { captureCoverage: this.liveCaptureCoverage }),
+      ...turn,
+      items: [],
+    });
   }
 
   /** Applies the original checks inside the admitted same-Turn boundary. */
@@ -4361,11 +4394,7 @@ export class FsStore {
         turn: {
           kind: 'turn',
           expectedRevision: existing?.revision ?? 0,
-          record: writeRetainedV1({
-            ...(existing?.metadata ?? { captureCoverage: this.liveCaptureCoverage }),
-            ...turn,
-            items: [],
-          }),
+          record: this.pendingServiceTerminalRecord(existing, turn),
         },
         products:
           input.archive && !input.admission
@@ -6265,10 +6294,7 @@ export class FsStore {
     threadId: string,
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1],
-    proveTaskFact: (
-      db: Pick<WorkspaceDb, 'sqlite'>,
-      turn: ReturnType<typeof controlTerminalTaskTurn>
-    ) => unknown
+    proveTaskFact: TerminalTaskFactProof
   ): void {
     this.getTurn(workspaceId, threadId, turnId);
     const owner = { kind: 'workspace' as const, workspaceId };
