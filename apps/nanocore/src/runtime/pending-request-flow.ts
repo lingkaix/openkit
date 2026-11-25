@@ -465,7 +465,7 @@ export async function recoverPendingRequestsAtBoot(
   const dataRoot = store.getDataRoot();
   // The Task owner imports the Store, which imports this module: load it here, as the terminal
   // writer loads it, so each service publication proves its Task terminal fact before any write.
-  const { prepareTaskTerminalFact } = await import('./task-terminal-fact.js');
+  const { prepareTaskTerminalFact, readTaskThreadGoal } = await import('./task-terminal-fact.js');
   // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
   for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     // A retained deletion or recovery fence belongs to its original lifecycle continuation.
@@ -596,9 +596,10 @@ export async function recoverPendingRequestsAtBoot(
           }
           // The idle tail below selects its first post on each Thread this walk leaves idle with its
           // own rules on the settled census: a closeout when a requester lost authority, else the
-          // derived invalidation publication. Either proposal is proved here before any write. A
-          // retained contradiction holds the Workspace; its exit is a verified repair of the same
-          // owner's evidence, or a restore, while stopped, and then a restart that revalidates it.
+          // derived invalidation publication, else the next outcome batch. Each refusal that a
+          // retained record can reach is proved here before any write. A retained contradiction
+          // holds the Workspace; its exit is a verified repair of the same owner's evidence, or a
+          // restore, while stopped, and then a restart that revalidates it.
           const settled = new Map(loaded.map((record) => [record.requestId, record]));
           for (const thread of store.listThreads(workspace.id)) {
             if (
@@ -637,6 +638,12 @@ export async function recoverPendingRequestsAtBoot(
                 publication,
                 prepareTaskTerminalFact
               );
+            // Else a person outcome batch is admitted and closed at Boot; its new Turn has no fact
+            // yet, so the Task owner reads the Thread's Goal that its terminal would advance.
+            else if (
+              selectNextOutcome(store, dependencies, db.sqlite, census)?.executor === 'person'
+            )
+              readTaskThreadGoal(db, thread.id);
           }
           await bootWorkspaceWrite(() =>
             store.applyPendingRequestCommand(workspace.id, {
@@ -1429,6 +1436,47 @@ function closeoutPublication(
   };
 }
 
+/** The next outcome batch's selection on one Thread's Pending census, with its executor. */
+function selectNextOutcome(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  sqlite: import('better-sqlite3').Database,
+  census: readonly PendingRequestRecord[]
+): {
+  readonly requestIds: readonly string[];
+  readonly executor: PendingExecutorKind;
+  readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
+  readonly actorId: string;
+  readonly agentId: string | null;
+} | null {
+  const ready = census
+    .filter((record) => isReadyOutcome(record) && canonicalRecordIsUsable(store, sqlite, record))
+    .filter((record) => !dependencies.agentWorkPaused?.() || record.requesterKind === 'person')
+    .sort(compareReadiness);
+  const worker = ready.find((record) => record.requesterKind === 'worker');
+  const assistant = ready.find((record) => record.requesterKind === 'assistant');
+  const person = ready.find((record) => record.requesterKind === 'person');
+  const coordinator = ready.find((record) => record.requesterKind === 'coordinator');
+  const first = worker ?? assistant ?? coordinator ?? person;
+  if (!first || first.requesterKind === 'automation') return null;
+  const batch = selectReadyOutcomes(ready, {
+    executor: first.requesterKind,
+    agentId: first.agentId,
+    cause: 'outcome',
+    responsibleUserId: first.responsibleUserId,
+  });
+  return {
+    requestIds: batch.map((record) => record.requestId),
+    executor: first.requesterKind,
+    agentId: first.agentId,
+    triggerSource: pendingOutcomeTrigger(batch),
+    actorId:
+      first.requesterKind === 'worker' || first.requesterKind === 'assistant'
+        ? first.responsibleUserId
+        : (first.decidingActor?.id ?? first.responsibleUserId),
+  };
+}
+
 async function admitNextOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
@@ -1438,42 +1486,16 @@ async function admitNextOutcome(
 ): Promise<void> {
   if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId, boot)) return;
   if (await admitInvalidations(store, dependencies, workspaceId, threadId, boot)) return;
-  const selectedRequestIds: string[] = [];
-  let selected: {
-    readonly executor: PendingExecutorKind;
-    readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
-    readonly actorId: string;
-    readonly agentId: string | null;
-  } | null = null;
-  withWorkspace(dependencies, workspaceId, (sqlite) => {
-    const ready = listThreadPendingRequests(sqlite, workspaceId, threadId)
-      .filter((record) => isReadyOutcome(record) && canonicalRecordIsUsable(store, sqlite, record))
-      .filter((record) => !dependencies.agentWorkPaused?.() || record.requesterKind === 'person')
-      .sort(compareReadiness);
-    const worker = ready.find((record) => record.requesterKind === 'worker');
-    const assistant = ready.find((record) => record.requesterKind === 'assistant');
-    const person = ready.find((record) => record.requesterKind === 'person');
-    const coordinator = ready.find((record) => record.requesterKind === 'coordinator');
-    const first = worker ?? assistant ?? coordinator ?? person;
-    if (!first || first.requesterKind === 'automation') return;
-    const batch = selectReadyOutcomes(ready, {
-      executor: first.requesterKind,
-      agentId: first.agentId,
-      cause: 'outcome',
-      responsibleUserId: first.responsibleUserId,
-    });
-    selectedRequestIds.push(...batch.map((record) => record.requestId));
-    selected = {
-      executor: first.requesterKind,
-      agentId: first.agentId,
-      triggerSource: pendingOutcomeTrigger(batch),
-      actorId:
-        first.requesterKind === 'worker' || first.requesterKind === 'assistant'
-          ? first.responsibleUserId
-          : (first.decidingActor?.id ?? first.responsibleUserId),
-    };
-  });
+  const selected = withWorkspace(dependencies, workspaceId, (sqlite) =>
+    selectNextOutcome(
+      store,
+      dependencies,
+      sqlite,
+      listThreadPendingRequests(sqlite, workspaceId, threadId)
+    )
+  );
   if (!selected) return;
+  const selectedRequestIds = selected.requestIds;
   const choice: {
     readonly executor: PendingExecutorKind;
     readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
