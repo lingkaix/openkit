@@ -463,9 +463,6 @@ export async function recoverPendingRequestsAtBoot(
 ): Promise<void> {
   const now = new Date().toISOString();
   const dataRoot = store.getDataRoot();
-  // The Task owner imports the Store, which imports this module: load it here, as the terminal
-  // writer loads it, so each service publication proves its Task terminal fact before any write.
-  const { prepareTaskTerminalFact, readTaskThreadGoal } = await import('./task-terminal-fact.js');
   // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
   for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     // A retained deletion or recovery fence belongs to its original lifecycle continuation.
@@ -583,12 +580,7 @@ export async function recoverPendingRequestsAtBoot(
                 { action: 'delivery-prove' as const, workspaceId: workspace.id, turnId, now },
               ],
             };
-            store.provePendingRequestServiceTurn(
-              workspace.id,
-              publication.threadId,
-              input,
-              prepareTaskTerminalFact
-            );
+            await store.provePendingRequestServiceTurn(workspace.id, publication.threadId, input);
             proveDelivery(turnId);
             posts.push(() =>
               store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, input)
@@ -632,18 +624,13 @@ export async function recoverPendingRequestsAtBoot(
                 ? invalidationPublication(workspace.id, thread.id, waiting, now)
                 : null;
             if (publication)
-              store.provePendingRequestServiceTurn(
-                workspace.id,
-                thread.id,
-                publication,
-                prepareTaskTerminalFact
-              );
+              await store.provePendingRequestServiceTurn(workspace.id, thread.id, publication);
             // Else a person outcome batch is admitted and closed at Boot; its new Turn has no fact
             // yet, so the Task owner reads the Thread's Goal that its terminal would advance.
             else if (
               selectNextOutcome(store, dependencies, db.sqlite, census)?.executor === 'person'
             )
-              readTaskThreadGoal(db, thread.id);
+              await store.proveTaskThreadGoal(workspace.id, thread.id);
           }
           await bootWorkspaceWrite(() =>
             store.applyPendingRequestCommand(workspace.id, {
@@ -1674,20 +1661,12 @@ async function deliverWorkerOutcome(
         // At startup a refused or uncertain post is followed by this Turn's failed terminal: its
         // writer's own preparation, reap and Task fact proofs run on that terminal before the post,
         // so a retained contradiction holds the Workspace rather than following its bookkeeping.
-        if (outcome.prepared) {
-          const { prepareTaskTerminalFact } = await import('./task-terminal-fact.js');
-          store.proveWorkspaceTurnCompletion(
-            workspaceId,
-            threadId,
-            turnId,
-            {
-              status: 'failed',
-              completedAt: new Date().toISOString(),
-              error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
-            },
-            prepareTaskTerminalFact
-          );
-        }
+        if (outcome.prepared)
+          await store.proveWorkspaceTurnCompletion(workspaceId, threadId, turnId, {
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+          });
         if (dependencies.agentWorkPaused?.())
           throw new TurnStartValidationError(
             'agent_work_paused',
