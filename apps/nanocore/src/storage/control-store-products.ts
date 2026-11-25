@@ -2284,6 +2284,27 @@ let terminalOwners:
     }
   | undefined;
 
+/**
+ * Loads the terminal writer's domain owners once, outside every SQL transaction. A Boot proof reads
+ * through these same owners, so it runs the writer's own checks across their Store import cycle.
+ *
+ * @returns The owners that `applyControlTerminal` calls in its deciding body.
+ */
+export async function loadControlTerminalOwners(): Promise<NonNullable<typeof terminalOwners>> {
+  if (!terminalOwners) {
+    const [store, requests, audit, task, evidence, observations] = await Promise.all([
+      import('./command-request-records.js'),
+      import('./command-request-records.js'),
+      import('../audit-events.js'),
+      import('../runtime/task-terminal-fact.js'),
+      import('../runtime/runtime-evidence.js'),
+      import('./work-observations.js'),
+    ]);
+    terminalOwners = { store, requests, audit, task, evidence, observations };
+  }
+  return terminalOwners;
+}
+
 const terminalPreparations = new WeakMap<
   PreparedControlTerminal,
   {
@@ -2624,17 +2645,7 @@ export async function prepareControlTerminal(
   newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlTerminal> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  if (!terminalOwners) {
-    const [store, requests, audit, task, evidence, observations] = await Promise.all([
-      import('./command-request-records.js'),
-      import('./command-request-records.js'),
-      import('../audit-events.js'),
-      import('../runtime/task-terminal-fact.js'),
-      import('../runtime/runtime-evidence.js'),
-      import('./work-observations.js'),
-    ]);
-    terminalOwners = { store, requests, audit, task, evidence, observations };
-  }
+  await loadControlTerminalOwners();
   if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   const input = ControlTerminalTransitionSchema.parse(value);
   terminalOwner(db, input.owner);
