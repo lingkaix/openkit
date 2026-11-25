@@ -10,11 +10,13 @@ import { fileURLToPath } from 'node:url';
 import type { OperationId } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
 import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
 import { pendingRequestItemId } from '../runtime/pending-requests.js';
+import * as productTurns from '../runtime/product-turn-start.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
@@ -25,8 +27,10 @@ import {
   createTestAgentSetup,
   recordTestAgentEnvironmentPackage,
 } from '../test-support/agent-environment.js';
+import { createApp as createSimulatedApp } from '../test-support/app.js';
 import {
   capabilityCallCount,
+  hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
   readPendingRow,
   type WorkspaceEvidence,
@@ -38,6 +42,10 @@ import {
 } from '../test-support/boot-walk-evidence.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
 
@@ -1024,6 +1032,141 @@ describe('B5 attributed Boot recovery', () => {
         // After the result: the handoff named its Workspace and Thread and read no sibling.
         expect(server.output()).not.toContain('[boot-walk-fault] hit');
         expect(bootDecisionLines(server)).not.toContain('Boot recovery held Workspace');
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "holds only the Workspace whose frozen Worker outcome fails its owner's pre-submit read at startup and leaves that outcome untouched",
+    async () => {
+      const root = await seedRoot(['Pre-submit read fails', 'Healthy frozen']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const frozen = root.workspaceIds.map((id, index) => {
+        const row = readPendingRow(root.dataRoot, id, seeded[index]!.requestIds[0]!);
+        expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+        return row;
+      });
+      // The scan reads the held outcome successfully; only the owner's own proof read then fails.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_RECORD_SQL,
+        within: ['prepareTurn'],
+        live: ['prepareTurn'],
+        label: 'pending-handoff-presubmit',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectNotHeld(server, healthy);
+      // The sibling still progresses: its own owner refuses it, so its batch is closed out.
+      await vi.waitFor(
+        () =>
+          expect(readPendingRow(root.dataRoot, healthy, seeded[1]!.requestIds[0]!)).toMatchObject({
+            delivery: 'closed-out',
+          }),
+        { timeout: 60_000, interval: 250 }
+      );
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // No release, unknown or terminal post reached the held Workspace: its bytes are the seeded ones.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded[0]!.requestIds[0]!)).toEqual(frozen[0]);
+      await withSeedStore(root, (store) => {
+        expect(
+          store.getTurn(held, seeded[0]!.threadId, frozen[0]!.delivery_turn_id as string).status
+        ).toBe('pending');
+        expect(
+          store.getTurn(healthy, seeded[1]!.threadId, frozen[1]!.delivery_turn_id as string)
+        ).toMatchObject({ status: 'failed', error: { code: 'agent_not_found' } });
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'admits the configured Worker outcome through its real App owner and keeps the lifecycle observer in that Workspace while a sibling cannot answer a Turn selector',
+    async () => {
+      const root = await seedRoot(['Unreadable sibling', 'Configured Worker']);
+      const [sibling, healthy] = root.workspaceIds as [string, string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [healthy], {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const requestId = seeded!.requestIds[0]!;
+      const frozen = readPendingRow(root.dataRoot, healthy, requestId);
+      expect(frozen).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+      const turnId = frozen.delivery_turn_id as string;
+      let restore = () => {};
+      const original = productTurns.startProductTurn;
+      const admission = vi.spyOn(productTurns, 'startProductTurn').mockImplementation((input) =>
+        original({
+          ...input,
+          onTurnCreated: async (...args) => {
+            restore();
+            await input.onTurnCreated?.(...args);
+          },
+        })
+      );
+      const failures = vi.spyOn(console, 'error');
+      // The packaged self-check executor records the simulated Worker run through its Native owner.
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      try {
+        const manifest = createTestAgentSetup({ agentId: WORKER_AGENT_ID }).manifest;
+        await recordTestNativeRuntimeTarget(coreDb);
+        const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+        // The sibling cannot answer any Turn selector until B's original admission ACK.
+        restore = hideWorkspaceTurnSelector(root.dataRoot, sibling);
+        // App's startup resume hands the frozen outcome to the declared Worker's real admission.
+        createSimulatedApp({
+          coreDb,
+          store,
+          dataRoot: root.dataRoot,
+          nanoHostStorage,
+          agentManifests: [manifest],
+        });
+        await vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(1), {
+          timeout: 30_000,
+          interval: 100,
+        });
+        // The lifecycle result: the original completion resolves with the terminal Worker Turn.
+        await expect(admission.mock.results[0]!.value).resolves.toMatchObject({
+          turn: { id: turnId, status: 'completed' },
+        });
+        expect(store.getTurn(healthy, seeded!.threadId, turnId).status).toBe('completed');
+        // The original ACK: the frozen batch was delivered to this admitted Turn.
+        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
+          delivery: 'delivered',
+          delivery_turn_id: turnId,
+        });
+        expect(failures).not.toHaveBeenCalledWith(
+          `Pending outcome Worker ${turnId} failed.`,
+          expect.anything()
+        );
+        // No owner read the sibling, so nothing held it.
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', sibling)).toBe(true);
+      } finally {
+        restore();
+        admission.mockRestore();
+        failures.mockRestore();
+        vi.unstubAllEnvs();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
       }
     },
     CASE_TIMEOUT_MS

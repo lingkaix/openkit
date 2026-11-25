@@ -359,7 +359,11 @@ describe('live Provider readiness composition', () => {
         } else {
           const delivery =
             f.registration.mock.calls.at(-1)![0].pendingRequestServices!.workerDelivery!;
-          const result = delivery.startTurn(f.store, frozen!.id);
+          // The admitting Workspace and Thread name the outcome Turn (D6).
+          const result = delivery.startTurn(f.store, frozen!.id, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          });
           void result.catch(() => undefined);
           await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
         }
