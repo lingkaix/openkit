@@ -1300,16 +1300,29 @@ export interface ControlTurnReapInput {
   readonly inferredBy: string;
 }
 
-/** Prepares ordinary terminal evidence from native authority, preserving the first snapshot despite late observations. */
-export function prepareControlTurnReap(
+/**
+ * Reads one Turn's reap dependency through its native owner: capture coverage, any retained reap,
+ * and every observation page with the page's own sequence, manifest and lineage checks. It writes
+ * nothing, so a Boot walk can prove a terminal's reap before its first write; the terminal
+ * transition still reads it again inside its own SQL transaction.
+ *
+ * @returns Undefined when the Turn retains no capture coverage and no observation.
+ * @throws When the retained coverage, reap identity or observation history refuses a reap.
+ */
+export function readControlTurnReapDependency(
   sqlite: Database.Database,
   owner: ControlProductOwner,
-  input: ControlTurnReapInput
-): ControlWorkObservationInput | null {
+  input: { readonly threadId: string; readonly turnId: string }
+):
+  | {
+      readonly binding: ReturnType<typeof readControlWorkObservationTurnBinding>;
+      readonly existing: WorkObservationRecord | undefined;
+      readonly unresolvedCalls: { corr: string; type: string; name: string | null; ts: string }[];
+      readonly lastObservedTs: string | null;
+    }
+  | undefined {
   if (!sqlite.inTransaction)
-    throw new Error('Native reap preparation requires the owning SQL transaction');
-  z.string().min(1).parse(input.reason);
-  z.string().min(1).parse(input.inferredBy);
+    return sqlite.transaction(() => readControlTurnReapDependency(sqlite, owner, input))();
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
   if (!binding.coverage) {
     if (
@@ -1319,16 +1332,14 @@ export function prepareControlTurnReap(
         .get(input.turnId)
     )
       throw new Error('recovery_required: missing capture coverage for native observations');
-    return null;
+    return undefined;
   }
-  if (['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt)
-    throw new Error('turn.reap requires the native terminal Turn in the same transition');
   const id = `turn.reap:${input.turnId}`;
   const existing = readControlWorkObservation(sqlite, owner, { ...input, id });
   if (existing) {
     if (existing.type !== 'turn.reap')
       throw new Error('recovery_required: turn.reap identity conflict');
-    return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
+    return { binding, existing, unresolvedCalls: [], lastObservedTs: null };
   }
   const calls = new Map<string, { corr: string; type: string; name: string | null; ts: string }>();
   let afterSequence = 0;
@@ -1373,20 +1384,40 @@ export function prepareControlTurnReap(
     if (rows.length < 128) break;
     afterSequence = rows.at(-1)!.seq;
   }
+  return { binding, existing: undefined, unresolvedCalls: [...calls.values()], lastObservedTs };
+}
+
+/** Prepares ordinary terminal evidence from native authority, preserving the first snapshot despite late observations. */
+export function prepareControlTurnReap(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlTurnReapInput
+): ControlWorkObservationInput | null {
+  if (!sqlite.inTransaction)
+    throw new Error('Native reap preparation requires the owning SQL transaction');
+  z.string().min(1).parse(input.reason);
+  z.string().min(1).parse(input.inferredBy);
+  const dependency = readControlTurnReapDependency(sqlite, owner, input);
+  if (!dependency) return null;
+  const { binding, existing } = dependency;
+  if (['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt)
+    throw new Error('turn.reap requires the native terminal Turn in the same transition');
+  if (existing)
+    return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
   return {
     threadId: input.threadId,
     turnId: input.turnId,
     bodies: [],
     observation: {
-      id,
+      id: `turn.reap:${input.turnId}`,
       type: 'turn.reap',
       ts: binding.turn.completedAt,
       obs: 'nanocore',
       ret: 'turn-evidence',
       payload: {
         reason: input.reason,
-        lastObservedTs,
-        unresolvedCalls: [...calls.values()],
+        lastObservedTs: dependency.lastObservedTs,
+        unresolvedCalls: dependency.unresolvedCalls,
         inferredBy: input.inferredBy,
       },
     },
