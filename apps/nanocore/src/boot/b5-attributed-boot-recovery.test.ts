@@ -2127,6 +2127,86 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
+  it(
+    "proves every row of a configured Worker outcome's frozen batch on the delivery writer's rule before the Core post at startup, and holds A with no submission when one no longer decodes",
+    async () => {
+      const root = await seedRoot(['Undecodable batch row', 'Configured Worker']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, root.workspaceIds, {
+          count: 2,
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const frozen = root.workspaceIds.map((id, index) =>
+        readPendingRow(root.dataRoot, id, seeded[index]!.requestIds[0]!)
+      );
+      const [heldTurn, healthyTurn] = frozen.map((row) => row.delivery_turn_id as string) as [
+        string,
+        string,
+      ];
+      // Stopped retained-row fault: A's second batch row no longer decodes; the scan skips it.
+      writePendingHeldResult(root.dataRoot, held, seeded[0]!.requestIds[1]!, '{');
+      const original = workspaceEvidence(root.dataRoot, held);
+      const admission = vi.spyOn(productTurns, 'startProductTurn');
+      const warnings = vi.spyOn(console, 'warn');
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      try {
+        const manifest = createTestAgentSetup({ agentId: WORKER_AGENT_ID }).manifest;
+        await recordTestNativeRuntimeTarget(coreDb);
+        const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+        createSimulatedApp({
+          coreDb,
+          store,
+          dataRoot: root.dataRoot,
+          nanoHostStorage,
+          agentManifests: [manifest],
+        });
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false);
+        expect(warnings).toHaveBeenCalledWith(
+          `Boot recovery held Workspace ${held} during pending-request-recovery.`,
+          expect.any(String)
+        );
+        // The sibling progresses through its own original admission, delivery and terminal.
+        await vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(1), {
+          timeout: 30_000,
+          interval: 100,
+        });
+        expect(admission.mock.calls[0]![0].reservedTurnId).toBe(healthyTurn);
+        await expect(admission.mock.results[0]!.value).resolves.toMatchObject({
+          turn: { id: healthyTurn, status: 'completed' },
+        });
+        expect(readPendingRow(root.dataRoot, healthy, seeded[1]!.requestIds[0]!)).toMatchObject({
+          delivery: 'delivered',
+          delivery_turn_id: healthyTurn,
+        });
+        expect(admission).toHaveBeenCalledTimes(1);
+        // Nothing reached Core for A: no scheduler admission names its outcome Turn.
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: held,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          }).filter((entry) => entry.turnId === heldTurn)
+        ).toEqual([]);
+      } finally {
+        admission.mockRestore();
+        warnings.mockRestore();
+        vi.unstubAllEnvs();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
+      }
+      // A's frozen batch and pending Turn remain for the Boot that admits A again.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded[0]!.requestIds[0]!)).toEqual(frozen[0]);
+    },
+    CASE_TIMEOUT_MS
+  );
+
   it.each(PENDING_BOOT_POSTS)(
     'holds only the Workspace whose own writer refuses its Pending $write at Boot with a definite precondition',
     async ({ write, seed, writerAfter }) => {
