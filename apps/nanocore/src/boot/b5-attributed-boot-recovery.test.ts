@@ -1040,23 +1040,34 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
-  it(
-    "proves the idle tail's authority-loss closeout publication before the restart settlement, and holds A unchanged when its Task's Goal is gone",
-    async () => {
-      const root = await seedRoot(['Healthy', 'Closeout Task Goal gone']);
+  it.each([
+    {
+      post: 'authority-loss closeout publication',
+      // A waiting Worker approval whose agent Boot's configuration no longer declares.
+      approval: { requesterKind: 'worker', decision: null },
+      delivery: 'closed-out',
+    },
+    {
+      post: 'person outcome close',
+      // A denied person approval whose outcome the tail admits and closes at Boot.
+      approval: { requesterKind: 'person', decision: 'denied' },
+      delivery: 'delivered',
+    },
+  ] as const)(
+    "proves the idle tail's $post before the restart settlement, and holds A unchanged when its Task's Goal is gone",
+    async ({ approval, delivery }) => {
+      const root = await seedRoot(['Healthy', 'Tail Task Goal gone']);
       const [healthy, held] = root.workspaceIds as [string, string];
       const seeded = await withSeedStore(root, async (store) => {
         const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
         for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
-        // A waiting Worker approval whose agent Boot's configuration no longer declares.
         const approvals = await seedDecidedApprovals(store, root, root.workspaceIds, {
           services: 'none',
-          requesterKind: 'worker',
-          decision: null,
+          ...approval,
         });
-        return approvals.map((approval, index) => ({ ...approval, claim: claims[index]! }));
+        return approvals.map((seed, index) => ({ ...seed, claim: claims[index]! }));
       });
-      // A's closeout Thread is a Goal card Task of an ended Goal whose row is gone while stopped.
+      // A's tail Thread is a Goal card Task of an ended Goal whose row is gone while stopped.
       const goalThreadId = await withSeedStore(
         root,
         async (store) => (await store.createThread(held, 'Goal coordination')).id
@@ -1078,12 +1089,10 @@ describe('B5 attributed Boot recovery', () => {
       expect(bootDecisionLines(server)).toContain(
         'Task terminal fact requires its linked Goal owner'
       );
-      // The sibling's closeout took the same tail of the same walk.
+      // The sibling's post took the same tail of the same walk.
       for (const requestId of seeded[0]!.requestIds)
-        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
-          delivery: 'closed-out',
-        });
-      // A's closeout terminal would refuse after the settlement: neither committed.
+        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({ delivery });
+      // A's tail terminal would refuse after the settlement: neither committed.
       expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toEqual(claim);
       expectEvidenceUnchanged(root.dataRoot, held, original);
 
@@ -1099,9 +1108,7 @@ describe('B5 attributed Boot recovery', () => {
       await expectServed(corrected, root.workspaceIds, null);
       await stopServer(corrected);
       for (const requestId of seeded[1]!.requestIds)
-        expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({
-          delivery: 'closed-out',
-        });
+        expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({ delivery });
       expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
         claim: 'finished',
         disposition: 'outcome-unknown',
