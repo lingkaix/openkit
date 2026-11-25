@@ -153,11 +153,12 @@ export async function copyNanoHostMeasuredHarnessIdentity(
 export interface AdmittedNanoHostHarnessTurnLifecycle {
   /**
    * @param authority A replacement close's successor authority, decided under the Core and
-   *   Workspace holds in the turn that posts the queue commit.
+   *   Workspace holds in the turn that posts the queue commit, or an ordinary idle close's
+   *   allowance check in that turn.
    */
   queue(
     input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1],
-    authority?: NanoHostReplacementQueueAuthority
+    authority?: NanoHostReplacementQueueAuthority | NanoHostQueuePostCheck
   ): Promise<number>;
   dispatch(
     input: Parameters<typeof Records.dispatchNanoHostHarnessOperation>[1]
@@ -196,8 +197,16 @@ export interface NanoHostFirstCarriage {
   readonly refuse: (error: unknown) => Promise<void>;
 }
 
+/**
+ * A process-local check in the turn that posts one queue commit, on committed Native state; false
+ * refuses the queue unposted. An ordinary idle close checks its idle proof and cleanup allowance.
+ */
+export interface NanoHostQueuePostCheck {
+  readonly verifyBeforePost: (native: Pick<CoreDb, 'sqlite'>) => boolean;
+}
+
 /** Process-local successor authority for one replacement close queue commit. */
-export interface NanoHostReplacementQueueAuthority {
+export interface NanoHostReplacementQueueAuthority extends NanoHostQueuePostCheck {
   /** The successor attempt whose Workspace is held with Core through the queue commit. */
   readonly attemptId: string;
   /**
@@ -225,7 +234,7 @@ export async function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: Parameters<typeof Records.queueNanoHostHarnessOperation>[1],
   admitted?: AdmittedNanoHostHarnessTurnLifecycle,
-  authority?: NanoHostReplacementQueueAuthority
+  authority?: NanoHostReplacementQueueAuthority | NanoHostQueuePostCheck
 ): Promise<number> {
   const startedAt = performance.now();
   try {

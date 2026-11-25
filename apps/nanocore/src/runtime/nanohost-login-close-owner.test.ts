@@ -16,7 +16,8 @@ import {
   type SchedulerCapacityChange,
   type SchedulerCapacityRefusal,
 } from '../scheduler-hold-release.js';
-import type { CoreDb } from '../storage/db.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import {
@@ -45,6 +46,7 @@ vi.mock('./nanohost-harness.js', async (importOriginal) => {
     expireNanoHostHarnessQueuedOperation: vi.fn(),
     markNanoHostHarnessOperationUnknown: vi.fn(),
     queueNanoHostHarnessOperation: vi.fn(),
+    readNanoHostIdleCloseAuthority: vi.fn(() => ({ receipt: 'idle-close' })),
   };
 });
 vi.mock('./execution-attempts.js', async (importOriginal) => ({
@@ -602,6 +604,171 @@ describe('Row 15: the original Login close keeps both slots until its proof', ()
     expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
     expect(loginCloseOwns(a)).toBe(false);
   });
+});
+
+// CLOSE-LC S3a-r2 row 5: an ordinary idle close samples its cleanup allowance after the receipt
+// and preparation reads, and again in the turn that posts the queue.
+describe('CLOSE-LC S3a-r2 row 5: the ordinary idle close queue samples after its reads', () => {
+  it.each(['preparation', 'post'] as const)(
+    'refuses the queue when the cleanup allowance passes at the %s',
+    async (at) => {
+      const a = fakeSession('a', 'th_a');
+      controlLoginClose([a]);
+      const real = Date.now.bind(Date);
+      const late = real() + 86_400_000;
+      let passed = false;
+      const wall = vi.spyOn(Date, 'now').mockImplementation(() => (passed ? late : real()));
+      try {
+        const target = backend as unknown as Record<string, (...args: never[]) => unknown>;
+        const prepare = vi.mocked(target.prepareHarnessOperation!);
+        const prepared = prepare.getMockImplementation()!;
+        prepare.mockImplementation(((...args: never[]) => {
+          const out = prepared(...args);
+          // The allowance passes during the Harness and lineage reads of the preparation.
+          if (at === 'preparation') passed = true;
+          return out;
+        }) as never);
+        let posted: boolean | undefined;
+        vi.mocked(queueNanoHostHarnessOperation).mockImplementation(
+          async (_db, _input, _lifecycle, authority) => {
+            // The allowance passes before the turn that posts the queue.
+            if (at === 'post') passed = true;
+            posted = authority ? authority.verifyBeforePost({ sqlite: {} as never }) : true;
+            if (!posted) throw new Error('The posting turn refused the queue unposted.');
+            return 1;
+          }
+        );
+        const closing = backend.closeDurableAgentSession(inspectionOf(a));
+        void closing.catch(() => {});
+        if (at === 'preparation') {
+          await expect(closing).rejects.toThrow(
+            'NanoHost idle Core binding or cleanup allowance changed before queue.'
+          );
+          expect(queueNanoHostHarnessOperation).not.toHaveBeenCalled();
+          return;
+        }
+        await vi.waitFor(
+          () => expect(queueNanoHostHarnessOperation).toHaveBeenCalledTimes(1),
+          POLL
+        );
+        expect(posted).toBe(false);
+        await expect(closing).rejects.toThrow(
+          'NanoHost idle Core binding or cleanup allowance changed before queue.'
+        );
+      } finally {
+        wall.mockRestore();
+      }
+    }
+  );
+});
+
+// CLOSE-LC S3a-r2 row 7: the Login departure reads the physical Epoch before it samples its
+// clocks. The production client posts the removal right after its beforeSubmit check, so expiry
+// during the last Epoch read submits zero removals. The removal keeps the first settlement clock.
+describe('CLOSE-LC S3a-r2 row 7: the Login departure samples its clocks after the Epoch read', () => {
+  it.each(['passes', 'live'] as const)(
+    'decides the Login removal on the clock after its last Epoch read (slot %s during the read)',
+    async (slot) => {
+      const target = backend as unknown as {
+        completeHarnessLoginDeparture(pending: unknown, result: unknown): Promise<void>;
+      };
+      const epoch = 'e'.repeat(64);
+      const completedAt = '2026-11-25T00:00:00.000Z';
+      const referenceId = 'vault_00000000-0000-7000-8000-000000000001';
+      const operationId = 'a'.repeat(64);
+      let wall = Date.now();
+      const deadlineUnixMs = wall + 10_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => wall);
+      let reads = 0;
+      const owner = backend as unknown as Record<string, (...args: never[]) => unknown>;
+      vi.spyOn(owner, 'requireCurrentPhysicalEpoch' as never).mockImplementation(((
+        runtimeTargetId: string
+      ) => {
+        expect(runtimeTargetId).toBe('rt_local');
+        reads += 1;
+        // Read 2 runs in the client beforeSubmit check, the last read before the removal post.
+        if (reads === 2 && slot === 'passes') wall = deadlineUnixMs;
+        return epoch;
+      }) as never);
+      vi.mocked(openAdmittedWorkspaceReadDb).mockReturnValueOnce({
+        dataRoot,
+        workspaceId: WORKSPACE,
+        scope: 'workspace',
+        sqlite: { open: true, close: () => {} },
+      } as never);
+      const client = getControlStoreWorkerClient();
+      const nativeVault = client.vault.bind(client);
+      const records: unknown[] = [];
+      vi.spyOn(client, 'vault').mockImplementation(async (...args) => {
+        records.push(args[2]);
+        return nativeVault(...args);
+      });
+      const internals = client as unknown as Record<string, (...args: never[]) => unknown>;
+      vi.spyOn(internals, 'open' as never).mockResolvedValue(undefined as never);
+      const submitted: unknown[] = [];
+      vi.spyOn(internals, 'request' as never).mockImplementation((async (command: {
+        readonly input: { readonly kind: string; readonly record: unknown };
+      }) => {
+        submitted.push(command.input.record);
+        return { operation: 'vault', result: { kind: command.input.kind, value: null } };
+      }) as never);
+      const failures: Error[] = [];
+      const departure: Record<string, unknown> = {
+        workspaceId: WORKSPACE,
+        threadId: 'th_departure',
+        agentSessionId: 'as_departure',
+        agentSessionRuntimeBindingId: 'asrb_departure',
+        harnessBindingRef: 'hb_departure',
+        originPhysicalEpoch: epoch,
+        runtimeTargetId: 'rt_local',
+        expectedReferenceId: referenceId,
+        completedAt,
+      };
+      const pending = {
+        sequence: 1,
+        operationId,
+        reject: (error: Error) => failures.push(error),
+        admittedUnixMs: wall - 1,
+        deadlineUnixMs,
+        deadlineMonotonicMs: performance.now() + 600_000,
+        closeDeparture: departure,
+      };
+      const settled = target.completeHarnessLoginDeparture(pending, {
+        disposition: 'succeeded',
+        sequence: 1,
+        operationId,
+        harnessInstanceId: 'hi_departure',
+      });
+      const removal = {
+        workspaceId: WORKSPACE,
+        threadId: 'th_departure',
+        agentSessionId: 'as_departure',
+        agentSessionRuntimeBindingId: 'asrb_departure',
+        harnessInstanceId: 'hi_departure',
+        operationId,
+        sequence: 1,
+        completedAt,
+        expectedReferenceId: referenceId,
+      };
+      // The client receives the removal with the first settlement clock, never a later sample.
+      if (slot === 'passes') {
+        await expect(settled).rejects.toThrow('NanoHost Login departure requires inspection.');
+        expect(records).toEqual([removal]);
+        expect(reads).toBe(2);
+        expect(submitted).toEqual([]);
+        expect(failures.map((error) => error.message)).toEqual([
+          'NanoHost Login departure requires inspection.',
+        ]);
+        expect(departure.completedAt).toBe(completedAt);
+        return;
+      }
+      await settled;
+      expect(records).toEqual([removal]);
+      expect(reads).toBe(3);
+      expect(submitted).toEqual([removal]);
+      expect(failures).toEqual([]);
+    }
+  );
 });
 
 describe('Row 14: a changed resident carries the current admission read', () => {

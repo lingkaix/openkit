@@ -454,14 +454,33 @@ let factoryCoreDb: ReturnType<typeof openCoreDb>;
 beforeAll(async () => {
   factoryCoreDb = await createFactoryCoreDb();
 });
+/**
+ * A timed case owns the process-wide writer only while Vitest runs it. Its shutdown can start just
+ * before Vitest times the case out and still run under the next case. The suite owner joins that
+ * shutdown before the next case starts (A8 FIX 4 finding 4).
+ */
+let timedCaseShutdown: Promise<void> | undefined;
+function shutdownOwnedWriter(owned: () => boolean): Promise<void> {
+  if (!owned()) return Promise.resolve();
+  const shutdown = shutdownControlStoreWorkerClient();
+  timedCaseShutdown = shutdown;
+  return shutdown;
+}
+async function joinTimedCaseShutdown(): Promise<void> {
+  const crossing = timedCaseShutdown;
+  timedCaseShutdown = undefined;
+  await crossing?.catch(() => undefined);
+}
 // Cases that restart the control-store client drop every admitted opening; rejoin the shared root as boot does.
-beforeEach(async () => {
+async function prepareFactoryCase(): Promise<void> {
+  await joinTimedCaseShutdown();
   if (
     getControlStoreWorkerClient().readAdmittedNanoHost(factoryCoreDb.dataRoot, () => undefined)
       .state !== 'ready'
   )
     await reopenAdmittedTestNanoHost(factoryCoreDb);
-});
+}
+beforeEach(prepareFactoryCase);
 
 /** Returns the fixed persistent-image facts used by NanoHost materialization fixtures. */
 function nanoHostImageInspection(request: NanoHostSessionEffectRequest) {
@@ -8376,18 +8395,23 @@ describe('createConfiguredTurnExecutor', () => {
       // Native pauses after RC7 and before its commit: the queue frame is posted late. The
       // publisher resumes in that window. Its swap must wait for the Core hold.
       let swappedBeforeCommit: boolean | undefined;
+      let queueId: unknown;
       const post = NativeWorker.prototype.postMessage;
       const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
         this: NativeWorker,
         ...args: Parameters<NativeWorker['postMessage']>
       ) {
-        const frame = args[0] as { mutation?: { input?: { kind?: string; operation?: string } } };
+        const frame = args[0] as {
+          id?: unknown;
+          mutation?: { input?: { kind?: string; operation?: string } };
+        };
         if (
           swappedBeforeCommit !== undefined ||
           frame?.mutation?.input?.kind !== 'operation.queue' ||
           frame.mutation.input.operation !== 'session.close'
         )
           return Reflect.apply(post, this, args);
+        queueId = frame.id;
         swappedBeforeCommit = false;
         void (async () => {
           const until = Date.now() + 1_500;
@@ -8398,6 +8422,35 @@ describe('createConfiguredTurnExecutor', () => {
         })();
       });
       onTestFinished(() => posts.mockRestore());
+      // S3a-r2 F4-2: the queue row commits and its reply is withheld. The swap must still wait.
+      const emit = NativeWorker.prototype.emit;
+      let withheld: { readonly status: unknown; readonly old: boolean } | undefined;
+      const emits = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['emit']>
+      ) {
+        const [event, value] = args as [unknown, { id?: unknown } | undefined];
+        if (
+          event !== 'message' ||
+          withheld !== undefined ||
+          queueId === undefined ||
+          value?.id !== queueId
+        )
+          return Reflect.apply(emit, this, args);
+        // The exact commit ACK: Native replies only after the queue row committed. No Native read
+        // runs while its writer reply is withheld.
+        const status = (value as { status?: unknown }).status;
+        withheld = { status: null, old: true };
+        void (async () => {
+          const until = Date.now() + 1_500;
+          while (manager.current() === original && Date.now() < until)
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          withheld = { status, old: manager.current() === original };
+          Reflect.apply(emit, this, args);
+        })();
+        return true;
+      });
+      onTestFinished(() => emits.mockRestore());
       const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
       const queue = owner.harnessTurnLifecycle.queue;
       vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
@@ -8424,6 +8477,8 @@ describe('createConfiguredTurnExecutor', () => {
       );
       // Queue order: the old applied snapshot holds through the Native commit and its ACK.
       expect(swappedBeforeCommit).toBe(false);
+      await vi.waitFor(() => expect(withheld?.status).not.toBeNull(), { timeout: 30_000 });
+      expect(withheld).toEqual({ status: 'ok', old: true });
       expect(await reloading).toMatchObject({ status: 'applied' });
       expect(manager.current()).not.toBe(original);
       // The swap completed before RC10: zero bytes, the exact unsent settlement, scoped release.
@@ -8620,6 +8675,196 @@ describe('createConfiguredTurnExecutor', () => {
     },
     90_000
   );
+
+  // CLOSE-LC S3a-r2 F4-1: each effect samples the clock after its last successful fact read. The
+  // wall passes every deadline during that read (forward), or steps back below the original enqueue
+  // instant (back). Either way the limiting clock is the cleanup allowance.
+  const F41_WALL_STEP = { forward: 86_400_000, back: -86_400_000 } as const;
+  it.each(['forward', 'back'] as const)(
+    'refuses a replacement post whose clock passes during its last RC7 read (S3a-r2 F4-1, %s)',
+    async (step) => {
+      const f = await admitNativeReplacementClose(`r2_f41_rc7_${step}`);
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const choice = selectedRetainedStorage(f);
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const queue = owner.harnessTurnLifecycle.queue;
+      let lastRead = 0;
+      vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+        if (input.operation !== 'session.close' || !authority) return await queue(input, authority);
+        return await queue(input, {
+          ...authority,
+          verifyBeforePost: (native) => {
+            const real = Date.now.bind(Date);
+            const late = real() + F41_WALL_STEP[step];
+            let passed = false;
+            const wall = vi.spyOn(Date, 'now').mockImplementation(() => (passed ? late : real()));
+            const prepare = native.sqlite.prepare.bind(native.sqlite);
+            const reads = vi.spyOn(native.sqlite, 'prepare').mockImplementation(((sql: string) => {
+              // S, the last read of RC7 in the posting turn.
+              if (sql.includes('FROM worker_storage_bindings WHERE storage_ref=? AND revision=?')) {
+                lastRead += 1;
+                passed = true;
+              }
+              return prepare(sql);
+            }) as typeof native.sqlite.prepare);
+            try {
+              return authority.verifyBeforePost(native);
+            } finally {
+              reads.mockRestore();
+              wall.mockRestore();
+            }
+          },
+        });
+      });
+      await expect(f.close(choice)).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: 'close-allowance',
+      });
+      expect(lastRead).toBe(1);
+      expect(replacementCloseRows(f.coreDb)).toEqual([]);
+      expect(replacementCloses(f)).toEqual([]);
+      expectReplacementPairIntact(f, before, false);
+    },
+    90_000
+  );
+
+  it.each(['forward', 'back'] as const)(
+    'sends zero bytes when the clock passes during the exact dispatched-key read (S3a-r2 F4-1, %s)',
+    async (step) => {
+      const f = await admitNativeReplacementClose(`r2_f41_rc10_${step}`);
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const ref = f.native.outside.integrationBindingRef!;
+      // The real poll route is this close's only carrier.
+      f.native.outside.integrationBindingRef = undefined;
+      const carry = owner.harnessTurnLifecycle.carry;
+      let lastRead = 0;
+      vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+        const real = Date.now.bind(Date);
+        const late = real() + F41_WALL_STEP[step];
+        let passed = false;
+        const wall = vi.spyOn(Date, 'now').mockImplementation(() => (passed ? late : real()));
+        const prepare = Database.prototype.prepare;
+        const reads = vi
+          .spyOn(Database.prototype, 'prepare')
+          .mockImplementation(function (this: Database.Database, sql: string) {
+            // The exact dispatched key, the last read of RC10 in the held carriage turn.
+            if (
+              sql.includes("operation = 'session.close'") &&
+              sql.includes("operation_state = 'dispatched' AND operation_id = ?")
+            ) {
+              lastRead += 1;
+              passed = true;
+            }
+            return Reflect.apply(prepare, this, [sql]);
+          } as typeof Database.prototype.prepare);
+        try {
+          return await carry(attemptId, run);
+        } finally {
+          reads.mockRestore();
+          wall.mockRestore();
+        }
+      });
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await vi.waitFor(
+        () =>
+          expect(replacementCloseRows(f.coreDb)).toEqual([
+            expect.objectContaining({ state: 'queued' }),
+          ]),
+        { timeout: 30_000 }
+      );
+      expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+        status: 204,
+        body: '',
+      });
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: 'close-allowance',
+      });
+      expect(lastRead).toBe(1);
+      // Zero bytes and the exact unsent settlement.
+      expect(replacementCloseRows(f.coreDb)).toEqual(UNSENT_CLOSE);
+      expectReplacementPairIntact(f, before, true);
+    },
+    90_000
+  );
+
+  // CLOSE-LC S3a-r2 F4-3: Native refuses the slot after the limiting credential passed. Main's wall
+  // steps below Ta before the exact deadline reply arrives. The answer keeps the posted clock.
+  it('answers the posted limiting credential when the wall steps back before the Native deadline reply (S3a-r2 F4-3)', async () => {
+    let limiting = '';
+    const f = await admitNativeReplacementClose('r2_f43_issuer', {
+      successorCredential: (coreDb, ownerUserId) => {
+        const { limiting: tokenId, ...credential } = successorCredentials['issuer-grace'](
+          coreDb,
+          ownerUserId
+        );
+        limiting = tokenId;
+        return credential;
+      },
+    });
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    f.gate();
+    const operation = f.close();
+    void operation.catch(() => undefined);
+    await f.entered;
+    rotateOpenKitAccessTokenRecord(f.coreDb, limiting, { graceSeconds: 3 });
+    const cutoff = Date.parse(
+      getOpenKitAccessTokenRecord(f.coreDb, limiting)!.rotatedGraceExpiresAt!
+    );
+    // Native pauses after RC7 and before its commit until the cutoff has passed.
+    const post = NativeWorker.prototype.postMessage;
+    let queueId: unknown;
+    const posts = vi.spyOn(NativeWorker.prototype, 'postMessage').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['postMessage']>
+    ) {
+      const frame = args[0] as {
+        id?: unknown;
+        mutation?: { input?: { kind?: string; operation?: string } };
+      };
+      if (
+        queueId !== undefined ||
+        frame?.mutation?.input?.kind !== 'operation.queue' ||
+        frame.mutation.input.operation !== 'session.close'
+      )
+        return Reflect.apply(post, this, args);
+      queueId = frame.id;
+      setTimeout(() => Reflect.apply(post, this, args), Math.max(0, cutoff - Date.now() + 100));
+    });
+    onTestFinished(() => posts.mockRestore());
+    // Hold the exact deadline reply. Main's wall steps below Ta, then the reply arrives.
+    const emit = NativeWorker.prototype.emit;
+    let held: string | undefined;
+    const emits = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+      this: NativeWorker,
+      ...args: Parameters<NativeWorker['emit']>
+    ) {
+      const [event, value] = args as [unknown, { id?: unknown } | undefined];
+      if (event !== 'message' || held !== undefined || queueId === undefined || value?.id !== queueId)
+        return Reflect.apply(emit, this, args);
+      held = JSON.stringify(value);
+      void (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const wall = vi.spyOn(Date, 'now').mockReturnValue(cutoff - 2_000);
+        onTestFinished(() => wall.mockRestore());
+        Reflect.apply(emit, this, args);
+      })();
+      return true;
+    });
+    onTestFinished(() => emits.mockRestore());
+    f.release();
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
+      closeCause: 'authority-expired',
+    });
+    expect(held).toContain(harnessRecords.NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
+    expect(Date.now()).toBeLessThan(cutoff);
+    expect(replacementCloseRows(f.coreDb)).toEqual([]);
+    expect(replacementCloses(f)).toEqual([]);
+    expectReplacementPairIntact(f, before, false);
+  }, 90_000);
 
   // AMEND 3.3: a real writer of each held file starts after the successful observation; its first
   // frame must wait for the Native queue reply (held back here), so the decision cannot go stale.
@@ -18420,12 +18665,41 @@ describe('createConfiguredTurnExecutor', () => {
       admissions.mockRestore();
       dispatches.mockRestore();
       await native.restore();
-      if (ownsWriter) await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter(() => ownsWriter);
       coreDb.sqlite.close();
     }
       },
     120_000
   );
+
+  // A8 FIX 4 finding 4: a directed overlap. The owned shutdown starts, then Vitest ends the case
+  // (as at a timeout) before that shutdown completes. The next case must get an accepting writer.
+  // S3a-r2 F4-4, the directed overlap: a timed case enters its owned shutdown, and its time runs
+  // out (ownership ends, as its onTestFinished hook does) before that shutdown completes. Accepted
+  // writer work holds the shutdown in its drain: stopping, not closed. The next case's preparation
+  // is the suite owner's beforeEach, called here directly.
+  it('joins a timed case writer shutdown before the next case prepares (S3a-r2 F4-4)', async () => {
+    const client = getControlStoreWorkerClient();
+    const release = Promise.withResolvers<void>();
+    void client.runOperation(() => release.promise).catch(() => undefined);
+    let owned = true;
+    const shutdown = shutdownOwnedWriter(() => owned);
+    let completed = false;
+    void shutdown.finally(() => {
+      completed = true;
+    });
+    owned = false;
+    setTimeout(() => release.resolve(), 200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect({ closed: client.isClosed, completed }).toEqual({ closed: false, completed: false });
+    await expect(prepareFactoryCase()).resolves.toBeUndefined();
+    // The old shutdown completed first; the next case gets a new, accepting writer.
+    expect(completed).toBe(true);
+    const next = getControlStoreWorkerClient();
+    expect(next).not.toBe(client);
+    await expect(next.runOperation(async () => 'accepted')).resolves.toBe('accepted');
+    expect(next.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+  });
 
   it('dispatches a younger fresh-storage Task while a deferred Task waits only on its held selected storage', async () => {
     type FactoryManifest = ReturnType<typeof createTestAgentSetup>['manifest'];

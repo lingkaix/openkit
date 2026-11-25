@@ -4010,7 +4010,8 @@ class ControlStoreWorkerClient {
 
       const writeHarnessTurn = (
         input: Extract<NanoHostOwnerMutation, { kind: 'harness-turn-lifecycle' }>['input'],
-        verifyCarriage?: () => void
+        verifyCarriage?: () => void,
+        verifyAuthority?: (sqlite: Database.Database) => boolean
       ) => {
         const original = structuredClone(input);
         return withCoreHold(
@@ -4019,7 +4020,8 @@ class ControlStoreWorkerClient {
               await write(
                 { kind: 'harness-turn-lifecycle', input: original, coreIdentity },
                 undefined,
-                verifyCarriage
+                verifyCarriage,
+                verifyAuthority
               )
             ).value
         );
@@ -4107,25 +4109,31 @@ class ControlStoreWorkerClient {
             ...(replacement ? { replacement } : {}),
           } as const);
           // A replacement close decides its successor's Core and Workspace authority after both
-          // holds drained earlier writers, in the turn that posts this Native commit.
-          const result = authority
-            ? await withCoreHold((coreIdentity) =>
-                withWorkspaceForAttempt(authority.attemptId, async () => {
-                  try {
-                    return (
-                      await write(
-                        { kind: 'harness-turn-lifecycle', input: original, coreIdentity },
-                        undefined,
-                        undefined,
-                        (sqlite) => authority.verifyBeforePost({ sqlite })
-                      )
-                    ).value;
-                  } finally {
-                    if (opening.host.failed) await opening.host.exited.promise;
-                  }
-                })
-              )
-            : await writeHarnessTurn(original);
+          // holds drained earlier writers, in the turn that posts this Native commit. An ordinary
+          // idle close checks its allowance in that turn (CL2, S3a-r2).
+          const result =
+            authority && 'attemptId' in authority
+              ? await withCoreHold((coreIdentity) =>
+                  withWorkspaceForAttempt(authority.attemptId, async () => {
+                    try {
+                      return (
+                        await write(
+                          { kind: 'harness-turn-lifecycle', input: original, coreIdentity },
+                          undefined,
+                          undefined,
+                          (sqlite) => authority.verifyBeforePost({ sqlite })
+                        )
+                      ).value;
+                    } finally {
+                      if (opening.host.failed) await opening.host.exited.promise;
+                    }
+                  })
+                )
+              : await writeHarnessTurn(
+                  original,
+                  undefined,
+                  authority ? (sqlite) => authority.verifyBeforePost({ sqlite }) : undefined
+                );
           if (typeof result !== 'number') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         },

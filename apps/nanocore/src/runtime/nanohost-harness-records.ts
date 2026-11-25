@@ -1360,11 +1360,13 @@ export function queueNanoHostHarnessOperation(
       throw new Error('NanoHost Harness is not accepting new work.');
     }
     requireOperationLineage(coreDb, harness, input.operation, body, owner);
-    if (input.replacement) requireReplacementCloseSelection(owner, harness, input, body);
+    const slot = input.replacement
+      ? readReplacementCloseSelection(owner, harness, input, body)
+      : undefined;
     const command = input.prepared.command;
     const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
     const commandBodyJson = canonicalJson(durableBody);
-    if (
+    const conflict =
       command.schemaVersion !== 2 ||
       command.harnessInstanceId !== harness.harness_instance_id ||
       command.operation !== input.operation ||
@@ -1373,12 +1375,35 @@ export function queueNanoHostHarnessOperation(
       canonicalJson(requireDurableHarnessBody(input.operation, command.body)) !==
         canonicalJson(body) ||
       command.operationId !==
-        harnessOperationId(harness, input.operation, command.sequence, durableBody)
-    ) {
-      throw new Error(
-        'NanoHost Harness prepared identity conflicts with current binding or sequence.'
-      );
+        harnessOperationId(harness, input.operation, command.sequence, durableBody);
+    const refusal =
+      slot?.refusal ??
+      (conflict
+        ? 'NanoHost Harness prepared identity conflicts with current binding or sequence.'
+        : null);
+    if (refusal !== null) {
+      // The original deadline slot decides first, so Main can answer the clock that limited it.
+      // A refusal writes nothing, so its compare follows the last read.
+      if (slot?.deadline !== undefined && new Date().toISOString() >= slot.deadline)
+        throw new Error(NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
+      throw new Error(refusal);
     }
+    // RC8 (CL2, S3a-r2): a commit compares the slot inside its deciding update. A wall sample
+    // taken after the reads but before this update would be stale. The connection-local function
+    // is no durable state.
+    let expired = false;
+    if (slot?.deadline !== undefined)
+      owner.sqlite.function(
+        'nanohost_replacement_slot_open',
+        { directOnly: true },
+        (deadline: unknown) => {
+          if (typeof deadline !== 'string')
+            throw new Error('NanoHost replacement close slot is invalid.');
+          const open = new Date().toISOString() < deadline;
+          if (!open) expired = true;
+          return open ? 1 : 0;
+        }
+      );
     const update = owner.sqlite
       .prepare(
         `UPDATE harness_instance_records
@@ -1386,7 +1411,9 @@ export function queueNanoHostHarnessOperation(
              operation_sequence = next_sequence, operation = ?, command_body_json = ?,
              command_fingerprint = ?, updated_at = ?
          WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')
-           AND next_sequence = ?`
+           AND next_sequence = ?${
+             slot?.deadline === undefined ? '' : ' AND nanohost_replacement_slot_open(?) = 1'
+           }`
       )
       .run(
         command.operationId,
@@ -1395,8 +1422,10 @@ export function queueNanoHostHarnessOperation(
         sha256Hex(commandBodyJson),
         input.timestamp,
         input.harnessInstanceId,
-        command.sequence
+        command.sequence,
+        ...(slot?.deadline === undefined ? [] : [slot.deadline])
       );
+    if (expired) throw new Error(NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
     if (update.changes !== 1) throw new Error('NanoHost Harness changed before enqueue.');
 
     return command.sequence;
@@ -1406,23 +1435,19 @@ export function queueNanoHostHarnessOperation(
 }
 
 /**
- * Compares a replacement close's original selection in the queue commit: the same idle binding on
- * its open Harness and accepting Sandbox, in the same ready target Epoch.
+ * Reads a replacement close's original selection for the queue commit: the same idle binding on
+ * its open Harness and accepting Sandbox, in the same ready target Epoch, and the selected storage
+ * revision. It returns the first changed fact and the original deadline slot, which is never
+ * restarted. The caller compares the slot after these reads.
  */
-function requireReplacementCloseSelection(
+function readReplacementCloseSelection(
   owner: NanoHostHarnessDb,
   harness: HarnessRow,
   input: QueueNanoHostHarnessOperationInput,
   body: Readonly<Record<string, unknown>>
-): void {
+): { readonly deadline: string | undefined; readonly refusal: string | null } {
   const selection = input.replacement!;
-  // The original deadline slot is sampled at this deciding mutation, never restarted. It decides
-  // first, so Main can answer the clock that limited it.
-  if (
-    selection.startupDeadline !== undefined &&
-    new Date().toISOString() >= selection.startupDeadline
-  )
-    throw new Error(NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
+  const deadline = selection.startupDeadline;
   const target = getNanoHostRuntimeTarget(owner, selection.target.targetId);
   const binding =
     input.operation === 'session.close'
@@ -1455,14 +1480,15 @@ function requireReplacementCloseSelection(
     binding?.revision !== selection.bindingRevision ||
     binding.lifecycleState !== selection.bindingLifecycleState
   )
-    throw new Error(NANO_HOST_REPLACEMENT_SELECTION_CHANGED);
+    return { deadline, refusal: NANO_HOST_REPLACEMENT_SELECTION_CHANGED };
   if (selection.storage) {
     const storage = owner.sqlite
       .prepare('SELECT revision FROM worker_storage_bindings WHERE storage_ref=?')
       .get(selection.storage.storageRef) as { revision: number } | undefined;
     if (storage?.revision !== selection.storage.revision)
-      throw new Error(NANO_HOST_REPLACEMENT_STORAGE_CHANGED);
+      return { deadline, refusal: NANO_HOST_REPLACEMENT_STORAGE_CHANGED };
   }
+  return { deadline, refusal: null };
 }
 
 /** Observes pending dispatch for one current Integration on the admitted Native reader. */
@@ -1538,8 +1564,11 @@ export function dispatchNanoHostHarnessOperation(
     )
       return null;
     requireConsumedHarnessResult(coreDb, harness);
-    const now = input.now?.() ?? new Date().toISOString();
-    if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
+    const sample = () => input.now?.() ?? new Date().toISOString();
+    const expired = (at: string) =>
+      Date.parse(at) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS;
+    let now = sample();
+    if (expired(now)) {
       setHarnessUnknown(owner, harness.harness_instance_id, now, 'queued');
 
       return null;
@@ -1565,11 +1594,29 @@ export function dispatchNanoHostHarnessOperation(
       operation === 'turn.steer'
         ? undefined
         : requireOperationLineage(coreDb, harness, operation, body, owner);
-    if (harness.operation === 'turn.start') {
-      const attemptId = body.leaseId as string;
+    const turnStart = harness.operation === 'turn.start';
+    const attemptId = body.leaseId as string;
+    const original =
+      turnStart && admitted ? readRetainedNanoHostSubmission(coreDb, attemptId) : undefined;
+    const target =
+      turnStart && admitted ? getNanoHostRuntimeTarget(owner, integration.targetId) : undefined;
+    const lease =
+      turnStart && !admitted
+        ? (coreDb.sqlite
+            .prepare(
+              'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
+            )
+            .get(attemptId) as { readonly bindingRef: string } | undefined)
+        : undefined;
+    // CL2 (S3a-r2): the result budget decides again on a sample after the last read, before the
+    // first Turn, binding or dispatch write. Expiry during these reads takes the queued expiry.
+    now = sample();
+    if (expired(now)) {
+      setHarnessUnknown(owner, harness.harness_instance_id, now, 'queued');
+      return null;
+    }
+    if (turnStart) {
       if (admitted) {
-        const original = readRetainedNanoHostSubmission(coreDb, attemptId);
-        const target = getNanoHostRuntimeTarget(owner, integration.targetId);
         if (!original || !target || !sessionCompatibilityKey)
           throw new Error('NanoHost Harness requires the original admitted submission decision.');
         const { attempt } = original.lease;
@@ -1593,11 +1640,6 @@ export function dispatchNanoHostHarnessOperation(
           observedAt: now,
         });
       } else {
-        const lease = coreDb.sqlite
-          .prepare(
-            'SELECT binding_ref AS bindingRef FROM scheduler_execution_attempts WHERE attempt_id = ?'
-          )
-          .get(attemptId) as { readonly bindingRef: string } | undefined;
         if (!lease) throw new Error('NanoHost Harness Turn lease is missing.');
         bindNanoHostAttemptRouteTokenHashes(coreDb, {
           attemptId,

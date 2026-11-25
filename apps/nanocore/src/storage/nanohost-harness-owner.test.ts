@@ -9,7 +9,7 @@ import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
@@ -22,6 +22,8 @@ import {
   hasQueuedNanoHostHarnessOperation,
   inspectNanoHostIdleCloseConsumption,
   listNanoHostMeasuredHarnessIdentities,
+  NANO_HOST_HARNESS_RESULT_BUDGET_MS,
+  NANO_HOST_REPLACEMENT_DEADLINE_PASSED,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
@@ -32,6 +34,7 @@ import {
 } from '../runtime/nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
+  getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -584,3 +587,185 @@ it.each(['succeeded', 'unknown'] as const)(
     }
   }
 );
+
+/** CLOSE-LC S3a-r2: one idle close on its own Harness, queued or ready to queue. */
+function withIdleClose(
+  name: string,
+  exercise: (
+    core: ReturnType<typeof openCoreDb>,
+    owner: { readonly sqlite: Database.Database },
+    close: {
+      readonly runtime: ReturnType<typeof runtimeFacts>;
+      readonly session: ReturnType<typeof sessionFacts>;
+      readonly request: Parameters<typeof prepareNanoHostHarnessOperation>[1];
+    }
+  ) => void
+) {
+  const root = mkdtempSync(join(tmpdir(), `openkit-nanohost-close-clock-${name}-`));
+  const core = openCoreDb(root);
+  try {
+    applyMigrations(core);
+    withHarnessOwner((owner) => {
+      const runtime = runtimeFacts(name);
+      const session = { ...sessionFacts(name), agentSessionId: testEntityId('as', name) };
+      owner.sqlite
+        .transaction(() => {
+          createNanoHostHarnessRuntime(owner, runtime);
+          openNanoHostAgentSessionBinding(owner, session);
+        })
+        .immediate();
+      exercise(core, owner, {
+        runtime,
+        session,
+        request: {
+          harnessInstanceId: runtime.harnessInstanceId,
+          operation: 'session.close',
+          timestamp,
+          body: {
+            agentSessionId: session.agentSessionId,
+            agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+          },
+        },
+      });
+    });
+  } finally {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const harnessCell = (owner: { readonly sqlite: Database.Database }, harnessInstanceId: string) =>
+  owner.sqlite
+    .prepare(
+      `SELECT operation, operation_state AS operationState, lifecycle_state AS lifecycleState,
+        drain_state AS drainState FROM harness_instance_records WHERE harness_instance_id = ?`
+    )
+    .get(harnessInstanceId);
+
+// CLOSE-LC S3a-r2 AMEND 1: RC8 compares the slot inside its deciding update. Native samples its
+// wall at 99 after the reads; the slot passes at 100, before the update. The update leaves zero
+// rows and refuses with the typed deadline, so Main answers its posted limiting clock.
+it.each(['passes', 'live'] as const)(
+  'compares a replacement close slot inside its deciding queue update (slot %s at the update)',
+  (slot) => {
+    withIdleClose(`slot-${slot}`, (core, owner, { runtime, session, request }) => {
+      const target = getNanoHostRuntimeTarget(owner, runtimeTargetId)!;
+      const binding = owner.sqlite
+        .prepare(
+          `SELECT updated_at AS revision, lifecycle_state AS lifecycleState
+          FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
+        )
+        .get(session.agentSessionRuntimeBindingId) as { revision: string; lifecycleState: string };
+      const prepared = prepareNanoHostHarnessOperation(core, request, owner);
+      const deadline = Date.parse(timestamp) + 100;
+      const replacement = {
+        target: {
+          targetId: target.targetId,
+          identityId: target.identityId,
+          deploymentId: target.deploymentId,
+          connectionGeneration: target.connectionGeneration,
+          physicalEpoch: target.physicalEpoch,
+        },
+        bindingRevision: binding.revision,
+        bindingLifecycleState: binding.lifecycleState,
+        startupDeadline: new Date(deadline).toISOString(),
+      };
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const prepare = owner.sqlite.prepare.bind(owner.sqlite);
+      let updated = false;
+      const statements = vi.spyOn(owner.sqlite, 'prepare').mockImplementation(((sql: string) => {
+        if (sql.includes("SET operation_state = 'queued'")) {
+          updated = true;
+          // The wall reaches the slot after the last read and before the deciding update.
+          if (slot === 'passes') vi.setSystemTime(deadline);
+        }
+        return prepare(sql);
+      }) as typeof owner.sqlite.prepare);
+      try {
+        vi.setSystemTime(deadline - 1);
+        const queue = () =>
+          owner.sqlite
+            .transaction(() =>
+              queueNanoHostHarnessOperation(core, { ...request, prepared, replacement }, owner)
+            )
+            .immediate();
+        if (slot === 'passes') expect(queue).toThrow(NANO_HOST_REPLACEMENT_DEADLINE_PASSED);
+        else expect(queue()).toBe(prepared.command.sequence);
+      } finally {
+        statements.mockRestore();
+        vi.useRealTimers();
+      }
+      expect(updated).toBe(true);
+      expect(harnessCell(owner, runtime.harnessInstanceId)).toMatchObject(
+        slot === 'passes'
+          ? { operation: null, operationState: 'idle' }
+          : { operation: 'session.close', operationState: 'queued' }
+      );
+    });
+  }
+);
+
+// CLOSE-LC S3a-r2 row 10: the result budget decides again on a sample after the lineage read.
+// Expiry during that read takes the queued expiry and fences, with zero dispatches and no
+// binding write. The early expiry stays.
+it('expires a queued close whose result budget passes during its dispatch lineage read', () => {
+  withIdleClose('budget', (core, owner, { runtime, session, request }) => {
+    owner.sqlite
+      .transaction(() => {
+        const prepared = prepareNanoHostHarnessOperation(core, request, owner);
+        queueNanoHostHarnessOperation(core, { ...request, prepared }, owner);
+      })
+      .immediate();
+    const bindingBefore = owner.sqlite
+      .prepare(
+        'SELECT * FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+      )
+      .get(session.agentSessionRuntimeBindingId);
+    let wall = Date.parse(timestamp) + 1_000;
+    let lineage = 0;
+    const prepare = owner.sqlite.prepare.bind(owner.sqlite);
+    const statements = vi.spyOn(owner.sqlite, 'prepare').mockImplementation(((sql: string) => {
+      if (sql.includes('agent_session_compatibility_key AS compatibilityKey')) {
+        lineage += 1;
+        // The 300-second result budget passes during the lineage read.
+        wall = Date.parse(timestamp) + NANO_HOST_HARNESS_RESULT_BUDGET_MS;
+      }
+      return prepare(sql);
+    }) as typeof owner.sqlite.prepare);
+    let command: ReturnType<typeof dispatchNanoHostHarnessOperation>;
+    try {
+      command = owner.sqlite
+        .transaction(() =>
+          dispatchNanoHostHarnessOperation(
+            core,
+            {
+              sandboxIntegrationBindingRef: runtime.sandboxIntegrationBindingRef,
+              now: () => new Date(wall).toISOString(),
+            },
+            { owner }
+          )
+        )
+        .immediate();
+    } finally {
+      statements.mockRestore();
+    }
+    expect(lineage).toBe(1);
+    expect(command).toBeNull();
+    expect(harnessCell(owner, runtime.harnessInstanceId)).toEqual({
+      operation: 'session.close',
+      operationState: 'unknown',
+      lifecycleState: 'failed',
+      drainState: 'draining',
+    });
+    expect(
+      owner.sqlite
+        .prepare(
+          'SELECT * FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .get(session.agentSessionRuntimeBindingId)
+    ).toEqual(bindingBefore);
+    expect(hasQueuedNanoHostHarnessOperation(owner, runtime.sandboxIntegrationBindingRef)).toBe(
+      false
+    );
+  });
+});
