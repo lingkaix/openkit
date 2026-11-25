@@ -28,6 +28,7 @@ import {
   isSealedTurnTerminal,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import { NativeEnvironmentRecordSchema } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -3191,9 +3192,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         return undefined;
       return async () => {
         const workspaceId = workspaceIdForOwner(turn.owner);
-        const identity = createHash('sha256')
-          .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
-          .digest('hex');
+        // Same bytes as the former local JSON framing: these are well-formed ID strings.
+        const identity = sha256CanonicalJson([workspaceId, turn.threadId, turn.id]);
         const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
         const admitted = Promise.withResolvers<void>();
