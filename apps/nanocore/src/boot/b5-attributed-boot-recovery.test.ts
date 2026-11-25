@@ -2205,10 +2205,20 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
-  it(
-    "proves every row of a configured Worker outcome's frozen batch on the delivery writer's rule before the Core post at startup, and holds A with no submission when one no longer decodes",
-    async () => {
-      const root = await seedRoot(['Undecodable batch row', 'Configured Worker']);
+  it.each([
+    {
+      proof:
+        "every row of a configured Worker outcome's frozen batch on the delivery writer's rule",
+      fault: 'one no longer decodes',
+    },
+    {
+      proof: "a configured Worker outcome's failed terminal on its writer's own rules",
+      fault: "its Task's Goal is gone",
+    },
+  ] as const)(
+    'proves $proof before the Core post at startup, and holds A with no submission when $fault',
+    async ({ fault }) => {
+      const root = await seedRoot(['Startup proof fails', 'Configured Worker']);
       const [held, healthy] = root.workspaceIds as [string, string];
       const seeded = await withSeedStore(root, (store) =>
         seedDecidedApprovals(store, root, root.workspaceIds, {
@@ -2225,8 +2235,23 @@ describe('B5 attributed Boot recovery', () => {
         string,
         string,
       ];
-      // Stopped retained-row fault: A's second batch row no longer decodes; the scan skips it.
-      writePendingHeldResult(root.dataRoot, held, seeded[0]!.requestIds[1]!, '{');
+      if (fault === 'one no longer decodes')
+        // Stopped retained-row fault: A's second batch row no longer decodes; the scan skips it.
+        writePendingHeldResult(root.dataRoot, held, seeded[0]!.requestIds[1]!, '{');
+      else {
+        // A's outcome Thread is a Goal card Task whose Goal row is gone while stopped: a refused
+        // or uncertain post would be followed by a failed terminal its Task owner refuses.
+        const goalThreadId = await withSeedStore(
+          root,
+          async (store) => (await store.createThread(held, 'Goal coordination')).id
+        );
+        const goalId = seedEndedGoalTask(root.dataRoot, held, {
+          taskThreadId: seeded[0]!.threadId,
+          goalThreadId,
+          userId: root.actor.id,
+        });
+        removeGoal(root.dataRoot, held, goalId);
+      }
       const original = workspaceEvidence(root.dataRoot, held);
       const admission = vi.spyOn(productTurns, 'startProductTurn');
       const warnings = vi.spyOn(console, 'warn');
@@ -2244,10 +2269,19 @@ describe('B5 attributed Boot recovery', () => {
           nanoHostStorage,
           agentManifests: [manifest],
         });
-        expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false);
+        // The scan's scope proof holds A synchronously; the terminal proof runs in its delivery.
+        if (fault === 'one no longer decodes')
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false);
+        else
+          await vi.waitFor(
+            () => expect(isScopeAdmitted(root.dataRoot, 'workspace', held)).toBe(false),
+            { timeout: 30_000, interval: 100 }
+          );
         expect(warnings).toHaveBeenCalledWith(
           `Boot recovery held Workspace ${held} during pending-request-recovery.`,
-          expect.any(String)
+          fault === 'one no longer decodes'
+            ? expect.any(String)
+            : 'Task terminal fact requires its linked Goal owner.'
         );
         // The sibling progresses through its own original admission, delivery and terminal.
         await vi.waitFor(() => expect(admission).toHaveBeenCalledTimes(1), {

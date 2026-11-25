@@ -1671,6 +1671,23 @@ async function deliverWorkerOutcome(
     };
     try {
       try {
+        // At startup a refused or uncertain post is followed by this Turn's failed terminal: its
+        // writer's own preparation, reap and Task fact proofs run on that terminal before the post,
+        // so a retained contradiction holds the Workspace rather than following its bookkeeping.
+        if (outcome.prepared) {
+          const { prepareTaskTerminalFact } = await import('./task-terminal-fact.js');
+          store.proveWorkspaceTurnCompletion(
+            workspaceId,
+            threadId,
+            turnId,
+            {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+              error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+            },
+            prepareTaskTerminalFact
+          );
+        }
         if (dependencies.agentWorkPaused?.())
           throw new TurnStartValidationError(
             'agent_work_paused',
