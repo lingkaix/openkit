@@ -59,7 +59,7 @@ import {
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
 import * as appOwner from '../app.js';
@@ -449,19 +449,22 @@ async function createFactoryCoreDb() {
   return coreDb;
 }
 
-// Collection runs in worker threads without the control-store client; seed once before the cases.
-let factoryCoreDb: ReturnType<typeof openCoreDb>;
-beforeAll(async () => {
-  factoryCoreDb = await createFactoryCoreDb();
-});
 /**
- * A timed case owns the process-wide writer only while Vitest runs it, its hooks included. A body
- * or hook that still runs after Vitest finished its case (a timeout) keeps that case's token, so its
- * shutdown stops nothing (S3a-r2c A8 finding 2). An owned shutdown is published when it starts. The
- * next case joins it before it prepares (A8 FIX 4 finding 4) and forgets it only after it settles
- * (S3a-r2b A8-2). Every writer shutdown in this file goes through this owner.
+ * A case owns the process-wide writer only while Vitest runs it, its hooks included. A suite hook
+ * owns it from its entry until Vitest completes the hook (S3a-r2d A8 finding 1). Code that still
+ * runs after Vitest completed its unit (a timeout) keeps that unit's token, so its shutdown stops
+ * nothing (S3a-r2c A8 finding 2). A shutdown with no token stops nothing. An owned shutdown is
+ * published when it starts. The next case or suite hook joins it before it prepares (A8 FIX 4
+ * finding 4) and forgets it only after it settles (S3a-r2b A8-2). Every writer shutdown in this
+ * file goes through this owner, and every suite hook that can open or stop the writer registers
+ * through it.
  */
 const writerOwner = installWriterCaseOwner();
+// Collection runs in worker threads without the control-store client; seed once before the cases.
+let factoryCoreDb: ReturnType<typeof openCoreDb>;
+writerOwner.beforeAll(async () => {
+  factoryCoreDb = await createFactoryCoreDb();
+}, 10_000);
 function shutdownOwnedWriter(stop?: () => Promise<void>): Promise<void> {
   return writerOwner.shutdown(stop);
 }
@@ -19049,6 +19052,71 @@ describe('createConfiguredTurnExecutor', () => {
     });
   });
 
+  // S3a-r2d A8 finding 1, the directed suite-setup overlap: a suite hook awaits its own work
+  // before its shutdown, and Vitest completes the hook first (its timeout). A sibling suite's setup
+  // then prepares on the accepting writer and releases the old hook. Its shutdown must not stop the
+  // writer that the sibling setup uses.
+  it('fences a suite hook shutdown that resumes during a sibling suite setup (S3a-r2d A8 finding 1)', async () => {
+    const work = Promise.withResolvers<void>();
+    const stale = writerOwner.runHook(async () => {
+      expect(writerOwner.owns()).toBe(true);
+      await work.promise;
+      await shutdownOwnedWriter();
+    }, 50);
+    // The runner's timeout of the old hook passes.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await writerOwner.runHook(async () => {
+      await prepareFactoryCase();
+      const client = getControlStoreWorkerClient();
+      expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+      work.resolve();
+      await stale;
+      expect({ closed: client.isClosed, current: getControlStoreWorkerClient() === client }).toEqual(
+        { closed: false, current: true }
+      );
+      await expect(client.runOperation(async () => 'accepted')).resolves.toBe('accepted');
+    }, 60_000);
+  });
+
+  // S3a-r2d A8 finding 1, end to end through Vitest's suite hooks: the first suite's hook leaves
+  // a shutdown that outlives it, as a timed-out hook does. The sibling suite's hook prepares on the
+  // accepting writer and releases it. Run both suites together.
+  describe('writer suite hook ownership across real suites (S3a-r2d A8 finding 1)', () => {
+    const work = Promise.withResolvers<void>();
+    let outlived: Promise<void> | undefined;
+    describe('a suite hook that outlives its runner', () => {
+      writerOwner.beforeAll(() => {
+        expect(writerOwner.owns()).toBe(true);
+        outlived = (async () => {
+          await work.promise;
+          await shutdownOwnedWriter();
+        })();
+      }, 10_000);
+      it('leaves a writer shutdown that outlives its suite hook', () => {
+        expect(outlived).toBeDefined();
+      });
+    });
+    describe('the sibling suite', () => {
+      let seen: { closed: boolean; current: boolean; accepted: string } | undefined;
+      writerOwner.beforeAll(async () => {
+        await prepareFactoryCase();
+        const client = getControlStoreWorkerClient();
+        expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+        work.resolve();
+        await outlived;
+        seen = {
+          closed: client.isClosed,
+          current: getControlStoreWorkerClient() === client,
+          accepted: await client.runOperation(async () => 'accepted').catch(() => 'refused'),
+        };
+      }, 60_000);
+      it('keeps the sibling suite writer when the outlived hook shutdown resumes', () => {
+        expect(outlived, 'run with the previous suite').toBeDefined();
+        expect(seen).toEqual({ closed: false, current: true, accepted: 'accepted' });
+      });
+    });
+  });
+
   // S3a-r2c A8 finding 2, end to end through Vitest's aroundEach: the first case leaves a teardown
   // that outlives it, as a timed-out hook does. The next case releases it. Its shutdown must not
   // stop the next case's writer. Run both cases together.
@@ -19245,7 +19313,7 @@ describe('createConfiguredTurnExecutor', () => {
   }, 120_000);
 
   // One completed proof per group. Later cases copy that data root and run only their own fault.
-  beforeAll(async () => {
+  writerOwner.beforeAll(async () => {
     ordinaryProofTemplate = await buildOrdinaryProofTemplate();
   }, 180_000);
 
@@ -27887,7 +27955,7 @@ beforeEach(() => {
 
 // FAILURE-SCOPE #444: retired content cannot authorize execution or poison healthy target admission.
 describe('retired Workspace resident isolation', () => {
-  beforeAll(async () => {
+  writerOwner.beforeAll(async () => {
     retirementCheckpoint = await buildRetirementCheckpoint();
   }, 180_000);
 

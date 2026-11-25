@@ -15,6 +15,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestGatewayConfig } from './agent-environment.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { shutdownTestStoreWorker } from './store.js';
+import { stopWriterThroughFileOwner } from './writer-case-owner.js';
 
 export type { CreateAppOptions } from '../app.js';
 
@@ -120,7 +121,8 @@ const workspaceAuthorityFixtures: Array<{
 // Callers release their owned readers before this helper drains only its entered App fixture.
 beforeEach(() => {
   onTestFinished(async () => {
-    if (fixtureNativeClient) await shutdownTestStoreWorker();
+    // A file that owns its writer (S3a-r2d) stops it only under the current case.
+    if (fixtureNativeClient) await stopWriterThroughFileOwner(shutdownTestStoreWorker);
     fixtureNativeClient = undefined;
     for (const fixture of workspaceAuthorityFixtures.splice(0)) {
       if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
