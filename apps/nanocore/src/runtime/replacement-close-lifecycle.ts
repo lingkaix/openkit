@@ -39,10 +39,17 @@ export type ClockSample = 'after-reads' | 'in-write' | 'before-reads';
 export interface ClosePremises {
   /** The original pending owner still holds the admission-visible slots. */
   readonly pendingOwner: boolean;
-  /** R: the successor request is open, pre-submit and authorized. */
-  readonly request: boolean;
-  /** A: the Thread rows and the applied Workspace policy still admit the Thread. */
-  readonly audience: { readonly thread: boolean; readonly policy: boolean };
+  /**
+   * R: the successor request is open, pre-submit and authorized. `expired`: the R reader refused an
+   * elapsed credential cutoff (expired, or rotated past its grace). The read carries that clock to
+   * the decision, so a later wall step back in the same gather cannot hide it (S3b H4-1).
+   */
+  readonly request: boolean | 'expired';
+  /**
+   * A: the Thread rows and the applied Workspace policy still admit the Thread. `thread: 'expired'`:
+   * the P14 owner refused an elapsed Ts, and the read carries that clock (S3b H4-1).
+   */
+  readonly audience: { readonly thread: boolean | 'expired'; readonly policy: boolean };
   /** B: the exact Core idle receipt equals the carried receipt. */
   readonly idleReceipt: boolean;
   /** S: the selected storage revision is unchanged. */
@@ -101,6 +108,14 @@ export interface HarnessFacts {
   readonly sequence: number | null;
   readonly result: null | 'succeeded' | 'stale' | 'unknown';
   readonly nextSequence: number;
+  /**
+   * G3 (S3b, ENGINEER option A): the claim generation. RC3 writes a fresh identifier for each
+   * acquisition in its claim CAS. It never recurs on a replay, a restart or a same-name
+   * recreation. The queue transfers it with the row (RC8). An independent drain, a Native fence and
+   * a retirement invalidate it (null). The exact scoped restore compares it and clears it. Null: no
+   * claim of this lifecycle holds the row; a row from an older writer reads as null (legacy).
+   */
+  readonly claimGeneration: string | null;
 }
 
 /** RC8 reads these Harness facts only. */
@@ -116,6 +131,26 @@ export interface SandboxFacts {
 }
 
 export type CaptureState = 'none' | 'claimed' | 'raw' | 'receipt' | 'abandoned';
+
+/**
+ * The private restore frame (`sandbox.restore-admission`). It carries exactly one arm.
+ * `claim`: `harness.claim {revision}`, the rollback of the frame's own claim before any queue
+ * commit, and the cold quiescent exit. `close`: `harness.close`, the exact settled close key. Each
+ * arm carries the claim generation that its claim wrote; a retry of the same restore carries the
+ * same frame. Neither arm carries Sandbox rollback authority.
+ */
+export type RestoreFrame =
+  | {
+      readonly arm: 'claim';
+      readonly revision: number;
+      readonly generation: string | null;
+    }
+  | {
+      readonly arm: 'close';
+      readonly key: string;
+      readonly revision: number;
+      readonly generation: string | null;
+    };
 
 /** Ta: one absolute cutoff of one expiring credential that the admission requires. */
 export interface CredentialCutoff {
@@ -166,7 +201,11 @@ export type ColdAction =
   | { readonly kind: 'recover-capture'; readonly binding: string }
   | { readonly kind: 'expire-key'; readonly key: string }
   | { readonly kind: 'complete-native-result'; readonly binding: string }
-  | { readonly kind: 'restore'; readonly scope: 'close' | 'quiescent'; readonly revision: number }
+  | {
+      readonly kind: 'restore';
+      readonly scope: 'close' | 'quiescent';
+      readonly frame: RestoreFrame;
+    }
   | { readonly kind: 'fence'; readonly reason: ColdFence };
 
 export type ColdFence =
@@ -180,6 +219,7 @@ export type ColdFence =
   | 'unproved'
   | 'ambiguous-drain'
   | 'unattributed-claim'
+  | 'legacy-claim'
   | 'live-producer';
 
 export interface ReplacementCloseTable {
@@ -190,11 +230,15 @@ export interface ReplacementCloseTable {
     readonly harness: HarnessFacts;
     readonly sandbox: SandboxFacts;
   }) => CloseCause | null;
-  /** RC3: the Native claim CAS from accepting to draining. Returns the claim revision. */
+  /**
+   * RC3: the Native claim CAS from accepting to draining. Returns the claim revision and the claim
+   * generation that the CAS writes. `fresh` is the new identifier of this acquisition (G3).
+   */
   readonly claim: (
     harness: HarnessFacts,
-    sandbox: SandboxFacts
-  ) => { readonly revision: number } | CloseCause;
+    sandbox: SandboxFacts,
+    fresh: string
+  ) => { readonly revision: number; readonly generation: string | null } | CloseCause;
   /** RC3 refusal after RC2: the Workspace no-source record stays at P1. */
   readonly losingClaimRecord: 'keep' | 'erase';
   /** RC6: how long the Core hold (R, B) and the successor Workspace hold (A) pin their premises. */
@@ -245,6 +289,12 @@ export interface ReplacementCloseTable {
   }) => CloseCause | null;
   /** RC10: the synchronous recheck under the pins, then the write. */
   readonly firstBytes: (premises: ClosePremises) => FirstBytesDecision;
+  /**
+   * RC10 (S3b H4-2): the Ta that RC10 checks. `current`: the minimum of the posted Ta and the Ta
+   * folded from the current cutoffs, because a rotation after the post can only shorten Ta (F
+   * `recheck`). `posted`: the posted Ta alone; a take-out only.
+   */
+  readonly firstBytesAuthority: 'current' | 'posted';
   /** RC10 after the write starts: a transport failure keeps its own refusal. */
   readonly transportFailure: 'keep-dispatched' | 'settle-stale';
   /** After a possible handoff with no result: wait for the exact result or a fence. */
@@ -259,8 +309,8 @@ export interface ReplacementCloseTable {
   readonly absent: (harness: HarnessFacts, original: CloseKey) => boolean;
   /** RC12: the Native result writer settles only the exact dispatched key. */
   readonly settle: (harness: HarnessFacts, key: string) => boolean;
-  /** RC13: the Native restore CAS. */
-  readonly restore: (harness: HarnessFacts, sandbox: SandboxFacts, revision: number) => boolean;
+  /** RC13: the Native restore CAS on one restore frame. */
+  readonly restore: (harness: HarnessFacts, sandbox: SandboxFacts, frame: RestoreFrame) => boolean;
   /** Occupancy change at a restore. Success decrements once, at RC12. */
   readonly restoreDecrement: number;
   /** Native queued expiry: whether it applies to the current cell. */
@@ -317,15 +367,27 @@ export function slotClock(
 }
 
 /**
+ * S3b H4-1: a clock that a fact read of this decision saw elapse. The R reader checks Ta, and the
+ * P14 owner checks Ts. The wall can step back after that read and before the clock sample, so the
+ * read carries the clock to the decision.
+ */
+const carriedExpiry = (p: PostPremises, clock: CloseClock) =>
+  (clock === 'Ta' && p.request === 'expired') ||
+  (clock === 'Ts' && p.audience.thread === 'expired');
+
+/**
  * A clock refusal among the checked clocks, answered with the cause of the limiting clock. Tc fails
  * on its wall deadline, on the monotonic clock, and on a wall sample before the original enqueue
- * instant. Such a sample can hide each passed deadline, so Main refuses it as the lower Tc edge.
+ * instant. Such a sample can hide each passed deadline, so Main refuses it as the lower Tc edge. A
+ * clock fails also when a read of the decision carries its expiry (S3b H4-1). The limiting clock is
+ * then the earliest original deadline among the failed clocks.
  */
-function clockRefusal(p: ClockPremises, checked: readonly CloseClock[]): CloseCause | null {
-  const fails =
-    checked.some((clock) => passed(p, clock)) ||
-    (checked.includes('Tc') && (p.closeMonotonicExpired || p.now < p.admitted));
-  return fails ? CLOCK_CAUSE[limitingClock(p)] : null;
+function clockRefusal(p: PostPremises, checked: readonly CloseClock[]): CloseCause | null {
+  const failed = checked.filter((clock) => passed(p, clock) || carriedExpiry(p, clock));
+  const lowerEdge = checked.includes('Tc') && (p.closeMonotonicExpired || p.now < p.admitted);
+  if (failed.length === 0 && !lowerEdge) return null;
+  if (p.now < p.admitted) return CLOCK_CAUSE[limitingClock(p)];
+  return CLOCK_CAUSE[slotClock(p.deadlines, failed.length > 0 ? failed : ['Tc'])];
 }
 
 export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sandboxOpen(p.sandbox);
@@ -349,8 +411,8 @@ export function decidePost(p: PostPremises): CloseCause | null {
   if (!p.pendingOwner) return 'pending-owner';
   const clock = clockRefusal(p, CLOCKS);
   if (clock) return clock;
-  if (!p.request) return 'request';
-  if (!p.audience.thread || !p.audience.policy) return 'audience';
+  if (p.request !== true) return 'request';
+  if (p.audience.thread !== true || !p.audience.policy) return 'audience';
   if (!p.idleReceipt) return 'idle-proof';
   return null;
 }
@@ -362,9 +424,9 @@ export function decideFirstBytes(p: ClosePremises): FirstBytesDecision {
   if (!p.pendingOwner) return refuse('pending-owner');
   const clock = clockRefusal(p, CLOCKS);
   if (clock) return refuse(clock);
-  if (!p.request) return refuse('request');
+  if (p.request !== true) return refuse('request');
   if (!p.idleReceipt) return refuse('idle-proof');
-  if (!p.audience.thread || !p.audience.policy) return refuse('audience');
+  if (p.audience.thread !== true || !p.audience.policy) return refuse('audience');
   if (!p.storage) return refuse('storage');
   if (!placementOpen(p.placement)) return refuse('placement');
   return { kind: 'write' };
@@ -509,10 +571,26 @@ export const COLD_RULES: readonly ColdRule[] = [
     decide: (f) => (drainFollowsLastOperation(f.harness) ? undefined : fence('ambiguous-drain')),
   },
   {
+    // G3: a row that no claim of this lifecycle holds carries no generation. An older writer's
+    // claim reads as null, and its history stays ambiguous, so it stays fenced.
+    id: 'legacy-claim',
+    decide: (f) => (f.harness.claimGeneration === null ? fence('legacy-claim') : undefined),
+  },
+  {
+    // Cold recovery pins the observed generation with the proofs above. Native compares the same
+    // value at its commit.
     id: 'quiescent',
     decide: (f) =>
       restorable(f.harness, f.sandbox)
-        ? { kind: 'restore', scope: 'quiescent', revision: f.harness.revision }
+        ? {
+            kind: 'restore',
+            scope: 'quiescent',
+            frame: {
+              arm: 'claim',
+              revision: f.harness.revision,
+              generation: f.harness.claimGeneration,
+            },
+          }
         : undefined,
   },
 ];
@@ -548,6 +626,24 @@ export function composeCold(rules: readonly ColdRule[]): (facts: ColdFacts) => C
 
 export const decideCold = composeCold(COLD_RULES);
 
+/**
+ * RC13 under G3: the exact scoped restore. The row must be restorable, at the frame's revision, and
+ * hold the frame's claim generation. A null generation matches nothing, so the identifier alone
+ * never grants a release and a legacy claim never matches. The close arm also needs the exact
+ * settled close key. A commit clears the generation, so a second delivery of the same frame
+ * changes no row.
+ */
+export function restoresFrame(h: HarnessFacts, s: SandboxFacts, frame: RestoreFrame): boolean {
+  return (
+    restorable(h, s) &&
+    h.revision === frame.revision &&
+    frame.generation !== null &&
+    h.claimGeneration === frame.generation &&
+    (frame.arm === 'claim' ||
+      (h.cell === 'settled' && h.operation === 'session.close' && h.key === frame.key))
+  );
+}
+
 export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
   admit: ({ exclusionHolder, self, harness, sandbox }) =>
     (exclusionHolder !== null && exclusionHolder !== self) ||
@@ -556,9 +652,9 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
     !sandboxOpen(sandbox)
       ? 'capacity'
       : null,
-  claim: (harness, sandbox) =>
+  claim: (harness, sandbox, fresh) =>
     harness.drain === 'accepting' && harness.life === 'open' && sandboxOpen(sandbox)
-      ? { revision: harness.revision + 1 }
+      ? { revision: harness.revision + 1, generation: fresh }
       : 'capacity',
   losingClaimRecord: 'keep',
   holdUntil: { core: 'queue-reply', workspace: 'queue-reply' },
@@ -589,6 +685,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
         ? null
         : 'delivery',
   firstBytes: decideFirstBytes,
+  firstBytesAuthority: 'current',
   transportFailure: 'keep-dispatched',
   afterContact: 'wait',
   definiteRefusal: 'release',
@@ -603,8 +700,7 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
           ? harness.cell === 'idle' || harness.cell === 'settled'
           : harness.sequence === original.sequence && harness.key !== null,
   settle: (harness, key) => harness.cell === 'dispatched' && harness.key === key,
-  restore: (harness, sandbox, revision) =>
-    restorable(harness, sandbox) && harness.revision === revision,
+  restore: restoresFrame,
   restoreDecrement: 0,
   expiryApplies: (harness, target) => harness.cell === 'queued' && harness.key === target,
   callerBound: 'original-deadline',
