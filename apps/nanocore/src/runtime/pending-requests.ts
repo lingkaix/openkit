@@ -2876,6 +2876,41 @@ function assertPendingPreparedProjection(
       pendingNativeConflict('The Pending tuple contains an unexpected projected Item.');
 }
 
+/**
+ * The delivery commands' scope rule on one delivery Turn: every row frozen on it decodes, belongs to
+ * this Workspace, and names its raising Turn and that delivery Turn in its own Thread. The writer
+ * and a Boot walk's proof read Turns through their own owners.
+ *
+ * @param turnThreadId Thread of one Turn of this Workspace; it refuses or returns undefined when
+ * the Turn is absent.
+ * @throws PendingRequestCommandError when a frozen row breaks the rule.
+ */
+export function assertFrozenDeliveryScope(
+  sqlite: Database.Database,
+  workspaceId: string,
+  deliveryTurnId: string,
+  turnThreadId: (turnId: string) => unknown
+): void {
+  const deliveryThreadId = turnThreadId(deliveryTurnId);
+  if (deliveryThreadId === undefined)
+    pendingNativeConflict('The Pending Turn does not belong to its Thread.');
+  const rows = sqlite
+    .prepare(
+      "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
+    )
+    .all(deliveryTurnId) as { request_id: string }[];
+  for (const row of rows) {
+    const record = readPendingRequest(sqlite, row.request_id);
+    if (!record) pendingNativeConflict('The Pending request is missing.');
+    if (record.workspaceId !== workspaceId)
+      pendingNativeConflict('The Pending request does not belong to the command scope.');
+    if (turnThreadId(record.raisingTurnId) !== record.threadId)
+      pendingNativeConflict('The Pending Turn does not belong to its Thread.');
+    if (record.threadId !== deliveryThreadId)
+      pendingNativeConflict('The frozen request belongs to a different delivery Thread.');
+  }
+}
+
 /** Fails a native source/selection race before any Pending mutation. */
 function pendingNativeConflict(message: string): never {
   throw new PendingRequestCommandError('conflict', message, 409);
@@ -3180,17 +3215,12 @@ export function applyControlPendingCommand(
     case 'delivery-prove':
     case 'delivery-release':
     case 'delivery-unknown': {
-      const deliveryTurn = turn(command.turnId);
-      const rows = db.sqlite
-        .prepare(
-          "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
-        )
-        .all(command.turnId) as { request_id: string }[];
-      for (const row of rows) {
-        const record = requireRequest(row.request_id);
-        if (record.threadId !== deliveryTurn.threadId)
-          pendingNativeConflict('The frozen request belongs to a different delivery Thread.');
-      }
+      assertFrozenDeliveryScope(
+        db.sqlite,
+        command.workspaceId,
+        command.turnId,
+        (turnId) => turn(turnId).threadId
+      );
       return result(
         command.action === 'delivery-prove'
           ? proveFrozenDelivery(db.sqlite, command.turnId, command.now)

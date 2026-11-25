@@ -86,6 +86,48 @@ export function writePendingPublication(
 }
 
 /**
+ * Rewrites one stopped root's held Pending result bytes, so that row no longer decodes while its
+ * delivery columns still name its frozen batch.
+ * @returns Writes the original bytes back.
+ */
+export function writePendingHeldResult(
+  dataRoot: string,
+  workspaceId: string,
+  requestId: string,
+  bytes: string
+): () => void {
+  const write = (value: string | null) => {
+    const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+      fileMustExist: true,
+    });
+    try {
+      return sqlite
+        .prepare('UPDATE pending_requests SET held_result_json = ? WHERE request_id = ?')
+        .run(value, requestId).changes;
+    } finally {
+      sqlite.close();
+    }
+  };
+  const reader = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  let original: { held_result_json: string | null } | undefined;
+  try {
+    original = reader
+      .prepare('SELECT held_result_json FROM pending_requests WHERE request_id = ?')
+      .get(requestId) as { held_result_json: string | null } | undefined;
+  } finally {
+    reader.close();
+  }
+  if (!original || write(bytes) !== 1) throw new Error(`Pending row not rewritten: ${requestId}`);
+  const retained = original.held_result_json;
+  return () => {
+    if (write(retained) !== 1) throw new Error(`Pending row not restored: ${requestId}`);
+  };
+}
+
+/**
  * Writes one stopped root's Pending disposition, as the closeout writer leaves a granted request
  * whose requester lost authority before its executor claimed it.
  */
