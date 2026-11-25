@@ -34,6 +34,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from '../storage/index-rebuild.js';
+import { appendWorkObservation } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../storage/workspace-owner-records.js';
 import {
   createTestAgentSetup,
@@ -47,6 +48,7 @@ import {
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
   readPendingRow,
+  removeWorkObservation,
   type WorkspaceEvidence,
   withSeedWorkspaceDb,
   workspaceEvidence,
@@ -688,6 +690,13 @@ describe('B5 attributed Boot recovery', () => {
       failure: 'body file is missing',
       cause: 'check=records; stage=scope-admission',
     },
+    // A retained observation of the second orphan is gone while stopped (N2), a sequence gap in
+    // otherwise valid rows. Scope admission does not read observations; the reap owner refuses it.
+    {
+      input: 'observation',
+      failure: 'observation history has a gap',
+      cause: 'check=records; stage=assistant-turn-recovery',
+    },
   ] as const)(
     'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan $failure',
     async ({ input, cause }) => {
@@ -721,7 +730,7 @@ describe('B5 attributed Boot recovery', () => {
       // A's preexisting body files; a refused attempt may neither remove them nor add its own.
       expect(largeFiles(heldRoot).length).toBeGreaterThanOrEqual(2);
       let fault: BootWalkFault | undefined;
-      let restoreBody = () => {};
+      let repair = () => {};
       if (input === 'transcript')
         // A's first orphan transcript reads; the second orphan's transcript then cannot be read.
         fault = {
@@ -740,15 +749,46 @@ describe('B5 attributed Boot recovery', () => {
         const second = orphans
           .slice(2)
           .sort((a, b) => order.indexOf(a.threadId) - order.indexOf(b.threadId))[1]!;
-        const bodies = largeFiles(heldRoot).filter((path) =>
-          readFileSync(join(heldRoot, path), 'utf8').includes(second.bodyItemId)
-        );
-        expect(bodies).toHaveLength(1);
-        const aside = mkdtempSync(join(tmpdir(), 'openkit-b5-body-'));
-        roots.push(aside);
-        renameSync(join(heldRoot, bodies[0]!), join(aside, 'body'));
-        restoreBody = () => renameSync(join(aside, 'body'), join(heldRoot, bodies[0]!));
+        if (input === 'body') {
+          const bodies = largeFiles(heldRoot).filter((path) =>
+            readFileSync(join(heldRoot, path), 'utf8').includes(second.bodyItemId)
+          );
+          expect(bodies).toHaveLength(1);
+          const aside = mkdtempSync(join(tmpdir(), 'openkit-b5-body-'));
+          roots.push(aside);
+          renameSync(join(heldRoot, bodies[0]!), join(aside, 'body'));
+          repair = () => renameSync(join(aside, 'body'), join(heldRoot, bodies[0]!));
+        } else {
+          // The second orphan's runtime recorded three observations through their native owner.
+          await withSeedStore(root, () =>
+            withSeedWorkspaceDb(root.dataRoot, held, async (db) => {
+              for (let sequence = 1; sequence <= 3; sequence++)
+                await appendWorkObservation(db, {
+                  threadId: second.threadId,
+                  turnId: second.turnId,
+                  bodies: [],
+                  observation: {
+                    id: `obs_b5_${sequence}`,
+                    type: 'runtime.observed',
+                    ts: COMPLETED_AT,
+                    obs: 'worker-shim',
+                    payload: {
+                      observationId: `obs_b5_${sequence}`,
+                      sourceRef: 'source_b5',
+                      sourceSequence: sequence,
+                      observedAt: COMPLETED_AT,
+                      fact: { kind: 'origin', runtimeOriginRef: 'origin_b5', phase: 'started' },
+                      content: { state: 'not-applicable' },
+                    },
+                  },
+                });
+            })
+          );
+          repair = removeWorkObservation(root.dataRoot, held, second.turnId, 2);
+        }
       }
+      // A's file-backed bodies before Boot; a refused attempt neither removes one nor adds its own.
+      const bodies = largeFiles(heldRoot).sort();
       const original = workspaceEvidence(root.dataRoot, held);
 
       const server = await startServer(root, fault);
@@ -756,15 +796,18 @@ describe('B5 attributed Boot recovery', () => {
       await expectHeld(server, held, cause);
       await expectServed(server, [healthy], held);
       await stopServer(server);
+      if (input === 'observation')
+        expect(bootDecisionLines(server)).toContain('native observation sequence gap');
       // The first orphan was not interrupted ahead of the second orphan's refused proof.
       expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(largeFiles(heldRoot).sort()).toEqual(bodies);
 
       const repeated = await startServer(root, fault);
       await expectHeld(repeated, held, cause);
       await stopServer(repeated);
       expectEvidenceUnchanged(root.dataRoot, held, original);
 
-      restoreBody();
+      repair();
       const corrected = await startServer(root);
       await expectNotHeld(corrected, held);
       await expectServed(corrected, root.workspaceIds, null);

@@ -319,6 +319,7 @@ import {
 } from '../storage/server-work-intents.js';
 import { serverWorkProductScope } from '../storage/server-work-product-reads.js';
 import { storageRequestId } from '../storage/storage-owner.js';
+import { readControlTurnReapDependency } from '../storage/work-observations.js';
 import {
   AgentSessionRecordSchema,
   assertCanonicalDirectory,
@@ -6247,6 +6248,26 @@ export class FsStore {
   ): void {
     this.getTurn(workspaceId, threadId, turnId);
     this.prepareTurnCompletion(turnId, patch, {}, { kind: 'workspace', workspaceId });
+    this.proveWorkspaceTurnReap(workspaceId, threadId, turnId);
+  }
+
+  /**
+   * Reads one Workspace Turn's terminal reap dependency through its native observation owner, so
+   * a Boot walk proves the reap before it stages the first terminal. It writes nothing; the
+   * terminal transition reads the same dependency again inside its SQL transaction.
+   */
+  private proveWorkspaceTurnReap(workspaceId: string, threadId: string, turnId: string): void {
+    if (!this.dataRoot) return;
+    const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
+    try {
+      readControlTurnReapDependency(
+        db.sqlite,
+        { kind: 'workspace', workspaceId },
+        { threadId, turnId }
+      );
+    } finally {
+      db.sqlite.close();
+    }
   }
 
   /** The original terminal preparation: owner, history, transcript, terminal event and replay check. */

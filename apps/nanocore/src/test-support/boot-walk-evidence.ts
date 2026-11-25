@@ -160,6 +160,52 @@ export function hideWorkspaceTurnSelector(dataRoot: string, workspaceId: string)
 }
 
 /**
+ * Removes one retained native observation while NanoCore is stopped, leaving a sequence gap in an
+ * otherwise valid observation history.
+ * @returns Writes the original row back.
+ */
+export function removeWorkObservation(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  sequence: number
+): () => void {
+  const open = () =>
+    new Database(workspaceDatabasePath(dataRoot, workspaceId), { fileMustExist: true });
+  const sqlite = open();
+  let row: Record<string, unknown> | undefined;
+  try {
+    row = sqlite
+      .prepare(
+        'SELECT turn_id, sequence, id, schema_version, record_json FROM control_work_observations WHERE turn_id = ? AND sequence = ?'
+      )
+      .get(turnId, sequence) as Record<string, unknown> | undefined;
+    if (
+      !row ||
+      sqlite
+        .prepare('DELETE FROM control_work_observations WHERE turn_id = ? AND sequence = ?')
+        .run(turnId, sequence).changes !== 1
+    )
+      throw new Error(`Observation not removed: ${turnId}#${sequence}`);
+  } finally {
+    sqlite.close();
+  }
+  const retained = row;
+  return () => {
+    const writer = open();
+    try {
+      writer
+        .prepare(
+          'INSERT INTO control_work_observations (turn_id, sequence, id, schema_version, record_json) VALUES (@turn_id, @sequence, @id, @schema_version, @record_json)'
+        )
+        .run(retained);
+    } finally {
+      writer.close();
+    }
+  };
+}
+
+/**
  * Rewrites the stop reason of one Turn's retained inline completion while NanoCore is stopped.
  * The completion stays a readable, digest-consistent retained event; only that field changes.
  * @returns Writes the original entry descriptor back.
