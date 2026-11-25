@@ -2666,18 +2666,27 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
             continue;
           orphans.push({ threadId: thread.id, turnId: activeTurn.id });
         }
+        const interruption = {
+          status: 'interrupted' as const,
+          completedAt: new Date().toISOString(),
+          error: {
+            code: 'recovery_required' as const,
+            message:
+              'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+          },
+        };
+        // Every orphan's history and transcript prove its terminal write before the first one commits.
+        for (const orphan of orphans)
+          store.proveWorkspaceTurnCompletion(
+            workspaceId,
+            orphan.threadId,
+            orphan.turnId,
+            interruption
+          );
         // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
         for (const orphan of orphans)
           await bootWorkspaceWrite(() =>
-            store.completeWorkspaceTurn(workspaceId, orphan.threadId, orphan.turnId, {
-              status: 'interrupted',
-              completedAt: new Date().toISOString(),
-              error: {
-                code: 'recovery_required',
-                message:
-                  'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
-              },
-            })
+            store.completeWorkspaceTurn(workspaceId, orphan.threadId, orphan.turnId, interruption)
           );
       }
     );

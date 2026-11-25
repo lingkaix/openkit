@@ -1547,6 +1547,10 @@ async function reconcileWorkspaceMcpItems(
   } finally {
     workspaceDb.sqlite.close();
   }
+  // Every missing Item is proved on its writer's own append rule before the first publication,
+  // so a later refusal cannot follow an earlier committed Item.
+  for (const item of decided.values())
+    store.proveWorkspaceItemAppend(item, 'already-decided-publication');
   for (const item of decided.values())
     await bootWorkspaceWrite(() => store.publishSettledTurnItem(item));
   return decided.size;
