@@ -601,12 +601,7 @@ function applyProducts(
           'agent-session',
           record.agentSessionId as string
         );
-        if (
-          !session ||
-          session.record.threadId !== record.threadId ||
-          (record.id !== terminalTurnId &&
-            (session.record.status === 'closed' || session.record.status === 'failed'))
-        )
+        if (!turnHeadSessionAdmits(session?.record, record, record.id === terminalTurnId))
           throw new ControlProductPreconditionError();
       }
     }
@@ -2327,6 +2322,26 @@ function terminalSnapshotFieldMatches(
   return (
     isDeepStrictEqual(actual, expected) ||
     (sealedTurn !== undefined && terminalFillableFields.has(field) && actual == null)
+  );
+}
+
+/**
+ * The Session rule of a Turn head mutation: a Turn that names an AgentSession needs that Session
+ * in the Turn's own Thread, and open unless this mutation seals the Turn's terminal.
+ *
+ * @param session Retained AgentSession record the Turn names, if any.
+ * @param turn Turn head record being written.
+ * @param sealing Whether this mutation seals that Turn's terminal.
+ */
+export function turnHeadSessionAdmits(
+  session: { readonly threadId?: unknown; readonly status?: unknown } | undefined,
+  turn: { readonly threadId?: unknown },
+  sealing: boolean
+): boolean {
+  return (
+    session !== undefined &&
+    session.threadId === turn.threadId &&
+    (sealing || (session.status !== 'closed' && session.status !== 'failed'))
   );
 }
 
