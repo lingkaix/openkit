@@ -6640,8 +6640,16 @@ export class FsStore {
       }
     }
     // Feedback is a separate file owner and can publish only after native terminal acknowledgement.
+    // Its file failure never revises that acknowledged decision; its owner creates the file on use.
     if (scope && owner.kind === 'workspace' && turn.status === 'completed')
-      ensureTurnFeedback(this, turn, turn.agentId ?? null);
+      try {
+        ensureTurnFeedback(this, turn, turn.agentId ?? null);
+      } catch (error) {
+        console.error(
+          `Turn ${turnId} feedback could not be projected after its terminal acknowledgement.`,
+          error
+        );
+      }
     for (const terminalEvent of [...precedingEvents, event])
       this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
     return {
