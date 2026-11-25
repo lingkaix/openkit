@@ -4,7 +4,7 @@
 // Fault fixture only: it refuses selected SQLite reads and never writes.
 // OPENKIT_TEST_BOOT_WALK_FAULT =
 //   { workspaceId?, fail?, within?, outside?, after?, times?, miss?, arm?, live?, shared?, census?,
-//     writer?, writerSql?, writerWithin?, writerAfter?, label }.
+//     writer?, writerSql?, writerWithin?, writerAfter?, writerWatch?, label }.
 // - fail: SQL text that throws on the named Workspace's own database in Main once armed.
 // - within / outside: the fail applies only while one listed function is / no listed function is
 //   on the stack.
@@ -22,6 +22,8 @@
 //   throws SQLITE_BUSY (the writer's busy result). writerSql / writerWithin select another writer
 //   read (default the Turn head read inside prepareControlItemAppend); writerAfter counts the
 //   matching writer reads that still succeed first.
+// - writerWatch: in the control-store writer thread, report (never refuse) the first table write
+//   that enters the named Workspace's database, so a case can require that no write began there.
 // The Main fault covers Boot only: it disarms when the App listener binds, so live reads after Boot
 // run unfaulted, except reads under a listed `live` owner.
 (() => {
@@ -46,10 +48,29 @@
     }
   };
   if (!threads.isMainThread) {
-    if (!fault.writer) return;
+    if (!fault.writer && !fault.writerWatch) return;
     const probe = new Database(':memory:');
     const statement = Object.getPrototypeOf(probe.prepare('SELECT 1'));
     probe.close();
+    if (fault.writerWatch) {
+      const run = statement.run;
+      let entered = false;
+      statement.run = function (...args) {
+        const name = typeof this.database?.name === 'string' ? this.database.name : '';
+        if (
+          !entered &&
+          name.endsWith(scoped) &&
+          /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(String(this.source))
+        ) {
+          entered = true;
+          process.stderr.write(
+            `[boot-walk-fault] writer-entered ${fault.label} ${String(this.source).slice(0, 80)}\n`
+          );
+        }
+        return run.apply(this, args);
+      };
+    }
+    if (!fault.writer) return;
     const get = statement.get;
     let writerPassed = 0;
     statement.get = function (...args) {
