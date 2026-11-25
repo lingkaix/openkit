@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
   allocateEntityId,
@@ -2439,7 +2440,19 @@ function pendingProjectionEvidence(
       const lineage = store.getItemLineage(workspaceId, id);
       if (lineage) candidates.set(id, store.getThreadItem(workspaceId, lineage.threadId, id));
     }
-  const newIds = new Set(supplied.map((item) => item.id));
+  // The terminal writer stages a supplied Item only when its retained bytes differ; an equal
+  // retained Item is the decision's retained dependency, read on its own clock.
+  const newIds = new Set(
+    supplied
+      .filter((item) => {
+        const lineage = store.getItemLineage(workspaceId, item.id);
+        return (
+          !lineage ||
+          !isDeepStrictEqual(store.getThreadItem(workspaceId, lineage.threadId, item.id), item)
+        );
+      })
+      .map((item) => item.id)
+  );
   const turn = (id: string) =>
     plannedTurns.get(id) ?? readProduct(sqlite, owner, 'turn', id)?.record;
   return (record) => ({
