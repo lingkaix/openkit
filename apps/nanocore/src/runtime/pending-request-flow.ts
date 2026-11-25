@@ -394,6 +394,11 @@ export function resumeFrozenPendingDelivery(
     try {
       store.getWorkspace(workspaceId);
       withWorkspace(dependencies, workspaceId, (sqlite) => {
+        let turnThreads: Map<string, string> | undefined;
+        const turnThread = (turnId: string) => {
+          turnThreads ??= workspaceTurnThreads(store, workspaceId);
+          return turnThreads.get(turnId);
+        };
         for (const thread of store.listThreads(workspaceId)) {
           if (thread.status === 'archived') continue;
           for (const record of listThreadPendingRequests(sqlite, workspaceId, thread.id)) {
@@ -406,6 +411,10 @@ export function resumeFrozenPendingDelivery(
               continue;
             const turn = recordTurn(store, record, record.deliveryTurnId);
             if (turn.status !== 'pending') continue;
+            // At startup the handoff's later delivery moves (its executor's delivery, or its own
+            // release or unknown after the Core post) move every row frozen on this Turn: the
+            // delivery writer's own scope rule proves them all before the post.
+            if (startup) assertFrozenDeliveryScope(sqlite, workspaceId, turn.id, turnThread);
             const outcome: PendingOutcome = {
               workspaceId,
               threadId: turn.threadId,
@@ -505,12 +514,7 @@ export async function recoverPendingRequestsAtBoot(
           const loaded = usable.map((record) => projectUnfinishedSettlement(record, now));
           // A delivery post moves every row frozen on its Turn, including one this walk skipped:
           // the writer's own scope rule proves them all, here through this Workspace's Turns.
-          const turnThreads = new Map(
-            store
-              .listThreads(workspace.id)
-              .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id))
-              .map((turn) => [turn.id, turn.threadId])
-          );
+          const turnThreads = workspaceTurnThreads(store, workspace.id);
           const proveDelivery = (turnId: string) =>
             assertFrozenDeliveryScope(db.sqlite, workspace.id, turnId, (id) => turnThreads.get(id));
           const posts: (() => Promise<unknown>)[] = [];
@@ -1971,6 +1975,16 @@ function canonicalRecordIsUsable(
     .listThreads(record.workspaceId)
     .flatMap((thread) => store.listThreadTurns(record.workspaceId, thread.id));
   return validateCanonicalLoad(record, turns, readCommandRequestRecordsFromSqlite(sqlite)) === null;
+}
+
+/** Every Turn of one Workspace with its Thread, as the delivery writer's scope rule reads them. */
+function workspaceTurnThreads(store: FsStore, workspaceId: string): Map<string, string> {
+  return new Map(
+    store
+      .listThreads(workspaceId)
+      .flatMap((thread) => store.listThreadTurns(workspaceId, thread.id))
+      .map((turn) => [turn.id, turn.threadId])
+  );
 }
 
 function withWorkspace<T>(
