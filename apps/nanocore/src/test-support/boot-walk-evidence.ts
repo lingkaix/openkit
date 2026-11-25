@@ -204,6 +204,50 @@ export function contradictTurnRecord(
   };
 }
 
+/**
+ * Rewrites one retained AgentSession's status while NanoCore is stopped, so an open Turn names a
+ * Session that its own writer refuses.
+ * @returns Writes the original status and record bytes back.
+ */
+export function writeAgentSessionStatus(
+  dataRoot: string,
+  workspaceId: string,
+  agentSessionId: string,
+  status: string
+): () => void {
+  const write = (value: { status: string; record_json: string }) => {
+    const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+      fileMustExist: true,
+    });
+    try {
+      if (
+        sqlite
+          .prepare('UPDATE control_agent_sessions SET status = ?, record_json = ? WHERE id = ?')
+          .run(value.status, value.record_json, agentSessionId).changes !== 1
+      )
+        throw new Error(`AgentSession not rewritten: ${agentSessionId}`);
+    } finally {
+      sqlite.close();
+    }
+  };
+  const reader = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  let original: { status: string; record_json: string } | undefined;
+  try {
+    original = reader
+      .prepare('SELECT status, record_json FROM control_agent_sessions WHERE id = ?')
+      .get(agentSessionId) as typeof original;
+  } finally {
+    reader.close();
+  }
+  if (!original) throw new Error(`AgentSession not found: ${agentSessionId}`);
+  const retained = original;
+  write({ status, record_json: JSON.stringify({ ...JSON.parse(retained.record_json), status }) });
+  return () => write(retained);
+}
+
 /** Counts retained capability calls, so a replay that calls upstream again is visible. */
 export function capabilityCallCount(dataRoot: string, workspaceId: string): number {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {

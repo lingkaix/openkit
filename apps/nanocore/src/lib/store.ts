@@ -6229,13 +6229,27 @@ export class FsStore {
     return original.payload;
   }
 
-  /** Applies the original checks inside the admitted same-Turn boundary. */
-  private async completeTurnPublication(
+  /**
+   * Proves one Workspace Turn's terminal publication on its own history and transcript without
+   * writing: the preparation `completeWorkspaceTurn` runs before its writer.
+   */
+  public proveWorkspaceTurnCompletion(
+    workspaceId: string,
+    threadId: string,
+    turnId: string,
+    patch: Parameters<FsStore['updateTurn']>[1]
+  ): void {
+    this.getTurn(workspaceId, threadId, turnId);
+    this.prepareTurnCompletion(turnId, patch, {}, { kind: 'workspace', workspaceId });
+  }
+
+  /** The original terminal preparation: owner, history, transcript, terminal event and replay check. */
+  private prepareTurnCompletion(
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1],
-    publication: TerminalTurnPublication = {},
+    publication: TerminalTurnPublication,
     knownOwner?: Extract<ControlProductOwner, { kind: 'workspace' }>
-  ): Promise<{ turn: Turn; notify: boolean }> {
+  ) {
     // A Boot walk carries the Workspace whose own records named this Turn.
     const owner =
       knownOwner ??
@@ -6370,6 +6384,18 @@ export class FsStore {
         !alreadyDecidedPublicationBytesEqual(prior.data.turn, turn))
     )
       throw terminalTurnPublicationConflict(turnId);
+    return { owner, scope, history, before, turn, prior, precedingEvents, event };
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async completeTurnPublication(
+    turnId: string,
+    patch: Parameters<FsStore['updateTurn']>[1],
+    publication: TerminalTurnPublication = {},
+    knownOwner?: Extract<ControlProductOwner, { kind: 'workspace' }>
+  ): Promise<{ turn: Turn; notify: boolean }> {
+    const { owner, scope, history, before, turn, prior, precedingEvents, event } =
+      this.prepareTurnCompletion(turnId, patch, publication, knownOwner);
     if (scope && owner.kind === 'server') {
       if (
         publication.agentSession ||

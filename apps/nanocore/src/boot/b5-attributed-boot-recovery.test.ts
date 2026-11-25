@@ -37,6 +37,7 @@ import {
   type WorkspaceEvidence,
   withSeedWorkspaceDb,
   workspaceEvidence,
+  writeAgentSessionStatus,
   writeCapabilityCallColumn,
   writePendingDisposition,
   writePendingPublication,
@@ -80,6 +81,8 @@ interface BootWalkFault {
 
 /** Statement text that the Assistant walk's active-Turn navigation read issues. */
 const ACTIVE_TURN_SQL = "status IN ('pending','running') LIMIT 1";
+/** Statement text of one Turn's Item or event page read, such as its transcript. */
+const TURN_ENTRIES_SQL = 'FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence>?';
 /** Statement text of the Turn timeline page read. */
 const TURN_TIMELINE_SQL = 'WHERE thread_id=? AND admission_order>?';
 /** Statement text that only the Pending Boot walk issues on a Workspace database. */
@@ -362,6 +365,265 @@ describe('B5 attributed Boot recovery', () => {
           disposition: 'outcome-unknown',
           disposition_reason: 'restart',
         });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "proves a Worker outcome's delivery bookkeeping before a later service publication refuses, and holds A unchanged",
+    async () => {
+      const root = await seedRoot(['Healthy', 'Contradicted publication']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        // The claims come first: the freeze is the last seeded effect, as a stopped Core leaves it.
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        const outcomes = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        });
+        return root.workspaceIds.map((workspaceId, index) => {
+          const requestId = outcomes[index]!.requestIds[0]!;
+          const row = readPendingRow(root.dataRoot, workspaceId, requestId);
+          expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+          return {
+            workspaceId,
+            requestId,
+            threadId: outcomes[index]!.threadId,
+            deliveryTurnId: row.delivery_turn_id as string,
+            claim: claims[index]!,
+          };
+        });
+      });
+      // Stopped retained state: each Worker outcome Turn ended before its delivery was recorded.
+      await withSeedStore(root, async (store) => {
+        for (const entry of seeded)
+          await store.updateTurn(entry.deliveryTurnId, {
+            status: 'completed',
+            completedAt: COMPLETED_AT,
+          });
+      });
+      // Stopped retained-record fault: A's later service Turn no longer matches its completion.
+      const publication = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)
+        .publication_turn_id as string;
+      const restore = contradictTurnRecord(root.dataRoot, held, publication, 'durationMs', 987_654);
+      const original = workspaceEvidence(root.dataRoot, held);
+      const heldOutcome = readPendingRow(root.dataRoot, held, seeded[1]!.requestId);
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // The same walk takes the delivery bookkeeping branch in the healthy sibling.
+      expect(readPendingRow(root.dataRoot, healthy, seeded[0]!.requestId)).toMatchObject({
+        delivery: 'delivery-unknown',
+      });
+      // The bookkeeping did not reach A ahead of its refused publication.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.requestId)).toEqual(heldOutcome);
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
+        claim: 'claimed',
+        disposition: null,
+      });
+      expect(bootDecisionLines(server)).toContain(
+        `Turn ${publication} is terminal and the publication conflicts with the already-decided record.`
+      );
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // Repairing the original record while stopped lets the next Boot recover A once.
+      restore();
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      for (const entry of seeded) {
+        expect(readPendingRow(root.dataRoot, entry.workspaceId, entry.requestId)).toMatchObject({
+          delivery: 'delivery-unknown',
+        });
+        expect(
+          readPendingRow(root.dataRoot, entry.workspaceId, entry.claim.requestId)
+        ).toMatchObject({ claim: 'finished', disposition: 'outcome-unknown' });
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'counts a retained Pending outcome Item as published only when it is that exact Item, and holds A unchanged when it contradicts its record',
+    async () => {
+      const root = await seedRoot(['Healthy', 'Contradictory outcome Item']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const outcomes = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        });
+        return root.workspaceIds.map((workspaceId, index) => {
+          const requestId = outcomes[index]!.requestIds[0]!;
+          const row = readPendingRow(root.dataRoot, workspaceId, requestId);
+          expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+          return {
+            workspaceId,
+            requestId,
+            threadId: outcomes[index]!.threadId,
+            deliveryTurnId: row.delivery_turn_id as string,
+            itemId: pendingRequestItemId(requestId, 'disposition-status'),
+          };
+        });
+      });
+      // The freeze published each denial's disposition Item with its outcome Turn. A's Item gets a
+      // later revision whose level its record does not render, a field the usability check skips.
+      const healthyItem = await withSeedStore(root, async (store) => {
+        await store.publishSettledTurnItem(seeded[1]!.itemId, { level: 'info' });
+        const items = store
+          .getTurn(healthy, seeded[0]!.threadId, seeded[0]!.deliveryTurnId)
+          .items.filter((item) => item.id === seeded[0]!.itemId);
+        expect(items).toEqual([expect.objectContaining({ type: 'status', level: 'warning' })]);
+        return items[0];
+      });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const heldOutcome = readPendingRow(root.dataRoot, held, seeded[1]!.requestId);
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectNotHeld(server, healthy);
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.requestId)).toEqual(heldOutcome);
+      expect(bootDecisionLines(server)).toContain(
+        `Pending outcome Item conflicts with its published record: ${seeded[1]!.itemId}`
+      );
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      // The healthy exact Item stays the published one: no second append, no rewrite.
+      await withSeedStore(root, (store) => {
+        expect(
+          store
+            .getTurn(healthy, seeded[0]!.threadId, seeded[0]!.deliveryTurnId)
+            .items.filter((item) => item.id === seeded[0]!.itemId)
+        ).toEqual([healthyItem]);
+        // Repair A's Item through its own revision writer while stopped.
+        return store.publishSettledTurnItem(seeded[1]!.itemId, { level: 'warning' });
+      });
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'proves every missing MCP Item on its append rule before the first publication and holds A unchanged when its second append would refuse',
+    async () => {
+      const root = await seedRoot(['Healthy', 'Closed MCP Session']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const result: Awaited<ReturnType<typeof seedMcpCallsAcrossTurns>>[] = [];
+        for (const id of root.workspaceIds)
+          result.push(await seedMcpCallsAcrossTurns(store, root, id));
+        return result;
+      });
+      // Stopped retained-record fault: A's running Turn names a Session that is now closed, so the
+      // second append's own Session rule refuses while the first, sealed Turn would accept.
+      const restore = writeAgentSessionStatus(root.dataRoot, held, seeded[1]!.sessionId, 'closed');
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=mcp-item-backfill');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // Neither Item reached A: its first Item is not committed ahead of the refused second one.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(bootDecisionLines(server)).toContain(
+        `Turn ${seeded[1]!.calls[1]!.turnId} has no open Session in its Thread.`
+      );
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=mcp-item-backfill');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      // The same walk fills both missing Items in the healthy sibling.
+      const published = (store: FsStore, workspaceId: string, index: number) =>
+        seeded[index]!.calls.map((call) =>
+          store
+            .getTurn(workspaceId, seeded[index]!.threadId, call.turnId)
+            .items.some((item) => item.id === call.itemId)
+        );
+      await withSeedStore(root, (store) => {
+        expect(published(store, healthy, 0)).toEqual([true, true]);
+      });
+
+      // Restoring the original Session while stopped lets the next Boot fill A once.
+      restore();
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      await withSeedStore(root, (store) => {
+        expect(published(store, held, 1)).toEqual([true, true]);
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan transcript cannot be read',
+    async () => {
+      const root = await seedRoot(['Healthy', 'Second transcript unreadable']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const orphans = await withSeedStore(root, async (store) => {
+        const seeded: Awaited<ReturnType<typeof seedOrphanAssistantTurn>>[] = [];
+        for (const id of root.workspaceIds)
+          for (let index = 0; index < 2; index++)
+            seeded.push(await seedOrphanAssistantTurn(store, root, id));
+        return seeded;
+      });
+      // A's first orphan transcript reads; the second orphan's transcript then cannot be read.
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        fail: TURN_ENTRIES_SQL,
+        within: 'readWorkspaceTurnEvents',
+        after: 1,
+        times: 1,
+        label: 'assistant-second-transcript',
+      };
+      const original = workspaceEvidence(root.dataRoot, held);
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(server, held, 'check=records; stage=assistant-turn-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      // The first orphan was not interrupted ahead of the second orphan's refused proof.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      const repeated = await startServer(root, fault);
+      await expectHeld(repeated, held, 'check=records; stage=assistant-turn-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      await withSeedStore(root, (store) => {
+        for (const orphan of orphans)
+          expect(store.getTurnById(orphan.turnId)).toMatchObject({
+            status: 'interrupted',
+            error: { code: 'recovery_required' },
+          });
+      });
     },
     CASE_TIMEOUT_MS
   );
@@ -1816,6 +2078,99 @@ async function seedMcpCalls(
     });
   }
   return { threadId: thread.id, turnId: turn.id, parentItemId, calls };
+}
+
+/**
+ * Records one terminal MCP call with a missing Item in each of two Turns of one Thread: the first
+ * Turn sealed, the second still running under its AgentSession, as a stopped Core leaves them.
+ */
+async function seedMcpCallsAcrossTurns(store: FsStore, root: SeededRoot, workspaceId: string) {
+  const thread = await store.createThread(workspaceId, 'MCP backfill');
+  const sessionId = testEntityId('as', `as_b5_open_${workspaceId.slice(-12)}`);
+  await store.createAgentSession({
+    id: sessionId,
+    agentId: 'agent_codex',
+    workspaceId,
+    threadId: thread.id,
+    status: 'ready',
+    message: null,
+    createdAt: COMPLETED_AT,
+    updatedAt: COMPLETED_AT,
+  });
+  const turns: { turn: Awaited<ReturnType<FsStore['updateTurn']>>; parentItemId: string }[] = [];
+  for (const [index, open] of [false, true].entries()) {
+    const created = await store.createTurn(workspaceId, thread.id, 'Call MCP', root.actor, null, {
+      startedAt: COMPLETED_AT,
+    });
+    const parentItemId = testEntityId('it', `it_b5_parent_${workspaceId.slice(-12)}_${index}`);
+    await store.createItem({
+      id: parentItemId,
+      owner: { kind: 'workspace', workspaceId },
+      threadId: thread.id,
+      turnId: created.id,
+      type: 'user-message',
+      actor: root.actor,
+      text: 'Call MCP',
+      status: 'completed',
+      createdAt: COMPLETED_AT,
+      completedAt: COMPLETED_AT,
+    });
+    turns.push({
+      turn: await store.updateTurn(
+        created.id,
+        open
+          ? { agentId: 'agent_codex', agentSessionId: sessionId, status: 'running' }
+          : { status: 'completed', completedAt: COMPLETED_AT }
+      ),
+      parentItemId,
+    });
+  }
+  const calls: { callId: string; itemId: string; turnId: string }[] = [];
+  await withSeedWorkspaceDb(root.dataRoot, workspaceId, async (workspaceDb) => {
+    try {
+      for (const [index, { turn, parentItemId }] of turns.entries()) {
+        const suffix = `b5_turns_${workspaceId.slice(-12)}_${index}`;
+        const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
+          itemId: parentItemId,
+          suffix,
+          triggerActor: turn.triggerActor,
+          workspaceInputIds: [],
+        });
+        const callId = testEntityId('cap', `cap_${suffix}`);
+        const itemId = testEntityId('it', `it_${suffix}`);
+        await startCapabilityCall({
+          agentId: 'agent_codex',
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          authorityActor: turn.triggerActor,
+          callId,
+          capabilityId: 'mcp.call-tool',
+          family: 'mcp',
+          itemId,
+          now: new Date(COMPLETED_AT),
+          operation: 'mcp.call-tool',
+          packageSnapshotId: environmentPackage.snapshotId,
+          providerRef: 'echo',
+          redactionClass: 'metadata-only',
+          serviceRef: 'mcp-tool:echo',
+          threadId: turn.threadId,
+          turnId: turn.id,
+          workspaceDb,
+          workspaceId,
+        });
+        // The walk reads rows by completion: the sealed Turn's call is published first.
+        await finishCapabilityCall({
+          callId,
+          now: new Date(Date.parse(COMPLETED_AT) + index * 1000),
+          status: 'succeeded',
+          workspaceDb,
+        });
+        calls.push({ callId, itemId, turnId: turn.id });
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+    }
+  });
+  return { threadId: thread.id, sessionId, calls };
 }
 
 /** Compares path by path and table by table, so a changed retained byte names its owner. */
