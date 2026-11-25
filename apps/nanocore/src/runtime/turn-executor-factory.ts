@@ -10243,8 +10243,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
-   * RC7: gathers the original pending owner, Tc on both clocks, Ta, R, A and B on the given
-   * committed state. The lifecycle table decides. The selection's own P14 refusal keeps its type.
+   * RC7: gathers the original pending owner, every slot clock with the lower Tc edge, R, A and B
+   * on the given committed state. The lifecycle table decides. The selection's own P14 refusal keeps its type.
    */
   private decideAgentSessionReplacementPost(
     session: NanoHostBackendTurnSession,
@@ -10264,6 +10264,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const cause = REPLACEMENT_CLOSE_TABLE.post({
       pendingOwner: session.pendingHarnessOperation === pending,
       deadlines: posted.deadlines,
+      admitted: pending.admittedUnixMs,
       now: Date.now(),
       closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
       request: this.isAgentSessionReplacementRequestCurrent(close.request, false),
@@ -10300,6 +10301,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           session.pendingHarnessOperation === pending &&
           this.sessions.get(session.environmentPackage.snapshotId) === session,
         deadlines: posted.deadlines,
+        admitted: pending.admittedUnixMs,
         now: Date.now(),
         closeMonotonicExpired: performance.now() >= pending.deadlineMonotonicMs,
         request: this.isAgentSessionReplacementRequestCurrent(close.request, false),

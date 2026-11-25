@@ -47,6 +47,11 @@ export interface ClosePremises {
   readonly connection: boolean;
   /** The original absolute wall deadline of each clock. */
   readonly deadlines: Readonly<Record<CloseClock, number>>;
+  /**
+   * The original enqueue wall instant: Main's lower Tc edge. A wall sample before it comes from a
+   * wall step back, and no wall deadline can be read from it.
+   */
+  readonly admitted: number;
   /** The current wall instant. */
   readonly now: number;
   /** Tc on the monotonic clock. It is independent of the wall Tc. */
@@ -54,7 +59,10 @@ export interface ClosePremises {
 }
 
 /** The clock facts. */
-export type ClockPremises = Pick<ClosePremises, 'deadlines' | 'now' | 'closeMonotonicExpired'>;
+export type ClockPremises = Pick<
+  ClosePremises,
+  'deadlines' | 'admitted' | 'now' | 'closeMonotonicExpired'
+>;
 
 /** RC7 reads these facts only. Placement and storage are Native's at RC8, X is RC10's. */
 export type PostPremises = ClockPremises &
@@ -102,6 +110,18 @@ export interface SandboxFacts {
 }
 
 export type CaptureState = 'none' | 'claimed' | 'raw' | 'receipt' | 'abandoned';
+
+/** Ta: one absolute cutoff of one expiring credential that the admission requires. */
+export interface CredentialCutoff {
+  /**
+   * `session`: the browser session. `presented`: the presented Token. `projected-admin`: the
+   * session-projected admin Token. `admin-only`: the Token of the admin-only admission branch.
+   * `issuer`: a Token of the bounded issuer traversal.
+   */
+  readonly credential: 'session' | 'presented' | 'projected-admin' | 'admin-only' | 'issuer';
+  /** `expiresAt`, or the rotation grace cutoff while the Token is rotated. */
+  readonly at: number;
+}
 
 export interface CloseKey {
   readonly binding: string;
@@ -176,8 +196,13 @@ export interface ReplacementCloseTable {
     readonly core: 'queue-reply' | 'post';
     readonly workspace: 'queue-reply' | 'post';
   };
-  /** RC6-RC8: the applied Workspace policy install waits for the successor Workspace hold. */
-  readonly policyOrder: 'workspace-hold' | 'none';
+  /**
+   * RC6-RC8: the applied Workspace policy swap runs under the canonical Core posting hold. It
+   * waits while a close holds it. Publication I/O and the lost-ACK inspection run outside it.
+   */
+  readonly policyOrder: 'core-hold' | 'none';
+  /** Ta: the clock that Main folds from the cutoffs of the credentials that the admission requires. */
+  readonly authorityDeadline: (cutoffs: readonly CredentialCutoff[]) => number;
   /** RC7, in the Main turn that posts the worker frame. */
   readonly post: (premises: PostPremises) => CloseCause | null;
   /** RC8: the clocks that Main folds into the existing private replacement deadline slot. */
@@ -252,7 +277,7 @@ const passed = (p: ClockPremises, clock: CloseClock) => p.deadlines[clock] <= p.
 
 /**
  * The limiting clock: the earliest original wall deadline that has passed. When no wall deadline
- * has passed, only the monotonic Tc can have failed.
+ * has passed, only Tc can have failed: on the monotonic clock, or at its lower edge.
  */
 export function limitingClock(p: ClockPremises): CloseClock {
   let limit: CloseClock | null = null;
@@ -275,11 +300,15 @@ export function slotClock(
   return limit;
 }
 
-/** A clock refusal among the checked clocks, answered with the cause of the limiting clock. */
+/**
+ * A clock refusal among the checked clocks, answered with the cause of the limiting clock. Tc fails
+ * on its wall deadline, on the monotonic clock, and on a wall sample before the original enqueue
+ * instant. Such a sample can hide each passed deadline, so Main refuses it as the lower Tc edge.
+ */
 function clockRefusal(p: ClockPremises, checked: readonly CloseClock[]): CloseCause | null {
   const fails =
     checked.some((clock) => passed(p, clock)) ||
-    (checked.includes('Tc') && p.closeMonotonicExpired);
+    (checked.includes('Tc') && (p.closeMonotonicExpired || p.now < p.admitted));
   return fails ? CLOCK_CAUSE[limitingClock(p)] : null;
 }
 
@@ -295,10 +324,14 @@ export const transfersLatch = (
   claimRevision: number | null
 ) => claimRevision !== null && harness.drain === 'draining' && harness.revision === claimRevision;
 
-/** RC7: the original pending owner, Tc on both clocks, Ta, R, A with the P14 cause, and B. */
+/**
+ * RC7: the original pending owner, every slot clock (Tc on both clocks and its lower edge, Ts, Ta),
+ * R, A with the P14 cause, and B. The clocks come first: the P14 owner also refuses an elapsed Ts,
+ * and the R reader an elapsed credential, so a known expired slot answers its own clock cause.
+ */
 export function decidePost(p: PostPremises): CloseCause | null {
   if (!p.pendingOwner) return 'pending-owner';
-  const clock = clockRefusal(p, ['Tc', 'Ta']);
+  const clock = clockRefusal(p, CLOCKS);
   if (clock) return clock;
   if (!p.request) return 'request';
   if (!p.audience.thread || !p.audience.policy) return 'audience';
@@ -513,7 +546,9 @@ export const REPLACEMENT_CLOSE_TABLE: ReplacementCloseTable = {
       : 'capacity',
   losingClaimRecord: 'keep',
   holdUntil: { core: 'queue-reply', workspace: 'queue-reply' },
-  policyOrder: 'workspace-hold',
+  policyOrder: 'core-hold',
+  authorityDeadline: (cutoffs) =>
+    cutoffs.reduce((earliest, cutoff) => Math.min(earliest, cutoff.at), Number.POSITIVE_INFINITY),
   post: decidePost,
   deadlineSlot: ['Tc', 'Ts', 'Ta'],
   queue: ({ harness, claimRevision, key, slotExpired, storage, sandbox }) => {

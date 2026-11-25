@@ -9,6 +9,7 @@ import {
   type ColdAction,
   type ColdFacts,
   type ColdRule,
+  type CredentialCutoff,
   composeCold,
   type HarnessFacts,
   limitingClock,
@@ -31,8 +32,14 @@ import {
  * under test never reads `p`. The oracles read only the raw facts and `p`.
  */
 
+/**
+ * The wall clocks. `Ti` is the cutoff of a required credential other than the presented one: an
+ * issuer Token with its rotation grace, or the session-projected admin Token. Main folds it into Ta.
+ */
+type ModelClock = CloseClock | 'Ti';
+
 type Env =
-  | CloseClock
+  | ModelClock
   | 'TcMono'
   | 'Wback'
   | 'W'
@@ -133,10 +140,12 @@ interface State {
   };
   /**
    * Wall deadlines pass in this order; a live deadline is later than every passed one. `back`: the
-   * wall clock stepped back before every passed deadline, which keep their order. The monotonic Tc
-   * and the caller bound W are separate.
+   * wall clock stepped back before the original enqueue instant, so before every deadline. The
+   * monotonic Tc and the caller bound W are separate.
    */
-  clock: { passed: CloseClock[]; back: boolean; mono: boolean; W: boolean };
+  clock: { passed: ModelClock[]; back: boolean; mono: boolean; W: boolean };
+  /** The policy publisher has its activation ACK; the Main swap of the applied policy waits. */
+  install: boolean;
   cold: Record<string, number | null>;
   used: string[];
   after: boolean;
@@ -229,6 +238,7 @@ function initial(world: World): State {
       X: true,
     },
     clock: { passed: [], back: false, mono: false, W: false },
+    install: false,
     cold: Object.fromEntries((world.splitCold ?? []).map((k) => [k, null])),
     used: [],
     after: world.legacy === undefined,
@@ -274,23 +284,37 @@ const liveTable = (ctx: Ctx, s: State) =>
   s.after || !ctx.world.legacy ? ctx.table : legacyTable(ctx.table, ctx.world.legacy);
 
 const LIVE_DEADLINE = 1_000_000;
-const deadlineOf = (s: State, clock: CloseClock) => {
+/** The original enqueue wall instant. Every deadline is later. */
+const ADMITTED = 0;
+const deadlineOf = (s: State, clock: ModelClock) => {
   const at = s.clock.passed.indexOf(clock);
   return at < 0 ? LIVE_DEADLINE : at + 1;
 };
-const wallNow = (s: State) => (s.clock.back ? 0 : s.clock.passed.length);
-const wallPassed = (s: State, clock: CloseClock) => deadlineOf(s, clock) <= wallNow(s);
+const wallNow = (s: State) => (s.clock.back ? ADMITTED - 1 : s.clock.passed.length);
+const wallPassed = (s: State, clock: ModelClock) => deadlineOf(s, clock) <= wallNow(s);
+/** Oracle: an expiring credential that the admission requires has passed on the wall. */
+const authorityPassed = (s: State) => wallPassed(s, 'Ta') || wallPassed(s, 'Ti');
 
-function premises(s: State, pendingOwner: boolean): ClosePremises {
+function premises(s: State, pendingOwner: boolean, t: ReplacementCloseTable): ClosePremises {
+  const cutoffs: CredentialCutoff[] = [
+    { credential: 'presented', at: deadlineOf(s, 'Ta') },
+    { credential: 'issuer', at: deadlineOf(s, 'Ti') },
+  ];
   return {
     pendingOwner,
     request: s.prem.R,
-    audience: { thread: s.prem.thread, policy: s.prem.policy },
+    // The P14 owner reports A. Its contributor authorizer also refuses an elapsed Ts (A8-2).
+    audience: { thread: s.prem.thread && !wallPassed(s, 'Ts'), policy: s.prem.policy },
     idleReceipt: s.prem.idle,
     storage: s.prem.S,
     placement: { harness: s.h.life, sandbox: sandboxFacts(s) },
     connection: s.prem.X,
-    deadlines: { Tc: deadlineOf(s, 'Tc'), Ts: deadlineOf(s, 'Ts'), Ta: deadlineOf(s, 'Ta') },
+    deadlines: {
+      Tc: deadlineOf(s, 'Tc'),
+      Ts: deadlineOf(s, 'Ts'),
+      Ta: t.authorityDeadline(cutoffs),
+    },
+    admitted: ADMITTED,
     now: wallNow(s),
     closeMonotonicExpired: s.clock.mono,
   };
@@ -299,10 +323,11 @@ function premises(s: State, pendingOwner: boolean): ClosePremises {
 /** Oracle facts, read from the raw state only. */
 const rawPlacement = (s: State) =>
   s.h.life === 'open' && s.sb.accepting && s.sb.clean && s.sb.currentEpoch;
-const ORACLE_CLOCK_CAUSE: Readonly<Record<CloseClock, CloseCause>> = {
+const ORACLE_CLOCK_CAUSE: Readonly<Record<ModelClock, CloseCause>> = {
   Tc: 'close-allowance',
   Ts: 'startup-deadline',
   Ta: 'authority-expired',
+  Ti: 'authority-expired',
 };
 const CLOCK_CAUSES: readonly CloseCause[] = [
   'close-allowance',
@@ -352,8 +377,11 @@ function applyRestore(
   }
 }
 
-/** A definite live refusal before any queue commit. */
-function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause): void {
+/**
+ * A definite live refusal before any queue commit. `mainWall`: Main decided on its own wall sample
+ * at RC7. A sample before the enqueue instant shows no deadline, so it answers the lower Tc edge.
+ */
+function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause, mainWall = false): void {
   const c = s.c[b]!;
   const t = liveTable(ctx, s);
   c.coreHold = false;
@@ -373,8 +401,15 @@ function liveRefuse(ctx: Ctx, s: State, b: string, cause: CloseCause): void {
   }
   c.cause = cause;
   c.answer = t.carryCause(cause, 'capacity');
-  // A clock refusal answers the original limiting clock; every other refusal keeps its cause.
-  const expected = CLOCK_CAUSES.includes(cause) ? expectedClockCause(s) : cause;
+  // A clock refusal answers the original limiting clock; every other refusal keeps its cause. A
+  // P14 audience refusal while the Thread rows and the policy admit can only come from a clock.
+  const clockCause =
+    CLOCK_CAUSES.includes(cause) || (cause === 'audience' && s.prem.thread && s.prem.policy);
+  const expected = !clockCause
+    ? cause
+    : mainWall && s.clock.back
+      ? ORACLE_CLOCK_CAUSE.Tc
+      : expectedClockCause(s);
   if (c.answer !== expected) violate(ctx, 'O.cause', `${b} answered ${c.answer} for ${expected}`);
   c.phase = 'refused';
 }
@@ -575,10 +610,15 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
     if (c.phase === 'held' && reach('posted'))
       add(`post:${b}`, false, (n, ctx) => {
         const x = n.c[b]!;
-        const cause = t.post(premises(n, n.prem.pend));
-        if (cause) return liveRefuse(ctx, n, b, cause);
+        const cause = t.post(premises(n, n.prem.pend, t));
+        if (cause) return liveRefuse(ctx, n, b, cause, true);
         const q = n.prem;
-        const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ta') || n.clock.mono;
+        const clocks =
+          wallPassed(n, 'Tc') ||
+          wallPassed(n, 'Ts') ||
+          authorityPassed(n) ||
+          n.clock.mono ||
+          n.clock.back;
         if (!(q.pend && q.R && q.thread && q.policy && q.idle) || clocks)
           violate(ctx, 'O.frame', `${b} posted with a failed premise`);
         if (t.holdUntil.core === 'post') x.coreHold = false;
@@ -591,7 +631,9 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
       add(`queue:${b}`, false, (n, ctx) => {
         const x = n.c[b]!;
         const key = keyOf(b, x);
-        const slotExpired = t.deadlineSlot.some((clock) => wallPassed(n, clock));
+        // Main folds the slot from the original clocks; Native compares it with its own wall.
+        const p = premises(n, n.prem.pend, t);
+        const slotExpired = t.deadlineSlot.some((clock) => p.deadlines[clock] <= p.now);
         const cause = t.queue({
           harness: n.h,
           claimRevision: x.claimRev,
@@ -603,7 +645,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         if (!cause) {
           const q = n.prem;
           const own = n.p.drainBy.length === 1 && n.p.drainBy[0] === `claim:${b}`;
-          const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || wallPassed(n, 'Ta');
+          const clocks = wallPassed(n, 'Tc') || wallPassed(n, 'Ts') || authorityPassed(n);
           if (clocks || !rawPlacement(n) || !(q.S && q.R && q.thread && q.policy && q.idle) || !own)
             violate(ctx, 'O.queue', `${key} committed with a failed premise or latch`);
           n.h = {
@@ -638,7 +680,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
           if (decision !== 'commit') {
             // The model assigns wall deadlines lazily in the order they pass, so the original
             // minimum that Main posted is rebuilt from those fixed deadlines, never from the wall.
-            const p = premises(n, n.prem.pend);
+            const p = premises(n, n.prem.pend, t);
             const posted =
               t.slotClockAt === 'post' ? slotClock(p.deadlines, t.deadlineSlot) : limitingClock(p);
             return liveRefuse(ctx, n, b, decision === 'deadline' ? t.slotCause(posted) : decision);
@@ -715,7 +757,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               keyOf(b, x) === key &&
               x.slot &&
               ['replying', 'queued', 'unknown-reply'].includes(x.phase);
-            const d = t.firstBytes(premises(n, pending));
+            const d = t.firstBytes(premises(n, pending, t));
             if (d.kind === 'refuse') {
               n.p.unsent.push(key);
               n.core[b] = { key, result: 'stale', revision: null };
@@ -723,7 +765,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
               return;
             }
             const q = n.prem;
-            const clocks = n.clock.passed.length > 0 || n.clock.mono;
+            const clocks = n.clock.passed.length > 0 || n.clock.mono || n.clock.back;
             if (
               !(pending && q.R && q.thread && q.policy && q.idle && q.S && q.X) ||
               !rawPlacement(n) ||
@@ -793,6 +835,14 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         n.cold[k] = null;
       });
 
+  // F-e: the Main swap of the applied policy. It revalidates and swaps under the canonical Core
+  // posting hold, so it waits while a close holds that hold. It is no budgeted writer.
+  if (s.install && (table.policyOrder === 'none' || !coreHeld))
+    add('install:policy', true, (n) => {
+      n.install = false;
+      n.prem.policy = false;
+    });
+
   // Environment writers, each at most once within the budget.
   if (s.used.length < world.budget)
     for (const e of world.env) {
@@ -806,6 +856,7 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
         case 'Tc':
         case 'Ts':
         case 'Ta':
+        case 'Ti':
           // A held Core writer does not stop a clock. After a step back the wall stays behind.
           if (!s.clock.back)
             env((n) => {
@@ -813,14 +864,10 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
             });
           break;
         case 'Wback':
-          // V1-P S2-r1 item 2: the wall clock steps back while a Native deadline refusal is in
-          // transit to Main. A step back at RC7, RC8 or RC10 is out of scope: those owners read
-          // the wall as the existing owners do, and Tc keeps its monotonic check.
-          if (
-            !s.clock.back &&
-            s.clock.passed.length > 0 &&
-            Object.values(s.c).some((c) => c.phase === 'replying' && c.decision === 'deadline')
-          )
+          // The wall clock steps back before the original enqueue instant, at any point: before
+          // RC7, between RC7 and RC8, while a Native refusal is in transit to Main, or after the
+          // queue commit. Main refuses such a sample at RC7 and RC10 as the lower Tc edge (A8-1).
+          if (!s.clock.back)
             env((n) => {
               n.clock.back = true;
             });
@@ -859,10 +906,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
             });
           break;
         case 'policy':
-          if (!(wsHeld && table.policyOrder === 'workspace-hold'))
-            env((n) => {
-              n.prem.policy = false;
-            });
+          // The publisher's activation ACK or lost-ACK readback runs outside the Core hold. It
+          // changes no premise: only the Main swap below changes the applied policy.
+          env((n) => {
+            n.install = true;
+          });
           break;
         case 'pend':
         case 'S':
@@ -974,6 +1022,11 @@ function steps(world: World, table: ReplacementCloseTable, s: State): Step[] {
             n.excl = null;
             n.reserved = null;
             n.settling = [];
+            // A restart reads the activated policy from its durable publication.
+            if (n.install) {
+              n.install = false;
+              n.prem.policy = false;
+            }
             n.prem.pend = true;
             n.p.owed = 0;
             for (const k of Object.keys(n.cold)) n.cold[k] = null;
@@ -1266,6 +1319,7 @@ const LIVE_ENV: readonly Env[] = [
   'Tc',
   'Ts',
   'Ta',
+  'Ti',
   'TcMono',
   'Wback',
   'W',
@@ -1590,12 +1644,15 @@ const restoreWithout =
     (drop === 'revision' || h.revision === revision);
 const OPEN_SANDBOX: SandboxFacts = { accepting: true, clean: true, currentEpoch: true };
 const postWithout =
-  (field: 'Tc' | 'mono' | 'pendingOwner' | 'thread' | 'policy') => (p: ClosePremises) =>
+  (field: 'Tc' | 'Ts' | 'edge' | 'mono' | 'pendingOwner' | 'thread' | 'policy') =>
+  (p: ClosePremises) =>
     T.post({
       ...p,
       ...(field === 'Tc'
         ? { deadlines: { ...p.deadlines, Tc: LIVE_DEADLINE }, closeMonotonicExpired: false }
         : {}),
+      ...(field === 'Ts' ? { deadlines: { ...p.deadlines, Ts: LIVE_DEADLINE } } : {}),
+      ...(field === 'edge' ? { admitted: p.now } : {}),
       ...(field === 'mono' ? { closeMonotonicExpired: false } : {}),
       ...(field === 'pendingOwner' ? { pendingOwner: true } : {}),
       ...(field === 'thread' ? { audience: { ...p.audience, thread: true } } : {}),
@@ -1605,6 +1662,7 @@ const bytesWithout =
   (
     field:
       | 'Ta'
+      | 'edge'
       | 'mono'
       | 'placement'
       | 'idleReceipt'
@@ -1618,6 +1676,7 @@ const bytesWithout =
     T.firstBytes({
       ...p,
       ...(field === 'Ta' ? { deadlines: { ...p.deadlines, Ta: LIVE_DEADLINE } } : {}),
+      ...(field === 'edge' ? { admitted: p.now } : {}),
       ...(field === 'mono' ? { closeMonotonicExpired: false } : {}),
       ...(field === 'placement' ? { placement: { ...p.placement, sandbox: OPEN_SANDBOX } } : {}),
       ...(field === 'idleReceipt' ? { idleReceipt: true } : {}),
@@ -1955,8 +2014,9 @@ const M: readonly MutationRow[] = [
     id: 'M-A1c',
     world: WORLDS.live,
     oracle: 'O.queue',
-    takeOut: 'the policy install does not wait for the hold (RC8 order)',
+    takeOut: 'the policy swap does not wait for the Core hold (RC8 order)',
     table: { policyOrder: 'none' },
+    via: 'install:policy',
   },
   {
     id: 'M-C1',
@@ -2198,6 +2258,41 @@ const M: readonly MutationRow[] = [
     table: { slotClockAt: 'reply' },
     via: 'env:Wback',
   },
+  {
+    id: 'M-T6',
+    world: WORLDS.live,
+    oracle: 'O.frame',
+    takeOut: 'RC7 reads a wall sample before the enqueue instant (no lower Tc edge, S3a)',
+    table: { post: postWithout('edge') },
+    via: 'env:Wback',
+  },
+  {
+    id: 'M-T7',
+    world: WORLDS.live,
+    oracle: 'O.bytes',
+    takeOut: 'RC10 reads a wall sample before the enqueue instant (no lower Tc edge, S3a)',
+    table: { firstBytes: bytesWithout('edge') },
+    via: 'env:Wback',
+  },
+  {
+    id: 'M-T8',
+    world: WORLDS.live,
+    oracle: 'O.cause',
+    takeOut: 'RC7 leaves an expired Ts to the P14 audience refusal (S3a)',
+    table: { post: postWithout('Ts') },
+    via: 'env:Ts',
+  },
+  {
+    id: 'M-Ta3',
+    world: WORLDS.live,
+    oracle: 'O.queue',
+    takeOut: 'Ta folds only the presented credential (S3a)',
+    table: {
+      authorityDeadline: (cutoffs) =>
+        T.authorityDeadline(cutoffs.filter((c) => c.credential === 'presented')),
+    },
+    via: 'env:Ti',
+  },
 ];
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
@@ -2399,6 +2494,7 @@ describe('replacement close lifecycle model check', () => {
 
     it.each([
       ['Ta', 'authority-expired'],
+      ['Ti', 'authority-expired'],
       ['Ts', 'startup-deadline'],
       ['Tc', 'close-allowance'],
     ] as const)(
@@ -2411,7 +2507,7 @@ describe('replacement close lifecycle model check', () => {
       }
     );
 
-    it.each(['Ta', 'Ts', 'Tc'] as const)('%s alone after RC8 gives zero bytes', (clock) => {
+    it.each(['Ta', 'Ti', 'Ts', 'Tc'] as const)('%s alone after RC8 gives zero bytes', (clock) => {
       const s = run(live, [...TO_QUEUED, `env:${clock}`, 'dispatch:p1', 'write:p1:ok']);
       expect(s.p.committed).toEqual(['A1']);
       expect(s.p.bytes).toEqual({});
@@ -2474,6 +2570,7 @@ describe('replacement close lifecycle model check', () => {
         placement: { harness: 'open', sandbox: OPEN_SANDBOX },
         connection: true,
         deadlines,
+        admitted: 50,
         now: 99,
         closeMonotonicExpired: false,
       };
@@ -2486,6 +2583,82 @@ describe('replacement close lifecycle model check', () => {
       expect(s.c.A!.answer).toBe('authority-expired');
       expect(s.p.committed).toEqual([]);
       expect(s.p.bytes).toEqual({});
+    });
+
+    const TO_HOLD = TO_POST.slice(0, -1);
+    const TO_PUB = TO_POST.slice(0, -2);
+
+    it('A8-1: a wall sample before the enqueue instant refuses at RC7 and at RC10', () => {
+      const atPost = run(live, [...TO_HOLD, 'env:Wback', 'post:A']);
+      expect(atPost.c.A!.answer).toBe('close-allowance');
+      expect(atPost.p.committed).toEqual([]);
+      // The step back hides an elapsed Ta. Main reads no deadline and answers the lower Tc edge.
+      const hidden = run(live, [...TO_HOLD, 'env:Ta', 'env:Wback', 'post:A']);
+      expect(hidden.c.A!.answer).toBe('close-allowance');
+      expect(hidden.p.committed).toEqual([]);
+      // After the queue commit: zero bytes and the exact unsent settlement.
+      const atBytes = run(live, [...TO_QUEUED, 'env:Wback', 'dispatch:p1', 'write:p1:ok']);
+      expect(atBytes.p.committed).toEqual(['A1']);
+      expect(atBytes.p.bytes).toEqual({});
+      expect(atBytes.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+      // Native has no lower edge: a step back before RC8 commits, and RC10 sends nothing.
+      const wait = run(live, [
+        ...TO_POST,
+        'env:Wback',
+        'queue:A',
+        'reply:A:ack',
+        'dispatch:p1',
+        'write:p1:ok',
+      ]);
+      expect(wait.p.committed).toEqual(['A1']);
+      expect(wait.p.bytes).toEqual({});
+    });
+
+    it('A8-2: an expired Ts answers its own cause before P14; a live-clock audience denial keeps P14', () => {
+      const ts = run(live, [...TO_HOLD, 'env:Ts', 'post:A']);
+      expect(ts.c.A!.answer).toBe('startup-deadline');
+      expect(ts.p.committed).toEqual([]);
+      const audience = run(live, [...TO_PUB, 'env:thread', 'hold:A', 'post:A']);
+      expect(audience.c.A!.answer).toBe('audience');
+      expect(audience.p.committed).toEqual([]);
+      expect(audience.clock.passed).toEqual([]);
+    });
+
+    it('F-e: the policy swap waits for the Core hold, in both orders', () => {
+      // The swap wins before RC7: the original P14 refusal, zero rows and zero bytes.
+      const first = run(live, [...TO_PUB, 'env:policy', 'install:policy', 'hold:A', 'post:A']);
+      expect(first.c.A!.answer).toBe('audience');
+      expect(first.p.committed).toEqual([]);
+      // The ACK lands before the hold; the swap waits through the queue reply.
+      const acked = [...TO_PUB, 'env:policy', 'hold:A', 'post:A', 'queue:A'];
+      expect(enabled(live, run(live, acked))).not.toContain('install:policy');
+      const late = run(live, [
+        ...acked,
+        'reply:A:ack',
+        'install:policy',
+        'dispatch:p1',
+        'write:p1:ok',
+      ]);
+      expect(late.p.committed).toEqual(['A1']);
+      expect(late.p.bytes).toEqual({});
+      expect(late.core.A).toEqual({ key: 'A1', result: 'stale', revision: null });
+    });
+
+    it('F-c: Ta is the earliest cutoff over every required credential', () => {
+      expect(
+        T.authorityDeadline([
+          { credential: 'session', at: 500 },
+          { credential: 'projected-admin', at: 300 },
+          { credential: 'issuer', at: 200 },
+          { credential: 'admin-only', at: 400 },
+        ])
+      ).toBe(200);
+      expect(T.authorityDeadline([])).toBe(Number.POSITIVE_INFINITY);
+      // An issuer cutoff passes in the Native wait while the presented credential stays live.
+      const wait = run(live, [...TO_POST, 'env:Ti', 'queue:A', 'env:Wback', 'reply:A:ack']);
+      expect(wait.c.A!.answer).toBe('authority-expired');
+      expect(wait.p.committed).toEqual([]);
+      expect(wait.p.bytes).toEqual({});
     });
 
     it('a Sandbox drain before RC8 gives zero rows; after the queue, zero bytes; the drain stays', () => {
@@ -2521,8 +2694,13 @@ describe('replacement close lifecycle model check', () => {
     it('a stopped producer releases the pins; a commit with a pending reply does not', () => {
       const pending = run(live, [...TO_POST, 'queue:A']);
       const labels = enabled(live, pending);
-      for (const writer of ['env:core', 'env:thread', 'env:policy', 'env:R', 'env:idle'])
+      for (const writer of ['env:core', 'env:thread', 'env:R', 'env:idle'])
         expect(labels).not.toContain(writer);
+      // F-e: the publisher ACK runs while the close holds the Core hold; the swap waits.
+      expect(labels).toContain('env:policy');
+      expect(enabled(live, run(live, [...TO_POST, 'queue:A', 'env:policy']))).not.toContain(
+        'install:policy'
+      );
       expect(labels.filter((l) => l.startsWith('cold:'))).toEqual([]);
       const stopped = run(live, [...TO_POST, 'queue:A', 'env:crash']);
       const after = enabled(live, stopped);
