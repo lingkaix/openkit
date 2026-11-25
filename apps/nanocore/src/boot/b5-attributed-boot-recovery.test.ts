@@ -52,6 +52,7 @@ import {
   contradictTurnRecord,
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
+  readPendingRecord,
   readPendingRow,
   removeGoal,
   removeWorkObservation,
@@ -2885,6 +2886,101 @@ describe('B5 attributed Boot recovery', () => {
         expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).not.toEqual(claimRow);
         expect(readPendingRow(root.dataRoot, workspaceId, waitingId)).toMatchObject({
           delivery: 'closed-out',
+        });
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // A8 FIX 3 item 1: a Worker denial decided while its Thread was busy is ready on restart with its
+  // authority unchanged. When Boot's wall clock reads just before that decision, the Worker outcome
+  // Turn the walk would create starts before it, and the freeze writer refuses that delivery. The
+  // walk runs the writer's freeze decision on that Turn before its first write, so A is held with
+  // the earlier claim unsettled; on the unshifted clock the same walk admits the same batch.
+  it.each([
+    { clock: 'stepped back', outcome: 'holds A with no prefix' },
+    { clock: 'unshifted', outcome: 'admits the same batch' },
+  ] as const)(
+    "proves a Worker outcome freeze on its planned Turn before the walk's first write when the clock is $clock and $outcome",
+    async ({ clock }) => {
+      const root = await seedRoot(['Freeze clock']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const { claim, denial } = await withSeedStore(root, async (store) => ({
+        claim: await seedClaimedPending(store, root, workspaceId),
+        denial: (
+          await seedDecidedApprovals(store, root, [workspaceId], {
+            requesterKind: 'worker',
+            decision: 'denied',
+            services: 'none',
+          })
+        )[0]!,
+      }));
+      const denialId = denial.requestIds[0]!;
+      const claimRow = readPendingRow(root.dataRoot, workspaceId, claim.requestId);
+      const denialRow = readPendingRow(root.dataRoot, workspaceId, denialId);
+      // Decided while its Thread was busy, so the denial waits undelivered for Boot.
+      expect(denialRow).toMatchObject({ delivery: 'undelivered' });
+      const decided = (requestId: string) =>
+        readPendingRecord(root.dataRoot, workspaceId, requestId)!;
+      const decision = decided(denialId);
+      expect(decision).toMatchObject({ resolution: 'denied', decidedAt: expect.any(String) });
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      // Boot's configuration still declares the Worker agent: the requester keeps its authority.
+      const pending = {
+        coreDb,
+        agentAuthority: () => true,
+        openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+      };
+      const writes = vi.spyOn(store, 'applyPendingRequestCommand');
+      const turns = vi.spyOn(store, 'createTurn');
+      const warnings = vi.spyOn(console, 'warn');
+      try {
+        store.startPendingRequestDelivery(pending);
+        if (clock === 'stepped back') {
+          // After the claim's decision and one millisecond before the denial's.
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(Date.parse(decision.decidedAt!) - 1);
+          expect(Date.parse(decided(claim.requestId).decidedAt!)).toBeLessThan(Date.now());
+        }
+        await recoverPendingRequestsAtBoot(store, pending);
+        if (clock === 'stepped back') {
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+          expect(warnings).toHaveBeenCalledWith(
+            `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
+            'The decided Pending tuple has invalid canonical Items: delivery-association.'
+          );
+          // No write was entered: neither the settlement nor the outcome admission reached A.
+          expect(writes).not.toHaveBeenCalled();
+          expect(turns).not.toHaveBeenCalled();
+        } else {
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+          const admitted = turns.mock.calls.filter(
+            (call) => call[1] === denial.threadId && call[5]?.agentId === WORKER_AGENT_ID
+          );
+          expect(admitted).toHaveLength(1);
+          expect(readPendingRow(root.dataRoot, workspaceId, denialId)).toMatchObject({
+            delivery: 'frozen',
+            delivery_turn_id: admitted[0]![5]!.turnId,
+          });
+        }
+      } finally {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
+      }
+      if (clock === 'stepped back') {
+        // Zero prefix: the earlier claim and the denial keep their bytes, and no file was added.
+        expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toEqual(claimRow);
+        expect(readPendingRow(root.dataRoot, workspaceId, denialId)).toEqual(denialRow);
+        expect(workspaceEvidence(root.dataRoot, workspaceId).files).toEqual(original.files);
+      } else {
+        expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
         });
       }
     },
