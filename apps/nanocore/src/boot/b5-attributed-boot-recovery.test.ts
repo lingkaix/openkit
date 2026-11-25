@@ -2205,18 +2205,12 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
+  // Each interpolated value stays under vitest's 40-character display limit, so titles are whole.
   it.each([
-    {
-      proof:
-        "every row of a configured Worker outcome's frozen batch on the delivery writer's rule",
-      fault: 'one no longer decodes',
-    },
-    {
-      proof: "a configured Worker outcome's failed terminal on its writer's own rules",
-      fault: "its Task's Goal is gone",
-    },
+    { proof: 'every frozen batch row', fault: 'one no longer decodes' },
+    { proof: 'the failed terminal', fault: "its Task's Goal is gone" },
   ] as const)(
-    'proves $proof before the Core post at startup, and holds A with no submission when $fault',
+    "proves $proof of a configured Worker outcome on its writer's own rules before the Core post at startup, and holds A with no submission when $fault",
     async ({ fault }) => {
       const root = await seedRoot(['Startup proof fails', 'Configured Worker']);
       const [held, healthy] = root.workspaceIds as [string, string];

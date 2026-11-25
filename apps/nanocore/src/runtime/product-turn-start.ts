@@ -33,12 +33,12 @@ import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { WorkInputRef } from '../storage/control-kernel-port.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
-import type { ControlStorePublicationGuard } from '../storage/control-store-worker-client.js';
 import {
   type ExternalSourceSchema,
   WorkspaceQueueInputRefSchema,
 } from '../storage/control-store-admission-codecs.js';
 import { frameControlScalarText } from '../storage/control-store-input.js';
+import type { ControlStorePublicationGuard } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import {
