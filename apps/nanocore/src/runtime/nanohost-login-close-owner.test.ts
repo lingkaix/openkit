@@ -170,6 +170,7 @@ interface Backend {
     replacementSelection?: Record<string, unknown>
   ): Promise<unknown>;
   materialize(environmentPackage: unknown, context?: Record<string, unknown>): Promise<unknown>;
+  prepareAgentSessionContinuity(input: Record<string, unknown>): Promise<unknown>;
   schedulerCapacityRefusal(
     error: unknown,
     thread: { readonly workspaceId: string; readonly threadId: string }
@@ -926,6 +927,79 @@ describe('Row 14: a changed resident carries the current admission read', () => 
     expect((held as WorkerGovernanceCapacityUnavailableError).schedulerCapacity).toEqual({
       key: { kind: 'backend', backendId: expect.any(String) },
       stillRefused: null,
+    });
+  });
+
+  it('keeps the carried attachment refusal through the continuity entry (S3b D3)', async () => {
+    const target = backend as unknown as Record<string, (...args: never[]) => unknown>;
+    const old = resident('a');
+    const current = { value: null as unknown };
+    const storage = { value: undefined as unknown };
+    // The continuity read and the eviction see the old resident. When the proof handoff
+    // returns, the replacement resident is saturated, also at the continuity catch.
+    const inspections: unknown[] = [old, old, 'capacity-saturated', 'capacity-saturated'];
+    vi.spyOn(target, 'inspectIncompatibleIdleSandbox' as never).mockImplementation((() =>
+      inspections.length > 0 ? inspections.shift() : current.value) as never);
+    let reads = 0;
+    vi.spyOn(target, 'readNanoHost' as never).mockImplementation((() => {
+      reads += 1;
+      // The first read is the RuntimeTarget admission row; the later reads are absent
+      // until the re-check reads the selected-storage attachment.
+      return reads === 1 ? [{ predecessorFenced: 1, ready: 1, freshEmpty: 1 }] : storage.value;
+    }) as never);
+    vi.spyOn(target, 'handoffDurableAgentSessionProof' as never).mockResolvedValue(
+      undefined as never
+    );
+    vi.spyOn(target, 'workerStorageAudienceAuthorizer' as never).mockReturnValue(
+      (() => true) as never
+    );
+    vi.spyOn(target, 'workerStorageReplacementSelection' as never).mockReturnValue({
+      storageRef: 'storage_selected',
+      expectedRevision: 3,
+    } as never);
+    vi.spyOn(target, 'validateWorkerStorageSelection' as never).mockReturnValue({
+      storageRef: 'storage_selected',
+      revision: 3,
+      currentSandboxBindingRef: old.sandboxBindingRef,
+    } as never);
+    const thread = { workspaceId: WORKSPACE, threadId: environmentPackage.scope.threadId };
+    const refused = await backend
+      .prepareAgentSessionContinuity({
+        ...thread,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        admissionAgentSessionId: environmentPackage.scope.agentSessionId,
+        admissionAttemptId: 'attempt_incoming',
+        environmentPackage,
+        reuseAllowed: false,
+        workerStorageChoice: {
+          kind: 'selected',
+          storageRef: 'storage_selected',
+          expectedRevision: 3,
+        },
+      })
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(inspections).toEqual([]);
+    expect(refused).toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
+    // The scheduler's release read of this refusal: held, or one fresh claim.
+    const refusal = backend.schedulerCapacityRefusal(refused, thread)!;
+    const claims = () => (refusal.stillRefused === null || refusal.stillRefused() ? 0 : 1);
+    // Saturated replacement: held.
+    current.value = 'capacity-saturated';
+    storage.value = { state: 'attached', currentSandboxBindingRef: 'sb_a' };
+    expect(claims()).toBe(0);
+    // Physical clearance: the old resident's attachment still holds. Zero fresh claims.
+    current.value = null;
+    expect(claims()).toBe(0);
+    // Attachment clearance: one fresh claim.
+    storage.value = { state: 'idle', currentSandboxBindingRef: null };
+    expect(claims()).toBe(1);
+    // The old-effect guard stopped the stale drain post. The carried cause is the refusal.
+    expect(claimNanoHostIdleSandboxDrain).not.toHaveBeenCalled();
+    expect(refused).toMatchObject({
+      message: 'NanoHost one-Sandbox capacity is occupied or unproved.',
     });
   });
 });

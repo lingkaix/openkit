@@ -3360,10 +3360,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (
             this.inspectIncompatibleIdleSandbox(input.environmentPackage) === 'capacity-saturated'
           ) {
-            throw new WorkerGovernanceCapacityUnavailableError(
+            const fallback = new WorkerGovernanceCapacityUnavailableError(
               'Resident retirement awaits definite cleanup or predecessor Epoch fencing and fresh readiness.',
               this.schedulerSandboxRefusal(input.environmentPackage)
             );
+            // CL9: a structured refusal keeps its own re-check. The Sandbox-only read is a fallback.
+            throw error instanceof WorkerGovernanceCapacityUnavailableError &&
+              error.schedulerCapacity
+              ? REPLACEMENT_CLOSE_TABLE.carryCause(error, fallback)
+              : fallback;
           }
           throw error;
         }
