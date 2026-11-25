@@ -27,8 +27,13 @@ import {
   applyNativeScopeMigrations,
   applyScopedMigrations,
   applyServerOwnerJournal,
+  assertCurrentServerOwnerSchema,
+  assertSupportedNativeLedger,
   listAppliedMigrationIds,
   listAppliedNativeMigrationIds,
+  readServerOwnerJournal,
+  ServerOwnerAdmissionError,
+  SPLIT_STORAGE_JOURNALS,
   type StorageMigrationScope,
 } from './migrate';
 
@@ -561,6 +566,8 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
         'schema_version',
+        // G3 (CLOSE-LC S3b): the additive 0001 claim generation column, after the baseline.
+        'claim_generation',
       ]);
       expect(listColumnNames({ sqlite }, 'agent_session_runtime_bindings')).toEqual([
         'agent_session_runtime_binding_id',
@@ -1480,6 +1487,145 @@ describe('native Drizzle migrate', () => {
       expect(listAppliedNativeMigrationIds(sqlite, 'core', folder)).toEqual(['core_0000_setup']);
     } finally {
       sqlite.close();
+    }
+  });
+});
+
+describe('NanoHost claim generation journal (CLOSE-LC S3b G3)', () => {
+  const scope = SPLIT_STORAGE_JOURNALS.nanohost;
+  const reference = () => new Database(':memory:');
+
+  /** The shipped NanoHost journal folder of this binary. */
+  function shippedNanoHostFolder(): string {
+    const folder = [
+      join(process.cwd(), 'apps', 'nanocore', 'drizzle', scope),
+      join(process.cwd(), 'drizzle', scope),
+    ].find((path) => existsSync(join(path, 'meta', '_journal.json')));
+    if (!folder) throw new Error('The shipped NanoHost journal is missing.');
+    return folder;
+  }
+
+  /** The journal of a binary from before G3: the shipped baseline alone, byte for byte. */
+  function baselineOnlyNanoHostFolder(): string {
+    const shipped = shippedNanoHostFolder();
+    const journal = JSON.parse(readFileSync(join(shipped, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { tag: string; when: number }[];
+    };
+    const baseline = journal.entries[0]!;
+    expect(baseline.tag).toBe('0000_baseline');
+    return createNativeJournalFolder([
+      {
+        tag: baseline.tag,
+        when: baseline.when,
+        sql: readFileSync(join(shipped, `${baseline.tag}.sql`), 'utf8'),
+      },
+    ]);
+  }
+
+  /** The Harness columns of the baseline, in their order: every read of an older binary. */
+  const baselineHarnessColumns = (sqlite: Database.Database) =>
+    listColumnNames({ sqlite }, 'harness_instance_records').filter(
+      (name) => name !== 'claim_generation'
+    );
+
+  /** One Sandbox and one draining Harness row, written with the baseline columns only. */
+  function seedBaselineRows(sqlite: Database.Database): void {
+    sqlite.pragma('foreign_keys = OFF');
+    sqlite
+      .prepare(`INSERT INTO sandbox_runtime_records (sandbox_runtime_id, runtime_target_id,
+        origin_physical_epoch, sandbox_binding_ref, sandbox_integration_binding_ref,
+        sandbox_compatibility_key, image_digest, environment_class, max_open_sessions,
+        max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
+        cleanup_state, created_at, updated_at)
+        VALUES ('sandbox-g3', 'target-g3', 'epoch-g3', 'sandbox-binding-g3', 'integration-g3',
+        'compat-g3', 'sha256:g3', 'standard', 2, 2, 1, 'open', 'ready', 'accepting', 'clean',
+        '2098-08-21T00:00:00.000Z', '2098-08-21T00:00:00.000Z')`)
+      .run();
+    sqlite
+      .prepare(`INSERT INTO harness_instance_records (harness_instance_id, sandbox_runtime_id,
+        harness_binding_ref, harness_compatibility_key, runtime_family, adapter_id,
+        adapter_version, protocol_version, capabilities_json, max_open_sessions,
+        max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state,
+        next_sequence, operation_state, created_at, updated_at)
+        VALUES ('harness-g3', 'sandbox-g3', 'harness-binding-g3', 'compat-g3', 'codex', 'codex',
+        '0.153.4', 1, '[]', 2, 1, 1, 0, 'open', 'draining', 3, 'settled',
+        '2098-08-21T00:00:00.000Z', '2098-08-21T00:00:01.000Z')`)
+      .run();
+    sqlite.pragma('foreign_keys = ON');
+  }
+
+  it('installs the claim generation as one nullable text column on a fresh NanoHost file', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      applyServerOwnerJournal(sqlite, 'nanohost', reference);
+      expect(
+        (
+          sqlite.prepare('PRAGMA table_info(harness_instance_records)').all() as { name: string }[]
+        ).find((column) => column.name === 'claim_generation')
+      ).toEqual({
+        cid: 27,
+        name: 'claim_generation',
+        type: 'TEXT',
+        notnull: 0,
+        dflt_value: null,
+        pk: 0,
+      });
+      expect(countNativeLedgerRows(sqlite)).toBe(2);
+      expect(readServerOwnerJournal(sqlite, 'nanohost', reference).current).toBe(true);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('upgrades a baseline NanoHost file with existing rows to a null claim generation and keeps every baseline value', () => {
+    const folder = baselineOnlyNanoHostFolder();
+    const sqlite = new Database(':memory:');
+    try {
+      applyNativeScopeMigrations(sqlite, scope, folder);
+      seedBaselineRows(sqlite);
+      const before = sqlite.prepare('SELECT * FROM harness_instance_records').all();
+      expect(before).toHaveLength(1);
+      expect(before[0]).not.toHaveProperty('claim_generation');
+      // This binary admits the baseline history and serves only after the pending entry.
+      expect(readServerOwnerJournal(sqlite, 'nanohost', reference).current).toBe(false);
+      expect(() => assertCurrentServerOwnerSchema(sqlite, 'nanohost', reference)).toThrow(
+        new ServerOwnerAdmissionError('recovery-required')
+      );
+      // The offline owner migration applies the pending entry after its preserved copy.
+      applyServerOwnerJournal(sqlite, 'nanohost', reference);
+      expect(sqlite.prepare('SELECT * FROM harness_instance_records').all()).toEqual(
+        before.map((row) => ({ ...(row as object), claim_generation: null }))
+      );
+      expect(countNativeLedgerRows(sqlite)).toBe(2);
+      expect(readServerOwnerJournal(sqlite, 'nanohost', reference).current).toBe(true);
+    } finally {
+      sqlite.close();
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a migrated NanoHost file under the journal of an older binary and keeps every baseline column readable', () => {
+    const folder = baselineOnlyNanoHostFolder();
+    const sqlite = new Database(':memory:');
+    try {
+      applyNativeScopeMigrations(sqlite, scope, folder);
+      seedBaselineRows(sqlite);
+      const columns = baselineHarnessColumns(sqlite);
+      const baselineRead = () =>
+        sqlite.prepare(`SELECT ${columns.join(', ')} FROM harness_instance_records`).all();
+      const before = baselineRead();
+      applyServerOwnerJournal(sqlite, 'nanohost', reference);
+      sqlite.prepare("UPDATE harness_instance_records SET claim_generation = 'cg_downgrade'").run();
+      // The older binary's ledger admission finds a row outside its journal and fails closed.
+      expect(() => assertSupportedNativeLedger(sqlite, scope, folder)).toThrow(
+        `Unsupported ${scope} native Drizzle ledger identity.`
+      );
+      // The additive column leaves every baseline column, and so every older read, unchanged.
+      expect(baselineHarnessColumns(sqlite)).toEqual(columns);
+      expect(baselineRead()).toEqual(before);
+    } finally {
+      sqlite.close();
+      rmSync(folder, { recursive: true, force: true });
     }
   });
 });

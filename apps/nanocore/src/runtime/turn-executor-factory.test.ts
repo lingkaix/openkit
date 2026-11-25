@@ -9561,39 +9561,312 @@ describe('createConfiguredTurnExecutor', () => {
           FROM harness_instance_records WHERE harness_instance_id=?`)
           .get(harnessInstanceId)
       ) as { drain: string; revision: string };
+    const generation = () =>
+      (
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT claim_generation AS generation, open_session_count AS open,
+            active_turn_count AS active FROM harness_instance_records WHERE harness_instance_id=?`)
+            .get(harnessInstanceId)
+        ) as { generation: string | null; open: number; active: number }
+      ).generation;
+    const occupancy = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT open_session_count AS open, active_turn_count AS active
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(harnessInstanceId)
+      );
     let laterClaimedAt: string | undefined;
     let laterBeforeRestore = false;
-    // Pause after the restore's key (live) or cold read (replay), before its Native post; the
-    // co-resident's own capture claim commits on the same Harness through the admitted writer.
+    // CL3 (S3b): no later claim can take the Harness while the predecessor's latch holds, so the
+    // co-resident claims only after the proved release. The predecessor's own restore frame is
+    // kept and arrives again after that claim (a lost restore ACK, or a paused restore).
     const latch = f.backend as unknown as {
       releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
     };
     const release = latch.releaseIdleCaptureLatch.bind(f.backend);
-    let held = false;
+    let frame: unknown[] | undefined;
     vi.spyOn(latch, 'releaseIdleCaptureLatch').mockImplementation(async (...args) => {
-      if (!held) {
-        held = true;
-        expect(original?.harnessInstanceId).toBe(harnessInstanceId);
-        laterClaimedAt = new Date(
-          Math.max(Date.now(), Date.parse(harness().revision) + 1)
-        ).toISOString();
+      frame ??= args;
+      return await release(...args);
+    });
+    expect(await f.close()).toBe('closed');
+    const held = frame !== undefined;
+    expect(held).toBe(true);
+    expect(original?.harnessInstanceId).toBe(harnessInstanceId);
+    // G3: the successful release clears the written generation (the file-backed column).
+    const released = harness();
+    expect(released.drain).toBe('accepting');
+    expect(generation()).toBeNull();
+    // V1-P's no-sequence binding-open schedule: a binding opens 1 ms before the settle revision,
+    // so the row's clock steps back with no queue, and the later claim recurs at that revision.
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionCompatibilityKey: 'd'.repeat(64),
+      agentSessionId: testEntityId('as', 'p23_later_claim_open'),
+      agentSessionRuntimeBindingId: 'agent-session-binding-p23-later-claim-open',
+      effectiveSetupGeneration: 1,
+      harnessInstanceId,
+      // A Thread has at most one current AgentSession on a Harness: the binding has its own Thread.
+      threadId: testEntityId('th', 'p23_later_claim_open'),
+      timestamp: new Date(Date.parse(released.revision) - 1).toISOString(),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    laterClaimedAt = released.revision;
+    await claim({
+      ...original!,
+      agentSessionId: coSession,
+      agentSessionRuntimeBindingId: coBinding,
+      attemptId: coAttempt,
+      claimedAt: laterClaimedAt,
+      claimGeneration: 'cg_p23_later_claim',
+    });
+    laterBeforeRestore = true;
+    expect(laterBeforeRestore).toBe(true);
+    const occupied = occupancy();
+    // The predecessor's original frame: its revision and close key still match the row.
+    await release(...frame!);
+    // The old close's restore cannot clear the later claim's latch on its Harness.
+    expect(harness()).toEqual({ drain: 'draining', revision: laterClaimedAt });
+    expect(generation()).toBe('cg_p23_later_claim');
+    expect(occupancy()).toEqual(occupied);
+  }, 90_000);
+
+  /**
+   * CLOSE-LC S3b (G3): one replacement close with an idle co-resident on the predecessor's Harness.
+   * It records the predecessor's own claim input and every restore frame that Main posts. A later
+   * claim by the co-resident goes through the admitted Native writer with its own generation.
+   */
+  async function admitCoResidentClose(label: string) {
+    const coThread = testEntityId('th', `${label}_co`);
+    const coSession = testEntityId('as', `${label}_co`);
+    const coBinding = `agent-session-binding-${label}-co`;
+    const coAttempt = testEntityId('attempt', `${label}_co`);
+    const f = await admitNativeReplacementClose(label, {
+      async beforeSuccessor(coreDb, store, ownerUserId) {
+        await store.createThread(DEMO_WORKSPACE_ID, 'Later co-resident', coThread);
+        const entry = await createTestQueueEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${label}_co`,
+          requestedAgentId: 'agent_worker',
+          text: 'Earlier Turn of the later co-resident.',
+          threadId: coThread,
+          triggerActor: { kind: 'user', id: ownerUserId },
+          turnId: testEntityId('tu', `${label}_co`),
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        await nativeAttemptOwners.createSchedulerExecutionAttempt(coreDb, {
+          attemptId: coAttempt,
+          entry,
+          preparationInput: { admission: entry },
+        });
+        await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(coreDb, {
+          attemptId: coAttempt,
+          agentSessionId: coSession,
+        });
+        await nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          attemptId: coAttempt,
+          cause: 'worker-final-phase',
+          noOutstandingEffects: true,
+        });
+      },
+    });
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionCompatibilityKey: 'c'.repeat(64),
+      agentSessionId: coSession,
+      agentSessionRuntimeBindingId: coBinding,
+      effectiveSetupGeneration: 1,
+      harnessInstanceId,
+      threadId: coThread,
+      timestamp: new Date().toISOString(),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    type ClaimInput = Parameters<
+      NonNullable<ReturnType<typeof currentAdmittedTestNanoHostOwner>>['harnessTurnLifecycle']['claimIdleCaptureDrain']
+    >[0];
+    let original: ClaimInput | undefined;
+    const frames: unknown[][] = [];
+    /** Records the claim input and the restore frames of the current backend. */
+    const observeLatch = () => {
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const claim = owner.harnessTurnLifecycle.claimIdleCaptureDrain;
+      vi.spyOn(owner.harnessTurnLifecycle, 'claimIdleCaptureDrain').mockImplementation(
+        async (input) => {
+          original ??= input;
+          return await claim(input);
+        }
+      );
+      const latch = f.backend as unknown as {
+        releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+      };
+      const release = latch.releaseIdleCaptureLatch.bind(f.backend);
+      vi.spyOn(latch, 'releaseIdleCaptureLatch').mockImplementation(async (...args) => {
+        frames.push(args);
+        return await release(...args);
+      });
+      return { claim, release };
+    };
+    const row = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT drain_state AS drain, lifecycle_state AS life, updated_at AS revision,
+          claim_generation AS generation, open_session_count AS open, active_turn_count AS active
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(harnessInstanceId)
+      ) as {
+        drain: string;
+        life: string;
+        revision: string;
+        generation: string | null;
+        open: number;
+        active: number;
+      };
+    return {
+      f,
+      frames,
+      harnessInstanceId,
+      observeLatch,
+      row,
+      get original() {
+        return original;
+      },
+      /**
+       * V1-P's no-sequence binding-open schedule: a binding opens 1 ms before `revision`, so the
+       * row's clock steps back with no queue. Then the co-resident claims at exactly `revision`.
+       */
+      async claimLaterAt(
+        claim: (input: ClaimInput) => Promise<void>,
+        revision: string,
+        generation: string
+      ) {
+        await openNanoHostAgentSessionBinding(f.coreDb, {
+          agentSessionCompatibilityKey: 'd'.repeat(64),
+          agentSessionId: testEntityId('as', `${label}_open`),
+          agentSessionRuntimeBindingId: `agent-session-binding-${label}-open`,
+          effectiveSetupGeneration: 1,
+          harnessInstanceId,
+          // A Thread has at most one current AgentSession on a Harness.
+          threadId: testEntityId('th', `${label}_open`),
+          timestamp: new Date(Date.parse(revision) - 1).toISOString(),
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
         await claim({
           ...original!,
           agentSessionId: coSession,
           agentSessionRuntimeBindingId: coBinding,
           attemptId: coAttempt,
-          claimedAt: laterClaimedAt,
+          claimedAt: revision,
+          claimGeneration: generation,
         });
-        laterBeforeRestore = true;
-      }
-      return await release(...args);
+      },
+    };
+  }
+
+  it('delivers a rolled-back claim frame again after a later claim at its revision and changes no row (S3b G3)', async () => {
+    const c = await admitCoResidentClose('p23_g3_claim_arm');
+    const { f } = c;
+    const { claim, release } = c.observeLatch();
+    f.gate();
+    const operation = f.close();
+    void operation.catch(() => undefined);
+    await f.entered;
+    // A definite refusal before any queue commit: the successor actor loses launch authority.
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.ownerUserId))();
+    f.release();
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
     });
-    expect(await f.close()).toBe('closed');
-    expect(held).toBe(true);
-    expect(laterBeforeRestore).toBe(true);
-    // The old close's restore cannot clear the later claim's latch on its Harness.
-    expect(harness()).toEqual({ drain: 'draining', revision: laterClaimedAt });
+    // Q6: the rollback posts the claim arm with the claim's own revision and generation.
+    expect(c.frames).toHaveLength(1);
+    const frame = c.frames[0]!;
+    expect(frame[2]).toMatchObject({
+      claim: { revision: c.original!.claimedAt },
+      generation: c.original!.claimGeneration,
+    });
+    expect((frame[2] as { close?: unknown }).close).toBeUndefined();
+    const released = c.row();
+    expect(released).toMatchObject({ drain: 'accepting', generation: null });
+    expect(released.revision).toBe(c.original!.claimedAt);
+    await c.claimLaterAt(claim, released.revision, 'cg_p23_g3_claim_arm_later');
+    const claimed = c.row();
+    expect(claimed).toMatchObject({
+      drain: 'draining',
+      revision: released.revision,
+      generation: 'cg_p23_g3_claim_arm_later',
+    });
+    // The rollback frame arrives again (a lost restore ACK): the same revision, a foreign claim.
+    await release(...frame);
+    expect(c.row()).toEqual(claimed);
   }, 90_000);
+
+  it('keeps the fence of a stopped capture latch whose last operation is the terminal inspection (S3b P3 control)', async () => {
+    const c = await admitCoResidentClose('p23_g3_cold');
+    const { f } = c;
+    c.observeLatch();
+    // The process stops after the accepted capture receipt and before the close queue (P3).
+    const queue = f.backend as unknown as {
+      queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
+      new Error('NanoCore stopped before its close queue.')
+    );
+    await expect(f.close()).rejects.toThrow();
+    const latched = c.row();
+    expect(latched).toMatchObject({ drain: 'draining', generation: c.original!.claimGeneration });
+    // A stop is no definite refusal: no restore frame was posted.
+    expect(c.frames).toEqual([]);
+    // The predecessor's last Harness operation is its settled terminal inspection. The Native
+    // queue admits an inspection on a draining Harness, so the cold table cannot order the drain
+    // after it (drain-after-op): the cold exit keeps the fence, and Workspace keeps the receipt.
+    const last = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(`SELECT operation, operation_state AS cell FROM harness_instance_records
+        WHERE harness_instance_id=?`)
+        .get(c.harnessInstanceId)
+    );
+    expect(last).toEqual({ operation: 'session.inspect', cell: 'settled' });
+    await f.reopen();
+    c.observeLatch();
+    expect(
+      await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)
+    ).toBeDefined();
+    expect(c.frames).toEqual([]);
+    expect(c.row()).toEqual(latched);
+  }, 120_000);
+
+  it('keeps the fence of a stopped capture latch that an independent drain lands on (S3b cold control)', async () => {
+    const c = await admitCoResidentClose('p23_g3_cold_drain');
+    const { f } = c;
+    c.observeLatch();
+    const queue = f.backend as unknown as {
+      queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
+      new Error('NanoCore stopped before its close queue.')
+    );
+    await expect(f.close()).rejects.toThrow();
+    const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          'SELECT harness_binding_ref AS binding FROM harness_instance_records WHERE harness_instance_id=?'
+        )
+        .get(c.harnessInstanceId)
+    ) as { binding: string };
+    // An independent Harness-only drain lands on the stopped claim and invalidates its generation.
+    await harnessRecords.drainNanoHostHarnessAdmission(currentAdmittedTestNanoHostOwner(f.coreDb)!, {
+      harnessBindingRef: anchor.binding,
+      timestamp: new Date().toISOString(),
+    });
+    const drained = c.row();
+    expect(drained).toMatchObject({ drain: 'draining', life: 'failed', generation: null });
+    await f.reopen();
+    c.observeLatch();
+    await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage);
+    // The cold reader posts no frame, and the drain stays.
+    expect(c.frames).toEqual([]);
+    expect(c.row()).toEqual(drained);
+  }, 120_000);
 
   // AMEND 2: a terminal abandon of the predecessor's capture is no ordinary replacement input.
   it('refuses an ordinary replacement of an idle predecessor whose capture was abandoned', async () => {
@@ -9786,6 +10059,39 @@ describe('createConfiguredTurnExecutor', () => {
         const published = vi.fn(async () => {});
         collector.setWorkspaceCollectionPublisher(published);
         const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+        // CL3 (S3b): each idle capture claims the Harness latch, and a draining Harness refuses
+        // another claim. So before each later capture the owner rolls back the earlier claim
+        // through its claim arm with the claim's own revision and generation, as a definite
+        // refusal before any queue commit does. The next capture then claims again.
+        const releaseLatch = async () => {
+          const owned = f.session as {
+            harnessInstanceId: string;
+            harnessBindingRef: string;
+            sharedHarness: { sandbox: { runtimeTargetId: string; sandboxRuntimeId: string } };
+          };
+          const claimed = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`SELECT drain_state AS drain, updated_at AS revision,
+              claim_generation AS generation FROM harness_instance_records
+              WHERE harness_instance_id=?`)
+              .get(owned.harnessInstanceId)
+          ) as { drain: string; revision: string; generation: string | null };
+          if (claimed.drain === 'draining')
+            await (
+              f.backend as unknown as {
+                releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+              }
+            ).releaseIdleCaptureLatch(
+              owned.sharedHarness.sandbox.runtimeTargetId,
+              owned.sharedHarness.sandbox.sandboxRuntimeId,
+              {
+                harnessInstanceId: owned.harnessInstanceId,
+                harnessBindingRef: owned.harnessBindingRef,
+                claim: { revision: claimed.revision },
+                generation: claimed.generation,
+              }
+            );
+        };
         try {
           const firstCollection = collector.collectWorkspaceSnapshot(f.session, 'turn-end');
           await expect(firstCollection).resolves.toHaveLength(0);
@@ -9806,6 +10112,7 @@ describe('createConfiguredTurnExecutor', () => {
           ).toEqual({ count: 0 });
           expect(JSON.parse(row.result_json).acceptedCommit).toBe(gitSource ? commit : null);
           bytes = Buffer.from('openkit-full-mode-delta\n0644 0600 8 file.txt\n');
+          await releaseLatch();
           const unsupported = await collector.collectWorkspaceSnapshot(f.session, 'release');
           expect(unsupported).toEqual([]);
           expect(published).not.toHaveBeenCalled();
@@ -9814,6 +10121,7 @@ describe('createConfiguredTurnExecutor', () => {
             .get() as { head: string };
           expect(JSON.parse(cursor.head)).toEqual({ tree: '4'.repeat(40), manifest: '5'.repeat(40) });
           captureEmpty = true;
+          await releaseLatch();
           await expect(collector.collectWorkspaceSnapshot(f.session, 'successor')).resolves.toEqual(
             []
           );
@@ -9821,6 +10129,7 @@ describe('createConfiguredTurnExecutor', () => {
             .prepare('SELECT payload_json FROM worker_output_manifests')
             .all() as { payload_json: string }[];
           expect(manifests).toHaveLength(0);
+          await releaseLatch();
           const emptyScans = f.effects.length;
           await expect(collector.collectWorkspaceSnapshot(f.session, 'successor')).resolves.toEqual(
             []

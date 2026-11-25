@@ -119,14 +119,13 @@ export interface HarnessFacts {
 }
 
 /**
- * RC8 reads these Harness facts only. G3 (S3b-m-r2): the queue also reads the row's claim
- * generation. It is optional only until the S3b code passes it from the owner read.
+ * RC8 reads these Harness facts only. G3 (S3b): the queue also reads the row's claim generation
+ * through the existing owner read.
  */
 export type QueueHarnessFacts = Pick<
   HarnessFacts,
-  'life' | 'drain' | 'revision' | 'cell' | 'nextSequence'
-> &
-  Partial<Pick<HarnessFacts, 'claimGeneration'>>;
+  'life' | 'drain' | 'revision' | 'cell' | 'nextSequence' | 'claimGeneration'
+>;
 
 export interface SandboxFacts {
   readonly accepting: boolean;
@@ -273,11 +272,10 @@ export interface ReplacementCloseTable {
     readonly harness: QueueHarnessFacts;
     readonly claimRevision: number | null;
     /**
-     * G3 (S3b-m-r2, V1-P FIX 2 item 1): the generation that the close pinned at its own claim, read
-     * through the existing owner read and kept through the commit. Undefined: a caller from before
-     * G3 (production F until the S3b code). The S3b code passes it and makes it required.
+     * G3 (S3b-m-r2, V1-P FIX 2 item 1): the generation that the close pinned at its own claim and
+     * keeps through the commit. Required (V1-P re-sign): null when the close holds no claim.
      */
-    readonly claimGeneration?: string | null | undefined;
+    readonly claimGeneration: string | null;
     readonly key: CloseKey;
     readonly slotExpired: boolean;
     readonly storage: boolean;
@@ -419,20 +417,18 @@ export const placementOpen = (p: PlacementFacts) => p.harness === 'open' && sand
  * item 1): the revision is a wall stamp. An independent drain that settles at the claim's own
  * instant leaves it equal, so the queue also compares the generation that the close pinned at its
  * claim with the row's generation. Null matches nothing. A match transfers that generation
- * unchanged. A caller with no pinned generation (undefined: production F before the S3b code) keeps
- * the revision compare alone.
+ * unchanged.
  */
 export const transfersLatch = (
-  harness: Pick<HarnessFacts, 'drain' | 'revision'> &
-    Partial<Pick<HarnessFacts, 'claimGeneration'>>,
+  harness: Pick<HarnessFacts, 'drain' | 'revision' | 'claimGeneration'>,
   claimRevision: number | null,
-  claimGeneration?: string | null
+  claimGeneration: string | null
 ) =>
   claimRevision !== null &&
   harness.drain === 'draining' &&
   harness.revision === claimRevision &&
-  (claimGeneration === undefined ||
-    (claimGeneration !== null && harness.claimGeneration === claimGeneration));
+  claimGeneration !== null &&
+  harness.claimGeneration === claimGeneration;
 
 /**
  * RC7: the original pending owner, every slot clock (Tc on both clocks and its lower edge, Ts, Ta),

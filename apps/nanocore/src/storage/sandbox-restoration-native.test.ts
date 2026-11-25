@@ -10,7 +10,10 @@ import {
   claimNanoHostIdleSandboxDrain,
   createNanoHostHarnessRuntime,
   drainNanoHostHarnessAdmission,
+  drainNanoHostSandboxAdmission,
+  fenceNanoHostSandboxRuntime,
   openNanoHostAgentSessionBinding,
+  removeNanoHostSandboxRuntimeByBinding,
   restoreNanoHostSandboxAdmissionIfSafe,
 } from '../runtime/nanohost-harness.js';
 import { recordWorkerBackendSessionMaterializing } from '../runtime/worker-backend-sessions.js';
@@ -264,6 +267,8 @@ async function fixture(capture = false, drain = true, idle = false) {
     originPhysicalEpoch: physicalEpoch,
     // The claim's own clock, strictly later than the Harness row's last write, as the factory picks.
     claimedAt: '2098-08-21T00:00:01.000Z',
+    // G3: the fresh generation of this acquisition.
+    claimGeneration: 'cg_restore_claim',
   };
   if (drain) await claimNanoHostIdleSandboxDrain(db, claim, drainJoin);
   expect(
@@ -493,10 +498,34 @@ it('claims only the exact idle-capture Harness and persists its drain after reop
       ...(row as object),
       drain_state: 'draining',
       updated_at: f.idleClaim.claimedAt,
+      claim_generation: f.idleClaim.claimGeneration,
     })),
   };
   expect(tuple(f.db)).toEqual(expected);
   expect(await coldTuple(f)).toEqual(expected);
+});
+
+it('refuses a later idle-capture claim on a Harness that an earlier claim already drains (CL3)', async () => {
+  const f = await fixture(false, false, true);
+  const claim = {
+    ...f.idleClaim,
+    harnessBindingRef: 'restore-harness-binding',
+    sandboxBindingRef,
+    originPhysicalEpoch: physicalEpoch,
+  };
+  await claimNanoHostIdleCaptureDrain(f.db, claim, f.owner.harnessTurnLifecycle);
+  const latched = tuple(f.db);
+  // A strictly later clock is not enough: the Harness is no longer accepting, so the earlier
+  // claim keeps the latch, its revision and its generation.
+  await expect(
+    claimNanoHostIdleCaptureDrain(
+      f.db,
+      { ...claim, claimedAt: '2098-08-21T00:00:02.000Z', claimGeneration: 'cg_later_claim' },
+      f.owner.harnessTurnLifecycle
+    )
+  ).rejects.toThrow('Idle capture drain ownership changed.');
+  expect(tuple(f.db)).toEqual(latched);
+  expect(await coldTuple(f)).toEqual(latched);
 });
 
 it('refuses an idle-capture claim whose clock is not later than the Harness revision', async () => {
@@ -513,4 +542,285 @@ it('refuses an idle-capture claim whose clock is not later than the Harness revi
   ).rejects.toThrow('Idle capture drain ownership changed.');
   expect(tuple(f.db)).toEqual(before);
   expect(await coldTuple(f)).toEqual(before);
+});
+
+// CLOSE-LC S3b (G3): the claim generation through the file-backed Native writer.
+
+/** A's idle-capture claim clock (the fixture's `idleClaim.claimedAt`) and offsets from it. */
+const claimedAtA = '2098-08-21T00:00:01.000Z';
+const at = (ms: number) => new Date(Date.parse(claimedAtA) + ms).toISOString();
+
+/** The claim-arm frame of one claim: its own revision and generation (Q6 rollback, cold P2/P3). */
+function claimFrame(revision: string, generation: string) {
+  return {
+    sandboxRuntimeId,
+    harness: {
+      harnessInstanceId: 'restore-harness',
+      harnessBindingRef: 'restore-harness-binding',
+      claim: { revision },
+      generation,
+    },
+  };
+}
+
+/** The Harness admission, clock, generation and occupancy that a restore compares or keeps. */
+function harnessRow(db: CoreDb) {
+  return readAdmittedTestNanoHost(db, (sqlite) =>
+    sqlite
+      .prepare(`SELECT lifecycle_state AS life, drain_state AS drain, updated_at AS revision,
+      claim_generation AS generation, open_session_count AS open, active_turn_count AS active
+      FROM harness_instance_records`)
+      .get()
+  ) as {
+    life: string;
+    drain: string;
+    revision: string;
+    generation: string | null;
+    open: number;
+    active: number;
+  };
+}
+
+/** Stops the actual writers and returns the reopened Core, its admitted owner and its restore join. */
+async function reopen(f: Awaited<ReturnType<typeof fixture>>) {
+  await shutdownControlStoreWorkerClient();
+  f.db.sqlite.close();
+  const db = openCoreDb(f.root);
+  handles.push(db);
+  // The restarted process opens the Core writer before it rejoins NanoHost, as boot does.
+  const core = nativeProductScope(f.root, { kind: 'server' });
+  await getControlStoreWorkerClient().open({
+    database: `core:${core.path}`,
+    path: core.path,
+    dataRoot: f.root,
+    create: false,
+    initialize: 'core',
+    productOwner: { kind: 'server' },
+    contentMount: core.contentMount,
+  });
+  await reopenAdmittedTestNanoHost(db);
+  const owner = currentAdmittedTestNanoHostOwner(db)!;
+  return {
+    db,
+    owner,
+    join: { write: owner.writeIdleHarnessDrain, authority: f.drainJoin.authority },
+  };
+}
+
+/**
+ * V1-P's no-sequence schedule: one more idle binding opens at `timestamp`. The binding writer sets
+ * the Harness clock to it and queues no operation, so the clock can step back below a released claim.
+ */
+async function openBindingAt(
+  writer: Parameters<typeof openNanoHostAgentSessionBinding>[0],
+  f: Awaited<ReturnType<typeof fixture>>,
+  timestamp: string
+) {
+  await openNanoHostAgentSessionBinding(writer, {
+    agentSessionCompatibilityKey: 'c'.repeat(64),
+    agentSessionId: testEntityId('as', 'restore-open-session'),
+    agentSessionRuntimeBindingId: 'restore-open-binding',
+    effectiveSetupGeneration: 1,
+    harnessInstanceId: 'restore-harness',
+    // A Thread has at most one current AgentSession on a Harness.
+    threadId: testEntityId('th', 'restore-open-thread'),
+    workspaceId: f.workspaceId,
+    timestamp,
+  });
+}
+
+it('restores its own idle-capture claim through the claim arm and keeps the cleared generation after reopen (S3b G3)', async () => {
+  const f = await fixture(false, false, true);
+  const before = tuple(f.db);
+  await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+  expect(harnessRow(f.db)).toMatchObject({ drain: 'draining', generation: 'cg_restore_claim' });
+  await restoreNanoHostSandboxAdmissionIfSafe(
+    f.db,
+    claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration),
+    f.drainJoin
+  );
+  // The written row: accepting, the claim's revision, and the generation column cleared.
+  const expected = {
+    sandbox: before.sandbox,
+    harness: before.harness.map((row) => ({
+      ...(row as object),
+      updated_at: f.idleClaim.claimedAt,
+      claim_generation: null,
+    })),
+  };
+  expect(tuple(f.db)).toEqual(expected);
+  expect(await coldTuple(f)).toEqual(expected);
+});
+
+it.each([
+  ['99', -1, 0],
+  ['101', 1, 2],
+] as const)(
+  'keeps a later claim when a released claim frame arrives again after reopen and a binding opens at %s (S3b G3)',
+  async (_stamp, openOffset, claimOffset) => {
+    const f = await fixture(false, false, true);
+    await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+    const frame = claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration);
+    await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+    expect(harnessRow(f.db)).toMatchObject({ drain: 'accepting', generation: null });
+    // A's restore ACK is lost after its commit; the process stops and keeps the frame.
+    const r = await reopen(f);
+    // At 99 the binding steps the clock back 1 ms below A's revision, so B claims at exactly A's
+    // revision. At 101 (the control) B claims at its own later stamp.
+    await openBindingAt(r.owner, f, at(openOffset));
+    await claimNanoHostIdleCaptureDrain(
+      r.db,
+      { ...f.idleClaim, claimedAt: at(claimOffset), claimGeneration: 'cg_restore_later' },
+      r.owner.harnessTurnLifecycle
+    );
+    const claimed = tuple(r.db);
+    expect(harnessRow(r.db)).toMatchObject({
+      life: 'open',
+      drain: 'draining',
+      revision: at(claimOffset),
+      generation: 'cg_restore_later',
+    });
+    // A's original frame arrives: zero rows change, and B keeps its drain and its generation.
+    await restoreNanoHostSandboxAdmissionIfSafe(r.db, frame, r.join);
+    expect(tuple(r.db)).toEqual(claimed);
+    expect(await coldTuple({ ...f, db: r.db })).toEqual(claimed);
+  }
+);
+
+it('keeps a claim on a same-name recreated Harness when the retired claim frame arrives (S3b G3)', async () => {
+  const f = await fixture(false, false, true);
+  await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+  const frame = claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration);
+  // Retirement deletes the Sandbox projection with its Harness and bindings. The same names are
+  // created again below A's revision, so B's claim recurs at exactly A's revision.
+  await removeNanoHostSandboxRuntimeByBinding(f.owner, sandboxBindingRef);
+  await createNanoHostHarnessRuntime(f.owner, {
+    adapterId: 'codex',
+    adapterVersion: '0.153.4',
+    maxActiveTurns: 1,
+    harnessBindingRef: 'restore-harness-binding',
+    harnessCompatibilityKey: 'd'.repeat(64),
+    harnessInstanceId: 'restore-harness',
+    imageDigest: `sha256:${'f'.repeat(64)}`,
+    originPhysicalEpoch: physicalEpoch,
+    runtimeTargetId: f.drainJoin.authority.target.targetId,
+    sandboxBindingRef,
+    sandboxCompatibilityKey: compatibility,
+    sandboxIntegrationBindingRef: 'restore-integration',
+    sandboxRuntimeId,
+    timestamp: at(-2),
+  });
+  // The recreated row starts with no generation.
+  expect(harnessRow(f.db)).toMatchObject({ drain: 'accepting', generation: null });
+  await openNanoHostAgentSessionBinding(f.owner, {
+    agentSessionCompatibilityKey: 'b'.repeat(64),
+    agentSessionId: f.idleClaim.agentSessionId,
+    agentSessionRuntimeBindingId: f.idleClaim.agentSessionRuntimeBindingId,
+    effectiveSetupGeneration: 1,
+    harnessInstanceId: 'restore-harness',
+    threadId: testEntityId('th', 'restore-thread'),
+    workspaceId: f.workspaceId,
+    timestamp: at(-1),
+  });
+  await claimNanoHostIdleCaptureDrain(
+    f.db,
+    { ...f.idleClaim, claimGeneration: 'cg_restore_recreated' },
+    f.owner.harnessTurnLifecycle
+  );
+  const claimed = tuple(f.db);
+  expect(harnessRow(f.db)).toMatchObject({
+    drain: 'draining',
+    revision: f.idleClaim.claimedAt,
+    generation: 'cg_restore_recreated',
+  });
+  await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+  expect(tuple(f.db)).toEqual(claimed);
+  expect(await coldTuple(f)).toEqual(claimed);
+});
+
+it.each(['harness-drain', 'sandbox-drain', 'fence'] as const)(
+  'invalidates the claim generation at an independent %s, and the claim frame changes no row (S3b G3)',
+  async (writer) => {
+    const f = await fixture(false, false, true);
+    await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+    if (writer === 'harness-drain')
+      // The equal-stamp drain: the independent owner writes A's own claim revision.
+      await drainNanoHostHarnessAdmission(f.owner, {
+        harnessBindingRef: 'restore-harness-binding',
+        timestamp: f.idleClaim.claimedAt,
+      });
+    else if (writer === 'sandbox-drain')
+      await drainNanoHostSandboxAdmission(f.owner, {
+        sandboxBindingRef,
+        originPhysicalEpoch: physicalEpoch,
+      });
+    else await fenceNanoHostSandboxRuntime(f.owner, { sandboxBindingRef, timestamp: at(1) });
+    // The written row: the independent owner's drain, with A's generation invalidated.
+    expect(harnessRow(f.db)).toMatchObject({ life: 'failed', drain: 'draining', generation: null });
+    const drained = tuple(f.db);
+    await restoreNanoHostSandboxAdmissionIfSafe(
+      f.db,
+      claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration),
+      f.drainJoin
+    );
+    expect(tuple(f.db)).toEqual(drained);
+    expect(await coldTuple(f)).toEqual(drained);
+  }
+);
+
+it('releases a claim once in the opposite order, its duplicate changes no row, and a later claim then takes the Harness (S3b G3)', async () => {
+  const f = await fixture(false, false, true);
+  await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+  const later = { ...f.idleClaim, claimedAt: at(1), claimGeneration: 'cg_restore_later' };
+  // CL3: B cannot claim while A's latch holds.
+  await expect(
+    claimNanoHostIdleCaptureDrain(f.db, later, f.owner.harnessTurnLifecycle)
+  ).rejects.toThrow('Idle capture drain ownership changed.');
+  const frame = claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration);
+  await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+  const released = tuple(f.db);
+  expect(harnessRow(f.db)).toMatchObject({
+    drain: 'accepting',
+    revision: f.idleClaim.claimedAt,
+    generation: null,
+  });
+  await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+  expect(tuple(f.db)).toEqual(released);
+  await claimNanoHostIdleCaptureDrain(f.db, later, f.owner.harnessTurnLifecycle);
+  expect(harnessRow(f.db)).toMatchObject({
+    drain: 'draining',
+    revision: at(1),
+    generation: 'cg_restore_later',
+  });
+});
+
+it('restores nothing for a Harness frame that carries Sandbox rollback authority (S3b G3)', async () => {
+  // The whole-Sandbox claim drains the Sandbox and the Harness at `timestamp`, the rollback clock.
+  const f = await fixture(false, true);
+  const before = tuple(f.db);
+  await restoreNanoHostSandboxAdmissionIfSafe(
+    f.db,
+    claimFrame(timestamp, 'cg_restore_claim'),
+    f.restoreJoin
+  );
+  expect(tuple(f.db)).toEqual(before);
+  expect(await coldTuple(f)).toEqual(before);
+});
+
+it('keeps a legacy claim without a generation fenced against every claim frame (S3b G3)', async () => {
+  const f = await fixture(false, false, true);
+  await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+  // A claim from before the migration: the upgrade leaves its generation null.
+  mutateAdmittedTestNanoHost(f.db, (sqlite) =>
+    sqlite.exec('UPDATE harness_instance_records SET claim_generation = NULL')
+  );
+  const legacy = tuple(f.db);
+  expect(harnessRow(f.db)).toMatchObject({ drain: 'draining', generation: null });
+  await restoreNanoHostSandboxAdmissionIfSafe(
+    f.db,
+    claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration),
+    f.drainJoin
+  );
+  expect(tuple(f.db)).toEqual(legacy);
+  expect(await coldTuple(f)).toEqual(legacy);
 });

@@ -226,8 +226,11 @@ import {
 } from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import {
+  type CaptureState,
   type CloseCause,
   type CloseClock,
+  type ColdFacts,
+  type HarnessFacts,
   type PlacementFacts,
   type QueueHarnessFacts,
   REPLACEMENT_CLOSE_TABLE,
@@ -1122,6 +1125,11 @@ interface NanoHostAgentSessionCloseOwner {
   replacement?: AgentSessionReplacementClose;
   /** RC3: the Harness revision that this close's own capture latch claim wrote. */
   claimRevision?: string;
+  /**
+   * G3: the fresh claim generation that the same RC3 CAS wrote. The close keeps it through the
+   * RC8 commit and carries it in every restore frame of its claim, including a retry.
+   */
+  claimGeneration?: string;
   pending: PendingNanoHostHarnessOperation | null;
   /** The exact queued close identity for receipt-scoped restore. */
   closeKey?: { readonly operationId: string; readonly sequence: number };
@@ -4586,6 +4594,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // A held Worker Control restore can only refuse registration. Report the existing unavailable
     // result here, before any dispatch commit, Workspace intent or Sandbox effect exists to unwind.
     if (this.workerControlGateway?.restoreHeld()) return 'capacity-saturated';
+    // P2/P3 (CLOSE-LC S3b): the cold quiescent exit runs after the held-restore guard and before
+    // the capacity early return. Each latch that it cannot attribute keeps its fence.
+    await this.exitQuiescentCaptureLatches(environmentPackage);
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
@@ -8726,6 +8737,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /**
    * RC3: claims the idle capture latch from accepting to draining with a strictly later clock
    * than the Harness row's last write. The live close owner keeps that clock as its claim revision.
+   * G3: the same CAS writes a fresh generation for this acquisition, and the owner pins it.
    */
   private async claimIdleCaptureLatch(session: NanoHostBackendTurnSession): Promise<void> {
     const previous = this.readNanoHost(({ sqlite }) =>
@@ -8738,6 +8750,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const claimedAt = new Date(
       Math.max(Date.now(), previous ? Date.parse(previous.revision) + 1 : 0)
     ).toISOString();
+    // Fresh for each acquisition: a retry, a receipt replay and a restart each claim a new one.
+    const claimGeneration = `cg_${randomUUID()}`;
     await claimNanoHostIdleCaptureDrain(
       this.coreDb,
       {
@@ -8749,11 +8763,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
         originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
         claimedAt,
+        claimGeneration,
       },
       this.harnessTurnLifecycle()
     );
     const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
-    if (closeOwner) closeOwner.claimRevision = claimedAt;
+    if (closeOwner) {
+      closeOwner.claimRevision = claimedAt;
+      closeOwner.claimGeneration = claimGeneration;
+    }
   }
 
   /**
@@ -10419,7 +10437,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const row = owner.sqlite
       .prepare(`SELECT h.lifecycle_state AS harness, h.drain_state AS harnessDrain,
         h.updated_at AS revision, h.operation_state AS cell, h.next_sequence AS nextSequence,
-        s.lifecycle_state AS life, s.health_state AS health, s.drain_state AS drain,
+        h.claim_generation AS claimGeneration, s.lifecycle_state AS life, s.health_state AS health, s.drain_state AS drain,
         s.cleanup_state AS cleanup, s.origin_physical_epoch AS epoch
         FROM harness_instance_records h
         JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
@@ -10438,6 +10456,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           revision: string;
           cell: string;
           nextSequence: number;
+          claimGeneration: string | null;
           life: string;
           health: string;
           drain: string;
@@ -10457,6 +10476,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               revision: Date.parse(row.revision),
               cell,
               nextSequence: row.nextSequence,
+              claimGeneration: row.claimGeneration,
             }
           : null,
       sandbox: {
@@ -10520,9 +10540,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           revision: Number.NaN,
           cell: 'unknown',
           nextSequence: Number.NaN,
+          claimGeneration: null,
         },
         claimRevision:
           closeOwner?.claimRevision === undefined ? null : Date.parse(closeOwner.claimRevision),
+        // G3 (V1-P FIX 2 item 1): the generation pinned at this close's own claim. An equal-stamp
+        // independent drain keeps the revision but clears the generation, so it refuses `latch`.
+        claimGeneration: closeOwner?.claimGeneration ?? null,
         key: {
           binding: session.agentSessionRuntimeBindingId,
           key: pending.coreIdleClose?.prepared?.command.operationId ?? '',
@@ -10558,6 +10582,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly harnessInstanceId: string;
       readonly harnessBindingRef: string;
       readonly close?: { readonly operationId: string; readonly sequence: number } | undefined;
+      /** The claim arm: the frame's own claim revision, before any queue commit. */
+      readonly claim?: { readonly revision: string } | undefined;
+      /** G3: the generation that the frame's claim wrote. Without it no frame is posted. */
+      readonly generation?: string | null | undefined;
     }
   ): Promise<void> {
     const admitted = this.idleSandboxLifecycle();
@@ -10566,19 +10594,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return;
     }
     const target = this.readIdleSandboxTarget(runtimeTargetId);
-    const { close } = harness;
+    const { close, claim, generation } = harness;
+    const { harnessInstanceId, harnessBindingRef } = harness;
     // FIX 4 F4: the Native restore decides this Harness only, on the write it still carries.
-    if (target && close)
+    // The frame carries exactly one arm, and G3: the generation of its claim.
+    const scoped = !generation
+      ? undefined
+      : close
+        ? { harnessInstanceId, harnessBindingRef, close, generation }
+        : claim
+          ? { harnessInstanceId, harnessBindingRef, claim, generation }
+          : undefined;
+    if (target && scoped)
       await restoreNanoHostSandboxAdmissionIfSafe(
         this.coreDb,
-        {
-          sandboxRuntimeId,
-          harness: {
-            harnessInstanceId: harness.harnessInstanceId,
-            harnessBindingRef: harness.harnessBindingRef,
-            close,
-          },
-        },
+        { sandboxRuntimeId, harness: scoped },
         { write: admitted.writeIdleHarnessDrain, authority: { target } }
       );
   }
@@ -10592,7 +10622,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const latched = this.readNanoHost(({ sqlite }) =>
       sqlite
         .prepare(`SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
-        s.runtime_target_id AS runtimeTargetId, h.harness_binding_ref AS harnessBindingRef
+        s.runtime_target_id AS runtimeTargetId, h.harness_binding_ref AS harnessBindingRef,
+        h.claim_generation AS generation
         FROM harness_instance_records h
         JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
         WHERE h.harness_instance_id=? AND h.operation='session.close' AND h.operation_id=?
@@ -10600,14 +10631,221 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         AND s.drain_state='accepting'`)
         .get(result.harnessInstanceId, result.operationId, result.sequence)
     ) as
-      | { sandboxRuntimeId: string; runtimeTargetId: string; harnessBindingRef: string }
+      | {
+          sandboxRuntimeId: string;
+          runtimeTargetId: string;
+          harnessBindingRef: string;
+          generation: string | null;
+        }
       | undefined;
+    // G3: the generation is pinned in the same read as the settled close key. Native compares it.
     if (latched)
       await this.releaseIdleCaptureLatch(latched.runtimeTargetId, latched.sandboxRuntimeId, {
         harnessInstanceId: result.harnessInstanceId,
         harnessBindingRef: latched.harnessBindingRef,
         close: { operationId: result.operationId, sequence: result.sequence },
+        generation: latched.generation,
       });
+  }
+
+  /**
+   * P2/P3 (CLOSE-LC S3b): the cold quiescent exit of the capture latches on the target's
+   * Sandboxes. The cold `decide` sees only durable values and the live owners of this process. G3:
+   * the first read pins each row's claim generation and revision before the capture proofs are
+   * joined, and the restore frame carries exactly that pinned pair. It never reads the generation
+   * again. Native rechecks the capture dispositions, the revision and the generation in its commit.
+   * Every other cold action keeps its fence here. One latch that fails does not stop the others.
+   */
+  private async exitQuiescentCaptureLatches(
+    environmentPackage: AgentEnvironmentPackagePreview
+  ): Promise<void> {
+    if (!this.idleSandboxLifecycle()) return;
+    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
+    const pinned = this.readNanoHost(({ sqlite }) =>
+      sqlite
+        .prepare(`SELECT h.harness_instance_id AS harnessInstanceId,
+        h.harness_binding_ref AS harnessBindingRef, h.lifecycle_state AS life,
+        h.updated_at AS revision, h.operation, h.operation_state AS cell, h.operation_id AS key,
+        h.operation_sequence AS sequence, h.next_sequence AS nextSequence,
+        json_extract(h.result_json, '$.disposition') AS disposition,
+        json_extract(h.result_json, '$.body.reasonCode') AS reasonCode,
+        json_extract(h.command_body_json, '$.agentSessionRuntimeBindingId') AS closeBinding,
+        h.claim_generation AS generation, s.sandbox_runtime_id AS sandboxRuntimeId,
+        s.sandbox_binding_ref AS sandboxBindingRef, s.lifecycle_state AS sandboxLife,
+        s.health_state AS health, s.drain_state AS sandboxDrain, s.cleanup_state AS cleanup,
+        s.origin_physical_epoch AS epoch
+        FROM harness_instance_records h
+        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+        WHERE s.runtime_target_id=? AND h.drain_state='draining'
+        ORDER BY h.harness_instance_id`)
+        .all(runtimeTargetId)
+    ) as Array<{
+      harnessInstanceId: string;
+      harnessBindingRef: string;
+      life: string;
+      revision: string;
+      operation: string | null;
+      cell: string;
+      key: string | null;
+      sequence: number | null;
+      nextSequence: number;
+      disposition: string | null;
+      reasonCode: string | null;
+      closeBinding: string | null;
+      generation: string | null;
+      sandboxRuntimeId: string;
+      sandboxBindingRef: string;
+      sandboxLife: string;
+      health: string;
+      sandboxDrain: string;
+      cleanup: string;
+      epoch: string;
+    }>;
+    if (pinned.length === 0) return;
+    const target = this.readIdleSandboxTarget(runtimeTargetId);
+    for (const row of pinned) {
+      try {
+        const cells = ['idle', 'queued', 'dispatched', 'settled', 'unknown'] as const;
+        const cell = cells.find((known) => known === row.cell);
+        if (!cell) continue;
+        const operations = [
+          'session.open',
+          'turn.start',
+          'session.close',
+          'harness.drain',
+        ] as const;
+        const harness: HarnessFacts = {
+          life: row.life === 'open' ? 'open' : 'failed',
+          drain: 'draining',
+          revision: Date.parse(row.revision),
+          operation:
+            row.operation === null
+              ? null
+              : (operations.find((known) => known === row.operation) ?? 'other'),
+          cell,
+          key: row.key,
+          sequence: row.sequence,
+          result:
+            cell === 'unknown'
+              ? 'unknown'
+              : row.disposition === 'succeeded'
+                ? 'succeeded'
+                : row.disposition === 'refused' && row.reasonCode === 'stale'
+                  ? 'stale'
+                  : null,
+          nextSequence: row.nextSequence,
+          claimGeneration: row.generation,
+        };
+        const bindings = this.readNanoHost(({ sqlite }) =>
+          sqlite
+            .prepare(`SELECT agent_session_runtime_binding_id AS binding,
+            agent_session_id AS agentSessionId FROM agent_session_runtime_bindings
+            WHERE harness_instance_id=? ORDER BY agent_session_runtime_binding_id`)
+            .all(row.harnessInstanceId)
+        ) as Array<{ binding: string; agentSessionId: string }>;
+        const anchors = this.readNanoHost((native) =>
+          readNanoHostWorkspaceCaptureAnchors(native, row.sandboxBindingRef)
+        );
+        const facts: ColdFacts = {
+          sandbox: {
+            accepting:
+              row.sandboxLife === 'open' &&
+              row.health === 'ready' &&
+              row.sandboxDrain === 'accepting',
+            clean: row.cleanup === 'clean',
+            currentEpoch: target !== null && target.physicalEpoch === row.epoch,
+          },
+          harness,
+          bindings: bindings.map(({ binding, agentSessionId }) => ({
+            binding,
+            present: true,
+            capture: this.readColdCaptureState(
+              anchors.filter((anchor) => anchor.agentSessionId === agentSessionId)
+            ),
+            // A close removes its binding, so a present binding has no consumed close unless its
+            // own close is the cell's last operation.
+            consumed:
+              harness.operation === 'session.close' &&
+              row.closeBinding === binding &&
+              row.key !== null &&
+              (harness.result === 'succeeded' || harness.result === 'stale')
+                ? { key: row.key, result: harness.result, revision: harness.revision }
+                : null,
+          })),
+          liveProducer:
+            this.harnessOperationSettlements.has(row.harnessInstanceId) ||
+            [...this.agentSessionCloseOwners.values()].some(
+              (owner) => owner.inspection.harnessInstanceId === row.harnessInstanceId
+            ) ||
+            [...this.sessions.values()].some(
+              (session) => session.harnessInstanceId === row.harnessInstanceId
+            ),
+          restoreHeld: this.workerControlGateway?.restoreHeld() ?? false,
+        };
+        const action = REPLACEMENT_CLOSE_TABLE.cold(facts);
+        if (action.kind !== 'restore' || action.scope !== 'quiescent' || !target) continue;
+        await this.releaseIdleCaptureLatch(runtimeTargetId, row.sandboxRuntimeId, {
+          harnessInstanceId: row.harnessInstanceId,
+          harnessBindingRef: row.harnessBindingRef,
+          claim: { revision: row.revision },
+          generation: row.generation,
+        });
+      } catch {
+        // This latch keeps its fence; the other latches still decide.
+      }
+    }
+  }
+
+  /**
+   * The cold capture state of one binding from its durable anchors, read only. An unreadable
+   * Workspace is undefined. A terminal abandon, then an unsettled claim or source, then an accepted
+   * successor receipt decide, in that order.
+   */
+  private readColdCaptureState(
+    anchors: ReturnType<typeof readNanoHostWorkspaceCaptureAnchors>
+  ): CaptureState | undefined {
+    const states: CaptureState[] = [];
+    for (const anchor of anchors) {
+      let db: WorkspaceDb | undefined;
+      try {
+        db = isScopeAdmitted(this.coreDb.dataRoot, 'workspace', anchor.workspaceId)
+          ? openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId)
+          : this.openRetiringWorkspaceDb(anchor.workspaceId);
+        const hash = createHash('sha256').update(anchor.packageSnapshotId).digest('hex');
+        const ids = ['turn-end', 'release', 'successor'].map((boundary) => `${boundary}-${hash}`);
+        const records = listWorkspaceReconciliationRecords(db, anchor.workspaceId).filter(
+          (record) =>
+            ids.some((id) => record.id === `wrr_capture_${id}`) &&
+            record.backendHandleSummary.attemptId === anchor.attemptId
+        );
+        const receipt = db.sqlite
+          .prepare(
+            'SELECT 1 FROM workspace_snapshot_collections WHERE workspace_id=? AND collection_id=?'
+          )
+          .get(anchor.workspaceId, `successor-${hash}`);
+        if (records.some((record) => record.stateAfter === 'unrecoverable'))
+          states.push('abandoned');
+        else if (records.some((record) => record.stateAfter === 'requires-human'))
+          states.push(
+            records.some(
+              (record) =>
+                record.stateAfter === 'requires-human' &&
+                record.backendHandleSummary.candidateDigest !== null
+            )
+              ? 'raw'
+              : 'claimed'
+          );
+        else if (records.some((record) => record.stateAfter !== 'recovered')) return undefined;
+        else states.push(receipt ? 'receipt' : 'none');
+      } catch {
+        return undefined;
+      } finally {
+        db?.sqlite.close();
+      }
+    }
+    for (const state of ['abandoned', 'claimed', 'raw', 'receipt'] as const)
+      if (states.includes(state)) return state;
+    return 'none';
   }
 
   /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
@@ -10673,10 +10911,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             harnessInstanceId: session.harnessInstanceId,
             harnessBindingRef: session.harnessBindingRef,
             close: closeOwner.closeKey,
+            generation: closeOwner.claimGeneration,
           }
         );
     } catch (error) {
-      // A settled unsent refusal can restore only through the exact close's receipt.
+      // A settled unsent refusal can restore only through the exact close's receipt. Q6: a
+      // definite refusal before any queue commit rolls back this close's own claim (claim arm).
+      // A lost queue reply is not such a refusal: it goes to the readback, never to this rollback.
       if (
         (error instanceof AgentSessionReplacementSelectionChanged ||
           (typeof error === 'object' && error !== null && this.replacementRefusals.has(error))) &&
@@ -10689,6 +10930,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             harnessInstanceId: session.harnessInstanceId,
             harnessBindingRef: session.harnessBindingRef,
             close: closeOwner.closeKey,
+            ...(closeOwner.closeKey === undefined && closeOwner.claimRevision !== undefined
+              ? { claim: { revision: closeOwner.claimRevision } }
+              : {}),
+            generation: closeOwner.claimGeneration,
           }
         );
       throw error;

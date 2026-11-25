@@ -328,6 +328,20 @@ const ownerOfKey = (key: string) => key.slice(0, 1);
 const generationOf = (b: string, c: Closer) => `g${b}${c.gen}`;
 
 /**
+ * The RC8 queue of a writer from before G3: it compares the claim revision alone. The table's queue
+ * requires the pinned generation (S3b), so this double puts one sentinel on both sides.
+ */
+const REVISION_ONLY = 'revision-only';
+const revisionOnlyQueue =
+  (queue: ReplacementCloseTable['queue']): ReplacementCloseTable['queue'] =>
+  (input) =>
+    queue({
+      ...input,
+      harness: { ...input.harness, claimGeneration: REVISION_ONLY },
+      claimGeneration: REVISION_ONLY,
+    });
+
+/**
  * The older claim and restore, for data roots that older writers produced. The claim writes no
  * generation, and the older restore compares the revision alone.
  */
@@ -338,7 +352,7 @@ function legacyTable(t: ReplacementCloseTable, kind: 'c1' | 'r2'): ReplacementCl
     claim: (h) => ({ revision: kind === 'r2' ? h.revision + 1 : h.revision, generation: null }),
     restore: (h, s, frame) => restorable(h, s) && h.revision === frame.revision,
     // The older queue compares the claim revision alone.
-    queue: (input) => t.queue({ ...input, claimGeneration: undefined }),
+    queue: revisionOnlyQueue(t.queue),
   };
 }
 
@@ -2666,7 +2680,7 @@ const preG3 = (row: MutationRow): MutationRow => {
       restore: (h, sb, frame) =>
         restore({ ...h, claimGeneration: 'any' }, sb, { ...frame, generation: 'any' }),
       // S3b-m-r2: RC8 compares no generation either.
-      queue: (input) => queue({ ...input, claimGeneration: undefined }),
+      queue: revisionOnlyQueue(queue),
     },
   };
 };
@@ -3282,7 +3296,7 @@ const M: readonly MutationRow[] = [
     world: WORLDS.equalStamp,
     oracle: 'O.queue',
     takeOut: 'RC8 compares the claim revision alone (no generation)',
-    table: { queue: (input) => T.queue({ ...input, claimGeneration: undefined }) },
+    table: { queue: revisionOnlyQueue(T.queue) },
     via: 'env:hdrain@claim',
   },
   // S3b-m-r2 (V1-P): the committed restore clears the generation, checked on the written row.
@@ -4086,8 +4100,7 @@ describe('replacement close lifecycle model check', () => {
       // Removing only the generation compare commits A's key.
       const noGeneration = {
         ...T,
-        queue: (input: Parameters<ReplacementCloseTable['queue']>[0]) =>
-          T.queue({ ...input, claimGeneration: undefined }),
+        queue: revisionOnlyQueue(T.queue),
       };
       const step = steps(w, noGeneration, prepared).find((x) => x.label === 'queue:A');
       expect(step?.next.p.committed).toEqual(['A1']);
@@ -4102,8 +4115,7 @@ describe('replacement close lifecycle model check', () => {
       expect(refused.p.committed).toEqual([]);
       const noGeneration = {
         ...T,
-        queue: (input: Parameters<ReplacementCloseTable['queue']>[0]) =>
-          T.queue({ ...input, claimGeneration: undefined }),
+        queue: revisionOnlyQueue(T.queue),
       };
       const posted = run(w, [...labels, 'post:A']);
       const step = steps(w, noGeneration, posted).find((x) => x.label === 'queue:A');

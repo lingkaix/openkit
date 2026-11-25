@@ -8,6 +8,13 @@
       "when": 1794664200000,
       "tag": "0000_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795723200000,
+      "tag": "0001_claim_generation",
+      "breakpoints": true
     }
   ]
 }

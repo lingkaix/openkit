@@ -115,6 +115,11 @@ export const harnessInstanceRecords = sqliteTable(
     createdAt: text('created_at').notNull(),
     /** Last transition timestamp. */
     updatedAt: text('updated_at').notNull(),
+    /**
+     * G3: the fresh identifier of the capture claim that holds the drain, or null. Null for every
+     * row from before this column (legacy) and for a row that no capture claim holds.
+     */
+    claimGeneration: text('claim_generation'),
   },
   (table) => [
     uniqueIndex('harness_instance_records_compatibility_idx').on(

@@ -807,7 +807,8 @@ function drainNanoHostHarnessAdmissionInTransaction(
   const update = owner.sqlite
     .prepare(
       `UPDATE harness_instance_records
-       SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?
+       SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?,
+           claim_generation = NULL
        WHERE harness_instance_id = ? AND lifecycle_state = ? AND drain_state = ?`
     )
     .run(
@@ -838,7 +839,8 @@ export function drainNanoHostSandboxAdmission(
       WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?`)
         .run(input.sandboxBindingRef, input.originPhysicalEpoch);
       owner.sqlite
-        .prepare(`UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining'
+        .prepare(`UPDATE harness_instance_records SET lifecycle_state = 'failed', drain_state = 'draining',
+        claim_generation = NULL
       WHERE sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
         WHERE sandbox_binding_ref = ? AND origin_physical_epoch = ?)`)
         .run(input.sandboxBindingRef, input.originPhysicalEpoch);
@@ -1946,7 +1948,7 @@ function projectSuccessfulResult(
     if (harness.operation === 'harness.drain') {
       owner.sqlite
         .prepare(
-          "UPDATE harness_instance_records SET drain_state = 'draining' WHERE harness_instance_id = ?"
+          "UPDATE harness_instance_records SET drain_state = 'draining', claim_generation = NULL WHERE harness_instance_id = ?"
         )
         .run(harness.harness_instance_id);
       return;
@@ -2981,7 +2983,7 @@ function setHarnessUnknown(
     .prepare(
       `UPDATE harness_instance_records
        SET operation_state = 'unknown', lifecycle_state = 'failed',
-           drain_state = 'draining', updated_at = ?
+           drain_state = 'draining', updated_at = ?, claim_generation = NULL
        WHERE harness_instance_id = ? AND operation_state = ?`
     )
     .run(timestamp, harnessInstanceId, fromState);
@@ -3036,7 +3038,8 @@ function fenceNanoHostSandboxRuntimeInTransaction(
   owner.sqlite
     .prepare(
       `UPDATE harness_instance_records
-       SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?
+       SET lifecycle_state = 'failed', drain_state = 'draining', updated_at = ?,
+           claim_generation = NULL
        WHERE sandbox_runtime_id = ?`
     )
     .run(input.timestamp, sandbox.sandboxRuntimeId);

@@ -62,6 +62,8 @@ export function applyControlHarnessLifecycle(
               throw new Error('NanoHost idle Sandbox eviction changed before drain claim.');
             claimIdleSandboxDrain(admitted.coreDb, input, owner);
           } else if (authority.rollback) {
+            // Neither Harness arm carries Sandbox rollback authority: a mixed frame restores nothing.
+            if (input.harness) return null;
             restoreSandboxAdmission(admitted.coreDb, input.sandboxRuntimeId, owner, authority);
           } else {
             restoreHarnessAdmissionAfterLocalClose(admitted.coreDb, input, owner, authority);
@@ -214,10 +216,13 @@ function captureDispositionsRecovered(
 
 /**
  * Releases one Harness's idle capture latch on an accepting Sandbox in the authorized target Epoch,
- * after its proved local close or its close refused as unsent stale.
+ * after its proved local close or its close refused as unsent stale (`close` arm), or for its own
+ * claim before any queue commit and at the cold quiescent exit (`claim` arm).
  * The Harness row must still carry that write: the close's settle clock retained by its Core
- * consumption. A later claim, queue or drain on that Harness, another Harness's latch and any
- * other close outcome keep their drain.
+ * consumption, or the claim's own revision. G3: the row must also hold the frame's claim
+ * generation, and the release clears it, so a retry or a late duplicate of the frame changes no
+ * row. A frame without a generation restores nothing. A later claim, queue or drain on that
+ * Harness, another Harness's latch and any other close outcome keep their drain.
  */
 function restoreHarnessAdmissionAfterLocalClose(
   coreDb: CoreDb,
@@ -251,24 +256,34 @@ function restoreHarnessAdmissionAfterLocalClose(
         revision: string;
       }
     | undefined;
-  if (!harness) return;
+  if (!harness || scoped.generation === undefined) return;
   // The close's settle clock, retained by its Core consumption, proves no later Harness write.
-  const revision = records.readNanoHostSettledIdleCloseConsumedAt(
-    coreDb,
-    owner,
-    scoped.harnessInstanceId,
-    scoped.close
-  );
+  // The claim arm carries the claim's own revision.
+  const revision =
+    'close' in scoped
+      ? records.readNanoHostSettledIdleCloseConsumedAt(
+          coreDb,
+          owner,
+          scoped.harnessInstanceId,
+          scoped.close
+        )
+      : scoped.claim.revision;
   if (revision === null || harness.revision !== revision) return;
   owner.sqlite
-    .prepare(`UPDATE harness_instance_records SET drain_state='accepting'
+    .prepare(`UPDATE harness_instance_records SET drain_state='accepting', claim_generation=NULL
     WHERE harness_instance_id=? AND harness_binding_ref=? AND sandbox_runtime_id=? AND updated_at=?
-      AND lifecycle_state='open' AND drain_state='draining'
+      AND claim_generation=? AND lifecycle_state='open' AND drain_state='draining'
       AND operation_state IN ('idle','settled') AND (operation IS NULL OR (operation<>'harness.drain'
       AND (operation<>'session.close' OR json_extract(result_json, '$.disposition')='succeeded'
         OR (json_extract(result_json, '$.disposition')='refused'
           AND json_extract(result_json, '$.body.reasonCode')='stale'))))`)
-    .run(scoped.harnessInstanceId, scoped.harnessBindingRef, input.sandboxRuntimeId, revision);
+    .run(
+      scoped.harnessInstanceId,
+      scoped.harnessBindingRef,
+      input.sandboxRuntimeId,
+      revision,
+      scoped.generation
+    );
 }
 
 /** Restores the exact two-table admission tuple while its current Core proof remains inside the native savepoint. */
@@ -318,7 +333,8 @@ function restoreSandboxAdmission(
   if (restored.changes === 1)
     owner.sqlite
       .prepare(`UPDATE harness_instance_records
-    SET drain_state = 'accepting' WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'`)
+    SET drain_state = 'accepting', claim_generation = NULL
+    WHERE sandbox_runtime_id = ? AND lifecycle_state = 'open'`)
       .run(sandboxRuntimeId);
 }
 
@@ -489,8 +505,8 @@ function claimIdleSandboxDrain(
     WHERE sandbox_runtime_id=? AND (?=1 OR (lifecycle_state='open' AND health_state='ready' AND drain_state='accepting' AND cleanup_state='clean'))`)
     .run(input.timestamp, input.sandboxRuntimeId, absent);
   const harnessUpdate = owner.sqlite
-    .prepare(`UPDATE harness_instance_records SET drain_state='draining',updated_at=?
-    WHERE sandbox_runtime_id=? AND active_turn_count=0 AND (operation_state IN ('idle','settled') OR ?=1)
+    .prepare(`UPDATE harness_instance_records SET drain_state='draining',updated_at=?,
+    claim_generation=NULL WHERE sandbox_runtime_id=? AND active_turn_count=0 AND (operation_state IN ('idle','settled') OR ?=1)
     AND (?=1 OR (lifecycle_state='open' AND drain_state='accepting') OR (lifecycle_state='failed' AND drain_state='draining'
     AND operation='session.close' AND operation_state='settled' AND json_extract(result_json,'$.disposition')='refused'
     AND json_extract(result_json,'$.body.reasonCode')='cleanup_required'))`)
@@ -518,20 +534,26 @@ function claimIdleCaptureDrain(
       .prepare(`SELECT 1 FROM scheduler_execution_attempts WHERE attempt_id=? AND phase='closed'
       AND agent_session_id=? AND workspace_id=? AND thread_id=?`)
       .get(input.attemptId, input.agentSessionId, binding.workspaceId, binding.threadId);
-  // The claim's clock is this Harness's new revision; an older or equal clock refuses.
+  // The claim's clock is this Harness's new revision; an older or equal clock refuses. Only an
+  // accepting Harness on an accepting Sandbox can be claimed (CLOSE-LC RC3, CL3): a drain that
+  // another owner holds, or an earlier claim, keeps the latch. G3: the same CAS writes the fresh
+  // generation of this acquisition.
   const changed = closed
     ? owner.sqlite
-        .prepare(`UPDATE harness_instance_records SET drain_state='draining', updated_at=?
+        .prepare(`UPDATE harness_instance_records SET drain_state='draining', updated_at=?,
+    claim_generation=?
     WHERE harness_binding_ref=? AND harness_instance_id=? AND lifecycle_state='open' AND operation_state IN ('idle','settled')
-    AND updated_at < ?
+    AND drain_state='accepting' AND updated_at < ?
     AND EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
       WHERE b.harness_instance_id=harness_instance_records.harness_instance_id
       AND b.agent_session_runtime_binding_id=? AND b.agent_session_id=?
       AND b.current_attempt_id IS NULL AND b.current_turn_id IS NULL)
     AND sandbox_runtime_id IN (SELECT sandbox_runtime_id FROM sandbox_runtime_records
-    WHERE sandbox_binding_ref=? AND origin_physical_epoch=? AND lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean')`)
+    WHERE sandbox_binding_ref=? AND origin_physical_epoch=? AND lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean'
+    AND drain_state='accepting')`)
         .run(
           input.claimedAt,
+          input.claimGeneration,
           input.harnessBindingRef,
           input.harnessInstanceId,
           input.claimedAt,
