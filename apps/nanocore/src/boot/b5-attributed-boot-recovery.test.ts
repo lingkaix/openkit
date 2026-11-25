@@ -952,6 +952,95 @@ describe('B5 attributed Boot recovery', () => {
   );
 
   it(
+    "proves a person outcome's Core-local publication Task terminal fact before the restart settlement, and holds A unchanged when its Task's Goal is gone",
+    async () => {
+      const root = await seedRoot(['Healthy', 'Task Goal gone']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        // The person batch's close is the write after its freeze: the seeding Core stops before it.
+        const close = store.completeWorkspaceTurn.bind(store);
+        const stop = vi
+          .spyOn(store, 'completeWorkspaceTurn')
+          .mockImplementation(async (...args) =>
+            args[4]?.pending?.some((command) => command.action === 'delivery-prove')
+              ? store.getTurnById(args[2])
+              : close(...args)
+          );
+        const outcomes = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          requesterKind: 'person',
+          decision: 'denied',
+          services: 'frozen',
+        });
+        stop.mockRestore();
+        return root.workspaceIds.map((workspaceId, index) => {
+          const requestIds = outcomes[index]!.requestIds;
+          const deliveryTurnId = readPendingRow(root.dataRoot, workspaceId, requestIds[0]!)
+            .delivery_turn_id as string;
+          return {
+            requestIds,
+            threadId: store.getTurnById(deliveryTurnId).threadId,
+            claim: claims[index]!,
+          };
+        });
+      });
+      // A's outcome Thread is a Goal card Task of an ended Goal whose row is gone while stopped.
+      const goalThreadId = await withSeedStore(
+        root,
+        async (store) => (await store.createThread(held, 'Goal coordination')).id
+      );
+      const goalId = seedEndedGoalTask(root.dataRoot, held, {
+        taskThreadId: seeded[1]!.threadId,
+        goalThreadId,
+        userId: root.actor.id,
+      });
+      const repair = removeGoal(root.dataRoot, held, goalId);
+      const original = workspaceEvidence(root.dataRoot, held);
+      const claim = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId);
+      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+
+      const server = await startServer(root);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      expect(bootDecisionLines(server)).toContain(
+        'Task terminal fact requires its linked Goal owner'
+      );
+      // The sibling's publication took the same branch of the same walk.
+      for (const requestId of seeded[0]!.requestIds)
+        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
+          delivery: 'delivered',
+        });
+      // A's publication terminal would refuse after the settlement: neither committed.
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toEqual(claim);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      const repeated = await startServer(root);
+      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+
+      // Restoring the Goal row while stopped lets the next Boot recover A once.
+      repair();
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      for (const requestId of seeded[1]!.requestIds)
+        expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({
+          delivery: 'delivered',
+        });
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
     "keeps A's committed person outcome when its feedback file cannot be projected after the terminal acknowledgement",
     async () => {
       const root = await seedRoot(['Healthy', 'Feedback unwritable']);
