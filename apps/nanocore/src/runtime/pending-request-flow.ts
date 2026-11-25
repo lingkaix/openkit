@@ -454,6 +454,9 @@ export async function recoverPendingRequestsAtBoot(
 ): Promise<void> {
   const now = new Date().toISOString();
   const dataRoot = store.getDataRoot();
+  // The Task owner imports the Store, which imports this module: load it here, as the terminal
+  // writer loads it, so each service publication proves its Task terminal fact before any write.
+  const { prepareTaskTerminalFact } = await import('./task-terminal-fact.js');
   // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
   for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     // A retained deletion or recovery fence belongs to its original lifecycle continuation.
@@ -509,9 +512,7 @@ export async function recoverPendingRequestsAtBoot(
               .map((turn) => [turn.id, turn.threadId])
           );
           const proveDelivery = (turnId: string) =>
-            assertFrozenDeliveryScope(db.sqlite, workspace.id, turnId, (id) =>
-              turnThreads.get(id)
-            );
+            assertFrozenDeliveryScope(db.sqlite, workspace.id, turnId, (id) => turnThreads.get(id));
           const posts: (() => Promise<unknown>)[] = [];
           const planned = new Set<string>();
           const localPublications = new Set<string>();
@@ -578,7 +579,12 @@ export async function recoverPendingRequestsAtBoot(
                 { action: 'delivery-prove' as const, workspaceId: workspace.id, turnId, now },
               ],
             };
-            store.provePendingRequestServiceTurn(workspace.id, publication.threadId, input);
+            store.provePendingRequestServiceTurn(
+              workspace.id,
+              publication.threadId,
+              input,
+              prepareTaskTerminalFact
+            );
             proveDelivery(turnId);
             posts.push(() =>
               store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, input)
@@ -610,7 +616,8 @@ export async function recoverPendingRequestsAtBoot(
               store.provePendingRequestServiceTurn(
                 workspace.id,
                 thread.id,
-                invalidationPublication(workspace.id, thread.id, waiting, now)
+                invalidationPublication(workspace.id, thread.id, waiting, now),
+                prepareTaskTerminalFact
               );
           }
           await bootWorkspaceWrite(() =>
