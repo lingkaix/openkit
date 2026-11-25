@@ -1347,24 +1347,38 @@ export function releaseFrozenOutcomes(
   turnId: string,
   now: string
 ): PendingRequestRecord[] {
-  const release = sqlite.transaction(() => {
-    const rows = sqlite
-      .prepare(
-        `SELECT ${SELECT_COLUMNS} FROM pending_requests
-         WHERE delivery = 'frozen' AND delivery_turn_id = ?`
-      )
-      .all(turnId) as PendingRequestRow[];
-    const records = rows.map(parsePendingRequestRow);
-    sqlite
-      .prepare(
-        `UPDATE pending_requests
-         SET delivery = 'undelivered', delivery_turn_id = NULL, delivery_cause = NULL, updated_at = ?
-         WHERE delivery = 'frozen' AND delivery_turn_id = ?`
-      )
-      .run(now, turnId);
-    return records.map((record) => readPendingRequest(sqlite, record.requestId) ?? record);
-  });
-  return release();
+  return moveFrozenDelivery(sqlite, turnId, 'delivery-release', now);
+}
+
+/**
+ * The delivery writer's move of one row frozen on its delivery Turn, exactly as the writer writes
+ * it: prove delivers the row and clears its held result, unknown marks it, and release returns it
+ * to undelivered while keeping its publication Turn. A Boot proof projects the same move.
+ *
+ * @param record A row frozen on the command's delivery Turn.
+ * @param action The delivery command.
+ * @param now Update time.
+ * @returns The moved row.
+ */
+export function projectFrozenDeliveryMove(
+  record: PendingRequestRecord,
+  action: 'delivery-prove' | 'delivery-release' | 'delivery-unknown',
+  now: string
+): PendingRequestRecord {
+  if (action === 'delivery-release')
+    return {
+      ...record,
+      delivery: 'undelivered',
+      deliveryTurnId: null,
+      deliveryCause: null,
+      updatedAt: now,
+    };
+  return {
+    ...record,
+    delivery: action === 'delivery-prove' ? 'delivered' : 'delivery-unknown',
+    heldResult: action === 'delivery-prove' ? null : record.heldResult,
+    updatedAt: now,
+  };
 }
 
 /**
@@ -1380,7 +1394,7 @@ export function proveFrozenDelivery(
   turnId: string,
   now: string
 ): PendingRequestRecord[] {
-  return moveFrozenDelivery(sqlite, turnId, 'delivered', true, now);
+  return moveFrozenDelivery(sqlite, turnId, 'delivery-prove', now);
 }
 
 /**
@@ -1396,7 +1410,7 @@ export function markFrozenDeliveryUnknown(
   turnId: string,
   now: string
 ): PendingRequestRecord[] {
-  return moveFrozenDelivery(sqlite, turnId, 'delivery-unknown', false, now);
+  return moveFrozenDelivery(sqlite, turnId, 'delivery-unknown', now);
 }
 
 /**
@@ -2286,28 +2300,50 @@ function endPendingRequest(
 function moveFrozenDelivery(
   sqlite: Database.Database,
   turnId: string,
-  delivery: 'delivered' | 'delivery-unknown',
-  clearResult: boolean,
+  action: 'delivery-prove' | 'delivery-release' | 'delivery-unknown',
   now: string
 ): PendingRequestRecord[] {
   const move = sqlite.transaction(() => {
-    const rows = sqlite
-      .prepare(
-        `SELECT ${SELECT_COLUMNS} FROM pending_requests
-         WHERE delivery = 'frozen' AND delivery_turn_id = ?`
-      )
-      .all(turnId) as PendingRequestRow[];
-    const records = rows.map(parsePendingRequestRow);
-    sqlite
-      .prepare(
-        `UPDATE pending_requests
-         SET delivery = ?, held_result_json = CASE WHEN ? = 1 THEN NULL ELSE held_result_json END, updated_at = ?
-         WHERE delivery = 'frozen' AND delivery_turn_id = ?`
-      )
-      .run(delivery, clearResult ? 1 : 0, now, turnId);
+    const records = readFrozenDeliveryRows(sqlite, turnId);
+    const update = sqlite.prepare(
+      `UPDATE pending_requests
+       SET delivery = ?, delivery_turn_id = ?, delivery_cause = ?,
+           held_result_json = CASE WHEN ? = 1 THEN NULL ELSE held_result_json END, updated_at = ?
+       WHERE request_id = ? AND delivery = 'frozen' AND delivery_turn_id = ?`
+    );
+    for (const record of records) {
+      // The writer writes the projection's fields; the held result is only ever kept or cleared.
+      const moved = projectFrozenDeliveryMove(record, action, now);
+      update.run(
+        moved.delivery,
+        moved.deliveryTurnId,
+        moved.deliveryCause,
+        moved.heldResult === null ? 1 : 0,
+        moved.updatedAt,
+        record.requestId,
+        turnId
+      );
+    }
     return records.map((record) => readPendingRequest(sqlite, record.requestId)!).filter(Boolean);
   });
   return move();
+}
+
+/**
+ * Every row frozen on one delivery Turn, decoded as the delivery writer loads them; a row that
+ * does not decode refuses the command.
+ */
+export function readFrozenDeliveryRows(
+  sqlite: Database.Database,
+  turnId: string
+): PendingRequestRecord[] {
+  const rows = sqlite
+    .prepare(
+      `SELECT ${SELECT_COLUMNS} FROM pending_requests
+       WHERE delivery = 'frozen' AND delivery_turn_id = ?`
+    )
+    .all(turnId) as PendingRequestRow[];
+  return rows.map(parsePendingRequestRow);
 }
 
 function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequestInput): void {
@@ -2793,12 +2829,6 @@ function assertPendingPreparedProjection(
   now: string
 ): void {
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
-  const relevant = new Set([
-    record.requestItemId,
-    ...(
-      ['decision', 'answer', 'disposition', 'disposition-status', 'ending', 'invalidation'] as const
-    ).map((role) => pendingRequestItemId(record.requestId, role)),
-  ]);
   const items = new Map<string, Item>();
   const newIds = new Set(
     prepared.entries.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
@@ -2812,17 +2842,74 @@ function assertPendingPreparedProjection(
       readPreparedControlEntry(entry),
       StoredItemPayloadV1Schema.parse
     );
-    if (
-      !relevant.has(entry.id) &&
-      payload.causationId !== record.requestItemId &&
-      !('approvalRequestId' in payload && payload.approvalRequestId === record.requestId) &&
-      !('userInputRequestId' in payload && payload.userInputRequestId === record.requestId)
-    )
-      continue;
+    if (!isPendingProjectionItem(record, { ...payload, id: entry.id })) continue;
     if (items.has(entry.id))
       pendingNativeConflict('The Pending Item proof contains duplicate identities.');
     items.set(entry.id, pendingPreparedItem(db, entry));
   }
+  decidePendingProjection(
+    record,
+    { items, newIds, turn: (id) => readProduct(db.sqlite, owner, 'turn', id)?.record },
+    now
+  );
+}
+
+/**
+ * Whether an actual Item belongs to one decided row's projection proof: its request Item, a role
+ * Item, or an Item caused by or naming the request. The writer and a Boot proof select with it.
+ */
+export function isPendingProjectionItem(
+  record: PendingRequestRecord,
+  item: {
+    readonly id: string;
+    readonly causationId?: unknown;
+    readonly approvalRequestId?: unknown;
+    readonly userInputRequestId?: unknown;
+  }
+): boolean {
+  return (
+    item.id === record.requestItemId ||
+    PENDING_PROJECTION_ROLES.some(
+      (role) => item.id === pendingRequestItemId(record.requestId, role)
+    ) ||
+    item.causationId === record.requestItemId ||
+    item.approvalRequestId === record.requestId ||
+    item.userInputRequestId === record.requestId
+  );
+}
+
+/** The role Items whose identities a decided row's projection proof reads. */
+export const PENDING_PROJECTION_ROLES = [
+  'decision',
+  'answer',
+  'disposition',
+  'disposition-status',
+  'ending',
+  'invalidation',
+] as const;
+
+/**
+ * The Pending writer's decided-row rule on actual evidence: every Turn the row names has the
+ * row's Thread, the row loads canonically with its Items, and each projected publication or
+ * invalidation Item exists exactly once with the exact rendered content. The writer runs it after
+ * its write on the prepared Items; a Boot proof runs it on a projected row and the actual Items.
+ *
+ * @param record The decided row.
+ * @param evidence The row's actual Items by identity, the ones this command supplies new, and the
+ * native metadata of a Turn.
+ * @param now The command's clock, used for a new Item.
+ * @throws PendingRequestCommandError conflict when the row or its Items contradict.
+ */
+export function decidePendingProjection(
+  record: PendingRequestRecord,
+  evidence: {
+    readonly items: ReadonlyMap<string, Item>;
+    readonly newIds: ReadonlySet<string>;
+    readonly turn: (turnId: string) => Record<string, unknown> | undefined;
+  },
+  now: string
+): void {
+  const { items, newIds } = evidence;
   const turnIds = new Set(
     [
       record.raisingTurnId,
@@ -2832,7 +2919,7 @@ function assertPendingPreparedProjection(
     ].filter((id): id is string => id !== null)
   );
   const turns = [...turnIds].map((id) => {
-    const metadata = readProduct(db.sqlite, owner, 'turn', id)?.record;
+    const metadata = evidence.turn(id);
     if (!metadata || metadata.threadId !== record.threadId)
       pendingNativeConflict('The Pending publication Turn has different native lineage.');
     return {
@@ -2891,17 +2978,34 @@ export function assertFrozenDeliveryScope(
   deliveryTurnId: string,
   turnThreadId: (turnId: string) => unknown
 ): void {
-  const deliveryThreadId = turnThreadId(deliveryTurnId);
-  if (deliveryThreadId === undefined)
-    pendingNativeConflict('The Pending Turn does not belong to its Thread.');
   const rows = sqlite
     .prepare(
       "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
     )
     .all(deliveryTurnId) as { request_id: string }[];
-  for (const row of rows) {
-    const record = readPendingRequest(sqlite, row.request_id);
-    if (!record) pendingNativeConflict('The Pending request is missing.');
+  assertFrozenRowsScope(
+    workspaceId,
+    deliveryTurnId,
+    rows.map((row) => {
+      const record = readPendingRequest(sqlite, row.request_id);
+      if (!record) pendingNativeConflict('The Pending request is missing.');
+      return record;
+    }),
+    turnThreadId
+  );
+}
+
+/** The delivery commands' scope rule on the rows frozen on one delivery Turn. */
+function assertFrozenRowsScope(
+  workspaceId: string,
+  deliveryTurnId: string,
+  records: readonly PendingRequestRecord[],
+  turnThreadId: (turnId: string) => unknown
+): void {
+  const deliveryThreadId = turnThreadId(deliveryTurnId);
+  if (deliveryThreadId === undefined)
+    pendingNativeConflict('The Pending Turn does not belong to its Thread.');
+  for (const record of records) {
     if (record.workspaceId !== workspaceId)
       pendingNativeConflict('The Pending request does not belong to the command scope.');
     if (turnThreadId(record.raisingTurnId) !== record.threadId)
@@ -2909,6 +3013,48 @@ export function assertFrozenDeliveryScope(
     if (record.threadId !== deliveryThreadId)
       pendingNativeConflict('The frozen request belongs to a different delivery Thread.');
   }
+}
+
+/**
+ * The delivery commands' complete decision on one delivery Turn, without writing: the scope rule,
+ * the move of every row frozen on the Turn (including a row a Boot walk skips), and the decided-row
+ * rule on each moved row. A Boot walk runs it on the state its preceding planned commands produce,
+ * before its first write; the writer runs the same rule, move and decided-row check at commit.
+ *
+ * @param sqlite Workspace database the rows are read from.
+ * @param command The planned delivery command.
+ * @param input The Thread of a Turn, the state earlier planned commands give a row, and the actual
+ * evidence of a moved row.
+ * @returns The moved rows.
+ * @throws PendingRequestCommandError conflict when the writer would refuse the command.
+ */
+export function decideFrozenDeliveryCommand(
+  sqlite: Database.Database,
+  command: {
+    readonly action: 'delivery-prove' | 'delivery-release' | 'delivery-unknown';
+    readonly workspaceId: string;
+    readonly turnId: string;
+    readonly now: string;
+  },
+  input: {
+    readonly turnThreadId: (turnId: string) => unknown;
+    readonly current?: (record: PendingRequestRecord) => PendingRequestRecord;
+    /** The rows a planned freeze leaves on a Turn it creates; otherwise the actual rows. */
+    readonly frozen?: readonly PendingRequestRecord[];
+    readonly evidence: (
+      record: PendingRequestRecord
+    ) => Parameters<typeof decidePendingProjection>[1];
+  }
+): PendingRequestRecord[] {
+  const rows = (input.frozen ?? readFrozenDeliveryRows(sqlite, command.turnId)).map(
+    (record) => input.current?.(record) ?? record
+  );
+  assertFrozenRowsScope(command.workspaceId, command.turnId, rows, input.turnThreadId);
+  const moved = rows.map((record) =>
+    projectFrozenDeliveryMove(record, command.action, command.now)
+  );
+  for (const record of moved) decidePendingProjection(record, input.evidence(record), command.now);
+  return moved;
 }
 
 /** Fails a native source/selection race before any Pending mutation. */

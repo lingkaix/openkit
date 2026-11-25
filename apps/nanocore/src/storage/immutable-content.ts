@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { ContentReferenceSchema } from '@openkit/protocol';
 import {
   ensureCanonicalDirectoryAsync,
   LocalStorage,
@@ -139,6 +140,15 @@ export async function prepareRetainedProductJson(
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
     );
+  return inlineProductJsonContent(owner, body, bytes);
+}
+
+/** The inline descriptor of one retained JSON body within the inline bound. */
+function inlineProductJsonContent(
+  owner: ControlProductOwner,
+  body: string,
+  bytes: Buffer
+): Pick<ControlProductEntry, 'content'> {
   return {
     content: {
       reference: {
@@ -150,6 +160,45 @@ export async function prepareRetainedProductJson(
       byteLength: bytes.length,
       mediaType: 'application/json',
     },
+  };
+}
+
+/**
+ * The descriptor `prepareRetainedProductJson` gives one retained JSON body, computed in memory for a
+ * proof that bounds a planned packet; nothing is staged or written. A body within the inline bound
+ * gets the same inline descriptor. A larger body gets the native immutable-file reference its staged
+ * publication derives from the digest (a JSON body never sniffs as a binary media type) and a
+ * temporary publication name of the same length as the one the preparation draws.
+ */
+export function plannedRetainedProductJson(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  value: unknown
+): Pick<ControlProductEntry, 'content' | 'publication'> {
+  const body = JSON.stringify(value);
+  const bytes = Buffer.from(body, 'utf8');
+  if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
+    throw new Error(
+      'Canonical product publication requires the admitted native work-byte binding.'
+    );
+  if (bytes.length <= CONTROL_PRODUCT_LIMITS.inlineBytes)
+    return inlineProductJsonContent(owner, body, bytes);
+  if (bytes.length > CONTROL_PRODUCT_LIMITS.immutableBodyBytes)
+    throw new Error('Control product body exceeds its byte limit.');
+  const hex = createHash('sha256').update(bytes).digest('hex');
+  return {
+    content: {
+      reference: ContentReferenceSchema.parse({
+        knowledgeBaseId: null,
+        contentDigest: `sha256:${hex}`,
+        locator: { ownerScope: owner, mount: mount.mount, path: `sha256/${hex}` },
+        range: null,
+        availability: 'available',
+      }),
+      byteLength: bytes.length,
+      mediaType: 'application/octet-stream',
+    },
+    publication: { temporary: `.${hex}.${'00000000-0000-4000-8000-000000000000'}.tmp` },
   };
 }
 

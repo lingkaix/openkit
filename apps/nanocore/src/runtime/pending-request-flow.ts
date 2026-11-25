@@ -1,4 +1,5 @@
 import {
+  type ActorRef,
   allocateEntityId,
   deriveEntityId,
   type Item,
@@ -15,6 +16,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
+  BootWorkspaceConflict,
   bootWorkspaceWrite,
   holdBootWorkspaceFailure,
   withinBootWorkspaceBoundary,
@@ -27,6 +29,7 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
+import { readProduct } from '../storage/control-store-product-records.js';
 import {
   type ControlStorePublicationGuard,
   getControlStoreWorkerClient,
@@ -40,22 +43,27 @@ import { PendingRequestCommandError } from './pending-request-error.js';
 import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
   archiveSelects,
-  assertFrozenDeliveryScope,
   compareReadiness,
+  decideFrozenDeliveryCommand,
+  type decidePendingProjection,
   executorKindForTurn,
   isBlockingPendingRequest,
   isCommandIntentApproval,
   isFinalOutcome,
+  isPendingProjectionItem,
   isReadyOutcome,
   listThreadPendingRequests,
+  PENDING_PROJECTION_ROLES,
   type PendingExecutorKind,
   type PendingRequestActor,
   type PendingRequestRecord,
   renderPendingInvalidationItem as pendingInvalidationItem,
   renderPendingOutcomeItems as pendingOutcomeItems,
+  pendingRequestItemId,
   pendingRequestSystemActor,
   preflightPendingRequest,
   projectApprovalRequest,
+  projectFrozenDeliveryMove,
   projectUnfinishedSettlement,
   type RaisePendingRequestInput,
   readPendingRequest,
@@ -207,11 +215,6 @@ function outcomeDelivery(
       : dependencies.workerDelivery;
 }
 
-/** Posts one Workspace write; Boot recovery attributes its definite local noncommit to that Workspace. */
-function postWorkspace<Value>(boot: boolean, write: () => Promise<Value>): Promise<Value> {
-  return boot ? bootWorkspaceWrite(write) : write();
-}
-
 /** Dependencies for admission and boot. */
 export interface PendingAdmissionDependencies extends PendingRequestDatabase {
   /** A paused server retains ready agent outcomes without admitting a successor Turn. */
@@ -280,49 +283,84 @@ export function preparePendingOutcomeFreeze(
   const workspaceId = turn.owner.workspaceId;
   const executor = declaredExecutor ?? executorKindForTurn(turn);
   if (!executor) return { items: [], pending: [] };
+  // A Boot walk built and proved this Turn's freeze once; its admission carries exactly that one.
+  const planned = plannedOutcomeFreezes.get(turn.id);
+  if (planned) {
+    plannedOutcomeFreezes.delete(turn.id);
+    turn.triggerSource = planned.triggerSource;
+    return { items: planned.items, pending: planned.pending };
+  }
   return withWorkspace(dependencies, workspaceId, (sqlite) => {
-    const census = listThreadPendingRequests(sqlite, workspaceId, turn.threadId);
-    const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
     const cause: 'outcome' | 'carried' = outcomeCauses.get(turn.id) ?? 'carried';
-    const selected = selectReadyOutcomes(usable, {
+    const freeze = buildPendingOutcomeFreeze(
+      store,
+      sqlite,
+      workspaceId,
+      listThreadPendingRequests(sqlite, workspaceId, turn.threadId),
+      turn,
       executor,
-      agentId: turn.agentId ?? null,
       cause,
-      responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
-    });
+      new Date().toISOString()
+    );
     if (cause === 'outcome') {
-      if (!selected.length) throw associationGap();
+      if (!freeze.frozen.length) throw associationGap();
       // Preparation owns the input passed to the same native Turn/freeze transaction.
-      turn.triggerSource = pendingOutcomeTrigger(selected);
+      turn.triggerSource = freeze.triggerSource;
     }
-    const now = new Date().toISOString();
-    const frozen = selected.map((record) => ({
-      ...record,
-      delivery: 'frozen' as const,
-      deliveryTurnId: turn.id,
-      deliveryCause: cause,
-      publicationTurnId: record.publicationTurnId ?? turn.id,
-      updatedAt: now,
-    }));
-    return {
-      items: pendingOutcomeItems(frozen, turn.id, now),
-      pending: [
-        {
-          action: 'freeze' as const,
-          workspaceId,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          executor,
-          agentId: turn.agentId ?? null,
-          cause,
-          now,
-          expected: pendingSources(usable),
-          expectedSelection: selected.map((record) => record.requestId),
-          expectedThreadCensus: census.map((record) => record.requestId),
-        },
-      ],
-    };
+    return { items: freeze.items, pending: freeze.pending };
   });
+}
+
+/**
+ * Builds one outcome freeze from a Thread's census: the ready batch its executor selects, the
+ * frozen rows and their outcome Items, and the freeze command with its exact sources.
+ */
+function buildPendingOutcomeFreeze(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string,
+  census: readonly PendingRequestRecord[],
+  turn: Pick<Turn, 'id' | 'threadId' | 'agentId' | 'triggerActor'>,
+  executor: PendingExecutorKind,
+  cause: 'outcome' | 'carried',
+  now: string
+): PlannedOutcomeFreeze {
+  const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
+  const selected = selectReadyOutcomes(usable, {
+    executor,
+    agentId: turn.agentId ?? null,
+    cause,
+    responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
+  });
+  const frozen = selected.map((record) => ({
+    ...record,
+    delivery: 'frozen' as const,
+    deliveryTurnId: turn.id,
+    deliveryCause: cause,
+    publicationTurnId: record.publicationTurnId ?? turn.id,
+    updatedAt: now,
+  }));
+  return {
+    turnId: turn.id,
+    triggerSource: pendingOutcomeTrigger(selected),
+    frozen,
+    items: pendingOutcomeItems(frozen, turn.id, now),
+    pending: [
+      {
+        action: 'freeze' as const,
+        workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        executor,
+        agentId: turn.agentId ?? null,
+        cause,
+        now,
+        expected: pendingSources(usable),
+        expectedSelection: selected.map((record) => record.requestId),
+        expectedThreadCensus: census.map((record) => record.requestId),
+      },
+    ],
+  };
 }
 
 /** Derives the original not-accepted release for the same native terminal tuple. */
@@ -364,6 +402,8 @@ export async function wakePendingOutcomes(
   turn: Turn
 ): Promise<void> {
   if (refusedOutcomeTurns.has(turn.id)) return;
+  // A Boot walk applies the successors it planned for its own person close.
+  if (plannedBootTurns.has(turn.id)) return;
   if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived') return;
   await admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
   // Finish this native admission before the command owner can issue another Goal wake.
@@ -376,15 +416,53 @@ export async function wakePendingOutcomes(
  *
  * @param store Store that owns the outcome Turns.
  * @param dependencies Workspace storage and executor delivery owners.
- * @param startup At startup one Workspace's failed scan holds that Workspace; live callers rethrow it.
  */
 export function resumeFrozenPendingDelivery(
   store: FsStore,
-  dependencies: PendingAdmissionDependencies,
-  startup = false
+  dependencies: PendingAdmissionDependencies
 ): void {
-  if (dependencies.agentWorkPaused?.()) return;
-  if (!dependencies.workerDelivery) return;
+  for (const outcome of scanFrozenPendingDelivery(store, dependencies, false))
+    void deliverWorkerOutcome(store, dependencies, outcome);
+}
+
+/**
+ * Hands every startup frozen Worker outcome to its Core admission and settles when each reaches
+ * its first decision: the original admission ACK, or a classified refusal with its Workspace
+ * effects. Boot joins it before either listener binds. A Workspace-owned failure holds that
+ * Workspace; a shared writer failure rejects, so Boot stops. Execution after the ACK continues
+ * under its Worker owner.
+ *
+ * @param store Store that owns the outcome Turns.
+ * @param dependencies Workspace storage and executor delivery owners.
+ */
+export async function resumeFrozenPendingDeliveryAtStartup(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies
+): Promise<void> {
+  const decisions = await Promise.allSettled(
+    scanFrozenPendingDelivery(store, dependencies, true).map((outcome) =>
+      outcome.prepared
+        ? deliverStartupOutcome(store, dependencies, { ...outcome, prepared: outcome.prepared })
+        : deliverWorkerOutcome(store, dependencies, outcome)
+    )
+  );
+  const shared = decisions.find((decision) => decision.status === 'rejected');
+  if (shared) throw shared.reason;
+}
+
+/**
+ * Lists the frozen Worker outcomes whose Turn is still pending, per admitted Workspace.
+ *
+ * @param startup At startup one Workspace's failed scan holds that Workspace and each outcome
+ * carries its owner's pre-submit proof; live callers rethrow a failure.
+ */
+function scanFrozenPendingDelivery(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  startup: boolean
+): PendingOutcome[] {
+  if (dependencies.agentWorkPaused?.()) return [];
+  if (!dependencies.workerDelivery) return [];
   const dataRoot = store.getDataRoot();
   const outcomes = new Map<string, PendingOutcome>();
   // The census stays outside every Workspace boundary: an untrustworthy list stops the caller.
@@ -394,11 +472,6 @@ export function resumeFrozenPendingDelivery(
     try {
       store.getWorkspace(workspaceId);
       withWorkspace(dependencies, workspaceId, (sqlite) => {
-        let turnThreads: Map<string, string> | undefined;
-        const turnThread = (turnId: string) => {
-          turnThreads ??= workspaceTurnThreads(store, workspaceId);
-          return turnThreads.get(turnId);
-        };
         for (const thread of store.listThreads(workspaceId)) {
           if (thread.status === 'archived') continue;
           for (const record of listThreadPendingRequests(sqlite, workspaceId, thread.id)) {
@@ -411,10 +484,6 @@ export function resumeFrozenPendingDelivery(
               continue;
             const turn = recordTurn(store, record, record.deliveryTurnId);
             if (turn.status !== 'pending') continue;
-            // At startup the handoff's later delivery moves (its executor's delivery, or its own
-            // release or unknown after the Core post) move every row frozen on this Turn: the
-            // delivery writer's own scope rule proves them all before the post.
-            if (startup) assertFrozenDeliveryScope(sqlite, workspaceId, turn.id, turnThread);
             const outcome: PendingOutcome = {
               workspaceId,
               threadId: turn.threadId,
@@ -448,11 +517,178 @@ export function resumeFrozenPendingDelivery(
     }
     for (const outcome of found) outcomes.set(outcome.turnId, outcome);
   }
-  for (const outcome of outcomes.values()) void deliverWorkerOutcome(store, dependencies, outcome);
+  return [...outcomes.values()];
 }
 
 /**
+ * Settles one startup outcome's first decision before either listener binds. Before the Core post
+ * it proves, on their writers' own rules, the Workspace effects of both dispositions that can
+ * follow: the failed terminal, and the release or unknown move of every row frozen on the Turn.
+ * A definite scheduler refusal then releases the batch and fails the Turn in one terminal
+ * transaction; a possibly committed post marks the batch unknown the same way and never
+ * resends. A failure before the post began names no submission: a Workspace-owned cause holds
+ * that Workspace, and a shared cause rejects to stop Boot without any release, unknown or
+ * terminal write.
+ */
+async function deliverStartupOutcome(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  outcome: PendingOutcome & { readonly prepared: NonNullable<PendingOutcome['prepared']> }
+): Promise<void> {
+  const { workspaceId, threadId, turnId } = outcome;
+  const submit = outcome.prepared.submit;
+  // An already queued admission belongs to the scheduler; this walk writes nothing for it.
+  if (!submit) return;
+  const dataRoot = store.getDataRoot();
+  const hold = (error: unknown) => {
+    // A shared cause rethrows here, so Boot stops; an owned one holds only this Workspace.
+    if (!dataRoot) throw error;
+    holdBootWorkspaceFailure({ dataRoot, workspaceId, stage: 'pending-request-recovery' }, error);
+  };
+  // Never aborted and without a deadline: the Core writer only records whether its post began.
+  const posting: ControlStorePublicationGuard = {
+    signal: new AbortController().signal,
+    deadline: Number.POSITIVE_INFINITY,
+  };
+  const failedAt = new Date().toISOString();
+  const decide = async () => {
+    try {
+      const terminal = await store.proveWorkspaceTurnCompletion(workspaceId, threadId, turnId, {
+        status: 'failed',
+        completedAt: failedAt,
+        error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+      });
+      withWorkspace(dependencies, workspaceId, (sqlite) => {
+        const turnThreads = workspaceTurnThreads(store, workspaceId);
+        for (const action of ['delivery-release', 'delivery-unknown'] as const)
+          proveFrozenDeliveryCommand(
+            store,
+            sqlite,
+            { action, workspaceId, turnId, now: failedAt },
+            {
+              turnThreadId: (id) => turnThreads.get(id),
+              ...(terminal ? { turns: new Map([[turnId, terminal]]) } : {}),
+            }
+          );
+      });
+    } catch (error) {
+      hold(error);
+      return;
+    }
+    try {
+      if (dependencies.agentWorkPaused?.())
+        throw new TurnStartValidationError(
+          'agent_work_paused',
+          'Agent work is paused by a server administrator.',
+          503
+        );
+      // Resolves at the original admission ACK, not at Worker completion.
+      await submit(posting);
+      return;
+    } catch (error) {
+      if (error instanceof TurnStartValidationError) {
+        // A lost input or owner proof leaves the original batch and pending Turn held.
+        if (error.code === 'recovery_required') return;
+        refusedOutcomeTurns.add(turnId);
+        await settleStartupOutcome(store, outcome, failedAt, 'delivery-release', {
+          code: error.code,
+          message: error.message,
+        }).catch(hold);
+        // The closeout of requesters that lost authority is the closeout owner's later wake.
+        void closeoutUnavailableRequests(store, dependencies, workspaceId, threadId).catch(
+          (closeoutError: unknown) =>
+            console.error(`Closing out refused outcomes for Turn ${turnId} failed.`, closeoutError)
+        );
+        return;
+      }
+      // The startup owner's reads and final recheck ran before its Core post began: nothing was
+      // submitted, so this is a startup failure of the Workspace or of a shared owner.
+      if (!posting.postedSettlement) {
+        hold(error);
+        return;
+      }
+      await settleStartupOutcome(store, outcome, failedAt, 'delivery-unknown', {
+        code: 'delivery_unknown',
+        message: 'Outcome delivery could not be proved.',
+      }).catch(hold);
+    }
+  };
+  if (!dependencies.coreDb) return decide();
+  // Retain the accepted outcome across awaited refusal bookkeeping before Core can close.
+  await getControlStoreWorkerClient().runOperation(decide);
+}
+
+/** Records one startup outcome's disposition and its failed terminal in one transaction. */
+async function settleStartupOutcome(
+  store: FsStore,
+  outcome: PendingOutcome,
+  failedAt: string,
+  action: 'delivery-release' | 'delivery-unknown',
+  error: { readonly code: string; readonly message: string }
+): Promise<void> {
+  const { workspaceId, threadId, turnId } = outcome;
+  const command = { action, workspaceId, turnId, now: failedAt };
+  if (isSealedTurnTerminal(store.getTurn(workspaceId, threadId, turnId).status)) {
+    await bootWorkspaceWrite(() => store.applyPendingRequestCommand(workspaceId, command));
+    return;
+  }
+  await bootWorkspaceWrite(() =>
+    store.completeWorkspaceTurn(
+      workspaceId,
+      threadId,
+      turnId,
+      { status: 'failed', completedAt: failedAt, error },
+      { pending: [command] }
+    )
+  );
+}
+
+/** One Pending service publication: a closeout, an invalidation or a local publication. */
+type PendingServicePublication = Parameters<FsStore['publishPendingRequestServiceTurn']>[2];
+
+/** One step the Boot walk applies on an idle Thread after its own posts, exactly as it planned it. */
+type PendingBootTailStep =
+  | {
+      readonly kind: 'publication';
+      readonly threadId: string;
+      readonly publication: PendingServicePublication;
+    }
+  | {
+      readonly kind: 'outcome';
+      readonly threadId: string;
+      readonly choice: NonNullable<ReturnType<typeof selectNextOutcome>>;
+      readonly freeze: PlannedOutcomeFreeze;
+      /** The new Turn's start clock, planned with its freeze. */
+      readonly startedAt: string;
+      /** The person batch's close clock; null for an executor that delivers it later. */
+      readonly provedAt: string | null;
+    };
+
+/** An outcome freeze built once from its selection, with the Turn ID it was built for. */
+interface PlannedOutcomeFreeze {
+  readonly turnId: string;
+  readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
+  readonly frozen: readonly PendingRequestRecord[];
+  readonly items: readonly Item[];
+  readonly pending: readonly ControlPendingCommandInput[];
+}
+
+/** Planned Boot outcome freezes, consumed once by the Turn admission that the plan names. */
+const plannedOutcomeFreezes = new Map<string, PlannedOutcomeFreeze>();
+/** Turns a Boot walk closes as planned steps: the walk applies their successors itself. */
+const plannedBootTurns = new Set<string>();
+
+/**
  * Settles unfinished claims, finishes named publications, and admits waiting outcomes after scheduler fencing.
+ *
+ * Each admitted Workspace's walk is built once: it reads its records, selects every command it will
+ * post (the restart settlement, the delivery moves, the original publications, and on each Thread
+ * it leaves idle the closeout, invalidation or outcome steps the settled census makes eligible),
+ * and runs each command's own writer decision on the state the preceding planned commands produce.
+ * Nothing is written until the whole set is proved and its dependent inputs are read again
+ * unchanged; the walk then posts exactly the planned commands. A retained contradiction holds the
+ * Workspace with its bytes unchanged; its exit is a verified repair of the same owner's evidence,
+ * or a restore, while stopped, and then a restart that revalidates it.
  *
  * @param store Boot store.
  * @param dependencies Workspace opener.
@@ -461,7 +697,6 @@ export async function recoverPendingRequestsAtBoot(
   store: FsStore,
   dependencies: PendingAdmissionDependencies
 ): Promise<void> {
-  const now = new Date().toISOString();
   const dataRoot = store.getDataRoot();
   // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
   for (const workspaceId of store.listAdmittedWorkspaceIds()) {
@@ -475,187 +710,381 @@ export async function recoverPendingRequestsAtBoot(
       async () => {
         const workspace = store.getWorkspace(workspaceId);
         const db = dependencies.openWorkspace(workspace.id);
+        let plan: PendingBootPlan;
         try {
-          assertPendingAssociations(store, db.sqlite, workspace.id);
-          const readable = db.sqlite
-            .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
-            .all(workspace.id) as { request_id: string }[];
-          // Only a row that does not decode is skipped, as the settlement skips it; an owner read
-          // or proof failure holds this Workspace before any write.
-          const usable = readable.flatMap((row) => {
-            const record = readPendingRequestForRecovery(db.sqlite, row.request_id);
-            return record &&
-              record !== 'malformed' &&
-              canonicalRecordIsUsable(store, db.sqlite, record)
-              ? [record]
-              : [];
-          });
-          // Every Turn the delivery and publication steps read is resolved before the first write.
-          const turns = new Map<string, ReturnType<FsStore['getTurn']>>();
-          for (const record of usable)
-            for (const turnId of [
-              record.deliveryTurnId,
-              record.publicationTurnId,
-              record.invalidationTurnId,
-            ])
-              if (turnId && !turns.has(turnId))
-                turns.set(turnId, recordTurn(store, record, turnId));
-          // Settlement changes only claim and disposition, so these Turns remain the loaded ones'.
-          const turnOf = (turnId: string) => {
-            const turn = turns.get(turnId);
-            if (!turn) throw associationGap();
-            return turn;
-          };
-          // The writer's own settlement of these records: every later post is decided and proved
-          // on the exact records it publishes, before the settlement or any other write commits.
-          const loaded = usable.map((record) => projectUnfinishedSettlement(record, now));
-          // A delivery post moves every row frozen on its Turn, including one this walk skipped:
-          // the writer's own scope rule proves them all, here through this Workspace's Turns.
-          const turnThreads = workspaceTurnThreads(store, workspace.id);
-          const proveDelivery = (turnId: string) =>
-            assertFrozenDeliveryScope(db.sqlite, workspace.id, turnId, (id) => turnThreads.get(id));
-          const posts: (() => Promise<unknown>)[] = [];
-          const planned = new Set<string>();
-          const localPublications = new Set<string>();
-          for (const record of loaded) {
-            if (
-              record.delivery === 'frozen' &&
-              record.deliveryTurnId &&
-              record.requesterKind !== 'person' &&
-              turnOf(record.deliveryTurnId).status !== 'pending'
-            ) {
-              const turnId = record.deliveryTurnId;
-              proveDelivery(turnId);
-              posts.push(() =>
-                store.applyPendingRequestCommand(workspace.id, {
-                  action: 'delivery-unknown',
-                  workspaceId: workspace.id,
-                  turnId,
-                  now,
-                })
-              );
-            }
-            for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
-              if (!turnId) continue;
-              const publication = turnOf(turnId);
-              if (!publication.agentId && !publication.agentSessionId) {
-                localPublications.add(turnId);
-                continue;
-              }
-              for (const item of pendingOutcomeItems([record], turnId, now)) {
-                if (planned.has(item.id)) continue;
-                planned.add(item.id);
-                // An Item this Workspace already holds is the settlement's to prove: its writer's
-                // decided-tuple check refuses an inexact retained Item at this walk's first write.
-                if (store.getItemLineage(workspace.id, item.id)) continue;
-                posts.push(() => store.publishSettledTurnItem(item));
-              }
-            }
-          }
-          for (const turnId of localPublications) {
-            const publication = turnOf(turnId);
-            const records = loaded.filter(
-              (record) =>
-                record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+          plan = await planPendingBootWalk(store, dependencies, db.sqlite, workspace.id);
+          // The proofs bought no authority over a changed dependency: the first write follows
+          // only an identical second read of every input the planned commands decide on.
+          if (pendingBootInputs(store, db.sqlite, workspace.id) !== plan.inputs)
+            throw new BootWorkspaceConflict(
+              'records',
+              'The Pending records changed while the Boot walk proved them.'
             );
-            const input = {
-              turnId,
-              summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
-              actor: publication.triggerActor,
-              now: publication.completedAt ?? now,
-              items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map(
-                (item) => {
-                  const retained = publication.items.find((current) => current.id === item.id);
-                  // Replay validates semantic fields while retaining the original projection clocks.
-                  return retained
-                    ? ItemSchema.parse({
-                        ...item,
-                        createdAt: retained.createdAt,
-                        completedAt: retained.completedAt,
-                      })
-                    : item;
-                }
-              ),
-              pending: [
-                { action: 'delivery-prove' as const, workspaceId: workspace.id, turnId, now },
-              ],
-            };
-            await store.provePendingRequestServiceTurn(workspace.id, publication.threadId, input);
-            proveDelivery(turnId);
-            posts.push(() =>
-              store.publishPendingRequestServiceTurn(workspace.id, publication.threadId, input)
-            );
-          }
-          // The idle tail below selects its first post on each Thread this walk leaves idle with its
-          // own rules on the settled census: a closeout when a requester lost authority, else the
-          // derived invalidation publication, else the next outcome batch. Each refusal that a
-          // retained record can reach is proved here before any write. A retained contradiction
-          // holds the Workspace; its exit is a verified repair of the same owner's evidence, or a
-          // restore, while stopped, and then a restart that revalidates it.
-          const settled = new Map(loaded.map((record) => [record.requestId, record]));
-          for (const thread of store.listThreads(workspace.id)) {
-            if (
-              thread.status === 'archived' ||
-              store
-                .listThreadTurns(workspace.id, thread.id)
-                .some(
-                  (turn) => !isSealedTurnTerminal(turn.status) && !localPublications.has(turn.id)
-                )
-            )
-              continue;
-            const census = listThreadPendingRequests(db.sqlite, workspace.id, thread.id).map(
-              (record) => settled.get(record.requestId) ?? record
-            );
-            const unavailable = selectUnavailableRequests(store, dependencies, db.sqlite, census);
-            const waiting = unavailable.records.length
-              ? []
-              : selectWaitingInvalidations(store, db.sqlite, census);
-            // The closeout's new Turn ID is allocated again at its post; its writer reads only
-            // that the ID is absent, which holds for both.
-            const publication = unavailable.records.length
-              ? closeoutPublication(
-                  workspace.id,
-                  thread.id,
-                  unavailable,
-                  allocateEntityId('tu'),
-                  now
-                )
-              : waiting.length
-                ? invalidationPublication(workspace.id, thread.id, waiting, now)
-                : null;
-            if (publication)
-              await store.provePendingRequestServiceTurn(workspace.id, thread.id, publication);
-            // Else a person outcome batch is admitted and closed at Boot; its new Turn has no fact
-            // yet, so the Task owner reads the Thread's Goal that its terminal would advance.
-            else if (
-              selectNextOutcome(store, dependencies, db.sqlite, census)?.executor === 'person'
-            )
-              await store.proveTaskThreadGoal(workspace.id, thread.id);
-          }
-          await bootWorkspaceWrite(() =>
-            store.applyPendingRequestCommand(workspace.id, {
-              action: 'settle-unfinished',
-              workspaceId: workspace.id,
-              now,
-              expected: pendingSources(usable),
-            })
-          );
-          for (const post of posts) await bootWorkspaceWrite(post);
         } finally {
           db.sqlite.close();
         }
-        for (const thread of store.listThreads(workspace.id)) {
-          if (thread.status === 'archived') continue;
-          if (
-            !store
-              .listThreadTurns(workspace.id, thread.id)
-              .some((turn) => !isSealedTurnTerminal(turn.status))
-          )
-            await admitNextOutcome(store, dependencies, workspace.id, thread.id, true);
-        }
+        for (const post of plan.posts) await bootWorkspaceWrite(post);
+        for (const step of plan.tail) await applyPendingBootStep(store, workspace.id, step);
       }
     );
   }
+}
+
+/** One Workspace's planned Boot walk: the ordered posts, the idle tail, and their input digest. */
+interface PendingBootPlan {
+  readonly posts: readonly (() => Promise<unknown>)[];
+  readonly tail: readonly PendingBootTailStep[];
+  readonly inputs: string;
+}
+
+/**
+ * Builds one Workspace's Boot walk once and proves every planned command on its writer's own
+ * decision, on the state the preceding planned commands produce. It writes nothing.
+ */
+async function planPendingBootWalk(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string
+): Promise<PendingBootPlan> {
+  const now = new Date().toISOString();
+  const inputs = pendingBootInputs(store, sqlite, workspaceId);
+  assertPendingAssociations(store, sqlite, workspaceId);
+  const readable = sqlite
+    .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
+    .all(workspaceId) as { request_id: string }[];
+  // Only a row that does not decode is skipped, as the settlement skips it; an owner read
+  // or proof failure holds this Workspace before any write.
+  const usable = readable.flatMap((row) => {
+    const record = readPendingRequestForRecovery(sqlite, row.request_id);
+    return record && record !== 'malformed' && canonicalRecordIsUsable(store, sqlite, record)
+      ? [record]
+      : [];
+  });
+  // Every Turn the delivery and publication steps read is resolved before the first write.
+  const turns = new Map<string, ReturnType<FsStore['getTurn']>>();
+  for (const record of usable)
+    for (const turnId of [
+      record.deliveryTurnId,
+      record.publicationTurnId,
+      record.invalidationTurnId,
+    ])
+      if (turnId && !turns.has(turnId)) turns.set(turnId, recordTurn(store, record, turnId));
+  // Settlement changes only claim and disposition, so these Turns remain the loaded ones'.
+  const turnOf = (turnId: string) => {
+    const turn = turns.get(turnId);
+    if (!turn) throw associationGap();
+    return turn;
+  };
+  const turnThreads = workspaceTurnThreads(store, workspaceId);
+  const turnThreadId = (id: string) => turnThreads.get(id);
+  // The state each planned command leaves a row in, starting from the writer's own settlement.
+  const projected = new Map(
+    usable.map((record) => [record.requestId, projectUnfinishedSettlement(record, now)])
+  );
+  const current = (record: PendingRequestRecord) => projected.get(record.requestId) ?? record;
+  const settle = (moved: readonly PendingRequestRecord[]) => {
+    for (const record of moved) projected.set(record.requestId, record);
+  };
+  const posts: (() => Promise<unknown>)[] = [
+    () =>
+      store.applyPendingRequestCommand(workspaceId, {
+        action: 'settle-unfinished',
+        workspaceId,
+        now,
+        expected: pendingSources(usable),
+      }),
+  ];
+  const unknown = new Set<string>();
+  const planned = new Set<string>();
+  const localPublications = new Set<string>();
+  for (const loaded of usable) {
+    const record = current(loaded);
+    if (
+      record.delivery === 'frozen' &&
+      record.deliveryTurnId &&
+      record.requesterKind !== 'person' &&
+      turnOf(record.deliveryTurnId).status !== 'pending' &&
+      !unknown.has(record.deliveryTurnId)
+    ) {
+      const command = {
+        action: 'delivery-unknown' as const,
+        workspaceId,
+        turnId: record.deliveryTurnId,
+        now,
+      };
+      unknown.add(command.turnId);
+      // The writer moves every row frozen on this Turn, including one this walk skipped.
+      settle(proveFrozenDeliveryCommand(store, sqlite, command, { turnThreadId, current }));
+      posts.push(() => store.applyPendingRequestCommand(workspaceId, command));
+    }
+    for (const turnId of [record.publicationTurnId, record.invalidationTurnId]) {
+      if (!turnId) continue;
+      const publication = turnOf(turnId);
+      if (!publication.agentId && !publication.agentSessionId) {
+        localPublications.add(turnId);
+        continue;
+      }
+      for (const item of pendingOutcomeItems([record], turnId, now)) {
+        if (planned.has(item.id)) continue;
+        planned.add(item.id);
+        // An Item this Workspace already holds is the settlement's to prove: its writer's
+        // decided-tuple check refuses an inexact retained Item at this walk's first write.
+        if (store.getItemLineage(workspaceId, item.id)) continue;
+        store.proveWorkspaceItemAppend(item, 'already-decided-publication');
+        posts.push(() => store.publishSettledTurnItem(item));
+      }
+    }
+  }
+  for (const turnId of localPublications) {
+    const publication = turnOf(turnId);
+    const records = usable
+      .map(current)
+      .filter(
+        (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+      );
+    const command = { action: 'delivery-prove' as const, workspaceId, turnId, now };
+    const input: PendingServicePublication = {
+      turnId,
+      summary: publication.triggerSource?.summary ?? 'Finish original Pending publication',
+      actor: publication.triggerActor,
+      now: publication.completedAt ?? now,
+      items: pendingOutcomeItems(records, turnId, publication.startedAt ?? now).map((item) => {
+        const retained = publication.items.find((existing) => existing.id === item.id);
+        // Replay validates semantic fields while retaining the original projection clocks.
+        return retained
+          ? ItemSchema.parse({
+              ...item,
+              createdAt: retained.createdAt,
+              completedAt: retained.completedAt,
+            })
+          : item;
+      }),
+      pending: [command],
+    };
+    const terminal = await store.provePendingRequestServiceTurn(
+      workspaceId,
+      publication.threadId,
+      input
+    );
+    // Its delivery proof runs after the terminal in the same transaction, on its Items.
+    settle(
+      proveFrozenDeliveryCommand(store, sqlite, command, {
+        turnThreadId,
+        current,
+        supplied: input.items,
+        turns: new Map([[turnId, terminal]]),
+      })
+    );
+    posts.push(() =>
+      store.publishPendingRequestServiceTurn(workspaceId, publication.threadId, input)
+    );
+  }
+  // Each Thread this walk leaves idle continues with the steps its own selection makes eligible on
+  // the planned census: a closeout when a requester lost authority, else the derived invalidation
+  // publication, else the next outcome batch; a person batch closes at Boot and its successor is
+  // selected again on the census it leaves. Each step is proved here before any write.
+  const tail: PendingBootTailStep[] = [];
+  for (const thread of store.listThreads(workspaceId)) {
+    if (
+      thread.status === 'archived' ||
+      store
+        .listThreadTurns(workspaceId, thread.id)
+        .some((turn) => !isSealedTurnTerminal(turn.status) && !localPublications.has(turn.id))
+    )
+      continue;
+    let census = listThreadPendingRequests(sqlite, workspaceId, thread.id).map(current);
+    for (let depth = 0; depth < PENDING_BOOT_TAIL_STEPS; depth++) {
+      const step = await planPendingBootTailStep(
+        store,
+        dependencies,
+        sqlite,
+        workspaceId,
+        thread.id,
+        census,
+        turnThreadId,
+        now
+      );
+      if (!step) break;
+      tail.push(step);
+      if (step.kind !== 'outcome' || step.provedAt === null) break;
+      const delivered = new Map(
+        step.freeze.frozen.map((record) => [
+          record.requestId,
+          projectFrozenDeliveryMove(record, 'delivery-prove', step.provedAt!),
+        ])
+      );
+      census = census.map((record) => delivered.get(record.requestId) ?? record);
+    }
+  }
+  return { posts, tail, inputs };
+}
+
+/** The successor wakes a Boot person close plans, matching the live wake depth. */
+const PENDING_BOOT_TAIL_STEPS = 8;
+
+/**
+ * Plans and proves one idle-Thread step on a planned census, with its new Turn ID and clocks
+ * allocated once. Returns null when nothing is eligible.
+ */
+async function planPendingBootTailStep(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string,
+  threadId: string,
+  census: readonly PendingRequestRecord[],
+  turnThreadId: (turnId: string) => string | undefined,
+  now: string
+): Promise<PendingBootTailStep | null> {
+  const unavailable = selectUnavailableRequests(store, dependencies, sqlite, census);
+  const waiting = unavailable.records.length
+    ? []
+    : selectWaitingInvalidations(store, sqlite, census);
+  const publication = unavailable.records.length
+    ? closeoutPublication(workspaceId, threadId, unavailable, allocateEntityId('tu'), now)
+    : waiting.length
+      ? invalidationPublication(workspaceId, threadId, waiting, now)
+      : null;
+  if (publication) {
+    await store.provePendingRequestServiceTurn(workspaceId, threadId, publication);
+    return { kind: 'publication', threadId, publication };
+  }
+  const choice = selectNextOutcome(store, dependencies, sqlite, census);
+  if (!choice || (dependencies.agentWorkPaused?.() && choice.executor !== 'person')) return null;
+  const turnId = allocateEntityId('tu');
+  const freeze = buildPendingOutcomeFreeze(
+    store,
+    sqlite,
+    workspaceId,
+    census,
+    {
+      id: turnId,
+      threadId,
+      agentId: outcomeTurnAgentId(choice),
+      triggerActor: outcomeTriggerActor(choice),
+    },
+    choice.executor,
+    'outcome',
+    now
+  );
+  if (!freeze.frozen.length) throw associationGap();
+  if (choice.executor !== 'person')
+    return { kind: 'outcome', threadId, choice, freeze, startedAt: now, provedAt: null };
+  // A person batch is admitted and closed at Boot. Its new Turn has no fact yet, so the Task owner
+  // reads the Thread's Goal that its terminal would advance; the close's delivery proof runs on
+  // the batch the freeze publishes.
+  await store.proveTaskThreadGoal(workspaceId, threadId);
+  const owner = { kind: 'workspace' as const, workspaceId };
+  proveFrozenDeliveryCommand(
+    store,
+    sqlite,
+    { action: 'delivery-prove', workspaceId, turnId, now },
+    {
+      turnThreadId: (id) => (id === turnId ? threadId : turnThreadId(id)),
+      frozen: freeze.frozen,
+      planned: freeze.items,
+      turns: new Map([
+        [
+          turnId,
+          {
+            id: turnId,
+            owner,
+            threadId,
+            status: 'completed',
+            agentId: outcomeTurnAgentId(choice),
+            agentSessionId: null,
+            triggerActor: outcomeTriggerActor(choice),
+            triggerSource: freeze.triggerSource,
+            startedAt: now,
+            completedAt: now,
+          },
+        ],
+      ]),
+    }
+  );
+  return { kind: 'outcome', threadId, choice, freeze, startedAt: now, provedAt: now };
+}
+
+/** Applies one planned idle-Thread step through its original writers, without selecting again. */
+async function applyPendingBootStep(
+  store: FsStore,
+  workspaceId: string,
+  step: PendingBootTailStep
+): Promise<void> {
+  if (step.kind === 'publication') {
+    await bootWorkspaceWrite(() =>
+      store.publishPendingRequestServiceTurn(workspaceId, step.threadId, step.publication)
+    );
+    return;
+  }
+  const { choice, freeze, threadId } = step;
+  outcomeCauses.set(freeze.turnId, 'outcome');
+  plannedOutcomeFreezes.set(freeze.turnId, freeze);
+  plannedBootTurns.add(freeze.turnId);
+  try {
+    await bootWorkspaceWrite(() =>
+      store.createTurn(
+        workspaceId,
+        threadId,
+        outcomeTurnSummary(choice),
+        outcomeTriggerActor(choice),
+        null,
+        {
+          turnId: freeze.turnId,
+          startedAt: step.startedAt,
+          status: choice.executor === 'worker' ? 'pending' : 'running',
+          executorKind: choice.executor,
+          agentId: outcomeTurnAgentId(choice),
+          triggerSource: freeze.triggerSource,
+        }
+      )
+    );
+    // An agent executor's batch stays frozen on its pending Turn for the startup handoff.
+    if (step.provedAt === null) return;
+    const provedAt = step.provedAt;
+    await bootWorkspaceWrite(() =>
+      store.completeWorkspaceTurn(
+        workspaceId,
+        threadId,
+        freeze.turnId,
+        { status: 'completed', completedAt: provedAt },
+        {
+          pending: [
+            { action: 'delivery-prove', workspaceId, turnId: freeze.turnId, now: provedAt },
+          ],
+        }
+      )
+    );
+  } finally {
+    plannedOutcomeFreezes.delete(freeze.turnId);
+    plannedBootTurns.delete(freeze.turnId);
+  }
+}
+
+/**
+ * A digest of every input the planned Boot commands decide on: each Pending row's bytes, each
+ * Turn's metadata revision and status, and each Item's latest descriptor revision, read in one
+ * order. Two equal reads leave no dependency the proofs did not see.
+ */
+function pendingBootInputs(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string
+): string {
+  const rows = sqlite
+    .prepare('SELECT * FROM pending_requests WHERE workspace_id=? ORDER BY request_id')
+    .all(workspaceId);
+  const turns = sqlite.prepare('SELECT id,revision,status FROM control_turns ORDER BY id').all();
+  const items = sqlite
+    .prepare(
+      "SELECT id,MAX(revision) AS revision FROM control_product_entries WHERE kind='item' GROUP BY id ORDER BY id"
+    )
+    .all();
+  const threads = store
+    .listThreads(workspaceId)
+    .map((thread) => [thread.id, thread.status, thread.updatedAt]);
+  return commandInputHash({ rows, turns, items, threads });
 }
 
 /**
@@ -1357,8 +1786,7 @@ async function closeoutUnavailableRequests(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
-  threadId: string,
-  boot = false
+  threadId: string
 ): Promise<boolean> {
   const selection = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
@@ -1377,10 +1805,7 @@ async function closeoutUnavailableRequests(
     allocateEntityId('tu'),
     new Date().toISOString()
   );
-  // Core authority decided the loss above; only this Workspace's own post is attributed.
-  await postWorkspace(boot, () =>
-    store.publishPendingRequestServiceTurn(workspaceId, threadId, publication)
-  );
+  await store.publishPendingRequestServiceTurn(workspaceId, threadId, publication);
   return true;
 }
 
@@ -1464,15 +1889,40 @@ function selectNextOutcome(
   };
 }
 
+/** The summary of an outcome Turn its batch selection admits. */
+function outcomeTurnSummary(choice: { readonly triggerSource: { readonly kind: string } }): string {
+  return choice.triggerSource.kind === 'approval-resolution'
+    ? 'Approval outcomes'
+    : 'User-input outcomes';
+}
+
+/** The trigger actor of an outcome Turn its batch selection admits. */
+function outcomeTriggerActor(choice: { readonly actorId: string }): ActorRef {
+  return choice.actorId === 'system'
+    ? pendingRequestSystemActor(null)
+    : { kind: 'user', id: choice.actorId };
+}
+
+/** The agent of an outcome Turn its batch selection admits. */
+function outcomeTurnAgentId(choice: {
+  readonly executor: PendingExecutorKind;
+  readonly agentId: string | null;
+}): string | null {
+  return choice.executor === 'worker' || choice.executor === 'coordinator'
+    ? choice.agentId
+    : choice.executor === 'assistant'
+      ? 'quick-chat'
+      : null;
+}
+
 async function admitNextOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   workspaceId: string,
-  threadId: string,
-  boot = false
+  threadId: string
 ): Promise<void> {
-  if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId, boot)) return;
-  if (await admitInvalidations(store, dependencies, workspaceId, threadId, boot)) return;
+  if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId)) return;
+  if (await admitInvalidations(store, dependencies, workspaceId, threadId)) return;
   const selected = withWorkspace(dependencies, workspaceId, (sqlite) =>
     selectNextOutcome(
       store,
@@ -1495,32 +1945,19 @@ async function admitNextOutcome(
   outcomeCauses.set(turnId, 'outcome');
   let turn: ReturnType<FsStore['getTurnById']>;
   try {
-    turn = await postWorkspace(boot, () =>
-      store.createTurn(
-        workspaceId,
-        threadId,
-        choice.triggerSource.kind === 'approval-resolution'
-          ? 'Approval outcomes'
-          : 'User-input outcomes',
-        choice.actorId === 'system'
-          ? pendingRequestSystemActor(null)
-          : { kind: 'user', id: choice.actorId },
-        null,
-        {
-          turnId,
-          status: choice.executor === 'worker' ? 'pending' : 'running',
-          executorKind: choice.executor,
-          agentId:
-            choice.executor === 'worker'
-              ? choice.agentId
-              : choice.executor === 'coordinator'
-                ? choice.agentId
-                : choice.executor === 'assistant'
-                  ? 'quick-chat'
-                  : null,
-          triggerSource: choice.triggerSource,
-        }
-      )
+    turn = await store.createTurn(
+      workspaceId,
+      threadId,
+      outcomeTurnSummary(choice),
+      outcomeTriggerActor(choice),
+      null,
+      {
+        turnId,
+        status: choice.executor === 'worker' ? 'pending' : 'running',
+        executorKind: choice.executor,
+        agentId: outcomeTurnAgentId(choice),
+        triggerSource: choice.triggerSource,
+      }
     );
   } catch (error) {
     // Native freezing owns the winner. A competing answer can win after this wake selected
@@ -1595,39 +2032,12 @@ async function admitNextOutcome(
     return;
   }
   const provedAt = new Date().toISOString();
-  await postWorkspace(boot, () =>
-    store.completeWorkspaceTurn(
-      workspaceId,
-      threadId,
-      turn.id,
-      { status: 'completed', completedAt: provedAt },
-      // The acknowledged outcome's own wake runs inside this write, so Boot attributes it too.
-      { pending: [{ action: 'delivery-prove', workspaceId, turnId: turn.id, now: provedAt }] }
-    )
-  );
-}
-
-/**
- * Attributes a startup submission that failed before its Core post began. An owned failure holds
- * the Workspace; a shared cause names none. Either way the frozen Turn and its batch stay
- * untouched for the Boot that admits the Workspace again.
- */
-function holdUnpostedStartupOutcome(
-  store: FsStore,
-  workspaceId: string,
-  turnId: string,
-  error: unknown
-): void {
-  const dataRoot = store.getDataRoot();
-  try {
-    if (dataRoot)
-      holdBootWorkspaceFailure({ dataRoot, workspaceId, stage: 'pending-request-recovery' }, error);
-  } catch {
-    // A shared cause is not this Workspace's; the next Boot resumes the frozen Turn.
-  }
-  console.error(
-    `Outcome delivery for Turn ${turnId} failed before submission; leaving it for boot resume.`,
-    error
+  await store.completeWorkspaceTurn(
+    workspaceId,
+    threadId,
+    turn.id,
+    { status: 'completed', completedAt: provedAt },
+    { pending: [{ action: 'delivery-prove', workspaceId, turnId: turn.id, now: provedAt }] }
   );
 }
 
@@ -1651,22 +2061,8 @@ async function deliverWorkerOutcome(
   const deliver = async () => {
     let refusal: TurnStartValidationError | undefined;
     let submitted = false;
-    // Never aborted and without a deadline: the Core writer only records whether its post began.
-    const posting: ControlStorePublicationGuard = {
-      signal: new AbortController().signal,
-      deadline: Number.POSITIVE_INFINITY,
-    };
     try {
       try {
-        // At startup a refused or uncertain post is followed by this Turn's failed terminal: its
-        // writer's own preparation, reap and Task fact proofs run on that terminal before the post,
-        // so a retained contradiction holds the Workspace rather than following its bookkeeping.
-        if (outcome.prepared)
-          await store.proveWorkspaceTurnCompletion(workspaceId, threadId, turnId, {
-            status: 'failed',
-            completedAt: new Date().toISOString(),
-            error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
-          });
         if (dependencies.agentWorkPaused?.())
           throw new TurnStartValidationError(
             'agent_work_paused',
@@ -1674,9 +2070,7 @@ async function deliverWorkerOutcome(
             503
           );
         submitted = true;
-        await (outcome.prepared
-          ? outcome.prepared.submit?.(posting)
-          : delivery.startTurn(store, turnId, { workspaceId, threadId }));
+        await delivery.startTurn(store, turnId, { workspaceId, threadId });
         // The worker execution owner records delivery at native acceptance, before completion.
       } catch (error) {
         const now = new Date().toISOString();
@@ -1698,12 +2092,6 @@ async function deliverWorkerOutcome(
               error: { code: error.code, message: error.message },
             });
           await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId);
-          return;
-        }
-        // The startup owner's reads and final recheck ran before its Core post began: nothing was
-        // submitted, so this stays a startup failure of the Workspace, not an uncertain delivery.
-        if (outcome.prepared && !posting.postedSettlement) {
-          holdUnpostedStartupOutcome(store, workspaceId, turnId, error);
           return;
         }
         await store.applyPendingRequestCommand(workspaceId, {
@@ -1943,8 +2331,7 @@ async function admitInvalidations(
   store: FsStore,
   dependencies: PendingRequestDatabase,
   workspaceId: string,
-  threadId: string,
-  boot = false
+  threadId: string
 ): Promise<boolean> {
   const waiting = withWorkspace(dependencies, workspaceId, (sqlite) => {
     assertPendingAssociations(store, sqlite, workspaceId, threadId);
@@ -1961,9 +2348,7 @@ async function admitInvalidations(
     waiting,
     new Date().toISOString()
   );
-  await postWorkspace(boot, () =>
-    store.publishPendingRequestServiceTurn(workspaceId, threadId, publication)
-  );
+  await store.publishPendingRequestServiceTurn(workspaceId, threadId, publication);
   return true;
 }
 
@@ -2023,6 +2408,92 @@ function canonicalRecordIsUsable(
     .listThreads(record.workspaceId)
     .flatMap((thread) => store.listThreadTurns(record.workspaceId, thread.id));
   return validateCanonicalLoad(record, turns, readCommandRequestRecordsFromSqlite(sqlite)) === null;
+}
+
+/**
+ * The Pending writer's evidence for decided rows, read on Main through this Workspace's own
+ * readers: the actual Items under the identities its preparation reads (each affected row's
+ * request and role Items), the Items the command supplies new, and the native Turn metadata,
+ * where a Turn the same transaction completes first reads as its planned terminal record.
+ */
+function pendingProjectionEvidence(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  workspaceId: string,
+  affected: readonly PendingRequestRecord[],
+  supplied: readonly Item[] = [],
+  plannedTurns: ReadonlyMap<string, Record<string, unknown>> = new Map(),
+  planned: readonly Item[] = []
+): (record: PendingRequestRecord) => Parameters<typeof decidePendingProjection>[1] {
+  const owner = { kind: 'workspace' as const, workspaceId };
+  // A planned earlier transaction's Items are retained by then; this command supplies its own.
+  const candidates = new Map<string, Item>(
+    [...planned, ...supplied].map((item) => [item.id, item])
+  );
+  for (const record of affected)
+    for (const id of [
+      record.requestItemId,
+      ...PENDING_PROJECTION_ROLES.map((role) => pendingRequestItemId(record.requestId, role)),
+    ]) {
+      if (candidates.has(id)) continue;
+      const lineage = store.getItemLineage(workspaceId, id);
+      if (lineage) candidates.set(id, store.getThreadItem(workspaceId, lineage.threadId, id));
+    }
+  const newIds = new Set(supplied.map((item) => item.id));
+  const turn = (id: string) =>
+    plannedTurns.get(id) ?? readProduct(sqlite, owner, 'turn', id)?.record;
+  return (record) => ({
+    items: new Map([...candidates].filter(([, item]) => isPendingProjectionItem(record, item))),
+    newIds,
+    turn,
+  });
+}
+
+/**
+ * Runs the delivery writer's complete decision on one planned delivery command, on the state the
+ * walk's preceding planned commands give each row, without writing. It reads every row frozen on
+ * the Turn, including one the walk skipped.
+ */
+function proveFrozenDeliveryCommand(
+  store: FsStore,
+  sqlite: import('better-sqlite3').Database,
+  command: Parameters<typeof decideFrozenDeliveryCommand>[1],
+  planned: {
+    readonly turnThreadId: (turnId: string) => unknown;
+    readonly current?: (record: PendingRequestRecord) => PendingRequestRecord;
+    readonly frozen?: readonly PendingRequestRecord[];
+    readonly supplied?: readonly Item[];
+    readonly planned?: readonly Item[];
+    readonly turns?: ReadonlyMap<string, Record<string, unknown>>;
+  }
+): PendingRequestRecord[] {
+  // The decision reads the rows itself; their identities select the evidence it reads.
+  const records =
+    planned.frozen ??
+    (
+      sqlite
+        .prepare(
+          "SELECT request_id FROM pending_requests WHERE delivery='frozen' AND delivery_turn_id=?"
+        )
+        .all(command.turnId) as { request_id: string }[]
+    ).flatMap((row) => {
+      const record = readPendingRequestForRecovery(sqlite, row.request_id);
+      return record && record !== 'malformed' ? [record] : [];
+    });
+  return decideFrozenDeliveryCommand(sqlite, command, {
+    turnThreadId: planned.turnThreadId,
+    ...(planned.current ? { current: planned.current } : {}),
+    ...(planned.frozen ? { frozen: planned.frozen } : {}),
+    evidence: pendingProjectionEvidence(
+      store,
+      sqlite,
+      command.workspaceId,
+      records,
+      planned.supplied,
+      planned.turns,
+      planned.planned
+    ),
+  });
 }
 
 /** Every Turn of one Workspace with its Thread, as the delivery writer's scope rule reads them. */

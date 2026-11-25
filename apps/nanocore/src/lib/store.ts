@@ -194,7 +194,7 @@ import {
   type PendingAdmissionDependencies,
   preparePendingDeliveryRelease,
   preparePendingOutcomeFreeze,
-  resumeFrozenPendingDelivery,
+  resumeFrozenPendingDeliveryAtStartup,
   wakePendingOutcomes,
 } from '../runtime/pending-request-flow.js';
 import type {
@@ -255,6 +255,7 @@ import {
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
 import {
+  assertControlTerminalPacketBound,
   type ControlItemAppend,
   ControlItemAppendError,
   type ControlPublicationInput,
@@ -291,6 +292,7 @@ import {
   workspaceDbPath,
 } from '../storage/fs-layout.js';
 import {
+  plannedRetainedProductJson,
   prepareRetainedProductJson,
   publishImmutableProductJson,
 } from '../storage/immutable-content.js';
@@ -1216,6 +1218,7 @@ export class FsStore {
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private pendingRequestServices: PendingAdmissionDependencies | null = null;
+  private startupPendingDelivery: Promise<void> = Promise.resolve();
   private pendingWakeDepth = 0;
   private readonly dataRoot: string | null;
   /** A request-scoped existing owner binding; never an owned connection or a second Store. */
@@ -3807,7 +3810,8 @@ export class FsStore {
   /** Synchronizes exact Item bytes for a complete native tuple, without admitting their entries. */
   private async prepareNativeItems(
     scope: NativeProductScope,
-    items: readonly Item[]
+    items: readonly Item[],
+    planned = false
   ): Promise<ControlProductEntry[]> {
     const counts = new Map<string, number>();
     const entries: ControlProductEntry[] = [];
@@ -3831,12 +3835,15 @@ export class FsStore {
         turnId: item.turnId,
         sequence: existing.length + offset + 1,
         expectedRevision: 0,
-        ...(await prepareRetainedProductJson(
-          scope.contentMount,
-          scope.owner,
-          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-          writeRetainedV1(item)
-        )),
+        // A planned packet's descriptors are computed in memory; nothing is staged for a proof.
+        ...(planned
+          ? plannedRetainedProductJson(scope.contentMount, scope.owner, writeRetainedV1(item))
+          : await prepareRetainedProductJson(
+              scope.contentMount,
+              scope.owner,
+              join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+              writeRetainedV1(item)
+            )),
       });
       counts.set(item.turnId, offset + 1);
     }
@@ -4162,16 +4169,20 @@ export class FsStore {
    * record and Items that the publication would post. It stages no content and writes nothing;
    * the Workspace writer still rechecks the same dependencies when the publication commits.
    *
-   * It then reads the terminal's Task terminal fact through the terminal writer's own Task owner,
-   * on the writer's exact Turn record.
+   * It then checks the packet the publication would post on the terminal writer's packet bound
+   * (descriptors computed in memory), and reads, on the writer's exact Turn record, the Task
+   * terminal fact through the Task owner and the reap row's bound through the observation owner.
    *
+   * @returns The Turn record the terminal posts, as a later delivery proof in the same
+   * transaction reads it.
    * @throws terminal publication conflict when a retained completion contradicts the proposal.
+   * @throws ControlProductPreconditionError when the packet or the reap row exceeds its bound.
    */
   public async provePendingRequestServiceTurn(
     workspaceId: string,
     threadId: string,
     input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2]
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
       workspaceId,
       threadId,
@@ -4209,17 +4220,40 @@ export class FsStore {
       [...supplied.keys()].some((id) => !snapshot.items.some((item) => item.id === id))
     )
       throw terminalTurnPublicationConflict(turn.id);
-    if (!this.dataRoot) return;
-    const taskTurn = controlTerminalTaskTurn(
-      decodeControlProduct('turn', this.pendingServiceTerminalRecord(existing, turn), scope.owner)
+    const terminal = decodeControlProduct(
+      'turn',
+      this.pendingServiceTerminalRecord(existing, turn),
+      scope.owner
     );
-    const { task } = await loadControlTerminalOwners();
+    if (!this.dataRoot) return terminal;
+    // The packet the publication would post, on the terminal writer's own bound: a deterministic
+    // oversize refuses here, locally and before any settlement, as the writer itself would refuse.
+    const planned = await this.pendingServiceTerminal(
+      scope,
+      threadId,
+      { existing, turn, priorEvent },
+      input,
+      true
+    );
+    assertControlTerminalPacketBound(planned);
+    const taskTurn = controlTerminalTaskTurn(terminal);
+    const { task, observations } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
     try {
       task.prepareTaskTerminalFact(db, taskTurn);
+      // The serialized reap row the same terminal would append, on the observation owner's bound.
+      // A new Turn has no observation row yet, so its reap names no call and fits by construction.
+      if (existing)
+        observations.proveControlTurnReapBound(
+          db.sqlite,
+          scope.owner,
+          { threadId, turnId: turn.id, ...planned.reap },
+          String(turn.completedAt)
+        );
     } finally {
       db.sqlite.close();
     }
+    return terminal;
   }
 
   /**
@@ -4317,28 +4351,24 @@ export class FsStore {
     });
   }
 
-  /** Applies the original checks inside the admitted same-Turn boundary. */
-  private async publishPendingRequestServiceTurnPublication(
-    workspaceId: string,
+  /**
+   * The terminal tuple one Pending service publication posts: its new Items, the completion event
+   * (or the retained one's exact bytes), the Turn record, an archive's Thread product and the
+   * deciding commands. A planned tuple computes its descriptors in memory and stages nothing.
+   */
+  private async pendingServiceTerminal(
+    scope: NativeProductScope,
     threadId: string,
-    input: {
-      turnId: string;
-      summary: string;
-      actor: ActorRef;
-      now: string;
-      items: readonly Item[];
-      pending: readonly ControlPendingCommandInput[];
-      admission?: ControlAdmission;
-      archive?: boolean;
-      triggerSource?: { kind: 'automation'; summary: string };
-    }
-  ): Promise<Turn> {
-    const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
-      workspaceId,
-      threadId,
-      input
-    );
-    const entries = await this.prepareNativeItems(scope, input.items);
+    proposal: Pick<
+      ReturnType<FsStore['pendingServiceTurnProposal']>,
+      'existing' | 'turn' | 'priorEvent'
+    >,
+    input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2],
+    planned: boolean
+  ): Promise<ControlTerminalTransition> {
+    const { existing, turn, priorEvent } = proposal;
+    const workspaceId = workspaceIdForOwner(scope.owner);
+    const entries = await this.prepareNativeItems(scope, input.items, planned);
     const event =
       priorEvent ??
       SseEventEnvelopeSchema.parse({
@@ -4365,12 +4395,14 @@ export class FsStore {
         reader.close();
       }
     } else {
-      content = await prepareRetainedProductJson(
-        scope.contentMount,
-        scope.owner,
-        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-        writeRetainedV1(event)
-      );
+      content = planned
+        ? plannedRetainedProductJson(scope.contentMount, scope.owner, writeRetainedV1(event))
+        : await prepareRetainedProductJson(
+            scope.contentMount,
+            scope.owner,
+            join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+            writeRetainedV1(event)
+          );
     }
     entries.push({
       kind: 'event',
@@ -4379,9 +4411,68 @@ export class FsStore {
       expectedRevision: 0,
       ...content,
     });
+    return {
+      owner: scope.owner,
+      turn: {
+        kind: 'turn',
+        expectedRevision: existing?.revision ?? 0,
+        record: this.pendingServiceTerminalRecord(existing, turn),
+      },
+      products:
+        input.archive && !input.admission
+          ? [
+              {
+                kind: 'thread',
+                expectedRevision: readNativeProduct(scope, 'thread', threadId)!.revision,
+                record: writeRetainedV1({
+                  ...readNativeProduct(scope, 'thread', threadId)!.record,
+                  status: 'archived',
+                  updatedAt: input.now,
+                }),
+              },
+            ]
+          : [],
+      entries,
+      pending: [...input.pending],
+      reap: { reason: 'completed', inferredBy: 'pending-request-publication' },
+      evidence: [],
+      evidenceContent: [],
+      command: null,
+      execution: null,
+    };
+  }
+
+  /** Applies the original checks inside the admitted same-Turn boundary. */
+  private async publishPendingRequestServiceTurnPublication(
+    workspaceId: string,
+    threadId: string,
+    input: {
+      turnId: string;
+      summary: string;
+      actor: ActorRef;
+      now: string;
+      items: readonly Item[];
+      pending: readonly ControlPendingCommandInput[];
+      admission?: ControlAdmission;
+      archive?: boolean;
+      triggerSource?: { kind: 'automation'; summary: string };
+    }
+  ): Promise<Turn> {
+    const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
+      workspaceId,
+      threadId,
+      input
+    );
     const [command] = input.pending;
     if (!command)
       throw new Error('Pending service publication requires its original deciding transition.');
+    const terminal = await this.pendingServiceTerminal(
+      scope,
+      threadId,
+      { existing, turn, priorEvent },
+      input,
+      false
+    );
     const client = getControlStoreWorkerClient();
     const database = `workspace:${scope.path}`;
     await client.open({
@@ -4399,35 +4490,7 @@ export class FsStore {
       entries: [],
       receipt: null,
       ...(input.admission ? { admission: input.admission } : {}),
-      terminal: {
-        owner: scope.owner,
-        turn: {
-          kind: 'turn',
-          expectedRevision: existing?.revision ?? 0,
-          record: this.pendingServiceTerminalRecord(existing, turn),
-        },
-        products:
-          input.archive && !input.admission
-            ? [
-                {
-                  kind: 'thread',
-                  expectedRevision: readNativeProduct(scope, 'thread', threadId)!.revision,
-                  record: writeRetainedV1({
-                    ...readNativeProduct(scope, 'thread', threadId)!.record,
-                    status: 'archived',
-                    updatedAt: input.now,
-                  }),
-                },
-              ]
-            : [],
-        entries,
-        pending: [...input.pending],
-        reap: { reason: 'completed', inferredBy: 'pending-request-publication' },
-        evidence: [],
-        evidenceContent: [],
-        command: null,
-        execution: null,
-      },
+      terminal,
     });
     return this.getTurn(workspaceId, threadId, turn.id);
   }
@@ -5813,7 +5876,19 @@ export class FsStore {
   /** Binds the real Pending services and resumes their original frozen Worker deliveries. */
   public startPendingRequestDelivery(dependencies: PendingAdmissionDependencies | null): void {
     this.pendingRequestServices = dependencies;
-    if (dependencies) resumeFrozenPendingDelivery(this, dependencies, true);
+    this.startupPendingDelivery = dependencies
+      ? resumeFrozenPendingDeliveryAtStartup(this, dependencies)
+      : Promise.resolve();
+    // Boot observes a rejection through its join below; a Store without that join keeps none.
+    this.startupPendingDelivery.catch(() => undefined);
+  }
+
+  /**
+   * The startup handoffs' first admission decisions, which Boot joins before either listener
+   * binds. It rejects with a shared writer failure, so Boot stops without serving.
+   */
+  public startupPendingDeliveryDecisions(): Promise<void> {
+    return this.startupPendingDelivery;
   }
 
   /**
@@ -6295,35 +6370,44 @@ export class FsStore {
    * Proves one Workspace Turn's terminal publication on its own history and transcript without
    * writing: the preparation `completeWorkspaceTurn` runs before its writer. It then reads the
    * terminal's retained dependencies through their owners on the writer's exact Turn record: the
-   * reap dependency through the native observation owner, and the Task terminal fact through the
-   * Task owner, both as the terminal writer loads them. A Boot walk proves them before it stages
+   * reap dependency and the serialized reap row's bound through the native observation owner, and
+   * the Task terminal fact through the Task owner, both as the terminal writer loads them. A Boot walk proves them before it stages
    * the first terminal; the terminal transaction reads both again.
+   *
+   * @returns The Turn record the terminal posts, as a delivery proof in the same transaction
+   * reads it; undefined without a native history.
    */
   public async proveWorkspaceTurnCompletion(
     workspaceId: string,
     threadId: string,
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1]
-  ): Promise<void> {
+  ): Promise<Record<string, unknown> | undefined> {
     this.getTurn(workspaceId, threadId, turnId);
     const owner = { kind: 'workspace' as const, workspaceId };
     const { history, turn } = this.prepareTurnCompletion(turnId, patch, {}, owner);
-    if (!this.dataRoot || !history) return;
-    const taskTurn = controlTerminalTaskTurn(
-      decodeControlProduct(
-        'turn',
-        workspaceTerminalTurnRecord(history.metadata, patch, turn),
-        owner
-      )
+    if (!this.dataRoot || !history) return undefined;
+    const terminal = decodeControlProduct(
+      'turn',
+      workspaceTerminalTurnRecord(history.metadata, patch, turn),
+      owner
     );
+    const taskTurn = controlTerminalTaskTurn(terminal);
     const { observations, task } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
     try {
-      observations.readControlTurnReapDependency(db.sqlite, owner, { threadId, turnId });
+      // The reap dependency, and the serialized reap row on the observation owner's bound.
+      observations.proveControlTurnReapBound(
+        db.sqlite,
+        owner,
+        { threadId, turnId, reason: turn.status, inferredBy: 'native-terminal-publication' },
+        String(turn.completedAt)
+      );
       task.prepareTaskTerminalFact(db, taskTurn);
     } finally {
       db.sqlite.close();
     }
+    return terminal;
   }
 
   /** The original terminal preparation: owner, history, transcript, terminal event and replay check. */
