@@ -17,6 +17,7 @@ import {
   type SchedulerCapacityRefusal,
 } from '../scheduler-hold-release.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
@@ -605,6 +606,212 @@ describe('Row 15: the original Login close keeps both slots until its proof', ()
     expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
     expect(loginCloseOwns(a)).toBe(false);
   });
+});
+
+// CLOSE-LC S3b c1 D1 (CL7, CL8): the original Login close waiter rejects at its original bound
+// with each writer reply withheld in its own run. The owner keeps both slots and the writer
+// outcome, and only the exact proof releases.
+describe('CLOSE-LC S3b c1 D1: the Login close waiter rejects at its bound with a writer reply withheld', () => {
+  type ClosePath = 'idle' | 'ordinary';
+  const startClose = (path: ClosePath, a: FakeSession): Promise<unknown> => {
+    if (path === 'ordinary') {
+      control.attemptPhase = 'open';
+      backend.sessions.set(a.environmentPackage.snapshotId, a);
+      return backend.queueAndWaitForHarnessOperation(a, 'session.close', {
+        agentSessionId: a.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: a.agentSessionRuntimeBindingId,
+      });
+    }
+    return backend.closeDurableAgentSession(inspectionOf(a));
+  };
+
+  it('rejects a dispatched waiter at its bound while the unknown ACK is withheld', async () => {
+    control.budgetMs = SHORT_BOUND_MS;
+    const a = fakeSession('a', 'th_a');
+    controlLoginClose([a]);
+    const unknown = deferred<void>();
+    const fence = deferred<void>();
+    vi.mocked(queueNanoHostHarnessOperation).mockResolvedValue(1);
+    vi.mocked(markNanoHostHarnessOperationUnknown).mockReturnValue(unknown.promise);
+    vi.mocked(drainNanoHostHarnessAdmission).mockReturnValue(fence.promise);
+
+    const closing = backend.closeDurableAgentSession(inspectionOf(a));
+    void closing.catch(() => {});
+    await vi.waitFor(() => expect(queueNanoHostHarnessOperation).toHaveBeenCalledTimes(1), POLL);
+    await backend.acceptHarnessCommand(closeCommand(a)).catch(() => undefined);
+    expect(await settledWithin(closing, 1_000)).toBe(true);
+    await expect(closing).rejects.toThrow('NanoHost Login close requires inspection.');
+    expect(markNanoHostHarnessOperationUnknown).toHaveBeenCalledTimes(1);
+    expect(drainNanoHostHarnessAdmission).not.toHaveBeenCalled();
+    expect(slots(a)).toEqual({ session: 'held', closeOwner: 'held' });
+    expect(loginCloseOwns(a)).toBe(true);
+    expect(releases).toEqual([]);
+
+    // The late unknown ACK joins the exact admission fence. Only the fence ACK releases.
+    unknown.resolve();
+    await vi.waitFor(() => expect(drainNanoHostHarnessAdmission).toHaveBeenCalledTimes(1), POLL);
+    expect(releases).toEqual([]);
+    fence.resolve();
+    await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
+    expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
+    expect(loginCloseOwns(a)).toBe(false);
+  });
+
+  it('rejects a queued waiter at its bound while the expiry ACK is withheld; the late ACK releases once', async () => {
+    control.budgetMs = SHORT_BOUND_MS;
+    const a = fakeSession('a', 'th_a');
+    controlLoginClose([a]);
+    const expiry = deferred<void>();
+    vi.mocked(queueNanoHostHarnessOperation).mockResolvedValue(1);
+    vi.mocked(expireNanoHostHarnessQueuedOperation).mockReturnValue(expiry.promise);
+    vi.mocked(drainNanoHostHarnessAdmission).mockResolvedValue(undefined);
+
+    const closing = backend.closeDurableAgentSession(inspectionOf(a));
+    void closing.catch(() => {});
+    await vi.waitFor(() => expect(queueNanoHostHarnessOperation).toHaveBeenCalledTimes(1), POLL);
+    expect(await settledWithin(closing, 1_000)).toBe(true);
+    await expect(closing).rejects.toThrow('NanoHost Login close requires inspection.');
+    expect(expireNanoHostHarnessQueuedOperation).toHaveBeenCalledTimes(1);
+    expect(slots(a)).toEqual({ session: 'held', closeOwner: 'held' });
+    expect(loginCloseOwns(a)).toBe(true);
+    expect(releases).toEqual([]);
+
+    // The queued-expiry ACK proves that the close was never dispatched: one release, no fence.
+    expiry.resolve();
+    await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
+    expect(drainNanoHostHarnessAdmission).not.toHaveBeenCalled();
+    expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
+    expect(loginCloseOwns(a)).toBe(false);
+  });
+
+  it.each(['idle', 'ordinary'] as const)(
+    'rejects the %s waiter at its bound while the queue post is unanswered',
+    async (path) => {
+      control.budgetMs = SHORT_BOUND_MS;
+      const a = fakeSession('a', 'th_a');
+      controlLoginClose([a]);
+      const queued = deferred<number>();
+      const fence = deferred<void>();
+      vi.mocked(queueNanoHostHarnessOperation).mockReturnValue(queued.promise);
+      vi.mocked(drainNanoHostHarnessAdmission).mockReturnValue(fence.promise);
+
+      const closing = startClose(path, a);
+      void closing.catch(() => {});
+      await vi.waitFor(() => expect(queueNanoHostHarnessOperation).toHaveBeenCalledTimes(1), POLL);
+      expect(await settledWithin(closing, 1_000)).toBe(true);
+      await expect(closing).rejects.toThrow('NanoHost Login close requires inspection.');
+      expect(slots(a).session).toBe('held');
+      expect(loginCloseOwns(a)).toBe(true);
+      expect(releases).toEqual([]);
+
+      // The queue answers after the bound. That is no proof; the exact fence ACK releases once.
+      queued.resolve(1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(slots(a).session).toBe('held');
+      expect(releases).toEqual([]);
+      fence.resolve();
+      await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
+      expect(slots(a).session).toBe('clear');
+      expect(loginCloseOwns(a)).toBe(false);
+    }
+  );
+
+  it('rejects the waiter at its bound while a cleanup refusal drain ACK is withheld', async () => {
+    control.budgetMs = SHORT_BOUND_MS;
+    const a = fakeSession('a', 'th_a');
+    controlLoginClose([a]);
+    const cleanup = deferred<void>();
+    vi.mocked(queueNanoHostHarnessOperation).mockResolvedValue(1);
+    vi.mocked(drainNanoHostHarnessAdmission)
+      .mockReturnValueOnce(cleanup.promise)
+      .mockResolvedValue(undefined);
+
+    const closing = backend.closeDurableAgentSession(inspectionOf(a));
+    void closing.catch(() => {});
+    await vi.waitFor(() => expect(queueNanoHostHarnessOperation).toHaveBeenCalledTimes(1), POLL);
+    await backend.acceptHarnessCommand(closeCommand(a)).catch(() => undefined);
+    const refused = backend.acceptHarnessResult(
+      closeResult(a, 'refused', { reasonCode: 'cleanup_required' })
+    );
+    void refused.catch(() => {});
+    await vi.waitFor(() => expect(drainNanoHostHarnessAdmission).toHaveBeenCalledTimes(1), POLL);
+    expect(await settledWithin(closing, 1_000)).toBe(true);
+    await expect(closing).rejects.toThrow('NanoHost Login close requires inspection.');
+    expect(drainNanoHostHarnessAdmission).toHaveBeenCalledTimes(1);
+    expect(slots(a)).toEqual({ session: 'held', closeOwner: 'held' });
+    expect(loginCloseOwns(a)).toBe(true);
+    expect(releases).toEqual([]);
+
+    // The drain ACK: the refusal joins the exact admission fence, whose ACK releases once.
+    cleanup.resolve();
+    await refused;
+    await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
+    expect(drainNanoHostHarnessAdmission).toHaveBeenCalledTimes(2);
+    expect(slots(a)).toEqual({ session: 'clear', closeOwner: 'clear' });
+  });
+});
+
+// CLOSE-LC S3b c1 D2 (CL5, CL7): the original post outcome. A definite noncommit retires the
+// close. A lost reply keeps both slots and joins the exact admission fence.
+describe('CLOSE-LC S3b c1 D2: the Login close owner reads its queue post outcome', () => {
+  type ClosePath = 'idle' | 'ordinary';
+  const startClose = (path: ClosePath, a: FakeSession): Promise<unknown> => {
+    if (path === 'ordinary') {
+      control.attemptPhase = 'open';
+      backend.sessions.set(a.environmentPackage.snapshotId, a);
+      return backend.queueAndWaitForHarnessOperation(a, 'session.close', {
+        agentSessionId: a.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: a.agentSessionRuntimeBindingId,
+      });
+    }
+    return backend.closeDurableAgentSession(inspectionOf(a));
+  };
+
+  it.each(['idle', 'ordinary'] as const)(
+    'releases the Thread once when the writer refuses the %s queue post before commit',
+    async (path) => {
+      const a = fakeSession('a', 'th_a');
+      controlLoginClose([a]);
+      vi.mocked(queueNanoHostHarnessOperation).mockRejectedValue(
+        new ControlStoreWorkerError('precondition', 'not-committed')
+      );
+      vi.mocked(drainNanoHostHarnessAdmission).mockResolvedValue(undefined);
+
+      await expect(startClose(path, a)).rejects.toThrow(
+        'Control database writer operation failed.'
+      );
+      expect(releases).toEqual([loginRelease(a)]);
+      expect(slots(a).session).toBe('clear');
+      expect(loginCloseOwns(a)).toBe(false);
+      expect(drainNanoHostHarnessAdmission).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['idle', 'ordinary'] as const)(
+    'keeps both slots after a lost %s queue reply until the exact fence ACK',
+    async (path) => {
+      const a = fakeSession('a', 'th_a');
+      controlLoginClose([a]);
+      const fence = deferred<void>();
+      vi.mocked(queueNanoHostHarnessOperation).mockRejectedValue(
+        new ControlStoreWorkerError('commit-unknown', 'unknown')
+      );
+      vi.mocked(drainNanoHostHarnessAdmission).mockReturnValue(fence.promise);
+
+      await expect(startClose(path, a)).rejects.toThrow(
+        'Control database writer operation failed.'
+      );
+      expect(drainNanoHostHarnessAdmission).toHaveBeenCalledTimes(1);
+      expect(slots(a).session).toBe('held');
+      expect(loginCloseOwns(a)).toBe(true);
+      expect(releases).toEqual([]);
+
+      fence.resolve();
+      await vi.waitFor(() => expect(releases).toEqual([loginRelease(a)]), POLL);
+      expect(slots(a).session).toBe('clear');
+      expect(loginCloseOwns(a)).toBe(false);
+    }
+  );
 });
 
 // CLOSE-LC S3a-r2 row 5: an ordinary idle close samples its cleanup allowance after the receipt
