@@ -2329,6 +2329,43 @@ function terminalSnapshotFieldMatches(
   );
 }
 
+/**
+ * The terminal tuple's snapshot proof: its completion snapshot names exactly the terminal record.
+ * A sealed record may still fill only its fillable fields that the snapshot leaves empty.
+ *
+ * @param snapshot Turn carried by the completion event.
+ * @param record Terminal Turn record of the same tuple.
+ * @param sealedTurn The retained record when the Turn was already sealed.
+ */
+export function terminalSnapshotMatchesRecord(
+  snapshot: Record<string, unknown>,
+  record: Record<string, unknown>,
+  sealedTurn: Record<string, unknown> | undefined
+): boolean {
+  // Transcript snapshots deliberately omit capture declarations; use that family's existing projection.
+  const snapshotMetadata = StoredTurnSnapshotV1Schema.parse({ ...snapshot, items: [] });
+  const terminalMetadata = StoredTurnSnapshotV1Schema.parse({ ...record, items: [] });
+  return Object.keys({ ...snapshotMetadata, ...terminalMetadata }).every((field) =>
+    terminalSnapshotFieldMatches(
+      field,
+      snapshotMetadata[field as keyof typeof snapshotMetadata],
+      terminalMetadata[field as keyof typeof terminalMetadata],
+      sealedTurn
+    )
+  );
+}
+
+/**
+ * The terminal tuple's Item proof: the completion snapshot carries the public Item payload.
+ * The retained row's private disposition stays a CAS dependency, not part of this comparison.
+ */
+export function terminalSnapshotItemMatches(payload: unknown, snapshotItem: unknown): boolean {
+  return isDeepStrictEqual(
+    StoredItemPayloadV1Schema.parse(payload),
+    StoredItemPayloadV1Schema.parse(snapshotItem)
+  );
+}
+
 /** Keeps the existing sealed outcome mapping, including bounded successful stopping conditions. */
 function terminalStopReasonMatches(reason: unknown, status: unknown): boolean {
   if (status === 'completed')
@@ -2390,19 +2427,8 @@ async function prepareTerminalEntries(
       data: { turn: { items: Record<string, unknown>[] } };
     }
   ).data.turn;
-  // Transcript snapshots deliberately omit capture declarations; use that family's existing projection.
-  const snapshotMetadata = StoredTurnSnapshotV1Schema.parse({ ...snapshot, items: [] });
-  const terminalMetadata = StoredTurnSnapshotV1Schema.parse({ ...turn, items: [] });
   if (
-    Object.keys({ ...snapshotMetadata, ...terminalMetadata }).some(
-      (field) =>
-        !terminalSnapshotFieldMatches(
-          field,
-          snapshotMetadata[field as keyof typeof snapshotMetadata],
-          terminalMetadata[field as keyof typeof terminalMetadata],
-          sealedTurn
-        )
-    ) ||
+    !terminalSnapshotMatchesRecord(snapshot, turn, sealedTurn) ||
     terminalEvents[0]!.input.sequence !==
       Math.max(
         ...entries
@@ -2495,14 +2521,7 @@ async function prepareTerminalEntries(
       prepared = entry!;
       dependencies.push({ entry: prepared, contentJson: row.content_json, revision: row.revision });
     }
-    if (
-      !isDeepStrictEqual(
-        // The terminal event carries the public/embedded Item payload, not private
-        // retained-row disposition. Its actual descriptor/revision stays a CAS dependency.
-        StoredItemPayloadV1Schema.parse(preparedPayloads.get(prepared)),
-        StoredItemPayloadV1Schema.parse(item)
-      )
-    )
+    if (!terminalSnapshotItemMatches(preparedPayloads.get(prepared), item))
       throw new ControlProductPreconditionError();
   }
   if ([...supplied.keys()].some((id) => !ids.has(id))) throw new ControlProductPreconditionError();
