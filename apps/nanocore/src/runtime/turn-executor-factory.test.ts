@@ -121,7 +121,6 @@ import { readProduct } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
@@ -197,6 +196,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createTestUserDb, shutdownTestStoreWorker } from '../test-support/store.js';
+import { installWriterCaseOwner } from '../test-support/writer-case-owner.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import {
@@ -455,27 +455,19 @@ beforeAll(async () => {
   factoryCoreDb = await createFactoryCoreDb();
 });
 /**
- * A timed case owns the process-wide writer only while Vitest runs it. Its shutdown can start just
- * before Vitest times the case out and still run under the next case. The suite owner joins that
- * shutdown before the next case starts (A8 FIX 4 finding 4). It forgets the shutdown only after the
- * shutdown settles, so a join that Vitest abandons leaves it for the next setup (S3a-r2b A8-2).
+ * A timed case owns the process-wide writer only while Vitest runs it, its hooks included. A body
+ * or hook that still runs after Vitest finished its case (a timeout) keeps that case's token, so its
+ * shutdown stops nothing (S3a-r2c A8 finding 2). An owned shutdown is published when it starts. The
+ * next case joins it before it prepares (A8 FIX 4 finding 4) and forgets it only after it settles
+ * (S3a-r2b A8-2). Every writer shutdown in this file goes through this owner.
  */
-let timedCaseShutdown: Promise<void> | undefined;
-function shutdownOwnedWriter(owned: () => boolean): Promise<void> {
-  if (!owned()) return Promise.resolve();
-  const shutdown = shutdownControlStoreWorkerClient();
-  timedCaseShutdown = shutdown;
-  return shutdown;
-}
-async function joinTimedCaseShutdown(): Promise<void> {
-  const crossing = timedCaseShutdown;
-  if (!crossing) return;
-  await crossing.catch(() => undefined);
-  if (timedCaseShutdown === crossing) timedCaseShutdown = undefined;
+const writerOwner = installWriterCaseOwner();
+function shutdownOwnedWriter(stop?: () => Promise<void>): Promise<void> {
+  return writerOwner.shutdown(stop);
 }
 // Cases that restart the control-store client drop every admitted opening; rejoin the shared root as boot does.
 async function prepareFactoryCase(): Promise<void> {
-  await joinTimedCaseShutdown();
+  await writerOwner.join();
   if (
     getControlStoreWorkerClient().readAdmittedNanoHost(factoryCoreDb.dataRoot, () => undefined)
       .state !== 'ready'
@@ -2382,7 +2374,7 @@ describe('createConfiguredTurnExecutor', () => {
         // A launched Worker's peer failure must not replace the held-case assertions above.
         const peer = native.restore();
         await (held ? Promise.resolve(peer).catch(() => undefined) : peer);
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     });
@@ -3837,7 +3829,7 @@ describe('createConfiguredTurnExecutor', () => {
         try {
           if (core?.sqlite.open && fault !== 'exact') await cleanupBackend?.();
         } finally {
-          await shutdownControlStoreWorkerClient();
+          await shutdownOwnedWriter();
           if (core?.sqlite.open) core.sqlite.close();
         }
       }
@@ -4244,7 +4236,7 @@ describe('createConfiguredTurnExecutor', () => {
       restoreScheduler?.();
       restoreEffect?.();
       await native?.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       vault.lock();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       signal.removeEventListener('abort', unblock);
@@ -4824,7 +4816,7 @@ describe('createConfiguredTurnExecutor', () => {
         await authorizeNanoHostPackage(seedDb, currentPackage);
       } finally {
         seedDb.sqlite.close();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
       }
 
       await expect(import('../index.js')).rejects.toBe(atApp);
@@ -4932,7 +4924,7 @@ describe('createConfiguredTurnExecutor', () => {
         // This fixture catches the deliberate boot interruption; release its captured reader before native drain.
         const capturedCore = appOptions?.coreDb?.sqlite;
         if (capturedCore?.open && capturedCore.readonly) capturedCore.close();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
       } finally {
         signals.forEach((signal, index) => {
           for (const listener of process.rawListeners(signal)) {
@@ -5123,7 +5115,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       await original?.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     }
   });
@@ -5281,7 +5273,7 @@ describe('createConfiguredTurnExecutor', () => {
         await first?.cleanup();
         commands.mockRestore();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     }
@@ -5777,7 +5769,7 @@ describe('createConfiguredTurnExecutor', () => {
         sent.mockRestore();
         received.mockRestore();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     },
@@ -6001,7 +5993,7 @@ describe('createConfiguredTurnExecutor', () => {
       registration.mockRestore();
       await native.restore();
       workspaceDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     }
   });
@@ -6537,7 +6529,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       client?.destroy();
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
-      await shutdownTestStoreWorker();
+      await shutdownOwnedWriter(shutdownTestStoreWorker);
       pinCoreDb?.sqlite.close();
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
@@ -7263,7 +7255,7 @@ describe('createConfiguredTurnExecutor', () => {
       capture.resolve();
       await admitted?.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
     });
     const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
@@ -7401,7 +7393,7 @@ describe('createConfiguredTurnExecutor', () => {
       capture.resolve();
       for (const admission of admissions) await admission.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
     });
     // Every Harness command the peer accepts, in order; a close names its AgentSession.
@@ -7610,7 +7602,7 @@ describe('createConfiguredTurnExecutor', () => {
       async reopen() {
         for (const admission of admissions.splice(0)) await admission.cleanup();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
         coreDb = openCoreDb(dataRoot);
         store = await createDemoStore({ dataRoot });
@@ -8921,7 +8913,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const admission of admissions) await admission.cleanup();
       received.mockRestore();
       await native.restore();
-      await shutdownOwnedWriter(() => true);
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
     }, 60_000);
     const admit = async (index: number) => {
@@ -9078,8 +9070,10 @@ describe('createConfiguredTurnExecutor', () => {
   // allowance in the run that writes its command bytes, after the real poll's last await. The wall
   // passes during the delivery check or during the final carriage check: 204 and zero bytes, also on
   // a later poll. The existing timeout and inspection owner keeps the dispatched row. The live
-  // control sends.
-  it.each(['delivery', 'carriage', 'live'] as const)(
+  // control sends. S3a-r2c A8 finding 1: the wall passes during the response unwind, after the
+  // route returns and before a Fetch response reaches the native write. The bytes were written
+  // live, at the decision; each native write records the wall when it is made.
+  it.each(['delivery', 'carriage', 'live', 'unwind'] as const)(
     'writes an ordinary idle-drain close only inside its cleanup allowance after the last poll await (S3a-r2b row 6, %s)',
     async (at) => {
       const f = await admitIdleEvictionClose(`r2b_row6_${at}`);
@@ -9134,6 +9128,7 @@ describe('createConfiguredTurnExecutor', () => {
         } as typeof Database.prototype.prepare);
       onTestFinished(() => reads.mockRestore());
       let carriageChecks = 0;
+      const writes: { readonly bytes: number; readonly late: boolean }[] = [];
       const poll = await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref, {
         route: async () => {
           carriageChecks += 1;
@@ -9142,18 +9137,28 @@ describe('createConfiguredTurnExecutor', () => {
           await new Promise((resolve) => setTimeout(resolve, 50));
           if (at === 'carriage') passed = true;
         },
+        unwind: () => {
+          if (at === 'unwind') passed = true;
+        },
+        // The wall at each native write; late means it was made after the wall passed.
+        written: (bytes) => writes.push({ bytes, late: Date.now() - real() > 60_000 }),
       });
       reads.mockRestore();
       expect({ deliveryReads, carriageChecks }).toEqual({ deliveryReads: 1, carriageChecks: 3 });
       // Main handed the exact close to this poll in each case.
       expect(f.closes()).toEqual([{ operation: 'session.close', agentSessionId: f.predecessor }]);
-      if (at === 'live') {
+      if (at === 'live' || at === 'unwind') {
         expect(poll.status).toBe(200);
         expect(JSON.parse(poll.body)).toMatchObject({
           operation: 'session.close',
           body: { agentSessionId: f.predecessor },
         });
+        // Live at the write: the command bytes were written before the wall passed.
+        expect(writes.filter((write) => write.bytes > 0)).toEqual([
+          { bytes: Buffer.byteLength(poll.body), late: false },
+        ]);
       } else {
+        expect(writes.filter((write) => write.bytes > 0)).toEqual([]);
         // Zero command bytes, also on a later poll after the 204.
         expect(poll).toEqual({ status: 204, body: '' });
         expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
@@ -10016,7 +10021,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (db?.sqlite.open) db.sqlite.close();
       await admitted?.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(workingRoot, { recursive: true, force: true });
     });
@@ -10329,7 +10334,7 @@ describe('createConfiguredTurnExecutor', () => {
       writeFileSync(workingFile, b);
       await admitted.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       db.sqlite.close();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
@@ -10477,7 +10482,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(unknown.length).toBeGreaterThan(0);
       await admitted.cleanup();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       db.sqlite.close();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
@@ -10533,7 +10538,7 @@ describe('createConfiguredTurnExecutor', () => {
     await admitted.cleanup();
     injected.mockRestore();
     await native.restore();
-    await shutdownControlStoreWorkerClient();
+    await shutdownOwnedWriter();
     db.sqlite.close();
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
@@ -13222,7 +13227,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const join of joins) await join();
       commands.mockRestore();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
@@ -15440,7 +15445,7 @@ describe('createConfiguredTurnExecutor', () => {
         commands.mockRestore();
         drains.mockRestore();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     }
@@ -17418,7 +17423,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(original);
         expect(readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))).toEqual(anchor);
       } finally {
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     }
@@ -17502,7 +17507,7 @@ describe('createConfiguredTurnExecutor', () => {
       await first.complete();
       for (const join of joins.splice(0)) await join();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       const binding = readStoppedTestNanoHost(coreDb, (sqlite) => sqlite
         .prepare(`SELECT agent_session_runtime_binding_id AS bindingId
         FROM agent_session_runtime_bindings WHERE agent_session_id = ?`)
@@ -17553,7 +17558,7 @@ describe('createConfiguredTurnExecutor', () => {
       try {
         for (const join of joins.splice(0)) await join();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
       } finally {
         coreDb.sqlite.close();
       }
@@ -18665,7 +18670,7 @@ describe('createConfiguredTurnExecutor', () => {
         admissions.mockRestore();
         configRead.mockRestore();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         workspaceDb.sqlite.close();
         coreDb.sqlite.close();
       }
@@ -18781,11 +18786,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
     let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     // This test owns the process-wide writer only until Vitest finishes it. A body that resumes
-    // after a timeout runs its teardown under a later test, so it must not close that writer.
-    let ownsWriter = true;
-    onTestFinished(() => {
-      ownsWriter = false;
-    });
+    // after a timeout runs its teardown under a later test; the suite owner fences that shutdown.
     try {
       const firstResponse = await post(0);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
@@ -18976,7 +18977,7 @@ describe('createConfiguredTurnExecutor', () => {
       admissions.mockRestore();
       dispatches.mockRestore();
       await native.restore();
-      await shutdownOwnedWriter(() => ownsWriter);
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     }
       },
@@ -18985,21 +18986,22 @@ describe('createConfiguredTurnExecutor', () => {
 
   // A8 FIX 4 finding 4: a directed overlap. The owned shutdown starts, then Vitest ends the case
   // (as at a timeout) before that shutdown completes. The next case must get an accepting writer.
-  // S3a-r2 F4-4, the directed overlap: a timed case enters its owned shutdown, and its time runs
-  // out (ownership ends, as its onTestFinished hook does) before that shutdown completes. Accepted
+  // S3a-r2 F4-4, the directed overlap: a timed case enters its owned shutdown, and Vitest finishes
+  // the case (its token is no longer current, S3a-r2c) before that shutdown completes. Accepted
   // writer work holds the shutdown in its drain: stopping, not closed. The next case's preparation
   // is the suite owner's beforeEach, called here directly.
   it('joins a timed case writer shutdown before the next case prepares (S3a-r2 F4-4)', async () => {
     const client = getControlStoreWorkerClient();
     const release = Promise.withResolvers<void>();
     void client.runOperation(() => release.promise).catch(() => undefined);
-    let owned = true;
-    const shutdown = shutdownOwnedWriter(() => owned);
+    let shutdown!: Promise<void>;
+    await writerOwner.runCase(async () => {
+      shutdown = shutdownOwnedWriter();
+    });
     let completed = false;
     void shutdown.finally(() => {
       completed = true;
     });
-    owned = false;
     setTimeout(() => release.resolve(), 200);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect({ closed: client.isClosed, completed }).toEqual({ closed: false, completed: false });
@@ -19017,6 +19019,60 @@ describe('createConfiguredTurnExecutor', () => {
     expect(next).not.toBe(client);
     await expect(next.runOperation(async () => 'accepted')).resolves.toBe('accepted');
     expect(next.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+  });
+
+  // S3a-r2c A8 finding 2, the directed pre-shutdown overlap: a timed case's teardown awaits its own
+  // cleanup before its shutdown, and Vitest finishes the case first (a hook timeout). The next
+  // case's setup finds no published shutdown and prepares on the accepting writer. When the old
+  // teardown resumes, its shutdown must not stop the writer that the next case uses.
+  it('fences a writer shutdown that resumes after its case ended (S3a-r2c A8 finding 2)', async () => {
+    const cleanup = Promise.withResolvers<void>();
+    let teardown!: Promise<void>;
+    await writerOwner.runCase(async () => {
+      expect(writerOwner.owns()).toBe(true);
+      teardown = (async () => {
+        await cleanup.promise;
+        await shutdownOwnedWriter();
+      })();
+    });
+    await writerOwner.runCase(async () => {
+      await prepareFactoryCase();
+      const client = getControlStoreWorkerClient();
+      expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+      cleanup.resolve();
+      await teardown;
+      expect({ closed: client.isClosed, current: getControlStoreWorkerClient() === client }).toEqual(
+        { closed: false, current: true }
+      );
+      await expect(client.runOperation(async () => 'accepted')).resolves.toBe('accepted');
+      expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+    });
+  });
+
+  // S3a-r2c A8 finding 2, end to end through Vitest's aroundEach: the first case leaves a teardown
+  // that outlives it, as a timed-out hook does. The next case releases it. Its shutdown must not
+  // stop the next case's writer. Run both cases together.
+  describe('writer case ownership across real cases (S3a-r2c A8 finding 2)', () => {
+    const release = Promise.withResolvers<void>();
+    let outlived: Promise<void> | undefined;
+    it('leaves a writer shutdown that outlives its case', () => {
+      expect(writerOwner.owns()).toBe(true);
+      outlived = (async () => {
+        await release.promise;
+        await shutdownOwnedWriter();
+      })();
+    });
+    it('keeps the next case writer when the outlived shutdown resumes', async () => {
+      expect(outlived, 'run with the previous case').toBeDefined();
+      const client = getControlStoreWorkerClient();
+      expect(client.readAdmittedNanoHost(factoryCoreDb.dataRoot, () => 'read').state).toBe('ready');
+      release.resolve();
+      await outlived;
+      expect({ closed: client.isClosed, current: getControlStoreWorkerClient() === client }).toEqual(
+        { closed: false, current: true }
+      );
+      await expect(client.runOperation(async () => 'accepted')).resolves.toBe('accepted');
+    });
   });
 
   it('dispatches a younger fresh-storage Task while a deferred Task waits only on its held selected storage', async () => {
@@ -19354,7 +19410,7 @@ describe('createConfiguredTurnExecutor', () => {
         for (const restore of observations.splice(0)) restore();
         // Keep a setup failure before the fixture exists visible instead of a teardown TypeError.
         if (native) await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
       };
       /** Reopens the joined stopped controller with the same outside incarnation. */
       const restart = async () => {
@@ -20588,7 +20644,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       received.mockRestore();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     }
   }, 60_000);
@@ -20935,7 +20991,7 @@ describe('createConfiguredTurnExecutor', () => {
                 results.mockRestore();
                 collection.mockRestore();
                 await native.restore();
-                await shutdownControlStoreWorkerClient();
+                await shutdownOwnedWriter();
                 coreDb.sqlite.close();
                 coreDb = openCoreDb(dataRoot);
                 store = new FsStore({ dataRoot });
@@ -22039,7 +22095,7 @@ describe('createConfiguredTurnExecutor', () => {
         acknowledgement.mockRestore();
         commands.mockRestore();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         workspaceDb.sqlite.close();
         coreDb.sqlite.close();
       } finally {
@@ -22260,7 +22316,7 @@ describe('createConfiguredTurnExecutor', () => {
       await first.admitted.cleanup();
       await a.restore();
       for (const restore of probes) restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
 
       // Same root, retained outside facts, unchanged Epoch: no synthesized readiness.
@@ -22332,7 +22388,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
       const writer = getControlStoreWorkerClient();
       try {
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
       } catch (error) {
         failures.push(error);
       }
@@ -24072,7 +24128,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         restoreOpenObservation = undefined;
         await native.restore();
         native = undefined;
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         if (missingStorage) {
           // Deliberate stopped-owner fault: preserve the accepted pair and historical attachment.
           mutateStoppedTestNanoHost(coreDb, (sqlite) => sqlite
@@ -24238,7 +24294,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         restoreOpenObservation?.();
         await native?.restore();
         restoreRelease?.();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     },
@@ -24788,7 +24844,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       } finally {
         await admitted?.cleanup();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     }
@@ -24865,7 +24921,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       await admitted?.cleanup();
       materialization.mockRestore();
       await native.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     }
   });
@@ -25174,7 +25230,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       onTestFinished(async () => {
         await original?.cleanup();
         await f.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       });
       const attemptId = testEntityId('attempt', `lease_${label}`);
@@ -25803,7 +25859,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       liveResultOnly.mockRestore();
       liveEffects.mockRestore();
       await nativeFixture.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       currentDb.sqlite.close();
       pendingAbort.abort();
       await closing.catch(() => undefined);
@@ -26011,7 +26067,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           originalAttempt
         );
         await runtime.executionReconciler.stop();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         waitingEffects.mockRestore();
         resultOnly.mockRestore();
         currentDb.sqlite.close();
@@ -26154,7 +26210,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         originalAttempt
       );
       await runtime.executionReconciler.stop();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       waitingEffects.mockRestore();
       resultOnly.mockRestore();
       currentDb.sqlite.close();
@@ -26649,7 +26705,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       recorderFault?.mockRestore();
       await cold?.executionReconciler.stop();
       await f.runtime.executionReconciler.stop();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
     }
   });
@@ -26832,7 +26888,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       await Promise.allSettled([f.runtime.executionReconciler.stop()]);
       for (const admitted of cohort) await admitted.cleanup();
       await f.restore();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
     }
   });
@@ -26882,7 +26938,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       onTestFinished(async () => {
         await original?.cleanup();
         await f.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         if (workspace?.sqlite.open) workspace.sqlite.close();
         if (coldWorkspace?.sqlite.open) coldWorkspace.sqlite.close();
         if (coreDb.sqlite.open) coreDb.sqlite.close();
@@ -27060,7 +27116,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       expect(store.getThread(DEMO_WORKSPACE_ID, sibling.id)).toEqual(sibling);
       const ended = await reader.readEndedSteps(journalRef);
       workspace.sqlite.close();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
       cold = openCoreDb(dataRoot);
       coldWorkspace = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
@@ -27122,7 +27178,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       onTestFinished(async () => {
         await original?.cleanup();
         await f.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       });
       const attemptId = testEntityId('attempt', `lease_${label}`);
@@ -27627,9 +27683,21 @@ async function postNativeHarnessPoll(
     'acceptNanoHostHarnessCommand' | 'acceptNanoHostHarnessResult' | 'failNanoHostHarnessDelivery'
   >,
   sandboxIntegrationBindingRef: string,
-  options: { readonly route?: () => Promise<void> } = {}
+  options: {
+    readonly route?: () => Promise<void>;
+    /** Runs after the route returns, as post-route App middleware does, before a Fetch write. */
+    readonly unwind?: () => void;
+    /** Observes each native write of response bytes, with its byte count, when it is made. */
+    readonly written?: (bytes: number) => void;
+  } = {}
 ) {
   const app = new Hono<{ Variables: AuthVariables }>();
+  const unwind = options.unwind;
+  if (unwind)
+    app.use(async (_context, next) => {
+      await next();
+      unwind();
+    });
   registerNanoHostSessionSemanticRoutes({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     app,
@@ -27648,7 +27716,35 @@ async function postNativeHarnessPoll(
       runtime.failNanoHostHarnessDelivery(command, failure),
   });
   const listener = getRequestListener(app.fetch);
-  const server = createHttp2Server((request, response) => void listener(request, response));
+  const written = options.written;
+  const byteCount = (chunk: unknown) =>
+    typeof chunk === 'string'
+      ? Buffer.byteLength(chunk)
+      : chunk instanceof Uint8Array
+        ? chunk.byteLength
+        : 0;
+  const server = createHttp2Server((request, response) => {
+    if (written) {
+      const write = response.write;
+      const end = response.end;
+      // Node's end(chunk) writes the chunk through write(); that inner call is the same write.
+      let ending = false;
+      response.write = function (this: typeof response, ...args: unknown[]) {
+        if (!ending) written(byteCount(args[0]));
+        return Reflect.apply(write, this, args);
+      } as typeof response.write;
+      response.end = function (this: typeof response, ...args: unknown[]) {
+        written(byteCount(args[0]));
+        ending = true;
+        try {
+          return Reflect.apply(end, this, args);
+        } finally {
+          ending = false;
+        }
+      } as typeof response.end;
+    }
+    void listener(request, response);
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
@@ -27785,7 +27881,7 @@ function factoryPackageBinding(
 // Register first: Vitest finishes in reverse order, so each test joins its peer before its writer.
 beforeEach(() => {
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
+    await shutdownOwnedWriter();
   });
 });
 
@@ -28010,7 +28106,7 @@ describe('retired Workspace resident isolation', () => {
           await Promise.all(joins.map((join) => join()));
           await native.restore();
           const outside = native.outside;
-          await shutdownControlStoreWorkerClient();
+          await shutdownOwnedWriter();
           const contributorChanged = mutateStoppedTestNanoHost(coreDb, (sqlite) => sqlite
             .prepare(
               'UPDATE worker_storage_contributors SET thread_id = ? WHERE contributor_ref = ? AND storage_ref = ? AND attachment_generation = ?'
@@ -28105,7 +28201,7 @@ describe('retired Workspace resident isolation', () => {
         if (retainedOnly) {
           for (const join of joins.splice(0)) await join();
           await native.restore();
-          await shutdownControlStoreWorkerClient();
+          await shutdownOwnedWriter();
           // Named downgrade fault: the diagnosed owner has neither native projection after restart.
           const historical = openWorkspaceDb(dataRoot, retiredWorkspaceId);
           try {
@@ -28351,7 +28447,7 @@ describe('retired Workspace resident isolation', () => {
       } finally {
         for (const join of joins) await join();
         await native.restore();
-        await shutdownControlStoreWorkerClient();
+        await shutdownOwnedWriter();
         coreDb.sqlite.close();
       }
     },
@@ -28514,7 +28610,7 @@ async function buildOrdinaryProofTemplate(): Promise<OrdinaryProofTemplate> {
   await admitted.complete();
   await admitted.cleanup();
   await native.restore();
-  await shutdownControlStoreWorkerClient();
+  await shutdownOwnedWriter();
   const effects = JSON.parse(
     JSON.stringify(native.outside.effects)
   ) as NanoHostSessionEffectRequest[];
@@ -28614,7 +28710,7 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
   );
   await admitted.cleanup();
   await native.restore();
-  await shutdownControlStoreWorkerClient();
+  await shutdownOwnedWriter();
   coreDb.sqlite.close();
   return {
     acceptedRoot,
@@ -32071,7 +32167,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         for (const db of handles) if (db.sqlite.open) db.sqlite.close();
         vault.lock();
         try {
-          await shutdownControlStoreWorkerClient();
+          await shutdownOwnedWriter();
         } finally {
           for (const handle of userHandles) handle.close();
         }
@@ -33215,7 +33311,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
       for (const handle of handles) handle.sqlite.close();
       for (const handle of userHandles) handle.close();
       vault.lock();
-      await shutdownControlStoreWorkerClient();
+      await shutdownOwnedWriter();
       coreDb.sqlite.close();
     } finally {
       signal.removeEventListener('abort', unblock);

@@ -2560,15 +2560,17 @@ export function registerNanoHostSessionSemanticRoutes(
             selected as { readonly [NANO_HOST_FIRST_CARRIAGE]?: NanoHostFirstCarriage }
           )[NANO_HOST_FIRST_CARRIAGE];
           if (!first) {
-            // Row 6 (CL2, S3a-r2b): an ordinary idle close decides its original cleanup allowance
-            // after the last await, before carriage is recorded or bytes are written. Expiry answers
-            // 204. The existing timeout and inspection owner keeps the dispatched row.
+            // Row 6 (CL2, S3a-r2b, r2c): an ordinary idle close decides its original cleanup
+            // allowance after the last await, before carriage is recorded or bytes are written.
+            // Expiry answers 204. The existing timeout and inspection owner keeps the dispatched row.
+            // The bytes are written in this run, so post-route middleware cannot come between the
+            // decision and the write. Every ordinary carriage goes through the same write.
             const allowance = (
               selected as { readonly [NANO_HOST_CARRIAGE_ALLOWANCE]?: NanoHostCarriageAllowance }
             )[NANO_HOST_CARRIAGE_ALLOWANCE];
             if (allowance && !allowance()) return context.body(null, 204);
             carry();
-            return context.body(wire, 200, { 'content-type': 'application/json' });
+            return writeCarriedCommand(context, wire);
           }
           return await carryFirstCommand(context, first, wire, nativeHarness, () => {
             // The final decision and the command bytes share this turn under both holds.
@@ -2777,6 +2779,25 @@ async function carryFirstCommand(
   if (outcome.kind === 'failed') throw outcome.error;
   if (outcome.kind === 'refused') await first.refuse(outcome.error);
   return context.body(null, 204);
+}
+
+/**
+ * Ends the native HTTP/2 response with one carried command in the caller's run (S3a-r2c). The caller
+ * has decided carriage in this run; post-route middleware runs only after the bytes are written.
+ * @returns The adapter's already-sent sentinel, or a Fetch body on a transport without a native
+ * response.
+ */
+function writeCarriedCommand(context: Context, wire: string): Response {
+  const outgoing = (
+    context.env as { outgoing?: import('node:http2').Http2ServerResponse } | undefined
+  )?.outgoing;
+  if (!outgoing) return context.body(wire, 200, { 'content-type': 'application/json' });
+  outgoing.writeHead(200, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(wire),
+  });
+  outgoing.end(wire);
+  return RESPONSE_ALREADY_SENT;
 }
 
 /** Fences known incomplete delivery once; completed native writes remain evidence, never receipt. */

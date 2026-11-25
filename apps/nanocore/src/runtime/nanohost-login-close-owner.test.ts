@@ -20,6 +20,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
+import { installWriterCaseOwner } from '../test-support/writer-case-owner.js';
 import {
   claimNanoHostIdleSandboxDrain,
   drainNanoHostHarnessAdmission,
@@ -182,6 +183,11 @@ let backend: Backend;
 let releases: SchedulerCapacityChange[];
 let removeListener: () => void;
 
+// The suite owner of the process-wide writer (S3a-r2c): each disposal shuts the writer down only
+// while its case still owns it, and the next case joins that shutdown before its setup.
+const writerOwner = installWriterCaseOwner();
+beforeEach(() => writerOwner.join());
+
 beforeEach(() => {
   control.budgetMs = 10_000;
   control.attemptPhase = 'closed';
@@ -207,7 +213,7 @@ beforeEach(() => {
 afterEach(async () => {
   removeListener();
   vi.restoreAllMocks();
-  await disposeTestStore(dataRoot, coreDb);
+  await writerOwner.shutdown(() => disposeTestStore(dataRoot, coreDb));
 });
 
 function fakeSession(name: string, threadId: string): FakeSession {
