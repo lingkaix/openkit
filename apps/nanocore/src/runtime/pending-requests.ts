@@ -1127,13 +1127,62 @@ export function settleUnfinishedClaims(
       continue;
     }
     if (!usable(record)) continue;
+    const settled = projectUnfinishedSettlement(record, now);
     changed += sqlite
       .prepare(
-        "UPDATE pending_requests SET claim = 'finished', disposition = 'outcome-unknown', disposition_reason = 'restart', updated_at = ? WHERE request_id = ? AND claim = 'claimed' AND disposition IS NULL"
+        "UPDATE pending_requests SET claim = ?, disposition = ?, disposition_reason = ?, updated_at = ? WHERE request_id = ? AND claim = 'claimed' AND disposition IS NULL"
       )
-      .run(now, record.requestId).changes;
+      .run(
+        settled.claim,
+        settled.disposition,
+        settled.dispositionReason,
+        settled.updatedAt,
+        record.requestId
+      ).changes;
   }
   return changed;
+}
+
+/**
+ * The restart settlement of one unfinished claim, as `settleUnfinishedClaims` writes it. A Boot
+ * walk proves its later posts on this projection before the settlement itself commits.
+ *
+ * @param record One usable retained request.
+ * @param now Settlement time.
+ * @returns The settled record, or the same record when it holds no unfinished claim.
+ */
+export function projectUnfinishedSettlement(
+  record: PendingRequestRecord,
+  now: string
+): PendingRequestRecord {
+  return record.claim === 'claimed' && record.disposition === null
+    ? {
+        ...record,
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        dispositionReason: 'restart',
+        updatedAt: now,
+      }
+    : record;
+}
+
+/**
+ * Reads one retained request for a Boot walk. A row that does not decode is reported as
+ * `malformed`, as the settlement skips it; an owner read failure still throws.
+ */
+export function readPendingRequestForRecovery(
+  sqlite: Database.Database,
+  requestId: string
+): PendingRequestRecord | 'malformed' | null {
+  const row = sqlite
+    .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests WHERE request_id = ?`)
+    .get(requestId) as PendingRequestRow | undefined;
+  if (!row) return null;
+  try {
+    return parsePendingRequestRow(row);
+  } catch {
+    return 'malformed';
+  }
 }
 
 /** Selects one executor's ready batch; autonomous Workers and Assistants keep one responsible user before the count bound. */
