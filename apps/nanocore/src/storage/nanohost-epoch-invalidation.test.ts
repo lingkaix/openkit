@@ -141,11 +141,30 @@ describe('NanoHost original epoch invalidation relay', () => {
       stageEpochInvalidation: vi.fn(async () => ({ state: 'ready', value: undefined }) as const),
       settleEpochInvalidation: vi.fn(async () => ({ state: 'ready', value: undefined }) as const),
     };
+    const earlierGeneration = '7';
+    const earlierOccurrence = vaultEpochFenceOccurrence({
+      ...placement,
+      generation: earlierGeneration,
+    });
+    const earlierReceipt: NanoHostEpochReceipt = {
+      ...receipt,
+      receiptDigest: 'e'.repeat(64),
+      intent: {
+        ...intent,
+        ...earlierOccurrence,
+        requestId: storageRequestId(earlierOccurrence),
+        expectedGeneration: earlierGeneration,
+      },
+    };
     const kernel = {
       inspectNanoHostEpochFence: vi
         .fn<ControlKernelStore['inspectNanoHostEpochFence']>()
-        .mockResolvedValue(committed)
-        .mockResolvedValueOnce(absent),
+        .mockResolvedValueOnce(absent)
+        .mockResolvedValueOnce({
+          state: 'ready',
+          value: { state: 'settled', receipt: earlierReceipt },
+        })
+        .mockResolvedValue(committed),
       fenceNanoHostEpoch: vi.fn(async () => {
         throw new Error('fixture acknowledgement lost after commit');
       }),
@@ -155,11 +174,18 @@ describe('NanoHost original epoch invalidation relay', () => {
     );
     expect(store.settleEpochInvalidation).not.toHaveBeenCalled();
 
+    await expect(fenceNanoHostEpochBeforeSuccessor(store, kernel, intent)).resolves.toEqual({
+      state: 'ready',
+      value: { state: 'conflict' },
+    });
+    expect(kernel.fenceNanoHostEpoch).toHaveBeenCalledExactlyOnceWith(intent);
+    expect(store.settleEpochInvalidation).not.toHaveBeenCalled();
+
     await expect(fenceNanoHostEpochBeforeSuccessor(store, kernel, intent)).resolves.toEqual(
       committed
     );
     expect(kernel.fenceNanoHostEpoch).toHaveBeenCalledExactlyOnceWith(intent);
-    expect(kernel.inspectNanoHostEpochFence).toHaveBeenLastCalledWith(intent);
+    expect(kernel.inspectNanoHostEpochFence.mock.calls).toEqual([[intent], [intent], [intent]]);
     expect(store.settleEpochInvalidation).toHaveBeenCalledExactlyOnceWith(receipt);
   });
 
