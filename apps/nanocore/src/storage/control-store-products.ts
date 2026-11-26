@@ -128,6 +128,15 @@ export interface ControlContentPreparation {
   readonly directories: Set<string>;
   readonly publications: Map<string, ControlContentPublication>;
   readonly published: Set<string>;
+  /**
+   * A grouped Pending decision's new canonical names, linked only after its last definite local
+   * refusal and before its COMMIT; absent for every ordinary batch.
+   */
+  readonly deferred?: { readonly temporary: string; readonly path: string }[];
+  /** Item entries an earlier group of the same grouped decision writes before this one decides. */
+  readonly planned?: ReadonlyMap<string, PreparedControlEntry>;
+  /** Rows an earlier group of the same grouped decision freezes, by delivery Turn. */
+  readonly frozen?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 /** Native prepared bytes never cross an awaited callback or require file I/O inside SQL. */
 export interface PreparedControlEntry {
@@ -801,7 +810,10 @@ export async function prepareRetainedControlEntries(
 }
 
 /** Verifies one actual inode before either first publication or SQL-proved reuse. */
-async function readControlContentFile(file: FileHandle, content: StorageContent): Promise<Buffer> {
+export async function readControlContentFile(
+  file: FileHandle,
+  content: StorageContent
+): Promise<Buffer> {
   const metadata = await file.stat();
   if (!metadata.isFile() || metadata.size !== content.byteLength)
     throw new ControlProductPreconditionError();
@@ -923,7 +935,8 @@ async function preparePrivateControlContent(
         }
         // This owner alone publishes a new inode. Equal in-flight digests join this promise.
         await staged.sync();
-        await link(temporary, path);
+        if (preparation.deferred) preparation.deferred.push({ temporary, path });
+        else await link(temporary, path);
         return { bytes: await readControlContentFile(staged, content), changedDirectory: true };
       })();
       publication = { result, references: 0, directorySynchronized: false };
@@ -936,7 +949,9 @@ async function preparePrivateControlContent(
     const result = await publication.result;
     if (result.changedDirectory && !publication.directorySynchronized)
       preparation.directories.add(dirname(path));
-    await unlink(temporary);
+    // A deferred name keeps its private body until the grouped decision links it.
+    if (!preparation.deferred?.some((deferred) => deferred.temporary === temporary))
+      await unlink(temporary);
     return result.bytes;
   } finally {
     await staged.close();
@@ -2305,6 +2320,24 @@ export async function loadControlTerminalOwners(): Promise<NonNullable<typeof te
   return terminalOwners;
 }
 
+/** The verified entries one prepared terminal writes; a later group of a grouped decision reads them. */
+export function preparedControlTerminalEntries(
+  prepared: PreparedControlTerminal
+): readonly PreparedControlEntry[] {
+  const preparation = terminalPreparations.get(prepared);
+  if (!preparation) throw new ControlProductPreconditionError();
+  return preparation.entries;
+}
+
+/** The verified entries one prepared publication writes; a later group of a grouped decision reads them. */
+export function preparedControlPublicationEntries(
+  prepared: PreparedControlPublication
+): readonly PreparedControlEntry[] {
+  const preparation = publicationPreparations.get(prepared);
+  if (!preparation) throw new ControlProductPreconditionError();
+  return preparation.entries;
+}
+
 const terminalPreparations = new WeakMap<
   PreparedControlTerminal,
   {
@@ -2549,6 +2582,18 @@ async function prepareTerminalEntries(
     if (ids.has(id)) throw new ControlProductPreconditionError();
     ids.add(id);
     let prepared = supplied.get(id);
+    // An Item an earlier group of the same grouped decision writes is this terminal's dependency on
+    // that group's exact entry; the deciding body reads the row the earlier group produced.
+    const planned = prepared ? undefined : newDirectories?.planned?.get(id);
+    if (planned) {
+      if (planned.input.turnId !== turn.id) throw new ControlProductPreconditionError();
+      prepared = planned;
+      dependencies.push({
+        entry: planned,
+        contentJson: JSON.stringify(planned.input.content),
+        revision: planned.input.expectedRevision + 1,
+      });
+    }
     if (!prepared) {
       const row = db.sqlite
         .prepare(
@@ -2661,7 +2706,8 @@ export async function prepareControlTerminal(
   db: CoreDb | WorkspaceDb,
   value: ControlTerminalTransition,
   contentMount: ControlProductContentMount | undefined,
-  newDirectories?: ControlContentPreparation
+  newDirectories?: ControlContentPreparation,
+  carried: readonly ControlProductEntry[] = []
 ): Promise<PreparedControlTerminal> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   await loadControlTerminalOwners();
@@ -2678,11 +2724,14 @@ export async function prepareControlTerminal(
   assertControlTerminalPacketBound(input);
   for (const content of input.evidenceContent)
     await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
+  // A grouped decision carries a terminal's earlier entries in their own bounded groups; this
+  // packet keeps its ordinary bound and the one terminal decision covers every entry.
+  if (carried.length && !newDirectories?.deferred) throw new ControlProductPreconditionError();
   const { entries, dependencies } = await prepareTerminalEntries(
     db,
     input.owner,
     turn,
-    input.entries,
+    [...carried, ...input.entries],
     contentMount,
     newDirectories
   );
@@ -2749,7 +2798,7 @@ export async function prepareControlTerminal(
             db,
             input.pending,
             contentMount,
-            input.entries,
+            [...carried, ...input.entries],
             entries,
             newDirectories
           )

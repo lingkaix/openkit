@@ -212,6 +212,11 @@ import {
   prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
+import {
+  applyControlPendingPlan,
+  type PreparedControlPendingPlan,
+  prepareControlPendingPlan,
+} from './control-store-pending-plan.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -589,6 +594,7 @@ type WriteRequest = WriteCommand & {
   readonly itemPublication?: ControlPublicationInput | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
+  readonly preparedPlan?: PreparedControlPendingPlan;
   readonly preparedWorkspaceQueueInput?: ReturnType<typeof prepareWorkspaceQueueInput> | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedVaultRead?: PreparedNativeVaultRead | undefined;
@@ -2306,6 +2312,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       lanes.add(request.input.turnId);
       break;
     case 'pending':
+      // A grouped decision is a sole barrier; its private plan names no lane before preparation.
+      if ('plan' in request.input) break;
       add(request.input);
       pending([request.input.input]);
       if (request.input.admission) add(request.input.admission);
@@ -2427,13 +2435,20 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
   return lanes;
 }
 
+/** A grouped decision reaches SQL only after its whole plan was prepared. */
+function throwPlanUnprepared(): never {
+  throw new ControlProductPreconditionError();
+}
+
 /** Returns only Pending commands executed by this request's actual owner branch. */
 function pendingCommands(request: WriteCommand): readonly ControlPendingCommandInput[] {
   if (request.operation === 'transition' || request.operation === 'products')
     return 'pending' in request.transition ? (request.transition.pending ?? []) : [];
   if (request.operation === 'terminal') return request.input.pending ?? [];
   if (request.operation === 'pending')
-    return [request.input.input, ...(request.input.terminal?.pending ?? [])];
+    return 'plan' in request.input
+      ? []
+      : [request.input.input, ...(request.input.terminal?.pending ?? [])];
   if (request.operation === 'goal')
     return 'kind' in request.input ? [] : (request.input.pendingAdmission?.pending ?? []);
   return [];
@@ -2630,7 +2645,8 @@ async function prepareAfterPredecessors(
         if (
           request.operation === 'terminal' ||
           request.operation === 'publication' ||
-          (request.operation === 'pending' && request.input.terminal)
+          (request.operation === 'pending' &&
+            ('plan' in request.input || request.input.terminal))
         ) {
           // These opaque native proof tokens do not expose their verified Item identities.
           await request.settled;
@@ -2642,7 +2658,9 @@ async function prepareAfterPredecessors(
               ? request.transition.entries.length
               : 0
             : request.operation === 'pending'
-              ? request.input.entries.length
+              ? 'plan' in request.input
+                ? 0
+                : request.input.entries.length
               : request.operation === 'goal' && !('kind' in request.input)
                 ? Number(Boolean(request.input.pendingItem)) +
                   (request.input.pendingAdmission?.entries.length ?? 0)
@@ -2670,7 +2688,7 @@ async function prepareAfterPredecessors(
   const terminal =
     queued.operation === 'terminal'
       ? queued.input
-      : queued.operation === 'pending'
+      : queued.operation === 'pending' && !('plan' in queued.input)
         ? queued.input.terminal
         : undefined;
   if (terminal?.execution)
@@ -3323,12 +3341,19 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'pending') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            const result = applyControlPendingTransition(
-              owner.scopeDb,
-              request.input,
-              request.preparedPending ?? { entries: [], dependencies: [] },
-              request.preparedTerminal
-            );
+            const result =
+              'plan' in request.input
+                ? applyControlPendingPlan(
+                    owner.scopeDb,
+                    owner.productOwner!,
+                    request.preparedPlan ?? throwPlanUnprepared()
+                  )
+                : applyControlPendingTransition(
+                    owner.scopeDb,
+                    request.input,
+                    request.preparedPending ?? { entries: [], dependencies: [] },
+                    request.preparedTerminal
+                  );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -5754,6 +5779,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             value.operation === 'recovery-history' ||
             value.operation === 'recovery-safety' ||
             archivedThreads(value).length > 0 ||
+            // One grouped Pending decision holds the whole Workspace writer from its first
+            // preparation through its FULL acknowledgement.
+            (value.operation === 'pending' && 'plan' in value.input) ||
             (value.operation === 'write' && owner.scopeDb !== undefined),
           ready: false,
           predecessorFailed: false,
@@ -5944,7 +5972,19 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               ].includes(value.operation)
             )
               await prepareAfterPredecessors(owner, queued, earlier);
-            if (value.operation === 'pending' && !value.input.terminal) {
+            let preparedPlan: PreparedControlPendingPlan | undefined;
+            if (value.operation === 'pending' && 'plan' in value.input) {
+              if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner || !owner.contentMount)
+                throw new ControlProductPreconditionError();
+              preparedPlan = await prepareControlPendingPlan(
+                owner.scopeDb,
+                owner.productOwner,
+                owner.contentMount,
+                value.input
+              );
+              Object.assign(queued, { preparedPlan });
+            }
+            if (value.operation === 'pending' && !('plan' in value.input) && !value.input.terminal) {
               if (!owner.productOwner) throw new ControlProductPreconditionError();
               preparedEntries = await prepareControlEntries(
                 owner.productOwner,
@@ -6077,15 +6117,18 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 }
               }
             }
-            if (
-              value.operation === 'terminal' ||
-              (value.operation === 'pending' && value.input.terminal)
-            ) {
+            const terminalInput =
+              value.operation === 'terminal'
+                ? value.input
+                : value.operation === 'pending' && !('plan' in value.input)
+                  ? value.input.terminal
+                  : undefined;
+            if (terminalInput) {
               if (!owner.scopeDb || !owner.productOwner)
                 throw new ControlProductPreconditionError();
               preparedTerminal = await prepareControlTerminal(
                 owner.scopeDb,
-                value.operation === 'terminal' ? value.input : value.input.terminal!,
+                terminalInput,
                 owner.contentMount,
                 newDirectories
               );
@@ -6100,7 +6143,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 newDirectories
               );
             }
-            if (value.operation === 'pending') {
+            if (value.operation === 'pending' && !('plan' in value.input)) {
               if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner)
                 throw new ControlProductPreconditionError();
               preparedPending = await prepareControlPendingCommands(

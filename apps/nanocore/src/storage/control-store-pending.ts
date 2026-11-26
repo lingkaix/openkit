@@ -129,7 +129,9 @@ export async function prepareControlPendingCommands(
       );
     for (const source of command.expected ?? []) requestIds.add(source.requestId);
     if ('requestId' in command) requestIds.add(command.requestId);
-    if (command.action === 'freeze' && command.executor === 'worker') {
+    // A grouped decision freezes on the rows its earlier groups produce, so it derives the
+    // Worker input batch from the deciding selection inside its rollback boundary instead.
+    if (command.action === 'freeze' && command.executor === 'worker' && !newDirectories?.deferred) {
       const selected = command.expectedSelection.map((requestId) => {
         const record = readPendingRequest(db.sqlite, requestId);
         if (!record)
@@ -164,6 +166,9 @@ export async function prepareControlPendingCommands(
         )
         .all(db.workspaceId, command.turnId) as { request_id: string }[];
       for (const row of rows) requestIds.add(row.request_id);
+      // An earlier group of the same grouped decision freezes these rows on this Turn first.
+      for (const requestId of newDirectories?.frozen?.get(command.turnId) ?? [])
+        requestIds.add(requestId);
     }
   }
   for (const requestId of requestIds) {
@@ -186,7 +191,10 @@ export async function prepareControlPendingCommands(
     ] as const)
       ids.add(pendingRequestItemId(requestId, role));
   }
-  return { ...(await prepareRetainedPendingItems(db, mount, prepared, ids)), workerInputs };
+  return {
+    ...(await prepareRetainedPendingItems(db, mount, prepared, ids, newDirectories?.planned)),
+    workerInputs,
+  };
 }
 
 /** Prepares the current canonical Item context after earlier queued transitions commit, before archive SQL. */
@@ -211,7 +219,8 @@ async function prepareRetainedPendingItems(
   db: WorkspaceDb,
   mount: ControlProductContentMount | undefined,
   prepared: readonly PreparedControlEntry[],
-  ids: Iterable<string>
+  ids: Iterable<string>,
+  planned?: ReadonlyMap<string, PreparedControlEntry>
 ): Promise<PreparedControlPendingCommand> {
   const supplied = new Set(
     prepared.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
@@ -219,6 +228,17 @@ async function prepareRetainedPendingItems(
   const dependencies: PreparedControlPendingCommand['dependencies'][number][] = [];
   for (const id of ids) {
     if (supplied.has(id)) continue;
+    // An earlier group of the same grouped decision writes this Item; the deciding body reads the
+    // row that group produced against its exact entry.
+    const earlier = planned?.get(id);
+    if (earlier) {
+      dependencies.push({
+        entry: earlier,
+        revision: earlier.input.expectedRevision + 1,
+        contentJson: JSON.stringify(earlier.input.content),
+      });
+      continue;
+    }
     const row = db.sqlite
       .prepare(
         "SELECT schema_version,turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
