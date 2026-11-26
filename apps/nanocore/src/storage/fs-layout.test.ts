@@ -447,6 +447,35 @@ describe('ensureLayout', () => {
     expect(existsSync(join(root, 'workspaces'))).toBe(false);
   });
 
+  it.each(['malformed JSON', 'a self-predecessor'])(
+    'refuses a layout marker with %s before creating layout directories',
+    async (problem) => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+      onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+      const server = join(root, 'server');
+      mkdirSync(server);
+      const markerPath = join(server, 'layout.json');
+      const deploymentId = 'dep_00000000-0000-7000-8000-000000000001';
+      const originalBytes =
+        problem === 'malformed JSON'
+          ? '{"fixture-only-marker":'
+          : JSON.stringify({
+              schemaVersion: 1,
+              layoutVersion: 1,
+              deploymentId,
+              predecessorDeploymentId: deploymentId,
+            });
+      writeFileSync(markerPath, originalBytes);
+
+      expect(() => ensureLayout(root)).toThrow(
+        expect.objectContaining({ code: 'data_root_layout_unsupported' })
+      );
+      expect(readFileSync(markerPath, 'utf8')).toBe(originalBytes);
+      expect(readdirSync(root)).toEqual(['server']);
+      expect(readdirSync(server)).toEqual(['layout.json']);
+    }
+  );
+
   it('fails closed on an incompatible data-root layout marker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 

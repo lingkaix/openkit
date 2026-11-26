@@ -21,7 +21,7 @@ import { createTestStore } from '../test-support/store.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { admitDataRootForBoot, openCoreDb, recordDataRootDeploymentMove } from './db.js';
-import { coreDbPath, ensureLayout } from './fs-layout.js';
+import { coreDbPath, ensureLayout, readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
 import { dataRootInventory, retainedV010CoreBytes } from './test-support/data-root-admission.js';
 
@@ -182,6 +182,38 @@ describe('NanoCore startup storage layout', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+
+  it.each(['malformed JSON', 'a self-predecessor'])(
+    'refuses a current Core root with %s in its layout marker',
+    async (problem) => {
+      const dataRoot = createDataRoot();
+      try {
+        const coreDb = openCoreDb(dataRoot);
+        try {
+          applyMigrations(coreDb);
+        } finally {
+          coreDb.sqlite.close();
+        }
+        await expect(admitDataRootForBoot(dataRoot)).resolves.toBe(false);
+        const marker = readDataRootLayoutMarker(dataRoot);
+        writeFileSync(
+          join(dataRoot, 'server', 'layout.json'),
+          problem === 'malformed JSON'
+            ? 'fixture-only-invalid-marker'
+            : JSON.stringify({ ...marker, predecessorDeploymentId: marker.deploymentId })
+        );
+        const before = dataRootInventory(dataRoot);
+
+        await expect(admitDataRootForBoot(dataRoot)).rejects.toMatchObject({
+          cause: { code: 'data_root_layout_unsupported' },
+          message: expect.stringContaining('v0.2.0 Storage Reinstall'),
+        });
+        expect(dataRootInventory(dataRoot)).toEqual(before);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   it.runIf(process.platform === 'linux')(
     'refuses inspection scratch within DATA_ROOT before creating a temporary entry',

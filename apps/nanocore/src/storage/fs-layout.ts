@@ -318,7 +318,13 @@ export function ensureConfigTemplateSurface(root: string): void {
  */
 export function readDataRootLayoutMarker(root: string): DataRootLayoutMarker {
   const markerPath = dataRootLayoutMarkerPath(root);
-  const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as unknown;
+  const raw = readFileSync(markerPath, 'utf8');
+  let marker: unknown;
+  try {
+    marker = JSON.parse(raw);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+  }
 
   if (
     typeof marker === 'object' &&
@@ -329,7 +335,9 @@ export function readDataRootLayoutMarker(root: string): DataRootLayoutMarker {
     marker.layoutVersion === DATA_ROOT_LAYOUT_VERSION &&
     'deploymentId' in marker &&
     isEntityId('dep', marker.deploymentId) &&
-    (!('predecessorDeploymentId' in marker) || isEntityId('dep', marker.predecessorDeploymentId))
+    (!('predecessorDeploymentId' in marker) ||
+      (isEntityId('dep', marker.predecessorDeploymentId) &&
+        marker.predecessorDeploymentId !== marker.deploymentId))
   ) {
     return marker as DataRootLayoutMarker;
   }
