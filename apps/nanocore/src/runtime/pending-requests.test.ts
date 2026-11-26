@@ -2227,9 +2227,10 @@ describe('pending requests', () => {
         expect(store.getTurnById(admitted.deliveryTurnId!).status).toBe('pending');
         let submissions = 0;
         const settled = Promise.withResolvers<void>();
-        const publish = store.publishPendingRequestServiceTurn.bind(store);
+        // The authority-loss closeout posts as one grouped Pending decision.
+        const publish = store.publishPendingPlan.bind(store);
         const closeout = vi
-          .spyOn(store, 'publishPendingRequestServiceTurn')
+          .spyOn(store, 'publishPendingPlan')
           .mockImplementation(async (...args) => {
             const result = await publish(...args);
             if (readPendingRequest(db.sqlite, input.requestId)?.delivery === 'closed-out')
