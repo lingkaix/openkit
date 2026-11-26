@@ -5,11 +5,11 @@ status: Accepted
 
 This document defines OpenKit sandbox semantics.
 
-This document owns execution isolation, sandbox scope, environment constraints, workspace input rules, snapshot and persistence boundaries, resource limits, sandbox summaries, and backend containment projections.
+This document owns execution isolation, sandbox scope, the long-running Sandbox and its incarnation, draining, sleep and wake, environment constraints, workspace input rules, snapshot and persistence boundaries, resource limits, sandbox summaries, and backend containment projections.
 
 This document does not own permission policy, technical capability declarations, runtime scheduling, agent supply declarations, vault secret storage, storage layout, deployment topology, or backend-native sandbox payloads.
 
-The user-selectable Sandbox is the retained Worker environment identified by its Core storage association. Its physical Sandbox runtime instance is a replaceable containment realization. Sandbox runtime semantics decide where work runs and what execution can reach. Selection constrains placement and grants no authority; equal static compatibility never substitutes a different selected association. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this distinction and its owning specifications.
+The user-selectable Sandbox is the retained Worker environment identified by its Core storage association. It is long-running: several Workers work in it over a long time, it sleeps when it is idle, and it wakes on demand. Its physical Sandbox runtime instance is a Sandbox incarnation: a replaceable containment realization with its own Core-issued identity. Sandbox runtime semantics decide where work runs and what execution can reach. Selection constrains placement and grants no authority; equal static compatibility never substitutes a different selected association. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this distinction, and [Long-Running Sandbox And Worker Layer](../decisions/20261126-long_running_sandbox_and_worker_layer.md) records the long-running model.
 
 Containment, co-residency, cleanup and isolation clauses below concern the physical Sandbox runtime instance unless they explicitly concern the selectable retained resource.
 
@@ -26,7 +26,9 @@ Unless a rule explicitly names conversation-context or Workspace-write isolation
 - Secret values, temporary credentials, and ephemeral mounts must stay out of any future durable snapshot state.
 - Stronger backends may provide security and adjudication isolation beyond a shared Sandbox, but only when their OS-user, namespace, mount, process, credential, and traversal proofs support that named level; backend feature differences must be summarized as capabilities or clear launch failures rather than leaking raw backend state.
 - Runtime capacity must not be released until the owning backend teardown boundary has fenced every previously accepted effect; a resource-level delete or point-in-time empty probe is insufficient when the backend cannot prove that an older create has terminated.
-- An accepted sandbox create or delete whose completion cannot be proved MUST invalidate the owning execution-substrate epoch. The runtime MUST fence that epoch's capacity until the complete prior effect domain is terminated and a fresh epoch is proved ready and free of prior mutable execution state.
+- An accepted Sandbox create or delete whose completion is not proved inside its original deadline MUST make the owning execution-substrate epoch draining and MUST then invalidate that epoch. The runtime MUST fence that epoch's capacity until the complete prior effect domain is terminated and a fresh epoch is proved ready and free of prior mutable execution state. With no other live Sandbox in the epoch, the invalidation is immediate.
+- A work slot is not a containment. An unproved stop inside a Sandbox is contained only by the Sandbox incarnation, which is the smallest unit whose absence an outside owner can prove.
+- A wake restores bytes on disk only. Processes, memory and live authority are never restored.
 - A worker has full permission inside its Sandbox, with storage and network restrictions at its boundary ([public-route decision](../decisions/20260930-public_endpoints_by_admitted_grant.md)). Catalog and built-in MCP integrations, integrations using Gateway-held credentials, and external operations whose policy requires Gateway-mediated approval or audit use the MCP Gateway. An administrator-declared credential-free, non-LLM public endpoint, including a public MCP endpoint, may instead use an exact Sandbox network grant. The admitted public route does not grant managed capability authority. This is admission-time classification, not request-content inspection. Separately accepted credentialed non-LLM REST grants remain governed by their existing network and credential owners. Worker runtimes launch with full access and full permission inside the Sandbox so native permission prompts do not arise; a residual native permission prompt is answered allow once by default; neither disabling prompts nor answering one grants anything beyond what the Sandbox and the Gateway enforce ([decision](../decisions/20261001-sandbox_full_capability_rulings.md)). Configuration, tools, and MCP servers inside the Sandbox, such as a code index configured for software development, are the worker's to use and are not restricted by OpenKit ([decision](../decisions/20260930-full_permission_inside_the_sandbox.md)).
 - A Sandbox MAY permit broad ordinary process execution inside its boundary. That freedom MUST NOT relax host-to-Sandbox security and adjudication isolation for filesystem, network, credential, secret, or resource containment; network egress MUST be denied by default and opened only by explicit governed authority.
 - Confirmed loss or inability to prove the host-to-Sandbox security and adjudication isolation boundary has the same immediate fail-closed response. Core MUST deny the owning execution-substrate epoch's new admissions, external effects, and egress; interrupt every affected Turn and AgentSession; withhold unaccepted output; revoke runtime control handles; invalidate the complete epoch; route potentially exposed Vault material to its existing revocation or rotation owner; and retain only redacted audit evidence. Cleanup MUST terminate the complete effect-capable failure domain rather than delete one process or Sandbox or reuse the old environment. After cleanup, only inspection or a fresh authorized request is permitted, and reuse requires a fresh epoch with fresh containment proof at that level. This rule does not claim automatic escape detection or authorize an incident-response state machine.
@@ -67,6 +69,20 @@ Storage owns durable files and indexes.
 
 Sandbox does not decide whether an action should be allowed. It limits what execution can actually access.
 
+## Long-Running Sandbox
+
+A Sandbox is a physical isolation boundary that holds a complete working environment for a long time. Several Workers of different Harnesses can work in it together.
+
+- **Sandbox incarnation.** One physical realization of a Sandbox. Core issues its ID once and never reuses it. A wake makes a new incarnation. Every lifecycle operation is keyed by the incarnation ID.
+- **Worker incarnation.** One process tree that the Worker Shim started for one authorized start order. It is the runtime host instance of an AgentSession runtime binding in [Runtime Model](runtime-model.md#runtime-placement-boundaries). Where this document says "a Worker" in a Sandbox, it means a Worker incarnation. Core issues the Worker ID once, before it sends the order. The shim realizes that ID at most once. A stopped Worker never starts again under its ID; a restart is a new Worker. An AgentSession has at most one live Worker. The adapter declares how many AgentSessions one Worker carries.
+- **Worker Shim.** The one control process of OpenKit inside a Sandbox incarnation. It starts once for an incarnation ID, and a second start is refused. It connects outbound to Core, converges on the desired set of Workers that Core sends, and reports a full inventory. It is inside the trust domain of the Sandbox, so its reports are evidence.
+- **Environment provider.** The owner outside the Sandbox that keeps an incarnation present or absent, reports its inventory, and owns its edge and its Volume. It declares its absence proof: exact inside an execution-substrate epoch, or by renewal of the epoch only.
+- **Stop value.** Each adapter declares how its Worker stops: exact, with a proof kind, or best effort. With an exact stop, the stop of one Worker is proved in place. With a best-effort stop, a stop that is not proved follows [Draining](#draining).
+
+Core keeps all authority as desired state. The provider and the Worker Shim converge on it and report what they observe. [Runtime Model](runtime-model.md) owns these roles, and [Fault Tolerance](fault-tolerance.md#fencing-release-and-replacement) owns the rules for fencing, release and replacement.
+
+A Sandbox incarnation is `accepting` or `draining`. Placement requires `accepting`.
+
 ## Sandbox Scope
 
 A sandbox may be scoped to:
@@ -78,7 +94,7 @@ A sandbox may be scoped to:
 - one remote provider session
 - one reusable runtime pool
 
-The default scope when security and adjudication isolation is required remains one AgentSession per Sandbox. A shared Sandbox is an explicitly admitted alternative in which multiple compatibility-keyed Harnesses and AgentSessions from distinct Threads occupy one Sandbox while retaining independent Core identity, authority, Turn lineage, mutable Workspace slots, output staging, sequence, interruption, evidence, and terminal outcome. Historical AgentSessions for one Thread MUST NOT retain a resident binding after a successor becomes current.
+The base placement is the shared long-running Sandbox: Workers and AgentSessions from distinct Threads occupy one Sandbox while each keeps its own Core identity, authority, Turn lineage, mutable Workspace slot, output staging, sequence, interruption, evidence, and terminal outcome. The restricted placement is one Worker in one Sandbox. It is required when security and adjudication isolation is required. It is also the choice of an owner who does not accept the shared failure domain of [Draining](#draining). The restricted placement is visible and enforced; no separate consent step exists. Historical AgentSessions for one Thread MUST NOT retain a resident binding after a successor becomes current.
 
 Shared-Sandbox admission MUST use one static compatibility envelope that covers Workspace, admitted trust class, runtime image and declared Harness set, OS identity and process visibility, filesystem and mount posture, network policy, Provider attachment visibility, Vault injection visibility class, static credential exposure class, aggregate resource class, sensitivity class, and containment policy. Co-resident Harnesses and AgentSessions belong to distinct Threads in one Workspace and one admitted trust class. For a Workspace-shared retained environment, current eligible Workspace members form its admitted shared trust class. Different responsible users alone do not prohibit co-residency. No security or adjudication isolation is claimed between these members' executions; incompatible credential exposure, narrower source audiences, independent adjudication and other required stronger isolation still prevent sharing. Other trust-class expansion requires an accepted contract proving identical visibility and the required isolation level; spare capacity supplies no such proof. The accepted shared-data and mutual-write consequence is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md).
 
@@ -86,7 +102,7 @@ Turn payloads, Thread history, native conversation handles, raw secrets, tempora
 
 Multiple AgentSession-scoped Sandboxes MAY also occupy one compatible execution-substrate epoch. Whether AgentSessions share one Sandbox or use separate Sandboxes, the epoch remains one wider failure and cleanup domain and grants no shared AgentSession identity, permission scope, Workspace truth, or continuity record.
 
-Ordinary AgentSession termination in a shared Sandbox MUST close and clean only that AgentSession when exact local cleanup and continued sibling safety are proved. It MUST NOT delete the shared Sandbox or stop a healthy Harness merely because one AgentSession ends. If local cleanup cannot be proved, admission stops and cleanup widens to the Harness, Sandbox, or execution-substrate epoch boundary whose complete effect domain can be fenced.
+Ordinary AgentSession termination in a shared Sandbox MUST close and clean only that AgentSession when exact local cleanup and continued sibling safety are proved. It MUST NOT delete the shared Sandbox or stop a healthy Harness merely because one AgentSession ends. If local cleanup cannot be proved, the Sandbox incarnation enters [Draining](#draining), and cleanup widens to the incarnation, or to the execution-substrate epoch when the incarnation cannot be proved absent.
 
 ## Isolation Levels
 
@@ -112,7 +128,36 @@ A normal AgentSession close releases only that AgentSession's open-session capac
 
 Harness or Sandbox failure preserves, for every affected Turn, the truthful result its lifecycle owner determined from that Turn's own evidence. [Fault Tolerance](fault-tolerance.md#principles) owns effect uncertainty and recovery responsibility for affected Turns. Failure or cleanup uncertainty MUST NOT infer a common result, substitute one AgentSession for another, or return affected capacity before the wider proved boundary is fenced. Restart may adopt only exact surviving bindings under the runtime owner's proof contract; otherwise later work uses fresh admission and no automatic replay.
 
-Observable conformance requires at least two compatibility-distinct Harnesses and AgentSessions for two distinct Threads to coexist in one Sandbox with separate conversation-context and Workspace-write isolation, requires bounded concurrent Turns to retain independent authority and outcomes, requires an exact local close or Harness drain to leave compatible siblings usable, and requires an unprovable local close to fence the wider boundary. A claim of security and adjudication isolation requires separate proof of the stronger OS or Sandbox boundary; path names alone fail this predicate.
+### Draining
+
+Draining is a degraded mode of a Sandbox incarnation. It is accepted explicitly, and it is visible to the members of the Sandbox. Core enters it when the stop of a Worker is not proved. The decision is durable and monotonic: a draining incarnation never becomes accepting again.
+
+1. Core closes admission against a start that races with the decision. It fixes the set of admitted attempts and the cutoff, and both survive a Core restart. The cutoff is the latest deadline in that set.
+2. The incarnation admits no new attempt and no new Worker. No attempt and no prepared claim gets a new deadline during the drain.
+3. Sibling attempts in the admitted set may finish inside their own deadline.
+4. Core orders the recycle when the last admitted attempt ends, or at the cutoff even if a sibling hangs.
+5. The recycle stops the incarnation from outside and proves the absence of every process in it. Core settles each sibling by its own key from its own evidence.
+6. Queued Turns of the Threads in that Sandbox run after the wake.
+
+If no sibling attempt in the admitted set is eligible to finish, Core recycles at once. Core also recycles at once if the fence is ineffective for the unproved Worker or if the Sandbox owner or an administrator orders it. In v0.2.0, Core uses immediate replace-by-recycle.
+
+The drain bounds the time until Core orders the recycle. It does not prove that sibling work completes. During the drain the unproved Worker still shares one OS user and one filesystem with its siblings, so it can change their work trees, caches and local services. An owner who does not accept this uses the restricted placement.
+
+Physical release needs its own proof. Claims stay charged until producers are closed and absence is proved, and a claim with an unknown outcome is retained. If the provider cannot be reached, the hold is visible and follows [Fault Tolerance](fault-tolerance.md#exit-of-every-hold).
+
+The same rule applies one level up. A Sandbox create or delete that stays unknown past its original deadline makes the execution-substrate epoch draining, with accepted creates and delegated work in its admitted set; then the epoch is renewed.
+
+### Fence Effectiveness
+
+A fence is effective for a Worker only when every model route of that Worker passes Core. A Worker that uses a native Login reaches its vendor directly, and Core cannot fence it before its access token expires. Such a Worker enters a shared Sandbox only by an explicit share from the owner of that Login. The share states that the route has no cap and no meter. On any doubt about the stop of such a Worker, Core recycles the Sandbox at once. [Vault](vault.md) and [Policy](policy.md) own the share and its metering consequence; this document owns the placement consequence. Credentials that were already issued and remote effects stay with their own revocation and expiry owners.
+
+### Version Mismatch
+
+Core refuses a Worker Shim or a provider whose release differs from Core before any effect. For a mismatched Sandbox, Core recycles the incarnation once onto the current image. If the new incarnation is refused too, Core stops retries and shows a maintenance hold. An upgrade therefore costs one cold wake for each live Sandbox. A refused Host needs a compatible payload through authorized replacement before it renews its epoch. If that path is unavailable or the mismatch stays, Core stops retries and shows a maintenance hold. [Contract Evolution](contract-evolution.md#version-and-capability-discovery) owns the refusal rule.
+
+### Observable Conformance
+
+Observable conformance requires at least two Workers of different Harnesses, with AgentSessions for two distinct Threads, to coexist in one Sandbox with separate conversation-context and Workspace-write isolation. It requires bounded concurrent Turns to keep independent authority and outcomes. It requires an exact local close to leave compatible siblings usable. It requires an unproved Worker stop to drain the incarnation: the sibling finishes, the queued Turn waits, Core recycles the incarnation, and both Threads continue after the wake. It requires the cutoff to hold with a hung sibling, with a start that races the decision, and across a Core restart. A claim of security and adjudication isolation requires separate proof of the stronger OS or Sandbox boundary; path names alone fail this predicate.
 
 ## Off-Peak Freshness Rebuild
 
@@ -183,9 +228,19 @@ One retained association has at most one current writable physical attachment; c
 
 A storage association MUST NOT grant access to another Sandbox's retained files merely because Workspace, user, image or backend matches. Sharing remains exactly the existing explicitly admitted Sandbox trust boundary; independent adjudication receives separate storage and only its authorized candidate inputs. Static mount changes require replacement when the backend cannot apply them safely in place. Containers derived from the same compatible base SHOULD reuse storage without copying only Git files or registered Artifacts. Root filesystem and process snapshots are separate features.
 
+## Sleep And Wake
+
+An idle Sandbox sleeps. Core orders its incarnation absent after no attempt is admitted and required collection is complete. The retained Volume stays.
+
+A wake is a new incarnation on the same retained Volume, attached only after the previous writer is proved absent. Bytes on disk are complete, including dirty and untracked working files, and Workers continue on them. Processes, memory and live authority are not restored. A wake authorizes again before work is admitted: it uses current Policy, current grants, current credentials and the current image. A Worker may resume its retained native conversation from the Volume under the rules of [AgentSession](agent-session.md).
+
+A provider snapshot may shorten a wake. It is an optimization and never continuity truth.
+
+Observable conformance requires that dirty and untracked bytes are present after a wake, that authority from before the sleep is refused, and that the first Turn after the wake runs under fresh authority.
+
 ## Deferred Backend Snapshot Boundary
 
-Backend snapshot, suspend, resume, rollback, and clone features have no current OpenKit record, lifecycle, or behavior contract. They are future and non-authorizing. Any later owning specification must distinguish:
+Backend snapshot of processes or memory, suspend and resume of live processes, rollback, and clone have no current OpenKit record, lifecycle, or behavior contract. [Sleep And Wake](#sleep-and-wake) owns the one current behavior, which keeps the Volume only. They are future and non-authorizing. Any later owning specification must distinguish:
 
 - materialized files that should be preserved
 - mounted external data that should not be copied into snapshots
@@ -265,9 +320,16 @@ Implementations may expose stable summaries, redacted labels, or Core-issued IDs
 - Reusable sandboxes MUST NOT treat dynamic slot contents as canonical workspace truth until NanoCore imports and records them through the owning storage and workspace synchronization contracts.
 - Static sandbox layout changes that the backend cannot apply safely MUST require a replacement sandbox or a blocked launch diagnostic.
 - Runtime capacity MUST remain cleanup-owned when the backend cannot prove that every accepted create path has been terminated.
-- An unprovable accepted sandbox create or delete, or failure of an effect-capable member of the owning execution substrate, MUST invalidate the complete owning epoch and keep capacity fenced until the prior effect domain is terminated and a fresh epoch passes readiness and absence-of-prior-state proof.
+- An accepted Sandbox create or delete that is not proved inside its original deadline, or failure of the epoch's own containment or effect infrastructure, MUST invalidate the complete owning epoch. Loss of the epoch's own containment requires immediate invalidation. Capacity MUST stay fenced until the prior effect domain is terminated and a fresh epoch passes readiness and absence-of-prior-state proof.
 - AgentSession-scoped Sandbox deletion MUST NOT force replacement of a compatible shared execution-substrate epoch when exact deletion and continued host-to-Sandbox security and adjudication isolation are proved.
 - Shared-Sandbox co-residency MUST name its conversation-context, Workspace-write, or security and adjudication isolation level and MUST NOT derive security and adjudication isolation from logical namespacing.
 - Ordinary AgentSession close in a shared Sandbox MUST preserve compatible siblings after exact local cleanup; uncertainty MUST stop admission and widen cleanup before capacity returns.
 - Off-peak rebuild MUST remain a zero-active-Turn freshness optimization with measured idleness and age triggers, ordinary replacement, and no security, correctness, recovery, or stale-read authority.
 - Confirmed or unexcluded loss of host-to-Sandbox security and adjudication isolation MUST trigger the fail-closed epoch invalidation, interruption, non-publication, credential-protection, audit, and fresh-request boundary above; partial process or Sandbox cleanup and prior environment reuse are prohibited.
+- Core MUST issue a Sandbox incarnation ID and a Worker ID once and MUST NOT reuse either. A stopped Worker MUST NOT start again under its ID.
+- One Sandbox incarnation MUST have at most one Worker Shim start.
+- A work slot MUST NOT be described or used as a containment for an unproved stop.
+- A draining incarnation MUST NOT admit a new attempt or a new Worker and MUST NOT become accepting again.
+- A drain MUST NOT extend an attempt deadline. Core MUST order the recycle at the cutoff even if a sibling hangs.
+- A wake MUST NOT restore processes, memory or live authority, and MUST authorize again before it admits work.
+- A Worker whose fence is not effective MUST NOT enter a shared Sandbox without the explicit share of the Login owner.
