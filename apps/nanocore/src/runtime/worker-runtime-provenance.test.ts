@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -984,9 +984,13 @@ async function startGatewayCall(
   });
 }
 
-it.each(['node B', 'node C'] as const)(
-  'charges retained raw files after reopening %s data',
-  async (source) => {
+it.each([
+  ['node B', false],
+  ['node B', true],
+  ['node C', true],
+] as const)(
+  'charges retained raw files after reopening %s data (conflict=%s)',
+  async (source, conflict) => {
     const fixture = await createImportFixture('openkit-retained-provenance-budget-', 'on');
     const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-provenance-capture-'));
     const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
@@ -1013,7 +1017,33 @@ it.each(['node B', 'node C'] as const)(
       }
       db.sqlite.close();
       db = openWorkspaceDb(dirname(dirname(fixture.workspaceRoot)), fixture.lineage.workspaceId);
-      const append = (index: number) => {
+      const readTurn = () =>
+        db.sqlite
+          .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+          .get(target.turnId);
+      const oldCharge = readTurn();
+      if (conflict) {
+        const shorter = Buffer.from(
+          JSON.stringify(JSON.parse(capture.manifestBytes.toString('utf8')))
+        );
+        expect(shorter.length).toBeLessThan(capture.manifestBytes.length);
+        writeFileSync(capture.streamManifestPath, shorter);
+        try {
+          await expect(importCapture({ ...fixture, workspaceDb: db }, capture)).rejects.toThrow();
+          expect(readTurn()).toEqual(oldCharge);
+          expect(files(evidence)).toEqual(inventory);
+        } finally {
+          writeFileSync(capture.streamManifestPath, capture.manifestBytes);
+        }
+      }
+      const retainedBytes = inventory.reduce((sum, relativePath) => {
+        const info = statSync(join(evidence, relativePath));
+        return sum + (info.isFile() ? info.size : 0);
+      }, 0);
+      const unit = 16 * 1024 * 1024;
+      const lastBytes = unit - retainedBytes + 1;
+      expect(lastBytes).toBeGreaterThan(0);
+      const append = (index: number, bytes = unit) => {
         const id = `legacy-${index}`;
         const ts = '2026-07-13T00:00:00.000Z';
         return appendWorkObservation(db, {
@@ -1033,8 +1063,8 @@ it.each(['node B', 'node C'] as const)(
                 state: 'expected',
                 boundary: 'tool-args',
                 mediaType: 'application/json',
-                bytes: 16 * 1024 * 1024,
-                chunkCount: 342,
+                bytes,
+                chunkCount: Math.ceil(bytes / (48 * 1024)),
                 sha256: `sha256:${'a'.repeat(64)}`,
               },
             },
@@ -1044,10 +1074,13 @@ it.each(['node B', 'node C'] as const)(
       };
       for (let index = 0; index < 3; index++)
         expect(await append(index)).toMatchObject({ disposition: 'committed' });
-      await expect(append(3)).rejects.toMatchObject({
+      await expect(append(3, lastBytes)).rejects.toMatchObject({
         disposition: 'truncated',
         truncation: { reason: 'body-bytes', firstOmittedSequence: 4 },
       });
+      const sealed = readTurn();
+      expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toEqual(published);
+      expect(readTurn()).toEqual(sealed);
       expect(listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)).toEqual(bundles);
       expect(files(evidence)).toEqual(inventory);
     } finally {
@@ -1895,6 +1928,10 @@ describe('runtime provenance publication durability', () => {
         for (const [ref, bytes] of capture.streams)
           expect(readFileSync(join(root, 'raw', ref))).toEqual(bytes);
       };
+      const beforeCopy = fixture.workspaceDb.sqlite
+        .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+        .get(fixture.lineage.turnId) as { record_json: string; revision: number };
+      const unrelated = join(backend, `evb_${'0'.repeat(24)}.tmp-${randomUUID()}`);
       await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
       try {
@@ -1908,6 +1945,26 @@ describe('runtime provenance publication durability', () => {
           expect(inventory).toHaveLength(1);
           verifyRaw(join(backend, inventory[0]!));
           expect(existsSync(join(backend, rawBundleId))).toBe(false);
+          if (attempt === 0) {
+            // Node B used a random private suffix and made no counter reservation before this cut.
+            renameSync(
+              join(backend, inventory[0]!),
+              join(backend, `${rawBundleId}.tmp-${randomUUID()}`)
+            );
+            mkdirSync(unrelated);
+            writeFileSync(join(unrelated, 'sentinel'), 'another family');
+            const prior = openWorkspaceDb(
+              dirname(dirname(fixture.workspaceRoot)),
+              fixture.lineage.workspaceId
+            );
+            try {
+              prior.sqlite
+                .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+                .run(beforeCopy.record_json, beforeCopy.revision, fixture.lineage.turnId);
+            } finally {
+              prior.sqlite.close();
+            }
+          }
         }
         const db = openWorkspaceDb(
           dirname(dirname(fixture.workspaceRoot)),
@@ -1925,6 +1982,7 @@ describe('runtime provenance publication durability', () => {
             rawBundleId,
           });
           expect(staged()).toEqual([]);
+          expect(readFileSync(join(unrelated, 'sentinel'), 'utf8')).toBe('another family');
         } finally {
           await shutdownControlStoreWorkerClient();
           db.sqlite.close();

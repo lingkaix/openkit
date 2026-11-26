@@ -1,18 +1,12 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import {
-  canonicalJsonText,
-  compareCodeUnits,
-  isRecord,
-  readRetainedV1,
-  writeRetainedV1,
-} from '@openkit/protocol';
+import { canonicalJsonText, compareCodeUnits, isRecord, writeRetainedV1 } from '@openkit/protocol';
 import {
   copyVerifiedFile,
   createDirectoryExclusive,
@@ -352,22 +346,40 @@ export async function prepareWorkerRuntimeProvenance(
     'worker-runtime-provenance-index',
     lineage.packageSnapshotId
   );
-  const existingRawBundle = workspaceDb.sqlite
-    .prepare(
-      'SELECT schema_version AS schemaVersion, created_at, import_status FROM evidence_bundles WHERE evidence_bundle_id = ?'
+  const retainedBundles = workspaceDb.sqlite
+    .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id IN (?, ?)')
+    .all(rawBundleId, indexBundleId) as EvidenceBundleRow[];
+  const retainedReceipts = retainedBundles.map((row) => evidenceBundleFromRow(row));
+  const existingRawBundle = retainedReceipts.find((bundle) => bundle.id === rawBundleId);
+  const existingIndexBundle = retainedReceipts.find((bundle) => bundle.id === indexBundleId);
+  if (
+    (existingRawBundle && existingRawBundle.sourceKind !== 'worker-runtime-provenance-raw') ||
+    (existingIndexBundle &&
+      (!existingRawBundle ||
+        existingIndexBundle.sourceKind !== 'worker-runtime-provenance-index')) ||
+    retainedReceipts.some(
+      (bundle) =>
+        bundle.workspaceId !== lineage.workspaceId ||
+        bundle.threadId !== lineage.threadId ||
+        bundle.turnId !== lineage.turnId ||
+        bundle.agentSessionId !== lineage.agentSessionId
     )
-    .get(rawBundleId) as
-    | { schemaVersion: unknown; created_at: string; import_status: string }
-    | undefined;
-  const recordedAt = existingRawBundle
-    ? readRetainedV1(existingRawBundle, () => existingRawBundle.created_at)
-    : admitted.collectedAt;
-  if (existingRawBundle?.import_status === 'expired')
+  )
+    throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+  if (existingRawBundle?.importStatus === 'expired')
     throw new Error('Runtime provenance has expired.');
-  if (!existingRawBundle && (await retainedRuntimeProvenanceBytes(workspaceDb, lineage)) > 0)
+  if (
+    !existingRawBundle &&
+    workspaceDb.sqlite
+      .prepare(`SELECT 1 FROM evidence_bundles
+        WHERE turn_id=? AND source_kind='worker-runtime-provenance-raw' LIMIT 1`)
+      .get(lineage.turnId)
+  )
     throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
 
+  const recordedAt = existingRawBundle?.createdAt ?? admitted.collectedAt;
   const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
+  const normalizedRoot = join(workspaceRoot, 'evidence', 'bundles', indexBundleId);
   const declaration = admitted.environmentPackage.control.transcript?.runtimeProvenance;
   let streamBytes = 0;
   const seen = new Set<string>();
@@ -396,40 +408,81 @@ export async function prepareWorkerRuntimeProvenance(
   }
   if (streamBytes > (declaration?.maxTotalBytes ?? 256 * 1024 * 1024))
     throw new Error('Runtime provenance exceeds its AEP byte limit.');
-  const cutoff = reserveWorkObservationProvenance(workspaceDb, lineage, {
-    id: rawBundleId,
-    bytes: admitted.files.reduce((sum, file) => sum + file.byteLength, admitted.normalizedBytes),
-    digest: createHash('sha256')
-      .update(
-        canonicalJsonText({
-          files: admitted.files
-            .map(({ relativePath, byteLength, sha256 }) => ({
-              relativePath,
-              byteLength,
-              sha256,
-            }))
-            .sort((left, right) => compareCodeUnits(left.relativePath, right.relativePath)),
-          normalizedBytes: admitted.normalizedBytes,
-          normalizedDigest: admitted.normalizedDigest,
-        })
-      )
-      .digest('hex'),
-  });
+  // A retry cannot change the byte charge or reclaim any stage before proving its originals.
+  if (
+    existingRawBundle &&
+    (!isDeepStrictEqual(
+      existingRawBundle.rawEvidenceRefs.map((ref) => ref.ref),
+      [...seen]
+    ) ||
+      !isDeepStrictEqual(
+        existingRawBundle.contentDigests,
+        admitted.files.map((file) => file.sha256)
+      ) ||
+      (existingRawBundle.importStatus === 'promoted') !== (existingIndexBundle !== undefined))
+  )
+    throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+  const retained = await pathExists(rawRoot);
+  if (existingRawBundle && !retained) throw new Error('Runtime provenance owner is unavailable.');
+  if (retained) {
+    if (!isDeepStrictEqual(await listEvidenceFiles(rawRoot), [...seen].sort()))
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+    for (const file of admitted.files) {
+      const path = safeEvidencePath(rawRoot, file.relativePath);
+      if ((await lstat(path)).size !== file.byteLength || (await sha256File(path)) !== file.sha256)
+        throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+    }
+  }
+  if (existingIndexBundle) {
+    if (
+      !(await pathExists(normalizedRoot)) ||
+      !isDeepStrictEqual(await listEvidenceFiles(normalizedRoot), ['runtime-origin-index.jsonl'])
+    )
+      throw new Error('Runtime provenance normalized index is unavailable.');
+    const path = join(normalizedRoot, 'runtime-origin-index.jsonl');
+    if (
+      existingIndexBundle.importStatus !== 'promoted' ||
+      !isDeepStrictEqual(existingIndexBundle.contentDigests, [admitted.normalizedDigest]) ||
+      (await lstat(path)).size !== admitted.normalizedBytes ||
+      (await sha256File(path)) !== admitted.normalizedDigest
+    )
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+  }
+  const cutoff = reserveWorkObservationProvenance(
+    workspaceDb,
+    lineage,
+    {
+      id: rawBundleId,
+      bytes: admitted.files.reduce((sum, file) => sum + file.byteLength, admitted.normalizedBytes),
+      digest: createHash('sha256')
+        .update(
+          canonicalJsonText({
+            files: admitted.files
+              .map(({ relativePath, byteLength, sha256 }) => ({
+                relativePath,
+                byteLength,
+                sha256,
+              }))
+              .sort((left, right) => compareCodeUnits(left.relativePath, right.relativePath)),
+            normalizedBytes: admitted.normalizedBytes,
+            normalizedDigest: admitted.normalizedDigest,
+          })
+        )
+        .digest('hex'),
+    },
+    existingRawBundle !== undefined
+  );
   if (cutoff) return cutoff;
   await ensureCanonicalDirectoryAsync(dirname(rawRoot));
-  // This exact Turn and bundle already own the FIFO and the body reservation. Reclaim
-  // their one interrupted stage before allocating bytes on an exact retry.
+  await reclaimProvenanceStages(rawRoot);
+  await reclaimProvenanceStages(normalizedRoot);
   const stagingRoot = `${rawRoot}.tmp-reserved`;
-  await removePrivateTree(stagingRoot);
-  const retained = await pathExists(rawRoot);
   const sourceRoot = retained ? rawRoot : stagingRoot;
   try {
     if (!retained) {
       createDirectoryExclusive(stagingRoot, 0o700);
       if (admitted.files.some((file) => file.relativePath.startsWith('raw/')))
         createDirectoryExclusive(join(stagingRoot, 'raw'), 0o700);
-    } else if (!isDeepStrictEqual(await listEvidenceFiles(rawRoot), [...seen].sort())) {
-      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
     }
     const assertSourceIdentity = async (file: ControlProvenanceInput['files'][number]) => {
       const metadata = await lstat(file.path, { bigint: true });
@@ -444,14 +497,10 @@ export async function prepareWorkerRuntimeProvenance(
     };
     for (const file of admitted.files) {
       await assertSourceIdentity(file);
-      const destinationPath = safeEvidencePath(sourceRoot, file.relativePath);
-      if (retained) {
-        if ((await sha256File(destinationPath)) !== file.sha256)
-          throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
-      } else {
+      if (!retained) {
         await copyVerifiedFile({
           sourcePath: file.path,
-          destinationPath,
+          destinationPath: safeEvidencePath(sourceRoot, file.relativePath),
           expectedBytes: file.byteLength,
           expectedSha256: file.sha256,
           maxBytes: file.byteLength,
@@ -516,6 +565,12 @@ export async function prepareWorkerRuntimeProvenance(
       );
     }
     const complete = verified.errors.length === 0;
+    if (
+      existingRawBundle &&
+      (complete !== (existingRawBundle.importStatus === 'promoted') ||
+        complete !== (existingIndexBundle !== undefined))
+    )
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
     if (retained) {
       await syncCanonicalTreeAsync(rawRoot);
       await syncCanonicalDirectoryAsync(dirname(rawRoot));
@@ -523,7 +578,6 @@ export async function prepareWorkerRuntimeProvenance(
       await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot);
     }
     const normalizedBytes = complete ? normalized : null;
-    const normalizedRoot = join(input.workspaceRoot, 'evidence', 'bundles', indexBundleId);
     if (normalizedBytes) {
       await adoptEvidenceDirectory(
         normalizedRoot,
@@ -1047,6 +1101,26 @@ function projectNativeFrame(
   }
 
   return { primaryThreadId, sessionId, spawnedChildren, valid };
+}
+
+/** Reclaims only stages of this owner's admitted bundle, including node B's UUID suffix. */
+async function reclaimProvenanceStages(root: string): Promise<void> {
+  const parent = dirname(root);
+  if (!(await pathExists(parent))) return;
+  if (!(await lstat(parent)).isDirectory())
+    throw new Error('Runtime provenance staging parent is unavailable.');
+  const prefix = `${basename(root)}.tmp-`;
+  for (const entry of await readdir(parent, { withFileTypes: true })) {
+    if (!entry.name.startsWith(prefix)) continue;
+    const suffix = entry.name.slice(prefix.length);
+    if (
+      suffix !== 'reserved' &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(suffix)
+    )
+      continue;
+    if (!entry.isDirectory()) throw new Error('Runtime provenance staging path is invalid.');
+    await removePrivateTree(join(parent, entry.name));
+  }
 }
 
 /** Atomically adopts one deterministic evidence directory or accepts exact replay. */

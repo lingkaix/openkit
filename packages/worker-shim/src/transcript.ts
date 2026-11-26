@@ -246,7 +246,7 @@ export class WorkerTranscriptWriter {
     void source?.catch(() => undefined);
     try {
       await this.enqueueLive(metadata, async () => {
-        if ((!original && !admitted) || this.observationDeliveryStopped) return false;
+        if (original ? this.observationDeliveryStopped : !admitted) return false;
         if (!original) await this.appendLive(record);
         decideDeclaration(!this.observationDeliveryStopped);
         await source;

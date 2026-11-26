@@ -134,6 +134,7 @@ export function reservedModelGap(
     ts: parent.ts,
     obs: parent.obs,
     ...(parent.corr === undefined ? {} : { corr: parent.corr }),
+    ...(parent.refs === undefined ? {} : { refs: parent.refs }),
     ret: 'turn-evidence',
     payload: {
       direction: parent.payload.direction,

@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
@@ -325,6 +327,77 @@ describe('ordinary observation collection budgets', () => {
         { summary: cutoff!.summary, live: false }
       )
     ).toEqual(rows);
+  });
+
+  it('refuses a competing CapabilityCall gap before it consumes the admitted body slot', async () => {
+    const f = await fixture('on');
+    const authorityActor = f.store.getTurnById(f.owner.turnId).triggerActor;
+    const startCall = () =>
+      startCapabilityCall({
+        ...f.owner,
+        workspaceDb: f.db,
+        workspaceId: f.db.workspaceId,
+        callId: allocateEntityId('cap'),
+        authorityActor,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses',
+        redactionClass: 'restricted',
+        serviceRef: 'worker-inference-gateway',
+      });
+    const original = await startCall();
+    const competing = await startCall();
+    expect(original.inserted && competing.inserted).toBe(true);
+    const refsFor = (id: string) => [
+      {
+        kind: 'capability-call',
+        scope: { workspaceId: f.db.workspaceId },
+        edge: 'association' as const,
+        locator: id,
+      },
+    ];
+    const base = model(randomUUID(), 'reserved-association');
+    const observation = {
+      ...base,
+      refs: refsFor(original.id),
+      payload: { ...base.payload, content: { state: 'expected' } },
+    };
+    const body = {
+      id: 'body',
+      bytes: Buffer.from('original'),
+      mediaType: 'application/json',
+      boundary: 'model.request',
+    };
+    const declared = { ...f.owner, observation, bodies: [body] };
+    await appendWorkObservation(f.db, { ...declared, deferBodyPublication: true });
+    await observe(f, runtimeBody('fit', 4_092, 4_092));
+    await expect(observe(f, tool('cross', 'cross', 'completed'))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'row-count', firstOmittedSequence: 3 },
+    });
+    const before = observationBytes(f);
+    const gap: WorkObservationDraft = {
+      ...base,
+      id: `${base.id}:gap:capture-failed`,
+      parent: base.id,
+      type: 'model.capture-gap',
+      refs: refsFor(competing.id),
+      payload: {
+        direction: 'request',
+        event: 'request',
+        attempt: 0,
+        content: { state: 'unavailable', reason: 'capture-failed' },
+      },
+    };
+    await expect(observe(f, gap)).rejects.toThrow();
+    expect(observationBytes(f)).toEqual(before);
+    await expect(appendWorkObservation(f.db, declared)).resolves.toMatchObject({
+      disposition: 'duplicate',
+    });
+    expect(readWorkObservations(f.db, f.owner).at(-1)).toMatchObject({
+      type: 'content.published',
+      parent: base.id,
+    });
   });
 
   it('reserves 4096 units including one companion and the unique chunk inventory', async () => {

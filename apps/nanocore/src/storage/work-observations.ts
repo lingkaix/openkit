@@ -1030,11 +1030,18 @@ function assertControlObservationLineage(
   }
 }
 
+function hasReservedModelBody(row: WorkObservationRecord): boolean {
+  return (
+    row.type === 'model.observed' &&
+    Array.isArray(row.payload.bodies) &&
+    row.payload.bodies.length > 0
+  );
+}
+
 function admitsReservedModelGap(parent: WorkObservationRecord, gap: WorkObservationDraft): boolean {
   return (
-    parent.type === 'model.observed' &&
-    Array.isArray(parent.payload.bodies) &&
-    parent.payload.bodies.length > 0 &&
+    hasReservedModelBody(parent) &&
+    isDeepStrictEqual(gap.refs, parent.refs) &&
     gap.parent === parent.id &&
     gap.ts === parent.ts &&
     gap.obs === parent.obs &&
@@ -1414,7 +1421,8 @@ function readObservationCollection(
 export function reserveWorkObservationProvenance(
   db: WorkspaceDb,
   input: { threadId: string; turnId: string },
-  raw: NonNullable<ObservationCounter['rawProvenance']>
+  raw: NonNullable<ObservationCounter['rawProvenance']>,
+  verifiedRetainedFamily: boolean
 ): z.infer<typeof ObservationOmissionResultSchema> | undefined {
   const { sqlite } = db;
   if (
@@ -1434,6 +1442,9 @@ export function reserveWorkObservationProvenance(
           throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
         return;
       }
+      // A node B receipt and verified originals already own these bytes. They remain
+      // covered by the retained census and replay even after an unrelated cutoff.
+      if (verifiedRetainedFamily) return;
       const cutoff = binding.turn.observationCutoff;
       if (cutoff) {
         if (cutoff.observationId !== raw.id || cutoff.workerSequence !== undefined)
@@ -1665,11 +1676,14 @@ export function applyControlWorkObservation(
     });
     if (
       parent &&
-      admitsReservedModelGap(parent, observation) &&
-      observation.id === `${parent.id}:gap:${content.reason}` &&
-      !readControlWorkObservation(sqlite, owner, { ...parsed, id: observation.id })
-    )
-      observation = reservedModelGap(parent, content.reason);
+      hasReservedModelBody(parent) &&
+      observation.id === `${parent.id}:gap:${content.reason}`
+    ) {
+      if (!admitsReservedModelGap(parent, observation))
+        throw new Error('recovery_required: reserved model gap lineage mismatch');
+      if (!readControlWorkObservation(sqlite, owner, { ...parsed, id: observation.id }))
+        observation = reservedModelGap(parent, content.reason);
+    }
   }
   const input: ControlWorkObservationInput = { ...parsed, observation };
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
