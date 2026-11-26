@@ -429,6 +429,13 @@ it('keeps the shim input unknown across reconnect and backend reopen after scope
     })
   ).toBe('applied');
 
+  await shim.poll(reconnected, async (inventory) => {
+    expect(inventory.receipts).toEqual([
+      { kind: 'input', key: receiptKey, disposition: 'unknown' },
+    ]);
+    return { ...desired, session: reconnected, revision: 2 };
+  });
+
   expectHeld(await f.backend.release(release), f.original);
   shim.observeChildExit(worker.workerId);
   await f.advanceToDeadline();
