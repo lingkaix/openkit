@@ -94,7 +94,7 @@ import {
   runNanoHostAttemptRecoveryMaintenance,
 } from './runtime/nanohost-attempt-recovery.js';
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
-import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
+import { createProductionNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { recoverPendingRequestsAtBoot } from './runtime/pending-request-flow.js';
 import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
 import {
@@ -216,7 +216,7 @@ let readFileReserveBytes = () =>
   runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? DEFAULT_FILE_RESERVE_BYTES;
 const fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(readFileReserveBytes()));
 getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
-const nanoHostSessionDispatch = createNanoHostSessionDispatch({
+const nanoHostSessionDispatch = createProductionNanoHostSessionDispatch({
   fileAdmission,
   get coreDb() {
     return coreDb;

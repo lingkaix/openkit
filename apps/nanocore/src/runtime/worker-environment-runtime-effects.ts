@@ -15,7 +15,10 @@ import {
   NativeEnvironmentValuesSchema,
 } from '@openkit/worker-protocol';
 import { commandInputHash } from './idempotent-command.js';
-import type { NanoHostSessionDispatch } from './nanohost-session-dispatch.js';
+import {
+  NanoHostEffectNotEnqueuedError,
+  type NanoHostSessionDispatch,
+} from './nanohost-session-dispatch.js';
 import {
   projectWorkerReleaseIdentity,
   requireMatchingWorkerReleaseIdentity,
@@ -147,6 +150,7 @@ export function createWorkerEnvironmentRuntimeEffects(
         }
         imageDigest = requireDigest(
           await dispatch.effect({
+            beforeDelivery: deliveryAuthority(input.authorize),
             input: {
               arguments: image.arguments,
               argumentsDigest: image.argumentsDigest,
@@ -168,6 +172,7 @@ export function createWorkerEnvironmentRuntimeEffects(
       requireAuthorized(input.authorize);
       const inspection = parseNanoHostImageInspection(
         await dispatch.effect({
+          beforeDelivery: deliveryAuthority(input.authorize),
           input: { imageDigest },
           kind: 'image.inspect',
           requestId: effectRequestId(preparationId, 'image.inspect'),
@@ -186,6 +191,7 @@ export function createWorkerEnvironmentRuntimeEffects(
       const imageDigest = requiredDigest(input.imageDigest, 'image');
       const inspection = parseNanoHostImageInspection(
         await dispatch.effect({
+          beforeDelivery: deliveryAuthority(input.authorize),
           input: { imageDigest },
           kind: 'image.inspect',
           requestId: effectRequestId(input.requestId, 'image.inspect'),
@@ -219,6 +225,7 @@ export function createWorkerEnvironmentRuntimeEffects(
       requireAuthorized(input.authorize);
       const result = requireStorageInspection(
         await dispatch.effect({
+          beforeDelivery: deliveryAuthority(input.authorize),
           input: {
             attachmentGeneration: input.binding.attachmentGeneration,
             storageRef: input.binding.storageRef,
@@ -245,16 +252,31 @@ export function createWorkerEnvironmentRuntimeEffects(
       if (input.binding.state !== 'purge-pending') {
         throw new Error('Worker storage is not reserved for purge.');
       }
-      const result = requirePurgeResult(
-        await dispatch.effect({
+      const kind = 'storage.purge';
+      const requestId = effectRequestId(input.commandRequestId, kind);
+      let reply: unknown;
+      try {
+        reply = await dispatch.effect({
+          beforeDelivery: deliveryAuthority(input.authorize),
           input: {
             attachmentGeneration: input.binding.attachmentGeneration,
             storageRef: input.binding.storageRef,
           },
-          kind: 'storage.purge',
-          requestId: effectRequestId(input.commandRequestId, 'storage.purge'),
-        })
-      );
+          kind,
+          requestId,
+        });
+      } catch (error) {
+        if (
+          error instanceof NanoHostEffectNotEnqueuedError &&
+          error.operation === kind &&
+          error.requestId === requestId
+        ) {
+          // The exact command never entered the queue. Retain the original storage.
+          return { state: 'retained', storageRef: input.binding.storageRef };
+        }
+        throw error;
+      }
+      const result = requirePurgeResult(reply);
       if (result.storageRef !== input.binding.storageRef) {
         throw new Error('NanoHost storage purge returned a different association.');
       }
@@ -397,6 +419,11 @@ function requireDigest(value: unknown): string {
 }
 
 /** Rejects calls that bypass the current operation owner authorization. */
+/** Carries the initiating environment owner's live check into the synchronous first write. */
+function deliveryAuthority(authorize: () => boolean): () => () => void {
+  return () => () => requireAuthorized(authorize);
+}
+
 function requireAuthorized(authorize: () => boolean): void {
   if (!authorize()) throw new Error('Worker environment operation is not authorized.');
 }

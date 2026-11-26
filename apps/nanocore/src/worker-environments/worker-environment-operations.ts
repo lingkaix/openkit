@@ -181,8 +181,13 @@ export function createWorkerEnvironmentOperations(
       const storage = await dependencies.runtimeEffects.inspectStorage({
         authorize: () => {
           try {
-            readCurrentBinding();
-            return true;
+            const current = readCurrentBinding();
+            return (
+              current.storageRef === binding.storageRef &&
+              current.attachmentGeneration === binding.attachmentGeneration &&
+              current.scopeDigest === binding.scopeDigest &&
+              current.layoutDigest === binding.layoutDigest
+            );
           } catch {
             return false;
           }
@@ -232,7 +237,18 @@ export function createWorkerEnvironmentOperations(
           let outcome: 'purged' | 'retained' | 'unknown';
           try {
             const result = await dependencies.runtimeEffects.purgeStorage({
-              authorize: () => hasOperationAuthority(dependencies.coreDb, context, true),
+              authorize: () => {
+                if (!hasOperationAuthority(dependencies.coreDb, context, true)) return false;
+                const current = getWorkerStorageBinding(dependencies.coreDb, {
+                  storageRef: pending.storageRef,
+                });
+                return (
+                  current?.state === 'purge-pending' &&
+                  current.revision === pending.revision &&
+                  current.attachmentGeneration === pending.attachmentGeneration &&
+                  !hasSurvivingWork(dependencies, current)
+                );
+              },
               binding: pending,
               commandRequestId: input.requestId,
             });
