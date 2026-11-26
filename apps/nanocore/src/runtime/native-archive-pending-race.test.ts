@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -10,6 +19,7 @@ import { commandRequestKey, FsStore } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import {
   CONTROL_PENDING_PLAN_BYTES,
+  type ControlPendingPlan,
   controlPendingPlanInputs,
 } from '../storage/control-store-pending-plan.js';
 import {
@@ -21,7 +31,11 @@ import {
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { plannedRetainedProductJson, prepareProductFile } from '../storage/immutable-content.js';
+import {
+  pendingPlanStagePath,
+  plannedRetainedProductJson,
+  prepareProductFile,
+} from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   copyRetainedPendingHistory,
@@ -35,6 +49,7 @@ import { commandInputHash, runIdempotentCommand } from './idempotent-command.js'
 import {
   archiveThreadWithCloseout,
   raiseRecordedPendingRequest,
+  recoverPendingRequestsAtBoot,
   respondRecordedApproval,
 } from './pending-request-flow.js';
 import {
@@ -48,6 +63,31 @@ const archiveReadFault = vi.hoisted(() => ({
   planIo: undefined as Int32Array | undefined,
   workers: 0,
 }));
+
+/** Replaces the staged plan for a writer fault, keeping the original body's staging ownership. */
+async function replaceGroupedPlan(
+  scope: ReturnType<typeof nativeProductScope>,
+  reference: ControlPendingPlan['plan'],
+  bytes: Buffer
+): Promise<ControlPendingPlan['plan']> {
+  const root = scope.contentMount.root;
+  const staged = await prepareProductFile(
+    scope.contentMount,
+    scope.owner,
+    join(dirname(dirname(root)), 'runtime', 'staging'),
+    bytes
+  );
+  const temporary = staged.publication.temporary;
+  const stage = pendingPlanStagePath(root, temporary);
+  renameSync(pendingPlanStagePath(root, reference.temporary), stage);
+  renameSync(join(root, temporary), join(stage, 'plan'));
+  return {
+    ...reference,
+    temporary,
+    byteLength: staged.content.byteLength,
+    contentDigest: staged.content.reference.contentDigest,
+  };
+}
 
 // Private interception runs the actual entry and fails a real read only after owner initialization.
 vi.mock('node:worker_threads', async (load) => {
@@ -78,17 +118,28 @@ vi.mock('node:worker_threads', async (load) => {
           const firstSynced = Promise.withResolvers();
           files.open = async function(path, ...args) {
             const origin = String(new Error().stack);
+            const opensPlan = origin.includes('prepareControlPendingPlan');
+            const mode = Atomics.load(io, 0);
+            if (mode === 5 && opensPlan) {
+              Atomics.add(io, 2, 1);
+              throw Object.assign(new Error('plan open failed'), {code: 'EIO'});
+            }
             const file = await open(path, ...args);
             const read = file.read.bind(file);
-            if (Atomics.load(io, 0) === 1 && !measuredPlan &&
-                origin.includes('prepareControlPendingPlan')) {
+            if (mode === 4 && opensPlan) {
+              file.read = async (buffer) => {
+                Atomics.add(io, 2, 1);
+                return {bytesRead: 0, buffer};
+              };
+            }
+            if (mode === 1 && !measuredPlan && opensPlan) {
               measuredPlan = true;
               file.read = async (buffer, offset, length, position) => {
                 Atomics.store(io, 1, Math.max(Atomics.load(io, 1), length));
                 return read(buffer, offset, length, position);
               };
             }
-            if (Atomics.load(io, 0) === 2 && origin.includes('preparePrivateControlContent') &&
+            if (mode === 2 && origin.includes('preparePrivateControlContent') &&
                 String(path).endsWith('.tmp')) {
               const part = Atomics.add(io, 1, 1);
               if (part === 0) {
@@ -1188,7 +1239,10 @@ describe('native standalone archive and concurrent Pending raise', () => {
         if (fault === 'reference operation')
           return post(database, { plan: { ...input.plan, operation: 'pending-boot' } });
         const scope = nativeProductScope(f.root, f.turn.owner);
-        const path = join(scope.contentMount.root, input.plan.temporary);
+        const path = join(
+          pendingPlanStagePath(scope.contentMount.root, input.plan.temporary),
+          'plan'
+        );
         const lines = readFileSync(path, 'utf8').split('\n');
         const header = JSON.parse(lines[0]!);
         if (fault === 'group count') header.groups++;
@@ -1199,21 +1253,9 @@ describe('native standalone archive and concurrent Pending raise', () => {
         }
         header.inputs = controlPendingPlanInputs(f.reader.sqlite, f.workspace.id, header.threadId);
         lines[0] = JSON.stringify(header);
-        const staged = await prepareProductFile(
-          scope.contentMount,
-          scope.owner,
-          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-          Buffer.from(lines.join('\n'))
-        );
-        rmSync(path);
+        const plan = await replaceGroupedPlan(scope, input.plan, Buffer.from(lines.join('\n')));
         return post(database, {
-          plan: {
-            ...input.plan,
-            operation: header.operation,
-            temporary: staged.publication.temporary,
-            byteLength: staged.content.byteLength,
-            contentDigest: staged.content.reference.contentDigest,
-          },
+          plan: { ...plan, operation: header.operation },
         });
       });
       await expect(
@@ -1231,6 +1273,103 @@ describe('native standalone archive and concurrent Pending raise', () => {
     },
     90_000
   );
+
+  it.each(['terminal', 'receipt'] as const)(
+    'refuses a rename smuggled into the archive $0 mutation',
+    async (form) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const publish = f.store.publishPendingPlan.bind(f.store);
+      vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
+        (workspaceId, header, groups, turns) => {
+          const target = groups.find((group) => group.kind === 'pending');
+          if (!target?.input.terminal) throw new Error('Missing original archive closeout.');
+          const owner = form === 'receipt' ? target.input.admission : target.input.terminal;
+          if (!owner?.products[0]) throw new Error('Missing original archive mutation.');
+          owner.products[0].record.name = 'Independent rename';
+          return publish(workspaceId, header, groups, turns);
+        }
+      );
+      const result =
+        form === 'receipt'
+          ? archiveThread(f.archive, f.dependencies, actor)
+          : archiveThreadWithCloseout(
+              f.store,
+              { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+              f.workspace.id,
+              f.thread.id,
+              { kind: 'user', id: userId }
+            );
+      await expect(result).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
+  it('refuses a grouped Boot person freeze without its completion', async () => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    const pending = {
+      openWorkspace: f.dependencies.repositoryWorkspaceDb,
+      agentAuthority: () => true,
+    };
+    await respondRecordedApproval({
+      store: f.store,
+      sqlite: f.reader.sqlite,
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      approvalRequestId: f.raise.requestId,
+      decision: 'denied',
+      actorId: userId,
+      coreDb: undefined,
+      requestActor: actor,
+      dependencies: pending,
+    });
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)?.delivery).toBe('undelivered');
+    const original = workspaceEvidence(f.root, f.workspace.id);
+    const publish = f.store.publishPendingPlan.bind(f.store);
+    let refusal: unknown;
+    const plans = vi
+      .spyOn(f.store, 'publishPendingPlan')
+      .mockImplementationOnce(async (workspaceId, header, groups, turns) => {
+        const admission = groups.find((group) => group.kind === 'products')?.transition
+          .pending?.[0];
+        const completion = groups.find((group) => group.kind === 'terminal');
+        expect(admission).toMatchObject({ action: 'freeze', executor: 'person' });
+        expect(completion?.input.pending).toEqual([
+          expect.objectContaining({
+            action: 'delivery-prove',
+            turnId: completion!.input.turn.record.id,
+          }),
+        ]);
+        try {
+          return await publish(
+            workspaceId,
+            header,
+            groups.filter((group) => group !== completion),
+            turns
+          );
+        } catch (error) {
+          refusal = error;
+          throw error;
+        }
+      });
+    f.store.startPendingRequestDelivery(pending);
+    await recoverPendingRequestsAtBoot(f.store, pending);
+    expect(plans).toHaveBeenCalledTimes(1);
+    expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    closeFixtureReaders();
+    await shutdownControlStoreWorkerClient();
+    expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+  }, 90_000);
 
   it('refuses an unselected Item in the original closeout Turn', async () => {
     const f = await fixture();
@@ -1342,11 +1481,19 @@ describe('native standalone archive and concurrent Pending raise', () => {
   }, 90_000);
 
   it.each([
-    { mode: 2, phase: 'preparation', code: 'precondition' },
+    { mode: 0, phase: 'Workspace binding', code: 'precondition' },
+    { mode: 0, phase: 'staged-name binding', code: 'precondition' },
+    { mode: 5, phase: 'plan open', code: 'sql-failed' },
+    { mode: 0, phase: 'plan length', code: 'precondition' },
+    { mode: 4, phase: 'plan read', code: 'precondition' },
+    { mode: 0, phase: 'plan digest', code: 'precondition' },
+    { mode: 0, phase: 'first frame', code: 'precondition' },
+    { mode: 0, phase: 'header operation', code: 'precondition' },
+    { mode: 2, phase: 'body preparation', code: 'precondition' },
     { mode: 3, phase: 'grouped link', code: 'sql-failed' },
   ])(
     'keeps retained rows and file inventories intact after $phase fails',
-    async ({ mode, code }) => {
+    async ({ mode, phase, code }) => {
       const io = new Int32Array(new SharedArrayBuffer(12));
       archiveReadFault.planIo = io;
       const f = await fixture();
@@ -1356,10 +1503,45 @@ describe('native standalone archive and concurrent Pending raise', () => {
         completedAt: f.turn.startedAt!,
       });
       const original = workspaceEvidence(f.root, f.workspace.id);
+      const scope = nativeProductScope(f.root, f.turn.owner);
+      let afterWriter: typeof original | undefined;
+      const client = getControlStoreWorkerClient();
+      const post = client.pendingCommand.bind(client);
+      vi.spyOn(client, 'pendingCommand').mockImplementationOnce(async (database, input) => {
+        if (!('plan' in input)) throw new Error('Missing staged grouped plan.');
+        let plan = input.plan;
+        const stage = pendingPlanStagePath(scope.contentMount.root, plan.temporary);
+        expect(readdirSync(stage).filter((name) => name.endsWith('.tmp')).length).toBeGreaterThan(
+          1
+        );
+        const path = join(stage, 'plan');
+        if (phase === 'Workspace binding') plan = { ...plan, workspaceId: 'different-workspace' };
+        if (phase === 'staged-name binding')
+          plan = { ...plan, contentDigest: `sha256:${'0'.repeat(64)}` };
+        if (phase === 'plan length') plan = { ...plan, byteLength: plan.byteLength + 1 };
+        if (phase === 'plan digest') {
+          const bytes = readFileSync(path);
+          bytes[0] = 0x5b;
+          chmodSync(path, 0o600);
+          writeFileSync(path, bytes);
+          chmodSync(path, 0o444);
+        }
+        if (phase === 'first frame') {
+          const lines = readFileSync(path, 'utf8').split('\n');
+          lines.splice(1, 0, '{"kind":"unknown-group"}');
+          plan = await replaceGroupedPlan(scope, plan, Buffer.from(lines.join('\n')));
+        }
+        if (phase === 'header operation') plan = { ...plan, operation: 'pending-boot' };
+        try {
+          return await post(database, { plan });
+        } finally {
+          // Observe the writer's own release before the sender unwinds a refused post.
+          afterWriter = workspaceEvidence(f.root, f.workspace.id);
+        }
+      });
       const publish = f.store.publishPendingPlan.bind(f.store);
       vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
         async (workspaceId, header, groups, turns) => {
-          const scope = nativeProductScope(f.root, f.turn.owner);
           const stage = async (entry: Parameters<typeof ControlProductEntrySchema.parse>[0]) => {
             const parsed = ControlProductEntrySchema.parse(entry);
             const reference = parsed.content.reference;
@@ -1407,11 +1589,12 @@ describe('native standalone archive and concurrent Pending raise', () => {
         () => undefined,
         (error: unknown) => error
       );
-      expect(Atomics.load(io, 2)).toBe(1);
+      if (mode) expect(Atomics.load(io, 2)).toBe(1);
       if (mode === 2) expect(Atomics.load(io, 1)).toBe(2);
       closeFixtureReaders();
       await shutdownControlStoreWorkerClient();
       expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+      expect(afterWriter).toEqual(original);
       expect(failure).toMatchObject({ code, commit: 'not-committed' });
     },
     90_000

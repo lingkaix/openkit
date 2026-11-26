@@ -129,6 +129,12 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
+import {
+  createPrivateMetadataDirectory,
+  discardStagedFiles,
+  movePrivateTree,
+  removePrivateTree,
+} from '@openkit/storage';
 import { parse as parseJsonc } from 'jsonc-parser';
 import { ArtifactReviewError, type ControlReviewCommandInput } from '../artifact-review-codecs.js';
 import type { CreateArtifactReviewInput } from '../artifact-reviews.js';
@@ -247,6 +253,7 @@ import {
   type ControlPendingPlanGroup,
   controlPendingPlanTerminalGroups,
   encodeControlPendingPlan,
+  pendingPlanBodyNames,
 } from '../storage/control-store-pending-plan.js';
 import {
   type ControlProductEntry,
@@ -296,6 +303,7 @@ import {
   workspaceDbPath,
 } from '../storage/fs-layout.js';
 import {
+  pendingPlanStagePath,
   plannedRetainedProductJson,
   prepareProductFile,
   prepareRetainedProductJson,
@@ -4539,14 +4547,9 @@ export class FsStore {
   ): Promise<ControlPendingCommandResult> {
     const owner = { kind: 'workspace' as const, workspaceId };
     const scope = this.nativeScope(owner);
-    const bytes = encodeControlPendingPlan({ workspaceId, ...header }, groups);
+    const root = scope.contentMount.root;
+    const bodies = [...pendingPlanBodyNames(groups)];
     const post = async (plan: Buffer) => {
-      const file = await prepareProductFile(
-        scope.contentMount,
-        scope.owner,
-        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-        plan
-      );
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
       await client.open({
@@ -4558,20 +4561,48 @@ export class FsStore {
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       });
-      return client.pendingCommand(database, {
-        plan: {
-          workspaceId,
-          operation: header.operation,
-          temporary: file.publication.temporary,
-          contentDigest: file.content.reference.contentDigest,
-          byteLength: file.content.byteLength,
-        },
-      });
+      const file = await prepareProductFile(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+        plan
+      );
+      const temporary = file.publication.temporary;
+      const unstaged = join(root, temporary);
+      const stage = pendingPlanStagePath(root, temporary);
+      let created = false;
+      try {
+        await createPrivateMetadataDirectory(stage);
+        created = true;
+        await movePrivateTree(unstaged, join(stage, 'plan'));
+        for (const name of bodies) await movePrivateTree(join(root, name), join(stage, name));
+        return await client.pendingCommand(database, {
+          plan: {
+            workspaceId,
+            operation: header.operation,
+            temporary,
+            contentDigest: file.content.reference.contentDigest,
+            byteLength: file.content.byteLength,
+          },
+        });
+      } catch (error) {
+        // A locally refused post never transfers its stage to the writer.
+        if (created && !(error instanceof ControlStoreWorkerError && error.commit === 'unknown'))
+          await removePrivateTree(stage);
+        throw error;
+      } finally {
+        await removePrivateTree(unstaged);
+      }
     };
-    // The Turn boundary carries no plan bytes; the post reads them from this closure.
-    if (turns.length) return this.publishTurn(owner, turns, null, () => post(bytes));
-    const release = this.enterWorkspaceMutation(workspaceId);
-    return post(bytes).finally(release);
+    try {
+      const bytes = encodeControlPendingPlan({ workspaceId, ...header }, groups);
+      // The Turn boundary carries no plan bytes; the post reads them from this closure.
+      if (turns.length) return await this.publishTurn(owner, turns, null, () => post(bytes));
+      const release = this.enterWorkspaceMutation(workspaceId);
+      return await post(bytes).finally(release);
+    } finally {
+      discardStagedFiles(bodies.map((name) => ({ temporary: join(root, name) })));
+    }
   }
 
   /**

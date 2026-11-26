@@ -110,6 +110,8 @@ export interface ControlContentPreparation {
    * refusal and before its COMMIT; absent for every ordinary batch.
    */
   readonly deferred?: { readonly temporary: string; readonly path: string }[];
+  /** Private body names of one grouped plan resolve only inside its own staging directory. */
+  readonly privateRoot?: string;
   /** Item entries an earlier group of the same grouped decision writes before this one decides. */
   readonly planned?: ReadonlyMap<string, PreparedControlEntry>;
   /** Rows an earlier group of the same grouped decision freezes, by delivery Turn. */
@@ -312,6 +314,22 @@ function withReceivedInfluence(
       restrict('agent-session', turn.agentSessionId);
   }
   return [...planned.values()];
+}
+
+/** Both archive forms may change only the original Thread's archive status and clock. */
+export function assertArchiveMutation(db: WorkspaceDb, archive: ControlProductMutation): void {
+  const row = db.sqlite
+    .prepare('SELECT record_json FROM control_threads WHERE id=?')
+    .get(archive.record.id as string) as { record_json: string } | undefined;
+  if (!row) throw new ControlProductPreconditionError();
+  const raw: unknown = JSON.parse(row.record_json);
+  const original = decode('thread', raw, { kind: 'workspace', workspaceId: db.workspaceId });
+  const expected = preserveDescriptiveRecord(raw, original, {
+    ...original,
+    status: 'archived',
+    updatedAt: archive.record.updatedAt,
+  });
+  if (!isDeepStrictEqual(archive.record, expected)) throw new ControlProductPreconditionError();
 }
 
 /** Shared SQL mechanics; only the complete terminal owner supplies its exact terminal identity. */
@@ -975,7 +993,13 @@ async function synchronizeControlContent(
       reference.locator.path !== `sha256/${reference.contentDigest.slice('sha256:'.length)}`
     )
       throw new ControlProductPreconditionError();
-    return preparePrivateControlContent(path, root, fileContent, entry, newDirectories);
+    return preparePrivateControlContent(
+      path,
+      newDirectories.privateRoot ?? root,
+      fileContent,
+      entry,
+      newDirectories
+    );
   }
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes: Buffer;

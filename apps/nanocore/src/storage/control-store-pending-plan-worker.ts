@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { type FileHandle, open } from 'node:fs/promises';
+import { type FileHandle, open, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { writeRetainedV1 } from '@openkit/protocol';
-import { discardStagedFiles, linkStagedFiles, removeConsumedStagedFile } from '@openkit/storage';
+import { linkStagedFiles } from '@openkit/storage';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   applyControlPendingCommand,
@@ -56,7 +56,7 @@ import {
   preparedControlTerminalEntries,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
-import { prepareRetainedProductJson } from './immutable-content.js';
+import { pendingPlanStagePath, prepareRetainedProductJson } from './immutable-content.js';
 import { prepareWorkspaceQueueInputBatch } from './workspace-queue-inputs.js';
 
 type PreparedGroup =
@@ -156,34 +156,6 @@ async function readPendingPlanFrames(file: FileHandle, plan: PlanReference) {
   )
     throw new ControlProductPreconditionError();
   return { header, groups, complete: complete && parts.length === 0 };
-}
-
-/** Claims only private names whose validated descriptors name the expected digest. */
-function rememberPlanTemporaries(
-  root: string,
-  entries: readonly ControlProductEntry[],
-  temporaries: Set<string>
-): void {
-  for (const entry of entries)
-    if (
-      entry.publication?.temporary.startsWith(
-        `.${entry.content.reference.contentDigest.slice('sha256:'.length)}.`
-      )
-    )
-      temporaries.add(join(root, entry.publication.temporary));
-}
-
-/** Collects the native-owned staged names from one authenticated frame. */
-function rememberGroupTemporaries(root: string, group: PlanGroup, temporaries: Set<string>): void {
-  if (group.kind === 'entries') rememberPlanTemporaries(root, group.entries, temporaries);
-  if (group.kind === 'products')
-    rememberPlanTemporaries(root, group.transition.entries, temporaries);
-  if (group.kind === 'terminal') rememberPlanTemporaries(root, group.input.entries, temporaries);
-  if (group.kind === 'pending') {
-    rememberPlanTemporaries(root, group.input.entries, temporaries);
-    rememberPlanTemporaries(root, group.input.admission?.entries ?? [], temporaries);
-    rememberPlanTemporaries(root, group.input.terminal?.entries ?? [], temporaries);
-  }
 }
 
 /** The live packet holds one Thread's closeout, with no other product or command effects. */
@@ -319,6 +291,7 @@ function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGro
       throw new ControlProductPreconditionError();
     }
   }
+  if (admitted.size) throw new ControlProductPreconditionError();
 }
 
 /** Limits a closeout's entries to its one completion and its selected requests' projections. */
@@ -365,8 +338,8 @@ function assertPendingBootItem(db: WorkspaceDb, item: import('@openkit/protocol'
 /**
  * Verifies the exact private plan bytes and prepares its ordered groups outside SQL, on the
  * existing preparation of each packet. New bodies stay private: their names are deferred until the
- * grouped decision passes its last definite local refusal. The staged plan is consumed here and
- * confers no replay authority.
+ * grouped decision passes its last definite local refusal. The queued request owns the directory
+ * through settlement, including a refusal before the first frame can be decoded.
  */
 export async function prepareControlPendingPlan(
   db: WorkspaceDb,
@@ -377,36 +350,29 @@ export async function prepareControlPendingPlan(
   const { plan } = ControlPendingPlanSchema.parse(value);
   if (db.sqlite.inTransaction || plan.workspaceId !== db.workspaceId)
     throw new ControlProductPreconditionError();
-  const path = join(mount.root, plan.temporary);
+  const stage = pendingPlanStagePath(mount.root, plan.temporary);
   if (!plan.temporary.startsWith(`.${plan.contentDigest.slice('sha256:'.length)}.`))
     throw new ControlProductPreconditionError();
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  if ((await realpath(stage)) !== stage) throw new ControlProductPreconditionError();
+  const file = await open(join(stage, 'plan'), constants.O_RDONLY | constants.O_NOFOLLOW);
   let frames: Awaited<ReturnType<typeof readPendingPlanFrames>>;
   try {
     frames = await readPendingPlanFrames(file, plan);
   } finally {
     await file.close();
-    await removeConsumedStagedFile(path);
   }
   const { header, groups: framesToPrepare, complete } = frames;
-  const temporaries = new Set<string>();
-  for (const group of framesToPrepare) rememberGroupTemporaries(mount.root, group, temporaries);
-  try {
-    if (
-      !header ||
-      !complete ||
-      header.workspaceId !== plan.workspaceId ||
-      header.operation !== plan.operation ||
-      (header.operation === 'pending-closeout') !== (header.threadId !== null) ||
-      header.groups !== framesToPrepare.length
-    )
-      throw new ControlProductPreconditionError();
-    assertPendingPlanOperation(header, framesToPrepare);
-    return await preparePendingPlanGroups(db, owner, mount, header, framesToPrepare, temporaries);
-  } catch (error) {
-    discardStagedFiles([...temporaries].map((temporary) => ({ temporary })));
-    throw error;
-  }
+  if (
+    !header ||
+    !complete ||
+    header.workspaceId !== plan.workspaceId ||
+    header.operation !== plan.operation ||
+    (header.operation === 'pending-closeout') !== (header.threadId !== null) ||
+    header.groups !== framesToPrepare.length
+  )
+    throw new ControlProductPreconditionError();
+  assertPendingPlanOperation(header, framesToPrepare);
+  return await preparePendingPlanGroups(db, owner, mount, header, framesToPrepare, stage);
 }
 
 /** Prepares authenticated groups without linking any new canonical name. */
@@ -416,7 +382,7 @@ async function preparePendingPlanGroups(
   mount: ControlProductContentMount,
   header: PlanHeader,
   frames: readonly PlanGroup[],
-  temporaries: Set<string>
+  privateRoot: string
 ): Promise<PreparedControlPendingPlan> {
   const planned = new Map<string, PreparedControlEntry>();
   const frozen = new Map<string, Set<string>>();
@@ -426,6 +392,7 @@ async function preparePendingPlanGroups(
     publications: new Map(),
     published: new Set<string>(),
     deferred: [] as { temporary: string; path: string }[],
+    privateRoot,
     planned,
     frozen,
   };
@@ -584,7 +551,8 @@ async function preparePendingPlanGroups(
           mount,
           owner,
           join(dirname(dirname(db.sqlite.name)), 'runtime', 'staging'),
-          writeRetainedV1(append.item)
+          writeRetainedV1(append.item),
+          privateRoot
         );
         // A later Item on the same Turn follows the Items earlier groups append to it.
         const entry: ControlProductEntry = {
@@ -594,7 +562,6 @@ async function preparePendingPlanGroups(
           expectedRevision: append.revision,
           ...body,
         };
-        rememberPlanTemporaries(mount.root, [entry], temporaries);
         if (['pending', 'running'].includes(String(append.head.record.status))) {
           const entries = await prepareControlEntries(owner, mount, [entry], content);
           note(entries);
@@ -652,20 +619,13 @@ export function applyControlPendingPlan(
 ): ControlPendingCommandResult {
   if (!db.sqlite.inTransaction || prepared.workspaceId !== db.workspaceId)
     throw new ControlProductPreconditionError();
-  try {
-    // Inside one rollback boundary the recheck's place decides only which refusal is reported. A
-    // Boot group refuses any changed input first, as its Workspace records; a live closeout lets
-    // each owner report its own typed refusal first, then refuses an input no owner rechecks.
-    const unchanged =
-      controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId) === prepared.inputs;
-    if (prepared.operation === 'pending-boot' && !unchanged)
-      throw new ControlProductPreconditionError();
-    return decideControlPendingPlan(db, owner, prepared, unchanged);
-  } catch (error) {
-    // A refused decision links nothing; its private bodies are removed with its rolled-back rows.
-    discardStagedFiles(prepared.content.deferred);
-    throw error;
-  }
+  // Inside one rollback boundary Boot refuses changing inputs first; a live closeout lets each
+  // owner report its own typed refusal before the complete selection comparison.
+  const unchanged =
+    controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId) === prepared.inputs;
+  if (prepared.operation === 'pending-boot' && !unchanged)
+    throw new ControlProductPreconditionError();
+  return decideControlPendingPlan(db, owner, prepared, unchanged);
 }
 
 /** Each owner's own decision in order, the closeout recheck, then the deferred names. */

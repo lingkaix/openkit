@@ -337,7 +337,7 @@ import {
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
-import { prepareRetainedProductJson } from './immutable-content.js';
+import { pendingPlanStagePath, prepareRetainedProductJson } from './immutable-content.js';
 import {
   applyAppMigrations,
   applyNativeScopeMigrations,
@@ -2909,6 +2909,20 @@ function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWo
   try {
     request.preparedSchemaApplication?.close();
     request.preparedVaultRead?.close();
+    // The grouped request owns its stage even when preparation never decoded the plan.
+    if (request.operation === 'pending' && 'plan' in request.input && owner.contentMount) {
+      try {
+        removePrivateTreeSync(
+          pendingPlanStagePath(owner.contentMount.root, request.input.plan.temporary)
+        );
+      } catch {
+        result = failure(
+          request.id,
+          'unavailable',
+          result.status === 'error' ? result.commit : 'unknown'
+        );
+      }
+    }
     reply(result);
   } finally {
     request.finish();

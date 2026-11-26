@@ -31,6 +31,7 @@ import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlTerminal,
+  assertArchiveMutation,
   type PreparedControlEntry,
   type PreparedControlTerminal,
   prepareControlEntries,
@@ -342,18 +343,25 @@ export function applyControlPendingTransition(
         400
       );
     const input = transition.input;
-    if (
-      input.action === 'closeout' &&
-      (transition.admission?.receipt.command === 'thread.archive' ||
-        transition.terminal.products.some(
-          ({ kind, record }) =>
-            kind === 'thread' && record.id === input.threadId && record.status === 'archived'
-        )) &&
-      db.sqlite
-        .prepare("SELECT 1 FROM control_turns WHERE thread_id=? AND status IN('pending','running')")
-        .get(input.threadId)
-    )
-      assertControlPendingArchive(db, input.threadId, prepared);
+    if (input.action === 'closeout') {
+      const archive = [
+        ...transition.terminal.products,
+        ...(transition.admission?.products ?? []),
+      ].find(
+        ({ kind, record }) =>
+          kind === 'thread' && record.id === input.threadId && record.status === 'archived'
+      );
+      if (
+        (archive || transition.admission?.receipt.command === 'thread.archive') &&
+        db.sqlite
+          .prepare(
+            "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN('pending','running')"
+          )
+          .get(input.threadId)
+      )
+        assertControlPendingArchive(db, input.threadId, prepared);
+      if (archive) assertArchiveMutation(db, archive);
+    }
     applyControlTerminal(db, transition.terminal, terminal);
     result = {
       requestIds: transition.input.expected?.map((source) => source.requestId) ?? [],
