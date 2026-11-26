@@ -13,6 +13,7 @@ import { withTurnModelCapture } from '../llm/model-capture.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { AssistantSkillAdmission } from '../storage/work-observations.js';
+import { ObservationCollectionStoppedError } from '../storage/work-observations.js';
 import {
   AssistantSkillResourceError,
   type AssistantSkillResources,
@@ -71,6 +72,7 @@ export interface AssistantCommandRunInput {
   >;
   readonly profileId: string | null;
   readonly limits: InternalAgentLoopInput['limits'];
+  readonly onCollectionStop?: (error: ObservationCollectionStoppedError) => void;
   readonly signal: AbortSignal;
   readonly readContextEvidence?: InternalAgentContextInput['readEvidence'];
 }
@@ -173,6 +175,7 @@ export async function runAssistantCommand(
       turn,
       ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
       requireAssistantSkillAdmission: true,
+      ...(input.onCollectionStop ? { onCollectionStop: input.onCollectionStop } : {}),
       environment: {
         systemPrompt: assembly.systemPrompt,
         tools: assembly.tools,
@@ -396,6 +399,7 @@ export async function runAssistantModel(input: {
     }
   );
   if (exit.kind === 'aborted') {
+    if (input.signal.reason instanceof ObservationCollectionStoppedError) throw input.signal.reason;
     if (!input.signal.aborted && prepared?.signal.aborted)
       throw new TurnStartValidationError('provider_call_timeout', 'Provider call timed out.', 504);
     throw aborted();

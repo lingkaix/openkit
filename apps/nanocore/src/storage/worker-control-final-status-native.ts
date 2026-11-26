@@ -60,9 +60,11 @@ export function applyControlWorkerFinalStatus(
   );
   const hash = db.sqlite
     .prepare(
-      'SELECT worker_control_token_hash AS tokenHash FROM scheduler_execution_attempts WHERE binding_ref = ?'
+      'SELECT worker_control_token_hash AS tokenHash, terminal_cause AS terminalCause FROM scheduler_execution_attempts WHERE binding_ref = ?'
     )
-    .get(input.sandboxBindingRef) as { tokenHash: string | null } | undefined;
+    .get(input.sandboxBindingRef) as
+    | { tokenHash: string | null; terminalCause: string | null }
+    | undefined;
   if (
     !hash?.tokenHash ||
     !/^[0-9a-f]{64}$/.test(hash.tokenHash) ||
@@ -103,6 +105,9 @@ export function applyControlWorkerFinalStatus(
     operation: 'event_append',
     sequence,
     fingerprint: canonicalJsonText(event),
+    ...(payload.requireContinuous || hash.terminalCause === 'observation_limit_reached'
+      ? { requireContinuous: true }
+      : {}),
   });
   if (eventSequence.status !== 'accepted')
     throw new WorkerFinalStatusRefusal(eventSequence.code, eventSequence.message, 409);

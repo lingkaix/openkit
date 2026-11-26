@@ -14,6 +14,7 @@ import {
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -108,7 +109,8 @@ export async function classifyNanoHostAttemptsAfterRestart(
         hasPendingWorkerCancellationFinal(native, timestamp)
       )
         continue;
-      const eligible = isNanoHostAttemptReconnectEligible(native, session, timestamp);
+      const cutoff = readWorkspaceObservationCutoff(coreDb.dataRoot, attempt);
+      const eligible = !cutoff && isNanoHostAttemptReconnectEligible(native, session, timestamp);
       if (eligible) {
         try {
           await input.restoreBackendSession(session);
@@ -125,7 +127,7 @@ export async function classifyNanoHostAttemptsAfterRestart(
       }
       await markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: attempt.attemptId,
-        cause: 'restart-native-recovery',
+        cause: cutoff ? 'observation_limit_reached' : 'restart-native-recovery',
         ...(input.now ? { now: input.now } : {}),
       });
       await markNanoHostAttemptNeedsEvidence(coreDb, attempt.attemptId);
@@ -213,7 +215,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           : native.heartbeatDeadline <= timestamp;
       if (native.phase === 'open' && !livenessExpired && native.recoveryState !== 'needs-evidence')
         continue;
-      await markSchedulerExecutionAttemptClosing(coreDb, {
+      const closing = await markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: attempt.attemptId,
         cause: livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
         now,
@@ -323,7 +325,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           timestamp
         );
       } else {
-        await input.projectRecoveredTurn(session);
+        await input.projectRecoveredTurn({ ...session, terminalCause: closing.terminalCause });
         settled =
           input.store !== undefined &&
           hasRecoveredTerminalHandoff(input.store, session, workspace.environmentPackage);

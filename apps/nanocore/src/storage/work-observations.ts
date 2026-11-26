@@ -22,6 +22,7 @@ import {
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   retainWorkObservationBody,
   stageWorkObservationChunk,
@@ -29,7 +30,9 @@ import {
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ControlProductOwner } from './control-store-product-records.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import { getWorkspaceProductReadHandle } from './control-store-product-records.js';
+import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import { workspaceDbPath } from './fs-layout.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
   NativeThreadRequiredFeaturesSchema,
@@ -514,6 +517,7 @@ export type ControlWorkObservationResult =
 
 /** Delivered after the native owner's FULL acknowledgement, never from a rolled-back savepoint. */
 export class ObservationCollectionStoppedError extends Error {
+  readonly code = 'observation_limit_reached';
   constructor(
     readonly disposition: 'truncated' | 'closed',
     readonly truncation: ObservationTruncation | null
@@ -528,6 +532,47 @@ export function requireRetainedObservation<
 >(result: T | z.infer<typeof ObservationOmissionResultSchema>): T {
   if ('observation' in result) return result;
   throw new ObservationCollectionStoppedError(result.disposition, result.truncation);
+}
+
+type ObservationStopSelector = {
+  threadId: string;
+  turnId: string;
+  agentSessionId?: string | null;
+};
+
+/** Rechecks a cutoff in the already-admitted owner snapshot before agent contact. */
+export function readAdmittedObservationCutoff(
+  db: WorkspaceDb,
+  input: ObservationStopSelector
+): ObservationTruncation | undefined {
+  return db.sqlite.transaction(() => {
+    const candidate = db.sqlite
+      .prepare(
+        "SELECT 1 FROM control_turns WHERE id=? AND json_type(record_json,'$.observationCutoff') IS NOT NULL"
+      )
+      .get(input.turnId);
+    if (!candidate) return undefined;
+    const { turn } = readWorkObservationTurnBinding(db, input);
+    if (input.agentSessionId != null && input.agentSessionId !== turn.agentSessionId)
+      throw new Error('recovery_required: observation cutoff worker lineage mismatch');
+    return turn.observationCutoff?.summary;
+  })();
+}
+
+/** Uses the admitted Workspace and exact Turn for startup and stop delivery. */
+export function readWorkspaceObservationCutoff(
+  dataRoot: string,
+  input: ObservationStopSelector & { workspaceId: string }
+): ObservationTruncation | undefined {
+  assertScopeAdmitted(dataRoot, 'workspace', input.workspaceId);
+  const reader = getWorkspaceProductReadHandle(workspaceDbPath(dataRoot, input.workspaceId), {
+    kind: 'workspace',
+    workspaceId: input.workspaceId,
+  });
+  return readAdmittedObservationCutoff(
+    bindWorkspaceSqlite(reader.sqlite, dataRoot, input.workspaceId),
+    input
+  );
 }
 
 /** Producer-owned complete bytes; deferral records expectations without publication authority. */

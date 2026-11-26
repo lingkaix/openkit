@@ -182,9 +182,12 @@ function listTerminalControlLeases(
     .filter(
       (lease) =>
         (lease.phase === 'closing' &&
-          ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-            lease.terminalCause ?? ''
-          )) ||
+          [
+            'turn-cancelled',
+            'raw-output-exhausted',
+            'raw-output-unavailable',
+            'observation_limit_reached',
+          ].includes(lease.terminalCause ?? '')) ||
         hasFinal.get(
           lease.workspaceId,
           lease.threadId,

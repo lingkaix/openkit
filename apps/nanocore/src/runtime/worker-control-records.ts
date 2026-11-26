@@ -28,6 +28,7 @@ import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
   appendWorkObservation,
   appendWorkObservationChunk,
+  ObservationCollectionStoppedError,
   readWorkObservations,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
@@ -106,7 +107,7 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
   if (!compatible) {
     throw new Error('Accepted worker final status has no canonical Core StopReason.');
   }
-  return terminalCause === 'turn-cancelled'
+  return terminalCause === 'turn-cancelled' || terminalCause === 'observation_limit_reached'
     ? 'aborted'
     : terminalCause === 'raw-output-exhausted'
       ? 'budget_exhausted'
@@ -617,7 +618,11 @@ async function recordWorkerObservation(
     if (binding.coverage.value !== 'on')
       throw new Error('Observation content is not admitted by this Turn');
     const initial = readWorkObservations(workspaceDb, owner).find((row) => row.id === id);
-    if (!initial) throw new Error('Observation content arrived without durable metadata');
+    if (!initial) {
+      const cutoff = binding.turn.observationCutoff?.summary;
+      if (cutoff) throw new ObservationCollectionStoppedError('closed', cutoff);
+      throw new Error('Observation content arrived without durable metadata');
+    }
     const declaration = WorkerObservationDataSchema.parse(initial.payload);
     admitNative(declaration);
     if (declaration.content.state !== 'expected')
@@ -799,9 +804,12 @@ export async function waitForWorkerControlFinalStatus(
     }
     const cancelled =
       lease.phase === 'closing' &&
-      ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-        lease.terminalCause ?? ''
-      ) &&
+      [
+        'turn-cancelled',
+        'raw-output-exhausted',
+        'raw-output-unavailable',
+        'observation_limit_reached',
+      ].includes(lease.terminalCause ?? '') &&
       lease.recoveryState === null &&
       lease.workerDeadline !== null &&
       lease.workerDeadline > new Date().toISOString();
@@ -856,9 +864,12 @@ export function hasPendingWorkerCancellationFinal(
   const now = Date.parse(timestamp);
   return (
     attempt.phase === 'closing' &&
-    ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-      attempt.terminalCause ?? ''
-    ) &&
+    [
+      'turn-cancelled',
+      'raw-output-exhausted',
+      'raw-output-unavailable',
+      'observation_limit_reached',
+    ].includes(attempt.terminalCause ?? '') &&
     attempt.recoveryState === null &&
     attempt.fenceRef === null &&
     Boolean(attempt.workerControlTokenHash) &&

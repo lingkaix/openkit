@@ -239,10 +239,14 @@ import {
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
 import {
   createWorkerControlAcceptedRecordRecorder,
+  getWorkerControlAcceptedFinalStatus,
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
-import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
+import {
+  createWorkerControlSequenceRecorder,
+  matchesAcceptedWorkerControlSequence,
+} from './runtime/worker-control-sequences.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
   createDefaultWorkerMcpGateway,
@@ -294,6 +298,7 @@ import {
   readStagedServerWork,
 } from './storage/server-work-intents.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
+import { readAdmittedObservationCutoff } from './storage/work-observations.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
@@ -602,7 +607,10 @@ export interface CreateAppOptions {
  */
 export function createDefaultWorkerControlGateway(
   coreDb?: CoreDb,
-  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook
+  onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
+  onObservationStop?: NonNullable<
+    ConstructorParameters<typeof WorkerControlGateway>[0]
+  >['onObservationStop']
 ): WorkerControlGateway {
   if (!coreDb) {
     return new WorkerControlGateway();
@@ -610,11 +618,26 @@ export function createDefaultWorkerControlGateway(
 
   const gateway = new WorkerControlGateway({
     acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    ...(onObservationStop ? { onObservationStop } : {}),
+    readObservationOmission: (input) =>
+      matchesAcceptedWorkerControlSequence(coreDb, input) === true,
     publishHeartbeat: (input) => publishWorkerControlHeartbeat(coreDb, input),
     publishControlOperation: (input) => publishWorkerControlOperation(coreDb, input),
     publishFinalStatus: async (input) => {
       const rawDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
+        if (readAdmittedObservationCutoff(rawDb, input.lineage)) {
+          if (
+            !getWorkerControlAcceptedFinalStatus(coreDb, input.lineage) &&
+            !['cancelled', 'interrupted'].includes(input.payload.terminalData.status)
+          )
+            throw new WorkerControlGatewayError(
+              'observation_limit_reached',
+              'The Turn must settle its observation-limit interruption.',
+              409
+            );
+          input = { ...input, payload: { ...input.payload, requireContinuous: true } };
+        }
         assertWorkerRawOutputFinalStatus(
           rawDb,
           input.lineage,
@@ -1058,8 +1081,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   const automationStore =
     options.automationStore ?? (options.coreDb ? new AutomationStore(options.coreDb) : undefined);
+  const requestObservationStop = (lineage: {
+    workspaceId: string;
+    threadId: string;
+    turnId: string;
+    agentSessionId: string;
+    packageSnapshotId: string;
+  }): Promise<void> =>
+    turnExecutor.interruptTurn(sharedStore, lineage.turnId, {
+      requestId: null,
+      stopReason: 'observation_limit_reached',
+      observationLineage: lineage,
+    });
   const workerControlGateway =
-    options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
+    options.workerControlGateway ??
+    createDefaultWorkerControlGateway(options.coreDb, undefined, requestObservationStop);
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   /** Joins the unique Gateway owner without treating missing cleanup as success. */
@@ -2163,6 +2199,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerWorkerInferenceRoutes({
     exposureAvailable: () =>
       operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
+    onObservationStop: requestObservationStop,
     onRawOutputStop: (scope, reason) =>
       turnExecutor.interruptTurn(sharedStore, scope.turnId, {
         requestId: null,
