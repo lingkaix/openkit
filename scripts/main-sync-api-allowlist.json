@@ -91,7 +91,7 @@
     "apps/nanocore/src/context/worker-context-package.ts\tfs:readdirSync\tddcf57120b4f78eebcf49edefa4f967d542f0397c04c9e1f595096e30d96f6fe": 1,
     "apps/nanocore/src/context/worker-context-package.ts\tfs:rmSync\t09fddd394e85c7c13a2a84382ed22cb9e316259f05e1a809e156208df2760c5b": 1,
     "apps/nanocore/src/context/worker-context-projection.ts\tfs:existsSync\t3e3eb83a7e031e59b65848c99ba02d79753f67758f02e92f50d8b74d77dc501c": 1,
-    "apps/nanocore/src/diagnostics/release-identity.ts\tfs:readFileSync\te82a768b0c8ebc286f8b401af8338f329566068a5abbf154c7289ff710ad885a": 1,
+    "apps/nanocore/src/diagnostics/release-identity.ts\tfs:readFileSync\t6e22a5b1e0bbf43ebce81393f042b054e526935a06219ed84a6d05c494f6e860": 1,
     "apps/nanocore/src/evidence-bundles.ts\tfs:existsSync\t90cc61ab96f26270a1ab6646509e5b50cb562882855715466653d0ac68c8cf0c": 1,
     "apps/nanocore/src/evidence-bundles.ts\tfs:existsSync\tee04d31ce99ac1ce56c5b8279c21fde88497e1e182c5f69f0d94cfc92faefe92": 1,
     "apps/nanocore/src/evidence-bundles.ts\tfs:existsSync\tf74821bc523453d439ca653e54a878317190ddd8f219fb950f0fe5fcfa69abb6": 3,
