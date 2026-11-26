@@ -440,10 +440,16 @@ export function verifyDataRootBackupManifest(
 function verifyDataRootBackupInventory(
   input: VerifyDataRootBackupManifestInput
 ): VerifiedDataRootBackupManifest {
-  const manifest = parseDataRootBackupManifest(
-    JSON.parse(readFileSync(join(input.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE), 'utf8')),
-    { supportedFeatures: input.supportedFeatures ?? [] }
+  const originalManifest = JSON.parse(
+    readFileSync(join(input.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE), 'utf8')
   );
+  const manifest = parseDataRootBackupManifest(originalManifest, {
+    supportedFeatures: input.supportedFeatures ?? [],
+  });
+  // The writer hashes its stored field order, which the schema parser can change.
+  if (manifest.contentDigest !== digestText(JSON.stringify(originalManifest.contentInventory))) {
+    throw new Error('Backup manifest content digest does not match its inventory.');
+  }
   const expected = new Map(manifest.contentInventory.map((entry) => [entry.path, entry]));
   const actual = listRegularBackupFiles(input.backupRoot).filter(
     (path) => path !== DATA_ROOT_BACKUP_MANIFEST_FILE

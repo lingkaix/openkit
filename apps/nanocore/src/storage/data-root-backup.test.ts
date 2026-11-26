@@ -468,6 +468,49 @@ describe('data-root backup manifest', () => {
     );
   });
 
+  it('rejects a changed inventory digest with every backup file intact', async () => {
+    const { input, backupRoot } = backupPublicationFixture();
+    const { manifest } = await captureBackup('cold', input);
+    const manifestPath = join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+    // Earlier writers stored these entry fields in a different order.
+    const contentInventory = manifest.contentInventory.map(({ path, digest, bytes }) => ({
+      path,
+      digest,
+      bytes,
+    }));
+    const digest = createHash('sha256').update(JSON.stringify(contentInventory)).digest('hex');
+    const earlierManifest = { ...manifest, contentInventory, contentDigest: `sha256:${digest}` };
+    writeFileSync(manifestPath, JSON.stringify(earlierManifest));
+    expect(verifyDataRootBackupManifest({ backupRoot }).manifest).toEqual(earlierManifest);
+
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...earlierManifest, contentDigest: `sha256:${'0'.repeat(64)}` })
+    );
+    expect(() => verifyDataRootBackupManifest({ backupRoot })).toThrow(
+      'Backup manifest content digest does not match its inventory.'
+    );
+  });
+
+  it('rejects a reordered backup inventory before creating restore staging', async () => {
+    const { parent, input, backupRoot, dataRoot, relativeFile } = backupPublicationFixture();
+    input.sourceDeploymentId = initializeRestoreSource(dataRoot);
+    await captureBackup('cold', input);
+    const manifestPath = join(backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const contentInventory = [...manifest.contentInventory].reverse();
+    expect(contentInventory).not.toEqual(manifest.contentInventory);
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, contentInventory }));
+    writeFileSync(join(dataRoot, relativeFile), 'current bytes\n');
+    const stagingParent = join(parent, 'staging');
+
+    await expect(
+      restoreDataRootBackup({ backupRoot, dataRoot, stagingRoot: join(stagingParent, 'restore') })
+    ).rejects.toThrow('Backup manifest content digest does not match its inventory.');
+    expect(existsSync(stagingParent)).toBe(false);
+    expect(readFileSync(join(dataRoot, relativeFile), 'utf8')).toBe('current bytes\n');
+  });
+
   it('rejects unsupported backup required features', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-data-root-backup-'));
     mkdirSync(join(root, 'server'), { recursive: true });
