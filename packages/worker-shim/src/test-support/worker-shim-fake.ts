@@ -1,3 +1,4 @@
+import { WORKER_ADAPTERS, type WorkerStopDeclaration } from '../adapter-registry.js';
 import type { LifecycleDeadline } from '../lifecycle-deadline.js';
 import type {
   WorkerShimAbsence,
@@ -15,11 +16,11 @@ import type {
   WorkerShimStart,
   WorkerShimTurn,
   WorkerShimTurnInput,
-  WorkerStopDeclaration,
 } from '../worker-shim-port.js';
 
 interface FakeWorker {
   readonly start: WorkerShimStart;
+  readonly stop: WorkerStopDeclaration;
   state: WorkerShimObservation['state'];
   activeTurn?: WorkerShimTurn;
   absence?: Extract<WorkerShimAbsence, { state: 'absent' }>;
@@ -57,11 +58,11 @@ function sameStart(left: WorkerShimStart, right: WorkerShimStart): boolean {
   );
 }
 
-/** Controls which native receipts and stop scope the fixture can actually supply. */
+/** Supplies simulated receiver evidence. An absent result leaves the operation unknown. */
 export interface FakeWorkerShimOptions {
-  readonly stop?: WorkerStopDeclaration;
-  readonly input?: 'accepted' | 'unknown';
-  readonly steer?: 'accepted' | 'unknown';
+  readonly adapterStops?: Readonly<Record<string, WorkerStopDeclaration>>;
+  readonly input?: (input: WorkerShimTurnInput) => WorkerShimDisposition | undefined;
+  readonly steer?: (input: WorkerShimKeyedWork) => WorkerShimDisposition | undefined;
 }
 
 /** Deterministic one-slot shim. Provider absence and Core claim release stay with their owners. */
@@ -77,17 +78,14 @@ export class FakeWorkerShim implements WorkerShimPort {
   readonly #stopped = new Set<string>();
   readonly #operations = new Map<string, FakeOperation>();
   readonly #interrupts: WorkerShimInterruptReceipt[] = [];
-  readonly #stop: WorkerStopDeclaration;
   #generation = 0;
   #revision = -1;
 
-  /** Creates the fake for one incarnation. All enabled adapters default to best effort. */
+  /** Creates the fake for one incarnation. Shipped adapters use their registered scope. */
   constructor(
     readonly sandboxIncarnationId: string,
     private readonly options: FakeWorkerShimOptions = {}
-  ) {
-    this.#stop = options.stop ?? { kind: 'best-effort' };
-  }
+  ) {}
 
   /** Repeated current start observes the original Worker. A stopped ID cannot start again. */
   async start(start: WorkerShimStart): Promise<WorkerShimDisposition> {
@@ -97,7 +95,10 @@ export class FakeWorkerShim implements WorkerShimPort {
         ? 'accepted'
         : 'refused';
     }
-    this.#worker = { start, state: 'running' };
+    const stop =
+      WORKER_ADAPTERS[start.adapterId]?.stop ?? this.options.adapterStops?.[start.adapterId];
+    if (!stop) return 'refused';
+    this.#worker = { start, stop, state: 'running' };
     this.started.push(start.workerId);
     return 'accepted';
   }
@@ -136,25 +137,26 @@ export class FakeWorkerShim implements WorkerShimPort {
   /** Supply qualified tree absence after stop joined accepted work in the fixture. */
   observeTreeAbsent(workerId: string): void {
     const worker = this.#workerFor(workerId);
-    if (worker && this.#stopped.has(workerId) && this.#stop.kind === 'exact') {
+    if (worker && this.#stopped.has(workerId) && worker.stop.kind === 'exact') {
       worker.state = 'exited';
-      worker.absence = { state: 'absent', workerId, proofKind: this.#stop.proofKind };
+      worker.absence = { state: 'absent', workerId, proofKind: worker.stop.proofKind };
     }
   }
 
   /** Record native input intake once, against the originally authorized attempt. */
   async keyedTurnInput(input: WorkerShimTurnInput): Promise<WorkerShimDisposition> {
-    return this.#apply(input, 'input');
+    return this.#apply(input, 'input', () => this.options.input?.(input));
   }
 
   /** Record native steer intake once, confined to the active Turn even when unknown. */
   async keyedSteer(input: WorkerShimKeyedWork): Promise<WorkerShimDisposition> {
-    return this.#apply(input, 'steer');
+    return this.#apply(input, 'steer', () => this.options.steer?.(input));
   }
 
   #apply(
     input: WorkerShimKeyedWork | WorkerShimTurnInput,
-    kind: WorkerShimReceipt['kind']
+    kind: WorkerShimReceipt['kind'],
+    receive: () => WorkerShimDisposition | undefined
   ): WorkerShimDisposition {
     const previous = this.#operations.get(input.operationId);
     if (previous) {
@@ -176,14 +178,21 @@ export class FakeWorkerShim implements WorkerShimPort {
       !this.#interrupts.some((interrupt) => sameTurn(interrupt, input))
     ) {
       const active = worker.activeTurn;
-      const eligible = kind === 'input' ? !active : active && sameTurn(active, input);
+      const eligible =
+        kind === 'input'
+          ? !active
+          : worker.start.adapterId !== 'opencode' && active && sameTurn(active, input);
       if (eligible) {
-        disposition = this.options[kind] ?? 'accepted';
         this.contacted.push(input.operationId);
+        try {
+          disposition = receive() ?? 'unknown';
+        } catch {
+          disposition = 'unknown';
+        }
         if (kind === 'input' && disposition === 'unknown') {
           this.#stopped.add(input.workerId);
           worker.state = 'stopping';
-        } else if (kind === 'input') {
+        } else if (kind === 'input' && disposition === 'accepted') {
           worker.activeTurn = input;
         }
       }
@@ -195,7 +204,17 @@ export class FakeWorkerShim implements WorkerShimPort {
   }
 
   #interrupt(interrupt: WorkerShimInterrupt): void {
-    if (this.#interrupts.some((previous) => sameTurn(previous, interrupt))) return;
+    const previous = this.#interrupts.find((receipt) => sameTurn(receipt, interrupt));
+    if (previous) {
+      if (
+        !this.#interrupts.some(
+          (receipt) => sameTurn(receipt, interrupt) && receipt.requestId === interrupt.requestId
+        )
+      ) {
+        this.#interrupts.push({ ...interrupt, disposition: 'refused' });
+      }
+      return;
+    }
     const worker = this.#workerFor(interrupt.workerId);
     if (
       worker?.activeTurn &&
@@ -203,11 +222,24 @@ export class FakeWorkerShim implements WorkerShimPort {
       sameTurn(worker.activeTurn, interrupt)
     ) {
       this.interrupted.push(interrupt.requestId);
-      delete worker.activeTurn;
-      this.#interrupts.push({ ...interrupt, disposition: 'cancelled' });
-    } else {
-      this.#interrupts.push({ ...interrupt, disposition: 'unknown' });
     }
+    this.#interrupts.push({ ...interrupt, disposition: 'unknown' });
+  }
+
+  /** Settles the original signal only when the native receiver proves the addressed Turn ended. */
+  observeInterruptSettlement(interrupt: WorkerShimInterrupt): void {
+    const worker = this.#workerFor(interrupt.workerId);
+    if (!worker?.activeTurn || !sameTurn(worker.activeTurn, interrupt)) return;
+    const index = this.#interrupts.findIndex(
+      (receipt) =>
+        receipt.disposition === 'unknown' &&
+        sameTurn(receipt, interrupt) &&
+        receipt.requestId === interrupt.requestId &&
+        receipt.cause === interrupt.cause
+    );
+    if (index === -1 || !this.interrupted.includes(interrupt.requestId)) return;
+    this.#interrupts[index] = { ...interrupt, disposition: 'cancelled' };
+    delete worker.activeTurn;
   }
 
   /** Exchange full sets, fencing obsolete carrier replies before acting. */
@@ -230,7 +262,7 @@ export class FakeWorkerShim implements WorkerShimPort {
             {
               workerId: worker.start.workerId,
               state: worker.state,
-              stop: this.#stop,
+              stop: worker.stop,
               ...(worker.absence ? { absence: worker.absence } : {}),
             },
           ]

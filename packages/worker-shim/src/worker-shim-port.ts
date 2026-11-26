@@ -1,9 +1,5 @@
+import type { WorkerStopDeclaration } from './adapter-registry.js';
 import type { LifecycleDeadline } from './lifecycle-deadline.js';
-
-/** The adapter's qualified Worker stop scope. */
-export type WorkerStopDeclaration =
-  | { readonly kind: 'best-effort' }
-  | { readonly kind: 'exact'; readonly proofKind: string };
 
 /** One authenticated carrier. A reconnect advances the generation within the same incarnation. */
 export interface WorkerShimSession {
@@ -69,7 +65,7 @@ export interface WorkerShimReceipt {
 
 /** Original settlement for an admitted desired interruption. */
 export interface WorkerShimInterruptReceipt extends WorkerShimInterrupt {
-  readonly disposition: 'cancelled' | 'unknown';
+  readonly disposition: 'cancelled' | 'refused' | 'unknown';
 }
 
 /** Local Worker observation. Direct-child exit is independent of whole-tree proof. */

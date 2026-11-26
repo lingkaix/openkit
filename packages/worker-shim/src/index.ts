@@ -11,6 +11,7 @@ export {
   type WorkerResidentSession,
   type WorkerResidentTurn,
   type WorkerResidentTurnInput,
+  type WorkerStopDeclaration,
 } from './adapter-registry.js';
 export {
   type WorkerControlArtifactInput,
@@ -57,5 +58,4 @@ export type {
   WorkerShimStart,
   WorkerShimTurn,
   WorkerShimTurnInput,
-  WorkerStopDeclaration,
 } from './worker-shim-port.js';

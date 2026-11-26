@@ -18,7 +18,7 @@ Runtime provenance declarations are checked before capture creation or native wo
 
 ## Incarnation Contract
 
-`src/worker-shim-port.ts` defines the incarnation-scoped boundary from the [Worker Shim specification](../../docs/specs/20260629-worker_runtime_communication_model.md#worker-shim-contract). Its six operations cover local start, stop and observed absence, keyed input and steer, and one authenticated pull of full desired state. Interrupt uses that desired state, including the exact Turn and attempt cause. The deterministic fake exercises the contract in `src/worker-shim-port.test.ts`. The current binary still runs the Harness implementation described below.
+`src/worker-shim-port.ts` defines the incarnation-scoped boundary from the [Worker Shim specification](../../docs/specs/20260629-worker_runtime_communication_model.md#worker-shim-contract). Its six operations cover local start, stop and observed absence, keyed input and steer, and one authenticated pull of full desired state. Interrupt uses that desired state, including the exact Turn and attempt cause. The registry declares stop scope for each shipped adapter. The deterministic fake exercises receiver evidence and the full poll contract in `src/worker-shim-port.test.ts`. The current binary still runs the Harness implementation described below.
 
 ## Sandbox Integration
 
