@@ -1234,6 +1234,10 @@ export class FsStore {
     SseEventEnvelope | ServerTurnEventEnvelope
   >();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
+  private readonly pendingOutcomeCoverage = new WeakMap<
+    ControlPendingPlanGroup,
+    [string, CaptureCoverageBinding]
+  >();
   private workspaceCaptureCoverageProjection?: (workspaceId: string) => WorkspaceConfig | undefined;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
@@ -4551,12 +4555,7 @@ export class FsStore {
    */
   public async publishPendingPlan(
     workspaceId: string,
-    {
-      outcomeCoverageDigest,
-      ...header
-    }: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'> & {
-      readonly outcomeCoverageDigest?: string;
-    },
+    header: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'>,
     groups: readonly ControlPendingPlanGroup[],
     turns: readonly string[]
   ): Promise<ControlPendingCommandResult> {
@@ -4564,6 +4563,14 @@ export class FsStore {
     const scope = this.nativeScope(owner);
     const root = scope.contentMount.root;
     const bodies = [...pendingPlanBodyNames(groups)];
+    const outcomeCoverage = groups.flatMap((group) => {
+      const selected = this.pendingOutcomeCoverage.get(group);
+      this.pendingOutcomeCoverage.delete(group);
+      return selected ? [selected] : [];
+    });
+    const outcomeCoverageDigest = outcomeCoverage.length
+      ? commandInputHash(outcomeCoverage)
+      : undefined;
     const post = async (plan: Buffer) => {
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
@@ -4591,16 +4598,18 @@ export class FsStore {
         created = true;
         await movePrivateTree(unstaged, join(stage, 'plan'));
         for (const name of bodies) await movePrivateTree(join(root, name), join(stage, name));
-        return await client.pendingCommand(database, {
-          plan: {
-            workspaceId,
-            operation: header.operation,
-            temporary,
-            contentDigest: file.content.reference.contentDigest,
-            ...(outcomeCoverageDigest === undefined ? {} : { outcomeCoverageDigest }),
-            byteLength: file.content.byteLength,
-          },
-        });
+        return await client.withPendingPlanCoverage(database, temporary, outcomeCoverage, () =>
+          client.pendingCommand(database, {
+            plan: {
+              workspaceId,
+              operation: header.operation,
+              temporary,
+              contentDigest: file.content.reference.contentDigest,
+              ...(outcomeCoverageDigest === undefined ? {} : { outcomeCoverageDigest }),
+              byteLength: file.content.byteLength,
+            },
+          })
+        );
       } catch (error) {
         // A locally refused post never transfers its stage to the writer.
         if (created && !(error instanceof ControlStoreWorkerError && error.commit === 'unknown'))
@@ -4695,7 +4704,6 @@ export class FsStore {
   ): Promise<{
     group: ControlPendingPlanGroup;
     history: PlannedTurnHistory;
-    captureCoverage: CaptureCoverageBinding;
     thread: { revision: number; record: Record<string, unknown> };
     acknowledge: () => void;
   }> {
@@ -4731,19 +4739,20 @@ export class FsStore {
       items: [],
       captureCoverage: { ...captureCoverage },
     });
-    return {
-      captureCoverage,
-      group: {
-        kind: 'products',
-        transition: {
-          products: [
-            { kind: 'thread', expectedRevision: previousThread.revision, record: threadRecord },
-            { kind: 'turn', expectedRevision: 0, record: turnRecord },
-          ],
-          entries: admission.entries,
-          ...(admission.pending.length ? { pending: [...admission.pending] } : {}),
-        },
+    const group: ControlPendingPlanGroup = {
+      kind: 'products',
+      transition: {
+        products: [
+          { kind: 'thread', expectedRevision: previousThread.revision, record: threadRecord },
+          { kind: 'turn', expectedRevision: 0, record: turnRecord },
+        ],
+        entries: admission.entries,
+        ...(admission.pending.length ? { pending: [...admission.pending] } : {}),
       },
+    };
+    this.pendingOutcomeCoverage.set(group, [turn.id, captureCoverage]);
+    return {
+      group,
       history: {
         revision: 1,
         metadata: JSON.parse(JSON.stringify(turnRecord)),

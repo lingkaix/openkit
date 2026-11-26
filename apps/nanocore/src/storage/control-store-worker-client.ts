@@ -257,7 +257,10 @@ import {
 } from './control-store-capability.js';
 import { commandInputHash, frameControlScalarText } from './control-store-input.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
-import type { ControlPendingPlan } from './control-store-pending-plan.js';
+import type {
+  ControlPendingPlan,
+  ControlPendingPlanCoverage,
+} from './control-store-pending-plan.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -6494,6 +6497,32 @@ class ControlStoreWorkerClient {
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'provenance')
         throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      throw error;
+    }
+  }
+
+  /** Records the Store's original selection before posting the independently checked reference. */
+  async withPendingPlanCoverage(
+    database: string,
+    temporary: string,
+    selection: NonNullable<ControlPendingPlanCoverage['selection']>,
+    post: () => Promise<ControlPendingCommandResult>
+  ): Promise<ControlPendingCommandResult> {
+    if (!selection.length) return post();
+    try {
+      await this.request({
+        operation: 'pending-plan-coverage',
+        database,
+        input: { temporary, selection },
+      });
+      return await post();
+    } catch (error) {
+      // An admitted plan has already claimed the record. Release only an unclaimed exact match.
+      await this.request({
+        operation: 'pending-plan-coverage',
+        database,
+        input: { temporary, selection: null },
+      }).catch(() => {});
       throw error;
     }
   }

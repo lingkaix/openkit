@@ -206,7 +206,7 @@ import {
   prepareControlCapabilityCommand,
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
-import { readControlScalarText } from './control-store-input.js';
+import { commandInputHash, readControlScalarText } from './control-store-input.js';
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,
@@ -665,6 +665,8 @@ interface OwnedDatabase {
 }
 
 const databases = new Map<string, OwnedDatabase>();
+// Boot plans one Workspace at a time. The exact private stage claims its original selection once.
+const pendingOutcomeCoverage = new WeakMap<OwnedDatabase, { temporary: string; digest: string }>();
 const paths = new Set<string>();
 const identities = new Set<string>();
 /** An existing OPEN keeps its original admitted slot through private authority inspection. */
@@ -5660,6 +5662,29 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'unavailable'));
       return;
     }
+    if (value.operation === 'pending-plan-coverage') {
+      if (owner.scopeDb?.scope !== 'workspace') {
+        reply(failure(value.id, 'precondition'));
+        return;
+      }
+      const { temporary, selection } = value.input;
+      const recorded = pendingOutcomeCoverage.get(owner);
+      if (selection === null) {
+        if (recorded?.temporary === temporary) pendingOutcomeCoverage.delete(owner);
+      } else if (recorded) {
+        reply(failure(value.id, 'busy'));
+        return;
+      } else {
+        pendingOutcomeCoverage.set(owner, { temporary, digest: commandInputHash(selection) });
+      }
+      reply({
+        version: CONTROL_WORKER_VERSION,
+        id: value.id,
+        status: 'ok',
+        operation: value.operation,
+      });
+      return;
+    }
     if (value.operation === 'backend-session' && !simulatorMutation) {
       // A raw backend frame has no admitted Native writer. It cannot select Core attempt lanes.
       const code = owner.scopeDb?.scope === 'core' ? 'owner-recovery-required' : 'precondition';
@@ -5801,6 +5826,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
         };
         // This is the existing bounded FIFO slot, retained throughout asynchronous preparation.
         const earlier = [...owner.pending];
+        let outcomeCoverageDigest: string | undefined;
+        if (value.operation === 'pending' && 'plan' in value.input) {
+          const recorded = pendingOutcomeCoverage.get(owner);
+          if (recorded?.temporary === value.input.plan.temporary) {
+            outcomeCoverageDigest = recorded.digest;
+            pendingOutcomeCoverage.delete(owner);
+          }
+        }
         owner.pending.push(queued);
         const newDirectories: ControlContentPreparation = {
           db: owner.scopeDb,
@@ -5997,7 +6030,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 owner.scopeDb,
                 owner.productOwner,
                 owner.contentMount,
-                value.input
+                value.input,
+                outcomeCoverageDigest
               );
               Object.assign(queued, { preparedPlan });
             }

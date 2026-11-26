@@ -38,7 +38,6 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import type { CaptureCoverageBinding } from '../storage/workspace-file-records.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { ControlPendingCommandInputSchema } from './pending-request-codecs.js';
@@ -668,26 +667,19 @@ export async function recoverPendingRequestsAtBoot(
           const acknowledgements: (() => void)[] = [];
           for (const build of plan.groups) groups.push(...(await build(ownBody)));
           const threads = new Map<string, PlannedThread>();
-          const outcomeCoverage: [string, CaptureCoverageBinding][] = [];
           for (const step of plan.tail)
             groups.push(
               ...(await planPendingBootStep(store, workspace.id, step, {
                 threads,
                 turns,
                 acknowledgements,
-                outcomeCoverage,
                 ownBody,
               }))
             );
           await bootWorkspaceWrite(() =>
             store.publishPendingPlan(
               workspace.id,
-              {
-                operation: 'pending-boot',
-                threadId: null,
-                inputs: plan.inputs,
-                outcomeCoverageDigest: commandInputHash(outcomeCoverage),
-              },
+              { operation: 'pending-boot', threadId: null, inputs: plan.inputs },
               groups,
               [...turns]
             )
@@ -1021,7 +1013,6 @@ async function planPendingBootStep(
     readonly threads: Map<string, PlannedThread>;
     readonly turns: Set<string>;
     readonly acknowledgements: (() => void)[];
-    readonly outcomeCoverage: [string, CaptureCoverageBinding][];
     readonly ownBody: (path: string) => void;
   }
 ): Promise<readonly ControlPendingPlanGroup[]> {
@@ -1060,7 +1051,6 @@ async function planPendingBootStep(
     plannedOutcomeFreezes.delete(freeze.turnId);
   }
   planned.threads.set(threadId, admitted.thread);
-  planned.outcomeCoverage.push([freeze.turnId, admitted.captureCoverage]);
   planned.acknowledgements.push(admitted.acknowledge);
   // An agent executor's batch stays frozen on its pending Turn for the startup handoff.
   if (step.provedAt === null) return [admitted.group];

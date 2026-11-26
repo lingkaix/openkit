@@ -730,7 +730,8 @@ export async function prepareControlPendingPlan(
   db: WorkspaceDb,
   owner: ControlProductOwner,
   mount: ControlProductContentMount,
-  value: ControlPendingPlan
+  value: ControlPendingPlan,
+  recordedCoverageDigest?: string
 ): Promise<PreparedControlPendingPlan> {
   const { plan } = ControlPendingPlanSchema.parse(value);
   if (db.sqlite.inTransaction || plan.workspaceId !== db.workspaceId)
@@ -757,6 +758,8 @@ export async function prepareControlPendingPlan(
   )
     throw new ControlProductPreconditionError();
   assertPendingPlanOperation(header, framesToPrepare);
+  if (plan.outcomeCoverageDigest !== recordedCoverageDigest)
+    throw new ControlProductPreconditionError();
   const outcomeCoverage = framesToPrepare.flatMap((group) => {
     if (group.kind !== 'products') return [];
     const { record } = group.transition.products.find(({ kind }) => kind === 'turn')!;

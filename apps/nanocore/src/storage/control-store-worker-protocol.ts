@@ -181,7 +181,13 @@ import {
   controlKnowledgeContentSchema,
   decodeControlKnowledgeHead,
 } from './control-store-knowledge-heads.js';
-import { type ControlPendingPlan, ControlPendingPlanSchema } from './control-store-pending-plan.js';
+import {
+  CONTROL_PENDING_PLAN_BYTES,
+  type ControlPendingPlan,
+  type ControlPendingPlanCoverage,
+  ControlPendingPlanCoverageSchema,
+  ControlPendingPlanSchema,
+} from './control-store-pending-plan.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
@@ -1650,6 +1656,7 @@ export type ControlWorkerCommand =
           readonly content: ArrayBuffer;
         }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
+      | { readonly operation: 'pending-plan-coverage'; readonly input: ControlPendingPlanCoverage }
       | {
           readonly operation: 'pending';
           // A grouped decision carries only its private plan reference.
@@ -2335,6 +2342,7 @@ export type ControlWorkerReply = {
       readonly operation: 'pending';
       readonly result: ControlPendingCommandResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'pending-plan-coverage' }
   | {
       readonly status: 'ok';
       readonly operation: 'write';
@@ -2801,6 +2809,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
           (result.execution.phase === 'closing' || result.execution.phase === 'closed')))
     );
   }
+  if (reply.operation === 'pending-plan-coverage') return true;
   if (reply.operation === 'pending')
     return ControlPendingCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'journal')
@@ -3311,6 +3320,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'pending-plan-coverage')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PENDING_PLAN_BYTES &&
+      ControlPendingPlanCoverageSchema.safeParse(value.input).success
+    );
   if (value.operation === 'runtime-policy-publication')
     return (
       exactFields(value, [...scoped, 'input']) &&

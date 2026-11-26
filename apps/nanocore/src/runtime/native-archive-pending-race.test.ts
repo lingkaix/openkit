@@ -1403,6 +1403,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     'with a person batch marked unknown before completion',
     'with a substituted outcome start status',
     'with substituted capture coverage',
+    'with substituted capture coverage and matching reference',
     'with reversed completion Item order',
   ] as const)(
     'refuses a grouped Boot person freeze %s',
@@ -1436,8 +1437,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
           dependencies: pending,
         });
       }
-      if (fault === 'with substituted capture coverage')
-        f.store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
+      const substituteCoverage = fault.startsWith('with substituted capture coverage');
+      if (substituteCoverage) f.store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
       await f.store.completeTurn(f.turn.id, {
         status: 'completed',
         completedAt: f.turn.startedAt!,
@@ -1471,7 +1472,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
           if (fault === 'with a substituted outcome start status')
             products.transition.products.find((entry) => entry.kind === 'turn')!.record.status =
               'pending';
-          if (fault === 'with substituted capture coverage') {
+          if (substituteCoverage) {
             const admission = products.transition.products.find((entry) => entry.kind === 'turn')!;
             expect(admission.record.captureCoverage).toEqual({ scope: 'server', value: 'off' });
             expect(completion.input.turn.record.captureCoverage).toEqual(
@@ -1479,6 +1480,21 @@ describe('native standalone archive and concurrent Pending raise', () => {
             );
             admission.record.captureCoverage = { scope: 'server', value: 'on' };
             completion.input.turn.record.captureCoverage = admission.record.captureCoverage;
+            if (fault === 'with substituted capture coverage and matching reference') {
+              const client = getControlStoreWorkerClient();
+              const post = client.pendingCommand.bind(client);
+              vi.spyOn(client, 'pendingCommand').mockImplementationOnce((database, input) => {
+                if (!('plan' in input)) throw new Error('Expected the grouped Boot reference.');
+                return post(database, {
+                  plan: {
+                    ...input.plan,
+                    outcomeCoverageDigest: commandInputHash([
+                      [admission.record.id, admission.record.captureCoverage],
+                    ]),
+                  },
+                });
+              });
+            }
           }
           if (fault === 'with reversed completion Item order') {
             const scope = nativeProductScope(f.root, f.turn.owner);

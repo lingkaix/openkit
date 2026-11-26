@@ -1,3 +1,4 @@
+import { CaptureCoverageBindingSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
   PendingExpectedSourceSchema,
@@ -51,6 +52,18 @@ export const ControlPendingPlanSchema = z
   .strict();
 /** One grouped Pending decision's private plan reference. */
 export type ControlPendingPlan = z.infer<typeof ControlPendingPlanSchema>;
+
+/** The outcome coverage captured by the Store, before the writer receives the plan reference. */
+export const ControlPendingPlanCoverageSchema = z
+  .object({
+    temporary: ControlPendingPlanSchema.shape.plan.shape.temporary,
+    selection: z
+      .array(z.tuple([z.string().min(1), CaptureCoverageBindingSchema]))
+      .min(1)
+      .nullable(),
+  })
+  .strict();
+export type ControlPendingPlanCoverage = z.infer<typeof ControlPendingPlanCoverageSchema>;
 
 /** The exact Workspace and operation selected by one grouped Pending plan. */
 export const ControlPendingPlanHeaderSchema = z
