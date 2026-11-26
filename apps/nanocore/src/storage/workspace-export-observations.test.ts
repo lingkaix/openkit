@@ -25,6 +25,7 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
@@ -38,6 +39,29 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
   const db = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(db);
   return db;
+}
+
+/** Re-seals an altered fixture member so the offline check reaches semantic validation. */
+function replaceArchiveFixtureMember(
+  exportRoot: string,
+  manifestText: string,
+  path: string,
+  text: string
+): void {
+  const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+  writeFileSync(join(exportRoot, path), text);
+  const manifest = JSON.parse(manifestText) as {
+    contentDigest: string;
+    contentInventory: Array<{ path: string; bytes: number; digest: string }>;
+  };
+  const entry = manifest.contentInventory.find((row) => row.path === path)!;
+  entry.bytes = Buffer.byteLength(text);
+  entry.digest = digest(text);
+  manifest.contentDigest = digest(JSON.stringify(manifest.contentInventory));
+  writeFileSync(
+    join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
 }
 
 describe('work observation portable closure', () => {
@@ -124,7 +148,10 @@ describe('work observation portable closure', () => {
             },
           });
         }
-        const exportSnapshot = (id: string) =>
+        const exportSnapshot = (
+          id: string,
+          repositoryWorkspaceDb = (workspace: string) => workspaceDb(dataRoot, workspace)
+        ) =>
           createVerifiedWorkspaceExport({
             fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
             requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -132,10 +159,15 @@ describe('work observation portable closure', () => {
             coreDb,
             dataRoot,
             exportId: testEntityId('wsexp', id),
-            repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+            repositoryWorkspaceDb,
             store,
             workspaceId: workspace.id,
           });
+        const readTurnHead = () =>
+          db.sqlite
+            .prepare('SELECT record_json AS json, status FROM control_turns WHERE id=?')
+            .get(turn.id) as { json: string; status: string };
+        let liveHead: ReturnType<typeof readTurnHead> | undefined;
         if (truncated) {
           await expect(
             appendWorkObservation(db, {
@@ -163,6 +195,7 @@ describe('work observation portable closure', () => {
               },
             })
           ).rejects.toMatchObject({ disposition: 'truncated' });
+          liveHead = readTurnHead();
           const live = await exportSnapshot('export_runtime_joins_live');
           expect(live.verified.manifest.requiredFeatures).toContain(
             WORK_OBSERVATION_TRUNCATION_FEATURE
@@ -234,6 +267,48 @@ describe('work observation portable closure', () => {
           `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
         );
         expect(archive.status).toBe(200);
+        if (liveHead) {
+          await shutdownControlStoreWorkerClient();
+          const terminalHead = readTurnHead();
+          const setTurnHead = (head: ReturnType<typeof readTurnHead>) =>
+            db.sqlite
+              .prepare('UPDATE control_turns SET record_json=?, status=? WHERE id=?')
+              .run(head.json, head.status, turn.id);
+          setTurnHead(liveHead);
+          try {
+            expect
+              .soft(() => readWorkObservations(db, owner))
+              .toThrow(/live Turn cannot carry a terminal observation reap/);
+            await expect(
+              exportSnapshot('export_runtime_joins_race', (id) => {
+                setTurnHead(terminalHead);
+                return workspaceDb(dataRoot, id);
+              })
+            ).rejects.toThrow(/Turn changed while selecting its observation snapshot/);
+          } finally {
+            setTurnHead(terminalHead);
+          }
+
+          const exportRoot = join(
+            dataRoot,
+            'server',
+            'exports',
+            'workspaces',
+            workspace.id,
+            exported.verified.manifest.id
+          );
+          const path = 'records/turns.jsonl';
+          const header = JSON.parse(exported.verified.fileContents.get(path)!.trim());
+          replaceArchiveFixtureMember(
+            exportRoot,
+            exported.verified.manifestText,
+            path,
+            `${JSON.stringify({ ...header, status: liveHead.status, completedAt: null })}\n`
+          );
+          expect
+            .soft(() => verifyWorkspaceExportTree({ exportRoot }))
+            .toThrow(/live Turn cannot carry a terminal observation reap/);
+        }
       } finally {
         db.sqlite.close();
         coreDb.sqlite.close();
@@ -372,20 +447,11 @@ describe('work observation portable closure', () => {
           retained.payload.workspaceId = foreignOwner;
           lines[0] = JSON.stringify(retained);
           const text = lines.join('\n');
-          writeFileSync(join(exportRoot, observationFile), text);
-          const manifest = JSON.parse(exported.verified.manifestText) as {
-            contentDigest: string;
-            contentInventory: Array<{ path: string; bytes: number; digest: string }>;
-          };
-          const entry = manifest.contentInventory.find((row) => row.path === observationFile)!;
-          entry.bytes = Buffer.byteLength(text);
-          entry.digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
-          manifest.contentDigest = `sha256:${createHash('sha256')
-            .update(JSON.stringify(manifest.contentInventory))
-            .digest('hex')}`;
-          writeFileSync(
-            join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
-            `${JSON.stringify(manifest, null, 2)}\n`
+          replaceArchiveFixtureMember(
+            exportRoot,
+            exported.verified.manifestText,
+            observationFile,
+            text
           );
           exported.verified = verifyWorkspaceExportTree({ exportRoot });
           expect(

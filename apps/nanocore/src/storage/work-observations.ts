@@ -793,20 +793,20 @@ function assertObservationTruncation(
       !isDeepStrictEqual(record.payload.truncation, binding.turn.observationCutoff.summary))
   )
     throw new Error('recovery_required: inconsistent observation truncation feature or summary');
-  if (!truncated) return;
-  const summary = ObservationTruncationSchema.parse(record.payload.truncation);
-  const rows = sqlite
-    .prepare(
-      'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence<? ORDER BY sequence'
-    )
-    .iterate(record.turnId, record.seq) as Iterable<ControlObservationRow>;
+  const summary = ObservationTruncationSchema.optional().parse(record.payload.truncation);
   function* prior() {
+    const rows = sqlite
+      .prepare(
+        'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence<? ORDER BY sequence'
+      )
+      .iterate(record.turnId, record.seq) as Iterable<ControlObservationRow>;
     for (const row of rows) yield decodeControlObservation(row, record.turnId);
   }
   assertReapObservationPrefix(
     prior(),
     summary,
     record,
+    ['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt,
     binding.turn.observationCutoff?.retainedSequence
   );
 }

@@ -160,10 +160,14 @@ export function omission(position: number): ObservationTruncation {
 /** Prove the declared logical prefix even when old physical rows include the omitted suffix. */
 export function assertReapObservationPrefix(
   rows: Iterable<WorkObservationRecord>,
-  summary: ObservationTruncation,
+  summary: ObservationTruncation | undefined,
   reap: WorkObservationRecord | undefined,
+  live: boolean | undefined,
   retainedSequence?: number
 ): void {
+  if (live && reap) throw new Error('A live Turn cannot carry a terminal observation reap');
+  if (!summary) return;
+  if (!live && !reap) throw new Error('A terminal Turn lacks its required observation reap');
   let position = 0;
   let sequence = 0;
   let callBytes = 0;
@@ -183,17 +187,28 @@ export function assertReapObservationPrefix(
         if (retainedInSql !== inPrefix)
           throw new Error('Invalid retained observation truncation boundary');
       }
-      if (!inPrefix) continue;
+      if (
+        !inPrefix &&
+        (position !== summary.firstOmittedSequence || summary.reason !== 'unresolved-call-bytes')
+      )
+        continue;
       const change = reapCallChange(row);
+      const previous = change ? calls.get(change.key) : undefined;
+      const next = change ? mergeReapCall(previous, change.call) : null;
+      const nextBytes = callBytes + serializedCallBytes(next) - serializedCallBytes(previous);
+      const nextCount = calls.size - Number(previous !== undefined) + Number(next !== null);
+      if (!inPrefix) {
+        if (fitsReap(row.turnId, row.ts, nextBytes, nextCount))
+          throw new Error('The first historically omitted observation fits the reap bound');
+        continue;
+      }
+      if (!fitsReap(row.turnId, row.ts, nextBytes, nextCount))
+        throw new Error('Retained observation prefix exceeds its reap bound');
       if (change) {
-        const previous = calls.get(change.key);
-        const next = mergeReapCall(previous, change.call);
         if (next) calls.set(change.key, next);
         else calls.delete(change.key);
-        callBytes += serializedCallBytes(next) - serializedCallBytes(previous);
+        callBytes = nextBytes;
       }
-      if (2 + callBytes + Math.max(0, calls.size - 1) > REAP_CALL_BYTES)
-        throw new Error('Retained observation prefix exceeds its reap bound');
       // Only the last primary row and its following companions can define the prefix clock.
       matchingBoundaryTimestamp = false;
     }

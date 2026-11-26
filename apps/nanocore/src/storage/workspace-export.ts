@@ -504,13 +504,10 @@ export function writeWorkspaceExportTree(
         throw new Error('Work observation export requires historical capture coverage.');
       }
       const summary = input.turnObservationTruncations?.get(turnId);
-      const rows = parsePortableWorkObservations(
-        text,
-        turnId,
-        summary
-          ? { summary, live: turn.status === 'pending' || turn.status === 'running' }
-          : undefined
-      );
+      const rows = parsePortableWorkObservations(text, turnId, {
+        summary,
+        live: turn.status === 'pending' || turn.status === 'running' || !turn.completedAt,
+      });
       for (const row of rows) {
         for (const ref of row.refs ?? []) {
           if (
@@ -993,7 +990,7 @@ function isRestrictedPortableEvidenceBundle(record: unknown): record is Record<s
 export function parsePortableWorkObservations(
   text: string,
   turnId: string,
-  truncation?: { readonly summary: ObservationTruncation; readonly live: boolean }
+  turn?: { readonly summary?: ObservationTruncation | undefined; readonly live: boolean }
 ): WorkObservationRecord[] {
   const committed = text.slice(0, text.lastIndexOf('\n') + 1);
   const rows: WorkObservationRecord[] = [];
@@ -1011,8 +1008,8 @@ export function parsePortableWorkObservations(
     }
     if (row.type === 'turn.reap') {
       if (
-        (truncation !== undefined || row.payload.truncation !== undefined) &&
-        (!truncation || reap || !isDeepStrictEqual(row.payload.truncation, truncation.summary))
+        (turn?.summary !== undefined || row.payload.truncation !== undefined) &&
+        (reap || !isDeepStrictEqual(row.payload.truncation, turn?.summary))
       )
         throw new Error('Invalid portable observation truncation declaration or prefix.');
       reap = row;
@@ -1020,12 +1017,8 @@ export function parsePortableWorkObservations(
     ids.add(row.id);
     rows.push(row);
   }
-  if (truncation) {
-    if (!reap && !truncation.live)
-      throw new Error('Portable terminal Turn lacks its required observation truncation summary.');
-    const prefix = reap ? rows.slice(0, reap.seq - 1) : rows;
-    assertReapObservationPrefix(prefix, truncation.summary, reap);
-  }
+  const prefix = !turn?.summary || !reap ? rows : rows.slice(0, reap.seq - 1);
+  assertReapObservationPrefix(prefix, turn?.summary, reap, turn?.live);
   return rows;
 }
 
@@ -1212,13 +1205,10 @@ export function verifyWorkspaceExportTree(
     if (observations !== undefined) {
       if (!features?.includes('openkit.work-observations.v1'))
         throw new Error('Portable observations lack their Turn required feature.');
-      parsePortableWorkObservations(
-        observations,
-        turn.id,
-        summary
-          ? { summary, live: turn.status === 'pending' || turn.status === 'running' }
-          : undefined
-      );
+      parsePortableWorkObservations(observations, turn.id, {
+        summary,
+        live: turn.status === 'pending' || turn.status === 'running' || !turn.completedAt,
+      });
       observationPaths.add(observationPath);
     } else if (truncated)
       throw new Error('Portable Turn lacks its required observation truncation file.');

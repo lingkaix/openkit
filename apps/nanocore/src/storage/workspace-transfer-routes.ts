@@ -633,6 +633,10 @@ function createVerifiedWorkspaceExportFiles({
       const retained = observationDb.sqlite.transaction(() => {
         const input = { threadId: turn.threadId, turnId: turn.id };
         const binding = readWorkObservationTurnBinding(observationDb, input);
+        if (binding.turn.status !== turn.status || binding.turn.completedAt !== turn.completedAt)
+          throw new Error(
+            'Turn changed while selecting its observation snapshot for Workspace export.'
+          );
         const rows = readWorkObservations(observationDb, input);
         if (binding.turn.requiredFeatures?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE)) {
           const summary =

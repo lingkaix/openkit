@@ -543,12 +543,8 @@ describe('native terminal recovery observations', () => {
     expect(observationBytes(f).slice(0, -1)).toEqual(bytes);
 
     const reap = rows.at(-1)!;
-    const summary: ObservationTruncation = {
-      ...(reap.payload.truncation as ObservationTruncation),
-      firstOmittedSequence: 1,
-      omittedCount: 258,
-    };
-    const contradictory = { ...reap, payload: { ...reap.payload, truncation: summary } };
+    const summary = reap.payload.truncation as ObservationTruncation;
+    const contradictory = { ...reap, payload: { ...reap.payload, unresolvedCalls: [] } };
     await shutdownControlStoreWorkerClient();
     f.db.sqlite
       .prepare('UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=?')
@@ -562,6 +558,50 @@ describe('native terminal recovery observations', () => {
     expect
       .soft(() => parsePortableWorkObservations(jsonl, f.owner.turnId, { summary, live: false }))
       .toThrow(/contradicts its retained observation prefix/);
+  });
+
+  it('refuses historical omission of a retained model call that fits the reap bound', async () => {
+    const f = await fixture();
+    const request = await observe(f, model(randomUUID(), 'retained'));
+    expect(await recover(f)).toMatchObject({ status: 'interrupted' });
+    const reap = readWorkObservations(f.db, f.owner).at(-1)!;
+    expect(reap.payload.unresolvedCalls).toEqual([
+      { corr: request.corr, type: request.type, name: null, ts: request.ts },
+    ]);
+    expect(Buffer.byteLength(JSON.stringify(reap.payload.unresolvedCalls))).toBeLessThan(61_440);
+    const summary: ObservationTruncation = {
+      reason: 'unresolved-call-bytes',
+      omittedCount: 1,
+      firstOmittedSequence: 1,
+      lastOmittedSequence: 1,
+      tail: 'unknown',
+    };
+    const forged = {
+      ...reap,
+      payload: { ...reap.payload, unresolvedCalls: [], lastObservedTs: null, truncation: summary },
+    };
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.transaction(() => {
+      f.db.sqlite
+        .prepare(
+          "UPDATE control_turns SET record_json=json_set(record_json,'$.requiredFeatures',json(?)) WHERE id=?"
+        )
+        .run(
+          JSON.stringify(['openkit.work-observations.v1', WORK_OBSERVATION_TRUNCATION_FEATURE]),
+          f.owner.turnId
+        );
+      f.db.sqlite
+        .prepare(
+          'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=?'
+        )
+        .run(JSON.stringify(forged), f.owner.turnId, reap.seq);
+    })();
+    const message = /first historically omitted observation fits the reap bound/;
+    expect.soft(() => readWorkObservations(f.db, f.owner)).toThrow(message);
+    const jsonl = [request, forged].map((row) => `${JSON.stringify(row)}\n`).join('');
+    expect
+      .soft(() => parsePortableWorkObservations(jsonl, f.owner.turnId, { summary, live: false }))
+      .toThrow(message);
   });
 
   it('reuses the exact committed snapshot after late observations and a cold retry', async () => {
