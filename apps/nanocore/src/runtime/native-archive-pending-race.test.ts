@@ -64,6 +64,8 @@ const archiveReadFault = vi.hoisted(() => ({
   gate: undefined as Int32Array | undefined,
   planIo: undefined as Int32Array | undefined,
   failPlanCopy: false,
+  failPlanClose: false,
+  planCloseFailures: 0,
   planCopyFailures: 0,
   workers: 0,
 }));
@@ -82,6 +84,15 @@ vi.mock('node:fs/promises', async (load) => {
           archiveReadFault.planCopyFailures++;
           throw Object.assign(new Error('Partial encoded plan copy refused'), { code: 'EIO' });
         }) as typeof file.write;
+      }
+      if (archiveReadFault.failPlanClose && args[1] === 'wx' && String(args[0]).endsWith('.tmp')) {
+        const close = file.close;
+        file.close = async () => {
+          await close.call(file);
+          archiveReadFault.failPlanClose = false;
+          archiveReadFault.planCloseFailures++;
+          throw Object.assign(new Error('Encoded plan close refused'), { code: 'EIO' });
+        };
       }
       return file;
     },
@@ -1340,7 +1351,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     90_000
   );
 
-  it.each(['terminal rename', 'receipt rename', 'receipt resource'] as const)(
+  it.each(['terminal rename', 'terminal clock', 'receipt rename', 'receipt resource'] as const)(
     'refuses an unrelated change in the archive $0 mutation',
     async (form) => {
       const f = await fixture();
@@ -1350,29 +1361,31 @@ describe('native standalone archive and concurrent Pending raise', () => {
         completedAt: f.turn.startedAt!,
       });
       const original = workspaceEvidence(f.root, f.workspace.id);
+      const lifecycle = form.startsWith('terminal ');
       const publish = f.store.publishPendingPlan.bind(f.store);
       vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
         (workspaceId, header, groups, turns) => {
           const target = groups.find((group) => group.kind === 'pending');
           if (!target?.input.terminal) throw new Error('Missing original archive closeout.');
-          const owner = form === 'terminal rename' ? target.input.terminal : target.input.admission;
+          const owner = lifecycle ? target.input.terminal : target.input.admission;
           if (!owner?.products[0]) throw new Error('Missing original archive mutation.');
           if (form === 'receipt resource')
             target.input.admission!.audit.resource = 'Unrelated resource';
+          else if (form === 'terminal clock')
+            owner.products[0].record.updatedAt = '2001-01-01T00:00:00.000Z';
           else owner.products[0].record.name = 'Independent rename';
           return publish(workspaceId, header, groups, turns);
         }
       );
-      const result =
-        form !== 'terminal rename'
-          ? archiveThread(f.archive, f.dependencies, actor)
-          : archiveThreadWithCloseout(
-              f.store,
-              { openWorkspace: f.dependencies.repositoryWorkspaceDb },
-              f.workspace.id,
-              f.thread.id,
-              { kind: 'user', id: userId }
-            );
+      const result = !lifecycle
+        ? archiveThread(f.archive, f.dependencies, actor)
+        : archiveThreadWithCloseout(
+            f.store,
+            { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+            f.workspace.id,
+            f.thread.id,
+            { kind: 'user', id: userId }
+          );
       await expect(result).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
       closeFixtureReaders();
       await shutdownControlStoreWorkerClient();
@@ -1389,27 +1402,42 @@ describe('native standalone archive and concurrent Pending raise', () => {
     'without a usable settlement source',
     'with a person batch marked unknown before completion',
     'with a substituted outcome start status',
+    'with substituted capture coverage',
+    'with reversed completion Item order',
   ] as const)(
     'refuses a grouped Boot person freeze %s',
     async (fault) => {
       const f = await fixture();
-      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
       const pending = {
         openWorkspace: f.dependencies.repositoryWorkspaceDb,
         agentAuthority: () => true,
       };
-      await respondRecordedApproval({
-        store: f.store,
-        sqlite: f.reader.sqlite,
-        workspaceId: f.workspace.id,
-        threadId: f.thread.id,
-        approvalRequestId: f.raise.requestId,
-        decision: 'denied',
-        actorId: userId,
-        coreDb: undefined,
-        requestActor: actor,
-        dependencies: pending,
-      });
+      const requests = [f.raise];
+      if (fault === 'with reversed completion Item order') {
+        const requestId = randomUUID();
+        requests.push({
+          ...f.raise,
+          requestId,
+          requestItemId: pendingRequestItemId(requestId, 'request'),
+        });
+      }
+      for (const request of requests) {
+        await raiseRecordedPendingRequest(f.store, f.reader.sqlite, request);
+        await respondRecordedApproval({
+          store: f.store,
+          sqlite: f.reader.sqlite,
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          approvalRequestId: request.requestId,
+          decision: 'denied',
+          actorId: userId,
+          coreDb: undefined,
+          requestActor: actor,
+          dependencies: pending,
+        });
+      }
+      if (fault === 'with substituted capture coverage')
+        f.store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
       await f.store.completeTurn(f.turn.id, {
         status: 'completed',
         completedAt: f.turn.startedAt!,
@@ -1443,6 +1471,28 @@ describe('native standalone archive and concurrent Pending raise', () => {
           if (fault === 'with a substituted outcome start status')
             products.transition.products.find((entry) => entry.kind === 'turn')!.record.status =
               'pending';
+          if (fault === 'with substituted capture coverage') {
+            const admission = products.transition.products.find((entry) => entry.kind === 'turn')!;
+            expect(admission.record.captureCoverage).toEqual({ scope: 'server', value: 'off' });
+            expect(completion.input.turn.record.captureCoverage).toEqual(
+              admission.record.captureCoverage
+            );
+            admission.record.captureCoverage = { scope: 'server', value: 'on' };
+            completion.input.turn.record.captureCoverage = admission.record.captureCoverage;
+          }
+          if (fault === 'with reversed completion Item order') {
+            const scope = nativeProductScope(f.root, f.turn.owner);
+            const event = completion.input.entries[0]!;
+            const reference = event.content.reference;
+            if (!('representation' in reference)) throw new Error('Expected inline completion.');
+            const envelope = JSON.parse(reference.body);
+            expect(envelope.data.turn.items).toHaveLength(2);
+            envelope.data.turn.items.reverse();
+            completion.input.entries[0] = {
+              ...event,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+            };
+          }
           if (fault === 'without a usable settlement source') {
             const settlement = groups.find(
               (g) => g.kind === 'pending' && g.input.input.action === 'settle-unfinished'
@@ -1656,7 +1706,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
   }, 90_000);
 
-  it.each(['partial plan copy', 'pre-admission post'] as const)(
+  it.each(['partial plan copy', 'encoded plan close', 'pre-admission post'] as const)(
     'releases the producer staging after a refused %s',
     async (fault) => {
       const f = await fixture();
@@ -1676,7 +1726,9 @@ describe('native standalone archive and concurrent Pending raise', () => {
       const client = getControlStoreWorkerClient();
       const post = vi.spyOn(client, 'pendingCommand');
       archiveReadFault.planCopyFailures = 0;
+      archiveReadFault.planCloseFailures = 0;
       if (fault === 'partial plan copy') archiveReadFault.failPlanCopy = true;
+      else if (fault === 'encoded plan close') archiveReadFault.failPlanClose = true;
       else
         post.mockImplementationOnce(async (_database, input) => {
           if (!('plan' in input)) throw new Error('Missing assembled grouped plan.');
@@ -1695,15 +1747,17 @@ describe('native standalone archive and concurrent Pending raise', () => {
             { kind: 'user', id: userId }
           )
         ).rejects.toMatchObject(
-          fault === 'partial plan copy'
-            ? { code: 'EIO' }
-            : { code: 'busy', commit: 'not-committed' }
+          fault === 'pre-admission post'
+            ? { code: 'busy', commit: 'not-committed' }
+            : { code: 'EIO' }
         );
       } finally {
         archiveReadFault.failPlanCopy = false;
+        archiveReadFault.failPlanClose = false;
       }
-      expect(post).toHaveBeenCalledTimes(fault === 'partial plan copy' ? 0 : 1);
+      expect(post).toHaveBeenCalledTimes(fault === 'pre-admission post' ? 1 : 0);
       if (fault === 'partial plan copy') expect(archiveReadFault.planCopyFailures).toBe(1);
+      if (fault === 'encoded plan close') expect(archiveReadFault.planCloseFailures).toBe(1);
       closeFixtureReaders();
       await shutdownControlStoreWorkerClient();
       expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
