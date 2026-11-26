@@ -208,7 +208,7 @@ function operationDouble(
 }
 
 /** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
-async function faultFixture() {
+async function faultFixture({ alignFixtureWall = false } = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
@@ -223,6 +223,16 @@ async function faultFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
+  if (alignFixtureWall) {
+    const write = store.writeWorkspaceExecutionJournalIntent.bind(store);
+    vi.spyOn(store, 'writeWorkspaceExecutionJournalIntent').mockImplementation(async (...args) => {
+      const acknowledged = await write(...args);
+      // The native journal writer uses real time. Keep the test's virtual time at or past its ACK.
+      const admittedMs = Number(acknowledged.clock.admittedUnixNano / 1_000_000n);
+      if (Date.now() < admittedMs) vi.setSystemTime(admittedMs);
+      return acknowledged;
+    });
+  }
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1057,7 +1067,7 @@ describe('Workspace execution journal producer boundaries', () => {
     async ({ boundary, operation }) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
       const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
@@ -1174,7 +1184,7 @@ describe('Workspace execution journal producer boundaries', () => {
     async (operation) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
       try {
@@ -1263,7 +1273,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (mode) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const controller = new AbortController();
       let release!: () => void;
       let entered!: () => void;
@@ -1406,7 +1416,7 @@ describe('first-release worker faults (real Core crossings)', () => {
         })
       );
     onTestFinished(() => heartbeatClock.mockRestore());
-    const f = await faultFixture();
+    const f = await faultFixture({ alignFixtureWall: true });
     const workspaceDb = openWorkspaceDb(
       f.coreDb.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -1553,7 +1563,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (loss) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1637,7 +1647,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (finished) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1664,9 +1674,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         // No successor poll: the Worker died. One poll interval plus the header bound fits within this independent ceiling.
         await vi.advanceTimersByTimeAsync(2_000);
         // Join native failure publication without advancing the original virtual deadline.
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(
           f.isSettled(),
           'missing non-receipt proof must fail within seconds, not the 300-second result budget'
@@ -1715,7 +1725,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (kind) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1750,9 +1760,9 @@ describe('first-release worker faults (real Core crossings)', () => {
               ];
         expect([204, 409]).toContain((await f.poll(invalid)).status);
         await vi.advanceTimersByTimeAsync(2_000);
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(f.isSettled()).toBe(true);
         const failedTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
         expect(failedTurn.status).toBe('failed');
@@ -1796,7 +1806,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (finished) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1843,9 +1853,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         ).toBeNull();
         const expectedFailure = 'NanoHost Harness turn.start delivery incomplete: outcome unknown.';
         await vi.advanceTimersByTimeAsync(100);
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(expectedFailure);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(f.isSettled()).toBe(true);
         const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
         expect(turn.status).toBe('failed');
@@ -1911,7 +1921,7 @@ describe('first-release worker faults (real Core crossings)', () => {
   it('fails closed when a dispatched session.inspect result is held for the 300-second budget', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(vi.getRealSystemTime());
-    const f = await faultFixture();
+    const f = await faultFixture({ alignFixtureWall: true });
     try {
       const opened = await f.dispatch('session.open');
       await f.result(opened, {

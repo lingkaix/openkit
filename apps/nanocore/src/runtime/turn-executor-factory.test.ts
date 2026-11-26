@@ -4314,7 +4314,7 @@ describe('createConfiguredTurnExecutor', () => {
     const peer = createFactoryNanoHostDispatch(effects);
     let observed = { sourceCommit: 'b'.repeat(40), releaseTag: null as string | null };
     const dispatch = vi
-      .spyOn(nanoHostDispatchOwner, 'createNanoHostSessionDispatch')
+      .spyOn(nanoHostDispatchOwner, 'createProductionNanoHostSessionDispatch')
       .mockReturnValue({
         ...peer,
         async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {

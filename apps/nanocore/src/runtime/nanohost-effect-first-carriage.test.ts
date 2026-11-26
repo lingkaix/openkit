@@ -875,6 +875,30 @@ it('keeps a committed command result-only after loss and never replays it on the
   expect(fixture.peerInvocations).toEqual([{ kind: 'sandbox.delete', requestId: REQUEST_ID }]);
 });
 
+it('refuses the native first write when the original command has no owner proof', async () => {
+  const fixture = await nativeEffects();
+  const original = new AbortController();
+  const pending = fixture.dispatch
+    .effect({
+      ...sandboxDelete(),
+      beforeDelivery: undefined,
+      signal: original.signal,
+    })
+    .catch((error: unknown) => error);
+  try {
+    const reply = await fixture.post('sandbox.delete');
+    expect(reply.status).toBe(409);
+    expect(JSON.parse(reply.body.toString())).toMatchObject({
+      message: 'NanoHost effect first-write owner proof is unavailable.',
+    });
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.peerInvocations).toEqual([]);
+  } finally {
+    original.abort();
+    await pending;
+  }
+});
+
 it('holds production first sends and build input while retaining bounded ownership and result inspection', async () => {
   const fixture = await nativeEffects({ held: true });
   const original = new AbortController();
