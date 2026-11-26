@@ -140,7 +140,8 @@ export function readRegistryEvidence(
       '--dir',
       directory,
     ]);
-    const record = JSON.parse(readFileSync(join(directory, 'registry-admission.json'), 'utf8'));
+    const recordBytes = readFileSync(join(directory, 'registry-admission.json'));
+    const record = JSON.parse(recordBytes.toString('utf8'));
     validateRegistryEvidence(record, {
       repository,
       source,
@@ -165,7 +166,7 @@ export function readRegistryEvidence(
       ...record,
       ...registry,
       artifactId,
-      recordSha256: sha(readFileSync(join(directory, 'registry-admission.json'))),
+      recordSha256: sha(recordBytes),
       images: record.images,
     };
   } finally {
