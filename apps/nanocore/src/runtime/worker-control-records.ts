@@ -601,6 +601,7 @@ async function recordWorkerObservation(
       await appendWorkObservation(workspaceDb, {
         ...owner,
         observation,
+        workerSequence: event.sequence,
         bodies:
           data.content.state === 'expected' && data.content.bytes === 0
             ? [

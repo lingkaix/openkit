@@ -36,6 +36,7 @@ export const ObservationOmissionResultSchema = z.discriminatedUnion('disposition
 /** The original crossing identity and the retained SQL boundary are private to the deciding owner. */
 export const ObservationCutoffSchema = z.strictObject({
   observationId: z.string().min(1).max(512),
+  workerSequence: z.int().nonnegative().optional(),
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   retainedSequence: z.int().nonnegative(),
   summary: ObservationTruncationSchema,

@@ -502,6 +502,7 @@ export interface ControlWorkObservationInput {
   readonly observation: WorkObservationDraft;
   readonly bodies: readonly WorkObservationBodyDescriptor[];
   readonly publishBodies?: boolean | undefined;
+  readonly workerSequence?: number | undefined;
 }
 
 /** Savepoint result only: the worker must await outer FULL COMMIT before acknowledgement. */
@@ -582,6 +583,7 @@ export interface ControlWorkObservationPreparation {
   readonly observation: WorkObservationDraft;
   readonly bodies: readonly AdmittedWorkBody[];
   readonly deferBodyPublication?: true;
+  readonly workerSequence?: number | undefined;
 }
 
 /** Scoped selectors are not paths and cannot select a second owning database. */
@@ -595,6 +597,7 @@ export const ControlWorkObservationInputSchema = controlObservationSelectorSchem
     observation: z.record(z.string(), z.unknown()),
     bodies: z.array(bodyDescriptorSchema.strict()),
     publishBodies: z.boolean().optional(),
+    workerSequence: z.int().nonnegative().optional(),
   })
   .strict();
 
@@ -1087,6 +1090,7 @@ export function prepareControlWorkObservation(
     observation: { ...observation, payload: producerPayload },
     bodies,
     publishBodies: bodies.length > 0 && !input.deferBodyPublication,
+    ...(input.workerSequence !== undefined ? { workerSequence: input.workerSequence } : {}),
   };
 }
 
@@ -1544,7 +1548,7 @@ export function applyControlWorkObservation(
       if (!terminalReap && (candidate.payload.truncation !== undefined || cutoff))
         throw new Error('Observation truncation belongs to the terminal writer');
     } else if (cutoff) {
-      if (cutoff.observationId !== candidate.id)
+      if (cutoff.observationId !== candidate.id || cutoff.workerSequence !== input.workerSequence)
         return { disposition: 'closed', truncation: cutoff.summary };
       if (cutoff.digest !== observationDigest(candidate))
         throw new Error('recovery_required: observation cutoff identity conflict');
@@ -1569,6 +1573,7 @@ export function applyControlWorkObservation(
         if (historicalReap) return { disposition: 'closed', truncation: null };
         const seal = previous.cutoff ?? {
           observationId: candidate.id,
+          ...(input.workerSequence !== undefined ? { workerSequence: input.workerSequence } : {}),
           digest: observationDigest(candidate),
           retainedSequence: tail.count,
           summary,

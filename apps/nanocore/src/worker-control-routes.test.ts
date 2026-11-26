@@ -97,7 +97,11 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { appendWorkObservation, readWorkObservations } from './storage/work-observations.js';
+import {
+  appendWorkObservation,
+  readWorkObservations,
+  readWorkObservationTurnBinding,
+} from './storage/work-observations.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
@@ -1816,6 +1820,21 @@ describe('worker control routes', () => {
       nextExpectedSequence: 1,
     });
     expect(lostNotice).toHaveBeenCalledExactlyOnceWith(lineage);
+    const fingerprints = () =>
+      coreDb.sqlite
+        .prepare(
+          "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE operation='event_append' AND package_snapshot_id=? ORDER BY sequence"
+        )
+        .all(lineage.packageSnapshotId);
+    expect(readWorkObservationTurnBinding(workspace, lineage).turn.observationCutoff).toMatchObject(
+      { workerSequence: 0 }
+    );
+    const originalFingerprint = fingerprints();
+    expect(originalFingerprint).toEqual([{ sequence: 0, fingerprint: expect.any(String) }]);
+    const shifted = await post('events/append', { lineage, record: { ...event, sequence: 1 } });
+    expect(shifted.status).toBe(409);
+    expect(await shifted.json()).toMatchObject({ code: 'observation_limit_reached' });
+    expect(fingerprints()).toEqual(originalFingerprint);
     expect(readWorkObservations(workspace, lineage).map((row) => row.id)).toEqual([
       'near-full-model-call',
     ]);
@@ -1882,6 +1901,7 @@ describe('worker control routes', () => {
     const replay = await post('events/append', { lineage, record: event });
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(omission);
+    expect(fingerprints()).toEqual(originalFingerprint);
     const final = (sequence: number) =>
       post('final-status', {
         body: { status: 'interrupted', stopReason: 'aborted' },
