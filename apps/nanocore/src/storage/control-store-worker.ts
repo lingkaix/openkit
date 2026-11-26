@@ -221,7 +221,7 @@ import {
   applyControlPendingPlan,
   type PreparedControlPendingPlan,
   prepareControlPendingPlan,
-} from './control-store-pending-plan.js';
+} from './control-store-pending-plan-worker.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   assertControlProductWriter,
