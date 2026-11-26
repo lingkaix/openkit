@@ -18,6 +18,11 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  reviseGoalIntent,
+  seedEndedGoalTask,
+  workspaceEvidence,
+} from '../test-support/boot-walk-evidence.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { archiveThread, createThread } from '../thread-routes.js';
 import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
@@ -713,6 +718,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
       const nativePending = client.pendingCommand.bind(client);
       const packet = Promise.withResolvers<Parameters<typeof nativePending>>();
       const reply = Promise.withResolvers<Awaited<ReturnType<typeof nativePending>>>();
+      // The closeout is one grouped Pending decision; its plan's closeout group is the packet here.
+      const planned = vi.spyOn(f.store, 'publishPendingPlan');
       // Hold only the real producer's first post; the unchanged packet receives a real native reply.
       const boundary = vi.spyOn(client, 'pendingCommand').mockImplementationOnce((...args) => {
         packet.resolve(args);
@@ -733,27 +740,36 @@ describe('native standalone archive and concurrent Pending raise', () => {
         (reason: unknown) => ({ status: 'rejected' as const, reason })
       );
       const args = await packet.promise;
+      expect(args[1]).toEqual({
+        plan: expect.objectContaining({
+          workspaceId: f.workspace.id,
+          operation: 'pending-closeout',
+        }),
+      });
+      const group = planned.mock.calls[0]![2].find((candidate) => candidate.kind === 'pending');
+      if (group?.kind !== 'pending') throw new Error('The closeout plan has no closeout group.');
+      const closeout = group.input;
       let winningTurn: Awaited<ReturnType<typeof f.store.createTurn>>;
       let winningThread: ReturnType<typeof f.store.getThread>;
       let beforeRelease: ReturnType<typeof committedRows>;
       try {
-        expect(args[1].input).toMatchObject({
+        expect(closeout.input).toMatchObject({
           action: 'closeout',
           workspaceId: f.workspace.id,
           threadId: f.thread.id,
           expectedThreadCensus: [f.raise.requestId],
           expected: [expect.objectContaining({ requestId: f.raise.requestId })],
         });
-        expect(args[1].terminal).toMatchObject({
+        expect(closeout.terminal).toMatchObject({
           turn: { expectedRevision: 0, record: { status: 'completed' } },
           execution: null,
           command: null,
           evidence: [],
         });
-        expect(args[1].receipt).toBeNull();
+        expect(closeout.receipt).toBeNull();
         if (path === 'public') {
           const scope = { workspaceId: f.workspace.id, threadId: f.thread.id };
-          expect(args[1].admission?.receipt).toMatchObject({
+          expect(closeout.admission?.receipt).toMatchObject({
             key: commandRequestKey('thread.archive', f.archive.requestId, scope),
             command: 'thread.archive',
             requestId: f.archive.requestId,
@@ -761,12 +777,12 @@ describe('native standalone archive and concurrent Pending raise', () => {
             inputHash: commandInputHash(f.archive),
             response: { kind: 'thread', id: f.thread.id },
           });
-          expect(args[1].admission?.audit).toMatchObject({
+          expect(closeout.admission?.audit).toMatchObject({
             requestId: f.archive.requestId,
             action: 'thread.archive',
           });
         } else {
-          expect(args[1].admission).toBeUndefined();
+          expect(closeout.admission).toBeUndefined();
         }
         expect(committedRows(f.reader)).toEqual(beforePreparation);
         winningTurn = await f.store.createTurn(
@@ -792,6 +808,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
       const result = await archiveAttempt;
       expect(boundary).toHaveBeenCalledTimes(1);
       boundary.mockRestore();
+      planned.mockRestore();
       // A refusal must roll back every selected request, product, original receipt and Audit write.
       expect(committedRows(f.reader)).toEqual(beforeRelease);
       expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toEqual(request);
@@ -958,6 +975,70 @@ describe('native standalone archive and concurrent Pending raise', () => {
         readCommandRequestRecordsFromSqlite(cold.sqlite)
       )
     ).toBeNull();
+  });
+
+  // V1-P vehicle gate: the archive closeout's final group goes stale after planning. Only the Task's
+  // Goal changes before A's writer decides; the Task owner accepts it, so the closeout's own input
+  // recheck refuses with no prefix and no new name, and a retry archives once.
+  it('refuses a grouped archive closeout whose Task Goal changed after planning with no prefix, then archives once', async () => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const goalThread = await f.store.createThread(f.workspace.id, 'Goal coordination');
+    const goalId = seedEndedGoalTask(f.root, f.workspace.id, {
+      taskThreadId: f.thread.id,
+      goalThreadId: goalThread.id,
+      userId,
+    });
+    const request = readPendingRequest(f.reader.sqlite, f.raise.requestId);
+    const original = workspaceEvidence(f.root, f.workspace.id);
+    const publish = f.store.publishPendingPlan.bind(f.store);
+    const planned = vi
+      .spyOn(f.store, 'publishPendingPlan')
+      .mockImplementationOnce(async (...args) => {
+        expect(reviseGoalIntent(f.root, f.workspace.id, goalId)).toBe(1);
+        return publish(...args);
+      });
+    const archive = () =>
+      archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      );
+
+    await expect(archive()).rejects.toMatchObject({
+      code: 'conflict',
+      status: 409,
+      message: 'The Pending closeout changed after it was planned.',
+    });
+    expect(planned).toHaveBeenCalledTimes(1);
+    // Zero prefix: the Thread stays active with its one Turn, the request is unchanged, and
+    // every file and table but the changed Goal is as planned.
+    expect(f.store.getThread(f.workspace.id, f.thread.id).status).toBe('active');
+    expect(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toHaveLength(1);
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toEqual(request);
+    const refused = workspaceEvidence(f.root, f.workspace.id);
+    expect(refused.files).toEqual(original.files);
+    const { goals: plannedGoal, ...plannedRest } = original.content;
+    const { goals: changedGoal, ...refusedRest } = refused.content;
+    expect(changedGoal).not.toBe(plannedGoal);
+    expect(refusedRest).toEqual(plannedRest);
+
+    // A retry plans on the changed Goal and archives once, with one closeout Turn.
+    expect(await archive()).toBe(f.thread.id);
+    expect(planned).toHaveBeenCalledTimes(2);
+    expect(f.store.getThread(f.workspace.id, f.thread.id).status).toBe('archived');
+    const turns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+    expect(turns).toHaveLength(2);
+    const closeout = turns.find((turn) => turn.id !== f.turn.id)!;
+    expect(closeout).toMatchObject({ status: 'completed', threadId: f.thread.id });
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toMatchObject({
+      state: 'ended',
+      publicationTurnId: closeout.id,
+      delivery: 'closed-out',
+    });
   });
 
   it('rolls back fresh lifecycle closeout when the native archived-status write fails', async () => {

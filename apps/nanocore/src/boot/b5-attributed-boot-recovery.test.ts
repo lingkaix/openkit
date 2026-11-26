@@ -27,7 +27,11 @@ import type { FsStore } from '../lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
 import { mcpToolArgumentsContentDigest } from '../runtime/mcp-tool-schema-snapshots.js';
 import { recoverPendingRequestsAtBoot } from '../runtime/pending-request-flow.js';
-import { pendingRequestItemId } from '../runtime/pending-requests.js';
+import {
+  PENDING_PROJECTION_ROLES,
+  pendingRequestItemId,
+  validateCanonicalLoad,
+} from '../runtime/pending-requests.js';
 import * as productTurns from '../runtime/product-turn-start.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -50,9 +54,11 @@ import {
   capabilityCallCount,
   contradictTurnCompletionStopReason,
   contradictTurnRecord,
+  copyRetainedPendingHistory,
   hideWorkspaceTurnSelector,
   raiseSeedPendingRequest,
   readPendingRecord,
+  readPendingRecords,
   readPendingRow,
   removeGoal,
   removeWorkObservation,
@@ -100,6 +106,7 @@ interface BootWalkFault {
   readonly writerWithin?: string;
   readonly writerAfter?: number;
   readonly writerWatch?: boolean;
+  readonly writerGoal?: string;
   readonly arm?: string;
   readonly live?: string | readonly string[];
   readonly shared?: boolean;
@@ -133,9 +140,9 @@ const PENDING_PAGE_SQL = 'WHERE workspace_id = ? AND thread_id = ?';
 /** Statement text of the writer's own Thread read while it validates a Turn publication. */
 const WRITER_THREAD_SQL = 'SELECT * FROM control_threads WHERE id=?';
 /**
- * Each distinct Pending post the Boot tail addresses to a Workspace writer, with the number of
- * that writer's Thread reads that precede it: admission reads the Thread three times (Thread CAS
- * and graph validation), the close once, and the acknowledged close's wake then admits again.
+ * Each Pending group the Boot tail decides in a Workspace writer's one grouped decision, with the
+ * number of that writer's Thread reads that precede it: admission reads the Thread three times
+ * (Thread CAS and graph validation), the close once, and the closed batch's successor then admits.
  */
 const PENDING_BOOT_POSTS = [
   { write: 'closeout', seed: 'agent-removed', writerAfter: 0 },
@@ -144,6 +151,12 @@ const PENDING_BOOT_POSTS = [
   { write: 'outcome close', seed: 'outcome', writerAfter: 3 },
   { write: 'outcome wake', seed: 'outcomes', writerAfter: 4 },
 ] as const;
+/** Outcome Items 16 closed-out Worker denials publish on their one closeout Turn, two each. */
+const CLOSED_OUT_ITEMS = 32;
+/** A user-input answer over the 64 KiB inline Item bound: its outcome Item is file-backed. */
+const LARGE_ANSWER_BYTES = 96 * 1024;
+/** Retained Pending rows of the long-history gate: past one writer frame of census sources. */
+const HISTORY_SOURCES = 12_000;
 /** Agent named by seeded Worker approvals; no Boot configuration declares it. */
 const WORKER_AGENT_ID = 'agent_b5_worker';
 
@@ -1159,10 +1172,13 @@ describe('B5 attributed Boot recovery', () => {
   // delivery and their requester loses authority before restart. The idle closeout's original
   // packet carries a decision and a denied-disposition Item per row plus the completion event, 33
   // entries past the terminal writer's 32-entry bound; that bound refuses before the settlement.
+  // Cold-Boot input 2: the idle tail closes every waiting denial of one Thread out on one Core-local
+  // Turn in A's one grouped decision, past the 32-entry terminal packet, and the next Boot finds
+  // nothing left to decide.
   it(
-    "proves the idle closeout's packet on the terminal writer's bound before the restart settlement, and holds A unchanged when 16 denials exceed it",
+    "closes the idle tail's 16 denials out on one completed Turn with every original association, exactly once across restart",
     async () => {
-      const root = await seedRoot(['Healthy', 'Over-limit closeout']);
+      const root = await seedRoot(['Healthy', 'Grouped closeout']);
       const [healthy, held] = root.workspaceIds as [string, string];
       const { claims, denials } = await withSeedStore(root, async (store) => {
         const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
@@ -1188,41 +1204,53 @@ describe('B5 attributed Boot recovery', () => {
           expect(readPendingRow(root.dataRoot, id, requestId)).toMatchObject({
             delivery: 'undelivered',
           });
-      const claim = readPendingRow(root.dataRoot, held, claims[1]!.requestId);
-      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
-      const original = workspaceEvidence(root.dataRoot, held);
-      const watch: BootWalkFault = {
-        workspaceId: held,
-        writerWatch: true,
-        label: 'closeout-packet',
-      };
-
-      const server = await startServer(root, watch);
-      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
-      await expectServed(server, [healthy], held);
-      await stopServer(server);
-      expect(bootDecisionLines(server)).toContain(
-        'Control product transition precondition failed.'
-      );
-      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
-      // B proceeds: its claim settles and its denial closes out.
-      expect(readPendingRow(root.dataRoot, healthy, claims[0]!.requestId)).toMatchObject({
-        claim: 'finished',
-        disposition: 'outcome-unknown',
+      expect(readPendingRow(root.dataRoot, held, claims[1]!.requestId)).toMatchObject({
+        claim: 'claimed',
+        disposition: null,
       });
+
+      const server = await startServer(root);
+      await expectNotHeld(server, held);
+      await expectServed(server, root.workspaceIds, null);
+      await stopServer(server);
+      expect(bootDecisionLines(server)).not.toContain('Boot recovery held Workspace');
+      for (const [index, id] of root.workspaceIds.entries())
+        expect(readPendingRow(root.dataRoot, id, claims[index]!.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+        });
       expect(readPendingRow(root.dataRoot, healthy, denials[0]!.requestIds[0]!)).toMatchObject({
         delivery: 'closed-out',
       });
-      // A's earlier claim and every denial stay byte-identical: the refusal preceded the settlement.
-      expect(readPendingRow(root.dataRoot, held, claims[1]!.requestId)).toEqual(claim);
-      expectEvidenceUnchanged(root.dataRoot, held, original);
+      // Every one of A's 16 denials closed out on the same one Turn of its own Thread.
+      const closed = denials[1]!.requestIds.map((requestId) =>
+        readPendingRow(root.dataRoot, held, requestId)
+      );
+      const closeoutTurnId = closed[0]!.publication_turn_id as string;
+      expect(closeoutTurnId).toEqual(expect.any(String));
+      for (const row of closed)
+        expect(row).toMatchObject({ delivery: 'closed-out', publication_turn_id: closeoutTurnId });
+      await withSeedStore(root, (store) => {
+        const turn = store.getTurn(held, denials[1]!.threadId, closeoutTurnId);
+        expect(turn).toMatchObject({ status: 'completed', threadId: denials[1]!.threadId });
+        // The Turn carries exactly each denial's own outcome Items, once each.
+        const own = new Set(
+          denials[1]!.requestIds.flatMap((requestId) =>
+            PENDING_PROJECTION_ROLES.map((role) => pendingRequestItemId(requestId, role))
+          )
+        );
+        expect(turn.items).toHaveLength(CLOSED_OUT_ITEMS);
+        expect(new Set(turn.items.map((item) => item.id)).size).toBe(CLOSED_OUT_ITEMS);
+        for (const item of turn.items) expect(own.has(item.id), item.id).toBe(true);
+      });
+      const closedOut = workspaceEvidence(root.dataRoot, held);
 
-      // The same valid batch repeats the refusal before any write.
-      const repeated = await startServer(root, watch);
-      await expectHeld(repeated, held, 'check=records; stage=pending-request-recovery');
+      // Exactly once: the next Boot decides nothing more for A.
+      const repeated = await startServer(root);
+      await expectNotHeld(repeated, held);
       await stopServer(repeated);
-      expect(repeated.output()).not.toContain('[boot-walk-fault] writer-entered');
-      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(bootDecisionLines(repeated)).not.toContain('Boot recovery held Workspace');
+      expectEvidenceUnchanged(root.dataRoot, held, closedOut);
     },
     CASE_TIMEOUT_MS
   );
@@ -1276,13 +1304,16 @@ describe('B5 attributed Boot recovery', () => {
       const claim = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId);
       expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
 
-      const server = await startServer(root);
+      const watch: BootWalkFault = { workspaceId: held, writerWatch: true, label: 'task-fact' };
+      const server = await startServer(root, watch);
       await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
       await expectServed(server, [healthy], held);
       await stopServer(server);
       expect(bootDecisionLines(server)).toContain(
         'Task terminal fact requires its linked Goal owner'
       );
+      // The intact preflight refuses before A's writer: no write entered A's database.
+      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
       // The sibling's publication took the same branch of the same walk.
       for (const requestId of seeded[0]!.requestIds)
         expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({
@@ -1358,13 +1389,20 @@ describe('B5 attributed Boot recovery', () => {
       const claim = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId);
       expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
 
-      const server = await startServer(root);
+      const watch: BootWalkFault = {
+        workspaceId: held,
+        writerWatch: true,
+        label: 'tail-task-fact',
+      };
+      const server = await startServer(root, watch);
       await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
       await expectServed(server, [healthy], held);
       await stopServer(server);
       expect(bootDecisionLines(server)).toContain(
         'Task terminal fact requires its linked Goal owner'
       );
+      // The intact preflight refuses before A's writer: no write entered A's database.
+      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
       // The sibling's post took the same tail of the same walk.
       for (const requestId of seeded[0]!.requestIds)
         expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({ delivery });
@@ -1390,6 +1428,213 @@ describe('B5 attributed Boot recovery', () => {
         disposition: 'outcome-unknown',
         disposition_reason: 'restart',
       });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P vehicle gate: only the Task's Goal changes after Main planned A's grouped decision, inside
+  // A's writer before it decides. The Task owner itself accepts a changed Goal payload, so only the
+  // decision's recheck of its planned inputs refuses: A is held and only that Goal row differs.
+  it.each([
+    {
+      post: 'authority-loss closeout',
+      approval: { requesterKind: 'worker', decision: null },
+      delivery: 'closed-out',
+    },
+    {
+      post: 'person outcome close',
+      approval: { requesterKind: 'person', decision: 'denied' },
+      delivery: 'delivered',
+    },
+  ] as const)(
+    "refuses A's grouped $post at its writer when only the Task's Goal changed after planning, then recovers A once",
+    async ({ approval, delivery }) => {
+      const root = await seedRoot(['Healthy', 'Goal changed']);
+      const [healthy, held] = root.workspaceIds as [string, string];
+      const seeded = await withSeedStore(root, async (store) => {
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        const approvals = await seedDecidedApprovals(store, root, root.workspaceIds, {
+          services: 'none',
+          ...approval,
+        });
+        return approvals.map((seed, index) => ({ ...seed, claim: claims[index]! }));
+      });
+      // A's tail Thread is a Goal card Task of an ended Goal.
+      const goalThreadId = await withSeedStore(
+        root,
+        async (store) => (await store.createThread(held, 'Goal coordination')).id
+      );
+      const goalId = seedEndedGoalTask(root.dataRoot, held, {
+        taskThreadId: seeded[1]!.threadId,
+        goalThreadId,
+        userId: root.actor.id,
+      });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const claim = readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId);
+      expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
+      const fault: BootWalkFault = { workspaceId: held, writerGoal: goalId, label: 'goal-changed' };
+
+      const server = await startServer(root, fault);
+      expect(server.output()).toContain(`[boot-walk-fault] goal-changed ${fault.label} 1`);
+      await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
+      await expectServed(server, [healthy], held);
+      await stopServer(server);
+      for (const requestId of seeded[0]!.requestIds)
+        expect(readPendingRow(root.dataRoot, healthy, requestId)).toMatchObject({ delivery });
+      // Zero prefix: A's earlier claim, every other row and every file are unchanged.
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toEqual(claim);
+      const refused = workspaceEvidence(root.dataRoot, held);
+      expect(refused.files).toEqual(original.files);
+      const { goals: plannedGoal, ...plannedRest } = original.content;
+      const { goals: changedGoal, ...refusedRest } = refused.content;
+      expect(changedGoal).not.toBe(plannedGoal);
+      expect(refusedRest).toEqual(plannedRest);
+
+      // The next Boot plans on the changed Goal and recovers A once.
+      const corrected = await startServer(root);
+      await expectNotHeld(corrected, held);
+      await expectServed(corrected, root.workspaceIds, null);
+      await stopServer(corrected);
+      for (const requestId of seeded[1]!.requestIds)
+        expect(readPendingRow(root.dataRoot, held, requestId)).toMatchObject({ delivery });
+      expect(readPendingRow(root.dataRoot, held, seeded[1]!.claim.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P vehicle gate (A8 3): a valid long history drains through bounded reads. 12,000 retained
+  // requests and one unfinished claim give A a settlement census larger than one writer frame; it
+  // travels in staging, the claim settles once and every Workspace binds.
+  it(
+    'settles one unfinished claim once beside 12,000 valid historical Pending sources and binds every Workspace',
+    async () => {
+      const root = await seedRoot(['Long history', 'Healthy']);
+      const [long, healthy] = root.workspaceIds as [string, string];
+      const { template, claims } = await withSeedStore(root, async (store) => {
+        // A waiting request its completed Turn raised: the shape of every retained history row.
+        const [template] = await seedDecidedApprovals(store, root, [long], {
+          requesterKind: 'person',
+          decision: null,
+          services: 'none',
+        });
+        const claims: Awaited<ReturnType<typeof seedClaimedPending>>[] = [];
+        for (const id of root.workspaceIds) claims.push(await seedClaimedPending(store, root, id));
+        return { template: template!, claims };
+      });
+      const history = [
+        template.requestIds[0]!,
+        ...copyRetainedPendingHistory(
+          root.dataRoot,
+          long,
+          template.requestIds[0]!,
+          HISTORY_SOURCES - 1
+        ),
+      ];
+      // Every history row loads canonically, so each is a source of A's settlement census.
+      await withSeedStore(root, (store) => {
+        const turns = store
+          .listThreads(long)
+          .flatMap((thread) => store.listThreadTurns(long, thread.id));
+        const records = readPendingRecords(root.dataRoot, long);
+        expect(records).toHaveLength(HISTORY_SOURCES + 1);
+        expect(records.filter((record) => validateCanonicalLoad(record, turns) !== null)).toEqual(
+          []
+        );
+      });
+      const sample = [history[0]!, history[HISTORY_SOURCES / 2]!, history.at(-1)!];
+      const sampled = sample.map((requestId) => readPendingRow(root.dataRoot, long, requestId));
+
+      const server = await startServer(root);
+      await expectNotHeld(server, long);
+      await expectServed(server, root.workspaceIds, null);
+      await stopServer(server);
+      expect(bootDecisionLines(server)).not.toContain('Boot recovery held Workspace');
+      for (const [index, id] of root.workspaceIds.entries())
+        expect(readPendingRow(root.dataRoot, id, claims[index]!.requestId)).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+        });
+      // The settlement moved only the claim: the history keeps its bytes.
+      expect(sample.map((requestId) => readPendingRow(root.dataRoot, long, requestId))).toEqual(
+        sampled
+      );
+      const settled = workspaceEvidence(root.dataRoot, long);
+
+      // Once: the next Boot carries the same census and settles nothing more.
+      const repeated = await startServer(root);
+      await expectNotHeld(repeated, long);
+      await stopServer(repeated);
+      expect(bootDecisionLines(repeated)).not.toContain('Boot recovery held Workspace');
+      expectEvidenceUnchanged(root.dataRoot, long, settled);
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // V1-P vehicle gate, decide-then-link: A's person outcome close publishes a user-input answer
+  // over the inline bound, so A's one grouped decision carries a new body. Its last group is
+  // refused at the writer: A keeps every row, file and linked digest, and no private body stays.
+  // The next Boot's committed decision links its new bodies, the answer's among them.
+  it(
+    "keeps A's new answer body unlinked and private when its grouped decision's last group is refused, then links it on the next Boot",
+    async () => {
+      const root = await seedRoot(['Large answer']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [workspaceId], {
+          requesterKind: 'person',
+          decision: null,
+          answer: 'x'.repeat(LARGE_ANSWER_BYTES),
+          services: 'none',
+        })
+      );
+      const requestId = seeded!.requestIds[0]!;
+      // Answered while its Turn ran, so the answer waits undelivered for Boot.
+      expect(readPendingRecord(root.dataRoot, workspaceId, requestId)).toMatchObject({
+        resolution: 'answered',
+        delivery: 'undelivered',
+      });
+      const row = readPendingRow(root.dataRoot, workspaceId, requestId);
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const fault: BootWalkFault = {
+        workspaceId,
+        writer: 'missing-head',
+        writerSql: WRITER_THREAD_SQL,
+        writerWithin: 'applyProducts',
+        writerAfter: 3,
+        label: 'pending-writer-large-outcome-close',
+      };
+
+      const refused = await startServer(root, fault);
+      expect(refused.output()).toContain(`[boot-walk-fault] hit ${fault.label}`);
+      await expectHeld(refused, workspaceId, 'check=records; stage=pending-request-recovery');
+      await stopServer(refused);
+      // The refused group is the decision's last: the close's terminal.
+      expect(refused.output()).toMatch(/writer-stack [^\n]*applyControlTerminal/);
+      expectEvidenceUnchanged(root.dataRoot, workspaceId, original);
+      expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toEqual(row);
+
+      const published = await startServer(root);
+      await expectNotHeld(published, workspaceId);
+      await stopServer(published);
+      expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+        delivery: 'delivered',
+      });
+      // The committed decision linked new bodies the refused one held back, and left no private
+      // body; beside them only the outcome Turn's post-acknowledgement feedback projection.
+      const added = Object.keys(workspaceEvidence(root.dataRoot, workspaceId).files).filter(
+        (path) => !(path in original.files)
+      );
+      const bodies = added.filter((path) => /^evidence\/backend\/sha256\/[0-9a-f]{64}$/.test(path));
+      expect(bodies.length).toBeGreaterThan(0);
+      expect(added.filter((path) => !bodies.includes(path))).toEqual([
+        expect.stringMatching(/\/feedback\.json$/),
+      ]);
     },
     CASE_TIMEOUT_MS
   );
@@ -2054,10 +2299,10 @@ describe('B5 attributed Boot recovery', () => {
       // The whole window from the Pending walk to the bind: the close's terminal publication and
       // its acknowledgement run on the writer queue, whose stack no longer names the walk.
       within: undefined,
-      outside: ['createTurnPublication'],
+      outside: ['assertNewTurnIdentity'],
       sibling: 'served',
     },
-    { site: 'creation identity', within: ['createTurnPublication'], sibling: 'held' },
+    { site: 'creation identity', within: ['assertNewTurnIdentity'], sibling: 'held' },
   ] as const)(
     'proves the healthy person outcome at Boot from its own Workspace while a sibling Turn selector is unreadable ($site)',
     async ({ within, sibling, ...rest }) => {
@@ -2801,15 +3046,15 @@ describe('B5 attributed Boot recovery', () => {
   );
 
   // V1-P: a clean preflight buys no authority over a changed dependency. A dependency the walk
-  // proved changes after its proof and before A's first write; the walk's second read of every
-  // input differs, so A is held with no write entered and no file added. The unchanged control
-  // runs the same walk through its settlement and posts each publication it proved once.
+  // proved changes after its proof and before A's first write; A's writer rechecks the plan's
+  // inputs before it decides and refuses the whole grouped decision, so A is held with no prefix
+  // and no file added. The unchanged control posts each publication it proved once.
   it.each([
     // Each interpolated value stays within vitest's 40-character title limit.
     { dependency: 'changed', outcome: 'holds A with no prefix when one changed' },
     { dependency: 'unchanged', outcome: 'posts each proof once when none changed' },
   ] as const)(
-    "rechecks A's proved Pending dependencies before the walk's first write and $outcome",
+    "rechecks A's proved Pending dependencies at its writer before the first write and $outcome",
     async ({ dependency }) => {
       const root = await seedRoot(['Changed dependency']);
       const [workspaceId] = root.workspaceIds as [string];
@@ -2843,30 +3088,36 @@ describe('B5 attributed Boot recovery', () => {
         }
         return terminal;
       });
-      const writes = vi.spyOn(store, 'applyPendingRequestCommand');
-      const publications = vi.spyOn(store, 'publishPendingRequestServiceTurn');
+      const plans = vi.spyOn(store, 'publishPendingPlan');
       const warnings = vi.spyOn(console, 'warn');
       try {
         await recoverPendingRequestsAtBoot(store, pending);
         if (dependency === 'changed') {
           expect(touched).toBe(1);
           expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+          // The one plan reached A's writer, which refused it on its own input recheck.
+          expect(plans).toHaveBeenCalledTimes(1);
           expect(warnings).toHaveBeenCalledWith(
             `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
-            'The Pending records changed while the Boot walk proved them.'
+            'The Workspace writer refused Boot recovery.'
           );
-          // No write was entered: neither the settlement nor the closeout reached A's writer.
-          expect(writes).not.toHaveBeenCalled();
-          expect(publications).not.toHaveBeenCalled();
+          // The zero prefix below: neither the settlement nor the closeout committed.
         } else {
           expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
           expect(warnings).not.toHaveBeenCalledWith(
             `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
             expect.anything()
           );
-          expect(writes).toHaveBeenCalled();
-          // Every publication the walk proved posts exactly once, and nothing unproved posts.
-          const published = publications.mock.calls.map((call) => call[2].turnId);
+          // One grouped decision carries every publication the walk proved, each once, and
+          // nothing unproved.
+          expect(plans).toHaveBeenCalledTimes(1);
+          const published = plans.mock.calls[0]![2].flatMap((group) =>
+            group.kind === 'terminal'
+              ? [String(group.input.turn.record.id)]
+              : group.kind === 'pending' && group.input.terminal
+                ? [String(group.input.terminal.turn.record.id)]
+                : []
+          );
           expect(published.length).toBeGreaterThan(0);
           expect(new Set(published).size).toBe(published.length);
           expect(new Set(published)).toEqual(new Set(proved));
@@ -2895,13 +3146,13 @@ describe('B5 attributed Boot recovery', () => {
   // A8 FIX 3 item 1: a Worker denial decided while its Thread was busy is ready on restart with its
   // authority unchanged. When Boot's wall clock reads just before that decision, the Worker outcome
   // Turn the walk would create starts before it, and the freeze writer refuses that delivery. The
-  // walk runs the writer's freeze decision on that Turn before its first write, so A is held with
-  // the earlier claim unsettled; on the unshifted clock the same walk admits the same batch.
+  // writer decides that freeze inside A's one grouped decision, so A is held with the earlier
+  // claim unsettled; on the unshifted clock the same walk admits the same batch.
   it.each([
     { clock: 'stepped back', outcome: 'holds A with no prefix' },
     { clock: 'unshifted', outcome: 'admits the same batch' },
   ] as const)(
-    "proves a Worker outcome freeze on its planned Turn before the walk's first write when the clock is $clock and $outcome",
+    "decides a Worker outcome freeze on its planned Turn inside A's grouped decision when the clock is $clock and $outcome",
     async ({ clock }) => {
       const root = await seedRoot(['Freeze clock']);
       const [workspaceId] = root.workspaceIds as [string];
@@ -2933,8 +3184,7 @@ describe('B5 attributed Boot recovery', () => {
         agentAuthority: () => true,
         openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
       };
-      const writes = vi.spyOn(store, 'applyPendingRequestCommand');
-      const turns = vi.spyOn(store, 'createTurn');
+      const plans = vi.spyOn(store, 'publishPendingPlan');
       const warnings = vi.spyOn(console, 'warn');
       try {
         store.startPendingRequestDelivery(pending);
@@ -2947,23 +3197,23 @@ describe('B5 attributed Boot recovery', () => {
         await recoverPendingRequestsAtBoot(store, pending);
         if (clock === 'stepped back') {
           expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+          // The one plan reached A's writer, whose freeze decision refused it.
+          expect(plans).toHaveBeenCalledTimes(1);
           expect(warnings).toHaveBeenCalledWith(
             `Boot recovery held Workspace ${workspaceId} during pending-request-recovery.`,
             'The decided Pending tuple has invalid canonical Items: delivery-association.'
           );
-          // No write was entered: neither the settlement nor the outcome admission reached A.
-          expect(writes).not.toHaveBeenCalled();
-          expect(turns).not.toHaveBeenCalled();
+          // The zero prefix below: neither the settlement nor the outcome admission committed.
         } else {
           expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
-          const admitted = turns.mock.calls.filter(
-            (call) => call[1] === denial.threadId && call[5]?.agentId === WORKER_AGENT_ID
-          );
-          expect(admitted).toHaveLength(1);
-          expect(readPendingRow(root.dataRoot, workspaceId, denialId)).toMatchObject({
-            delivery: 'frozen',
-            delivery_turn_id: admitted[0]![5]!.turnId,
-          });
+          // One grouped decision admitted one Worker outcome Turn and froze the denial on it.
+          expect(plans).toHaveBeenCalledTimes(1);
+          const row = readPendingRow(root.dataRoot, workspaceId, denialId);
+          expect(row).toMatchObject({ delivery: 'frozen', delivery_turn_id: expect.any(String) });
+          const admitted = store
+            .listThreadTurns(workspaceId, denial.threadId)
+            .filter((turn) => turn.agentId === WORKER_AGENT_ID && turn.id !== denial.raisingTurnId);
+          expect(admitted.map((turn) => turn.id)).toEqual([row.delivery_turn_id]);
         }
       } finally {
         vi.useRealTimers();
@@ -3016,20 +3266,14 @@ describe('B5 attributed Boot recovery', () => {
       await expectServed(server, [before, after], held);
       await stopServer(server);
       const settled = rows();
-      if (writerAfter === 0) {
-        // The refused post is A's first Boot write: A's retained evidence is unchanged.
-        expectEvidenceUnchanged(root.dataRoot, held, original);
-        expect(settled[1]).toEqual(seededRows[1]);
-      } else if (seed === 'outcome') {
-        // The admitted outcome Turn committed; its refused close leaves the batch frozen, unproved.
-        expect(settled[1]![0]).toMatchObject({ delivery: 'frozen' });
-      } else {
-        // The first batch closed and was proved; the wake's next admission was refused.
-        expect(settled[1]!.slice(0, 16).map((row) => row.delivery)).toEqual(
-          Array(16).fill('delivered')
-        );
-        expect(settled[1]![16]).toMatchObject({ delivery: 'undelivered', delivery_turn_id: null });
-      }
+      // The refused group is one group of A's one grouped decision, after its earlier groups
+      // decided when writerAfter > 0: A's rows, files and linked digests are all unchanged.
+      expectEvidenceUnchanged(root.dataRoot, held, original);
+      expect(settled[1]).toEqual(seededRows[1]);
+      expect(server.output()).toMatch(/writer-stack [^\n]*applyControlPendingPlan/);
+      // The outcome close is the decision's last group.
+      if (write === 'outcome close')
+        expect(server.output()).toMatch(/writer-stack [^\n]*applyControlTerminal/);
       for (const index of [0, 2])
         for (const row of settled[index]!)
           if (seed === 'agent-removed') expect(row).toMatchObject({ delivery: 'closed-out' });
@@ -3259,6 +3503,8 @@ async function seedDecidedApprovals(
     readonly requesterKind: 'person' | 'worker';
     readonly decision: 'granted' | 'denied' | null;
     readonly governedIntent?: boolean;
+    /** A person user-input request answered with this text instead of an approval. */
+    readonly answer?: string;
     readonly services: 'none' | 'frozen';
   }
 ) {
@@ -3289,6 +3535,18 @@ async function seedDecidedApprovals(
         );
         const requestIds: string[] = [];
         for (let index = 0; index < (input.count ?? 1); index++) {
+          if (input.answer !== undefined) {
+            requestIds.push(
+              await seedAnsweredUserInput(store, app, db, {
+                workspaceId,
+                threadId: thread.id,
+                turnId: turn.id,
+                responsibleUserId,
+                answer: input.answer,
+              })
+            );
+            continue;
+          }
           const requestId = `ap_b5_${randomUUID().replaceAll('-', '')}`;
           const requestItemId = pendingRequestItemId(requestId, 'request');
           const approval = { title: 'Exact command', description: 'One command.' };
@@ -3382,6 +3640,83 @@ async function seedDecidedApprovals(
   } finally {
     closeTestCoreDb(coreDb);
   }
+}
+
+/** Raises one person user-input request on a running Turn and answers it through its route. */
+async function seedAnsweredUserInput(
+  store: FsStore,
+  app: ReturnType<typeof createApp>,
+  db: Parameters<Parameters<typeof withSeedWorkspaceDb>[2]>[0],
+  input: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly responsibleUserId: string;
+    readonly answer: string;
+  }
+): Promise<string> {
+  const requestId = `uq_b5_${randomUUID().replaceAll('-', '')}`;
+  const requestItemId = pendingRequestItemId(requestId, 'request');
+  const questions = [
+    {
+      id: 'log',
+      header: 'Log',
+      question: 'Paste the full log.',
+      options: null,
+      isOther: true,
+      isSecret: false,
+    },
+  ];
+  const now = new Date().toISOString();
+  const requestItem = await store.createItem({
+    id: requestItemId,
+    owner: { kind: 'workspace', workspaceId: input.workspaceId },
+    threadId: input.threadId,
+    turnId: input.turnId,
+    type: 'user-input-request',
+    status: 'completed',
+    responsibleUserId: input.responsibleUserId,
+    userInputRequestId: requestId,
+    prompt: 'Paste the full log.',
+    questions,
+    createdAt: now,
+    completedAt: now,
+  });
+  await raiseSeedPendingRequest(
+    store,
+    db,
+    {
+      requestId,
+      requestItemId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      raisingTurnId: input.turnId,
+      kind: 'user-input',
+      requesterKind: 'person',
+      responsibleUserId: input.responsibleUserId,
+      questions,
+      now,
+    },
+    requestItem
+  );
+  const response = await app.request(
+    ...operationRequest(
+      'question.answer',
+      { userInputRequestId: requestId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: randomUUID(),
+          answers: { log: [input.answer] },
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  return requestId;
 }
 
 /** Seeds every Workspace with the retained Pending state whose Boot tail issues one post. */
