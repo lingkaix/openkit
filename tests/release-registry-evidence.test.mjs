@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -208,6 +209,7 @@ test('CI evidence binds exact source, intended tag, both attempts, complete inde
 test('local observation downloads only repository artifacts and rechecks the current attempt', () => {
   for (const outcome of [
     'passed',
+    'changed-local-record',
     'missing',
     'mismatch',
     'rerun',
@@ -219,25 +221,32 @@ test('local observation downloads only repository artifacts and rechecks the cur
     const { context, record } = fixture(),
       root = mkdtempSync(join(tmpdir(), 'registry-evidence-driver-')),
       calls = [];
+    const directory = join(root, 'download');
+    const downloadedBytes = `${JSON.stringify(record, null, 2)}\n`;
     let reads = 0;
     const run = (exe, args) => {
       calls.push([exe, ...args]);
       assert.equal(exe, 'gh');
       assert.equal(args[args.indexOf('--name') + 1], 'registry-admission-3');
       if (outcome === 'missing') throw Error('missing artifact');
-      const data = structuredClone(record);
-      if (outcome === 'mismatch') data.sha = 'd'.repeat(40);
       writeFileSync(
         join(args[args.indexOf('--dir') + 1], 'registry-admission.json'),
-        JSON.stringify(data)
+        outcome === 'mismatch'
+          ? JSON.stringify({ ...record, sha: 'd'.repeat(40) })
+          : downloadedBytes
       );
       return '';
     };
-    const observe = () => ({
-      ...context.registry,
-      sha: context.source,
-      attempt: ++reads === 2 && outcome === 'rerun' ? 4 : 3,
-    });
+    const observe = () => {
+      reads++;
+      if (reads === 2 && outcome === 'changed-local-record')
+        writeFileSync(join(directory, 'registry-admission.json'), '{}\n');
+      return {
+        ...context.registry,
+        sha: context.source,
+        attempt: reads === 2 && outcome === 'rerun' ? 4 : 3,
+      };
+    };
     try {
       let artifactReads = 0;
       const read = () => {
@@ -256,12 +265,15 @@ test('local observation downloads only repository artifacts and rechecks the cur
       const invoke = () =>
         readRegistryEvidence(
           { ...context, registryRunId: 42 },
-          { run, observe, read, directory: join(root, 'download'), now: context.now }
+          { run, observe, read, directory, now: context.now }
         );
-      if (outcome === 'passed') {
+      if (outcome === 'passed' || outcome === 'changed-local-record') {
         const proof = invoke();
         assert.equal(proof.sha, context.source);
-        assert.match(proof.recordSha256, /^[a-f0-9]{64}$/);
+        assert.equal(
+          proof.recordSha256,
+          createHash('sha256').update(downloadedBytes).digest('hex')
+        );
         assert.equal(reads, 2);
       } else assert.throws(invoke);
       assert.ok(calls.every((c) => c[0] === 'gh'));
