@@ -8904,6 +8904,215 @@ describe('createConfiguredTurnExecutor', () => {
     expectReplacementPairIntact(f, before, false);
   }, 90_000);
 
+  // CLOSE-LC S3b H4-1: a read of the deciding gather carries the clock that it saw pass. R sees Ta
+  // pass (the presented Token expires at R's read instant), or P14 sees Ts pass. The wall then
+  // steps back to the real instant, below that deadline and above the enqueue instant, before the
+  // clock sample. The table answers the carried clock with zero frames (RC7) or zero bytes and the
+  // exact unsent settlement (RC10). With the monotonic Tc failed too, the earliest failed clock is
+  // Tc (S3b-m-r2, V1-P FIX 2 item 2). Control: a step back below the enqueue instant keeps the
+  // pre-enqueue lower edge, which answers the limiting clock.
+  const H4_READS = {
+    /** R's first read: the successor's attempt. */
+    R: 'WHERE attempt.attempt_id = ?',
+    /** P14's first read: the selected storage association. */
+    P14: 'FROM worker_storage_bindings WHERE storage_ref = ?',
+    /** The Harness owner facts: read after R at RC7 (K, L, N) and at RC10 (N). */
+    owner: 'h.claim_generation AS claimGeneration',
+  } as const;
+  it.each([
+    { reader: 'R', site: 'RC7', cause: 'authority-expired' },
+    { reader: 'R', site: 'RC10', cause: 'authority-expired' },
+    { reader: 'P14', site: 'RC7', cause: 'startup-deadline' },
+    { reader: 'P14', site: 'RC10', cause: 'startup-deadline' },
+    { reader: 'R+Tc', site: 'RC7', cause: 'close-allowance' },
+    { reader: 'R+Tc', site: 'RC10', cause: 'close-allowance' },
+    { reader: 'R<enqueue', site: 'RC7', cause: 'close-allowance' },
+    { reader: 'R<enqueue', site: 'RC10', cause: 'close-allowance' },
+  ] as const)(
+    'answers the clock that a read carried when the wall steps back before the sample (S3b H4-1, $reader at $site)',
+    async ({ reader, site, cause }) => {
+      let presented = '';
+      const f = await admitNativeReplacementClose(
+        `h4_1_${{ R: 'r', P14: 'p14', 'R+Tc': 'rtc', 'R<enqueue': 'redge' }[reader]}_${site.toLowerCase()}`,
+        reader === 'P14'
+          ? {}
+          : {
+              successorCredential: (coreDb, ownerUserId) => {
+                presented = closeCredentialToken(coreDb, ownerUserId, 'workspace');
+                return { credentialRef: { kind: 'token', id: presented } as const };
+              },
+            }
+      );
+      const before = f.readRows(f.predecessor.agentSessionId)!;
+      // Before the close: every later wall sample at this instant lies before its enqueue instant.
+      const belowEnqueue = Date.now() - 60_000;
+      const choice = reader === 'P14' ? selectedRetainedStorage(f) : undefined;
+      // The instant of the carrying read: past the startup clock, or past the presented Token.
+      const budget = Date.parse(nanoHostStartupDeadline({ createdAt: new Date(0).toISOString() }));
+      const late =
+        reader === 'P14'
+          ? Date.now() + budget + 60_000
+          : Date.parse(getOpenKitAccessTokenRecord(f.coreDb, presented)!.expiresAt) + 1_000;
+      const from = reader === 'P14' ? H4_READS.P14 : H4_READS.R;
+      const to = reader === 'P14' ? H4_READS.R : H4_READS.owner;
+      const seen = { from: 0, to: 0 };
+      let phase: 'before' | 'carried' | 'back' = 'before';
+      let monotonic = false;
+      const stepWall = () => {
+        const prepare = Database.prototype.prepare;
+        const reads = vi
+          .spyOn(Database.prototype, 'prepare')
+          .mockImplementation(function (this: Database.Database, sql: string) {
+            if (phase === 'before' && sql.includes(from)) {
+              phase = 'carried';
+              seen.from += 1;
+              vi.useFakeTimers({ toFake: ['Date'], now: late });
+            } else if (phase === 'carried' && sql.includes(to)) {
+              phase = 'back';
+              seen.to += 1;
+              vi.useRealTimers();
+              if (reader === 'R<enqueue') {
+                // The decision runs synchronously, so its sample reads this instant.
+                vi.useFakeTimers({ toFake: ['Date'], now: belowEnqueue });
+                queueMicrotask(() => vi.useRealTimers());
+              }
+              if (reader === 'R+Tc') {
+                // The monotonic Tc fails before the sample, while the wall Tc is live.
+                monotonic = true;
+                const clock = vi
+                  .spyOn(performance, 'now')
+                  .mockReturnValue(Number.MAX_SAFE_INTEGER);
+                queueMicrotask(() => clock.mockRestore());
+              }
+            }
+            return Reflect.apply(prepare, this, [sql]);
+          } as typeof Database.prototype.prepare);
+        return () => {
+          reads.mockRestore();
+          if (phase === 'carried') vi.useRealTimers();
+        };
+      };
+      const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+      const ref = f.native.outside.integrationBindingRef!;
+      let stepped = false;
+      if (site === 'RC7') {
+        const queue = owner.harnessTurnLifecycle.queue;
+        vi.spyOn(owner.harnessTurnLifecycle, 'queue').mockImplementation(async (input, authority) => {
+          if (input.operation !== 'session.close' || !authority || stepped)
+            return await queue(input, authority);
+          stepped = true;
+          return await queue(input, {
+            ...authority,
+            // The deciding RC7 in the posting turn.
+            verifyBeforePost: (native) => {
+              const restore = stepWall();
+              try {
+                return authority.verifyBeforePost(native);
+              } finally {
+                restore();
+              }
+            },
+          });
+        });
+      } else {
+        // The real poll route is this close's only carrier: the fixture peer stops polling.
+        f.native.outside.integrationBindingRef = undefined;
+        const carry = owner.harnessTurnLifecycle.carry;
+        vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+          if (stepped) return await carry(attemptId, run);
+          stepped = true;
+          // The queue committed. RC10 runs in the held carriage turn.
+          const restore = stepWall();
+          try {
+            return await carry(attemptId, run);
+          } finally {
+            restore();
+          }
+        });
+      }
+      const operation = choice ? f.close(choice) : f.close();
+      void operation.catch(() => undefined);
+      if (site === 'RC10') {
+        await vi.waitFor(
+          () =>
+            expect(replacementCloseRows(f.coreDb)).toEqual([
+              expect.objectContaining({ state: 'queued' }),
+            ]),
+          { timeout: 30_000 }
+        );
+        expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+          status: 204,
+          body: '',
+        });
+      }
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+        closeCause: cause,
+      });
+      // One carrying read, then the step back before the owner facts and the sample.
+      expect(seen).toEqual({ from: 1, to: 1 });
+      expect(monotonic).toBe(reader === 'R+Tc');
+      expect(Date.now()).toBeLessThan(late);
+      // RC7: zero frames. RC10: zero bytes and the exact unsent settlement.
+      expect(replacementCloseRows(f.coreDb)).toEqual(site === 'RC7' ? [] : UNSENT_CLOSE);
+      expect(replacementCloses(f)).toHaveLength(site === 'RC7' ? 0 : 1);
+      expectReplacementPairIntact(f, before, site === 'RC10');
+    },
+    90_000
+  );
+
+  // CLOSE-LC S3b H4-2: after the queue ACK, a rotation of the issuer Token passes its grace while
+  // the presented Token stays live. RC10 has two independent readers of that rotation: the current
+  // Ta fold and R's reason (`rotated`). Either alone keeps authority-expired.
+  it('answers authority-expired with zero bytes when an issuer rotation after the queue ACK passes its grace (S3b H4-2)', async () => {
+    let limiting = '';
+    const f = await admitNativeReplacementClose('h4_2_issuer', {
+      successorCredential: (coreDb, ownerUserId) => {
+        const { limiting: tokenId, ...credential } = successorCredentials['issuer-grace'](
+          coreDb,
+          ownerUserId
+        );
+        limiting = tokenId;
+        return credential;
+      },
+    });
+    const before = f.readRows(f.predecessor.agentSessionId)!;
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+    const ref = f.native.outside.integrationBindingRef!;
+    f.native.outside.integrationBindingRef = undefined;
+    const carry = owner.harnessTurnLifecycle.carry;
+    let rotated = false;
+    vi.spyOn(owner.harnessTurnLifecycle, 'carry').mockImplementation(async (attemptId, run) => {
+      if (!rotated) {
+        rotated = true;
+        // The queue committed. The issuer rotates with no grace; the presented Token stays live.
+        rotateOpenKitAccessTokenRecord(f.coreDb, limiting, { graceSeconds: 0 });
+      }
+      return await carry(attemptId, run);
+    });
+    const operation = f.close();
+    void operation.catch(() => undefined);
+    await vi.waitFor(
+      () =>
+        expect(replacementCloseRows(f.coreDb)).toEqual([
+          expect.objectContaining({ state: 'queued' }),
+        ]),
+      { timeout: 30_000 }
+    );
+    expect(await postNativeHarnessPoll(f.coreDb, f.native.runtime, ref)).toEqual({
+      status: 204,
+      body: '',
+    });
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
+      closeCause: 'authority-expired',
+    });
+    expect(rotated).toBe(true);
+    expect(getOpenKitAccessTokenRecord(f.coreDb, limiting)).toMatchObject({ status: 'rotated' });
+    expect(replacementCloseRows(f.coreDb)).toEqual(UNSENT_CLOSE);
+    expectReplacementPairIntact(f, before, true);
+  }, 90_000);
+
   /**
    * CLOSE-LC S3a-r2b: an admitted ordinary idle-drain close. The first Thread's Sandbox is idle.
    * The second Thread's admission evicts it and closes the first AgentSession through the real

@@ -112,6 +112,11 @@ export interface WorkspaceAuthorityOptions {
   readonly delegatedRefresh?: ProductPolicyInput['delegatedRefresh'];
   /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
   readonly onEvaluation?: (event: WorkspaceAuthorityEvaluation) => void;
+  /**
+   * CLOSE-LC H4-1: the one read instant of every credential clock in this evaluation. Omission
+   * reads the wall at each check, as before.
+   */
+  readonly now?: Date;
 }
 
 /** Authorized Workspace context exposed to one guarded handler. */
@@ -337,18 +342,18 @@ export function currentWorkspaceAuthority(
     const administrator = requestActor
       ? requestActor.kind === 'token' &&
         requestActor.tokenScope === 'server-admin' &&
-        isCurrentDeploymentAdministrator(coreDb, requestActor)
+        isCurrentDeploymentAdministrator(coreDb, requestActor, options?.now)
       : !!(
           options?.retainedPolicyAuthor &&
           actor.kind === 'user' &&
-          currentServerPolicyAuthorEligibility(coreDb, actor.id)
+          currentServerPolicyAuthorEligibility(coreDb, actor.id, options?.now?.getTime())
         );
     const membership = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
     const activeUser = isCanonicalUserActive(coreDb, responsibleUserId);
     const activeWorkspace = isActiveRegisteredWorkspace(coreDb, workspaceId);
     const credentialCurrent =
-      (!presentedActor || isUsablePresentedCredential(coreDb, presentedActor)) &&
-      (!requestActor || isUsablePresentedCredential(coreDb, requestActor));
+      (!presentedActor || isUsablePresentedCredential(coreDb, presentedActor, options?.now)) &&
+      (!requestActor || isUsablePresentedCredential(coreDb, requestActor, options?.now));
     const credentialBound =
       !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
     const clientAuthority = requestActor
@@ -358,7 +363,7 @@ export function currentWorkspaceAuthority(
           { kind: 'workspace', workspaceId },
           operation,
           options?.mutating ?? true,
-          new Date()
+          options?.now ?? new Date()
         )
       : null;
     let decision = evaluatePolicyKernel({
@@ -620,13 +625,94 @@ export function currentScheduledTurnWorkspaceAuthority(
     readonly triggerActor: ActorRef;
   },
   operation: string,
-  effectAuthority: boolean
+  effectAuthority: boolean,
+  options?: Pick<WorkspaceAuthorityOptions, 'now'>
 ): WorkspaceAuthority | null {
   const admission = findSchedulerAdmissionForTurn(coreDb, lineage);
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
   }
-  return currentSchedulerAdmissionWorkspaceAuthority(coreDb, admission, operation, effectAuthority);
+  return currentSchedulerAdmissionWorkspaceAuthority(
+    coreDb,
+    admission,
+    operation,
+    effectAuthority,
+    options
+  );
+}
+
+/**
+ * CLOSE-LC H4-1: R with the reason of its refusal, read at one instant. The authority is the
+ * scheduled Turn's own (`currentScheduledTurnWorkspaceAuthority`), with every credential clock at
+ * `now`. A refusal gives `expired` or `rotated` (the Token usability reasons, and an elapsed
+ * session) when a credential that R requires has passed its cutoff at `now`, and no required
+ * credential is missing or revoked. Otherwise it gives null: the request is closed. The reason
+ * comes from the same read instant as the authority, so a later wall step back cannot hide it.
+ *
+ * @param coreDb Core Workspace, admission and Token authority.
+ * @param lineage Exact product Turn and trigger actor.
+ * @param operation Product operation being attempted now.
+ * @param effectAuthority Caller-owned effect authority.
+ * @param now The one read instant.
+ * @returns The authority, and the reason of a refusal by an elapsed credential.
+ */
+export function readScheduledTurnWorkspaceAuthority(
+  coreDb: CoreDb,
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly triggerActor: ActorRef;
+  },
+  operation: string,
+  effectAuthority: boolean,
+  now: Date
+): {
+  readonly authority: WorkspaceAuthority | null;
+  readonly refusal: 'expired' | 'rotated' | null;
+} {
+  const authority = currentScheduledTurnWorkspaceAuthority(
+    coreDb,
+    lineage,
+    operation,
+    effectAuthority,
+    { now }
+  );
+  if (authority !== null) return { authority, refusal: null };
+  const admission = findSchedulerAdmissionForTurn(coreDb, lineage);
+  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor))
+    return { authority, refusal: null };
+  // The walk of `scheduledTurnCredentialCutoffs`, with the usability reason at `now`.
+  let refusal: 'expired' | 'rotated' | null = null;
+  let closed = false;
+  const token = (tokenId: string) => {
+    let current = getOpenKitAccessTokenRecord(coreDb, tokenId);
+    if (!current) closed = true;
+    const visited = new Set<string>();
+    for (let depth = 0; current && depth < 64 && !visited.has(current.tokenId); depth++) {
+      visited.add(current.tokenId);
+      const usability = evaluateOpenKitAccessTokenUsability(current, now);
+      if (!usability.usable) {
+        if (usability.reason === 'revoked') closed = true;
+        else refusal ??= usability.reason;
+      }
+      const issuer = current.issuerRef;
+      current =
+        issuer && issuer.kind !== 'user' ? getOpenKitAccessTokenRecord(coreDb, issuer.id) : null;
+      if (issuer && issuer.kind !== 'user' && !current) closed = true;
+    }
+  };
+  const credential = admission.credentialRef;
+  if (credential?.kind === 'token') token(credential.id);
+  else if (credential) {
+    const session = coreDb.sqlite
+      .prepare('SELECT expires_at AS expiresAt FROM session WHERE id = ?')
+      .get(credential.id) as { expiresAt: number } | undefined;
+    if (!session) closed = true;
+    else if (session.expiresAt <= now.getTime()) refusal ??= 'expired';
+    if (admission.serverAdminTokenId) token(admission.serverAdminTokenId);
+  } else if (admission.serverAdminTokenId) token(admission.serverAdminTokenId);
+  return { authority, refusal: closed ? null : refusal };
 }
 
 /**

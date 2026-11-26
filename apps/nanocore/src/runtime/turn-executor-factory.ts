@@ -42,6 +42,7 @@ import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
   readCurrentWorkspacePolicy,
+  readScheduledTurnWorkspaceAuthority,
   scheduledTurnCredentialCutoffs,
 } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
@@ -1150,9 +1151,13 @@ interface AgentSessionReplacementClose {
     readonly triggerActor: AgentEnvironmentPackagePreview['scope']['triggerActor'];
     /**
      * Re-runs the explicit storage selection's own P14 check, on the given committed Native state
-     * when a queue post decides it; absent without a selection.
+     * when a queue post decides it; absent without a selection. S3b H4-1: P14 calls
+     * `onStartupExpired` when it refuses an elapsed startup clock (Ts).
      */
-    readonly validateStorage?: (native?: Pick<CoreDb, 'sqlite'>) => void;
+    readonly validateStorage?: (
+      native?: Pick<CoreDb, 'sqlite'>,
+      onStartupExpired?: () => void
+    ) => void;
     /** The explicit selection's planned revision, compared again inside the Native queue commit. */
     readonly storage?: { readonly storageRef: string; readonly revision: number };
   };
@@ -1496,13 +1501,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
   }
 
-  private workerStorageAudienceAuthorizer(environmentPackage: AgentEnvironmentPackagePreview) {
+  private workerStorageAudienceAuthorizer(
+    environmentPackage: AgentEnvironmentPackagePreview,
+    onStartupExpired?: () => void
+  ) {
     return currentWorkerStorageAudienceAuthorizer(
       this.coreDb,
       environmentPackage,
       this.readRuntimeConfig,
       this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot }),
-      this.nanoHostOwner ? (input) => this.resolveLiveWorkerBinding(input) : undefined
+      this.nanoHostOwner ? (input) => this.resolveLiveWorkerBinding(input) : undefined,
+      onStartupExpired
     );
   }
 
@@ -3544,7 +3553,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return inspection.reusable ? 'reusable' : 'replacement-required';
     }
     // The slot and dispatch rechecks rerun the same explicit selection check.
-    let validateStorage: ((native?: Pick<CoreDb, 'sqlite'>) => void) | undefined;
+    let validateStorage:
+      | ((native?: Pick<CoreDb, 'sqlite'>, onStartupExpired?: () => void) => void)
+      | undefined;
     if (input.workerStorageChoice?.kind === 'selected') {
       const environmentPackage = input.environmentPackage;
       const responsibleUserId = environmentPackage
@@ -3557,7 +3568,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('Worker storage selection lacks current AgentSession lineage.');
       }
       const workerStorageChoice = input.workerStorageChoice;
-      validateStorage = (native) => {
+      validateStorage = (native, onStartupExpired) => {
         this.validateWorkerStorageSelection(
           environmentPackage,
           sharedHarness.sandbox.sandboxBindingRef,
@@ -3565,7 +3576,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             environmentPackage,
             workerStorageChoice,
             responsibleUserId,
-            this.workerStorageAudienceAuthorizer(environmentPackage)
+            this.workerStorageAudienceAuthorizer(environmentPackage, onStartupExpired)
           )!,
           native
         );
@@ -10351,24 +10362,50 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   private isAgentSessionReplacementRequestCurrent(
-    request: AgentSessionReplacementClose['request'],
-    clocks = true
+    request: AgentSessionReplacementClose['request']
   ): boolean {
-    const attempt = requireSchedulerExecutionAttempt(this.coreDb, request.attemptId);
+    const attempt = this.readAgentSessionReplacementAttempt(request);
     return (
-      attempt.phase === 'open' &&
+      attempt !== null &&
+      // The original live admission and its absolute startup clock, as pre-submit storage uses.
+      nanoHostStartupDeadline(attempt) > new Date().toISOString() &&
+      currentScheduledTurnWorkspaceAuthority(this.coreDb, request, 'runtime.launch', true) !== null
+    );
+  }
+
+  /** The successor's attempt, when it is still open and pre-submit on this backend as requested. */
+  private readAgentSessionReplacementAttempt(request: AgentSessionReplacementClose['request']) {
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, request.attemptId);
+    return attempt.phase === 'open' &&
       attempt.operationId === null &&
       attempt.deadline === null &&
       attempt.backendId === this.id &&
       attempt.turnId === request.turnId &&
       attempt.agentSessionId === request.agentSessionId &&
       attempt.workspaceId === request.workspaceId &&
-      attempt.threadId === request.threadId &&
-      // The original live admission and its absolute startup clock, as pre-submit storage uses.
-      // A close owner that decides through the lifecycle table gives the clocks to the table.
-      (!clocks || nanoHostStartupDeadline(attempt) > new Date().toISOString()) &&
-      currentScheduledTurnWorkspaceAuthority(this.coreDb, request, 'runtime.launch', true) !== null
+      attempt.threadId === request.threadId
+      ? attempt
+      : null;
+  }
+
+  /**
+   * R at RC7 and RC10. A close owner that decides through the lifecycle table gives the clocks to
+   * the table. S3b H4-1: a closed request refuses first. Then the authority and the reason of its
+   * refusal come from one read instant. A refusal by an elapsed credential (expired, or rotated
+   * past its grace) carries that clock as `expired`, so a later wall step back cannot hide it.
+   */
+  private readAgentSessionReplacementRequestPremise(
+    request: AgentSessionReplacementClose['request']
+  ): boolean | 'expired' {
+    if (!this.readAgentSessionReplacementAttempt(request)) return false;
+    const read = readScheduledTurnWorkspaceAuthority(
+      this.coreDb,
+      request,
+      'runtime.launch',
+      true,
+      new Date(Date.now())
     );
+    return read.authority !== null ? true : read.refusal ? 'expired' : false;
   }
 
   /** Reads one idle binding on its original Harness and Sandbox in the current target Epoch. */
@@ -10452,8 +10489,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const posted = close.posted;
     if (!posted) throw new Error('NanoHost replacement close has no posted deadline slot.');
     let p14: { readonly error: unknown } | undefined;
+    // S3b H4-1: the P14 owner reports an elapsed Ts that it refused, and the read carries it.
+    let startupExpired = false;
     try {
-      close.request.validateStorage?.(native);
+      close.request.validateStorage?.(native, () => {
+        startupExpired = true;
+      });
     } catch (error) {
       p14 = { error };
     }
@@ -10461,8 +10502,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // that slot stale, so R refuses its post. An elapsed cutoff answers its own clock first.
     const Ta = this.readAgentSessionReplacementTa(close);
     const request =
-      Ta >= posted.deadlines.Ta &&
-      this.isAgentSessionReplacementRequestCurrent(close.request, false);
+      Ta >= posted.deadlines.Ta && this.readAgentSessionReplacementRequestPremise(close.request);
     const idle = idleReceipt();
     // The caller's later facts of the same decision (RC7 in the posting turn: K, L, N and S).
     const facts = gather?.();
@@ -10476,7 +10516,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       now,
       closeMonotonicExpired,
       request,
-      audience: { thread: p14 === undefined, policy: p14 === undefined },
+      audience: {
+        thread: p14 === undefined ? true : startupExpired ? 'expired' : false,
+        policy: p14 === undefined,
+      },
       idleReceipt: idle,
     });
     if (cause === 'audience' && p14) throw p14.error;
@@ -10499,15 +10542,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const posted = close.posted;
       if (!posted) throw new Error('NanoHost replacement close has no posted deadline slot.');
       let p14: { readonly error: unknown } | undefined;
+      // S3b H4-1: the P14 owner reports an elapsed Ts that it refused, and the read carries it.
+      let startupExpired = false;
       try {
-        close.request.validateStorage?.();
+        close.request.validateStorage?.(undefined, () => {
+          startupExpired = true;
+        });
       } catch (error) {
         p14 = { error };
       }
       const planned = close.request.storage;
       // A rotation since the post can only shorten Ta. RC10 honors the shorter cutoff.
       const Ta = this.readAgentSessionReplacementTa(close);
-      const request = this.isAgentSessionReplacementRequestCurrent(close.request, false);
+      const request = this.readAgentSessionReplacementRequestPremise(close.request);
       const storage =
         !planned ||
         this.readNanoHost(
@@ -10533,7 +10580,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         closeMonotonicExpired,
         request,
         idleReceipt,
-        audience: { thread: p14 === undefined, policy: p14 === undefined },
+        audience: {
+          thread: p14 === undefined ? true : startupExpired ? 'expired' : false,
+          policy: p14 === undefined,
+        },
         storage,
         placement,
       });
@@ -11662,7 +11712,9 @@ function currentWorkerStorageAudienceAuthorizer(
   store: FsStore,
   resolveAdmittedBinding?: (
     input: Parameters<typeof resolveAdmittedNanoHostWorkerBinding>[2]
-  ) => ReturnType<typeof resolveAdmittedNanoHostWorkerBinding>
+  ) => ReturnType<typeof resolveAdmittedNanoHostWorkerBinding>,
+  /** S3b H4-1: called when the check refuses an elapsed startup clock (Ts). */
+  onStartupExpired?: () => void
 ): (contributor: WorkerStorageContributor) => boolean {
   const { scope } = environmentPackage;
   const requesterUserId = responsibleUserIdForActor(scope.triggerActor);
@@ -11699,12 +11751,16 @@ function currentWorkerStorageAudienceAuthorizer(
       // Selected old-resident retirement precedes binding; incoming storage preparation precedes
       // submission. Both use exact current admission, never a not-yet-issued worker route token.
       if (attempt.agentSessionId !== null) {
-        if (resolveAdmittedBinding) {
-          if (nanoHostStartupDeadline(attempt) <= new Date().toISOString()) return false;
-        } else {
-          const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
-          if (native.startupDeadline <= new Date().toISOString() || native.recoveryState !== null)
-            return false;
+        const startupDeadline = resolveAdmittedBinding
+          ? nanoHostStartupDeadline(attempt)
+          : (() => {
+              const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+              return native.recoveryState === null ? native.startupDeadline : null;
+            })();
+        if (startupDeadline === null) return false;
+        if (startupDeadline <= new Date().toISOString()) {
+          onStartupExpired?.();
+          return false;
         }
       }
     } else {
