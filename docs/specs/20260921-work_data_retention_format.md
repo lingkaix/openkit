@@ -182,7 +182,7 @@ No Evaluation Harness exists (#311).
 
 ## Implementation Gaps
 
-- Per-Turn collection cutoff and truncation - Serialized observation admission, required reader feature, typed stop and cutoff boundary qualification await implementation - #951
+- Per-Turn collection cutoff and truncation - Typed stop delivery, ordinary budgets, scoped allowances and release qualification remain open - #951
 - Per-scope observation allowance - Workspace and Server-work accounting and before-contact refusal across Turns and reopen await implementation - #951
 - Durable work-owned inputs and payload retirement - The full restart and missing-owner checks for immutable start/steer, structured delegation and recurrence, and the no-queue-text deletion fixture await implementation - #947
 

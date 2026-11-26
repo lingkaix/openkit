@@ -23,6 +23,7 @@ import {
   type ControlWorkObservationPreparation,
   readControlWorkObservationTurnBinding,
   readWorkObservationTurnBinding,
+  requireRetainedObservation,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
 import type { ModelSemanticEvent } from './model-semantic-content.js';
@@ -149,7 +150,7 @@ export async function withTurnModelCapture<T>(
       append: async (draft) => {
         const result = await write.call(binding.owner, admission, draft);
         if (result.state !== 'ready') throw serverWorkUnavailable();
-        return result.value;
+        return requireRetainedObservation(result.value);
       },
     };
   }

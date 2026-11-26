@@ -27,6 +27,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
 import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
@@ -40,135 +41,181 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
 }
 
 describe('work observation portable closure', () => {
-  it('recovers implicit callRef and explicit runtime corr before archive download', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Runtime joins');
-    const thread = await store.createThread(workspace.id, 'Runtime joins');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
-    const turn = await store.createTurn(
-      workspace.id,
-      thread.id,
-      'Portable runtime recovery',
-      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      null,
-      { captureCoverage: { scope: 'workspace', value: 'off' } }
-    );
-    const db = workspaceDb(dataRoot, workspace.id);
-    const owner = { threadId: thread.id, turnId: turn.id };
-    try {
-      const agentSetup = createTestAgentSetup();
-      const session = await store.createAgentSession({
-        id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
-        agentId: agentSetup.manifest.id,
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        status: 'idle',
-        message: null,
-        createdAt: turn.startedAt!,
-        updatedAt: turn.startedAt!,
-      });
-      const environmentPackage = await resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'workspace', value: 'off' },
-        agentSetup,
-        agentSessionId: session.id,
-        triggerActor: turn.triggerActor,
-        backend: { kind: 'openshell' },
-        requestId: 'portable-runtime',
-        turn,
-        turnInput: 'Portable runtime recovery',
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-      });
-      await recordAgentEnvironmentPackageSnapshot(db, {
-        createdAt: turn.startedAt!,
-        environmentPackage,
-      });
-      await store.updateAgentSession(session.id, {
-        environmentPackageSnapshotId: environmentPackage.snapshotId,
-      });
-      for (const [index, corr] of [undefined, 'explicit-runtime-group'].entries()) {
-        await appendWorkObservation(db, {
-          ...owner,
-          bodies: [],
-          observation: {
-            id: `runtime_${index}`,
-            type: 'runtime.observed',
-            obs: 'worker-shim',
-            ts: turn.startedAt!,
-            ...(corr === undefined ? {} : { corr }),
-            payload: {
-              observationId: `runtime_${index}`,
-              sourceRef: `source_${index}`,
-              sourceSequence: index + 1,
-              observedAt: turn.startedAt!,
-              fact: {
-                kind: 'tool',
-                runtimeOriginRef: null,
-                callRef: index === 0 ? 'runtime-call-source' : 'runtime-explicit-call-source',
-                phase: 'started',
-                toolName: 'example.read',
-              },
-              content: { state: 'off' },
-            },
-          },
-        });
-      }
-      const terminal = await terminalizeGovernedWorkerTurn({
-        agentSessionId: null,
-        completedAt: turn.startedAt!,
-        errorCode: 'worker_governance_restart_recovery',
-        message: 'Worker execution was interrupted during NanoCore restart recovery.',
-        outcome: 'interrupted',
-        requestId: null,
-        store,
-        turnId: turn.id,
-      });
-      const reap = await appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
-      const sourceRows = readWorkObservations(db, owner);
-      expect(sourceRows[0]).not.toHaveProperty('corr');
-      expect(reap.payload.unresolvedCalls).toEqual([
-        {
-          corr: 'runtime-call-source',
-          type: 'runtime.observed',
-          name: 'example.read',
-          ts: turn.startedAt,
-        },
-        {
-          corr: 'explicit-runtime-group',
-          type: 'runtime.observed',
-          name: 'example.read',
-          ts: turn.startedAt,
-        },
-      ]);
-      const exported = await createVerifiedWorkspaceExport({
-        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  it.each([false, true])(
+    'recovers implicit callRef and explicit runtime corr before archive download (truncated=%s)',
+    async (truncated) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const workspace = await store.createWorkspace('Runtime joins');
+      const thread = await store.createThread(workspace.id, 'Runtime joins');
+      recordWorkspaceOwnerMembership({
         coreDb,
-        dataRoot,
-        exportId: testEntityId('wsexp', 'export_runtime_joins'),
-        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
-        store,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-      const app = createApp({ coreDb, dataRoot, store });
-      const archive = await app.request(
-        `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
+      const turn = await store.createTurn(
+        workspace.id,
+        thread.id,
+        'Portable runtime recovery',
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        null,
+        { captureCoverage: { scope: 'workspace', value: 'off' } }
       );
-      expect(archive.status).toBe(200);
-    } finally {
-      db.sqlite.close();
-      coreDb.sqlite.close();
+      const db = workspaceDb(dataRoot, workspace.id);
+      const owner = { threadId: thread.id, turnId: turn.id };
+      try {
+        const agentSetup = createTestAgentSetup();
+        const session = await store.createAgentSession({
+          id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
+          agentId: agentSetup.manifest.id,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          status: 'idle',
+          message: null,
+          createdAt: turn.startedAt!,
+          updatedAt: turn.startedAt!,
+        });
+        const environmentPackage = await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'workspace', value: 'off' },
+          agentSetup,
+          agentSessionId: session.id,
+          triggerActor: turn.triggerActor,
+          backend: { kind: 'openshell' },
+          requestId: 'portable-runtime',
+          turn,
+          turnInput: 'Portable runtime recovery',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        });
+        await recordAgentEnvironmentPackageSnapshot(db, {
+          createdAt: turn.startedAt!,
+          environmentPackage,
+        });
+        await store.updateAgentSession(session.id, {
+          environmentPackageSnapshotId: environmentPackage.snapshotId,
+        });
+        for (const [index, corr] of [undefined, 'explicit-runtime-group'].entries()) {
+          await appendWorkObservation(db, {
+            ...owner,
+            bodies: [],
+            observation: {
+              id: `runtime_${index}`,
+              type: 'runtime.observed',
+              obs: 'worker-shim',
+              ts: turn.startedAt!,
+              ...(corr === undefined ? {} : { corr }),
+              payload: {
+                observationId: `runtime_${index}`,
+                sourceRef: `source_${index}`,
+                sourceSequence: index + 1,
+                observedAt: turn.startedAt!,
+                fact: {
+                  kind: 'tool',
+                  runtimeOriginRef: null,
+                  callRef: index === 0 ? 'runtime-call-source' : 'runtime-explicit-call-source',
+                  phase: 'started',
+                  toolName: 'example.read',
+                },
+                content: { state: 'off' },
+              },
+            },
+          });
+        }
+        if (truncated) {
+          await expect(
+            appendWorkObservation(db, {
+              ...owner,
+              bodies: [],
+              observation: {
+                id: 'runtime_overflow',
+                type: 'runtime.observed',
+                obs: 'worker-shim',
+                corr: 'x'.repeat(61_440),
+                ts: turn.startedAt!,
+                payload: {
+                  observationId: 'runtime_overflow',
+                  sourceRef: 'source_0',
+                  sourceSequence: 3,
+                  observedAt: turn.startedAt!,
+                  fact: {
+                    kind: 'tool',
+                    runtimeOriginRef: null,
+                    callRef: 'overflow',
+                    phase: 'started',
+                  },
+                  content: { state: 'off' },
+                },
+              },
+            })
+          ).rejects.toMatchObject({ disposition: 'truncated' });
+        }
+        const terminal = await terminalizeGovernedWorkerTurn({
+          agentSessionId: null,
+          completedAt: turn.startedAt!,
+          errorCode: 'worker_governance_restart_recovery',
+          message: 'Worker execution was interrupted during NanoCore restart recovery.',
+          outcome: 'interrupted',
+          requestId: null,
+          store,
+          turnId: turn.id,
+        });
+        const reap = await appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
+        const sourceRows = readWorkObservations(db, owner);
+        expect(sourceRows[0]).not.toHaveProperty('corr');
+        expect(reap.payload.unresolvedCalls).toEqual([
+          {
+            corr: 'runtime-call-source',
+            type: 'runtime.observed',
+            name: 'example.read',
+            ts: turn.startedAt,
+          },
+          {
+            corr: 'explicit-runtime-group',
+            type: 'runtime.observed',
+            name: 'example.read',
+            ts: turn.startedAt,
+          },
+        ]);
+        const exported = await createVerifiedWorkspaceExport({
+          fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+          requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+          authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          coreDb,
+          dataRoot,
+          exportId: testEntityId('wsexp', 'export_runtime_joins'),
+          repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+          store,
+          workspaceId: workspace.id,
+        });
+        expect(
+          exported.verified.manifest.requiredFeatures.includes(WORK_OBSERVATION_TRUNCATION_FEATURE)
+        ).toBe(truncated);
+        if (truncated) {
+          expect(reap.payload.truncation).toEqual({
+            reason: 'unresolved-call-bytes',
+            omittedCount: 1,
+            firstOmittedSequence: 3,
+            lastOmittedSequence: 3,
+            tail: 'unknown',
+          });
+          const path = `workspace-files/threads/${thread.id}/turns/${turn.id}/observations.jsonl`;
+          const rows = exported.verified.fileContents.get(path)!.trimEnd().split('\n');
+          expect(JSON.parse(rows.at(-1)!).payload.truncation).toEqual(reap.payload.truncation);
+        }
+        const app = createApp({ coreDb, dataRoot, store });
+        const archive = await app.request(
+          `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
+        );
+        expect(archive.status).toBe(200);
+      } finally {
+        db.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each([null, 'ws_00000000-0000-7f9c-aa14-53566c621405'])(
     'validates env.bound source owner (%s)',

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,14 +10,18 @@ import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
+import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import {
   appendWorkObservation,
+  applyControlWorkObservation,
+  ObservationCollectionStoppedError,
   prepareControlTurnReap,
   readWorkObservations,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
 } from './work-observations.js';
+import { parsePortableWorkObservations } from './workspace-export.js';
 
 const completedAt = '2026-09-29T00:01:00.000Z';
 const roots: string[] = [];
@@ -310,6 +315,176 @@ describe('native terminal recovery observations', () => {
     expect(f.store.getTurnById(f.owner.turnId)).toEqual(turn);
     expect(f.store.getTurnEvents(f.owner.turnId)).toEqual(events);
     expect(observationBytes(f)).toEqual(original);
+  });
+
+  it('seals a one-byte crossing after an exactly fitting reap prefix and replays the omission cold', async () => {
+    const f = await fixture();
+    const start = tool(randomUUID(), 'real-tool-call', 'started');
+    const base = model(randomUUID(), randomUUID());
+    const encodedCalls = (corr: string, name: string | null) =>
+      Buffer.byteLength(
+        JSON.stringify([
+          { corr: 'real-tool-call', type: start.type, name, ts: start.ts },
+          { corr, type: base.type, name: null, ts: base.ts },
+        ])
+      );
+    const escapedCorrelation = `${base.corr!}"界`;
+    const lastFitCorrelation =
+      escapedCorrelation + 'x'.repeat(61_440 - encodedCalls(escapedCorrelation, null));
+    expect(encodedCalls(lastFitCorrelation, null)).toBe(61_440);
+    expect(encodedCalls(lastFitCorrelation, 'xxx')).toBe(61_441);
+    await observe(f, start);
+    await observe(f, { ...base, corr: lastFitCorrelation });
+    const contenders = [
+      tool(randomUUID(), 'real-tool-call', 'updated', 'xxx'),
+      tool(randomUUID(), 'real-tool-call', 'updated', 'xxxx'),
+    ];
+    const append = (observation: WorkObservationDraft, db = f.db) =>
+      appendWorkObservation(db, { ...f.owner, observation, bodies: [] });
+    const summary = {
+      reason: 'unresolved-call-bytes',
+      omittedCount: 1,
+      firstOmittedSequence: 3,
+      lastOmittedSequence: 3,
+      tail: 'unknown',
+    };
+    await shutdownControlStoreWorkerClient();
+    expect(() =>
+      f.db.sqlite.transaction(() => {
+        expect(
+          applyControlWorkObservation(
+            f.db.sqlite,
+            { kind: 'workspace', workspaceId: f.db.workspaceId },
+            { ...f.owner, observation: contenders[0]!, bodies: [] }
+          )
+        ).toMatchObject({ disposition: 'truncated', truncation: summary });
+        throw new Error('commit interrupted');
+      })()
+    ).toThrow('commit interrupted');
+    expect(readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff).toBeUndefined();
+
+    const outcomes = await Promise.allSettled(contenders.map((observation) => append(observation)));
+    const refusals = outcomes.map((outcome) => {
+      expect(outcome.status).toBe('rejected');
+      return (outcome as PromiseRejectedResult).reason;
+    });
+    expect(refusals.map((error) => error.disposition).sort()).toEqual(['closed', 'truncated']);
+    for (const error of refusals) expect(error.truncation).toEqual(summary);
+    const original = contenders[refusals.findIndex((error) => error.disposition === 'truncated')]!;
+    const bytes = observationBytes(f);
+    expect(bytes).toHaveLength(2);
+    await Promise.all(
+      Array.from({ length: 8 }, () =>
+        expect(append(model(randomUUID(), randomUUID()))).rejects.toMatchObject({
+          disposition: 'closed',
+          truncation: summary,
+        })
+      )
+    );
+
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(db);
+    await expect(append(original, db)).rejects.toBeInstanceOf(ObservationCollectionStoppedError);
+    await expect(append(original, db)).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: summary,
+    });
+    await expect(append({ ...original, ts: completedAt }, db)).rejects.not.toBeInstanceOf(
+      ObservationCollectionStoppedError
+    );
+    const cold = { ...f, db, store: new FsStore({ dataRoot: f.dataRoot }) };
+    expect(observationBytes(cold)).toEqual(bytes);
+    expect(await recover(cold)).toMatchObject({ status: 'interrupted' });
+    const rows = readWorkObservations(db, f.owner);
+    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3]);
+    const reap = rows.at(-1)!;
+    expect(reap.payload).toMatchObject({
+      truncation: summary,
+      lastObservedTs: base.ts,
+      unresolvedCalls: [
+        { corr: 'real-tool-call', name: null, ts: start.ts },
+        { corr: lastFitCorrelation, name: null, ts: base.ts },
+      ],
+    });
+    expect(Buffer.byteLength(JSON.stringify(reap))).toBeLessThanOrEqual(65_536);
+    expect(readWorkObservationTurnBinding(db, f.owner).turn.requiredFeatures).toContain(
+      WORK_OBSERVATION_TRUNCATION_FEATURE
+    );
+    const jsonl = rows.map((row) => `${JSON.stringify(row)}\n`).join('');
+    expect(parsePortableWorkObservations(jsonl, f.owner.turnId, true)).toEqual(rows);
+    expect(() => parsePortableWorkObservations(jsonl, f.owner.turnId)).toThrow(/truncation/);
+  });
+
+  it('reserves the reap envelope for a non-call observation timestamp', async () => {
+    const f = await fixture();
+    const initial = await observe(f, tool(randomUUID(), 'tool-call', 'started', 'read'));
+    const timestamp = `2026-09-29T00:00:02.${'0'.repeat(4096)}Z`;
+    await expect(
+      observe(f, model(randomUUID(), randomUUID(), 'text_delta', timestamp))
+    ).rejects.toMatchObject({ disposition: 'truncated' });
+    const terminal = await recover(f);
+    expect(terminal).toMatchObject({ status: 'interrupted' });
+    expect(terminal).not.toHaveProperty('observationCutoff');
+    expect(terminal).not.toHaveProperty('observationCounter');
+    const reap = readWorkObservations(f.db, f.owner).at(-1)!;
+    expect(reap.payload).toMatchObject({
+      lastObservedTs: initial.ts,
+      truncation: {
+        reason: 'unresolved-call-bytes',
+        omittedCount: 1,
+        firstOmittedSequence: 2,
+        lastOmittedSequence: 2,
+        tail: 'unknown',
+      },
+    });
+
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_turns SET record_json=json_set(record_json,'$.requiredFeatures',json(?)) WHERE id=?"
+      )
+      .run(JSON.stringify(['openkit.work-observations.v1']), f.owner.turnId);
+    expect(() => readWorkObservations(f.db, f.owner)).toThrow(
+      /missing observation truncation feature/
+    );
+  });
+
+  it('projects a historical omission across all pages and preserves the physical rows', async () => {
+    const f = await fixture();
+    await observe(f, model('retained', 'x'.repeat(60_000)));
+    await shutdownControlStoreWorkerClient();
+    const tail = [
+      model('historical-overflow', 'x'.repeat(2_000)),
+      ...Array.from({ length: 256 }, () => model(randomUUID(), randomUUID(), 'text_delta')),
+    ];
+    const insert = f.db.sqlite.prepare('INSERT INTO control_work_observations VALUES (?,?,?,1,?)');
+    f.db.sqlite.transaction(() =>
+      tail.forEach((observation, index) => {
+        const seq = index + 2;
+        insert.run(
+          f.owner.turnId,
+          seq,
+          observation.id,
+          JSON.stringify({ v: 1, seq, turnId: f.owner.turnId, ...observation })
+        );
+      })
+    )();
+    const bytes = observationBytes(f);
+    expect(await recover(f)).toMatchObject({ status: 'interrupted' });
+    const rows = readWorkObservations(f.db, f.owner);
+    expect(rows.at(-1)?.payload).toMatchObject({
+      truncation: {
+        reason: 'unresolved-call-bytes',
+        omittedCount: 257,
+        firstOmittedSequence: 2,
+        lastOmittedSequence: 258,
+        tail: 'unknown',
+      },
+      unresolvedCalls: [{ corr: 'x'.repeat(60_000), type: 'model.observed' }],
+    });
+    expect(observationBytes(f).slice(0, -1)).toEqual(bytes);
   });
 
   it('reuses the exact committed snapshot after late observations and a cold retry', async () => {
