@@ -24,7 +24,7 @@ function probe(mode: string, phase = 'first', root?: string) {
 }
 
 describe('public pending publication recovery', () => {
-  it.each(['delivery', 'closeout', 'invalidation'])(
+  it.each(['delivery', 'closeout', 'authority-closeout', 'invalidation'])(
     'completes a named %s after native commit and process exit before the transport reply',
     (mode) => {
       const crashed = probe(mode);
@@ -42,7 +42,7 @@ describe('public pending publication recovery', () => {
         expect(record.items.length).toBeGreaterThan(0);
         if (mode === 'invalidation')
           expect(record.invalidationTurnId).not.toBe(record.publicationTurnId);
-        expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
+        expect(record.delivery).toBe(mode.endsWith('closeout') ? 'closed-out' : 'delivered');
       }
       const repeated = probe(mode, 'first', crashed.root);
       expect(repeated.value.records).toEqual(recovered.value.records);
@@ -50,7 +50,7 @@ describe('public pending publication recovery', () => {
     90_000
   );
 
-  it.each(['delivery', 'closeout', 'invalidation'])(
+  it.each(['delivery', 'closeout', 'authority-closeout', 'invalidation'])(
     'completes a named %s after native commit and process exit before caller acknowledgement',
     (mode) => {
       const crashed = probe(mode, 'between');
@@ -61,9 +61,9 @@ describe('public pending publication recovery', () => {
       for (const record of recovered.value.records) {
         expect(record.status).toBe('completed');
         expect(record.validation).toBeNull();
-        expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
+        expect(record.delivery).toBe(mode.endsWith('closeout') ? 'closed-out' : 'delivered');
         expect(record.items).toEqual(
-          mode === 'closeout'
+          mode.endsWith('closeout')
             ? ['status']
             : mode === 'invalidation'
               ? ['approval-decision', 'status']
