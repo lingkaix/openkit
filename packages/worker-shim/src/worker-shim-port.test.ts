@@ -6,6 +6,7 @@ import type {
   WorkerShimDesiredSet,
   WorkerShimInventory,
   WorkerShimOperationKey,
+  WorkerShimReceipt,
   WorkerShimSession,
   WorkerShimStart,
   WorkerShimTurnInput,
@@ -61,29 +62,56 @@ function desired(
   };
 }
 
+const emptyReport: WorkerShimInventory = { session, workers: [], receipts: [], interrupts: [] };
+const runningWorker = {
+  workerId: start.workerId,
+  state: 'running',
+  stop: { kind: 'best-effort' },
+} as const;
+const runningReport: WorkerShimInventory = { ...emptyReport, workers: [runningWorker] };
+
+function receipt(
+  kind: WorkerShimReceipt['kind'],
+  original: WorkerShimOperationKey,
+  disposition: WorkerShimReceipt['disposition']
+): WorkerShimReceipt {
+  return { kind, key: key(original), disposition };
+}
+
+async function expectPoll(
+  shim: FakeWorkerShim,
+  reply: WorkerShimDesiredSet,
+  expected: WorkerShimInventory,
+  result: 'applied' | 'stale' = 'applied'
+) {
+  const exchange = vi.fn(async (_report: WorkerShimInventory) => reply);
+  const observed = await shim.poll(expected.session, exchange);
+  expect(exchange.mock.calls).toEqual([[expected]]);
+  expect(observed).toBe(result);
+}
+
 describe('Worker Shim contract', () => {
   it('starts only after desired state arrives and keeps one start over lost observation and reconnect', async () => {
     const shim = fake(session.sandboxIncarnationId);
     const run = [{ state: 'run' as const, worker: start }];
-    await expect(
-      shim.poll(session, async () => {
-        throw new Error('lost before delivery');
-      })
-    ).rejects.toThrow();
+    const lostBeforeDelivery = vi.fn(async (_report: WorkerShimInventory) => {
+      throw new Error('lost before delivery');
+    });
+    await expect(shim.poll(session, lostBeforeDelivery)).rejects.toThrow('lost before delivery');
+    expect(lostBeforeDelivery.mock.calls).toEqual([[emptyReport]]);
     expect(shim.started).toEqual([]);
-    await shim.poll(session, async () => desired(1, { workers: run }));
-    let inventory: WorkerShimInventory | undefined;
-    await expect(
-      shim.poll(session, async (report) => {
-        inventory = report;
-        throw new Error('lost report');
-      })
-    ).rejects.toThrow('lost report');
-    expect(inventory?.workers).toEqual([
-      { workerId: start.workerId, state: 'running', stop: { kind: 'best-effort' } },
-    ]);
+
+    await expectPoll(shim, desired(1, { workers: run }), emptyReport);
+    const lostReport = vi.fn(async (_report: WorkerShimInventory) => {
+      throw new Error('lost report');
+    });
+    await expect(shim.poll(session, lostReport)).rejects.toThrow('lost report');
+    expect(lostReport.mock.calls).toEqual([[runningReport]]);
     const successor = { ...session, connectionGeneration: 2 };
-    await shim.poll(successor, async () => desired(1, { session: successor, workers: run }));
+    await expectPoll(shim, desired(1, { session: successor, workers: run }), {
+      ...runningReport,
+      session: successor,
+    });
     const obsolete = vi.fn(async () => desired(100, { workers: run }));
     expect(await shim.poll(session, obsolete)).toBe('stale');
     expect(obsolete).not.toHaveBeenCalled();
@@ -93,69 +121,59 @@ describe('Worker Shim contract', () => {
   it('discards a delayed old-session reply and a superseded revision before they start work', async () => {
     const shim = fake(session.sandboxIncarnationId);
     const delayed = Promise.withResolvers<WorkerShimDesiredSet>();
-    const oldPoll = shim.poll(session, () => delayed.promise);
+    const oldExchange = vi.fn((_report: WorkerShimInventory) => delayed.promise);
+    const oldPoll = shim.poll(session, oldExchange);
     const successor = { ...session, connectionGeneration: 2 };
-    await shim.poll(successor, async () => desired(3, { session: successor }));
+    const current = { ...emptyReport, session: successor };
+    await expectPoll(shim, desired(3, { session: successor }), current);
     const workers = [{ state: 'run' as const, worker: start }];
     delayed.resolve(desired(100, { workers }));
     expect(await oldPoll).toBe('stale');
-    expect(
-      await shim.poll(successor, async () => desired(2, { session: successor, workers }))
-    ).toBe('stale');
-    expect(
-      await shim.poll(successor, async () =>
-        desired(101, { session: { ...successor, sandboxIncarnationId: 'other' }, workers })
-      )
-    ).toBe('stale');
+    expect(oldExchange.mock.calls).toEqual([[emptyReport]]);
+    await expectPoll(shim, desired(2, { session: successor, workers }), current, 'stale');
+    await expectPoll(
+      shim,
+      desired(101, { session: { ...successor, sandboxIncarnationId: 'other' }, workers }),
+      current,
+      'stale'
+    );
     expect(shim.started).toEqual([]);
   });
 
   it('keeps original input evidence until acknowledged and never repeats a native admission', async () => {
     const shim = fake(session.sandboxIncarnationId);
-    await shim.poll(session, async () =>
+    await expectPoll(
+      shim,
       desired(1, {
         workers: [{ state: 'run', worker: start }],
         inputs: [input],
-      })
+      }),
+      emptyReport
     );
     const successor = { ...session, connectionGeneration: 2 };
-    let inventory: WorkerShimInventory | undefined;
-    await shim.poll(successor, async (report) => {
-      inventory = report;
-      return desired(1, { session: successor, inputs: [input] });
-    });
-    expect(inventory?.receipts).toEqual([
-      {
-        kind: 'input',
-        key: {
-          workerId: input.workerId,
-          operationId: input.operationId,
-          payloadDigest: input.payloadDigest,
-        },
-        disposition: 'accepted',
-      },
-    ]);
+    const running = { ...runningReport, session: successor };
+    const pending = { ...running, receipts: [receipt('input', input, 'accepted')] };
+    await expectPoll(shim, desired(1, { session: successor, inputs: [input] }), pending);
     expect(await shim.keyedTurnInput(input)).toBe('accepted');
     expect(await shim.keyedTurnInput({ ...input, payloadDigest: 'changed' })).toBe('refused');
     expect(await shim.keyedTurnInput({ ...input, attemptId: 'other' })).toBe('refused');
     expect(await shim.keyedTurnInput({ ...input, routeGrant: 'other' })).toBe('refused');
     expect(shim.contacted).toEqual([input.operationId]);
-    await shim.poll(successor, async () =>
+    await expectPoll(
+      shim,
       desired(2, {
         session: successor,
         acknowledgedOperations: [{ ...key(input), payloadDigest: 'changed' }],
-      })
+      }),
+      pending
     );
-    await shim.poll(successor, async (report) => {
-      expect(report.receipts).toEqual([
-        { kind: 'input', key: key(input), disposition: 'accepted' },
-      ]);
-      return desired(3, { session: successor, acknowledgedOperations: [key(input)] });
-    });
-    await shim.poll(successor, async (report) => {
-      expect(report.receipts).toEqual([]);
-      return desired(4, { session: successor, inputs: [input] });
-    });
+    await expectPoll(
+      shim,
+      desired(3, { session: successor, acknowledgedOperations: [key(input)] }),
+      pending
+    );
+    await expectPoll(shim, desired(4, { session: successor, inputs: [input] }), running);
+    await expectPoll(shim, desired(5, { session: successor }), running);
     expect(shim.contacted).toEqual([input.operationId]);
   });
 
@@ -171,21 +189,29 @@ describe('Worker Shim contract', () => {
     const laterSteer = { ...input, operationId: 'late-steer' };
     expect(await shim.keyedTurnInput(laterInput)).toBe('refused');
     expect(await shim.keyedSteer(laterSteer)).toBe('refused');
-    await shim.stop(start.workerId);
+    expect(await shim.stop(start.workerId)).toBe('stopping');
     expect(shim.contacted).toEqual([input.operationId]);
     expect(receiveInput).toHaveBeenCalledExactlyOnceWith(input);
+    const stopped = {
+      ...emptyReport,
+      receipts: [
+        receipt('input', input, 'unknown'),
+        receipt('input', laterInput, 'refused'),
+        receipt('steer', laterSteer, 'refused'),
+      ],
+    };
+    await expectPoll(shim, desired(1), {
+      ...stopped,
+      workers: [{ ...runningWorker, state: 'stopping' }],
+    });
     shim.observeChildExit(start.workerId);
     shim.observeTreeAbsent(start.workerId);
     expect(await shim.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
       state: 'held',
     });
-    await shim.poll(session, async (report) => {
-      expect(report.receipts).toEqual([
-        { kind: 'input', key: key(input), disposition: 'unknown' },
-        { kind: 'input', key: key(laterInput), disposition: 'refused' },
-        { kind: 'steer', key: key(laterSteer), disposition: 'refused' },
-      ]);
-      return desired(1);
+    await expectPoll(shim, desired(2), {
+      ...stopped,
+      workers: [{ ...runningWorker, state: 'exited' }],
     });
   });
 
@@ -193,19 +219,19 @@ describe('Worker Shim contract', () => {
     const steer = { ...input, operationId: 'steer-1', payloadDigest: 'steer-digest' };
     const receiveSteer = vi.fn(() => undefined);
     const shim = fake(session.sandboxIncarnationId, { steer: receiveSteer });
-    await shim.poll(session, async () =>
+    await expectPoll(
+      shim,
       desired(1, {
         workers: [{ state: 'run', worker: start }],
         inputs: [input],
         steers: [steer],
-      })
+      }),
+      emptyReport
     );
-    await shim.poll(session, async (report) => {
-      expect(report.receipts).toEqual([
-        { kind: 'input', key: key(input), disposition: 'accepted' },
-        { kind: 'steer', key: key(steer), disposition: 'unknown' },
-      ]);
-      return desired(2, { steers: [steer] });
+    const acceptedInput = receipt('input', input, 'accepted');
+    await expectPoll(shim, desired(2, { steers: [steer] }), {
+      ...runningReport,
+      receipts: [acceptedInput, receipt('steer', steer, 'unknown')],
     });
     expect(receiveSteer).toHaveBeenCalledExactlyOnceWith(steer);
     expect(shim.contacted).toEqual([input.operationId, steer.operationId]);
@@ -214,6 +240,10 @@ describe('Worker Shim contract', () => {
     await openCode.start({ ...start, adapterId: 'opencode' });
     await openCode.keyedTurnInput(input);
     expect(await openCode.keyedSteer(steer)).toBe('refused');
+    await expectPoll(openCode, desired(1), {
+      ...runningReport,
+      receipts: [acceptedInput, receipt('steer', steer, 'refused')],
+    });
     expect(openCode.contacted).toEqual([input.operationId]);
     expect(receiveSteer).toHaveBeenCalledTimes(1);
   });
@@ -230,24 +260,26 @@ describe('Worker Shim contract', () => {
       cause: 'observation_limit_reached' as const,
     };
     const conflict = { ...interrupt, requestId: 'conflict' };
-    await shim.poll(session, async () => desired(1, { interrupts: [interrupt, conflict] }));
+    const conflicts = desired(1, { interrupts: [interrupt, conflict] });
+    const active = { ...runningReport, receipts: [receipt('input', input, 'accepted')] };
+    await expectPoll(shim, conflicts, active);
     shim.observeInterruptSettlement({ ...interrupt, attemptId: 'foreign' });
     const next = { ...input, turnId: 'next', attemptId: 'next', operationId: 'next' };
     expect(await shim.keyedTurnInput(next)).toBe('refused');
-    await shim.poll(session, async (report) => {
-      expect(report.interrupts).toEqual([
-        { ...interrupt, disposition: 'unknown' },
-        { ...conflict, disposition: 'refused' },
-      ]);
-      return desired(2, { interrupts: [interrupt, conflict] });
-    });
+    const fenced = { ...active, receipts: [...active.receipts, receipt('input', next, 'refused')] };
+    const refusal = { ...conflict, disposition: 'refused' } as const;
+    await expectPoll(
+      shim,
+      { ...conflicts, revision: 2 },
+      {
+        ...fenced,
+        interrupts: [{ ...interrupt, disposition: 'unknown' }, refusal],
+      }
+    );
     shim.observeInterruptSettlement(interrupt);
-    await shim.poll(session, async (report) => {
-      expect(report.interrupts).toEqual([
-        { ...interrupt, disposition: 'cancelled' },
-        { ...conflict, disposition: 'refused' },
-      ]);
-      return desired(3);
+    await expectPoll(shim, desired(3), {
+      ...fenced,
+      interrupts: [{ ...interrupt, disposition: 'cancelled' }, refusal],
     });
     expect(shim.interrupted).toEqual([interrupt.requestId]);
     expect(shim.contacted).toEqual([input.operationId]);
@@ -263,19 +295,21 @@ describe('Worker Shim contract', () => {
       requestId: 'cutoff-1',
       cause: 'observation_limit_reached' as const,
     };
-    await shim.poll(session, async () =>
+    await expectPoll(
+      shim,
       desired(1, {
         workers: [{ state: 'run', worker: start }],
         inputs: [input],
         interrupts: [interrupt],
-      })
+      }),
+      emptyReport
     );
     expect(shim.contacted).toEqual([]);
     expect(shim.interrupted).toEqual([]);
-    await shim.poll(session, async (report) => {
-      expect(report.interrupts).toEqual([{ ...interrupt, disposition: 'unknown' }]);
-      expect(report.receipts).toContainEqual(expect.objectContaining({ disposition: 'refused' }));
-      return desired(2, { inputs: [input], interrupts: [interrupt] });
+    await expectPoll(shim, desired(2, { inputs: [input], interrupts: [interrupt] }), {
+      ...runningReport,
+      interrupts: [{ ...interrupt, disposition: 'unknown' }],
+      receipts: [receipt('input', input, 'refused')],
     });
     expect(shim.contacted).toEqual([]);
     expect(await shim.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
@@ -285,15 +319,20 @@ describe('Worker Shim contract', () => {
 
   it('keeps stop monotonic and distinguishes direct-child exit from qualified absence', async () => {
     const shim = fake(session.sandboxIncarnationId);
-    await shim.poll(session, async () =>
-      desired(1, { workers: [{ state: 'run', worker: start }] })
-    );
-    await shim.poll(session, async () =>
+    await expectPoll(shim, desired(1, { workers: [{ state: 'run', worker: start }] }), emptyReport);
+    await expectPoll(
+      shim,
       desired(2, {
         workers: [{ state: 'stop', workerId: start.workerId }],
         inputs: [input],
-      })
+      }),
+      runningReport
     );
+    const refused = { ...emptyReport, receipts: [receipt('input', input, 'refused')] };
+    await expectPoll(shim, desired(3), {
+      ...refused,
+      workers: [{ ...runningWorker, state: 'stopping' }],
+    });
     expect(await shim.keyedTurnInput(input)).toBe('refused');
     expect(shim.contacted).toEqual([]);
     shim.observeChildExit(start.workerId);
@@ -301,29 +340,40 @@ describe('Worker Shim contract', () => {
     expect(await shim.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
       state: 'held',
     });
+    await expectPoll(shim, desired(4), {
+      ...refused,
+      workers: [{ ...runningWorker, state: 'exited' }],
+    });
     expect(await shim.start(start)).toBe('refused');
     for (const adapter of ['codex', 'opencode', 'pi']) {
       expect(WORKER_ADAPTERS[adapter]?.stop).toEqual({ kind: 'best-effort' });
     }
-    const exact = fake(session.sandboxIncarnationId, {
-      adapterStops: { 'exact-fixture': { kind: 'exact', proofKind: 'fixture-tree' } },
-    });
+    const stop = { kind: 'exact', proofKind: 'fixture-tree' } as const;
+    const exact = fake(session.sandboxIncarnationId, { adapterStops: { 'exact-fixture': stop } });
     const exactStart = { ...start, adapterId: 'exact-fixture' };
     await exact.start(exactStart);
-    await exact.stop(start.workerId);
+    expect(await exact.stop(start.workerId)).toBe('stopping');
+    await expectPoll(exact, desired(1), {
+      ...emptyReport,
+      workers: [{ ...runningWorker, state: 'stopping', stop }],
+    });
     exact.observeChildExit(start.workerId);
     expect(await exact.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
       state: 'held',
     });
+    const exited = { ...runningWorker, state: 'exited', stop } as const;
+    await expectPoll(exact, desired(2), { ...emptyReport, workers: [exited] });
     exact.observeTreeAbsent(start.workerId);
-    expect(await exact.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
+    const absence = {
       state: 'absent',
       workerId: start.workerId,
       proofKind: 'fixture-tree',
-    });
+    } as const;
+    expect(await exact.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual(absence);
     expect(await exact.waitUntilAbsent('foreign', new LifecycleDeadline(0))).toEqual({
       state: 'held',
     });
+    await expectPoll(exact, desired(3), { ...emptyReport, workers: [{ ...exited, absence }] });
     expect(await exact.start(exactStart)).toBe('refused');
   });
 
@@ -342,13 +392,21 @@ describe('Worker Shim contract', () => {
       turnId: 'turn-2',
       operationId: 'operation-2',
     };
-    await replacement.poll(next, async () =>
+    await expectPoll(
+      replacement,
       desired(1, {
         session: next,
         workers: [{ state: 'run', worker }],
         inputs: [nextInput],
-      })
+      }),
+      { ...emptyReport, session: next }
     );
+    await expectPoll(replacement, desired(2, { session: next }), {
+      ...emptyReport,
+      session: next,
+      workers: [{ ...runningWorker, workerId: worker.workerId }],
+      receipts: [receipt('input', nextInput, 'accepted')],
+    });
     expect(replacement.started).toEqual([worker.workerId]);
     expect(replacement.contacted).toEqual([nextInput.operationId]);
   });
