@@ -2380,7 +2380,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       ],
       dynamicCapabilities: [],
       kind: 'openshell',
-      version: '0.0.99',
+      version: '0.1.10',
     };
   }
 

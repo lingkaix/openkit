@@ -580,7 +580,12 @@ export function parseOpenShellRelease(source) {
   };
   const license = release?.redistribution?.license;
   const notices = release?.redistribution?.notices;
-  const platformDigests = release?.supervisor?.platformDigests;
+  const validRuntimeImage = (image, repository) =>
+    exactKeys(image, ['repository', 'platformDigests']) &&
+    image.repository === repository &&
+    exactKeys(image.platformDigests, ['linux/amd64', 'linux/arm64']) &&
+    digest(image.platformDigests['linux/amd64']) &&
+    digest(image.platformDigests['linux/arm64']);
   if (
     !exactKeys(release, [
       'schemaVersion',
@@ -588,6 +593,7 @@ export function parseOpenShellRelease(source) {
       'source',
       'gateway',
       'supervisor',
+      'sandboxRuntime',
       'redistribution',
     ]) ||
     release.schemaVersion !== 2 ||
@@ -599,11 +605,8 @@ export function parseOpenShellRelease(source) {
     !exactKeys(release.gateway, ['targets']) ||
     !exactKeys(targets, Object.keys(NANOHOST_TARGETS)) ||
     Object.keys(NANOHOST_TARGETS).some((target) => !validGateway(target, targets[target])) ||
-    !exactKeys(release.supervisor, ['repository', 'platformDigests']) ||
-    release.supervisor.repository !== 'ghcr.io/nvidia/openshell/supervisor' ||
-    !exactKeys(platformDigests, ['linux/amd64', 'linux/arm64']) ||
-    !digest(platformDigests['linux/amd64']) ||
-    !digest(platformDigests['linux/arm64']) ||
+    !validRuntimeImage(release.supervisor, 'quay.io/ai-openshell/supervisor') ||
+    !validRuntimeImage(release.sandboxRuntime, 'quay.io/ai-openshell/sandbox') ||
     !exactKeys(release.redistribution, ['license', 'notices']) ||
     !exactKeys(license, ['sourcePath', 'bundlePath', 'sha256']) ||
     license.sourcePath !== 'LICENSE' ||
@@ -626,7 +629,7 @@ export function assertOpenShellSdkRevision(release, cargoToml, cargoLock) {
     ? /(?:^|,)\s*rev\s*=\s*"([a-f0-9]{40})"\s*(?:,|$)/u.exec(dependencyBlock)?.[1]
     : undefined;
   const officialDependency = dependencyBlock
-    ? /(?:^|,)\s*git\s*=\s*"https:\/\/github\.com\/NVIDIA\/OpenShell\.git"\s*(?:,|$)/u.test(
+    ? /(?:^|,)\s*git\s*=\s*"https:\/\/github\.com\/ai-openshell\/openshell\.git"\s*(?:,|$)/u.test(
         dependencyBlock
       )
     : false;
@@ -640,7 +643,7 @@ export function assertOpenShellSdkRevision(release, cargoToml, cargoLock) {
   if (
     !officialDependency ||
     dependencyRev !== commit ||
-    lockedSource !== `git+https://github.com/NVIDIA/OpenShell.git?rev=${commit}#${commit}`
+    lockedSource !== `git+https://github.com/ai-openshell/openshell.git?rev=${commit}#${commit}`
   ) {
     throw new Error(
       'OpenShell release source commit must match the Cargo SDK revision and lockfile.'

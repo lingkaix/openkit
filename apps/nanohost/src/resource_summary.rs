@@ -153,7 +153,7 @@ pub(crate) async fn observe_from_sources(
     }).await.ok().flatten()
 }
 
-/// Resolves one exact stock-driver Sandbox through its four authoritative labels.
+/// Resolves one exact workload using the stock identity labels and split runtime role.
 async fn exact_container_id(
     binary: &std::path::Path,
     socket: &std::path::Path,
@@ -174,6 +174,8 @@ async fn exact_container_id(
             "label=openshell.ai/managed-by=openshell",
             "--filter",
             "label=openshell.ai/sandbox-namespace=default",
+            "--filter",
+            "label=openshell.ai/isolation-role=sandbox",
             "--filter",
             &id_filter,
             "--filter",

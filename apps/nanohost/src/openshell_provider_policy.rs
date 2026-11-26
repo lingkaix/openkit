@@ -1,6 +1,9 @@
 //! Dormant exact effective-policy verification for the pinned native REST subset.
 
-use openshell_sdk::raw::proto::{L7Allow, NetworkEndpoint, SandboxPolicy};
+use openshell_sdk::raw::proto::{
+    L7Allow, NetworkAccessPreset, NetworkEndpoint, NetworkEnforcementMode, NetworkTlsMode,
+    SandboxPolicy,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -76,12 +79,18 @@ pub(crate) fn endpoint_document(endpoint: &NetworkEndpoint) -> Result<Value, Pro
         host: endpoint.host.clone(),
         port: endpoint.port,
         protocol: endpoint.protocol.clone(),
-        tls: endpoint.tls.clone(),
-        enforcement: endpoint.enforcement.clone(),
-        access: endpoint.access.clone(),
+        tls: endpoint.tls,
+        enforcement: endpoint.enforcement,
+        access: endpoint.access,
         rules: endpoint.rules.clone(),
         allow_encoded_slash: endpoint.allow_encoded_slash,
         ..Default::default()
+    };
+    let access = match NetworkAccessPreset::try_from(endpoint.access) {
+        Ok(NetworkAccessPreset::ReadOnly) if endpoint.rules.is_empty() => "read-only",
+        Ok(NetworkAccessPreset::ReadWrite) if endpoint.rules.is_empty() => "read-write",
+        Ok(NetworkAccessPreset::Unspecified) if !endpoint.rules.is_empty() => "",
+        _ => return Err(invalid),
     };
     if *endpoint != understood
         || endpoint.host.is_empty()
@@ -92,11 +101,8 @@ pub(crate) fn endpoint_document(endpoint: &NetworkEndpoint) -> Result<Value, Pro
         || endpoint.port == 0
         || endpoint.port > 65535
         || endpoint.protocol != "rest"
-        || !matches!(endpoint.tls.as_str(), "" | "terminate")
-        || endpoint.enforcement != "enforce"
-        || !((matches!(endpoint.access.as_str(), "read-only" | "read-write")
-            && endpoint.rules.is_empty())
-            || (endpoint.access.is_empty() && !endpoint.rules.is_empty()))
+        || endpoint.tls != NetworkTlsMode::Unspecified as i32
+        || endpoint.enforcement != NetworkEnforcementMode::Enforce as i32
     {
         return Err(invalid);
     }
@@ -125,7 +131,7 @@ pub(crate) fn endpoint_document(endpoint: &NetworkEndpoint) -> Result<Value, Pro
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
         json!({"host":endpoint.host,"port":endpoint.port,"protocol":endpoint.protocol,
-        "tls":endpoint.tls,"enforcement":endpoint.enforcement,"access":endpoint.access,
+        "tls":"","enforcement":"enforce","access":access,
         "rules":rules,"allowEncodedSlash":endpoint.allow_encoded_slash}),
     )
 }

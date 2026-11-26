@@ -119,7 +119,7 @@ Startup failures use the same bounded exporter and group fence. They pin only th
 
 The current one-Sandbox realization rejects a second create before calling OpenShell while any Sandbox, bridge, or Harness monitor remains retained. NanoCore owns compatible reuse and clean retirement of an incompatible idle Sandbox; this preflight prevents an invalid second create from producing an untracked native Sandbox.
 
-The operator must first supply the profile-required executable regular non-symlink `/usr/bin/slirp4netns` and usable resolver; repository host provisioning never installs or upgrades that OS package. The bundled static requirement check observes its capability without comparing a promoted package version or digest. After that check passes, build and install the NanoHost binary, checksum-verified stock OpenShell `v0.0.99` Gateway, and the single systemd service from `apps/nanohost`:
+The operator must first supply the profile-required executable regular non-symlink `/usr/bin/slirp4netns` and usable resolver; repository host provisioning never installs or upgrades that OS package. The bundled static requirement check observes its capability without comparing a promoted package version or digest. After that check passes, build and install the NanoHost binary, checksum-verified stock OpenShell `v0.1.10` Gateway, and the single systemd service from `apps/nanohost`:
 
 ```bash
 cargo build --release

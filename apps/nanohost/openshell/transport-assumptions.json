@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032",
+  "sourceCommit": "152c59d3178039e3fbb4a5595f9fff7216a6be92",
   "scope": "Finite contributions at the named stock holding points. These values do not alone prove the complete memory bound, HTTP/2 or gRPC holding, in-progress frames, or process RSS. Rebind and review the source slice on every SDK release change.",
   "sources": [
     {
       "path": "crates/openshell-server/src/grpc/sandbox.rs",
-      "sha256": "sha256:7a13591c1d54b9a708c0e499ed31f2b927f93ed2a9070773649ca5585870d5e6"
+      "sha256": "sha256:e5ecea276985c4124c18893f5cc7700060ed910b9d9161175627c357c910d4db"
     },
     {
       "path": "crates/openshell-server/src/supervisor_session.rs",
-      "sha256": "sha256:017aa928b55b45b508acf843553f804cb5e2be71e74e7de4204a489f8528c7e6"
+      "sha256": "sha256:6faacd27df03f2f4f5252c78c3773789ae7b179ea8a07c988cadc559f82a5c7e"
     },
     {
       "path": "crates/openshell-supervisor-process/src/supervisor_session.rs",
-      "sha256": "sha256:60048faca271c392ccee8988e3e50127e59da963c96ad22332e370003c5bba97"
+      "sha256": "sha256:ea11a12a53b84599a4136c4d62f65598032480ea6c45a920721fa442f7b889dc"
     }
   ],
   "assumptions": [
@@ -23,9 +23,9 @@
       "queueFrames": 256,
       "queuedBytes": 16777216,
       "sourceLocations": [
-        "crates/openshell-server/src/grpc/sandbox.rs:62",
-        "crates/openshell-server/src/grpc/sandbox.rs:1192",
-        "crates/openshell-server/src/grpc/sandbox.rs:1380-1445"
+        "crates/openshell-server/src/grpc/sandbox.rs:80",
+        "crates/openshell-server/src/grpc/sandbox.rs:2934",
+        "crates/openshell-server/src/grpc/sandbox.rs:3260-3278"
       ],
       "reason": "The stock ForwardTcp response queue awaits bounded-channel capacity before another response chunk is enqueued. Its queued contribution is capacity times maximum chunk bytes; account for active read/send frames separately."
     },
@@ -37,10 +37,11 @@
       "endpoints": 2,
       "totalQueuedBytes": 524288,
       "sourceLocations": [
-        "crates/openshell-server/src/supervisor_session.rs:461-474",
-        "crates/openshell-server/src/supervisor_session.rs:575-591",
-        "crates/openshell-supervisor-process/src/supervisor_session.rs:213-216",
-        "crates/openshell-supervisor-process/src/supervisor_session.rs:564-615"
+        "crates/openshell-server/src/supervisor_session.rs:1235",
+        "crates/openshell-server/src/supervisor_session.rs:1347-1360",
+        "crates/openshell-supervisor-process/src/supervisor_session.rs:331",
+        "crates/openshell-supervisor-process/src/supervisor_session.rs:1141",
+        "crates/openshell-supervisor-process/src/supervisor_session.rs:1231-1260"
       ],
       "reason": "Both stock RelayStream directions use a bounded 16-frame output queue and a 16 KiB read buffer. Account for each endpoint queue and active read/send frames separately."
     },
@@ -49,7 +50,7 @@
       "bytesPerDirection": 65536,
       "directions": 2,
       "totalBytes": 131072,
-      "sourceLocations": ["crates/openshell-server/src/supervisor_session.rs:376-388"],
+      "sourceLocations": ["crates/openshell-server/src/supervisor_session.rs:1117"],
       "reason": "The stock relay pairing uses one bounded Tokio duplex. Its capacity applies separately in each direction; it is not a limit on the complete relay or process."
     }
   ]

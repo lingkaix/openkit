@@ -3630,9 +3630,15 @@ mod tests {
                             let endpoint =
                                 &policy.network_policies["scoped_package_read"].endpoints[0];
                             assert!(endpoint.allow_encoded_slash);
-                            assert_eq!(endpoint.access, "read-only");
+                            assert_eq!(
+                                endpoint.access,
+                                openshell_sdk::raw::proto::NetworkAccessPreset::ReadOnly as i32
+                            );
                             assert_eq!(endpoint.protocol, "rest");
-                            assert_eq!(endpoint.enforcement, "enforce");
+                            assert_eq!(
+                                endpoint.enforcement,
+                                openshell_sdk::raw::proto::NetworkEnforcementMode::Enforce as i32
+                            );
                             assert_eq!(endpoint.host, "packages.example.com");
                             assert_eq!(endpoint.port, 443);
                             assert!(endpoint.rules.is_empty());

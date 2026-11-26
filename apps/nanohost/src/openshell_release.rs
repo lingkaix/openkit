@@ -19,13 +19,19 @@ pub fn version() -> Option<String> {
 
 /// Returns the exact Supervisor image for the current build architecture.
 pub fn supervisor_image() -> Option<String> {
+    pinned_image("supervisor")
+}
+
+/// Returns the exact workload-side OpenShell runtime image for this architecture.
+pub fn sandbox_runtime_image() -> Option<String> {
+    pinned_image("sandboxRuntime")
+}
+
+fn pinned_image(member: &str) -> Option<String> {
     let release = parse_release(RELEASE_JSON, PLATFORM)?;
-    let repository = release.get("supervisor")?.get("repository")?.as_str()?;
-    let digest = release
-        .get("supervisor")?
-        .get("platformDigests")?
-        .get(PLATFORM)?
-        .as_str()?;
+    let image = release.get(member)?;
+    let repository = image.get("repository")?.as_str()?;
+    let digest = image.get("platformDigests")?.get(PLATFORM)?.as_str()?;
     Some(format!(
         "{repository}:{}@{digest}",
         release.get("version")?.as_str()?
@@ -66,7 +72,7 @@ fn parse_release(source: &str, platform: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RELEASE_JSON, parse_release, supervisor_image, version};
+    use super::{RELEASE_JSON, parse_release, sandbox_runtime_image, supervisor_image, version};
 
     #[test]
     fn embedded_release_matches_the_cargo_sdk_revision() {
@@ -82,6 +88,7 @@ mod tests {
         assert!(include_str!("../Cargo.lock").contains(&locked));
         assert_eq!(version().as_deref(), release["version"].as_str());
         assert!(supervisor_image().is_some());
+        assert!(sandbox_runtime_image().is_some());
     }
     #[test]
     fn gateway_pins_are_selected_and_validated_for_each_target() {

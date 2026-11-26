@@ -1349,7 +1349,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(runtime.turnExecutor).not.toHaveProperty('environmentBackend');
   });
 
-  it('projects OpenShell version 0.0.99 from the NanoHost backend capability observation', async () => {
+  it('projects OpenShell version 0.1.10 from the NanoHost backend capability observation', async () => {
     const runtime = createConfiguredWorkerLifecycleRuntime({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
@@ -1369,7 +1369,7 @@ describe('createConfiguredTurnExecutor', () => {
 
     await expect(backend.describeCapabilities()).resolves.toMatchObject({
       kind: 'openshell',
-      version: '0.0.99',
+      version: '0.1.10',
     });
   });
 

@@ -1024,19 +1024,19 @@ jobs:
           const inputs = [
             [
               OPENSHELL_AMD64_ARCHIVE,
-              `https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_AMD64_ARCHIVE}`,
+              `https://github.com/ai-openshell/openshell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_AMD64_ARCHIVE}`,
             ],
             [
               OPENSHELL_ARCHIVE,
-              `https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_ARCHIVE}`,
+              `https://github.com/ai-openshell/openshell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_ARCHIVE}`,
             ],
             [
               'openshell-LICENSE',
-              `https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_COMMIT}/LICENSE`,
+              `https://raw.githubusercontent.com/ai-openshell/openshell/${OPENSHELL_COMMIT}/LICENSE`,
             ],
             [
               'openshell-THIRD-PARTY-NOTICES',
-              `https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_COMMIT}/THIRD-PARTY-NOTICES`,
+              `https://raw.githubusercontent.com/ai-openshell/openshell/${OPENSHELL_COMMIT}/THIRD-PARTY-NOTICES`,
             ],
           ];
           for (const [name, url] of inputs) {

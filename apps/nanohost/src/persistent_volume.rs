@@ -207,20 +207,9 @@ pub struct PersistentVolumeStore {
 }
 
 impl PersistentVolumeStore {
-    /// Opens the production store after the complete prior epoch is proved absent.
-    pub fn open_after_epoch_fence(docker_socket: PathBuf) -> Result<Self, &'static str> {
-        Self::open_at_after_epoch_fence(PathBuf::from(PERSISTENT_VOLUME_ROOT), docker_socket, 0)
-    }
-
-    /// Opens one store and releases old attachment hints under the caller's complete prior-writer absence proof.
-    fn open_at_after_epoch_fence(
-        root: PathBuf,
-        docker_socket: PathBuf,
-        owner_uid: u32,
-    ) -> Result<Self, &'static str> {
-        let mut store = Self::open_at(root, docker_socket, owner_uid)?;
-        store.release_fenced_attachments()?;
-        Ok(store)
+    /// Opens retained metadata without settling any existing writer.
+    pub fn open_fixed(docker_socket: PathBuf) -> Result<Self, &'static str> {
+        Self::open_at(PathBuf::from(PERSISTENT_VOLUME_ROOT), docker_socket, 0)
     }
 
     fn open_at(
@@ -604,10 +593,13 @@ impl PersistentVolumeStore {
         Ok(files)
     }
 
-    /// Releases only the exact current Sandbox attachment after its writer is absent.
-    pub fn detach(&mut self, sandbox_id: &str) -> Result<(), &'static str> {
+    /// The only writer release transition. Evaluate proof against retained attachments.
+    pub(crate) fn release_writer(
+        &mut self,
+        proof: &crate::epoch_coordinator::WriterAbsenceProof<'_>,
+    ) -> Result<(), &'static str> {
         let entries = fs::read_dir(&self.root).map_err(|_| "persistent storage root unreadable")?;
-        let mut found = false;
+        let mut matches = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|_| "persistent storage root unreadable")?;
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
@@ -617,45 +609,24 @@ impl PersistentVolumeStore {
                 continue;
             }
             let path = entry.path();
-            let Ok(mut metadata) = self.read_metadata(&path) else {
+            let Ok(metadata) = self.read_metadata(&path) else {
                 continue;
             };
             if metadata
                 .attachment
                 .as_ref()
-                .is_some_and(|attachment| attachment.sandbox_id == sandbox_id)
+                .is_some_and(|writer| proof.covers(&writer.sandbox_id))
             {
-                if found {
-                    return Err("persistent storage attachment duplicated");
-                }
-                found = true;
-                metadata.attachment = None;
-                metadata.state = "available".to_string();
-                self.write_metadata(&path, &metadata)?;
+                matches.push((path, metadata));
             }
         }
-        Ok(())
-    }
-
-    /// Releases every attachment only after the complete prior epoch is proved absent.
-    fn release_fenced_attachments(&mut self) -> Result<(), &'static str> {
-        let entries = fs::read_dir(&self.root).map_err(|_| "persistent storage root unreadable")?;
-        for entry in entries {
-            let entry = entry.map_err(|_| "persistent storage root unreadable")?;
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if name.starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(mut metadata) = self.read_metadata(&path) else {
-                continue;
-            };
-            if metadata.attachment.take().is_some() {
-                metadata.state = "available".to_string();
-                self.write_metadata(&path, &metadata)?;
-            }
+        if !proof.is_renewal() && matches.len() > 1 {
+            return Err("persistent storage attachment duplicated");
+        }
+        for (path, mut metadata) in matches {
+            metadata.attachment = None;
+            metadata.state = "available".to_string();
+            self.write_metadata(&path, &metadata)?;
         }
         Ok(())
     }
@@ -3248,7 +3219,9 @@ pub(crate) mod tests {
         fs::create_dir(store.association_path("unrelated-corrupt")).unwrap();
         fs::write(volume.join("retained.txt"), b"retained work").unwrap();
 
-        store.release_fenced_attachments().unwrap();
+        store
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(None))
+            .unwrap();
 
         assert_eq!(store.inspect("storage-one", 3)["state"], "available");
         assert_eq!(
@@ -3292,12 +3265,17 @@ pub(crate) mod tests {
             fs::read(root.join("prior-runtime/member-state")).unwrap(),
             b"prior runtime state"
         );
-        let mut reopened = PersistentVolumeStore::open_at_after_epoch_fence(
-            retained_root,
-            runtime.join("docker.sock"),
-            unsafe { libc::geteuid() },
-        )
-        .expect("fenced startup must reopen the retained store independently of disposable roots");
+        let mut reopened =
+            PersistentVolumeStore::open_at(retained_root, runtime.join("docker.sock"), unsafe {
+                libc::geteuid()
+            })
+            .expect(
+                "fenced startup must reopen the retained store independently of disposable roots",
+            );
+        assert_eq!(reopened.inspect("storage-one", 3)["state"], "attached");
+        reopened
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(None))
+            .unwrap();
         assert_eq!(
             fs::read(volume.join("retained.txt")).unwrap(),
             b"retained worker bytes"
@@ -3361,7 +3339,11 @@ pub(crate) mod tests {
         stored_association(&store, "storage-one", "sandbox-one", 3);
         fs::create_dir(store.association_path("unrelated-corrupt")).unwrap();
 
-        store.detach("sandbox-one").unwrap();
+        store
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(
+                Some("sandbox-one"),
+            ))
+            .unwrap();
 
         assert_eq!(store.inspect("storage-one", 3)["state"], "available");
         fs::remove_dir_all(root).unwrap();
@@ -3422,7 +3404,11 @@ pub(crate) mod tests {
         fs::write(other_volume.join("other.txt"), b"other").unwrap();
 
         assert_eq!(store.purge("storage-subject", 4)["state"], "retained");
-        store.detach("sandbox-subject").unwrap();
+        store
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(
+                Some("sandbox-subject"),
+            ))
+            .unwrap();
         assert_eq!(store.purge("storage-subject", 3)["state"], "retained");
         assert_eq!(store.purge("storage-subject", 4)["state"], "purged");
 
@@ -3437,7 +3423,11 @@ pub(crate) mod tests {
         let root = temporary_root();
         let mut store = test_store(&root);
         let (association, _) = stored_association(&store, "storage-subject", "sandbox-subject", 4);
-        store.detach("sandbox-subject").unwrap();
+        store
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(
+                Some("sandbox-subject"),
+            ))
+            .unwrap();
         let tomb = store.purging_path("storage-subject");
         fs::rename(&association, &tomb).unwrap();
 
@@ -3447,7 +3437,11 @@ pub(crate) mod tests {
         assert!(!path_exists_nofollow(&tomb));
 
         let (association, _) = stored_association(&store, "storage-partial", "sandbox-partial", 5);
-        store.detach("sandbox-partial").unwrap();
+        store
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(
+                Some("sandbox-partial"),
+            ))
+            .unwrap();
         let partial_tomb = store.purging_path("storage-partial");
         fs::rename(&association, &partial_tomb).unwrap();
         fs::remove_file(partial_tomb.join(METADATA_NAME)).unwrap();
