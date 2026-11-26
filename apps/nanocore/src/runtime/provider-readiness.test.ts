@@ -195,6 +195,7 @@ async function fixture(kind: SupplyCase) {
 function expectNoRuntimeEffects(f: Awaited<ReturnType<typeof fixture>>) {
   expect(f.prepare).not.toHaveBeenCalled();
   expect(f.execute).not.toHaveBeenCalled();
+  expect(f.executor.interruptTurn).not.toHaveBeenCalled();
   expect(f.backend.submit).not.toHaveBeenCalled();
   expect(f.backend.inspect).not.toHaveBeenCalled();
   expect(f.backend.cancel).not.toHaveBeenCalled();
