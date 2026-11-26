@@ -1799,6 +1799,22 @@ export function* readNativeTurnHistorySteps(
 }
 
 /** Repeats the retained Turn decoder for verified Items and the selected native metadata. */
+/**
+ * The Turn this reader reconstructs once one admission writes this exact record and these first
+ * Item revisions, for a grouped decision that closes the Turn in the same rollback boundary.
+ */
+export function plannedNativeTurn(
+  record: ControlProductSnapshot['record'],
+  retained: readonly Record<string, unknown>[]
+): Turn {
+  const items = retained.map((value) => {
+    const parsed = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+    const { schemaVersion: _header, ...payload } = value;
+    return preserveDescriptiveRecord(payload, parsed, parsed) as Item;
+  });
+  return nativeTurnWithVerifiedItems(record, items);
+}
+
 function nativeTurnWithVerifiedItems(
   record: ControlProductSnapshot['record'],
   items: Item[]
