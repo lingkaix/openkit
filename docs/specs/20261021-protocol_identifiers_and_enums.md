@@ -81,6 +81,11 @@ This table names prefixes for independent generation paths. Workspace, Thread, T
 | Knowledge conflict | `kf` |
 | Knowledge retrieval trace | `krt` |
 | Execution attempt | `attempt` |
+| Host | `host` |
+| Host epoch | `hepoch` |
+| Sandbox | `sbx` |
+| Sandbox incarnation | `sbxi` |
+| Worker incarnation | `wkr` |
 | Worker storage binding | `wst` |
 | VaultReference | `vault` |
 | VaultGrant | `grant` |
@@ -92,6 +97,54 @@ This table names prefixes for independent generation paths. Workspace, Thread, T
 | Workspace export | `wsexp` |
 | Workspace backup | `wsbak` |
 | Data-root backup | `drb` |
+
+### Host, Sandbox And Worker Identities
+
+These five kinds use independently generated typed UUIDv7 values. Mint one ID for a lifetime. Preserve that ID on retries, reconnect and recovery of the same lifetime. A new incarnation receives a fresh ID. Configuration equality cannot allocate or locate an incarnation.
+
+| Kind | Issuer and lifetime | Parent and retained correlation |
+| --- | --- | --- |
+| Host | Core allocates once at enrolment. The ID survives runtime restarts of the enrolled Host. | Instance. Host admission also verifies the deployment and current connection generation. |
+| Host epoch | The Host agent allocates once at each runtime start and registers the ID at session admission. Reconnect preserves the same epoch ID while that runtime survives. | Enrolled Host. Stamp the origin Host epoch on the claim and retain it with accepted readiness and release proof. |
+| Sandbox | Core allocates once for the retained Sandbox. The ID survives sleep, wake and replacement. | Workspace and retained Volume. The storage association keeps its existing storage identity. |
+| Sandbox incarnation | Core allocates once per create or wake. The incarnation ends when its outside lifetime ends. | Sandbox, origin Host epoch and assigned Volume writer generation. |
+| Worker incarnation | Core allocates once per authorized start order, before sending it. The shim realizes that ID at most once. A later start after Worker exit uses a new ID. | Exact Sandbox incarnation. The adapter is an attribute. Work slot and AgentSession relations are recorded by rows. |
+
+An attempt refers to its Worker incarnation, the Worker to its Sandbox incarnation, and that incarnation to its Host epoch. Use those original references for recovery. Connection generation and session-local desired-set revision remain ordering fences. The shim lives with its Sandbox incarnation. Volume writer generation, storage, work slot and contributor references retain their owner-specific meanings. The Thread keeps its work slot.
+
+### NanoHost Physical Sandbox Address
+
+PENDING ENGINEER: proposed nh- + 16 lowercase base32 [a-z2-7]{16}
+
+NanoHost allocates the address within the originating Host epoch and Gateway namespace. Uniqueness comes from durable allocation within that provider namespace. Read the incarnation map in either direction. The address is separate from the Core-issued Sandbox incarnation ID.
+
+Before the first Gateway Create, Core records the original create intent, target incarnation and exclusions. Check current authority and required predecessor release before provider contact. NanoHost durably reserves the address for the exact incarnation and origin epoch in the map. Allow one binding per incarnation and exclusive use of each address in the namespace. Return the winning binding to duplicate admissions. A local collision may select a fresh candidate before any possible Create. A failed reservation stops before provider contact.
+
+Once Create may have been sent, inspect, reconcile and delete through the recorded address. Retain the provider's immutable object ID when it becomes known and verify lineage before acting. A lost reply, a name conflict with unproved ownership, an empty Get or an elapsed deadline leaves the original claim held. Do not adopt a foreign object or issue Create under a new address. Keep the binding across recovery and exclude reuse of retired addresses within the epoch. A new epoch has its own namespace after proved predecessor termination and fresh-empty readiness.
+
+Use Core's incarnation ID for lifecycle keys. A one-shot operation retains the existing Core operation ID, target Worker ID and payload digest. Address allocation grants no authority and supplies no key input. Use the original correlation after a lost reply.
+
+Before freezing the address format, qualify two allocated addresses on the pinned Gateway. Exercise a reservation collision, recovery of the original binding after a lost reply and reopen, and refusal of a stale operation against a successor.
+
+### Retired NanoHost Derived Identities
+
+At the fresh-root cut these forms retire as admitted runtime identities and keys. The last reader column identifies the final readers of the predecessor forms. Preserve original operation intent, inputs, accepted receipts and proof under their deciding owners. Compatibility checks retain admitted configuration as placement evidence.
+
+| Retired form | Last readers |
+| --- | --- |
+| `physicalEpoch` hashed from the private epoch name | Current target admission, origin stamp and epoch Audit |
+| Recurring `nh-` address derived from `SandboxCompatibilityKey` | Creation, sharing map, teardown and capture reverse lookup |
+| Compatibility-derived `sandbox-runtime-` identity | Launch, capture, current resident lookup and cleanup |
+| Compatibility-derived `integration-binding-` identity | Launch, same-name exclusion, capture and cleanup |
+| `HarnessCompatibilityKey` | Harness reuse and binding |
+| `harness-` and `harness-binding-` derived from the combined Sandbox and Harness digest | Main Harness map, binding lookup, shim poll and result consumption |
+| `AgentSessionCompatibilityKey` derived through the Harness key | Session binding admission and reuse |
+| `session-binding-` derived through the Harness instance | Binding foreign-key lookup, shim poll and result consumption |
+| Backend session address made from the recurring Sandbox name and AEP snapshot digest suffix | Inspection, effects, capture and cleanup, including reverse lookup by slicing |
+| Old Harness-cell operation and close keys from the Harness binding, sequence and command body or from attempt, operation and body | Harness dispatch, restoration and replay, RC8 result route and C4 replay |
+| `core-idle-cleanup/v1` and `core-harness-consume/v1` producer identities | Harness continuity and idle close |
+| Old `idle-cleanup:` execution and `effect:` step identities for reused-address cleanup | Idle cleanup and original predecessor read-back |
+| Old idle root fingerprint and baseline collection per-call nonce | Collection and idle reconciliation |
 
 ### Derived Entity Kinds And Namespaces
 
@@ -150,7 +203,6 @@ Retained values and derived identities that use owner-specific framing, serializ
 | Knowledge retrieval `requestDigest` | `sha256:` + SHA-256 of owner `canonicalJson({queryContext, sourceScope, caller: input.caller, request})`, which recursively sorts object keys by UTF-8 byte order, constructs plain objects (subject to JS integer-index key ordering), and calls `JSON.stringify`. |
 | Conversation retrieval `requestDigest` | `sha256:` + SHA-256 of insertion-order `JSON.stringify({query, workspaceId, threadId, turnId})`. |
 | Session-static `SessionCompatibilityKey` | Base digest is `sha256:` + SHA-256 of local `stableJson({agent, backend, control: sessionStaticControl(control), layout, policy, runtime, vault})` with absent components as `null` and Turn-specific sinks removed; final NanoCore key is `sha256:` + SHA-256 of insertion-order `JSON.stringify({sessionWorkspaceKey: baseDigest, allowedLogicalModelIds: sortedAllowedIds})`. |
-| NanoHost `AgentSessionCompatibilityKey` | Untagged `sha256CanonicalJson({nativeConversation: {adapterId, adapterVersion, harnessCompatibilityKey}, sessionCompatibilityKey, threadId})`. |
 | Worker Context Package ID and digests | Package ID is literal `ctxpkg_${turnId}`; trace digest is `ctxpkg_sha256_` + SHA-256 of owner `canonicalJson(traceWithoutDigest)` over the retained representation before public normalization; package-root digest is `sha256:` + SHA-256 of serialized delivery inventory; WMR policy digest hashes owner-serialized `{backendKind, packageSnapshotId, requiredCapabilities: [...input]}`; file and worker-request digests hash exact bytes. The owner serializer constructs UTF-16-sorted objects before `JSON.stringify` (integer-looking keys follow JS enumeration order). |
 | Policy and runtime configuration digests | `policyDigest(value)` is `sha256:` + SHA-256 of complete-name JCS (refusing `undefined` object members). Loaded runtime configuration `contentHash` is untagged `sha256CanonicalJson(snapshotSemanticSummary(snapshot))`. Fixed `policySnapshotId` labels (`runtime_config_gateway_policy`, `worker_turn_launch_policy`, `policy_snapshot_runtime`) are literal identifiers, not content digests. |
 | Generative UI digests | `semanticInputHash` is `sha256:` + SHA-256 of insertion-order `JSON.stringify({threadId, turnId, title, fallbackText, messages, source, actions})` before answer shorthand normalization; presentation `contentDigest` hashes `JSON.stringify(messages)`; Item-source digest hashes exact UTF-8 source text. |
@@ -380,7 +432,7 @@ supply_refresh_ack
 capability_summary
 ```
 
-Private Harness operation, `HarnessOperationSchema` in `packages/worker-protocol/src/harness-control.ts`:
+The private Harness operation vocabulary retires with the old carriage. The [Worker Control Protocol](20260703-worker_control_protocol.md#worker-shim-poll) owns the current poll. Predecessor values came from `HarnessOperationSchema` in `packages/worker-protocol/src/harness-control.ts`.
 
 ```text
 session.open
@@ -392,7 +444,7 @@ session.close
 harness.drain
 ```
 
-Harness refusal reason, `HarnessRefusalReasonSchema` in `packages/worker-protocol/src/harness-control.ts`:
+Predecessor Harness wire refusal reason, `HarnessRefusalReasonSchema` in `packages/worker-protocol/src/harness-control.ts`:
 
 ```text
 missing
@@ -404,7 +456,7 @@ dependency_failed
 cleanup_required
 ```
 
-Exhausted bound, `HarnessExhaustedBoundSchema` in that module:
+Predecessor Harness wire exhausted bound, `HarnessExhaustedBoundSchema` in that module:
 
 ```text
 harness.activeTurns
@@ -469,12 +521,14 @@ not-run
 
 ## Implementation Gaps
 
+- Runtime incarnation identifiers and NanoHost address binding - Final identifier admission, provider round trip and predecessor-identity cutover await qualification - #951
 - Cross-owner storage receipts - The deterministic internal receipt tuple, comparison and replay rules await implementation - #947
 
 - Mutating command UUID `requestId` admission - Some mutation request schemas admit arbitrary nonempty `requestId` strings instead of enforcing UUID syntax - #638
 
 ## Decisions
 
+- [Long-Running Sandbox And Worker Layer](../decisions/20261126-long_running_sandbox_and_worker_layer.md)
 - [Control Kernel And Service Storage](../decisions/20261120-control_kernel_and_service_storage.md)
 
 - [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md)
