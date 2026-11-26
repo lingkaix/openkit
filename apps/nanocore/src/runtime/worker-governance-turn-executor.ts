@@ -161,7 +161,6 @@ import {
   bindNanoHostAttemptPreparation,
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithFence,
-  closeSchedulerExecutionAttemptWithoutEffects,
   finalizeSchedulerExecutionAttemptInput,
   listOpenSchedulerExecutionAttempts,
   listSchedulerExecutionAttemptsForTurn,
@@ -195,11 +194,7 @@ import { commandInputHash } from './idempotent-command.js';
 import type { AdmittedNanoHostAttemptRecovery } from './nanohost-attempt-recovery.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
-import {
-  getNanoHostRuntimeTarget,
-  NanoHostHarnessOutageError,
-  NanoHostPhysicalAuthorityUnavailableError,
-} from './nanohost-runtime-target-records.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import type { NanoHostEnvironmentRead } from './native-environment.js';
 import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -281,6 +276,9 @@ import {
 } from './worker-storage-bindings.js';
 import { importWorkerTranscript } from './worker-transcript.js';
 import {
+  acceptedWorkerFinalCloseoutHold,
+  rejectAfterWorkerJournal,
+  requireWorkerFailureClose,
   terminalizeGovernedWorkerTurn,
   workerTurnTerminalPublication,
 } from './worker-turn-failure.js';
@@ -3503,6 +3501,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let primaryFailed = false;
     let primaryError: unknown;
     const errors: unknown[] = [];
+    const finalIntake = this.coreDb
+      ? { coreDb: this.coreDb, attemptId: executionAttempt.attemptId }
+      : undefined;
 
     try {
       if (!context.agentSetup) {
@@ -4317,10 +4318,27 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         closeoutAt
       );
       backendCleanupRequired = false;
-    } catch (error) {
-      if (error instanceof NanoHostSubmissionHeld) {
+      if (workerFinalStatus !== null) {
+        context.onSubmissionSettled?.();
         workspaceDb?.sqlite.close();
-        throw error;
+        workspaceDb = null;
+        await this.recordAcceptedWorkerOutcome(
+          store,
+          turn,
+          agentSessionId,
+          requestId,
+          workerFinalStatus,
+          environmentPackage.snapshotId
+        );
+        if (backendLifecycle.session?.state === 'cleaned')
+          await this.releaseTerminalAttempt(store, executionAttempt.attemptId, environmentPackage);
+        return;
+      }
+    } catch (error) {
+      const hold = acceptedWorkerFinalCloseoutHold(error, workerFinalStatus ? true : finalIntake);
+      if (hold || error instanceof NanoHostSubmissionHeld) {
+        workspaceDb?.sqlite.close();
+        throw hold ?? error;
       }
       primaryFailed = true;
       primaryError = asWorkerArtifactTurnError(error);
@@ -4339,28 +4357,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw primaryError;
       }
       if (primaryFailed) errors.unshift(primaryError);
-      try {
-        const attempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
-        if (!primaryFailed) failedAttempt = attempt;
-        else if (attempt.operationId === null)
-          failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
-            attemptId: attempt.attemptId,
-            noOutstandingEffects: true,
-            cause: 'turn-start-failed',
-            ...(this.now ? { now: this.now } : {}),
-          });
-        else
-          failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
-            attemptId: attempt.attemptId,
-            cause: 'execution-failed',
-            ...(this.now ? { now: this.now } : {}),
-          });
-      } catch (classificationError) {
-        if (!primaryFailed) throw classificationError;
-        // Failed classification gives cleanup no new authority. Keep the original start error
-        // first, even when reading or transitioning the retained attempt fails independently.
-        errors.push(classificationError);
-      }
+      failedAttempt = primaryFailed
+        ? await requireWorkerFailureClose(
+            this.coreDb!,
+            context.attemptId!,
+            'execution-failed',
+            primaryError,
+            this.now
+          )
+        : requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
       if (backendCleanupRequired && failedAttempt) {
         if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
           errors.push(new Error('Backend cleanup is missing its durable runtime lineage.'));
@@ -4394,18 +4399,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         errors.push(new Error('The governed worker turn is missing its AgentSession id.'));
       } else {
         try {
-          if (workerFinalStatus) {
-            await this.recordAcceptedWorkerOutcome(
-              store,
-              turn,
-              agentSessionId,
-              requestId,
-              workerFinalStatus,
-              environmentPackage?.snapshotId ?? null
-            );
-          } else {
-            await this.completeTurn(store, turn, agentSessionId, requestId);
-          }
+          await this.completeTurn(store, turn, agentSessionId, requestId);
         } catch (error) {
           errors.push(error);
           terminalObserved = store
@@ -4679,52 +4673,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         return 'interrupted';
       }
       if (collectDurableOutput) {
-        try {
-          await this.finishLaunchedTurn(
-            store,
-            environmentPackage,
-            environmentPackage.scope.requestId ?? null,
-            backendCapabilities,
-            lifecycle,
-            workspaceDb,
-            listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
-            listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
-            accepted.acceptedAt
-          );
-        } catch (error) {
-          // K8b: while the original peer is away, no current physical Epoch authorizes collection.
-          // That holds the last durable Turn state. Peer readmission lets this same closeout finish.
-          // A transport timeout is no outcome proof either; only proved outcome evidence terminalizes.
-          if (
-            hasCause(error, NanoHostPhysicalAuthorityUnavailableError) ||
-            hasCause(error, NanoHostHarnessOutageError)
-          )
-            throw error;
-          try {
-            await terminalizeGovernedWorkerTurn(restartFailure);
-          } catch (terminalError) {
-            throw new AggregateError(
-              [error, terminalError],
-              'Restored worker closeout failed and its stable product outcome could not be persisted.'
-            );
-          }
-          try {
-            await this.cleanupBackendLifecycle(
-              store,
-              lifecycle,
-              workspaceDb,
-              environmentPackage,
-              backendCapabilities,
-              true
-            );
-          } catch (cleanupError) {
-            throw new AggregateError(
-              [error, cleanupError],
-              'Restored worker closeout failed after its stable product outcome was persisted.'
-            );
-          }
-          return 'interrupted';
-        }
+        await this.finishLaunchedTurn(
+          store,
+          environmentPackage,
+          environmentPackage.scope.requestId ?? null,
+          backendCapabilities,
+          lifecycle,
+          workspaceDb,
+          listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
+          listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
+          accepted.acceptedAt
+        );
       } else if (session.state !== 'cleaned') {
         await this.cleanupBackendLifecycle(
           store,
@@ -4750,6 +4709,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
       await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
       return recoveredStatus;
+    } catch (error) {
+      throw acceptedWorkerFinalCloseoutHold(error, true);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -5364,13 +5325,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
           );
         } catch (error) {
-          await endWorkerTurnJournalStep(
-            store,
-            workspaceDb,
-            captureJournal,
-            error instanceof PreservedWorkspaceCaptureRefusal ? 'failed' : 'unknown'
+          return await rejectAfterWorkerJournal(error, () =>
+            endWorkerTurnJournalStep(
+              store,
+              workspaceDb,
+              captureJournal,
+              error instanceof PreservedWorkspaceCaptureRefusal ? 'failed' : 'unknown'
+            )
           );
-          throw error;
         }
         // An uncertain result acknowledgement leaves its original intent for recovery.
         await endWorkerTurnJournalStep(store, workspaceDb, captureJournal, 'completed');
@@ -5437,8 +5399,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       await running;
     } catch (error) {
-      if (collectionJournal)
-        await endWorkerTurnJournalStep(store, workspaceDb, collectionJournal, 'unknown');
+      const pending = collectionJournal;
+      if (pending)
+        return await rejectAfterWorkerJournal(error, () =>
+          endWorkerTurnJournalStep(store, workspaceDb, pending, 'unknown')
+        );
       throw error;
     }
   }
@@ -7207,14 +7172,4 @@ export async function endWorkerTurnJournalRelease(
     terminalCause: release.root.terminalCause,
     exclusionRefs: canClose ? [] : release.root.exclusionRefs,
   });
-}
-
-/** True when `error` or one of its `cause` links is an instance of `type`. */
-function hasCause(error: unknown, type: abstract new (...args: never[]) => Error): boolean {
-  let current: unknown = error;
-  for (let depth = 0; current instanceof Error && depth < 8; depth += 1) {
-    if (current instanceof type) return true;
-    current = (current as Error).cause;
-  }
-  return false;
 }

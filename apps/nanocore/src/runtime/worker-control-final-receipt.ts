@@ -58,6 +58,15 @@ export function getWorkerControlAcceptedFinalStatus(
   };
 }
 
+/** A closing cause whose original Worker can still own an aborted first final. */
+export function isWorkerCancellationFinalCause(cause: string | null): boolean {
+  return (
+    cause === 'turn-cancelled' ||
+    cause === 'raw-output-exhausted' ||
+    cause === 'raw-output-unavailable'
+  );
+}
+
 /**
  * Checks current cancellation and native authority for a first final without restoring effect authority.
  *
@@ -75,9 +84,7 @@ export function hasPendingWorkerCancellationFinal(
   const now = Date.parse(timestamp);
   return (
     attempt.phase === 'closing' &&
-    ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-      attempt.terminalCause ?? ''
-    ) &&
+    isWorkerCancellationFinalCause(attempt.terminalCause) &&
     attempt.recoveryState === null &&
     attempt.fenceRef === null &&
     Boolean(attempt.workerControlTokenHash) &&

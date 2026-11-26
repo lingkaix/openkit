@@ -51,7 +51,6 @@ import {
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
   ExecutionAttemptRefusal,
-  markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempts.js';
@@ -76,7 +75,11 @@ import {
   WorkerGovernanceCapacityUnavailableError,
   WorkerInputRecoveryRequiredError,
 } from './worker-governance-backend.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+import {
+  acceptedWorkerFinalCloseoutHold,
+  requireWorkerFailureClose,
+  terminalizeGovernedWorkerTurn,
+} from './worker-turn-failure.js';
 
 /** Current composition and the exact selected admission; no placement or native proof policy lives here. */
 export interface RunSchedulerDispatchLoopInput
@@ -707,6 +710,9 @@ async function dispatchSchedulerAdmission(
       terminalResult: { status: 'queued', reason: 'max-dispatches' },
     };
   } catch (error) {
+    const finalIntake = { coreDb: input.coreDb, attemptId: attempt.attemptId };
+    const hold = acceptedWorkerFinalCloseoutHold(error, finalIntake);
+    if (hold) throw hold;
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
     // Recovery owns the expired attempt and its original Turn after the persisted fence.
     if (current.terminalCause === 'preparation-deadline') throw error;
@@ -736,17 +742,12 @@ async function dispatchSchedulerAdmission(
       });
       return { startedTurns: [], terminalResult: { status: 'queued', reason: 'backend-busy' } };
     }
-    if (current.operationId === null)
-      await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
-        attemptId: attempt.attemptId,
-        noOutstandingEffects: true,
-        cause: 'turn-start-failed',
-      });
-    else
-      await markSchedulerExecutionAttemptClosing(input.coreDb, {
-        attemptId: attempt.attemptId,
-        cause: 'preparation-or-execution-failed',
-      });
+    await requireWorkerFailureClose(
+      input.coreDb,
+      attempt.attemptId,
+      'preparation-or-execution-failed',
+      error
+    );
     const turn = input.store.getTurnById(entry.turnId);
     if (turn.status === 'pending' || turn.status === 'running')
       await terminalizeGovernedWorkerTurn({

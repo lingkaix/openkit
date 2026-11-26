@@ -15,6 +15,7 @@ import {
 } from '../scheduler-records.js';
 import { hashNanoHostFinalDecision } from '../storage/control-store-worker-protocol.js';
 import {
+  hasCoreWorkerFinalIntake,
   hasSurvivingNanoHostFinalEvidence,
   type NanoHostFinalCloseDecision,
   verifyNanoHostCleanupSubmitPlacement,
@@ -366,6 +367,12 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         if (readback === 'closed' || lease.grant.deadline > timestamp) continue;
         finalDecision = readback;
       } else {
+        if (
+          native.deadline &&
+          native.deadline > timestamp &&
+          hasCoreWorkerFinalIntake(coreDb, attempt.attemptId)
+        )
+          continue;
         // A settled final reaches capture recovery through the guarded restart closeout above.
         const captureWorkspace = openRecoveryWorkspace(coreDb, native);
         try {
@@ -521,6 +528,8 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       } finally {
         workspace.db.sqlite.close();
       }
+      if (hasCoreWorkerFinalIntake(coreDb, native.attemptId))
+        throw new Error('The original Worker final still owns Turn publication.');
       let settled = false;
       if (native.terminalCause === 'turn-start-failed' && input.store) {
         settled = await settleTerminalFailedStart(

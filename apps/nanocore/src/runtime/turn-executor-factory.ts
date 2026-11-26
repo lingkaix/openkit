@@ -311,6 +311,7 @@ import type {
   WorkerRuntimeProvenanceCollection,
   WorkerTranscriptPayload,
 } from './worker-transcript.js';
+import { rejectAfterWorkerJournal } from './worker-turn-failure.js';
 import {
   acceptWorkspaceBaseline,
   authorizeWorkspaceBaselineInitialization,
@@ -10073,34 +10074,35 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           outcomeRef: null,
         });
     } catch (error) {
-      const child = pending.journal?.child;
-      if (child && !pending.journal?.consumerReceipt) {
-        const current = await pending.journal!.reader!.readInvocation({
-          execution: child.execution.ref,
-          stepId: child.stepId,
-        });
-        if (current.state === 'intent')
+      return await rejectAfterWorkerJournal(error, async () => {
+        const child = pending.journal?.child;
+        if (child && !pending.journal?.consumerReceipt) {
+          const current = await pending.journal!.reader!.readInvocation({
+            execution: child.execution.ref,
+            stepId: child.stepId,
+          });
+          if (current.state === 'intent')
+            await endWorkerTurnJournalStep(
+              store,
+              workspaceScope,
+              child,
+              pending.operationId ? 'unknown' : session.turnStopSettlement ? 'cancelled' : 'failed'
+            );
+        }
+        if (parent)
           await endWorkerTurnJournalStep(
             store,
             workspaceScope,
-            child,
-            pending.operationId ? 'unknown' : session.turnStopSettlement ? 'cancelled' : 'failed'
+            parent,
+            pending.journal?.consumerReceipt
+              ? 'completed'
+              : pending.operationId
+                ? 'unknown'
+                : session.turnStopSettlement
+                  ? 'cancelled'
+                  : 'failed'
           );
-      }
-      if (parent)
-        await endWorkerTurnJournalStep(
-          store,
-          workspaceScope,
-          parent,
-          pending.journal?.consumerReceipt
-            ? 'completed'
-            : pending.operationId
-              ? 'unknown'
-              : session.turnStopSettlement
-                ? 'cancelled'
-                : 'failed'
-        );
-      throw error;
+      });
     } finally {
       if (pending.timeout) clearTimeout(pending.timeout);
       if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;

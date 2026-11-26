@@ -84,6 +84,7 @@ import {
   readNanoHostWorkerLease,
   readNanoHostWorkerRouteBinding,
 } from '../runtime/worker-backend-session-records.js';
+import { isWorkerCancellationFinalCause } from '../runtime/worker-control-final-receipt.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import {
   inspectNanoHostWorkerFinalSequences,
@@ -772,7 +773,32 @@ export function commitCoreNanoHostOrphanAuditInDb(
 
 type FinalCommand = ControlWorkerFinalStatusCommand;
 type FinalNativeReader = Parameters<typeof inspectNanoHostWorkerBinding>[0];
+/** Reads both immutable facts left by the Core failure close on one snapshot. */
+export function readCoreWorkerFailureClose(db: CoreDb, attemptId: string) {
+  return db.sqlite
+    .transaction(() => {
+      const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+      if (
+        attempt.phase === 'open' ||
+        (attempt.phase === 'closing' && isWorkerCancellationFinalCause(attempt.terminalCause)) ||
+        hasCoreWorkerFinalIntake(db, attemptId)
+      )
+        return null;
+      return attempt;
+    })
+    .deferred();
+}
+
 const finalIntakeStepId = 'worker-final-intake';
+
+/** A retained final intake keeps generic failure writers off this exact attempt. It supplies no outcome. */
+export function hasCoreWorkerFinalIntake(db: CoreDb, attemptId: string): boolean {
+  return Boolean(
+    db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+      .get(attemptId, finalIntakeStepId)
+  );
+}
 
 function workerFinalBindingRefusal(
   reason: 'binding-not-found' | 'lineage-mismatch' | 'reconnect-required' | 'attempt-not-live'
@@ -905,12 +931,7 @@ function readCoreWorkerFinalIntake(
   input: FinalCommand
 ): NanoHostWorkerFinalDecision | null {
   const ref = { execution: grant.execution, stepId: finalIntakeStepId };
-  if (
-    !db.sqlite
-      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
-      .get(grant.execution.executionId, ref.stepId)
-  )
-    return null;
+  if (!hasCoreWorkerFinalIntake(db, grant.execution.executionId)) return null;
   const step = readExecutionJournalInvocation(db, ref);
   const [kind, acceptedAt, eventAcceptedAt] = step.control.outputRefs;
   if (
