@@ -47,6 +47,8 @@ import { PendingRequestCommandError } from './pending-request-error.js';
 import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
   archiveSelects,
+  type CanonicalLoadItems,
+  canonicalLoadItems,
   compareReadiness,
   decideFrozenDeliveryCommand,
   type decidePendingProjection,
@@ -2460,17 +2462,23 @@ function canonicalRecordIsUsable(
       .listThreads(record.workspaceId)
       .flatMap((thread) => store.listThreadTurns(record.workspaceId, thread.id));
   const receipts = walked?.receipts ?? readCommandRequestRecordsFromSqlite(sqlite);
-  if (walked) Object.assign(walked, { turns, receipts });
-  return validateCanonicalLoad(record, turns, receipts) === null;
+  const items = walked ? (walked.items ?? canonicalLoadItems(turns)) : undefined;
+  if (walked) Object.assign(walked, { turns, receipts, items });
+  return validateCanonicalLoad(record, turns, receipts, items) === null;
 }
 
 /**
- * The Turns and receipts the canonical-load rule reads, once per Boot walk on its Workspace read
- * handle: the walk plans on one unchanged state, so every row it decides reads the same history.
+ * The Turns, their indexed Items and the receipts the canonical-load rule reads, once per Boot
+ * walk on its Workspace read handle: the walk plans on one unchanged state, so every row it
+ * decides reads the same history.
  */
 const walkLoadHistory = new WeakMap<
   import('better-sqlite3').Database,
-  { turns?: readonly Turn[]; receipts?: ReturnType<typeof readCommandRequestRecordsFromSqlite> }
+  {
+    turns?: readonly Turn[];
+    items?: CanonicalLoadItems;
+    receipts?: ReturnType<typeof readCommandRequestRecordsFromSqlite>;
+  }
 >();
 
 /**
