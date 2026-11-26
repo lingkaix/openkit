@@ -223,7 +223,12 @@ export type ColdFence =
   | 'ambiguous-drain'
   | 'unattributed-claim'
   | 'legacy-claim'
-  | 'live-producer';
+  | 'live-producer'
+  /**
+   * S3b-r2 Variant B: an attributable quiescent latch. For v0.2.0 the cold path posts no restore
+   * frame (I-CL), so this latch stays fenced until a new NanoHost Epoch evicts its Sandbox.
+   */
+  | 'cold-deferred';
 
 export interface ReplacementCloseTable {
   /** RC2 pre-check in Main: the Harness exclusion, then the capacity read. */
@@ -605,21 +610,10 @@ export const COLD_RULES: readonly ColdRule[] = [
     decide: (f) => (f.harness.claimGeneration === null ? fence('legacy-claim') : undefined),
   },
   {
-    // Cold recovery pins the observed generation with the proofs above. Native compares the same
-    // value at its commit.
+    // S3b-r2 Variant B (I-CL): no cold proof authorizes a Native effect in v0.2.0. A latch that
+    // every rule above attributes still fences. Only its live owner's acquired frame restores it.
     id: 'quiescent',
-    decide: (f) =>
-      restorable(f.harness, f.sandbox)
-        ? {
-            kind: 'restore',
-            scope: 'quiescent',
-            frame: {
-              arm: 'claim',
-              revision: f.harness.revision,
-              generation: f.harness.claimGeneration,
-            },
-          }
-        : undefined,
+    decide: (f) => (restorable(f.harness, f.sandbox) ? fence('cold-deferred') : undefined),
   },
 ];
 

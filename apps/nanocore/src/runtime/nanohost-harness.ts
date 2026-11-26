@@ -248,6 +248,8 @@ export async function queueNanoHostHarnessOperation(
   const startedAt = performance.now();
   try {
     if (admitted) return await admitted.queue(input, authority);
+    // S13 (S3b-r2): a lifecycle post that needs a guard refuses when the guard is missing.
+    if (authority) throw new Error('NanoHost guarded queue has no admitted owner.');
     return (await publishHarness(coreDb, {
       kind: 'operation.queue',
       prepared: input.prepared,
@@ -341,10 +343,17 @@ export interface NanoHostIdleSandboxAuthority {
   readonly rollback?: { readonly sandboxBindingRef: string; readonly claimedAt: string };
 }
 
+/**
+ * Main's own check in the turn that posts the Native commit, after earlier owner writes drained.
+ * False posts nothing. It reads through the given handle only.
+ */
+export type NanoHostIdleSandboxPostCheck = (native: Pick<CoreDb, 'sqlite'>) => boolean;
+
 /** Publishes an existing idle Sandbox tuple on the held Native/Core pair. */
 export type WriteNanoHostIdleSandboxLifecycle = (
   input: NanoHostIdleSandboxLifecycleInput,
-  authority: NanoHostIdleSandboxAuthority
+  authority: NanoHostIdleSandboxAuthority,
+  verifyBeforePost?: NanoHostIdleSandboxPostCheck
 ) => Promise<void>;
 
 /** Restores only the current healthy resident after native current capture dispositions and the covering FULL commit. */
@@ -354,10 +363,11 @@ export async function restoreNanoHostSandboxAdmissionIfSafe(
   admitted?: {
     readonly write: WriteNanoHostIdleSandboxLifecycle;
     readonly authority: NanoHostIdleSandboxAuthority;
+    readonly verifyBeforePost?: NanoHostIdleSandboxPostCheck;
   }
 ): Promise<void> {
   const original = { ...input, kind: 'sandbox.restore-admission' } as const;
-  if (admitted) await admitted.write(original, admitted.authority);
+  if (admitted) await admitted.write(original, admitted.authority, admitted.verifyBeforePost);
   else await publishHarness(coreDb, original);
 }
 
@@ -368,10 +378,11 @@ export async function claimNanoHostIdleSandboxDrain(
   admitted?: {
     readonly write: WriteNanoHostIdleSandboxLifecycle;
     readonly authority: NanoHostIdleSandboxAuthority;
+    readonly verifyBeforePost?: NanoHostIdleSandboxPostCheck;
   }
 ): Promise<void> {
   const original = { ...input, kind: 'sandbox.claim-idle-drain' } as const;
-  if (admitted) await admitted.write(original, admitted.authority);
+  if (admitted) await admitted.write(original, admitted.authority, admitted.verifyBeforePost);
   else await publishHarness(coreDb, original);
 }
 

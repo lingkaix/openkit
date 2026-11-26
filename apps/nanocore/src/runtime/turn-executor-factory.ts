@@ -226,11 +226,8 @@ import {
 } from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import {
-  type CaptureState,
   type CloseCause,
   type CloseClock,
-  type ColdFacts,
-  type HarnessFacts,
   type PlacementFacts,
   type QueueHarnessFacts,
   REPLACEMENT_CLOSE_TABLE,
@@ -1069,6 +1066,76 @@ interface IdleSandboxCloseDrain {
   readonly claimedAt: string;
 }
 
+/** One child of a Sandbox as the S8 claim's posting turn pinned it (S9, S3b-r2). */
+interface IdleSandboxChild {
+  readonly operationId: string | null;
+  readonly sequence: number | null;
+  readonly nextSequence: number;
+}
+
+/**
+ * S9 (S3b-r2): the Main-side single-use rollback authority of one live S8 acquisition. It is bound
+ * to the admitted owner that acquired it, and Native never sees the pins: Main compares them under
+ * the posting exclusion, as for RC8.
+ */
+interface IdleSandboxRollbackAuthority {
+  readonly owner: AdmittedNanoHostIdleSandbox;
+  readonly claimedAt: string;
+  readonly children: ReadonlyMap<string, IdleSandboxChild>;
+  /** This eviction's own acknowledged S11 close keys per child, in queue order. */
+  readonly closes: Map<
+    string,
+    ReadonlyArray<{ readonly operationId: string; readonly sequence: number }>
+  >;
+}
+
+/** Reads every child of one Sandbox through the given handle. */
+function readIdleSandboxChildren(
+  native: Pick<CoreDb, 'sqlite'>,
+  sandboxRuntimeId: string
+): Map<string, IdleSandboxChild> {
+  const rows = native.sqlite
+    .prepare(`SELECT harness_instance_id AS harnessInstanceId, operation_id AS operationId,
+      operation_sequence AS sequence, next_sequence AS nextSequence
+      FROM harness_instance_records WHERE sandbox_runtime_id=? ORDER BY harness_instance_id`)
+    .all(sandboxRuntimeId) as Array<IdleSandboxChild & { harnessInstanceId: string }>;
+  return new Map(
+    rows.map(({ harnessInstanceId, operationId, sequence, nextSequence }) => [
+      harnessInstanceId,
+      { operationId, sequence, nextSequence },
+    ])
+  );
+}
+
+/**
+ * S9: the child set is the pinned set, and each child is at its pin or advanced only by the
+ * contiguous acknowledged close keys of this eviction. Any other advance fences.
+ */
+function idleSandboxChildrenRollbackSafe(
+  current: ReadonlyMap<string, IdleSandboxChild>,
+  authority: IdleSandboxRollbackAuthority
+): boolean {
+  if (current.size !== authority.children.size) return false;
+  for (const [harnessInstanceId, pin] of authority.children) {
+    const child = current.get(harnessInstanceId);
+    if (!child) return false;
+    const closes = authority.closes.get(harnessInstanceId) ?? [];
+    const last = closes.at(-1);
+    if (!last) {
+      if (child.sequence !== pin.sequence || child.nextSequence !== pin.nextSequence) return false;
+      continue;
+    }
+    if (closes.some((key, index) => key.sequence !== pin.nextSequence + index)) return false;
+    if (
+      child.operationId !== last.operationId ||
+      child.sequence !== last.sequence ||
+      child.nextSequence !== last.sequence + 1
+    )
+      return false;
+  }
+  return true;
+}
+
 /**
  * A successor's persisted pre-submit attempt requesting one predecessor close on its own Thread,
  * with the selected idle binding observed on its original Harness, Sandbox and target Epoch.
@@ -1285,6 +1352,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.workspaceCollectionPublisher = publisher;
   }
   private readonly agentSessionCloseOwners = new Map<string, NanoHostAgentSessionCloseOwner>();
+  /** S9 (S3b-r2): the single-use rollback authority of each live S8 acquisition, by Sandbox. */
+  private readonly idleSandboxRollbacks = new Map<string, IdleSandboxRollbackAuthority>();
   /** Refusals raised by a replacement close's own rechecks, before any queue write or contact. */
   private readonly replacementRefusals = new WeakSet<object>();
   private readonly cleanupRecoveryResults = new Map<
@@ -2108,10 +2177,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               !Object.hasOwn(thread.record, 'login') &&
               (!Array.isArray(thread.record.requiredFeatures) ||
                 !thread.record.requiredFeatures.includes(NATIVE_THREAD_LOGIN_FEATURE))
-            ) {
-              await this.releaseReplayedCloseLatch(result);
+            )
+              // C4 (S3b-r2, I-CL): the replay validates and ACKs the exact consumed result only. It
+              // has no proof of its close's claim, so it posts no restore frame and the latch stays.
               return;
-            }
           } finally {
             db.sqlite.close();
           }
@@ -4594,9 +4663,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // A held Worker Control restore can only refuse registration. Report the existing unavailable
     // result here, before any dispatch commit, Workspace intent or Sandbox effect exists to unwind.
     if (this.workerControlGateway?.restoreHeld()) return 'capacity-saturated';
-    // P2/P3 (CLOSE-LC S3b): the cold quiescent exit runs after the held-restore guard and before
-    // the capacity early return. Each latch that it cannot attribute keeps its fence.
-    await this.exitQuiescentCaptureLatches(environmentPackage);
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
@@ -4607,8 +4673,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return 'available';
   }
 
-  private readIdleSandboxTarget(targetId: string): NanoHostIdleSandboxAuthority['target'] | null {
-    const target = this.readNanoHost((owner) => getNanoHostRuntimeTarget(owner, targetId));
+  private readIdleSandboxTarget(
+    targetId: string,
+    native?: Pick<CoreDb, 'sqlite'>
+  ): NanoHostIdleSandboxAuthority['target'] | null {
+    const target = native
+      ? getNanoHostRuntimeTarget(native, targetId)
+      : this.readNanoHost((owner) => getNanoHostRuntimeTarget(owner, targetId));
     if (!target?.ready || !target.predecessorFenced || !target.freshEmpty || !target.physicalEpoch)
       return null;
     const { identityId, deploymentId, connectionGeneration, physicalEpoch } = target;
@@ -5033,7 +5104,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         originalStorageBinding.revision !== authorizedReplacementBinding.revision)
     )
       throw new Error('Worker storage selection changed before drain claim.');
+    // S14 (S3b-r2): a lifecycle post that needs a guard refuses when the guard is missing. Without
+    // an admitted owner the S8 target authority and the S9 rollback authority cannot exist.
+    if (!admitted) throw new Error('NanoHost idle Sandbox eviction has no admitted owner.');
     const claimedAt = new Date().toISOString();
+    // S9 (S3b-r2): the claim's posting turn pins every child of the Sandbox, under the posting
+    // exclusion, so the pins equal the children at the claim commit.
+    let pinnedChildren: IdleSandboxRollbackAuthority['children'] | undefined;
     await claimNanoHostIdleSandboxDrain(
       this.coreDb,
       {
@@ -5069,10 +5146,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             }
           : {}),
       },
-      admitted
-        ? { write: admitted.writeIdleHarnessDrain, authority: { target: eviction.target } }
-        : undefined
+      {
+        write: admitted.writeIdleHarnessDrain,
+        authority: { target: eviction.target },
+        verifyBeforePost: (native) => {
+          pinnedChildren = readIdleSandboxChildren(native, eviction.sandboxRuntimeId);
+          return true;
+        },
+      }
     );
+    const rollback: IdleSandboxRollbackAuthority | undefined = pinnedChildren && {
+      owner: admitted,
+      claimedAt,
+      children: pinnedChildren,
+      closes: new Map(),
+    };
+    // A later acquisition of the same Sandbox supersedes this one.
+    if (rollback) this.idleSandboxRollbacks.set(eviction.sandboxRuntimeId, rollback);
+    else this.idleSandboxRollbacks.delete(eviction.sandboxRuntimeId);
     let cleanupProved = eviction.physicalAbsent;
     try {
       await this.assertWorkspaceCaptureSettled(eviction.sandboxBindingRef);
@@ -5091,16 +5182,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         for (const binding of eviction.bindings) {
           if (binding.lifecycleState === 'closed') continue;
           try {
-            await this.closeDurableAgentSession(
-              binding,
-              admitted
-                ? {
-                    target: eviction.target,
-                    sandboxBindingRef: eviction.sandboxBindingRef,
-                    claimedAt,
-                  }
-                : undefined
-            );
+            const closeKey = await this.closeDurableAgentSession(binding, {
+              target: eviction.target,
+              sandboxBindingRef: eviction.sandboxBindingRef,
+              claimedAt,
+            });
+            // S9: the acknowledged S11 close keys of this eviction, in queue order per child.
+            if (rollback && closeKey)
+              rollback.closes.set(binding.harnessInstanceId, [
+                ...(rollback.closes.get(binding.harnessInstanceId) ?? []),
+                closeKey,
+              ]);
           } catch (error) {
             const unknownClose = this.readNanoHost(({ sqlite }) =>
               sqlite
@@ -5176,22 +5268,57 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         !(error instanceof WorkspaceCaptureRecoveryRequired) &&
         !(error instanceof NanoHostLoginDepartureIncompleteError)
       )
-        await restoreNanoHostSandboxAdmissionIfSafe(
-          this.coreDb,
-          { sandboxRuntimeId: eviction.sandboxRuntimeId },
-          admitted
-            ? {
-                write: admitted.writeIdleHarnessDrain,
-                authority: {
-                  target: eviction.target,
-                  rollback: { sandboxBindingRef: eviction.sandboxBindingRef, claimedAt },
-                },
-              }
-            : undefined
-        );
+        await this.rollbackIdleSandboxClaim(eviction, rollback);
       this.forgetSharedSandbox(eviction.sandboxCompatibilityKey);
       throw error;
+    } finally {
+      if (this.idleSandboxRollbacks.get(eviction.sandboxRuntimeId) === rollback)
+        this.idleSandboxRollbacks.delete(eviction.sandboxRuntimeId);
     }
+  }
+
+  /**
+   * S9 (S3b-r2): posts the whole-Sandbox rollback of one live S8 acquisition at most once. Main
+   * consumes the authority synchronously before its only post. The posting turn reads every child
+   * again and posts only if the child set is the pinned set and each child is at its pin or was
+   * advanced only by this eviction's own contiguous acknowledged close keys (S11). Otherwise, and
+   * after owner loss or supersession, nothing is posted and the Sandbox keeps its drain. A lost
+   * reply is never posted again: the caller fences. A committed rollback whose reply is lost may
+   * already have restored admission.
+   */
+  private async rollbackIdleSandboxClaim(
+    eviction: NanoHostIdleSandboxEviction,
+    authority: IdleSandboxRollbackAuthority | undefined
+  ): Promise<void> {
+    if (!authority || this.idleSandboxRollbacks.get(eviction.sandboxRuntimeId) !== authority)
+      return;
+    this.idleSandboxRollbacks.delete(eviction.sandboxRuntimeId);
+    let admitted: AdmittedNanoHostIdleSandbox | undefined;
+    try {
+      admitted = this.idleSandboxLifecycle();
+    } catch {
+      return;
+    }
+    if (admitted !== authority.owner) return;
+    await restoreNanoHostSandboxAdmissionIfSafe(
+      this.coreDb,
+      { sandboxRuntimeId: eviction.sandboxRuntimeId },
+      {
+        write: authority.owner.writeIdleHarnessDrain,
+        authority: {
+          target: eviction.target,
+          rollback: {
+            sandboxBindingRef: eviction.sandboxBindingRef,
+            claimedAt: authority.claimedAt,
+          },
+        },
+        verifyBeforePost: (native) =>
+          idleSandboxChildrenRollbackSafe(
+            readIdleSandboxChildren(native, eviction.sandboxRuntimeId),
+            authority
+          ),
+      }
+    );
   }
 
   /** Settles old commands as unknown and rejects waiters after fresh Epoch absence proof. */
@@ -8752,6 +8879,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ).toISOString();
     // Fresh for each acquisition: a retry, a receipt replay and a restart each claim a new one.
     const claimGeneration = `cg_${randomUUID()}`;
+    // S3b-r2 amendment 1: the pair belongs to the close owner that initiated this claim. Read it
+    // before the await and require the same owner object after the ACK.
+    const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
     await claimNanoHostIdleCaptureDrain(
       this.coreDb,
       {
@@ -8767,7 +8897,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       },
       this.harnessTurnLifecycle()
     );
-    const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
+    if (this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId) !== closeOwner)
+      throw new Error('Idle capture drain ownership changed.');
     if (closeOwner) {
       closeOwner.claimRevision = claimedAt;
       closeOwner.claimGeneration = claimGeneration;
@@ -10159,15 +10290,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Checks that collection and close still belong to the original drained same-Epoch resident. */
   private requireIdleSandboxCloseDrain(
     session: NanoHostBackendTurnSession,
-    drain: IdleSandboxCloseDrain
+    drain: IdleSandboxCloseDrain,
+    native?: Pick<CoreDb, 'sqlite'>
   ): void {
     const sandbox = session.sharedHarness.sandbox;
+    const read = <Value>(query: (owner: Pick<CoreDb, 'sqlite'>) => Value): Value =>
+      native ? query(native) : this.readNanoHost(query);
     if (
       sandbox.sandboxBindingRef !== drain.sandboxBindingRef ||
       sandbox.originPhysicalEpoch !== drain.target.physicalEpoch ||
       sandbox.runtimeTargetId !== drain.target.targetId ||
-      !isDeepStrictEqual(this.readIdleSandboxTarget(sandbox.runtimeTargetId), drain.target) ||
-      !this.readNanoHost(({ sqlite }) =>
+      !isDeepStrictEqual(
+        this.readIdleSandboxTarget(sandbox.runtimeTargetId, native),
+        drain.target
+      ) ||
+      !read(({ sqlite }) =>
         sqlite
           .prepare(`SELECT 1 FROM sandbox_runtime_records s
           JOIN harness_instance_records h ON h.sandbox_runtime_id=s.sandbox_runtime_id
@@ -10572,11 +10709,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
-   * Releases the idle capture latch on its accepting Sandbox. The admitted owner decides from the
-   * authorized target Epoch, recovered capture dispositions and the Harness's own operation.
+   * Releases this close's own idle capture latch on its accepting Sandbox (S3, S4). I-CL: the frame
+   * has only its acquired authority, the owner's RC3 pair or its own RC8 close key, and C3: the
+   * target that the owner's selection authorized. No read here supplies authority. A lifecycle post
+   * that needs a guard refuses without it, so no admitted owner or no target posts no frame.
    */
   private async releaseIdleCaptureLatch(
-    runtimeTargetId: string,
+    target: NanoHostIdleSandboxAuthority['target'] | undefined,
     sandboxRuntimeId: string,
     harness: {
       readonly harnessInstanceId: string;
@@ -10589,11 +10728,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   ): Promise<void> {
     const admitted = this.idleSandboxLifecycle();
-    if (!admitted) {
-      await restoreNanoHostSandboxAdmissionIfSafe(this.coreDb, { sandboxRuntimeId });
-      return;
-    }
-    const target = this.readIdleSandboxTarget(runtimeTargetId);
+    if (!admitted || !target) return;
     const { close, claim, generation } = harness;
     const { harnessInstanceId, harnessBindingRef } = harness;
     // FIX 4 F4: the Native restore decides this Harness only, on the write it still carries.
@@ -10605,7 +10740,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : claim
           ? { harnessInstanceId, harnessBindingRef, claim, generation }
           : undefined;
-    if (target && scoped)
+    if (scoped)
       await restoreNanoHostSandboxAdmissionIfSafe(
         this.coreDb,
         { sandboxRuntimeId, harness: scoped },
@@ -10613,247 +10748,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
   }
 
-  /**
-   * Exits the capture latch of an exact proved close replayed with no live producer, as the live
-   * producer would after its result: the admitted restore still decides from the settled close.
-   */
-  private async releaseReplayedCloseLatch(result: NanoHostHarnessResult): Promise<void> {
-    if (result.disposition !== 'succeeded') return;
-    const latched = this.readNanoHost(({ sqlite }) =>
-      sqlite
-        .prepare(`SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
-        s.runtime_target_id AS runtimeTargetId, h.harness_binding_ref AS harnessBindingRef,
-        h.claim_generation AS generation
-        FROM harness_instance_records h
-        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
-        WHERE h.harness_instance_id=? AND h.operation='session.close' AND h.operation_id=?
-        AND h.operation_sequence=? AND h.operation_state='settled' AND h.drain_state='draining'
-        AND s.drain_state='accepting'`)
-        .get(result.harnessInstanceId, result.operationId, result.sequence)
-    ) as
-      | {
-          sandboxRuntimeId: string;
-          runtimeTargetId: string;
-          harnessBindingRef: string;
-          generation: string | null;
-        }
-      | undefined;
-    // G3: the generation is pinned in the same read as the settled close key. Native compares it.
-    if (latched)
-      await this.releaseIdleCaptureLatch(latched.runtimeTargetId, latched.sandboxRuntimeId, {
-        harnessInstanceId: result.harnessInstanceId,
-        harnessBindingRef: latched.harnessBindingRef,
-        close: { operationId: result.operationId, sequence: result.sequence },
-        generation: latched.generation,
-      });
-  }
-
-  /**
-   * P2/P3 (CLOSE-LC S3b): the cold quiescent exit of the capture latches on the target's
-   * Sandboxes. The cold `decide` sees only durable values and the live owners of this process. G3:
-   * the first read pins each row's claim generation and revision before the capture proofs are
-   * joined, and the restore frame carries exactly that pinned pair. It never reads the generation
-   * again. Native rechecks the capture dispositions, the revision and the generation in its commit.
-   * Every other cold action keeps its fence here. One latch that fails does not stop the others.
-   */
-  private async exitQuiescentCaptureLatches(
-    environmentPackage: AgentEnvironmentPackagePreview
-  ): Promise<void> {
-    if (!this.idleSandboxLifecycle()) return;
-    const runtimeTargetId = requireNanoHostRuntimeTargetId(this.planSession(environmentPackage));
-    const pinned = this.readNanoHost(({ sqlite }) =>
-      sqlite
-        .prepare(`SELECT h.harness_instance_id AS harnessInstanceId,
-        h.harness_binding_ref AS harnessBindingRef, h.lifecycle_state AS life,
-        h.updated_at AS revision, h.operation, h.operation_state AS cell, h.operation_id AS key,
-        h.operation_sequence AS sequence, h.next_sequence AS nextSequence,
-        json_extract(h.result_json, '$.disposition') AS disposition,
-        json_extract(h.result_json, '$.body.reasonCode') AS reasonCode,
-        json_extract(h.command_body_json, '$.agentSessionRuntimeBindingId') AS closeBinding,
-        h.claim_generation AS generation, s.sandbox_runtime_id AS sandboxRuntimeId,
-        s.sandbox_binding_ref AS sandboxBindingRef, s.lifecycle_state AS sandboxLife,
-        s.health_state AS health, s.drain_state AS sandboxDrain, s.cleanup_state AS cleanup,
-        s.origin_physical_epoch AS epoch
-        FROM harness_instance_records h
-        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
-        WHERE s.runtime_target_id=? AND h.drain_state='draining'
-        ORDER BY h.harness_instance_id`)
-        .all(runtimeTargetId)
-    ) as Array<{
-      harnessInstanceId: string;
-      harnessBindingRef: string;
-      life: string;
-      revision: string;
-      operation: string | null;
-      cell: string;
-      key: string | null;
-      sequence: number | null;
-      nextSequence: number;
-      disposition: string | null;
-      reasonCode: string | null;
-      closeBinding: string | null;
-      generation: string | null;
-      sandboxRuntimeId: string;
-      sandboxBindingRef: string;
-      sandboxLife: string;
-      health: string;
-      sandboxDrain: string;
-      cleanup: string;
-      epoch: string;
-    }>;
-    if (pinned.length === 0) return;
-    const target = this.readIdleSandboxTarget(runtimeTargetId);
-    for (const row of pinned) {
-      try {
-        const cells = ['idle', 'queued', 'dispatched', 'settled', 'unknown'] as const;
-        const cell = cells.find((known) => known === row.cell);
-        if (!cell) continue;
-        const operations = [
-          'session.open',
-          'turn.start',
-          'session.close',
-          'harness.drain',
-        ] as const;
-        const harness: HarnessFacts = {
-          life: row.life === 'open' ? 'open' : 'failed',
-          drain: 'draining',
-          revision: Date.parse(row.revision),
-          operation:
-            row.operation === null
-              ? null
-              : (operations.find((known) => known === row.operation) ?? 'other'),
-          cell,
-          key: row.key,
-          sequence: row.sequence,
-          result:
-            cell === 'unknown'
-              ? 'unknown'
-              : row.disposition === 'succeeded'
-                ? 'succeeded'
-                : row.disposition === 'refused' && row.reasonCode === 'stale'
-                  ? 'stale'
-                  : null,
-          nextSequence: row.nextSequence,
-          claimGeneration: row.generation,
-        };
-        const bindings = this.readNanoHost(({ sqlite }) =>
-          sqlite
-            .prepare(`SELECT agent_session_runtime_binding_id AS binding,
-            agent_session_id AS agentSessionId FROM agent_session_runtime_bindings
-            WHERE harness_instance_id=? ORDER BY agent_session_runtime_binding_id`)
-            .all(row.harnessInstanceId)
-        ) as Array<{ binding: string; agentSessionId: string }>;
-        const anchors = this.readNanoHost((native) =>
-          readNanoHostWorkspaceCaptureAnchors(native, row.sandboxBindingRef)
-        );
-        const facts: ColdFacts = {
-          sandbox: {
-            accepting:
-              row.sandboxLife === 'open' &&
-              row.health === 'ready' &&
-              row.sandboxDrain === 'accepting',
-            clean: row.cleanup === 'clean',
-            currentEpoch: target !== null && target.physicalEpoch === row.epoch,
-          },
-          harness,
-          bindings: bindings.map(({ binding, agentSessionId }) => ({
-            binding,
-            present: true,
-            capture: this.readColdCaptureState(
-              anchors.filter((anchor) => anchor.agentSessionId === agentSessionId)
-            ),
-            // A close removes its binding, so a present binding has no consumed close unless its
-            // own close is the cell's last operation.
-            consumed:
-              harness.operation === 'session.close' &&
-              row.closeBinding === binding &&
-              row.key !== null &&
-              (harness.result === 'succeeded' || harness.result === 'stale')
-                ? { key: row.key, result: harness.result, revision: harness.revision }
-                : null,
-          })),
-          liveProducer:
-            this.harnessOperationSettlements.has(row.harnessInstanceId) ||
-            [...this.agentSessionCloseOwners.values()].some(
-              (owner) => owner.inspection.harnessInstanceId === row.harnessInstanceId
-            ) ||
-            [...this.sessions.values()].some(
-              (session) => session.harnessInstanceId === row.harnessInstanceId
-            ),
-          restoreHeld: this.workerControlGateway?.restoreHeld() ?? false,
-        };
-        const action = REPLACEMENT_CLOSE_TABLE.cold(facts);
-        if (action.kind !== 'restore' || action.scope !== 'quiescent' || !target) continue;
-        await this.releaseIdleCaptureLatch(runtimeTargetId, row.sandboxRuntimeId, {
-          harnessInstanceId: row.harnessInstanceId,
-          harnessBindingRef: row.harnessBindingRef,
-          claim: { revision: row.revision },
-          generation: row.generation,
-        });
-      } catch {
-        // This latch keeps its fence; the other latches still decide.
-      }
-    }
-  }
-
-  /**
-   * The cold capture state of one binding from its durable anchors, read only. An unreadable
-   * Workspace is undefined. A terminal abandon, then an unsettled claim or source, then an accepted
-   * successor receipt decide, in that order.
-   */
-  private readColdCaptureState(
-    anchors: ReturnType<typeof readNanoHostWorkspaceCaptureAnchors>
-  ): CaptureState | undefined {
-    const states: CaptureState[] = [];
-    for (const anchor of anchors) {
-      let db: WorkspaceDb | undefined;
-      try {
-        db = isScopeAdmitted(this.coreDb.dataRoot, 'workspace', anchor.workspaceId)
-          ? openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId)
-          : this.openRetiringWorkspaceDb(anchor.workspaceId);
-        const hash = createHash('sha256').update(anchor.packageSnapshotId).digest('hex');
-        const ids = ['turn-end', 'release', 'successor'].map((boundary) => `${boundary}-${hash}`);
-        const records = listWorkspaceReconciliationRecords(db, anchor.workspaceId).filter(
-          (record) =>
-            ids.some((id) => record.id === `wrr_capture_${id}`) &&
-            record.backendHandleSummary.attemptId === anchor.attemptId
-        );
-        const receipt = db.sqlite
-          .prepare(
-            'SELECT 1 FROM workspace_snapshot_collections WHERE workspace_id=? AND collection_id=?'
-          )
-          .get(anchor.workspaceId, `successor-${hash}`);
-        if (records.some((record) => record.stateAfter === 'unrecoverable'))
-          states.push('abandoned');
-        else if (records.some((record) => record.stateAfter === 'requires-human'))
-          states.push(
-            records.some(
-              (record) =>
-                record.stateAfter === 'requires-human' &&
-                record.backendHandleSummary.candidateDigest !== null
-            )
-              ? 'raw'
-              : 'claimed'
-          );
-        else if (records.some((record) => record.stateAfter !== 'recovered')) return undefined;
-        else states.push(receipt ? 'receipt' : 'none');
-      } catch {
-        return undefined;
-      } finally {
-        db?.sqlite.close();
-      }
-    }
-    for (const state of ['abandoned', 'claimed', 'raw', 'receipt'] as const)
-      if (states.includes(state)) return state;
-    return 'none';
-  }
-
   /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
   private async closeDurableAgentSession(
     inspection: NanoHostAgentSessionContinuityInspection,
     idleCloseDrain?: IdleSandboxCloseDrain,
     replacement?: AgentSessionReplacementClose['request']
-  ): Promise<void> {
+  ): Promise<NanoHostAgentSessionCloseOwner['closeKey']> {
     if (this.nanoHostOwner) {
       if (!idleCloseDrain && !replacement) this.unavailableNanoHostRuntime();
       this.harnessTurnLifecycle();
@@ -10905,8 +10805,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost Harness session.close result is incompatible.');
       if (sandbox?.drainState === 'accepting')
         await this.releaseIdleCaptureLatch(
-          session.sharedHarness.sandbox.runtimeTargetId,
-          sandbox.id,
+          closeOwner.replacement?.selection.target,
+          session.sharedHarness.sandbox.sandboxRuntimeId,
           {
             harnessInstanceId: session.harnessInstanceId,
             harnessBindingRef: session.harnessBindingRef,
@@ -10914,6 +10814,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             generation: closeOwner.claimGeneration,
           }
         );
+      return closeOwner.closeKey;
     } catch (error) {
       // A settled unsent refusal can restore only through the exact close's receipt. Q6: a
       // definite refusal before any queue commit rolls back this close's own claim (claim arm).
@@ -10924,8 +10825,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         sandbox?.drainState === 'accepting'
       )
         await this.releaseIdleCaptureLatch(
-          session.sharedHarness.sandbox.runtimeTargetId,
-          sandbox.id,
+          closeOwner.replacement?.selection.target,
+          session.sharedHarness.sandbox.sandboxRuntimeId,
           {
             harnessInstanceId: session.harnessInstanceId,
             harnessBindingRef: session.harnessBindingRef,
@@ -11226,6 +11127,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                     : {
                         verifyBeforePost: (native) => {
                           try {
+                            // S11 (S3b-r2): the eviction-owned close rechecks its drain and target
+                            // proof in the posting turn, under the posting exclusion.
+                            if (drain) this.requireIdleSandboxCloseDrain(session, drain, native);
                             requireOrdinaryQueue(() =>
                               readNanoHostIdleCloseAuthority(this.coreDb, identity, native)
                             );

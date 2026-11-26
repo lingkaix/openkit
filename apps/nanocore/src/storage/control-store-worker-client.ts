@@ -4339,7 +4339,7 @@ class ControlStoreWorkerClient {
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,
-          writeIdleHarnessDrain: async (input, authority) => {
+          writeIdleHarnessDrain: async (input, authority, verifyBeforePost) => {
             const original = structuredClone(input);
             const placement = structuredClone(authority);
             if (!placement.target.physicalEpoch)
@@ -4349,12 +4349,13 @@ class ControlStoreWorkerClient {
               target: { ...placement.target, physicalEpoch: placement.target.physicalEpoch },
             };
             await withCoreHold(async (coreIdentity) => {
-              await write({
-                kind: 'harness-idle-sandbox',
-                input: original,
-                coreIdentity,
-                authority: exact,
-              });
+              await write(
+                { kind: 'harness-idle-sandbox', input: original, coreIdentity, authority: exact },
+                undefined,
+                undefined,
+                // S9 (S3b-r2): Main's own pins and checks run in the posting turn.
+                verifyBeforePost ? (sqlite) => verifyBeforePost({ sqlite }) : undefined
+              );
             });
           },
           releaseIdleSandboxStorage: async (input) => {

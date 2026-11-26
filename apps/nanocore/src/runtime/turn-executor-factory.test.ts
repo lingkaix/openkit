@@ -9876,44 +9876,129 @@ describe('createConfiguredTurnExecutor', () => {
     expect(c.row()).toEqual(latched);
   }, 120_000);
 
-  it('restores a stopped capture latch through the cold quiescent exit when its drain follows the last operation (S3b P3 wiring)', async () => {
-    const c = await admitCoResidentClose('p23_g3_cold_exit');
-    const { f } = c;
-    c.observeLatch();
-    const queue = f.backend as unknown as {
-      queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
-    };
-    vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
-      new Error('NanoCore stopped before its close queue.')
-    );
-    await expect(f.close()).rejects.toThrow();
-    const latched = c.row();
-    expect(latched).toMatchObject({ drain: 'draining', generation: c.original!.claimGeneration });
-    expect(c.frames).toEqual([]);
-    // Through Main a completed Turn ends with the settled inspection (the P3 control above). This
-    // written state names the settled open as the last operation, so the drain follows it. It
-    // witnesses the wiring of the cold exit: the first read pins the pair, the table answers
-    // quiescent, and the exit posts the claim arm.
-    expect(
-      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
-        sqlite
-          .prepare(`UPDATE harness_instance_records SET operation='session.open'
-          WHERE harness_instance_id=? AND operation='session.inspect' AND operation_state='settled'`)
-          .run(c.harnessInstanceId)
-      ).changes
-    ).toBe(1);
-    await f.reopen();
-    c.observeLatch();
-    await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage);
-    expect(c.frames).toHaveLength(1);
-    expect(c.frames[0]![2]).toEqual({
-      harnessInstanceId: c.harnessInstanceId,
-      harnessBindingRef: c.original!.harnessBindingRef,
-      claim: { revision: c.original!.claimedAt },
-      generation: c.original!.claimGeneration,
+  /** S3b-r2: the full Harness cell and occupancy of one Harness. */
+  const harnessCell = (coreDb: CoreDb, harnessInstanceId: string) =>
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(`SELECT drain_state AS drain, lifecycle_state AS life, updated_at AS revision,
+        claim_generation AS generation, operation, operation_id AS operationId,
+        operation_state AS state, operation_sequence AS sequence, next_sequence AS nextSequence,
+        open_session_count AS open, active_turn_count AS active
+        FROM harness_instance_records WHERE harness_instance_id=?`)
+        .get(harnessInstanceId)
+    ) as Record<string, unknown> | undefined;
+
+  /** S3b-r2: every idle Sandbox lifecycle post at the backend's admitted owner, in order. */
+  function observeIdleSandboxPosts(backend: unknown) {
+    const owner = (
+      backend as {
+        admittedIdleSandbox: {
+          writeIdleHarnessDrain: harnessRecords.WriteNanoHostIdleSandboxLifecycle;
+        };
+      }
+    ).admittedIdleSandbox;
+    const write = owner.writeIdleHarnessDrain;
+    const posts: { kind: string; input: Record<string, unknown>; authority: unknown }[] = [];
+    vi.spyOn(owner, 'writeIdleHarnessDrain').mockImplementation(async (input, authority, check) => {
+      posts.push({ kind: input.kind, input: input as Record<string, unknown>, authority });
+      return await write(input, authority, check);
     });
-    expect(c.row()).toEqual({ ...latched, drain: 'accepting', generation: null });
-  }, 120_000);
+    return {
+      posts,
+      write,
+      restores: () => posts.filter(({ kind }) => kind === 'sandbox.restore-admission'),
+    };
+  }
+
+  it.each(['inspect', 'open-last', 'legacy-null', 'drain-queued'] as const)(
+    'keeps a stopped capture latch fenced across two reopens with zero restore posts (%s, S3b-r2 B1)',
+    async (variant) => {
+      const c = await admitCoResidentClose(`b1_${variant.replace('-', '_')}`);
+      const { f } = c;
+      c.observeLatch();
+      // R2: the process stops after the accepted capture receipt and before the close queue.
+      const queue = f.backend as unknown as {
+        queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
+      };
+      vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
+        new Error('NanoCore stopped before its close queue.')
+      );
+      await expect(f.close()).rejects.toThrow();
+      const claimedAt = c.original!.claimedAt;
+      expect(harnessCell(f.coreDb, c.harnessInstanceId)).toMatchObject({
+        drain: 'draining',
+        generation: c.original!.claimGeneration,
+        operation: 'session.inspect',
+        state: 'settled',
+      });
+      expect(c.frames).toEqual([]);
+      if (variant === 'open-last') {
+        // TEF:9879's written state: the settled open is the last operation, so the drain follows
+        // it. The r1 cold exit restored this state; Variant B keeps it fenced.
+        expect(
+          mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(`UPDATE harness_instance_records SET operation='session.open'
+              WHERE harness_instance_id=? AND operation='session.inspect' AND operation_state='settled'`)
+              .run(c.harnessInstanceId)
+          ).changes
+        ).toBe(1);
+      } else if (variant === 'legacy-null') {
+        // (i) The NR:810 shape: a legacy claim without a generation.
+        expect(
+          mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                'UPDATE harness_instance_records SET claim_generation=NULL WHERE harness_instance_id=?'
+              )
+              .run(c.harnessInstanceId)
+          ).changes
+        ).toBe(1);
+      }
+      const latched = harnessCell(f.coreDb, c.harnessInstanceId);
+      if (variant === 'drain-queued') {
+        // (ii) V1-P bullet 2 through Main, §10.5 fallback: an independent harness.drain queues at
+        // the claim stamp, but no admitted Core consumer settles the unbound drain. The owner
+        // dispatch returns no command. NR W4b settles it file-backed (R:1951 cut) and explorer E2
+        // runs the full schedule; the hidden-marker witness through Main stays outstanding.
+        await f.reopen();
+        await queueNanoHostHarnessOperation(f.coreDb, {
+          body: {},
+          harnessInstanceId: c.harnessInstanceId,
+          operation: 'harness.drain',
+          timestamp: claimedAt,
+        });
+        expect(harnessCell(f.coreDb, c.harnessInstanceId)).toMatchObject({
+          drain: 'draining',
+          generation: c.original!.claimGeneration,
+          operation: 'harness.drain',
+          state: 'queued',
+        });
+        expect(
+          await dispatchNanoHostHarnessOperation(f.coreDb, {
+            sandboxIntegrationBindingRef: f.native.outside.integrationBindingRef!,
+            now: () => claimedAt,
+          })
+        ).toBeNull();
+      }
+      for (const _pass of [1, 2]) {
+        await f.reopen();
+        c.observeLatch();
+        const posts = observeIdleSandboxPosts(f.backend);
+        const before = harnessCell(f.coreDb, c.harnessInstanceId);
+        if (variant === 'drain-queued') expect(before).toMatchObject({ drain: 'draining' });
+        else expect(before).toEqual(latched);
+        expect(
+          await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)
+        ).toBe('capacity-saturated');
+        // Variant B (I-CL): the cold path posts nothing, and no row or capacity changes.
+        expect(posts.posts).toEqual([]);
+        expect(c.frames).toEqual([]);
+        expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(before);
+      }
+    },
+    180_000
+  );
 
   it('keeps the fence of a stopped capture latch that an independent drain lands on (S3b cold control)', async () => {
     const c = await admitCoResidentClose('p23_g3_cold_drain');
@@ -10010,7 +10095,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(harness()).toEqual(retained);
     expect(f.readRows(f.predecessor.agentSessionId)).toEqual(binding);
   }, 120_000);
-  it('restores the capture latch on cold replay of a proved close whose ACK was lost', async () => {
+  it('keeps the capture latch on cold replay of a proved close whose ACK was lost, and ACKs the replay only (S3b-r2 C4)', async () => {
     const f = await admitNativeReplacementClose('p23_cold_replay');
     const ref = f.native.outside.integrationBindingRef!;
     const closes = () => f.commands.filter(({ operation }) => operation === 'session.close');
@@ -10056,17 +10141,613 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: new Date().toISOString(),
       })
     ).toBe('replayed');
+    const posts = observeIdleSandboxPosts(f.backend);
     await f.native.runtime.acceptNanoHostHarnessResult(lost, { disposition: 'replayed' });
-    // Exactly the original operation and sequence, one close, and the latch exits.
-    expect(harness()).toEqual([{ ...original, drain: 'accepting' }]);
+    // C4 (S3b-r2, I-CL): the replay validates and ACKs the exact consumed result only. It has no
+    // proof of its close's claim, so it posts no restore frame. Exactly the original operation and
+    // sequence and one close remain, and the latch stays until a new NanoHost Epoch (B2).
+    expect(posts.posts).toEqual([]);
+    expect(harness()).toEqual([{ ...original, drain: 'draining' }]);
     expect(closes()).toHaveLength(1);
+    expect(await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)).toBe(
+      'capacity-saturated'
+    );
+    expect(closes()).toHaveLength(1);
+  }, 120_000);
+
+  it('ACKs a real result replay after a later claim and posts no restore frame (S3b-r2 P6)', async () => {
+    const c = await admitCoResidentClose('p6_replay');
+    const { f } = c;
+    const { claim } = c.observeLatch();
+    expect(await f.close()).toBe('closed');
+    // The live success release (S3): the close arm of this owner's own acquisition.
+    expect(c.frames).toHaveLength(1);
+    const released = c.row();
+    expect(released).toMatchObject({ drain: 'accepting', generation: null });
+    // A's exact result envelope, as Native retained it.
+    const retained = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare('SELECT result_json AS json FROM harness_instance_records WHERE harness_instance_id=?')
+        .get(c.harnessInstanceId)
+    ) as { json: string };
+    const result = JSON.parse(retained.json) as Parameters<
+      typeof f.native.runtime.acceptNanoHostHarnessResult
+    >[0];
+    expect(result).toMatchObject({ disposition: 'succeeded' });
+    // B claims at the release revision after a binding opens at 99 (V1-P's no-sequence schedule).
+    await c.claimLaterAt(claim, released.revision, 'cg_p6_replay_later');
+    const claimed = harnessCell(f.coreDb, c.harnessInstanceId);
+    expect(claimed).toMatchObject({ drain: 'draining', generation: 'cg_p6_replay_later' });
+    const posts = observeIdleSandboxPosts(f.backend);
+    // The peer posts A's exact result again; Core answers from its durable consumption.
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
     expect(
-      await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)
-    ).not.toBe('capacity-saturated');
-    // The successor's next admission on the Thread succeeds after the proof.
-    const next = await f.admitSuccessor('next');
-    expect(next.attempt.agentSessionId).toBe(testEntityId('as', 'p23_cold_replay_next'));
-    expect(closes()).toHaveLength(1);
+      await owner.harnessTurnLifecycle.settle(
+        {
+          result,
+          sandboxIntegrationBindingRef: f.native.outside.integrationBindingRef!,
+          timestamp: new Date().toISOString(),
+        },
+        null
+      )
+    ).toBe('replayed');
+    await f.native.runtime.acceptNanoHostHarnessResult(result, { disposition: 'replayed' });
+    // C4: the replay gets its ACK and posts no restore frame. B's tuple and occupancy stay.
+    expect(posts.posts).toEqual([]);
+    expect(c.frames).toHaveLength(1);
+    expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(claimed);
+    await f.reopen();
+    expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(claimed);
+  }, 120_000);
+
+  it('refuses the RC8 queue after an equal-clock generation clear under the latch, and the claim frame changes no row (S3b-r2 P5)', async () => {
+    const f = await admitNativeReplacementClose('p5_equal_drain');
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    const posts = observeIdleSandboxPosts(f.backend);
+    f.gate();
+    const operation = f.close();
+    void operation.catch(() => undefined);
+    await f.entered;
+    const claimed = harnessCell(f.coreDb, harnessInstanceId)!;
+    expect(claimed).toMatchObject({ drain: 'draining', generation: expect.stringMatching(/^cg_/) });
+    const claimedAt = claimed.revision as string;
+    // Written state for the W4b settlement at the RC3 stamp: the generation clears and the revision
+    // stays. NR W4b runs the same settlement file-backed through the owner API (R:1951 cut).
+    expect(
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`UPDATE harness_instance_records SET claim_generation=NULL
+          WHERE harness_instance_id=? AND claim_generation=?`)
+          .run(harnessInstanceId, claimed.generation)
+      ).changes
+    ).toBe(1);
+    const cleared = harnessCell(f.coreDb, harnessInstanceId);
+    expect(cleared).toMatchObject({
+      life: 'open',
+      drain: 'draining',
+      revision: claimedAt,
+      generation: null,
+    });
+    f.release();
+    await expect(operation).rejects.toThrow();
+    // RC8 compares the owner's pair in the posting turn: no session.close is queued.
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    // The Q6 claim frame of this owner's own acquisition is posted and changes zero rows.
+    expect(posts.restores()).toHaveLength(1);
+    expect(posts.restores()[0]!.input).toMatchObject({
+      harness: { claim: { revision: claimedAt }, generation: claimed.generation },
+    });
+    expect(harnessCell(f.coreDb, harnessInstanceId)).toEqual(cleared);
+  }, 90_000);
+
+  it('gives the RC3 pair only to the close owner that initiated the claim (S3b-r2 RC3 ACK)', async () => {
+    const f = await admitNativeReplacementClose('rc3_owner');
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    const backend = f.backend as unknown as {
+      agentSessionCloseOwners: Map<string, Record<string, unknown>>;
+    };
+    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
+    const claim = owner.harnessTurnLifecycle.claimIdleCaptureDrain;
+    let initiating: Record<string, unknown> | undefined;
+    let replacement: Record<string, unknown> | undefined;
+    vi.spyOn(owner.harnessTurnLifecycle, 'claimIdleCaptureDrain').mockImplementation(
+      async (input) => {
+        initiating = backend.agentSessionCloseOwners.get(input.agentSessionRuntimeBindingId);
+        // During the claim await, a new close owner registers for the same binding.
+        replacement = { ...(initiating ?? {}), claimRevision: undefined, claimGeneration: undefined };
+        backend.agentSessionCloseOwners.set(input.agentSessionRuntimeBindingId, replacement);
+        return await claim(input);
+      }
+    );
+    await expect(f.close()).rejects.toMatchObject({
+      message: 'Idle capture drain ownership changed.',
+    });
+    expect(replacement).toBeDefined();
+    // The new owner did not receive the other owner's pair.
+    expect(replacement!.claimRevision).toBeUndefined();
+    expect(replacement!.claimGeneration).toBeUndefined();
+    expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
+    // The latch keeps the claim's own generation: no owner holds the pair to release it.
+    expect(harnessCell(f.coreDb, harnessInstanceId)).toMatchObject({
+      drain: 'draining',
+      generation: expect.stringMatching(/^cg_/),
+    });
+  }, 90_000);
+
+  it('posts the live release with the target of its selection, not a fresh read (S3b-r2 C3)', async () => {
+    const f = await admitNativeReplacementClose('c3_target');
+    const harnessInstanceId = String(f.readRows(f.predecessor.agentSessionId)!.harness);
+    const posts = observeIdleSandboxPosts(f.backend);
+    const latch = f.backend as unknown as {
+      releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+    };
+    const release = latch.releaseIdleCaptureLatch.bind(f.backend);
+    let selected: { targetId: string; connectionGeneration: number } | undefined;
+    vi.spyOn(latch, 'releaseIdleCaptureLatch').mockImplementation(async (...args) => {
+      selected = args[0] as { targetId: string; connectionGeneration: number };
+      // After the selection and before the release, the target owner records a new connection
+      // generation.
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            'UPDATE nanohost_runtime_targets SET connection_generation=connection_generation+1 WHERE target_id=?'
+          )
+          .run(selected!.targetId)
+      );
+      return await release(...args);
+    });
+    expect(await f.close()).toBe('closed');
+    expect(selected).toBeDefined();
+    // The frame carries the target that the selection authorized.
+    expect(posts.restores()).toHaveLength(1);
+    expect(posts.restores()[0]!.authority).toMatchObject({
+      target: { targetId: selected!.targetId, connectionGeneration: selected!.connectionGeneration },
+    });
+    // Native compares it with the current target and changes no row: the latch stays fenced.
+    expect(harnessCell(f.coreDb, harnessInstanceId)).toMatchObject({
+      drain: 'draining',
+      generation: expect.stringMatching(/^cg_/),
+    });
+  }, 90_000);
+
+  it('reclaims a crash-stranded capture latch only through a fresh NanoHost Epoch (S3b-r2 B2)', async () => {
+    const c = await admitCoResidentClose('b2_epoch');
+    const { f } = c;
+    c.observeLatch();
+    const queue = f.backend as unknown as {
+      queueAndWaitForHarnessOperation: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(queue, 'queueAndWaitForHarnessOperation').mockRejectedValueOnce(
+      new Error('NanoCore stopped before its close queue.')
+    );
+    await expect(f.close()).rejects.toThrow();
+    const sandbox = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(`SELECT s.sandbox_runtime_id AS id, s.runtime_target_id AS target
+        FROM sandbox_runtime_records s JOIN harness_instance_records h
+        ON h.sandbox_runtime_id=s.sandbox_runtime_id WHERE h.harness_instance_id=?`)
+        .get(c.harnessInstanceId)
+    ) as { id: string; target: string };
+    // Control: in the unchanged Epoch the stranded latch keeps the sole target saturated.
+    await f.reopen();
+    expect(await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)).toBe(
+      'capacity-saturated'
+    );
+    const evict = () =>
+      (
+        f.backend as unknown as {
+          evictIncompatibleIdleSandbox(pkg: unknown, force: boolean): Promise<unknown>;
+        }
+      ).evictIncompatibleIdleSandbox(f.successor.environmentPackage, true);
+    const residents = () =>
+      readAdmittedTestNanoHost(f.coreDb, (sqlite) => ({
+        sandbox: sqlite
+          .prepare('SELECT drain_state AS drain FROM sandbox_runtime_records WHERE sandbox_runtime_id=?')
+          .all(sandbox.id),
+        harness: sqlite
+          .prepare('SELECT drain_state AS drain FROM harness_instance_records WHERE harness_instance_id=?')
+          .all(c.harnessInstanceId),
+      }));
+    const stranded = residents();
+    expect(stranded).toEqual({ sandbox: [{ drain: 'accepting' }], harness: [{ drain: 'draining' }] });
+    await expect(evict()).rejects.toThrow('NanoHost one-Sandbox capacity is occupied or unproved.');
+    expect(residents()).toEqual(stranded);
+    // Operator remedy: restart NanoHost. The target owner records a new physical Epoch.
+    const current = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      getNanoHostRuntimeTarget({ sqlite }, sandbox.target)
+    )!;
+    const fresh = 'f'.repeat(64);
+    expect(current.physicalEpoch).not.toBe(fresh);
+    const generation = await transitionTestNativeRuntimeTargetFields('allocate', f.coreDb, {
+      deploymentId: current.deploymentId,
+      identityId: current.identityId,
+      targetId: current.targetId,
+      observedAt: new Date().toISOString(),
+    });
+    await transitionTestNativeRuntimeTargetFields('ready', f.coreDb, {
+      ...generation,
+      physicalEpoch: fresh,
+      predecessorFenced: true,
+      freshEmpty: true,
+      ready: true,
+      observedAt: new Date().toISOString(),
+    });
+    await f.reopen();
+    // The fresh Epoch proves physical absence; the forced eviction deletes the stranded rows.
+    // A full new-Turn admission is not driven here: this fixture does not re-admit NanoHost
+    // observation storage after the target transition.
+    expect(await f.backend.inspectMaterializationCapacity!(f.successor.environmentPackage)).toBe(
+      'available'
+    );
+    await expect(evict()).resolves.toBeNull();
+    expect(residents()).toEqual({ sandbox: [], harness: [] });
+  }, 180_000);
+
+  /**
+   * S3b-r2 S9: one idle resident Sandbox (OpenCode) that an incompatible DeepSeek Turn evicts.
+   * The second admission runs the real S8 claim, the S11 closes and the S9 rollback.
+   */
+  async function admitIdleEviction(label: string) {
+    const coreDb = await createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const manifests = ['opencode', 'deepseek'].map(
+      (adapter) =>
+        createTestAgentSetup({
+          adapter,
+          agentId: `agent_${adapter}`,
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest
+    );
+    for (const manifest of manifests) admitFactoryNativeEnvironment(coreDb, manifest);
+    const readRuntimeConfig = () =>
+      createInMemoryRuntimeConfigSnapshot({
+        ...loadRuntimeConfig(coreDb.dataRoot),
+        dataRoot: coreDb.dataRoot,
+        agentManifests: manifests,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'S9 idle eviction',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
+    const commands: { operation: string; agentSessionId: unknown }[] = [];
+    const accept = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+    vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand').mockImplementation(async (command) => {
+      const wire = await accept(command);
+      if (wire) commands.push({ operation: wire.operation, agentSessionId: wire.body.agentSessionId });
+      return wire;
+    });
+    const admissions: Awaited<ReturnType<typeof native.admitTurn>>[] = [];
+    onTestFinished(async () => {
+      for (const admission of admissions) await admission.cleanup().catch(() => undefined);
+      await native.restore();
+      await shutdownOwnedWriter();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    });
+    const admit = async (index: number) => {
+      const manifest = manifests[index]!;
+      const thread = await store.createThread(workspaceId, `${label} ${index}`);
+      const attemptId = testEntityId('attempt', `${label}_${index}`);
+      const agentSessionId = testEntityId('as', `${label}_${index}`);
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${attemptId}`,
+        requestId: testEntityId('tu', `${label}_request_${index}`).slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId,
+        threadId: thread.id,
+        turnId: testEntityId('tu', `${label}_turn_${index}`),
+        text: 'Complete a reusable Turn',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const admitted = await native.admitTurn(entry, {
+        attemptId,
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      admissions.push(admitted);
+      return admitted;
+    };
+    const resident = await admit(0);
+    await resident.complete();
+    const sandbox = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      sqlite
+        .prepare(`SELECT sandbox_runtime_id AS id, runtime_target_id AS target
+        FROM sandbox_runtime_records`)
+        .get()
+    ) as { id: string; target: string };
+    const tuple = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) => ({
+        sandbox: sqlite
+          .prepare('SELECT * FROM sandbox_runtime_records WHERE sandbox_runtime_id=?')
+          .get(sandbox.id) as Record<string, unknown>,
+        harnesses: sqlite
+          .prepare(
+            'SELECT * FROM harness_instance_records WHERE sandbox_runtime_id=? ORDER BY harness_instance_id'
+          )
+          .all(sandbox.id) as Record<string, unknown>[],
+      }));
+    const backend = native.executor.executionBackend as unknown as {
+      assertWorkspaceCaptureSettled(ref: string | null): Promise<Set<string>>;
+      idleSandboxLifecycle(): unknown;
+      rollbackIdleSandboxClaim(...args: unknown[]): Promise<void>;
+      requireIdleSandboxCloseDrain(...args: unknown[]): void;
+      withHarnessOperationSlot(id: string, action: () => Promise<unknown>): Promise<unknown>;
+    };
+    // The admission reports its own error; record the eviction's error at its owner.
+    const evictionErrors: Error[] = [];
+    const evicting = backend as unknown as {
+      evictIncompatibleIdleSandbox(...args: unknown[]): Promise<unknown>;
+    };
+    const evictOwner = evicting.evictIncompatibleIdleSandbox.bind(backend);
+    vi.spyOn(evicting, 'evictIncompatibleIdleSandbox').mockImplementation(async (...args) => {
+      try {
+        return await evictOwner(...args);
+      } catch (error) {
+        evictionErrors.push(error as Error);
+        throw error;
+      }
+    });
+    const closes = () => commands.filter(({ operation }) => operation === 'session.close');
+    return {
+      coreDb,
+      native,
+      backend,
+      sandbox,
+      tuple,
+      closes,
+      evictionErrors,
+      evict: () => admit(1),
+    };
+  }
+
+  /** Fails the eviction after its S8 claim commits, before any S11 close (the S9 rollback path). */
+  function failAfterIdleSandboxClaim(
+    e: Awaited<ReturnType<typeof admitIdleEviction>>,
+    before?: () => Promise<void>
+  ) {
+    const posts = observeIdleSandboxPosts(e.backend);
+    const settled = e.backend.assertWorkspaceCaptureSettled.bind(e.backend);
+    let injected = false;
+    vi.spyOn(e.backend, 'assertWorkspaceCaptureSettled').mockImplementation(async (ref) => {
+      if (!injected && posts.posts.some(({ kind }) => kind === 'sandbox.claim-idle-drain')) {
+        injected = true;
+        await before?.();
+        throw new Error('Injected failure after the S8 claim.');
+      }
+      return await settled(ref);
+    });
+    const rollbacks: unknown[][] = [];
+    const rollback = e.backend.rollbackIdleSandboxClaim.bind(e.backend);
+    vi.spyOn(e.backend, 'rollbackIdleSandboxClaim').mockImplementation(async (...args) => {
+      rollbacks.push(args);
+      return await rollback(...args);
+    });
+    return { posts, rollbacks, rollback, injected: () => injected };
+  }
+
+  it('rolls back an unchanged whole-Sandbox claim once, and A posts zero after B reclaims at the same stamp (S3b-r2 S9)', async () => {
+    const e = await admitIdleEviction('s9_once');
+    const s = failAfterIdleSandboxClaim(e);
+    await expect(e.evict()).rejects.toThrow();
+    expect(e.evictionErrors.map(({ message }) => message)).toEqual([
+      'Injected failure after the S8 claim.',
+    ]);
+    expect(s.posts.posts.map(({ kind }) => kind)).toEqual([
+      'sandbox.claim-idle-drain',
+      'sandbox.restore-admission',
+    ]);
+    const claim = s.posts.posts[0]!;
+    const stamp = claim.input.timestamp as string;
+    // One rollback with the children unchanged restores admission.
+    const restored = e.tuple();
+    expect(restored.sandbox).toMatchObject({ drain_state: 'accepting', updated_at: stamp });
+    for (const harness of restored.harnesses)
+      expect(harness).toMatchObject({ drain_state: 'accepting', claim_generation: null });
+    expect(e.closes()).toEqual([]);
+    // B reclaims at A's stamp: Native cannot tell A's duplicate rollback from the original.
+    const { kind: _kind, ...input } = claim.input;
+    await harnessRecords.claimNanoHostIdleSandboxDrain(
+      e.coreDb,
+      input as unknown as Parameters<typeof harnessRecords.claimNanoHostIdleSandboxDrain>[1],
+      {
+        write: s.posts.write,
+        authority: claim.authority as harnessRecords.NanoHostIdleSandboxAuthority,
+      }
+    );
+    const reclaimed = e.tuple();
+    expect(reclaimed.sandbox).toMatchObject({ drain_state: 'draining', updated_at: stamp });
+    // A's duplicate: Main consumed A's authority at its only post, so A posts zero.
+    expect(s.rollbacks).toHaveLength(1);
+    await s.rollback(...s.rollbacks[0]!);
+    expect(s.posts.restores()).toHaveLength(1);
+    expect(e.tuple()).toEqual(reclaimed);
+  }, 120_000);
+
+  it('posts no whole-Sandbox rollback after a child advances outside this eviction (S3b-r2 S9)', async () => {
+    const e = await admitIdleEviction('s9_stale');
+    const harnessInstanceId = String(e.tuple().harnesses[0]!.harness_instance_id);
+    let advanced: ReturnType<typeof e.tuple> | undefined;
+    const s = failAfterIdleSandboxClaim(e, async () => {
+      // Written state for an operation that this eviction did not queue and that settles after
+      // the claim (V1-P's inspection case): the child's sequences advance by one.
+      expect(
+        mutateAdmittedTestNanoHost(e.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`UPDATE harness_instance_records
+            SET operation_sequence=operation_sequence+1, next_sequence=next_sequence+1
+            WHERE harness_instance_id=? AND operation_state='settled'`)
+            .run(harnessInstanceId)
+        ).changes
+      ).toBe(1);
+      advanced = e.tuple();
+    });
+    await expect(e.evict()).rejects.toThrow();
+    expect(s.injected()).toBe(true);
+    expect(advanced).toBeDefined();
+    expect(e.evictionErrors.map(({ message }) => message)).toEqual([
+      'Control database writer operation failed.',
+    ]);
+    // The posting turn reads the children again and refuses: zero rows change.
+    expect(s.posts.restores()).toHaveLength(1);
+    expect(e.tuple()).toEqual(advanced);
+    expect(e.tuple().sandbox).toMatchObject({ drain_state: 'draining' });
+  }, 120_000);
+
+  it('rolls back a whole-Sandbox claim once after its own acknowledged S11 close advanced the child (S3b-r2 S9)', async () => {
+    const e = await admitIdleEviction('s9_closes');
+    const posts = observeIdleSandboxPosts(e.backend);
+    const pinned = e.tuple();
+    expect(pinned.harnesses).toHaveLength(1);
+    const deleting = e.backend as unknown as {
+      deleteSandbox(...args: unknown[]): Promise<unknown>;
+    };
+    // The failure comes after every S11 close of this eviction and before any Sandbox effect.
+    vi.spyOn(deleting, 'deleteSandbox').mockRejectedValueOnce(
+      new Error('Injected failure after the S11 closes.')
+    );
+    await expect(e.evict()).rejects.toThrow();
+    expect(e.evictionErrors.map(({ message }) => message)).toEqual([
+      'Injected failure after the S11 closes.',
+    ]);
+    expect(e.closes()).toHaveLength(1);
+    expect(posts.posts.map(({ kind }) => kind)).toEqual([
+      'sandbox.claim-idle-drain',
+      'sandbox.restore-admission',
+    ]);
+    const child = e.tuple().harnesses[0]!;
+    // The child advanced by exactly this eviction's one acknowledged close key.
+    expect(child).toMatchObject({
+      operation: 'session.close',
+      operation_state: 'settled',
+      operation_sequence: Number(pinned.harnesses[0]!.next_sequence),
+      next_sequence: Number(pinned.harnesses[0]!.next_sequence) + 1,
+    });
+    // So the posting turn accounts for the advance, and the one rollback restores admission.
+    expect(e.tuple().sandbox).toMatchObject({ drain_state: 'accepting' });
+  }, 120_000);
+
+  it('never posts a lost whole-Sandbox rollback again after its commit (S3b-r2 S9)', async () => {
+    const e = await admitIdleEviction('s9_lost');
+    const s = failAfterIdleSandboxClaim(e);
+    const client = getControlStoreWorkerClient() as unknown as {
+      receive(value: unknown, host: unknown): void;
+    };
+    const receive = client.receive;
+    let lost = 0;
+    vi.spyOn(client, 'receive').mockImplementation(function (
+      this: unknown,
+      value: unknown,
+      host: unknown
+    ) {
+      const reply = value as { operation?: unknown; result?: { kind?: unknown } } | null;
+      if (
+        lost === 0 &&
+        s.posts.restores().length === 1 &&
+        reply?.operation === 'nanohost-owner' &&
+        reply.result?.kind === 'harness-idle-sandbox'
+      ) {
+        lost += 1;
+        // The committed rollback's reply arrives in a version this Main refuses: it fails its host.
+        return receive.call(this, { ...(value as object), version: 98 }, host);
+      }
+      return receive.call(this, value, host);
+    });
+    await expect(e.evict()).rejects.toThrow();
+    expect(lost).toBe(1);
+    expect(s.posts.restores()).toHaveLength(1);
+    vi.mocked(client.receive).mockRestore();
+    // The caller fences and never posts the authority again.
+    const again = await s.rollback(...s.rollbacks[0]!).then(
+      () => 'resolved',
+      (error: Error) => error.message
+    );
+    expect(s.posts.restores()).toHaveLength(1);
+    expect(again).toBe('resolved');
+    // A committed rollback may already have restored admission.
+    await shutdownOwnedWriter();
+    expect(
+      readStoppedTestNanoHost(e.coreDb, (sqlite) =>
+        sqlite
+          .prepare('SELECT drain_state FROM sandbox_runtime_records WHERE sandbox_runtime_id=?')
+          .get(e.sandbox.id)
+      )
+    ).toEqual({ drain_state: 'accepting' });
+  }, 120_000);
+
+  it('posts no whole-Sandbox rollback after its owner is lost (S3b-r2 S9, S15)', async () => {
+    const e = await admitIdleEviction('s9_owner');
+    const s = failAfterIdleSandboxClaim(e, async () => {
+      vi.spyOn(e.backend, 'idleSandboxLifecycle').mockImplementation(() => {
+        throw new Error('NanoHost owner lost.');
+      });
+    });
+    await expect(e.evict()).rejects.toThrow();
+    expect(s.injected()).toBe(true);
+    const stamp = s.posts.posts[0]!.input.timestamp as string;
+    expect(s.posts.restores()).toEqual([]);
+    expect(e.tuple().sandbox).toMatchObject({ drain_state: 'draining', updated_at: stamp });
+  }, 120_000);
+
+  it('refuses the whole-Sandbox claim without an admitted owner before any row changes (S3b-r2 S14)', async () => {
+    const e = await admitIdleEviction('s14_owner');
+    const before = e.tuple();
+    const posts = observeIdleSandboxPosts(e.backend);
+    vi.spyOn(e.backend, 'idleSandboxLifecycle').mockReturnValue(undefined);
+    await expect(e.evict()).rejects.toThrow();
+    expect(e.evictionErrors.map(({ message }) => message)).toEqual([
+      'NanoHost idle Sandbox eviction has no admitted owner.',
+    ]);
+    expect(posts.posts).toEqual([]);
+    expect(e.tuple()).toEqual(before);
+    expect(e.closes()).toEqual([]);
+  }, 120_000);
+
+  it('queues no eviction-owned close after its target changes before the post (S3b-r2 S11)', async () => {
+    const e = await admitIdleEviction('s11_target');
+    let inSlot = false;
+    let bumped = false;
+    const slot = e.backend.withHarnessOperationSlot.bind(e.backend);
+    vi.spyOn(e.backend, 'withHarnessOperationSlot').mockImplementation(async (id, action) =>
+      slot(id, async () => {
+        inSlot = true;
+        try {
+          return await action();
+        } finally {
+          inSlot = false;
+        }
+      })
+    );
+    const check = e.backend.requireIdleSandboxCloseDrain.bind(e.backend);
+    vi.spyOn(e.backend, 'requireIdleSandboxCloseDrain').mockImplementation((...args) => {
+      check(...args);
+      if (inSlot && args[2] === undefined && !bumped) {
+        bumped = true;
+        // After the last pre-post check, the target owner records a new connection generation.
+        mutateAdmittedTestNanoHost(e.coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE nanohost_runtime_targets SET connection_generation=connection_generation+1 WHERE target_id=?'
+            )
+            .run(e.sandbox.target)
+        );
+      }
+    });
+    await expect(e.evict()).rejects.toThrow();
+    expect(bumped).toBe(true);
+    // The posting turn rechecks the drain and target proof: no session.close is queued.
+    expect(e.closes()).toEqual([]);
+    for (const harness of e.tuple().harnesses)
+      expect(harness).not.toMatchObject({ operation: 'session.close' });
   }, 120_000);
 
   it.each([

@@ -147,8 +147,9 @@ export function applyControlHarnessLifecycle(
         claimIdleCaptureDrain(owner, input);
         return null;
       case 'sandbox.restore-admission':
-        restoreSandboxAdmission(owner, input.sandboxRuntimeId);
-        return null;
+        // S7 (S3b-r2): a whole-Sandbox restore without its guard refuses at this common boundary.
+        // Only the admitted owner's S9 rollback or a scoped acquired frame restores admission.
+        throw new ControlProductPreconditionError();
       case 'operation.queue':
         return records.queueNanoHostHarnessOperation(owner, input);
       case 'operation.dispatch':

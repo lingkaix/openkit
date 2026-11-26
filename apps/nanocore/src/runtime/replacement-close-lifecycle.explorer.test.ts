@@ -1623,6 +1623,19 @@ function rewound(h: HarnessFacts, e: Env, pending: number): HarnessFacts {
 
 const stopOf = (world: World, b: string) => world.stop?.[b] ?? world.stopAt;
 
+/**
+ * S3b-r2 Variant B (V1-P ruling): the latch that a crash stranded in R2, after its capture receipt
+ * and before any close of its claimant was consumed, with no live owner. Only the model facts
+ * decide it, never the table under test. The caller has already found no fence class.
+ */
+function crashStrandedR2(s: State): boolean {
+  // `after`: past a NanoCore stop, a crash edge or a world that starts stopped.
+  if (!s.after || s.h.drain !== 'draining') return false;
+  if (Object.values(s.c).some((c) => ACTIVE.includes(c.phase))) return false;
+  const claimants = s.p.drainBy.filter((r) => r.startsWith('claim:')).map((r) => r.slice(6));
+  return claimants.length > 0 && claimants.every((b) => s.cap[b] === 'receipt' && !s.core[b]);
+}
+
 /** Raw classification of an owner-quiescent state with a draining Harness. */
 function fenceClass(world: World, s: State): string | null {
   if (s.h.drain !== 'draining') return null;
@@ -1710,7 +1723,12 @@ const EXIT_KINDS = ['cold:restore:quiescent', 'cold:restore:close', 'restore:', 
 function explore(
   world: World,
   table: ReplacementCloseTable,
-  options: { readonly stopOn?: string; readonly maxStates?: number } = {}
+  options: {
+    readonly stopOn?: string;
+    readonly maxStates?: number;
+    /** The r1 L.exit oracle, without the ruled Variant B exception (M-F3b only). */
+    readonly strictExit?: boolean;
+  } = {}
 ): Report {
   const maxStates = options.maxStates ?? 400_000;
   const start = initial(world);
@@ -1836,8 +1854,15 @@ function explore(
         )
       )
         record('L.stuck', key, 'a live owner has no next step');
-      else if (s.h.drain === 'draining' && !active)
-        record('L.exit', key, `stranded latch: ${s.p.drainBy.join(',')}`);
+      else if (s.h.drain === 'draining' && !active) {
+        // S3b-r2 Variant B (V1-P ruling): a crash-stranded, ownerless R2 latch keeps its fence
+        // (`cold-deferred`) until a new NanoHost Epoch evicts its Sandbox. It is the stated v0.2.0
+        // cost, not a liveness failure. Every other stranded latch is still L.exit.
+        if (!options.strictExit && crashStrandedR2(s)) {
+          report.fences['cold-deferred'] = (report.fences['cold-deferred'] ?? 0) + 1;
+          record('fence:cold-deferred', key);
+        } else record('L.exit', key, `stranded latch: ${s.p.drainBy.join(',')}`);
+      }
       if (checked(s)) {
         if (s.p.owed > 0) record('L.e7', key, 'a restore owes its E7 request');
         for (const [b, c] of Object.entries(s.c))
@@ -2379,6 +2404,55 @@ const WORLDS = {
 const T = REPLACEMENT_CLOSE_TABLE;
 const withRules = (drop: readonly string[], add: readonly ColdRule[] = []) =>
   composeCold([...add, ...COLD_RULES.filter((rule) => !drop.includes(rule.id))]);
+/**
+ * S3b-r2 Variant B (V1-P ruling): the r1 cold quiescent restore, put back. The production table
+ * fences `cold-deferred` exactly where r1 restored, so this take-out maps that fence back to the
+ * r1 frame: the claim arm with the pinned pair. Only take-outs and deferred-A witnesses use it.
+ */
+const coldRestore =
+  (cold: ReplacementCloseTable['cold']): ReplacementCloseTable['cold'] =>
+  (f) => {
+    const action = cold(f);
+    return action.kind === 'fence' && action.reason === 'cold-deferred'
+      ? {
+          kind: 'restore',
+          scope: 'quiescent',
+          frame: {
+            arm: 'claim',
+            revision: f.harness.revision,
+            generation: f.harness.claimGeneration,
+          },
+        }
+      : action;
+  };
+/** The deferred Variant A: the production table with the r1 cold restore put back. */
+const A_TABLE: ReplacementCloseTable = { ...T, cold: coldRestore(T.cold) };
+/**
+ * S3b-r2 Variant B: the take-outs below reach their oracle only through a cold restore. The
+ * production table posts none, so each single take-out now reaches no violation (B stops it). M
+ * runs each as a double take-out with the r1 cold restore put back, so every rule that a later
+ * eligible restore needs stays load-bearing.
+ */
+const DEFERRED_A = [
+  'M-V2b',
+  'M-G3d',
+  'M-F2c',
+  'M-F2d',
+  'M-F4h',
+  'M-F4g',
+  'M-C3',
+  'M-V2a',
+  'M-HD1',
+  'M-HD2',
+];
+const deferA = (row: MutationRow): MutationRow =>
+  DEFERRED_A.includes(row.id)
+    ? {
+        ...row,
+        takeOut: `${row.takeOut}, with the r1 cold restore put back`,
+        table: { ...row.table, cold: coldRestore(row.table.cold ?? T.cold) },
+      }
+    : row;
 const replaceRule = (id: string, rule: ColdRule['decide']) =>
   composeCold(COLD_RULES.map((r) => (r.id === id ? { id, decide: rule } : r)));
 type RestoreTakeOut = 'revision' | 'life' | 'harness-drain' | 'sandbox' | 'generation';
@@ -2486,6 +2560,8 @@ interface MutationRow {
   readonly takeOut: string;
   /** The named writer: the failing trace must contain this edge. */
   readonly via?: string;
+  /** S3b-r2: run under the r1 L.exit oracle, without the ruled Variant B exception. */
+  readonly strictExit?: boolean;
 }
 
 /**
@@ -2685,7 +2761,7 @@ const preG3 = (row: MutationRow): MutationRow => {
   };
 };
 
-const M: readonly MutationRow[] = [
+const M_BASE: readonly MutationRow[] = [
   {
     id: 'M-F1a',
     world: WORLDS.live,
@@ -2739,8 +2815,11 @@ const M: readonly MutationRow[] = [
     id: 'M-F3b',
     world: WORLDS.prefix,
     oracle: 'L.exit',
-    takeOut: 'remove the quiescent Harness exit',
+    // S3b-r2 Variant B: production already has no quiescent exit. Under the r1 oracle the R2
+    // latch strands, which is the cost that the V1-P ruling accepts.
+    takeOut: 'remove the quiescent Harness exit, under the r1 L.exit oracle',
     table: { cold: withRules(['quiescent']) },
+    strictExit: true,
   },
   {
     id: 'M-F3c',
@@ -3309,6 +3388,10 @@ const M: readonly MutationRow[] = [
   },
   ...SUBSUMED.map(preG3),
 ];
+const M: readonly MutationRow[] = M_BASE.map(deferA);
+
+/** S3b-r2 Variant B: the single take-outs that the `cold-deferred` fence now stops. */
+const B_STOPPED: readonly MutationRow[] = M_BASE.filter((row) => DEFERRED_A.includes(row.id));
 
 const tableOf = (row: MutationRow): ReplacementCloseTable => ({ ...T, ...row.table });
 
@@ -3515,13 +3598,17 @@ describe('replacement close lifecycle model check', () => {
       const r = reportOf(w);
       expect(r.fresh).toBe(Object.values(r.exits).reduce((n, x) => n + x, 0));
     }
-    expect(reportOf(WORLDS.prefix).exits['cold:restore:quiescent']).toBeGreaterThan(0);
+    // S3b-r2 Variant B: no cold restore exists. The deferred A restore keeps its fresh endpoint.
+    for (const w of [WORLDS.prefix, WORLDS.census]) {
+      const a = explore(w, A_TABLE);
+      expect(a.exits['cold:restore:quiescent']).toBeGreaterThan(0);
+      expect(a.fresh).toBe(Object.values(a.exits).reduce((n, x) => n + x, 0));
+    }
     // V1-P S2-r1 item 1: no cold P7 restore remains; the live owner releases its own close.
     for (const w of Object.values(WORLDS))
       expect(reportOf(w).exits['cold:restore:close'] ?? 0).toBe(0);
     expect(reportOf(WORLDS.live).fences['unattributed-claim']).toBeGreaterThan(0);
     expect(reportOf(WORLDS.live).exits['restore:']).toBeGreaterThan(0);
-    expect(reportOf(WORLDS.census).exits['cold:restore:quiescent']).toBeGreaterThan(0);
     const cl3 = reportOf(WORLDS.cl3full);
     keep('cl3-full', cl3.probes);
     // G1/G2: each winner order ends with the other's fresh claim and an accepting Harness.
@@ -4012,14 +4099,19 @@ describe('replacement close lifecycle model check', () => {
 
     it('the paused cold restore: k1 releases A, then 99 and B claim before k2; zero rows', () => {
       const w = WORLDS.pausedReuse;
+      // S3b-r2 Variant B: the production table reads no cold frame at all.
+      expect(enabled(w, initial(w)).filter((label) => label.startsWith('cold'))).toEqual([]);
+      // The deferred A restore keeps the G3 witness of its paused frame.
       const labels = ['cold-read:k1', 'cold-read:k2', 'cold-post:k1', 'env:open@99', ...B_CLAIMS];
-      const before = run(w, labels);
+      const before = run(w, labels, A_TABLE);
       expect(before.cold.k2).toEqual({ arm: 'claim', revision: 1, generation: 'gA1' });
       expect(before.h.revision).toBe(1);
-      const after = run(w, [...labels, 'cold-post:k2']);
+      const after = run(w, [...labels, 'cold-post:k2'], A_TABLE);
       expect(after.h).toEqual(before.h);
       expect(after.h.claimGeneration).toBe('gB1');
-      const step = steps(w, noCompare, before).find((x) => x.label === 'cold-post:k2');
+      const step = steps(w, { ...noCompare, cold: coldRestore(noCompare.cold) }, before).find(
+        (x) => x.label === 'cold-post:k2'
+      );
       expect(step?.violations.map((v) => v.name)).toContain('O.restore.live-latch');
     });
 
@@ -4147,6 +4239,39 @@ describe('replacement close lifecycle model check', () => {
         const report = explore(row.world, tableOf(row));
         expect(report.truncated).toBe(false);
         expect(Object.keys(report.traces)).not.toContain(row.oracle);
+      },
+      600_000
+    );
+  });
+
+  describe('B-E1: the cold exit is fence-only (S3b-r2 Variant B, V1-P ruling)', () => {
+    it('no world has a cold restore, and the crash-stranded R2 latch fences cold-deferred', () => {
+      const deferred: Record<string, number> = {};
+      for (const w of Object.values(WORLDS)) {
+        const r = reportOf(w);
+        expect(r.exits['cold:restore:quiescent'] ?? 0).toBe(0);
+        expect(r.exits['cold:restore:close'] ?? 0).toBe(0);
+        expect(r.exits['cold-post:'] ?? 0).toBe(0);
+        expect(Object.keys(r.traces).filter(SAFETY)).toEqual([]);
+        if (r.fences['cold-deferred']) deferred[w.name] = r.fences['cold-deferred'];
+      }
+      keep('B-E1', deferred);
+      expect(deferred.prefix).toBeGreaterThan(0);
+    });
+
+    it('the cut: put back the r1 cold restore, and the restore edges come back', () => {
+      const a = explore(WORLDS.prefix, A_TABLE);
+      expect(a.exits['cold:restore:quiescent']).toBeGreaterThan(0);
+      expect(a.fences['cold-deferred'] ?? 0).toBe(0);
+    });
+
+    it.each(B_STOPPED)(
+      'B stops the single take-out of $id ($takeOut)',
+      (row) => {
+        const report = explore(row.world, tableOf(row));
+        expect(report.truncated).toBe(false);
+        expect(Object.keys(report.traces)).not.toContain(row.oracle);
+        expect(report.exits['cold:restore:quiescent'] ?? 0).toBe(0);
       },
       600_000
     );
@@ -4336,7 +4461,10 @@ describe('replacement close lifecycle model check', () => {
   it.each(M)(
     '$id fails $oracle when the table takes out: $takeOut',
     (row) => {
-      const report = explore(row.world, tableOf(row), { stopOn: row.oracle });
+      const report = explore(row.world, tableOf(row), {
+        stopOn: row.oracle,
+        ...(row.strictExit ? { strictExit: true } : {}),
+      });
       keep(row.id, { oracle: row.oracle, trace: report.traces[row.oracle], states: report.states });
       expect(Object.keys(report.traces)).toContain(row.oracle);
       if (row.via)
