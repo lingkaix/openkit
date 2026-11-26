@@ -853,6 +853,14 @@ test('v0.2.0 is eligible only with all reviewed qualification reports on the exa
       /candidate qualification refused/u,
       name
     );
+    assert.throws(
+      () =>
+        admit({
+          ...qualification,
+          [name]: { ...qualification[name], evidenceSha256: [qualification[name].evidenceSha256] },
+        }),
+      { message: `Exact candidate qualification refused: ${name}` }
+    );
   }
   assert.throws(
     () =>

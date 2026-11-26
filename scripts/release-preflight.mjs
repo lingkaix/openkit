@@ -525,7 +525,8 @@ export function validateCandidateQualification(qualification, { tag, source, ass
       ]) ||
       report.sourceCommit !== source ||
       report.conclusion !== 'success' ||
-      !/^[a-f0-9]{64}$/u.test(report.evidenceSha256 ?? '') ||
+      typeof report.evidenceSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(report.evidenceSha256) ||
       (restore && report.previousAppImageId !== assessment.previousAppImageId)
     )
       throw Error(`Exact candidate qualification refused: ${name}`);
