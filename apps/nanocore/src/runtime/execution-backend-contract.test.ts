@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { LifecycleDeadline } from '../../../../packages/worker-shim/src/lifecycle-deadline.js';
+import { FakeWorkerShim } from '../../../../packages/worker-shim/src/test-support/worker-shim-fake.js';
+import type {
+  WorkerShimDesiredSet,
+  WorkerShimTurnInput,
+} from '../../../../packages/worker-shim/src/worker-shim-port.js';
 import type {
   ExecutionBackendCorrelation,
   ExecutionBackendObservation,
@@ -33,7 +39,10 @@ const handoffs = {
 } satisfies ExecutionReleaseProof;
 
 /** The independent evidence survives replacement of the port object in the fake. */
-function fakeFixture(cut: SubmitCut): ContractFixture {
+function fakeFixture(
+  cut: SubmitCut,
+  deliverInput?: (input: ExecutionBackendCorrelation) => Promise<void>
+): ContractFixture {
   const original: ExecutionBackendCorrelation = {
     attemptId: 'attempt',
     backendId: 'backend',
@@ -101,6 +110,7 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
         receiverHistory.set(key, { receipt: null, complete: true });
         throw new Error('Submit reply lost before acceptance');
       }
+      await deliverInput?.(input);
       nativeStarts++;
       if (cut === 'after-commit') {
         receiverHistory.set(key, { receipt: 'accepted', complete: true });
@@ -339,3 +349,107 @@ function executionBackendContract(
 }
 
 describe('execution backend port S5 contract', () => executionBackendContract(fakeFixture));
+
+it('keeps the shim input unknown across reconnect and backend reopen after scoped release', async () => {
+  const session = { sandboxIncarnationId: 'incarnation', connectionGeneration: 1 };
+  const worker = {
+    workerId: 'worker',
+    adapterId: 'codex',
+    agentSessionId: 'agent-session',
+    workSlotRef: 'work-slot',
+    resume: null,
+  };
+  const nativeAcceptances: WorkerShimTurnInput[] = [];
+  const shim = new FakeWorkerShim(session.sandboxIncarnationId, {
+    input(input) {
+      nativeAcceptances.push(input);
+      throw new Error('lost result after native acceptance');
+    },
+  });
+  const desired = {
+    session,
+    revision: 1,
+    workers: [],
+    inputs: [],
+    steers: [],
+    interrupts: [],
+    acknowledgedOperations: [],
+  } satisfies WorkerShimDesiredSet;
+  const f = fakeFixture('no-readback', async ({ attemptId, inputRef, operationId }) => {
+    if (inputRef === null) throw new Error('Expected original input reference');
+    expect(
+      await shim.poll(session, async () => ({
+        ...desired,
+        workers: [{ state: 'run', worker }],
+        inputs: [
+          {
+            attemptId,
+            inputRef,
+            operationId,
+            workerId: worker.workerId,
+            turnId: 'turn',
+            payloadDigest: 'digest',
+            routeGrant: 'grant',
+          },
+        ],
+      }))
+    ).toBe('applied');
+  });
+  const release = { ...f.original, proof: handoffs };
+  const unknown = { ...f.original, disposition: 'unknown', outcomeRef: null };
+  const receiptKey = {
+    workerId: worker.workerId,
+    operationId: f.original.operationId,
+    payloadDigest: 'digest',
+  };
+
+  expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject(unknown);
+  expect(nativeAcceptances).toEqual([
+    {
+      ...receiptKey,
+      attemptId: f.original.attemptId,
+      inputRef: f.original.inputRef,
+      turnId: 'turn',
+      routeGrant: 'grant',
+    },
+  ]);
+  await f.fence();
+  expect(await f.backend.cancel(f.original)).toMatchObject({ ...unknown, fenceRef: null });
+  const reconnected = { ...session, connectionGeneration: 2 };
+  expect(
+    await shim.poll(reconnected, async (inventory) => {
+      expect(inventory.receipts).toEqual([
+        { kind: 'input', key: receiptKey, disposition: 'unknown' },
+      ]);
+      return {
+        ...desired,
+        session: reconnected,
+        workers: [{ state: 'stop', workerId: worker.workerId }],
+      };
+    })
+  ).toBe('applied');
+
+  expectHeld(await f.backend.release(release), f.original);
+  shim.observeChildExit(worker.workerId);
+  await f.advanceToDeadline();
+  expect(await shim.waitUntilAbsent(worker.workerId, new LifecycleDeadline(0))).toEqual({
+    state: 'held',
+  });
+  await f.closeIngress();
+  await f.joinAcceptedWork();
+  expectHeld(await f.backend.release(release), f.original);
+  expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
+
+  await f.observeAbsence(f.original);
+  const released = await f.backend.release(release);
+  expect(released).toMatchObject({
+    ...f.original,
+    state: 'released',
+    fenceRef: expect.any(String),
+  });
+  const reopened = await f.reopen();
+  expect(await reopened.release(release)).toEqual(released);
+  expect(await reopened.inspect(f.original)).toMatchObject(unknown);
+  expect(nativeAcceptances).toHaveLength(1);
+  expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 1 });
+});
