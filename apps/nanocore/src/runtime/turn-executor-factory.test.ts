@@ -10837,13 +10837,15 @@ describe('createConfiguredTurnExecutor', () => {
               WHERE harness_instance_id=?`)
               .get(owned.harnessInstanceId)
           ) as { drain: string; revision: string; generation: string | null };
+          const latch = f.backend as unknown as {
+            readIdleSandboxTarget: (targetId: string) => unknown;
+            releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
+          };
+          // S3b-r2 C3: the release takes the target that its owner authorized. This rollback has
+          // no replacement selection, so it passes the authorized target of the resident.
           if (claimed.drain === 'draining')
-            await (
-              f.backend as unknown as {
-                releaseIdleCaptureLatch: (...args: unknown[]) => Promise<void>;
-              }
-            ).releaseIdleCaptureLatch(
-              owned.sharedHarness.sandbox.runtimeTargetId,
+            await latch.releaseIdleCaptureLatch(
+              latch.readIdleSandboxTarget(owned.sharedHarness.sandbox.runtimeTargetId) ?? undefined,
               owned.sharedHarness.sandbox.sandboxRuntimeId,
               {
                 harnessInstanceId: owned.harnessInstanceId,
