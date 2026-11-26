@@ -160,6 +160,7 @@ describe('Worker environment runtime effects', () => {
       {
         input: { imageDigest: IMAGE_DIGEST },
         kind: 'image.inspect',
+        beforeDelivery: expect.any(Function),
         requestId: workerEnvironmentEffectRequestId(identity, 'image.inspect'),
       },
     ]);
@@ -262,6 +263,7 @@ describe('Worker environment runtime effects', () => {
       {
         input: { imageDigest: IMAGE_DIGEST },
         kind: 'image.inspect',
+        beforeDelivery: expect.any(Function),
         requestId: workerEnvironmentEffectRequestId(identity, 'image.inspect'),
       },
     ]);

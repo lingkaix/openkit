@@ -201,7 +201,7 @@ import type {
 } from './runtime/idempotent-command.js';
 import { resolveNanoHostAttemptTokenBinding } from './runtime/nanohost-attempt-records.js';
 import {
-  createNanoHostSessionDispatch,
+  createProductionNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
@@ -1168,7 +1168,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     getControlStoreWorkerClient().setFileStorageAdmission(mutationDataRoot, fileAdmission);
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
-    createNanoHostSessionDispatch({
+    createProductionNanoHostSessionDispatch({
       fileAdmission,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,

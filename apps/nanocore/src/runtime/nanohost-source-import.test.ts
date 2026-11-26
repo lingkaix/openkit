@@ -18,7 +18,7 @@ afterEach(async () => {
 
 /** Tests raw carriage below the separately tested authoritative dispatcher, using a real HTTP/2 connection and fixed route. */
 async function carriage(source: NanoHostFileImportSource, byteLength: number, sha256: string) {
-  const poll = vi.fn().mockResolvedValue({
+  const command = {
     entryKind: 'file',
     executable: false,
     source,
@@ -28,6 +28,22 @@ async function carriage(source: NanoHostFileImportSource, byteLength: number, sh
     requestId: 'a'.repeat(64),
     sandboxId: 'sandbox-source',
     slot: 'context',
+  };
+  const poll = vi.fn(async (...args: Parameters<NanoHostSessionDispatch['poll']>) => {
+    const send = args[4];
+    if (
+      send &&
+      !(await send(
+        command,
+        async (write) => {
+          write();
+          return true;
+        },
+        undefined
+      ))
+    )
+      return null;
+    return command;
   });
   const app = new Hono<{ Variables: AuthVariables }>();
   registerNanoHostSessionEffectRoutes({
@@ -58,7 +74,9 @@ async function carriage(source: NanoHostFileImportSource, byteLength: number, sh
     request.on('error', () => {});
     const headers = once(request, 'response');
     request.end('{}');
-    return { request, headers: (await headers)[0] };
+    const [responseHeaders] = await headers;
+    if (responseHeaders[':status'] !== 200) throw new Error('Source refused before carriage.');
+    return { request, headers: responseHeaders };
   };
   return { open, poll };
 }

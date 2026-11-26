@@ -1,6 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { addAbortListener, once } from 'node:events';
 import { open } from 'node:fs/promises';
+import { validateHeaderName, validateHeaderValue } from 'node:http';
+import { Http2ServerResponse, constants as http2Constants } from 'node:http2';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
@@ -44,6 +47,7 @@ import {
   decodeExecutionJournalInvocation,
   encodeExecutionJournalValue,
   executionJournalProcessWitness,
+  readExecutionJournalInvocation,
 } from './execution-journal.js';
 import type {
   ExecutionJournalIntent,
@@ -111,6 +115,8 @@ const TERMINAL_FILE_MAX_BYTES = 256 * 1024 * 1024;
 const FILE_DATA_CHUNK_BYTES = 64 * 1024;
 /** Sole media type accepted on the two raw file-data directions. */
 const FILE_DATA_CONTENT_TYPE = 'application/octet-stream';
+const WORKSPACE_COLLECTION_POLL_MS = 240_000;
+const LIVE_FILE_EXPORT_WAIT_MS = 300_000;
 /** Exact fixed metadata header names shared by import and export. */
 const FILE_DATA_HEADERS = {
   byteLength: 'x-openkit-byte-length',
@@ -199,9 +205,10 @@ export class NanoHostEffectNotEnqueuedError extends Error {
   /** Creates a correlated refusal; timeouts and transport failures never use this proof. */
   public constructor(
     public readonly operation: NanoHostEffectOperation,
-    public readonly requestId: string
+    public readonly requestId: string,
+    message = `NanoHost effect ${operation} already has a pending command.`
   ) {
-    super(`NanoHost effect ${operation} already has a pending command.`);
+    super(message);
   }
 }
 
@@ -281,8 +288,10 @@ export interface NanoHostSessionEffectRequest {
     readonly workId: string;
     readonly authorize: () => boolean;
   };
-  /** Rechecks the original owning journal immediately before physical delivery. Never wire data. */
-  readonly beforeDelivery?: (() => Promise<void>) | undefined;
+  /** Prepares the original owner's proof and returns its synchronous first-write recheck. */
+  readonly beforeDelivery?: (() => (() => void) | Promise<() => void>) | undefined;
+  /** Original wall deadline of the producer supplying the bounded wait signal. */
+  readonly deliveryDeadlineUnixMs?: number;
   /** Commits the actual owner's outcome and receipt obligation before receiver acknowledgement. */
   readonly consumeResult?:
     | ((result: Readonly<Record<string, unknown>>) => Promise<void>)
@@ -354,6 +363,24 @@ interface NanoHostPhysicalReadiness {
   readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
 }
 
+/** Runs the deciding owner reads before latching and writing in the same synchronous turn. */
+type CommitEffectCarriage = (write: () => void) => Promise<boolean>;
+
+/** Prepares transport bytes before asking the dispatcher to commit an exact write. */
+type SendEffectCarriage<Command> = (
+  command: Command,
+  commit: CommitEffectCarriage,
+  signal: AbortSignal | undefined
+) => Promise<boolean>;
+
+/** Exact bytes and metadata held by the accepted build until first input carriage. */
+interface NanoHostImageBuildInput {
+  readonly body: Buffer;
+  readonly byteLength: number;
+  readonly requestId: string;
+  readonly sha256: string;
+}
+
 /** Physical facts created only inside the authoritative native dispatch closure. */
 export interface NanoHostHarnessLoginPhysical {
   readonly runtimeTargetId: string;
@@ -390,7 +417,8 @@ export interface NanoHostSessionDispatch {
     physicalConnection: object,
     operation: NanoHostEffectOperation,
     telemetryHeaders?: Record<string, string>,
-    recheckAdmission?: () => void
+    recheckAdmission?: () => void,
+    send?: SendEffectCarriage<Readonly<Record<string, unknown>>>
   ): Promise<Record<string, unknown> | null>;
   /** Accepts one correlated success or exact typed failure on its fixed operation path. */
   result(
@@ -411,13 +439,10 @@ export interface NanoHostSessionDispatch {
   /** Returns one accepted image build's exact retained Dockerfile bytes once. */
   imageBuildInput(
     physicalConnection: object,
-    request: Request
-  ): Promise<{
-    readonly body: Buffer;
-    readonly byteLength: number;
-    readonly requestId: string;
-    readonly sha256: string;
-  }>;
+    request: Request,
+    recheckAdmission: () => void,
+    send: SendEffectCarriage<NanoHostImageBuildInput>
+  ): Promise<void>;
   /**
    * Projects readiness for one exact authoritative native connection generation.
    *
@@ -440,7 +465,10 @@ export interface NanoHostSessionDispatch {
 interface PendingNanoHostEffect {
   /** Original allowance, retained to distinguish an ended producer from a live one. */
   readonly signal?: AbortSignal | undefined;
-  readonly beforeDelivery?: (() => Promise<void>) | undefined;
+  readonly deliveryDeadlineUnixMs?: number | undefined;
+  /** Dispatcher-owned collection or live capture wait, independent of timer scheduling. */
+  readonly deliveryDeadlineMonotonicMs?: number | undefined;
+  readonly beforeDelivery?: NanoHostSessionEffectRequest['beforeDelivery'];
   readonly consumeResult?:
     | ((result: Readonly<Record<string, unknown>>) => Promise<void>)
     | undefined;
@@ -607,13 +635,25 @@ function imageExecutionSpan(
 }
 
 /**
+ * Binds the EFFECT-POLL release hold for both boot and standalone App composition.
+ * Recovery continues through the dispatcher's existing accepted and result-only slots.
+ */
+export function createProductionNanoHostSessionDispatch(
+  input: CreateNanoHostSessionDispatchInput
+): NanoHostSessionDispatch {
+  return createNanoHostSessionDispatch(input, true);
+}
+
+/**
  * Creates the direct outer-session dispatcher for existing semantic routes and NanoHost effects.
  *
  * @param input Existing handlers and session authority.
+ * @param holdFirstCarriage Release hold on first sends, independent of results and fences.
  * @returns Fail-closed generation-bound dispatcher.
  */
 export function createNanoHostSessionDispatch(
-  input: CreateNanoHostSessionDispatchInput
+  input: CreateNanoHostSessionDispatchInput,
+  holdFirstCarriage = false
 ): NanoHostSessionDispatch {
   const pendingEffects = new Map<NanoHostEffectOperation, PendingNanoHostEffect>();
   const completedEffects = new Map<NanoHostEffectOperation, CompletedNanoHostEffect>();
@@ -622,6 +662,19 @@ export function createNanoHostSessionDispatch(
   const completedEffectPollConnections = new WeakSet<object>();
   let currentReadiness: NanoHostPhysicalReadiness | null = null;
   let harnessLoginHandler: NanoHostHarnessLoginHandler | undefined;
+
+  /** Repeats both native session and RuntimeTarget authority on the exact selected connection. */
+  function assertCurrentCarriage(physical: object, readiness: NanoHostPhysicalReadiness): void {
+    requireAuthoritativeSession(input.sessionAuthority, physical);
+    if (
+      currentReadiness !== readiness ||
+      readyPhysicalConnections.get(physical) !== readiness ||
+      input.sessionAuthority.connectionGeneration(physical) !== readiness.connectionGeneration
+    ) {
+      throw effectTransportError(409, 'NanoHost effect connection readiness changed.');
+    }
+    requireCurrentReadiness(readiness);
+  }
 
   return {
     supportsHarnessLogin: () => harnessLoginHandler !== undefined,
@@ -694,9 +747,30 @@ export function createNanoHostSessionDispatch(
           if (known)
             return settledImageResult(known, request.imageSettlement, requestId, operation);
         }
+        const liveFileExport =
+          operation === 'file.export' && request.input.purpose === 'artifact-submission';
+        if (
+          holdFirstCarriage &&
+          !(request.signal && Number.isFinite(request.deliveryDeadlineUnixMs)) &&
+          !(operation === 'image.acquire' && request.imageSettlement) &&
+          operation !== 'workspace.collect' &&
+          !liveFileExport
+        ) {
+          // These producers have no existing owner to end an undeliverable queue wait.
+          throw new NanoHostEffectNotEnqueuedError(
+            operation,
+            requestId,
+            'NanoHost effect first carriage is held.'
+          );
+        }
         let command: Readonly<Record<string, unknown>>;
+        let deliveryDeadlineUnixMs = request.deliveryDeadlineUnixMs;
         if (operation === 'reference.import') {
-          command = requireReferenceImportCommand(request.input, requestId);
+          const file = requireReferenceImportCommand(request.input, requestId);
+          const providerExpiry = file.providerBinding?.expiresAtMs;
+          if (providerExpiry !== undefined)
+            deliveryDeadlineUnixMs = Math.min(deliveryDeadlineUnixMs ?? Infinity, providerExpiry);
+          command = file;
         } else if (operation === 'image.build') {
           command = requireImageBuildCommand(request.input, requestId);
         } else if (operation === 'bridge.open') {
@@ -880,6 +954,13 @@ export function createNanoHostSessionDispatch(
             ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
             signal: request.signal,
+            deliveryDeadlineUnixMs,
+            deliveryDeadlineMonotonicMs:
+              operation === 'workspace.collect'
+                ? performance.now() + WORKSPACE_COLLECTION_POLL_MS
+                : liveFileExport
+                  ? performance.now() + LIVE_FILE_EXPORT_WAIT_MS
+                  : undefined,
             beforeDelivery: request.beforeDelivery,
             consumeResult: request.consumeResult,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
@@ -890,7 +971,7 @@ export function createNanoHostSessionDispatch(
             requestId,
             resolve,
           });
-          if (operation === 'file.export' && request.input.purpose === 'artifact-submission') {
+          if (liveFileExport) {
             armLiveFileExportWait(pendingEffects, pendingEffects.get(operation)!, request.signal);
           } else if (request.signal) {
             const pending = pendingEffects.get(operation)!;
@@ -943,7 +1024,11 @@ export function createNanoHostSessionDispatch(
           }
           if (operation === 'workspace.collect') {
             // NanoHost owns the scan clock; Core bounds the pre-delivery wait by both fixed phase allowances.
-            armWorkspaceCollectionDeadline(pendingEffects, pendingEffects.get(operation)!, 240_000);
+            armWorkspaceCollectionDeadline(
+              pendingEffects,
+              pendingEffects.get(operation)!,
+              WORKSPACE_COLLECTION_POLL_MS
+            );
           }
         });
       })();
@@ -1113,7 +1198,7 @@ export function createNanoHostSessionDispatch(
       return register();
     },
 
-    async poll(physicalConnection, operation, telemetryHeaders, recheckAdmission) {
+    async poll(physicalConnection, operation, telemetryHeaders, recheckAdmission, send) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       recheckAdmission?.();
       const pollingReadiness = readyPhysicalConnections.get(physicalConnection);
@@ -1188,31 +1273,22 @@ export function createNanoHostSessionDispatch(
         completedEffectPollConnections.add(physicalConnection);
         return null;
       }
-      if (pending.accepted || !pending.command) {
+      if (pending.accepted || !pending.command || holdFirstCarriage) {
         completedEffectPollConnections.add(physicalConnection);
         return null;
       }
-      if (pending.imageExecution) {
-        const original = await createExecutionStepJournalReader(input.coreDb!, {
-          kind: 'server',
-        }).readInvocation(pending.imageExecution.ref);
-        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-        requireCurrentReadiness(pollingReadiness);
-        if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
-          return null;
-        if (
-          !pending.imageExecution.authorize() ||
-          original.remainingMs <= 0 ||
-          original.state !== 'intent'
-        ) {
-          await removePendingEffectGroup(pendingEffects, operation, pending);
-          pending.reject(new Error('Image delivery authority is no longer usable.'));
-          return null;
-        }
-      }
-      if (pending.beforeDelivery) {
+      const originalCommand = pending.command;
+      const requestId = pending.requestId;
+      const commit: CommitEffectCarriage = async (write) => {
+        let assertOwner: (() => void) | undefined;
+        const image = pending.imageExecution;
+        const original = image
+          ? await createExecutionStepJournalReader(input.coreDb!, {
+              kind: 'server',
+            }).readInvocation(image.ref)
+          : undefined;
         try {
-          await pending.beforeDelivery();
+          assertOwner = await pending.beforeDelivery?.();
         } catch (cause) {
           // Reject only this unaccepted command. It must never become deliverable on a later poll.
           if (pendingEffects.get(operation) === pending && !pending.accepted) {
@@ -1225,33 +1301,120 @@ export function createNanoHostSessionDispatch(
           }
           throw cause;
         }
-        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-        requireCurrentReadiness(pollingReadiness);
-        if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
-          return null;
-      }
-      // Native image/dispatch admission can await. Keep an unavailable, unaccepted
-      // command queued for authorized recovery rather than claiming or losing it.
-      recheckAdmission?.();
-      pending.accepted = true;
-      pending.acceptedConnection = physicalConnection;
-      const command = { ...pending.command };
+        if (send && !image && !assertOwner)
+          throw effectTransportError(
+            409,
+            'NanoHost effect first-write owner proof is unavailable.'
+          );
+        if (
+          pendingEffects.get(operation) !== pending ||
+          pending.accepted ||
+          pending.requestId !== requestId ||
+          pending.command !== originalCommand
+        )
+          return false;
+        assertCurrentCarriage(physicalConnection, pollingReadiness);
+        recheckAdmission?.();
+        try {
+          assertOwner?.();
+        } catch (cause) {
+          await removePendingEffectGroup(pendingEffects, operation, pending);
+          pending.reject(
+            cause instanceof Error ? cause : new Error('Effect owner refused delivery.')
+          );
+          throw cause;
+        }
+        if (
+          image &&
+          (!image.authorize() ||
+            original?.state !== 'intent' ||
+            original.remainingMs <= 0 ||
+            readExecutionJournalInvocation(input.coreDb!, image.ref).remainingMs <= 0 ||
+            BigInt(Date.now()) * 1_000_000n >= image.deadlineUnixNano ||
+            process.hrtime.bigint() >= image.deadlineMonotonicNano)
+        ) {
+          await removePendingEffectGroup(pendingEffects, operation, pending);
+          pending.reject(new Error('Image delivery authority is no longer usable.'));
+          return false;
+        }
+        if (!effectAllowanceIsLive(pending)) return false;
+        // Set acceptance before the write. A failed native write can leave delivery uncertain.
+        pending.accepted = true;
+        pending.acceptedConnection = physicalConnection;
+        completedEffectPollConnections.add(physicalConnection);
+        write();
+        return true;
+      };
+      let command = { ...originalCommand };
       if (telemetryHeaders) injectTelemetryContext(pending.telemetryContext, telemetryHeaders);
-      completedEffectPollConnections.add(physicalConnection);
       if (operation === 'image.build') {
         const { dockerfile: _dockerfile, ...metadata } = command;
-        return metadata;
+        command = metadata;
       }
-      return command;
+      const accepted = send ? await send(command, commit, pending.signal) : await commit(() => {});
+      return accepted ? command : null;
     },
 
-    async imageBuildInput(physicalConnection, request) {
-      return readNanoHostImageBuildInput(
-        input.sessionAuthority,
-        readyPhysicalConnections,
-        pendingEffects,
-        physicalConnection,
-        request
+    async imageBuildInput(physicalConnection, request, recheckAdmission, send) {
+      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (holdFirstCarriage)
+        throw effectTransportError(503, 'NanoHost image input first carriage is held.');
+      const readiness = readyPhysicalConnections.get(physicalConnection);
+      if (!readiness)
+        throw effectTransportError(
+          409,
+          'NanoHost physical connection has not completed durable readiness.'
+        );
+      const requestId = await readImageBuildInputRequest(request);
+      const pending = pendingEffects.get('image.build');
+      const command = pending?.command;
+      if (
+        !pending ||
+        !command ||
+        !pending.accepted ||
+        pending.acceptedConnection !== physicalConnection ||
+        pending.requestId !== requestId ||
+        pending.imageBuildInputServed
+      ) {
+        throw effectTransportError(409, 'NanoHost image build input has no matching request.');
+      }
+      const {
+        dockerfile: body,
+        dockerfileByteLength: byteLength,
+        dockerfileDigest: sha256,
+      } = command;
+      if (!Buffer.isBuffer(body) || byteLength !== body.byteLength || typeof sha256 !== 'string')
+        throw effectTransportError(500, 'NanoHost image build input source is unavailable.');
+      await send(
+        { body, byteLength, requestId, sha256 },
+        async (write) => {
+          const assertOwner = await pending.beforeDelivery?.();
+          if (!assertOwner)
+            throw effectTransportError(
+              409,
+              'NanoHost image input first-write owner proof is unavailable.'
+            );
+          assertCurrentCarriage(physicalConnection, readiness);
+          recheckAdmission();
+          if (
+            pendingEffects.get('image.build') !== pending ||
+            pending.command !== command ||
+            !pending.accepted ||
+            pending.acceptedConnection !== physicalConnection ||
+            pending.requestId !== requestId ||
+            pending.originPhysicalEpoch !== readiness.physicalEpoch ||
+            pending.imageBuildInputServed
+          ) {
+            throw effectTransportError(409, 'NanoHost image build input has no matching request.');
+          }
+          assertOwner?.();
+          if (!effectAllowanceIsLive(pending))
+            throw effectTransportError(409, 'NanoHost image build input allowance ended.');
+          pending.imageBuildInputServed = true;
+          write();
+          return true;
+        },
+        pending.signal
       );
     },
 
@@ -1379,51 +1542,14 @@ export function createNanoHostSessionDispatch(
   };
 }
 
-/** Returns the original one-shot image bytes from the same accepted effect slot. */
-async function readNanoHostImageBuildInput(
-  sessionAuthority: NanoHostTransportSessionAuthority,
-  readyPhysicalConnections: WeakMap<object, NanoHostPhysicalReadiness>,
-  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
-  physicalConnection: object,
-  request: Request
-): Promise<{
-  readonly body: Buffer;
-  readonly byteLength: number;
-  readonly requestId: string;
-  readonly sha256: string;
-}> {
-  requireAuthoritativeSession(sessionAuthority, physicalConnection);
-  if (!readyPhysicalConnections.has(physicalConnection)) {
-    throw effectTransportError(
-      409,
-      'NanoHost physical connection has not completed durable readiness.'
-    );
-  }
-  const requestId = await readImageBuildInputRequest(request);
-  const pending = pendingEffects.get('image.build');
-  if (
-    !pending ||
-    !pending.command ||
-    !pending.accepted ||
-    pending.acceptedConnection !== physicalConnection ||
-    pending.requestId !== requestId ||
-    pending.imageBuildInputServed
-  ) {
-    throw effectTransportError(409, 'NanoHost image build input has no matching request.');
-  }
-  const body = pending.command.dockerfile;
-  const byteLength = pending.command.dockerfileByteLength;
-  const sha256 = pending.command.dockerfileDigest;
-  if (
-    !Buffer.isBuffer(body) ||
-    !Number.isSafeInteger(byteLength) ||
-    body.byteLength !== byteLength ||
-    typeof sha256 !== 'string'
-  ) {
-    throw effectTransportError(500, 'NanoHost image build input source is unavailable.');
-  }
-  pending.imageBuildInputServed = true;
-  return { body, byteLength: byteLength as number, requestId, sha256 };
+/** Samples original producer and dispatcher bounds after the last deciding read. */
+function effectAllowanceIsLive(pending: PendingNanoHostEffect): boolean {
+  return (
+    !pending.signal?.aborted &&
+    (pending.deliveryDeadlineUnixMs === undefined || Date.now() < pending.deliveryDeadlineUnixMs) &&
+    (pending.deliveryDeadlineMonotonicMs === undefined ||
+      performance.now() < pending.deliveryDeadlineMonotonicMs)
+  );
 }
 
 /** Starts bounded collection delivery and keeps abandonment bound to its original pending object. */
@@ -2007,7 +2133,7 @@ function armLiveFileExportWait(
     );
   };
   // Matches ExecSandboxRequest.timeout_seconds in NanoHost openshell_client.rs.
-  const timeout = setTimeout(abandon, 300_000);
+  const timeout = setTimeout(abandon, LIVE_FILE_EXPORT_WAIT_MS);
   timeout.unref();
   pending.fileExportWaitCleanup = () => {
     clearTimeout(timeout);
@@ -2557,48 +2683,60 @@ export function registerNanoHostSessionEffectRoutes(
     if (input.exposureAvailable && !input.exposureAvailable(entry))
       throw effectTransportError(403, 'NanoHost resource is unavailable.');
   };
+  const reserveFileData = (outgoing?: Http2ServerResponse) => {
+    if (fileDataTransferActive)
+      throw effectTransportError(409, 'NanoHost file-data transfer is already active.');
+    fileDataTransferActive = true;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      fileDataTransferActive = false;
+      outgoing?.off('close', release);
+    };
+    outgoing?.once('close', release);
+    return release;
+  };
 
   input.app.use('*', async (context, next) => {
-    if (context.req.path !== '/api/nanohost/transport/effects/image.build/input') {
-      return next();
-    }
-    if (context.req.method !== 'POST') {
-      return context.body(null, 405, { allow: 'POST' });
-    }
-    if (fileDataTransferActive) {
-      return privateEffectError(
-        effectTransportError(409, 'NanoHost file-data transfer is already active.')
-      );
-    }
-    fileDataTransferActive = true;
+    const path = '/api/nanohost/transport/effects/image.build/input';
+    if (context.req.path !== path) return next();
+    if (context.req.method !== 'POST') return context.body(null, 405, { allow: 'POST' });
+    let outgoing: Http2ServerResponse | undefined;
+    let release: (() => void) | undefined;
     try {
-      assertExposureAvailable('POST /api/nanohost/transport/effects/image.build/input');
-      const file = await input.dispatch.imageBuildInput(
+      outgoing = requireNativeEffectResponse(context.env);
+      const native = outgoing;
+      release = reserveFileData(native);
+      const recheckAdmission = () => {
+        assertExposureAvailable(`POST ${path}`);
+        assertNativeEffectWritable(native);
+      };
+      recheckAdmission();
+      await input.dispatch.imageBuildInput(
         requirePhysicalConnection(context.env),
-        context.req.raw
+        context.req.raw,
+        recheckAdmission,
+        (file, commit, signal) =>
+          sendNativeEffectFile(
+            native,
+            {
+              'content-length': String(file.byteLength),
+              'content-type': FILE_DATA_CONTENT_TYPE,
+              [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
+              [FILE_DATA_HEADERS.requestId]: file.requestId,
+              [FILE_DATA_HEADERS.sha256]: file.sha256,
+            },
+            (transfer) => fileDataChunks(file.body, transfer),
+            commit,
+            signal
+          )
       );
-      if (
-        input.exposureAvailable &&
-        !input.exposureAvailable('POST /api/nanohost/transport/effects/image.build/input')
-      ) {
-        throw effectTransportError(403, 'NanoHost resource is unavailable.');
-      }
-      return createChunkedFileDataResponse(
-        file.body,
-        {
-          'content-length': String(file.byteLength),
-          'content-type': FILE_DATA_CONTENT_TYPE,
-          [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
-          [FILE_DATA_HEADERS.requestId]: file.requestId,
-          [FILE_DATA_HEADERS.sha256]: file.sha256,
-        },
-        () => {
-          fileDataTransferActive = false;
-        }
-      );
+      return RESPONSE_ALREADY_SENT;
     } catch (error) {
-      fileDataTransferActive = false;
-      return privateEffectError(error);
+      return refuseNativeEffect(outgoing, error);
+    } finally {
+      release?.();
     }
   });
 
@@ -2606,76 +2744,50 @@ export function registerNanoHostSessionEffectRoutes(
     const { command: commandPath, result: resultPath } = NANO_HOST_EFFECT_PATHS[operation];
 
     input.app.post(commandPath, async (context) => {
-      let reservedFileData = false;
+      let outgoing: Http2ServerResponse | undefined;
+      let release: (() => void) | undefined;
       try {
-        if (operation === 'reference.import') {
-          if (fileDataTransferActive) {
-            throw effectTransportError(409, 'NanoHost file-data transfer is already active.');
-          }
-          fileDataTransferActive = true;
-          reservedFileData = true;
-        }
+        outgoing = requireNativeEffectResponse(context.env);
+        const native = outgoing;
+        if (operation === 'reference.import') release = reserveFileData(native);
         await readBoundedJsonObject(context.req.raw);
         const physicalConnection = requirePhysicalConnection(context.env);
         const telemetryHeaders: Record<string, string> = {};
-        const recheckAdmission = () => assertExposureAvailable(`POST ${commandPath}`);
+        const recheckAdmission = () => {
+          assertExposureAvailable(`POST ${commandPath}`);
+          assertNativeEffectWritable(native);
+        };
         recheckAdmission();
         const command = await input.dispatch.poll(
           physicalConnection,
           operation,
           telemetryHeaders,
-          recheckAdmission
-        );
-        for (const [name, value] of Object.entries(telemetryHeaders)) context.header(name, value);
-        if (operation === 'reference.import' && command) {
-          const file = requireReferenceImportCommand(command, readRequestId(command));
-          const providerMetadata = file.providerBinding
-            ? Buffer.from(JSON.stringify(file.providerBinding), 'utf8')
-            : undefined;
-          if (providerMetadata && providerMetadata.byteLength > 1024 * 1024)
-            throw effectTransportError(
-              400,
-              'NanoHost Provider metadata exceeded its control-body bound.'
-            );
-          return createStreamedFileDataResponse(
-            file,
-            {
+          recheckAdmission,
+          (command, commit, signal) => {
+            if (operation === 'reference.import')
+              return sendNativeReferenceImport(native, command, telemetryHeaders, commit, signal);
+            const body = Buffer.from(JSON.stringify(command), 'utf8');
+            const headers = {
               ...telemetryHeaders,
-              'content-length':
-                file.entryKind === 'file'
-                  ? String(file.byteLength + (providerMetadata?.byteLength ?? 0))
-                  : '0',
-              ...(providerMetadata
-                ? { 'x-openkit-provider-binding-bytes': String(providerMetadata.byteLength) }
-                : {}),
-              'content-type': FILE_DATA_CONTENT_TYPE,
-              'x-openkit-entry-kind': file.entryKind,
-              [FILE_DATA_HEADERS.relativePath]: encodeRelativePath(file.relativePath),
-              [FILE_DATA_HEADERS.requestId]: file.requestId,
-              [FILE_DATA_HEADERS.slot]: file.slot,
-              ...(file.entryKind === 'file'
-                ? {
-                    [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
-                    [FILE_DATA_HEADERS.sha256]: file.sha256,
-                    'x-openkit-executable': String(file.executable),
-                  }
-                : {}),
-            },
-            () => {
-              fileDataTransferActive = false;
-            },
-            providerMetadata
-          );
-        }
-        if (reservedFileData) {
-          fileDataTransferActive = false;
-        }
-        return command ? context.json(command, 200) : context.body(null, 204);
+              'content-length': String(body.byteLength),
+              'content-type': 'application/json',
+            };
+            validateEffectHeaders(headers);
+            return commit(() => {
+              native.writeHead(200, headers);
+              native.write(body);
+              native.end();
+            });
+          }
+        );
+        if (!command) return context.body(null, 204);
+        if (!native.headersSent)
+          throw effectTransportError(503, 'NanoHost effect first-write owner is unavailable.');
+        return RESPONSE_ALREADY_SENT;
       } catch (error) {
-        if (reservedFileData) {
-          fileDataTransferActive = false;
-        }
-        return privateEffectError(error);
+        return refuseNativeEffect(outgoing, error);
+      } finally {
+        release?.();
       }
     });
 
@@ -2691,13 +2803,11 @@ export function registerNanoHostSessionEffectRoutes(
           operation === 'workspace.collect' &&
           context.req.header('content-type') === FILE_DATA_CONTENT_TYPE
         ) {
-          if (fileDataTransferActive)
-            throw effectTransportError(409, 'NanoHost file-data transfer is already active.');
-          fileDataTransferActive = true;
+          const release = reserveFileData();
           try {
             await input.dispatch.workspaceCollectResult(physicalConnection, context.req.raw);
           } finally {
-            fileDataTransferActive = false;
+            release();
           }
           return context.body(null, 204);
         }
@@ -2726,14 +2836,11 @@ export function registerNanoHostSessionEffectRoutes(
           return context.body(null, 204);
         }
         if (operation === 'file.export') {
-          if (fileDataTransferActive) {
-            throw effectTransportError(409, 'NanoHost file-data transfer is already active.');
-          }
-          fileDataTransferActive = true;
+          const release = reserveFileData();
           try {
             await input.dispatch.fileExportResult(physicalConnection, context.req.raw);
           } finally {
-            fileDataTransferActive = false;
+            release();
           }
           return context.body(null, 204);
         }
@@ -3074,113 +3181,194 @@ async function readImageBuildInputRequest(request: Request): Promise<string> {
   return requestId;
 }
 
-/**
- * Creates one bounded raw response and releases its shared file-data reservation on completion.
- *
- * @param body Complete verified bytes retained by the current effect owner.
- * @param headers Exact operation-specific raw response headers.
- * @param release Releases the single application file-data reservation once.
- * @returns Raw response whose application chunks never exceed 65,536 bytes.
- * @throws A redacted 500 transport error when the response stream cannot be created.
- */
-function createChunkedFileDataResponse(
-  body: Uint8Array,
-  headers: Readonly<Record<string, string>>,
-  release: () => void
-): Response {
-  let offset = 0;
-  let released = false;
-  const releaseOnce = () => {
-    if (!released) {
-      released = true;
-      release();
-    }
-  };
-  try {
-    return new Response(
-      new ReadableStream<Uint8Array>({
-        cancel: releaseOnce,
-        pull(controller) {
-          if (offset === body.byteLength) {
-            controller.close();
-            releaseOnce();
-            return;
-          }
-          const end = Math.min(offset + FILE_DATA_CHUNK_BYTES, body.byteLength);
-          controller.enqueue(body.subarray(offset, end));
-          offset = end;
-        },
-      }),
-      { headers, status: 200 }
-    );
-  } catch {
-    releaseOnce();
-    throw effectTransportError(500, 'NanoHost file-data response stream failed.');
+/** Requires the real adapter response before preparing a command-bearing stream. */
+function requireNativeEffectResponse(environment: unknown): Http2ServerResponse {
+  const outgoing = (environment as { readonly outgoing?: unknown } | undefined)?.outgoing;
+  if (!(outgoing instanceof Http2ServerResponse))
+    throw effectTransportError(409, 'NanoHost effect requires a native H2 response.');
+  return outgoing;
+}
+
+/** Checks stream state inside the synchronous first-write decision. */
+function assertNativeEffectWritable(outgoing: Http2ServerResponse): void {
+  if (
+    outgoing.headersSent ||
+    outgoing.destroyed ||
+    outgoing.writableEnded ||
+    outgoing.stream.closed ||
+    outgoing.stream.destroyed
+  )
+    throw effectTransportError(409, 'NanoHost effect response is unavailable.');
+}
+
+/** Emits a route refusal before headers, or resets an uncertain partial native response. */
+function refuseNativeEffect(outgoing: Http2ServerResponse | undefined, error: unknown): Response {
+  if (outgoing && (outgoing.headersSent || outgoing.destroyed || outgoing.stream.closed)) {
+    if (!outgoing.stream.closed && !outgoing.stream.destroyed)
+      outgoing.stream.close(http2Constants.NGHTTP2_INTERNAL_ERROR);
+    return RESPONSE_ALREADY_SENT;
+  }
+  return privateEffectError(error);
+}
+
+/** Checks fallible header encoding before the dispatch owner can accept the operation. */
+function validateEffectHeaders(headers: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(headers)) {
+    validateHeaderName(name);
+    validateHeaderValue(name, value);
   }
 }
 
-/** Streams one exact private source under backpressure. The receiving Host still verifies the same size and digest before publication. Cancellation closes the current source and releases only this transfer's carriage slot. */
-function createStreamedFileDataResponse(
-  file: ReturnType<typeof requireReferenceImportCommand>,
+/** Prepares the exact import header and optional bounded provider prefix. */
+function sendNativeReferenceImport(
+  outgoing: Http2ServerResponse,
+  command: Readonly<Record<string, unknown>>,
+  telemetryHeaders: Readonly<Record<string, string>>,
+  commit: CommitEffectCarriage,
+  signal: AbortSignal | undefined
+): Promise<boolean> {
+  const file = requireReferenceImportCommand(command, readRequestId(command));
+  const providerMetadata = file.providerBinding
+    ? Buffer.from(JSON.stringify(file.providerBinding), 'utf8')
+    : undefined;
+  if (providerMetadata && providerMetadata.byteLength > CONTROL_BODY_MAX_BYTES)
+    throw effectTransportError(400, 'NanoHost Provider metadata exceeded its control-body bound.');
+  const body = file.entryKind === 'file' && file.body ? Buffer.from(file.body) : Buffer.alloc(0);
+  return sendNativeEffectFile(
+    outgoing,
+    {
+      ...telemetryHeaders,
+      'content-length': String(
+        file.entryKind === 'file' ? file.byteLength + (providerMetadata?.byteLength ?? 0) : 0
+      ),
+      ...(providerMetadata
+        ? { 'x-openkit-provider-binding-bytes': String(providerMetadata.byteLength) }
+        : {}),
+      'content-type': FILE_DATA_CONTENT_TYPE,
+      'x-openkit-entry-kind': file.entryKind,
+      [FILE_DATA_HEADERS.relativePath]: encodeRelativePath(file.relativePath),
+      [FILE_DATA_HEADERS.requestId]: file.requestId,
+      [FILE_DATA_HEADERS.slot]: file.slot,
+      ...(file.entryKind === 'file'
+        ? {
+            [FILE_DATA_HEADERS.byteLength]: String(file.byteLength),
+            [FILE_DATA_HEADERS.sha256]: file.sha256,
+            'x-openkit-executable': String(file.executable),
+          }
+        : {}),
+    },
+    (transfer) =>
+      file.entryKind === 'file' && file.source
+        ? verifiedImportChunks(file.source, file.byteLength, file.sha256, transfer)
+        : fileDataChunks(body, transfer),
+    commit,
+    signal,
+    providerMetadata
+  );
+}
+
+/** Writes headers, the bounded prefix and the first payload together, then follows native backpressure. */
+async function sendNativeEffectFile(
+  outgoing: Http2ServerResponse,
   headers: Readonly<Record<string, string>>,
-  release: () => void,
-  providerMetadata?: Buffer
-): Response {
-  if (file.entryKind === 'directory')
-    return createChunkedFileDataResponse(Buffer.alloc(0), headers, release);
-  if (file.body)
-    return createChunkedFileDataResponse(
-      providerMetadata ? Buffer.concat([providerMetadata, file.body]) : file.body,
-      headers,
-      release
+  open: (signal: AbortSignal) => AsyncGenerator<Uint8Array>,
+  commit: CommitEffectCarriage,
+  originalSignal: AbortSignal | undefined,
+  prefix?: Buffer
+): Promise<boolean> {
+  validateEffectHeaders(headers);
+  const close = new AbortController();
+  const abort = () => close.abort();
+  outgoing.once('close', abort);
+  const signal = originalSignal ? AbortSignal.any([close.signal, originalSignal]) : close.signal;
+  const chunks = open(signal);
+  try {
+    if (signal.aborted)
+      throw effectTransportError(409, 'NanoHost file-data carriage was cancelled.');
+    let next = await waitForEffectFile(chunks.next(), signal);
+    let writable = true;
+    const sent = await waitForEffectFile(
+      commit(() => {
+        outgoing.writeHead(200, headers);
+        if (prefix) {
+          // The prefix is control-bounded. Do not let a wait between it and payload disclose late bytes.
+          for (let offset = 0; offset < prefix.byteLength; offset += FILE_DATA_CHUNK_BYTES)
+            outgoing.write(prefix.subarray(offset, offset + FILE_DATA_CHUNK_BYTES));
+        }
+        if (next.done) outgoing.end();
+        else writable = outgoing.write(next.value);
+      }),
+      signal
     );
-  const controller = new AbortController();
-  let iterator: AsyncIterator<Uint8Array> | undefined;
+    if (!sent) return false;
+    while (!next.done) {
+      if (!writable) await once(outgoing, 'drain', { signal });
+      next = await waitForEffectFile(chunks.next(), signal);
+      if (next.done) outgoing.end();
+      else writable = outgoing.write(next.value);
+    }
+    if (!outgoing.writableFinished) await once(outgoing, 'finish', { signal });
+    return true;
+  } finally {
+    outgoing.off('close', abort);
+    close.abort();
+    // A stalled producer must not keep the shared transfer slot after reset or refusal.
+    void chunks.return(undefined).catch(() => {});
+  }
+}
+
+/** Stops waiting promptly even if an outstanding source read has not observed cancellation yet. */
+async function waitForEffectFile<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let subscription: ReturnType<typeof addAbortListener> | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    subscription = addAbortListener(signal, () =>
+      reject(effectTransportError(409, 'NanoHost file-data carriage was cancelled.'))
+    );
+  });
+  try {
+    return await Promise.race([work, stopped]);
+  } finally {
+    subscription?.[Symbol.dispose]();
+  }
+}
+
+/** Splits bounded in-memory input into the existing maximum application chunk. */
+async function* fileDataChunks(body: Buffer, signal: AbortSignal): AsyncGenerator<Uint8Array> {
+  for (let offset = 0; offset < body.byteLength; offset += FILE_DATA_CHUNK_BYTES) {
+    signal.throwIfAborted();
+    yield body.subarray(offset, offset + FILE_DATA_CHUNK_BYTES);
+  }
+}
+
+/** Checks each sourced chunk and requires the exact length and digest before successful EOF. */
+async function* verifiedImportChunks(
+  source: NanoHostFileImportSource,
+  byteLength: number,
+  sha256: string,
+  signal: AbortSignal
+): AsyncGenerator<Uint8Array> {
   const hash = createHash('sha256');
   let received = 0;
-  let released = false;
-  const finish = async () => {
-    if (released) return;
-    released = true;
-    controller.abort();
-    try {
-      await iterator?.return?.();
-    } finally {
-      release();
+  try {
+    for await (const chunk of source.open(signal)) {
+      signal.throwIfAborted();
+      if (
+        !(chunk instanceof Uint8Array) ||
+        !chunk.byteLength ||
+        chunk.byteLength > FILE_DATA_CHUNK_BYTES ||
+        received + chunk.byteLength > byteLength
+      )
+        throw effectTransportError(409, 'NanoHost import source exceeded its admitted range.');
+      received += chunk.byteLength;
+      const bytes = Buffer.from(chunk);
+      hash.update(bytes);
+      yield bytes;
     }
-  };
-  return new Response(
-    new ReadableStream<Uint8Array>({
-      async pull(output) {
-        try {
-          iterator ??= file.source!.open(controller.signal)[Symbol.asyncIterator]();
-          const next = await iterator.next();
-          if (next.done) {
-            if (received !== file.byteLength || `sha256:${hash.digest('hex')}` !== file.sha256)
-              throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
-            output.close();
-            await finish();
-            return;
-          }
-          if (
-            !(next.value instanceof Uint8Array) ||
-            !next.value.byteLength ||
-            next.value.byteLength > FILE_DATA_CHUNK_BYTES ||
-            received + next.value.byteLength > file.byteLength
-          )
-            throw effectTransportError(409, 'NanoHost import source exceeded its admitted range.');
-          received += next.value.byteLength;
-          hash.update(next.value);
-          output.enqueue(next.value);
-        } catch {
-          output.error(effectTransportError(500, 'NanoHost import source is unavailable.'));
-          await finish();
-        }
-      },
-      cancel: finish,
-    }),
-    { headers, status: 200 }
-  );
+  } catch {
+    throw effectTransportError(500, 'NanoHost import source is unavailable.');
+  }
+  if (received !== byteLength || `sha256:${hash.digest('hex')}` !== sha256)
+    throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
 }
 
 /**

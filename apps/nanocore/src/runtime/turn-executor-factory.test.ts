@@ -5883,6 +5883,7 @@ describe('createConfiguredTurnExecutor', () => {
         const {
           beforeDelivery: _delivery,
           consumeResult: _consumer,
+          deliveryDeadlineUnixMs: _deadline,
           signal: _signal,
           ...transportRequest
         } = request;
