@@ -521,11 +521,13 @@ async function recordLlmGatewayUsage(input: {
  * @param durableCall Started durable call, when any.
  * @param status Terminal status.
  * @param errorCode Stable error code for non-success calls.
+ * @param beforeDisclosure Rechecks authority after settlement while the owner read is still open.
  */
 async function finishDurableLlmGatewayCall(
   durableCall: DurableLlmGatewayCall | null,
   status: 'succeeded' | 'failed' | 'aborted' | 'timed-out',
-  errorCode?: string
+  errorCode?: string,
+  beforeDisclosure?: () => void | Promise<void>
 ): Promise<void> {
   if (!durableCall || durableCall.finished) {
     return;
@@ -542,6 +544,7 @@ async function finishDurableLlmGatewayCall(
       workspaceDb: durableCall.workspaceDb,
       ...(durableCall.serverWorkCall ? { serverWorkCall: durableCall.serverWorkCall } : {}),
     });
+    if (beforeDisclosure) await beforeDisclosure();
   } finally {
     try {
       if (durableCall.workspaceDb.scope === 'workspace') durableCall.workspaceDb.sqlite.close();
@@ -2719,8 +2722,12 @@ export function registerWorkerInferenceRoutes({
           },
         });
         if (!input.stream) {
-          await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          await durableCall?.assertAuthority?.();
+          await finishDurableLlmGatewayCall(
+            durableCall,
+            'succeeded',
+            undefined,
+            durableCall.assertAuthority
+          );
         }
         return result;
       } catch (error) {

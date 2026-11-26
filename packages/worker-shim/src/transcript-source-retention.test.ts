@@ -117,7 +117,7 @@ describe('WorkerTranscriptWriter source retention', () => {
     }
   });
 
-  it('retains distinct metadata emissions and every exact restricted chunk before lost ACK', async () => {
+  it('retains the original metadata and every deferred chunk before lost chunk ACK', async () => {
     const sessionDir = await mkdtemp(join(tmpdir(), 'worker-source-restricted-'));
     // Include a chunk boundary, a NUL and non-UTF-8 bytes; retained bytes must be exact.
     const body = Buffer.concat([Buffer.alloc(48 * 1024, 97), Buffer.from([0, 255, 195, 40, 10])]);
@@ -162,10 +162,10 @@ describe('WorkerTranscriptWriter source retention', () => {
       sessionDir,
       appendEvent: async (record) => {
         delivered.push(record);
-        if (record.sequence === 1) {
+        if (record.sequence === 2) {
           entered.resolve({
             record,
-            source: await sourceRecords(sessionDir, 1).catch((error: unknown) => error),
+            source: await sourceRecords(sessionDir, 0).catch((error: unknown) => error),
           });
           await release.promise;
           throw lostAck;
@@ -174,6 +174,10 @@ describe('WorkerTranscriptWriter source retention', () => {
     });
     await writer.writeObservation(metadata);
     await expect(sourceRecords(sessionDir, 0)).rejects.toMatchObject({ code: 'ENOENT' });
+    const heartbeat = await writer.writeAndAppendEvent({
+      type: 'worker.heartbeat',
+      data: { status: 'running' },
+    });
     const outcome = writer.writeObservation(metadata, body).then(
       () => null,
       (error: unknown) => error
@@ -198,12 +202,12 @@ describe('WorkerTranscriptWriter source retention', () => {
           },
         },
       }));
-      const expected = [observationEvent(0, metadata), observationEvent(1, metadata), ...chunks];
-      // SOURCE-RETENTION and expected-before-content: one observation ID does not overwrite either emission.
-      expect(observed.record).toEqual(expected[1]);
-      expect(await ordinaryEvents(sessionDir)).toEqual(expected.slice(0, 2));
-      // The selected source begins with its own metadata emission and preserves exact chunk order.
-      expect(observed.source).toEqual(expected.slice(1));
+      const original = observationEvent(0, metadata);
+      const expected = [original, ...chunks];
+      // Deferred chunks belong to the expected observation, even after another accepted event.
+      expect(observed.record).toEqual(chunks[0]);
+      expect(await ordinaryEvents(sessionDir)).toEqual([original, heartbeat]);
+      expect(observed.source).toEqual(expected);
       release.resolve();
       expect(await outcome).toBe(lostAck);
       await expect(
@@ -211,13 +215,13 @@ describe('WorkerTranscriptWriter source retention', () => {
       ).rejects.toBe(lostAck);
       writer.stopLiveEvents(lostAck);
       await writer.writeTerminalOutcome({ status: 'failed', stopReason: 'error' });
-      expect(await sourceRecords(sessionDir, 1)).toEqual(expected.slice(1));
+      expect(await sourceRecords(sessionDir, 0)).toEqual(expected);
       const ordinary = await ordinaryEvents(sessionDir);
       expect(ordinary.some((record) => record.event.type === 'observation.content.chunk')).toBe(
         false
       );
-      // The failed metadata ACK prevents chunk exposure, but must not discard owed source bytes.
-      expect(delivered.map((record) => record.sequence)).toEqual([0, 1]);
+      // Losing the first chunk ACK prevents the next chunk from being sent, while its source remains.
+      expect(delivered.map((record) => record.sequence)).toEqual([0, 1, 2]);
     } finally {
       release.resolve();
       await outcome;

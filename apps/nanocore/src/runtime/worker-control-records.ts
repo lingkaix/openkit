@@ -285,10 +285,12 @@ export async function recoverWorkerObservationSource(
             throw new Error('Observation source metadata conflict');
           continue;
         }
+        // Deferred publication can follow other accepted events. Its chunk range stays contiguous.
         if (
           record.event.type !== 'observation.content.chunk' ||
           !sameWorkerControlLineage(record.lineage, metadata.lineage) ||
-          record.sequence !== metadata.sequence + count - 1 ||
+          record.sequence <= metadata.sequence ||
+          (chunks.length > 0 && record.sequence !== chunks.at(-1)!.record.sequence + 1) ||
           chunks.length >= content.chunkCount
         )
           throw new Error('Observation source chunk identity conflict');
