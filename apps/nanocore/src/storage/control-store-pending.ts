@@ -26,6 +26,7 @@ import {
   type ControlProductContentMount,
   type ControlProductEntry,
   ControlProductEntrySchema,
+  ControlProductPreconditionError,
 } from './control-store-product-records.js';
 import type { ControlContentPreparation } from './control-store-products.js';
 import {
@@ -315,6 +316,54 @@ function pendingReceipt(db: WorkspaceDb, transition: ControlPendingTransition) {
   return { original, responseId, replayed: false };
 }
 
+/** Permits only the public archive command's owned receipt and matching command Audit. */
+function assertArchiveAdmission(
+  input: Extract<ControlPendingCommandInput, { action: 'closeout' }>,
+  admission: NonNullable<ControlPendingTransition['admission']>
+): void {
+  const { receipt, audit } = admission;
+  const { workspaceId, threadId } = input;
+  const { requestId } = receipt;
+  const scope = { workspaceId, threadId };
+  if (
+    receipt.command !== 'thread.archive' ||
+    receipt.key !== commandRequestKey(receipt.command, requestId, scope) ||
+    receipt.inputHash !== commandInputHash({ requestId, ...scope }) ||
+    !isDeepStrictEqual(receipt.scope, scope) ||
+    !isDeepStrictEqual(receipt.response, { kind: 'thread', id: threadId }) ||
+    receipt.expiresAt <= receipt.createdAt ||
+    audit.workspaceId !== workspaceId ||
+    audit.threadId !== threadId ||
+    audit.requestId !== requestId ||
+    input.actor.kind !== 'user' ||
+    !isDeepStrictEqual(audit.actor, input.actor) ||
+    audit.category !== 'command' ||
+    audit.action !== 'thread.archive' ||
+    audit.resource !== `thread:${threadId}` ||
+    audit.outcome !== 'succeeded' ||
+    audit.severity !== 'info' ||
+    audit.summary !== 'Thread archived.' ||
+    audit.createdAt !== receipt.createdAt ||
+    audit.occurredAt !== receipt.createdAt ||
+    [
+      audit.turnId,
+      audit.itemId,
+      audit.capabilityCallId,
+      audit.permissionDecisionId,
+      audit.vaultGrantId,
+      audit.subject,
+      audit.agentId,
+      audit.agentSessionId,
+      audit.resourceRevision,
+      audit.errorCode,
+    ].some((value) => value != null) ||
+    audit.notebookAdmission ||
+    audit.policyInvocation ||
+    audit.policyWriteOutcome
+  )
+    throw new ControlProductPreconditionError();
+}
+
 /** Applies Pending rows, their prepared product entries and original receipt in one native savepoint. */
 export function applyControlPendingTransition(
   db: WorkspaceDb,
@@ -361,6 +410,7 @@ export function applyControlPendingTransition(
       )
         assertControlPendingArchive(db, input.threadId, prepared);
       if (archive) assertArchiveMutation(db, archive);
+      if (transition.admission) assertArchiveAdmission(input, transition.admission);
     }
     applyControlTerminal(db, transition.terminal, terminal);
     result = {

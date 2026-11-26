@@ -43,8 +43,10 @@ import {
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { plannedRetainedProductJson } from '../storage/immutable-content.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from '../storage/index-rebuild.js';
 import { appendWorkObservation } from '../storage/work-observations.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { recordWorkspaceOwnerMembership } from '../storage/workspace-owner-records.js';
 import {
   findWorkspaceQueueInputRef,
@@ -66,6 +68,7 @@ import {
   readPendingRecords,
   readPendingRow,
   removeGoal,
+  removeTrailingPublicationItem,
   removeWorkObservation,
   seedEndedGoalTask,
   touchPendingRow,
@@ -156,8 +159,8 @@ const PENDING_BOOT_POSTS = [
   { write: 'outcome close', seed: 'outcome', writerAfter: 3 },
   { write: 'outcome wake', seed: 'outcomes', writerAfter: 4 },
 ] as const;
-/** Outcome Items 16 closed-out Worker denials publish on their one closeout Turn, two each. */
-const CLOSED_OUT_ITEMS = 32;
+/** Outcome Items 17 closed-out Worker denials publish on their one closeout Turn, two each. */
+const CLOSED_OUT_ITEMS = 34;
 /** A user-input answer over the 64 KiB inline Item bound: its outcome Item is file-backed. */
 const LARGE_ANSWER_BYTES = 96 * 1024;
 /** Retained Pending rows of the long-history gate: past one writer frame of census sources. */
@@ -1188,7 +1191,7 @@ describe('B5 attributed Boot recovery', () => {
   // bounded groups, so the idle tail closes every denial out on one Core-local Turn and the next
   // Boot finds nothing left to decide.
   it(
-    "closes the idle tail's 16 denials out on one completed Turn with every original association, exactly once across restart",
+    "closes the idle tail's 17 denials out on one completed Turn with every original association, exactly once across restart",
     async () => {
       const root = await seedRoot(['Healthy', 'Grouped closeout']);
       const [healthy, held] = root.workspaceIds as [string, string];
@@ -1202,7 +1205,7 @@ describe('B5 attributed Boot recovery', () => {
             services: 'none',
           })),
           ...(await seedDecidedApprovals(store, root, [held], {
-            count: 16,
+            count: 17,
             requesterKind: 'worker',
             decision: 'denied',
             services: 'none',
@@ -1234,7 +1237,7 @@ describe('B5 attributed Boot recovery', () => {
       expect(readPendingRow(root.dataRoot, healthy, denials[0]!.requestIds[0]!)).toMatchObject({
         delivery: 'closed-out',
       });
-      // Every one of A's 16 denials closed out on the same one Turn of its own Thread.
+      // Every one of A's 17 denials closed out on the same one Turn of its own Thread.
       const closed = denials[1]!.requestIds.map((requestId) =>
         readPendingRow(root.dataRoot, held, requestId)
       );
@@ -1648,6 +1651,145 @@ describe('B5 attributed Boot recovery', () => {
     }
   });
 
+  it.each(['original publication', 'derived invalidation'] as const)(
+    'refuses a substituted Boot %s and recovers the original once',
+    async (kind) => {
+      const root = await seedRoot(['Original Pending publication']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, async (store) => {
+        const close = store.completeWorkspaceTurn.bind(store);
+        const pause =
+          kind === 'original publication'
+            ? vi
+                .spyOn(store, 'completeWorkspaceTurn')
+                .mockImplementation(async (...args) =>
+                  args[4]?.pending?.some((input) => input.action === 'delivery-prove')
+                    ? store.getTurnById(args[2])
+                    : close(...args)
+                )
+            : undefined;
+        try {
+          return await seedDecidedApprovals(store, root, [workspaceId], {
+            requesterKind: 'person',
+            decision: kind === 'original publication' ? 'denied' : 'granted',
+            governedIntent: kind === 'derived invalidation',
+            services: 'frozen',
+          });
+        } finally {
+          pause?.mockRestore();
+        }
+      });
+      const requestId = seeded!.requestIds[0]!;
+      if (kind === 'derived invalidation')
+        expect(
+          writePendingDisposition(
+            root.dataRoot,
+            workspaceId,
+            requestId,
+            'denied-not-executed',
+            'membership-revoked'
+          )
+        ).toBe(1);
+      const row = readPendingRow(root.dataRoot, workspaceId, requestId)!;
+      expect(row).toMatchObject({
+        delivery: kind === 'original publication' ? 'frozen' : 'delivered',
+        publication_turn_id: expect.any(String),
+      });
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      const pending = {
+        coreDb,
+        agentAuthority: () => true,
+        openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+      };
+      let changes = 0;
+      if (kind === 'derived invalidation') {
+        const build = store.pendingServiceTurnGroups.bind(store);
+        vi.spyOn(store, 'pendingServiceTurnGroups').mockImplementation(
+          async (id, threadId, input, ownBody) => {
+            const [command] = input.pending;
+            if (command?.action !== 'associate-invalidation')
+              return build(id, threadId, input, ownBody);
+            changes++;
+            const turnId = deriveEntityId('tu', ['unrelated invalidation', requestId]);
+            return build(
+              id,
+              threadId,
+              {
+                ...input,
+                turnId,
+                pending: [{ ...command, turnId }],
+                items: input.items.map((item) => ({ ...item, turnId })),
+              },
+              ownBody
+            );
+          }
+        );
+      }
+      const publish = store.publishPendingPlan.bind(store);
+      let refusal: unknown;
+      vi.spyOn(store, 'publishPendingPlan').mockImplementationOnce(
+        async (id, header, groups, turns) => {
+          if (kind === 'original publication') {
+            const group = groups.find(
+              (value) => value.kind === 'pending' && value.input.input.action === 'delivery-prove'
+            );
+            if (group?.kind !== 'pending' || !group.input.terminal)
+              throw new Error('Missing original local publication.');
+            const terminal = group.input.terminal;
+            const event = terminal.entries[0]!;
+            const reference = event.content.reference;
+            if (!('representation' in reference))
+              throw new Error('Expected inline original completion.');
+            const envelope = JSON.parse(reference.body);
+            const triggerSource = {
+              ...envelope.data.turn.triggerSource,
+              summary: 'Unrelated summary',
+            };
+            terminal.turn.record.triggerSource = triggerSource;
+            envelope.data.turn.triggerSource = triggerSource;
+            const scope = nativeProductScope(root.dataRoot, { kind: 'workspace', workspaceId });
+            terminal.entries[0] = {
+              ...event,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+            };
+            changes++;
+          }
+          try {
+            return await publish(id, header, groups, turns);
+          } catch (error) {
+            refusal = error;
+            throw error;
+          }
+        }
+      );
+      try {
+        store.startPendingRequestDelivery(pending);
+        await recoverPendingRequestsAtBoot(store, pending);
+        expect(changes).toBe(1);
+        expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      } finally {
+        vi.restoreAllMocks();
+        closeTestCoreDb(coreDb);
+        closeWorkspaceProductReadHandles(root.dataRoot);
+        await shutdownControlStoreWorkerClient();
+      }
+      expectEvidenceUnchanged(root.dataRoot, workspaceId, original);
+      const server = await startServer(root);
+      await expectNotHeld(server, workspaceId);
+      await stopServer(server);
+      expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+        delivery: 'delivered',
+        publication_turn_id: row.publication_turn_id,
+        ...(kind === 'derived invalidation'
+          ? { invalidation_turn_id: deriveEntityId('tu', ['invalidation', requestId]) }
+          : {}),
+      });
+    },
+    CASE_TIMEOUT_MS
+  );
+
   // V1-P vehicle gate, decide-then-link: A's person outcome close publishes a user-input answer
   // over the inline bound, so A's one grouped decision carries a new body. Its last group is
   // refused at the writer: A keeps every row, file and linked digest, and no private body stays.
@@ -1707,6 +1849,67 @@ describe('B5 attributed Boot recovery', () => {
       expect(added.filter((path) => !bodies.includes(path))).toEqual([
         expect.stringMatching(/\/feedback\.json$/),
       ]);
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'releases a file-backed Boot answer when its paired completion cannot be staged before posting',
+    async () => {
+      const root = await seedRoot(['Answer staging']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [workspaceId], {
+          requesterKind: 'person',
+          decision: null,
+          answer: 'x'.repeat(LARGE_ANSWER_BYTES),
+          services: 'none',
+        })
+      );
+      const requestId = seeded!.requestIds[0]!;
+      const original = workspaceEvidence(root.dataRoot, workspaceId);
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      const pending = {
+        coreDb,
+        agentAuthority: () => true,
+        openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+      };
+      const backend = join(root.dataRoot, 'workspaces', workspaceId, 'evidence', 'backend');
+      const close = store.planTurnCompletion.bind(store);
+      let refusal: unknown;
+      const completion = vi
+        .spyOn(store, 'planTurnCompletion')
+        .mockImplementationOnce(async (...args) => {
+          expect(readdirSync(backend).some((name) => name.endsWith('.tmp'))).toBe(true);
+          chmodSync(backend, 0o500);
+          try {
+            return await close(...args);
+          } catch (error) {
+            refusal = error;
+            throw error;
+          } finally {
+            chmodSync(backend, 0o700);
+          }
+        });
+      const posts = vi.spyOn(store, 'publishPendingPlan');
+      try {
+        store.startPendingRequestDelivery(pending);
+        await recoverPendingRequestsAtBoot(store, pending);
+        expect(completion).toHaveBeenCalledTimes(1);
+        expect(refusal).toMatchObject({ code: 'EACCES' });
+        expect(posts).not.toHaveBeenCalled();
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(false);
+      } finally {
+        vi.restoreAllMocks();
+        closeTestCoreDb(coreDb);
+        closeWorkspaceProductReadHandles(root.dataRoot);
+        await shutdownControlStoreWorkerClient();
+      }
+      expect(readPendingRow(root.dataRoot, workspaceId, requestId)).toMatchObject({
+        delivery: 'undelivered',
+      });
+      expectEvidenceUnchanged(root.dataRoot, workspaceId, original);
     },
     CASE_TIMEOUT_MS
   );
@@ -3421,6 +3624,64 @@ describe('B5 attributed Boot recovery', () => {
         await shutdownControlStoreWorkerClient();
         closeWorkspaceProductReadHandles(root.dataRoot);
       }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    'restores the missing Pending disposition Item on its original Worker Turn once across Boot replay',
+    async () => {
+      const root = await seedRoot(['Worker publication']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const [seeded] = await withSeedStore(root, (store) =>
+        seedDecidedApprovals(store, root, [workspaceId], {
+          requesterKind: 'worker',
+          decision: 'denied',
+          services: 'frozen',
+        })
+      );
+      const requestId = seeded!.requestIds[0]!;
+      const itemId = pendingRequestItemId(requestId, 'disposition-status');
+      const frozen = readPendingRecord(root.dataRoot, workspaceId, requestId)!;
+      expect(frozen).toMatchObject({ delivery: 'frozen', publicationTurnId: expect.any(String) });
+      const original = await withSeedStore(root, (store) =>
+        store.getThreadItem(workspaceId, seeded!.threadId, itemId)
+      );
+      expect(original).toMatchObject({
+        type: 'status',
+        turnId: frozen.publicationTurnId,
+      });
+      // Retain the earlier decision Item and simulate a publication missing its trailing role.
+      expect(
+        removeTrailingPublicationItem(root.dataRoot, workspaceId, frozen.publicationTurnId!, itemId)
+      ).toBe(1);
+
+      const recover = () =>
+        withSeedStore(root, async (store, coreDb) => {
+          const pending = {
+            coreDb,
+            agentAuthority: () => true,
+            openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+          };
+          store.startPendingRequestDelivery(pending);
+          await recoverPendingRequestsAtBoot(store, pending);
+          expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+          const restored = store.getThreadItem(workspaceId, seeded!.threadId, itemId);
+          expect(restored).toEqual({
+            ...original,
+            createdAt: expect.any(String),
+            completedAt: expect.any(String),
+          });
+          expect(
+            store.listWorkspaceItemRevisions(workspaceId).filter(({ id }) => id === itemId)
+          ).toHaveLength(1);
+          expect(readPendingRecord(root.dataRoot, workspaceId, requestId)).toEqual(frozen);
+        });
+
+      await recover();
+      const recovered = workspaceEvidence(root.dataRoot, workspaceId);
+      await recover();
+      expectEvidenceUnchanged(root.dataRoot, workspaceId, recovered);
     },
     CASE_TIMEOUT_MS
   );

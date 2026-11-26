@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
-  type ActorRef,
   allocateEntityId,
   deriveEntityId,
   type Item,
@@ -49,22 +48,27 @@ import {
   archiveSelects,
   type CanonicalLoadItems,
   canonicalLoadItems,
+  closeoutProjection,
   compareReadiness,
   decideFrozenDeliveryCommand,
   type decidePendingProjection,
   executorKindForTurn,
   isBlockingPendingRequest,
   isCommandIntentApproval,
-  isFinalOutcome,
   isPendingProjectionItem,
   isReadyOutcome,
   listThreadPendingRequests,
+  outcomeTriggerActor,
+  outcomeTurnAgentId,
+  outcomeTurnSummary,
   PENDING_PROJECTION_ROLES,
   type PendingExecutorKind,
   type PendingRequestActor,
   type PendingRequestRecord,
   renderPendingInvalidationItem as pendingInvalidationItem,
+  pendingOutcomeActorId,
   renderPendingOutcomeItems as pendingOutcomeItems,
+  pendingOutcomeTrigger,
   pendingRequestItemId,
   pendingRequestSystemActor,
   preflightPendingRequest,
@@ -78,61 +82,6 @@ import {
   selectReadyOutcomes,
   validateCanonicalLoad,
 } from './pending-requests.js';
-
-/** Prepares the existing closeout communication; native SQL still decides and validates every changed source. */
-function closeoutProjection(
-  records: readonly PendingRequestRecord[],
-  turnId: string,
-  actor: PendingRequestActor,
-  now: string,
-  event: (record: PendingRequestRecord) => string
-): PendingRequestRecord[] {
-  return records
-    .map((record) => {
-      let next = record;
-      if (next.state === 'pending' && next.claim === 'unclaimed')
-        next = {
-          ...next,
-          state: 'ended',
-          ending: 'invalidated',
-          invalidatingEvent: event(record),
-          endingActor: actor,
-          endedAt: now,
-          updatedAt: now,
-        };
-      if (
-        isCommandIntentApproval(next) &&
-        next.resolution === 'granted' &&
-        next.claim === 'unclaimed' &&
-        next.disposition === null
-      )
-        next = {
-          ...next,
-          disposition: 'denied-not-executed',
-          dispositionReason: event(record),
-          invalidationTurnId: next.invalidationTurnId ?? turnId,
-          updatedAt: now,
-        };
-      if (
-        isCommandIntentApproval(next) &&
-        next.resolution === 'granted' &&
-        next.disposition === 'denied-not-executed' &&
-        next.invalidationTurnId === null
-      )
-        next = { ...next, invalidationTurnId: turnId, updatedAt: now };
-      if (next.delivery === 'undelivered' && isFinalOutcome(next))
-        next = {
-          ...next,
-          delivery: 'closed-out',
-          publicationTurnId: next.publicationTurnId ?? turnId,
-          updatedAt: now,
-        };
-      return next;
-    })
-    .filter(
-      (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
-    );
-}
 
 /** Exact readable Pending sources prepared before native SQL; these facts grant no Main authority. */
 function pendingSources(records: readonly PendingRequestRecord[]) {
@@ -267,16 +216,6 @@ export function setPendingRequestAttentionObserver(
 
 const refusedOutcomeTurns = new Set<string>();
 const outcomeCauses = new Map<string, 'outcome'>();
-
-/** Derives the outcome trigger only from the batch that the admission will freeze. */
-function pendingOutcomeTrigger(records: readonly PendingRequestRecord[]) {
-  const approvals = records.filter((record) => record.kind === 'approval').length;
-  const inputs = records.length - approvals;
-  return {
-    kind: approvals ? ('approval-resolution' as const) : ('user-input' as const),
-    summary: `${approvals} approval outcome${approvals === 1 ? '' : 's'} and ${inputs} user-input outcome${inputs === 1 ? '' : 's'} are ready.`,
-  };
-}
 
 /** Prepares the exact original outcome Items and freeze command for the native Turn tuple. */
 export function preparePendingOutcomeFreeze(
@@ -721,29 +660,32 @@ export async function recoverPendingRequestsAtBoot(
           walkLoadHistory.delete(db.sqlite);
           db.sqlite.close();
         }
-        // One grouped decision carries the whole dependent walk: every group or none commits.
-        const groups: ControlPendingPlanGroup[] = [];
-        const turns = new Set(plan.turns);
-        const acknowledgements: (() => void)[] = [];
-        for (const build of plan.groups) groups.push(...(await build()));
-        const threads = new Map<string, PlannedThread>();
-        for (const step of plan.tail)
-          groups.push(
-            ...(await planPendingBootStep(store, workspace.id, step, {
-              threads,
-              turns,
-              acknowledgements,
-            }))
+        await store.withPendingPlanBodies(async (ownBody) => {
+          // One grouped decision carries the whole dependent walk.
+          const groups: ControlPendingPlanGroup[] = [];
+          const turns = new Set(plan.turns);
+          const acknowledgements: (() => void)[] = [];
+          for (const build of plan.groups) groups.push(...(await build(ownBody)));
+          const threads = new Map<string, PlannedThread>();
+          for (const step of plan.tail)
+            groups.push(
+              ...(await planPendingBootStep(store, workspace.id, step, {
+                threads,
+                turns,
+                acknowledgements,
+                ownBody,
+              }))
+            );
+          await bootWorkspaceWrite(() =>
+            store.publishPendingPlan(
+              workspace.id,
+              { operation: 'pending-boot', threadId: null, inputs: plan.inputs },
+              groups,
+              [...turns]
+            )
           );
-        await bootWorkspaceWrite(() =>
-          store.publishPendingPlan(
-            workspace.id,
-            { operation: 'pending-boot', threadId: null, inputs: plan.inputs },
-            groups,
-            [...turns]
-          )
-        );
-        for (const acknowledge of acknowledgements) acknowledge();
+          for (const acknowledge of acknowledgements) acknowledge();
+        });
       }
     );
   }
@@ -754,11 +696,15 @@ export async function recoverPendingRequestsAtBoot(
  * the digest of the inputs its writer rechecks before it decides.
  */
 interface PendingBootPlan {
-  readonly groups: readonly (() => Promise<readonly ControlPendingPlanGroup[]>)[];
+  readonly groups: readonly PendingBootGroupBuilder[];
   readonly tail: readonly PendingBootTailStep[];
   readonly turns: ReadonlySet<string>;
   readonly inputs: string;
 }
+
+type PendingBootGroupBuilder = (
+  ownBody: (path: string) => void
+) => Promise<readonly ControlPendingPlanGroup[]>;
 
 /** A Thread's revision and record after an earlier group of the same grouped decision. */
 type PlannedThread = { readonly revision: number; readonly record: Record<string, unknown> };
@@ -837,7 +783,7 @@ async function planPendingBootWalk(
         expected: sources.slice(start, start + PENDING_BOOT_SETTLEMENT_SOURCES),
       })
     );
-  const groups: (() => Promise<readonly ControlPendingPlanGroup[]>)[] = [async () => settlement];
+  const groups: PendingBootGroupBuilder[] = [async () => settlement];
   const publishedTurns = new Set<string>();
   const unknown = new Set<string>();
   const planned = new Set<string>();
@@ -924,7 +870,9 @@ async function planPendingBootWalk(
       })
     );
     publishedTurns.add(turnId);
-    groups.push(() => store.pendingServiceTurnGroups(workspaceId, publication.threadId, input));
+    groups.push((ownBody) =>
+      store.pendingServiceTurnGroups(workspaceId, publication.threadId, input, ownBody)
+    );
   }
   // Each Thread this walk leaves idle continues with the steps its own selection makes eligible on
   // the planned census: a closeout when a requester lost authority, else the derived invalidation
@@ -1065,11 +1013,17 @@ async function planPendingBootStep(
     readonly threads: Map<string, PlannedThread>;
     readonly turns: Set<string>;
     readonly acknowledgements: (() => void)[];
+    readonly ownBody: (path: string) => void;
   }
 ): Promise<readonly ControlPendingPlanGroup[]> {
   if (step.kind === 'publication') {
     planned.turns.add(step.publication.turnId);
-    return store.pendingServiceTurnGroups(workspaceId, step.threadId, step.publication);
+    return store.pendingServiceTurnGroups(
+      workspaceId,
+      step.threadId,
+      step.publication,
+      planned.ownBody
+    );
   }
   const { choice, freeze, threadId } = step;
   planned.turns.add(freeze.turnId);
@@ -1090,7 +1044,8 @@ async function planPendingBootStep(
         agentId: outcomeTurnAgentId(choice),
         triggerSource: freeze.triggerSource,
       },
-      planned.threads.get(threadId)
+      planned.threads.get(threadId),
+      planned.ownBody
     );
   } finally {
     plannedOutcomeFreezes.delete(freeze.turnId);
@@ -1107,7 +1062,8 @@ async function planPendingBootStep(
       pending: [
         { action: 'delivery-prove', workspaceId, turnId: freeze.turnId, now: step.provedAt },
       ],
-    }
+    },
+    planned.ownBody
   );
   planned.acknowledgements.push(closed.acknowledge);
   return [admitted.group, closed.group];
@@ -1857,11 +1813,13 @@ async function publishPendingCloseout(
   inputs: string,
   publication: PendingServicePublication
 ): Promise<void> {
-  await store.publishPendingPlan(
-    workspaceId,
-    { operation: 'pending-closeout', threadId, inputs },
-    await store.pendingServiceTurnGroups(workspaceId, threadId, publication),
-    [publication.turnId]
+  await store.withPendingPlanBodies(async (ownBody) =>
+    store.publishPendingPlan(
+      workspaceId,
+      { operation: 'pending-closeout', threadId, inputs },
+      await store.pendingServiceTurnGroups(workspaceId, threadId, publication, ownBody),
+      [publication.turnId]
+    )
   );
 }
 
@@ -1938,37 +1896,8 @@ function selectNextOutcome(
     executor: first.requesterKind,
     agentId: first.agentId,
     triggerSource: pendingOutcomeTrigger(batch),
-    actorId:
-      first.requesterKind === 'worker' || first.requesterKind === 'assistant'
-        ? first.responsibleUserId
-        : (first.decidingActor?.id ?? first.responsibleUserId),
+    actorId: pendingOutcomeActorId(first),
   };
-}
-
-/** The summary of an outcome Turn its batch selection admits. */
-function outcomeTurnSummary(choice: { readonly triggerSource: { readonly kind: string } }): string {
-  return choice.triggerSource.kind === 'approval-resolution'
-    ? 'Approval outcomes'
-    : 'User-input outcomes';
-}
-
-/** The trigger actor of an outcome Turn its batch selection admits. */
-function outcomeTriggerActor(choice: { readonly actorId: string }): ActorRef {
-  return choice.actorId === 'system'
-    ? pendingRequestSystemActor(null)
-    : { kind: 'user', id: choice.actorId };
-}
-
-/** The agent of an outcome Turn its batch selection admits. */
-function outcomeTurnAgentId(choice: {
-  readonly executor: PendingExecutorKind;
-  readonly agentId: string | null;
-}): string | null {
-  return choice.executor === 'worker' || choice.executor === 'coordinator'
-    ? choice.agentId
-    : choice.executor === 'assistant'
-      ? 'quick-chat'
-      : null;
 }
 
 async function admitNextOutcome(
