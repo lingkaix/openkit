@@ -14,6 +14,7 @@ interface ContractFixture {
   readonly original: ExecutionBackendCorrelation;
   readonly deadline: string;
   reopen(): Promise<ExecutionBackendPort>;
+  setHistoryReadable(readable: boolean): Promise<void>;
   advanceToDeadline(): Promise<void>;
   fence(): Promise<void>;
   closeIngress(): Promise<void>;
@@ -45,18 +46,32 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
   let submitted = false;
   let nativeStarts = 0;
   let releases = 0;
-  let disposition: ExecutionBackendObservation['disposition'] | undefined;
+  const receiverHistory = new Map<string, { receipt: 'accepted' | null; complete: boolean }>();
+  let historyReadable = true;
   let fenced = false;
   let ingressClosed = false;
   let acceptedWorkJoined = false;
   let qualifiedAbsence = false;
 
-  const matches = (input: ExecutionBackendCorrelation) =>
-    input.attemptId === original.attemptId &&
-    input.backendId === original.backendId &&
-    input.bindingRef === original.bindingRef &&
-    input.inputRef === original.inputRef &&
-    input.operationId === original.operationId;
+  const correlationKey = (input: ExecutionBackendCorrelation) =>
+    JSON.stringify([
+      input.attemptId,
+      input.backendId,
+      input.bindingRef,
+      input.inputRef,
+      input.operationId,
+    ]);
+  const originalKey = correlationKey(original);
+  const matches = (input: ExecutionBackendCorrelation) => correlationKey(input) === originalKey;
+
+  const readDisposition = (input: ExecutionBackendCorrelation) => {
+    const history = receiverHistory.get(correlationKey(input));
+    if (!history) return undefined;
+    if (!historyReadable) return 'unknown';
+    if (history.receipt) return history.receipt;
+    if (ingressClosed && acceptedWorkJoined && history.complete) return 'not_accepted';
+    return 'unknown';
+  };
   const fencedRef = () => (releases > 0 ? 'original-scope-proof' : null);
   const observation = (
     result: ExecutionBackendObservation['disposition']
@@ -74,28 +89,32 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
       if (!matches(input) || input.deadline !== deadline || submitted)
         throw new Error('Submission lacks original unused admission');
       submitted = true;
-      if (cut === 'refused' || fenced || now >= Date.parse(deadline)) {
-        disposition = 'not_accepted';
-        return observation(disposition);
+      if (cut === 'refused' || fenced || now >= Date.parse(deadline))
+        return observation('not_accepted');
+      const key = correlationKey(input);
+      if (cut === 'before-commit') {
+        receiverHistory.set(key, { receipt: null, complete: true });
+        throw new Error('Submit reply lost before acceptance');
       }
-      if (cut === 'before-commit') throw new Error('Submit reply lost before acceptance');
       nativeStarts++;
       if (cut === 'after-commit') {
-        disposition = 'accepted';
+        receiverHistory.set(key, { receipt: 'accepted', complete: true });
         throw new Error('Submit reply lost after acceptance');
       }
-      disposition = 'unknown';
-      return observation(disposition);
+      receiverHistory.set(key, { receipt: null, complete: false });
+      return observation('unknown');
     },
     async inspect(input) {
-      if (!matches(input)) return null;
-      if (submitted && cut === 'before-commit' && ingressClosed && acceptedWorkJoined)
-        return observation('not_accepted');
+      const disposition = readDisposition(input);
       return disposition === undefined ? null : observation(disposition);
     },
     async cancel(input) {
       if (!fenced || !matches(input)) throw new Error('Cancellation lacks original fenced scope');
-      return { ...observation('accepted'), execution: 'unknown', fenceRef: null };
+      return {
+        ...observation(readDisposition(input) ?? 'unknown'),
+        execution: 'unknown',
+        fenceRef: null,
+      };
     },
     async release(input) {
       if (!matches(input) || !fenced) throw new Error('Release lacks original fenced scope');
@@ -114,6 +133,9 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
     original,
     deadline,
     reopen: async () => openPort(),
+    async setHistoryReadable(readable) {
+      historyReadable = readable;
+    },
     async advanceToDeadline() {
       now = Date.parse(deadline);
     },
@@ -166,10 +188,11 @@ function executionBackendContract(
       await f.backend.submit({ ...f.original, deadline: f.deadline }).catch(() => null)
     );
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
-    const accepted = await f.backend.inspect(f.original);
-    expect(accepted).toMatchObject({ ...f.original, disposition: 'accepted' });
-
+    await f.setHistoryReadable(false);
+    expectUnproved(await f.backend.inspect(f.original));
     const reopened = await f.reopen();
+    expectUnproved(await reopened.inspect(f.original));
+    await f.setHistoryReadable(true);
     for (const [key, value] of Object.entries(f.original)) {
       const wrong = { ...f.original, [key]: `${value}-other` };
       expectUnproved(await reopened.inspect(wrong));
@@ -181,25 +204,33 @@ function executionBackendContract(
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
   });
 
-  it('C28, S130 requires quiescent receiver history for negative read-back after loss before commit', async () => {
-    const f = await fixture('before-commit');
-    expectUnproved(
-      await f.backend.submit({ ...f.original, deadline: f.deadline }).catch(() => null)
-    );
-    await f.advanceToDeadline();
-    expectUnproved(await f.backend.inspect(f.original));
-    const reopened = await f.reopen();
-    expectUnproved(await reopened.inspect(f.original));
-    await f.fence();
-    await f.closeIngress();
-    expectUnproved(await reopened.inspect(f.original));
-    await f.joinAcceptedWork();
-    expect(await reopened.inspect(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'not_accepted',
-    });
-    expect(await f.readEffects()).toEqual({ nativeStarts: 0, releases: 0 });
-  });
+  it.each(['ingress', 'accepted work'] as const)(
+    'C28, S130 requires quiescence and readable negative history after loss before commit (%s settles first)',
+    async (first) => {
+      const f = await fixture('before-commit');
+      expectUnproved(
+        await f.backend.submit({ ...f.original, deadline: f.deadline }).catch(() => null)
+      );
+      await f.advanceToDeadline();
+      expectUnproved(await f.backend.inspect(f.original));
+      const reopened = await f.reopen();
+      expectUnproved(await reopened.inspect(f.original));
+      await f.fence();
+      if (first === 'ingress') await f.closeIngress();
+      else await f.joinAcceptedWork();
+      expectUnproved(await reopened.inspect(f.original));
+      await f.setHistoryReadable(false);
+      if (first === 'ingress') await f.joinAcceptedWork();
+      else await f.closeIngress();
+      expectUnproved(await reopened.inspect(f.original));
+      await f.setHistoryReadable(true);
+      expect(await reopened.inspect(f.original)).toMatchObject({
+        ...f.original,
+        disposition: 'not_accepted',
+      });
+      expect(await f.readEffects()).toEqual({ nativeStarts: 0, releases: 0 });
+    }
+  );
 
   it('C29–30/70, S145 holds after a stop ACK, expiry, early observation or foreign absence', async () => {
     const f = await fixture('no-readback');
@@ -208,7 +239,11 @@ function executionBackendContract(
       disposition: 'unknown',
     });
     await f.fence();
-    expect(await f.backend.cancel(f.original)).toMatchObject({ ...f.original, fenceRef: null });
+    expect(await f.backend.cancel(f.original)).toMatchObject({
+      ...f.original,
+      disposition: 'unknown',
+      fenceRef: null,
+    });
 
     const release = { ...f.original, proof: handoffs };
     expectHeld(await f.backend.release(release), f.original);
@@ -241,6 +276,13 @@ function executionBackendContract(
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
 
     const release = { ...f.original, proof: handoffs };
+    const foreign = { ...f.original, bindingRef: 'foreign-binding' };
+    const foreignResult = await f.backend
+      .release({ ...foreign, proof: handoffs })
+      .catch(() => null);
+    if (foreignResult) expectHeld(foreignResult, foreign);
+    expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
+
     const result = await f.backend.release(release);
     expect(result).toMatchObject({
       ...f.original,
@@ -258,8 +300,16 @@ function executionBackendContract(
       ...f.original,
       disposition: 'unknown',
     });
+    expect(await f.backend.inspect(f.original)).toMatchObject({
+      ...f.original,
+      disposition: 'unknown',
+    });
     await f.fence();
-    await f.backend.cancel(f.original);
+    expect(await f.backend.cancel(f.original)).toMatchObject({
+      ...f.original,
+      disposition: 'unknown',
+      fenceRef: null,
+    });
     await f.closeIngress();
     await f.joinAcceptedWork();
     await f.observeAbsence(f.original);
