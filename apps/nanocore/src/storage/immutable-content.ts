@@ -16,6 +16,7 @@ import {
   type ControlProductEntry,
   ControlProductEntrySchema,
   type ControlProductOwner,
+  ControlProductPreconditionError,
   inlineControlContentBytes,
 } from './control-store-product-records.js';
 import {
@@ -30,6 +31,22 @@ export {
   type ImmutableContentHandoff,
   publishImmutableContent,
 } from './immutable-content-publish.js';
+
+export const PENDING_PLAN_TEMPORARY_NAME =
+  /^\.[a-f0-9]{64}\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/;
+
+/** Identifies the private directory the request can release even before decoding its plan. */
+export function pendingPlanStagePath(root: string, temporary: string): string {
+  if (!PENDING_PLAN_TEMPORARY_NAME.test(temporary)) throw new ControlProductPreconditionError();
+  return join(root, `${temporary}.pending`);
+}
+
+/** Name shape reserved for grouped plan staging and abandoned-stage cleanup at Boot. */
+export function isPendingPlanStageName(name: string): boolean {
+  return (
+    name.endsWith('.pending') && PENDING_PLAN_TEMPORARY_NAME.test(name.slice(0, -'.pending'.length))
+  );
+}
 
 /** Publishes one bounded retained product body through the existing Storage stage owner. */
 async function withStagedProductJson<T>(
@@ -130,12 +147,13 @@ export async function prepareRetainedProductJson(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  value: unknown
+  value: unknown,
+  privateRoot?: string
 ): Promise<Pick<ControlProductEntry, 'content' | 'publication'>> {
   const body = JSON.stringify(value);
   const bytes = Buffer.from(body, 'utf8');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.inlineBytes)
-    return prepareProductFile(mount, owner, stagingRoot, bytes);
+    return prepareProductFile(mount, owner, stagingRoot, bytes, privateRoot);
   if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
@@ -207,7 +225,8 @@ export async function prepareProductFile(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  bytes: Buffer
+  bytes: Buffer,
+  privateRoot = mount.root
 ): Promise<{ content: StorageContent; publication: { temporary: string } }> {
   for (const path of [dirname(mount.root), dirname(stagingRoot)])
     if ((await realpath(path)) !== resolve(path))
@@ -225,7 +244,7 @@ export async function prepareProductFile(
   return withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
     const content = immutableStageContent(input);
     const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
-    const path = join(mount.root, temporary);
+    const path = join(privateRoot, temporary);
     const file = await open(path, 'wx', 0o600);
     try {
       await copyImmutableStage(input, file, content);

@@ -22,6 +22,7 @@ import {
   controlProductMetadataJson,
 } from './control-store-publication-codecs.js';
 import type { WorkspaceDb } from './db.js';
+import { PENDING_PLAN_TEMPORARY_NAME } from './immutable-content.js';
 
 /**
  * The measured deterministic Workspace bound of one grouped Pending plan: the plan is one private
@@ -36,7 +37,7 @@ export const ControlPendingPlanSchema = z
       .object({
         workspaceId: z.string().min(1),
         operation: z.enum(['pending-boot', 'pending-closeout']),
-        temporary: z.string().regex(/^\.[a-f0-9]{64}\.[0-9a-f-]{36}\.tmp$/),
+        temporary: z.string().regex(PENDING_PLAN_TEMPORARY_NAME),
         contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         byteLength: z.number().int().positive().max(CONTROL_PENDING_PLAN_BYTES),
       })
@@ -108,6 +109,37 @@ export type ControlPendingPlanGroup =
   | { readonly kind: 'terminal'; readonly input: ControlTerminalTransition }
   | { readonly kind: 'item'; readonly input: ControlItemAppend }
   | { readonly kind: 'entries'; readonly entries: readonly ControlProductEntry[] };
+
+/** Finds the private bodies already staged by the producer for this exact group list. */
+export function pendingPlanBodyNames(groups: readonly ControlPendingPlanGroup[]): Set<string> {
+  const names = new Set<string>();
+  for (const group of groups) {
+    const entries =
+      group.kind === 'entries'
+        ? group.entries
+        : group.kind === 'products'
+          ? group.transition.entries
+          : group.kind === 'terminal'
+            ? group.input.entries
+            : group.kind === 'pending'
+              ? [
+                  ...group.input.entries,
+                  ...(group.input.admission?.entries ?? []),
+                  ...(group.input.terminal?.entries ?? []),
+                ]
+              : [];
+    for (const { publication, content } of entries)
+      if (
+        publication &&
+        PENDING_PLAN_TEMPORARY_NAME.test(publication.temporary) &&
+        publication.temporary.startsWith(
+          `.${content.reference.contentDigest.slice('sha256:'.length)}.`
+        )
+      )
+        names.add(publication.temporary);
+  }
+  return names;
+}
 
 /** The existing frame bound of each group kind, so a plan never widens a packet. */
 function assertGroupBound(group: z.infer<typeof PlanGroupSchema>): void {
