@@ -5,6 +5,7 @@ import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-
 import { describe, expect, it, vi } from 'vitest';
 import { workerHeartbeatTick } from './control-client.js';
 import { WorkerControlClient, WorkerControlError, type WorkerControlFetch } from './index.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_00000000-0000-750f-a81e-1cbfbea96819',
@@ -1006,6 +1007,85 @@ describe('WorkerControlClient', () => {
       status: 503,
     });
     expect(requests).toHaveLength(1);
+  });
+
+  it.each(['artifact', 'heartbeat'] as const)(
+    'stops a queued %s retry when recovery is disabled during backoff',
+    async (requestKind) => {
+      const { fetch, requests } = createFetchFixture([
+        { body: heartbeatAck },
+        { body: { code: 'temporary_unavailable' }, ok: false, status: 503 },
+        { body: heartbeatAck },
+      ]);
+      const client = new WorkerControlClient({
+        baseUrl: '/worker-control',
+        fetch,
+        lineage,
+        token: 'control-fixture',
+      });
+      await client.recordHeartbeat({ status: 'starting' });
+      client.enablePostLaunchRecovery();
+
+      const waiting = Promise.withResolvers<void>();
+      const remainingMs = LifecycleDeadline.prototype.remainingMs;
+      const clock = vi
+        .spyOn(LifecycleDeadline.prototype, 'remainingMs')
+        .mockImplementation(function (this: LifecycleDeadline, cap) {
+          const remaining = remainingMs.call(this, cap);
+          if (cap === LIFECYCLE_DEFAULTS.workerControlRetryMs) waiting.resolve();
+          return remaining;
+        });
+      try {
+        const request =
+          requestKind === 'artifact'
+            ? client.recordArtifactNotice(notice)
+            : client.recordHeartbeat({ status: 'running' });
+        const outcome = request.catch((error: unknown) => error);
+        await waiting.promise;
+        client.disablePostLaunchRecovery();
+
+        const result = await outcome;
+        expect(requests).toHaveLength(2);
+        expect(result).toMatchObject({ code: 'temporary_unavailable', status: 503 });
+      } finally {
+        clock.mockRestore();
+      }
+    }
+  );
+
+  it('stops artifact replay when recovery is disabled before reconnect acknowledgement', async () => {
+    const probing = Promise.withResolvers<void>();
+    const acknowledge = Promise.withResolvers<void>();
+    const { fetch, requests } = createFetchFixture([
+      { body: heartbeatAck },
+      { body: { code: 'worker_control_reconnect_required' }, ok: false, status: 503 },
+      { body: heartbeatAck },
+      { body: heartbeatAck },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control-fixture',
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (requests.length === 3) {
+          probing.resolve();
+          await acknowledge.promise;
+        }
+        return response;
+      },
+    });
+    await client.recordHeartbeat({ status: 'starting' });
+    client.enablePostLaunchRecovery();
+
+    const outcome = client.recordArtifactNotice(notice).catch((error: unknown) => error);
+    await probing.promise;
+    client.disablePostLaunchRecovery();
+    acknowledge.resolve();
+
+    const result = await outcome;
+    expect(requests).toHaveLength(3);
+    expect(result).toMatchObject({ code: 'worker_control_reconnect_required', status: 503 });
   });
 
   it('normalizes non-JSON and code-less error responses into bounded WorkerControlError codes', async () => {
