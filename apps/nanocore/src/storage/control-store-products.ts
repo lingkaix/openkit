@@ -5,11 +5,9 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
-  AuditEventSchema,
   ItemDeltaEventSchema,
   ItemSchema,
   PROTOCOL_VERSION,
-  RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
@@ -21,17 +19,15 @@ import type { StorageContent } from '@openkit/storage';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { assertItemDeltaSequence, ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
-import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
+import type { CommandRequestResponse } from '../lib/store.js';
 import {
   createExecutionStepJournalReader,
   settleExecutionJournalStep,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
-import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
-import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import {
   contextInfluenceWasCleared,
   contextIsExternallyInfluenced,
@@ -47,15 +43,21 @@ import {
   ControlProductEntrySchema,
   type ControlProductKind,
   type ControlProductMutation,
-  ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
   decode,
-  fileContentSchema,
   inlineControlContentBytes,
   readProduct,
   tables,
 } from './control-store-product-records.js';
+import {
+  type ControlItemAppend,
+  type ControlPublicationInput,
+  ControlPublicationInputSchema,
+  type ControlTerminalTransition,
+  ControlTerminalTransitionSchema,
+  controlProductMetadataJson,
+} from './control-store-publication-codecs.js';
 import { prepareControlReadMetadata } from './control-store-read-metadata.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { userDbPath } from './fs-layout.js';
@@ -71,7 +73,7 @@ import {
   StoredItemV1Schema,
   StoredTaskSteerDispositionV1Schema,
 } from './retained-work-items-v1.js';
-import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
 import { serverWorkUnavailable } from './server-work-command.js';
 import { threadSegmentUsage } from './thread-segmentation.js';
@@ -82,40 +84,12 @@ import {
 } from './workspace-file-records.js';
 
 export { assertControlProductWriter } from './control-store-product-records.js';
+export type {
+  ControlItemAppend,
+  ControlPublicationInput,
+  ControlTerminalTransition,
+} from './control-store-publication-codecs.js';
 
-/** Counts descriptor metadata separately from bounded inline entry bodies; actual queue bytes stay charged. */
-export function controlProductMetadataJson(value: {
-  entries?: readonly ControlProductEntry[];
-  terminal?: { entries?: readonly ControlProductEntry[] };
-  admission?: { entries?: readonly ControlProductEntry[] };
-  pendingItem?: { entry: ControlProductEntry } | null;
-  pendingAdmission?: { entries?: readonly ControlProductEntry[] };
-  transition?: { entries?: readonly ControlProductEntry[] };
-}): string {
-  const entryMetadata = (entry: ControlProductEntry) => {
-    const reference = entry.content.reference;
-    return 'representation' in reference
-      ? { ...entry, content: { ...entry.content, reference: { ...reference, body: '' } } }
-      : entry;
-  };
-  const entriesMetadata = (input: { entries?: readonly ControlProductEntry[] }) => ({
-    ...input,
-    ...(input.entries && {
-      entries: input.entries.map(entryMetadata),
-    }),
-  });
-  return JSON.stringify({
-    ...entriesMetadata(value),
-    // Existing compound owners carry bounded bodies at these fixed packet paths.
-    ...(value.terminal && { terminal: entriesMetadata(value.terminal) }),
-    ...(value.admission && { admission: entriesMetadata(value.admission) }),
-    ...(value.pendingItem && {
-      pendingItem: { ...value.pendingItem, entry: entryMetadata(value.pendingItem.entry) },
-    }),
-    ...(value.pendingAdmission && { pendingAdmission: entriesMetadata(value.pendingAdmission) }),
-    ...(value.transition && { transition: entriesMetadata(value.transition) }),
-  });
-}
 /** One shared publication stays live until every admitted preparation or queued reference releases it. */
 export interface ControlContentPublication {
   readonly result: Promise<{ bytes: Buffer; changedDirectory: boolean }>;
@@ -1333,27 +1307,6 @@ async function assertControlItemDelta(
   assertItemDeltaSequence(data, actualItem, [...history, ...preceding]);
 }
 
-/** Closed existing Item/event admissions; each category keeps its accepted equality rule. */
-export const ControlPublicationInputSchema = z
-  .object({
-    category: z.enum(['already-decided-publication', 'display-projection-refresh']),
-    turnId: z.string().min(1),
-    expectedRevision: z.number().int().positive(),
-    entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-  })
-  .strict();
-/** Entry-only publication; no metadata or outcome mutation is admitted. */
-export type ControlPublicationInput = z.infer<typeof ControlPublicationInputSchema>;
-
-/** Complete addressed Item intent; heads and durable bytes are resolved by the native owner. */
-export const ControlItemAppendSchema = z
-  .object({
-    item: ItemSchema,
-    category: ControlPublicationInputSchema.shape.category.optional(),
-  })
-  .strict();
-export type ControlItemAppend = z.infer<typeof ControlItemAppendSchema>;
-
 /** Carries an existing Store validation refusal, never a native SQL or filesystem diagnostic. */
 export class ControlItemAppendError extends Error {}
 
@@ -2190,82 +2143,6 @@ export function applyControlPublication(
       throw new ControlProductPreconditionError();
   }
 }
-
-/** Closed original command partitions whose terminal publication can own their receipt. */
-const terminalReceiptSchema = z
-  .object({
-    key: z.string().min(1),
-    command: z.enum([
-      'conversation.submit',
-      'task.start',
-      'turn.start',
-      'turn.input.submit',
-      'turn.interrupt',
-      'knowledge.tell',
-      'knowledge.maintain',
-      'knowledge.server.tell',
-      'knowledge.server.maintain',
-    ] satisfies readonly CommandRequestName[]),
-    requestId: RequestIdSchema,
-    scope: z.record(z.string(), z.string()),
-    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    response: z
-      .object({
-        kind: z.string().min(1),
-        id: z.string().min(1),
-        conversationMetadata: z.unknown().optional(),
-      })
-      .strict(),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-
-const terminalCommandSchema = z
-  .object({
-    receipt: terminalReceiptSchema,
-    audit: AuditEventSchema.extend({
-      createdAt: z.string().datetime(),
-      occurredAt: z.string().datetime(),
-    }),
-  })
-  .strict();
-
-/** Complete local terminal tuple. Null execution means no native execution, not proof of release. */
-export const ControlTerminalTransitionSchema = z
-  .object({
-    owner: z.union([
-      StoredWorkOwnerV1Schema.options[0].strict(),
-      StoredWorkOwnerV1Schema.options[1].strict(),
-    ]),
-    turn: ControlProductMutationSchema.extend({ kind: z.literal('turn') }),
-    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-    pending: z
-      .array(z.lazy(() => ControlPendingCommandInputSchema))
-      .max(CONTROL_PRODUCT_LIMITS.entries)
-      .optional(),
-    reap: z.object({ reason: z.string().min(1), inferredBy: z.string().min(1) }).strict(),
-    evidence: z.array(StoredRuntimeEvidenceV1Schema).max(CONTROL_PRODUCT_LIMITS.entries),
-    evidenceContent: z.array(fileContentSchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    command: terminalCommandSchema.nullable(),
-    // Only the waiting internal Stop may converge with the original submission.
-    interruptCommand: terminalCommandSchema
-      .refine((command) => command.receipt.command === 'turn.interrupt')
-      .optional(),
-    execution: z
-      .object({
-        executionId: z.string().min(1),
-        terminalStepId: z.string().min(1),
-        expectedRevision: z.number().int().positive(),
-        cleanupStepId: z.string().min(1),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-/** Parsed complete native terminal input; it carries facts and references, never executable callbacks. */
-export type ControlTerminalTransition = z.infer<typeof ControlTerminalTransitionSchema>;
 
 /** Native-local preparation token. It cannot be serialized or substituted with a transport descriptor. */
 export interface PreparedControlTerminal {
