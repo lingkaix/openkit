@@ -25,6 +25,7 @@ import {
   recordCoreHarnessConsumption,
 } from './core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import { CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION } from './execution-journal.js';
 import { requireHarnessLoginBinding } from './harness-login-authority.js';
 import type { HarnessLoginReplacementRead } from './harness-login-selection.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
@@ -1367,13 +1368,17 @@ export function dispatchNanoHostHarnessOperation(
 
   try {
     const integration = coreDb.sqlite
-      .prepare(
-        'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?'
-      )
-      .get(input.sandboxIntegrationBindingRef) as { readonly sandboxRuntimeId: string } | undefined;
+      .prepare(`SELECT s.sandbox_runtime_id AS sandboxRuntimeId,
+        EXISTS (SELECT 1 FROM control_executions r WHERE r.work_id = s.sandbox_binding_ref
+          AND r.definition_version = ?) AS releaseRefused
+        FROM sandbox_runtime_records s WHERE s.sandbox_integration_binding_ref = ?`)
+      .get(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION, input.sandboxIntegrationBindingRef) as
+      | { readonly sandboxRuntimeId: string; readonly releaseRefused: number }
+      | undefined;
     if (!integration) {
       throw new Error('NanoHost Sandbox Integration binding is missing or stale.');
     }
+    if (integration.releaseRefused) return null;
     const harness = coreDb.sqlite
       .prepare(
         `SELECT *, schema_version AS schemaVersion FROM harness_instance_records

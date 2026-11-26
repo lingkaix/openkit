@@ -6371,6 +6371,7 @@ class ControlStoreWorkerClient {
         input.kind !== 'containment-inspect' &&
         input.kind !== 'image-intent' &&
         input.kind !== 'image-abandon' &&
+        input.kind !== 'sandbox-release-refusal' &&
         opening?.command.dataRoot
       ) {
         // These references address immutable originals, not caller-selected effect scopes.

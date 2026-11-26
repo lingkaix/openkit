@@ -1804,6 +1804,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       } else if (request.input.kind === 'image-abandon') {
         if (!owner.scopeDb) throw new ControlProductPreconditionError();
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
+      } else if (request.input.kind === 'sandbox-release-refusal') {
+        lanes.add(`runtime-target:${request.input.target.targetId}`);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
       break;
     case 'server-work-owner': {

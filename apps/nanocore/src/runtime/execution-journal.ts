@@ -69,6 +69,8 @@ export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 
 /** COORD 23:5x idle physical cleanup; each keyed operation has its own existing Core root. */
 export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
+/** Exact predecessor retirement decision before a bound release refusal can be acknowledged. */
+export const CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION = 'core-sandbox-release-refusal/v1';
 /** Local Core acknowledgement of an immutable Harness result, never native dispatch authority. */
 export const CORE_HARNESS_CONSUME_EXECUTION_DEFINITION = 'core-harness-consume/v1';
 /** Exact Workspace recovery decisions; local completion never proves physical close or readmission. */
@@ -342,6 +344,7 @@ const stepRefSchema = z.object({ execution: refSchema, stepId: text });
 const definition = z.enum([
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
@@ -645,6 +648,7 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
     db.scope === 'core'
       ? value === CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
         value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+        value === CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION ||
         value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
         value === CORE_CONTAINMENT_EXECUTION_DEFINITION ||
         value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
@@ -720,6 +724,11 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
+  if (
+    root.definitionVersion === CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION &&
+    control.kind !== 'fence'
+  )
+    throw new Error('Core Sandbox release refusal has no admitted producer.');
   const invocation = decode(invocationSchema, row.invocation_json);
   if (
     invocation.carriage.kernelInput &&
@@ -920,6 +929,11 @@ export function writeExecutionJournalIntent(
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
+  if (
+    admission.definitionVersion === CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION &&
+    control.kind !== 'fence'
+  )
+    throw new Error('Core Sandbox release refusal has no admitted producer.');
   if (
     admission.definitionVersion === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION &&
     !['admit', 'inspect-cleanup'].includes(control.kind)

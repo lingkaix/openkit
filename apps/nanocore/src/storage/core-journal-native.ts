@@ -14,12 +14,17 @@ import {
 import { policyDigest } from '@openkit/protocol/digest';
 import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { validatePolicyDocument } from '../policy/statements.js';
-import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
+import {
+  abandonCoreImageJournal,
+  localCoreJournalIntent,
+  settleCoreIdleJournal,
+} from '../runtime/core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
@@ -31,9 +36,11 @@ import {
 } from '../runtime/execution-journal.js';
 import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effect-identity.js';
+import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness-records.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import { commandInputHash } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreJournalInput,
@@ -136,6 +143,106 @@ function appendContainmentEvidenceHandoff(
   });
 }
 
+/** Orders retirement and fences ingress on the original live Sandbox in the same Core write. */
+function recordSandboxReleaseRefusal(
+  db: CoreDb,
+  input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>
+): void {
+  const target = getNanoHostRuntimeTarget(db, input.target.targetId);
+  const { targetId, physicalEpoch } = input.target;
+  if (
+    !target?.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.identityId !== input.target.identityId ||
+    target.deploymentId !== input.target.deploymentId ||
+    target.connectionGeneration !== input.target.connectionGeneration ||
+    target.physicalEpoch !== physicalEpoch
+  )
+    throw new CoreJournalRefusal('Sandbox release refusal has no current Host authority.');
+  const sandbox = db.sqlite
+    .prepare(`SELECT sandbox_runtime_id AS id, sandbox_binding_ref AS binding,
+        lifecycle_state AS lifecycle, health_state AS health, drain_state AS drain,
+        cleanup_state AS cleanup
+      FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?
+        AND runtime_target_id = ? AND origin_physical_epoch = ?`)
+    .get(input.integrationBindingRef, targetId, physicalEpoch) as
+    | {
+        id: string;
+        binding: string;
+        lifecycle: string;
+        health: string;
+        drain: string;
+        cleanup: string;
+      }
+    | undefined;
+  if (!sandbox)
+    throw new CoreJournalRefusal('Sandbox release refusal has no exact current binding.');
+
+  const definition = CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION;
+  const requestId = commandInputHash([definition, targetId, physicalEpoch, sandbox.binding]);
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `sandbox-release-refusal:${requestId}`,
+  };
+  const stepId = 'fence';
+  if (
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(execution.executionId)
+  ) {
+    const root = readExecutionJournalRoot(db, execution);
+    const original = readExecutionJournalInvocation(db, { execution, stepId });
+    if (
+      root.definitionVersion !== definition ||
+      root.fingerprint !== requestId ||
+      root.workId !== sandbox.binding ||
+      original.control.operationId !== requestId ||
+      original.carriage.bindingRef !== sandbox.binding ||
+      !isDeepStrictEqual(original.control.physicalFenceRefs, [physicalEpoch]) ||
+      sandbox.drain !== 'draining'
+    )
+      throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
+    return;
+  }
+  if (
+    sandbox.lifecycle !== 'open' ||
+    sandbox.health !== 'ready' ||
+    sandbox.drain !== 'accepting' ||
+    sandbox.cleanup !== 'clean'
+  )
+    throw new CoreJournalRefusal('Sandbox release refusal cannot order a different retirement.');
+
+  const intent = localCoreJournalIntent({
+    definitionVersion: definition,
+    executionId: execution.executionId,
+    stepId,
+    workId: sandbox.binding,
+    fingerprint: requestId,
+    kind: 'fence',
+    actorId: 'nanohost-release-refusal',
+    inputRefs: [],
+    authorityRefs: [sandbox.id],
+    carriage: {
+      operation: 'sandbox.release-refusal',
+      requestId,
+      sequence: null,
+      bindingRef: sandbox.binding,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  drainNanoHostSandboxAdmission(db, {
+    sandboxBindingRef: sandbox.binding,
+    originPhysicalEpoch: physicalEpoch,
+  });
+  writeExecutionJournalIntent(db, {
+    ...intent,
+    control: {
+      ...intent.control,
+      target: { backendKind: 'openshell', targetId, allocationRef: sandbox.binding },
+      physicalFenceRefs: [physicalEpoch],
+    },
+  });
+}
+
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
   db: CoreDb,
@@ -143,6 +250,10 @@ export function applyControlCoreJournal(
   publication?: NativeRuntimePolicyPublication
 ): string | null {
   assertControlProductWriter(db.sqlite);
+  if (input.kind === 'sandbox-release-refusal') {
+    recordSandboxReleaseRefusal(db, input);
+    return null;
+  }
   if (
     input.kind === 'containment-inspect' ||
     input.kind === 'containment-intent' ||

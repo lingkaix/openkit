@@ -43,6 +43,7 @@ import { publishCoreJournal } from './core-journal-owner.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   createExecutionStepJournalReader,
   decodeExecutionJournalInvocation,
   encodeExecutionJournalValue,
@@ -345,6 +346,8 @@ export interface CreateNanoHostSessionDispatchInput {
   readonly effectHandler?: (request: NanoHostSessionEffectRequest) => Promise<unknown>;
   /** Optional semantic-route handler used by the shared outer session. */
   readonly routeHandler?: (request: NanoHostSessionRouteRequest) => Promise<unknown>;
+  /** Held until the retirement, cold-wake and maintenance-hold consumers are composed. */
+  readonly orderReleaseRefusalRecycle?: true;
   readonly sessionAuthority: NanoHostTransportSessionAuthority;
 }
 
@@ -459,6 +462,11 @@ export interface NanoHostSessionDispatch {
   ): Promise<void>;
   /** Dispatches one existing semantic route on the current generation. */
   route(physicalConnection: object, request: NanoHostSessionRouteRequest): Promise<unknown>;
+  /** Awaits the Core fence and original recycle order on the authenticated Sandbox binding. */
+  recordSandboxReleaseRefusal?(
+    physicalConnection: object,
+    integrationBindingRef: string
+  ): Promise<void>;
 }
 
 /** One process-local pending effect owned by the dispatcher. */
@@ -677,6 +685,30 @@ export function createNanoHostSessionDispatch(
   }
 
   return {
+    ...(input.orderReleaseRefusalRecycle
+      ? {
+          async recordSandboxReleaseRefusal(
+            physicalConnection: object,
+            integrationBindingRef: string
+          ) {
+            const readiness = readyPhysicalConnections.get(physicalConnection);
+            if (!readiness) throw new Error('Sandbox release refusal has no Host readiness.');
+            assertCurrentCarriage(physicalConnection, readiness);
+            const { coreDb, identityId, deploymentId, targetId } = readiness.runtimeTarget;
+            await publishCoreJournal(coreDb, {
+              kind: 'sandbox-release-refusal',
+              integrationBindingRef,
+              target: {
+                identityId,
+                deploymentId,
+                targetId,
+                connectionGeneration: readiness.connectionGeneration,
+                physicalEpoch: readiness.physicalEpoch,
+              },
+            });
+          },
+        }
+      : {}),
     supportsHarnessLogin: () => harnessLoginHandler !== undefined,
     bindHarnessLogin(handler) {
       if (harnessLoginHandler || typeof handler !== 'function')
@@ -2303,7 +2335,8 @@ export function registerNanoHostSessionSemanticRoutes(
         if (request.headers.get('content-type') !== 'application/json') {
           throw new Error('NanoHost private Harness content type must be application/json.');
         }
-        await input.dispatch.route(requirePhysicalConnection(context.env), {
+        const physical = requirePhysicalConnection(context.env);
+        await input.dispatch.route(physical, {
           body,
           credentialClass: 'harness',
           family: 'worker-control',
@@ -2314,7 +2347,29 @@ export function registerNanoHostSessionSemanticRoutes(
           if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
-          requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
+          const recordRefusal = input.dispatch.recordSandboxReleaseRefusal;
+          try {
+            requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
+          } catch (error) {
+            if (recordRefusal && error instanceof WorkerReleaseIncompatibleError) {
+              try {
+                await recordRefusal(physical, sandboxIntegrationBindingRef);
+              } catch {
+                throw effectTransportError(503, 'NanoHost Sandbox release refusal is unavailable.');
+              }
+            }
+            throw error;
+          }
+          const releaseRefusalFenced = () =>
+            recordRefusal !== undefined &&
+            input.coreDb?.sqlite
+              .prepare(`SELECT 1 FROM sandbox_runtime_records s
+                JOIN control_executions r ON r.work_id = s.sandbox_binding_ref
+                WHERE s.sandbox_integration_binding_ref = ? AND r.definition_version = ?
+                LIMIT 1`)
+              .get(sandboxIntegrationBindingRef, CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION) !==
+              undefined;
+          if (releaseRefusalFenced()) return context.body(null, 204);
           const incoming = (context.env as { incoming?: import('node:http2').Http2ServerRequest })
             ?.incoming;
           // No await separates this check from dispatch: known cancelled carriage grants no delivery.
@@ -2374,6 +2429,7 @@ export function registerNanoHostSessionSemanticRoutes(
             incoming?.aborted ||
             incoming?.stream.destroyed ||
             incoming?.stream.rstCode ||
+            releaseRefusalFenced() ||
             !pendingDelivery(command)
           )
             return context.body(null, 204);

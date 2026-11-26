@@ -6,6 +6,7 @@ import { CoreJournalRefusal } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+  type CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   type CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
@@ -25,12 +26,13 @@ import type {
 export function localCoreJournalIntent(input: {
   definitionVersion:
     | typeof CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
+    | typeof CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION
     | typeof CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION;
   executionId: string;
   stepId: string;
   workId: string;
   fingerprint: string;
-  kind: 'admit' | 'consume-receipt' | 'inspect-cleanup';
+  kind: 'admit' | 'consume-receipt' | 'fence' | 'inspect-cleanup';
   actorId: string;
   inputRefs: readonly string[];
   authorityRefs: readonly string[];
