@@ -244,6 +244,12 @@ import type { ControlMcpItemCall } from '../storage/control-store-capability.js'
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import {
+  type ControlPendingPlanGroup,
+  controlPendingPlanTerminalGroups,
+  controlPendingPlanTransmittedTerminal,
+  encodeControlPendingPlan,
+} from '../storage/control-store-pending-plan.js';
+import {
   type ControlProductEntry,
   ControlProductEntrySchema,
   type ControlProductMutation,
@@ -293,6 +299,7 @@ import {
 } from '../storage/fs-layout.js';
 import {
   plannedRetainedProductJson,
+  prepareProductFile,
   prepareRetainedProductJson,
   publishImmutableProductJson,
 } from '../storage/immutable-content.js';
@@ -367,6 +374,7 @@ import {
   readWorkspaceTurnEvents,
   refuseWorkspaceIdentityConflicts,
   serializeKnowledgeProposalRecord,
+  plannedNativeTurn,
   type ThreadTimelineSnapshot,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   TurnReaderSchema,
@@ -1151,6 +1159,12 @@ export function assertThreadUpdatePrecondition(
     throw new ThreadUpdatePreconditionError();
   }
 }
+
+/** One Turn's metadata revision and verified Items, read or planned by the admission that creates it. */
+type PlannedTurnHistory = Pick<
+  NonNullable<ReturnType<typeof readNativeTurnHistory>>,
+  'revision' | 'metadata' | 'turn'
+>;
 
 /** Live native references share their physical scope across Store views; failed imports cannot erase them. */
 const pendingArtifactReferences = new Map<string, number>();
@@ -3854,7 +3868,11 @@ export class FsStore {
   public async prepareNativeTurnPendingAdmission(
     turn: Turn,
     executor?: CreateTurnOptions['executorKind']
-  ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
+  ): Promise<{
+    entries: ControlProductEntry[];
+    items: readonly Item[];
+    pending: readonly ControlPendingCommandInput[];
+  }> {
     const admission =
       this.pendingRequestServices && executor !== null
         ? preparePendingOutcomeFreeze(this, this.pendingRequestServices, turn, executor)
@@ -3863,7 +3881,7 @@ export class FsStore {
       this.nativeScope(turn.owner),
       admission?.items ?? []
     );
-    return { entries, pending: admission?.pending ?? [] };
+    return { entries, items: admission?.items ?? [], pending: admission?.pending ?? [] };
   }
 
   /** Executes one closed Pending transition with its complete prepared Item and original receipt tuple. */
@@ -4235,7 +4253,8 @@ export class FsStore {
       input,
       true
     );
-    assertControlTerminalPacketBound(planned);
+    // The plan carries the earlier entries in bounded groups; the transmitted part keeps the bound.
+    assertControlTerminalPacketBound(controlPendingPlanTransmittedTerminal(planned));
     const taskTurn = controlTerminalTaskTurn(terminal);
     const { task, observations } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
@@ -4493,6 +4512,222 @@ export class FsStore {
       terminal,
     });
     return this.getTurn(workspaceId, threadId, turn.id);
+  }
+
+  /**
+   * Posts one grouped Pending decision. Its ordered groups are staged as one private plan, and the
+   * Workspace writer receives only the plan's bound reference: it decides every group on the state
+   * the preceding groups produce, or none, under one FULL acknowledgement. The staged plan confers
+   * no replay authority; after a lost acknowledgement the caller inspects the original outcome.
+   *
+   * @param header The decision's operation, the Thread a closeout addresses, and the digest of
+   * every input it was planned on, read with `controlPendingPlanInputs` on the planning handle.
+   * @param groups Ordered writer packets.
+   * @param turns Every Turn the decision publishes, held in its same-Turn boundary.
+   * @throws ControlProductPreconditionError when the plan exceeds its Workspace bound, locally and
+   * before any staging.
+   */
+  public async publishPendingPlan(
+    workspaceId: string,
+    header: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'>,
+    groups: readonly ControlPendingPlanGroup[],
+    turns: readonly string[]
+  ): Promise<ControlPendingCommandResult> {
+    const owner = { kind: 'workspace' as const, workspaceId };
+    const scope = this.nativeScope(owner);
+    const bytes = encodeControlPendingPlan({ workspaceId, ...header }, groups);
+    const post = async (plan: Buffer) => {
+      const file = await prepareProductFile(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+        plan
+      );
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot!,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      return client.pendingCommand(database, {
+        plan: {
+          workspaceId,
+          operation: header.operation,
+          temporary: file.publication.temporary,
+          contentDigest: file.content.reference.contentDigest,
+          byteLength: file.content.byteLength,
+        },
+      });
+    };
+    // The Turn boundary carries no plan bytes; the post reads them from this closure.
+    if (turns.length) return this.publishTurn(owner, turns, null, () => post(bytes));
+    const release = this.enterWorkspaceMutation(workspaceId);
+    return post(bytes).finally(release);
+  }
+
+  /**
+   * The plan groups of one Pending service publication: the terminal tuple the publication posts,
+   * with its entries carried ahead of it in bounded groups.
+   */
+  public async pendingServiceTurnGroups(
+    ...[workspaceId, threadId, input]: Parameters<
+      FsStore['publishPendingRequestServiceTurnPublication']
+    >
+  ): Promise<ControlPendingPlanGroup[]> {
+    const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
+      workspaceId,
+      threadId,
+      input
+    );
+    const [command] = input.pending;
+    if (!command)
+      throw new Error('Pending service publication requires its original deciding transition.');
+    const terminal = await this.pendingServiceTerminal(
+      scope,
+      threadId,
+      { existing, turn, priorEvent },
+      input,
+      false
+    );
+    return controlPendingPlanTerminalGroups({
+      kind: 'pending',
+      input: {
+        input: command,
+        products: [],
+        entries: [],
+        receipt: null,
+        ...(input.admission ? { admission: input.admission } : {}),
+        terminal,
+      },
+    });
+  }
+
+  /**
+   * Plans one outcome Turn admission as a grouped decision's products group: the Turn, Thread
+   * preview, freeze Items and freeze command `createTurn` posts for the same original controls, on
+   * the Thread revision an earlier group of the same decision leaves.
+   *
+   * @returns The group, the Turn history a later close in the same decision reads, the Thread
+   * revision it leaves, and the acknowledgement this admission owns after the decision's ACK.
+   */
+  public async planOutcomeTurnAdmission(
+    workspaceId: string,
+    threadId: string,
+    input: string,
+    triggerActor: ActorRef,
+    options: CreateTurnOptions & { readonly turnId: string },
+    plannedThread?: { readonly revision: number; readonly record: Record<string, unknown> }
+  ): Promise<{
+    group: ControlPendingPlanGroup;
+    history: PlannedTurnHistory;
+    thread: { revision: number; record: Record<string, unknown> };
+    acknowledge: () => void;
+  }> {
+    const thread = this.getThread(workspaceId, threadId);
+    // An earlier group of the same decision may already have revised the Thread.
+    const previousThread =
+      plannedThread ??
+      readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'thread', threadId);
+    if (!previousThread) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+    const status = options.status ?? 'running';
+    if (
+      isSealedTurnTerminal(status) ||
+      options.fileInputs?.length ||
+      options.commandReceipt ||
+      options.captureCoverage
+    )
+      throw new Error('A planned outcome admission carries only its original Pending controls.');
+    const taskId =
+      thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
+    const captureCoverage = this.getLiveCaptureCoverage(workspaceId, taskId);
+    const timestamp = options.startedAt ?? now();
+    // createTurn's creation-identity rule: the planned Turn's id names no retained Turn.
+    this.assertNewTurnIdentity(workspaceId, options.turnId);
+    const turn = this.newWorkspaceTurn(
+      workspaceId,
+      threadId,
+      triggerActor,
+      null,
+      options,
+      timestamp,
+      options.turnId
+    );
+    const admission = await this.prepareNativeTurnPendingAdmission(turn, options.executorKind);
+    const threadRecord = writeRetainedV1({
+      ...previousThread.record,
+      preview: input,
+      updatedAt: timestamp,
+    });
+    const turnRecord = writeRetainedV1({ ...turn, items: [], captureCoverage });
+    return {
+      group: {
+        kind: 'products',
+        transition: {
+          products: [
+            { kind: 'thread', expectedRevision: previousThread.revision, record: threadRecord },
+            { kind: 'turn', expectedRevision: 0, record: turnRecord },
+          ],
+          entries: admission.entries,
+          ...(admission.pending.length ? { pending: [...admission.pending] } : {}),
+        },
+      },
+      history: {
+        revision: 1,
+        metadata: JSON.parse(JSON.stringify(turnRecord)),
+        turn: plannedNativeTurn(
+          JSON.parse(JSON.stringify(turnRecord)),
+          admission.items.map((item) =>
+            JSON.parse(JSON.stringify(writeRetainedV1(ItemSchema.parse(item))))
+          )
+        ),
+      },
+      thread: {
+        revision: previousThread.revision + 1,
+        record: JSON.parse(JSON.stringify(threadRecord)),
+      },
+      acknowledge: () => this.acknowledgeTurnAdmission(turn.id, options.executorKind),
+    };
+  }
+
+  /**
+   * Plans the completion of a Turn an earlier group of the same grouped decision admits, as its
+   * terminal group, on that admission's exact history and with no earlier event.
+   *
+   * @returns The group and the acknowledgement this terminal owns after the decision's ACK.
+   */
+  public async planTurnCompletion(
+    workspaceId: string,
+    history: PlannedTurnHistory,
+    patch: Parameters<FsStore['updateTurn']>[1],
+    publication: TerminalTurnPublication
+  ): Promise<{ group: ControlPendingPlanGroup; acknowledge: () => void }> {
+    const owner = { kind: 'workspace' as const, workspaceId };
+    const prepared = this.prepareTurnCompletion(
+      history.turn.id,
+      patch,
+      publication,
+      owner,
+      history
+    );
+    const terminal = await this.workspaceCompletionTerminal(
+      prepared.scope!,
+      prepared,
+      patch,
+      publication
+    );
+    return {
+      group: { kind: 'terminal', input: terminal },
+      acknowledge: () =>
+        this.acknowledgeTerminalPublication(true, prepared.turn, [
+          ...prepared.precedingEvents,
+          prepared.event,
+        ]),
+    };
   }
 
   /** Commits one existing Workspace execution intent before its actual effect. */
@@ -5674,29 +5909,8 @@ export class FsStore {
       );
   }
 
-  /** Prepares and publishes one Turn while its common admission remains held. */
-  private async createTurnPublication(
-    workspaceId: string,
-    threadId: string,
-    input: string,
-    triggerActor: ActorRef,
-    configVersion: number | null = null,
-    options: CreateTurnOptions = {}
-  ): Promise<Turn> {
-    const thread = this.getThread(workspaceId, threadId);
-    if (
-      !isSealedTurnTerminal(options.status ?? 'running') &&
-      (!options.admitThreadInNativeWriter || !this.dataRoot)
-    )
-      this.assertThreadIdle(workspaceId, threadId);
-    // Task Mode addresses its receiving Thread; checkpoints deliberately retain no Task record id.
-    const taskId =
-      thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
-    const captureCoverage =
-      options.captureCoverage ?? this.getLiveCaptureCoverage(workspaceId, taskId);
-    const timestamp = options.startedAt ?? now();
-    const turnId = options.turnId ?? allocateEntityId('tu');
-
+  /** A new Turn's creation identity: no Workspace, Server or sibling already holds it. */
+  private assertNewTurnIdentity(workspaceId: string, turnId: string): void {
     if (
       this.dataRoot
         ? // The creating Workspace answers in its own scope; a sibling that cannot answer is held.
@@ -5706,8 +5920,19 @@ export class FsStore {
     ) {
       throw new Error(`Turn already exists: ${turnId}`);
     }
+  }
 
-    const turn = TurnSchema.parse({
+  /** The new Workspace Turn one admission creates, from its original creation controls. */
+  private newWorkspaceTurn(
+    workspaceId: string,
+    threadId: string,
+    triggerActor: ActorRef,
+    configVersion: number | null,
+    options: CreateTurnOptions,
+    timestamp: string,
+    turnId: string
+  ): Turn {
+    return TurnSchema.parse({
       id: turnId,
       owner: { kind: 'workspace', workspaceId },
       threadId,
@@ -5741,6 +5966,71 @@ export class FsStore {
         : {}),
       ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
+  }
+
+  /** The live projections one Turn admission owns after its native acknowledgement. */
+  private acknowledgeTurnAdmission(
+    turnId: string,
+    executorKind: CreateTurnOptions['executorKind']
+  ): void {
+    if (executorKind) this.turnExecutors.set(turnId, executorKind);
+    this.turnStream(turnId);
+  }
+
+  /** The live projections one terminal publication owns after its native acknowledgement. */
+  private acknowledgeTerminalPublication(
+    workspace: boolean,
+    turn: Turn,
+    events: readonly (SseEventEnvelope | ServerTurnEventEnvelope)[]
+  ): void {
+    // Feedback is a separate file owner and can publish only after native terminal acknowledgement.
+    // Its file failure never revises that acknowledged decision; its owner creates the file on use.
+    if (workspace && turn.status === 'completed')
+      try {
+        ensureTurnFeedback(this, turn, turn.agentId ?? null);
+      } catch (error) {
+        console.error(
+          `Turn ${turn.id} feedback could not be projected after its terminal acknowledgement.`,
+          error
+        );
+      }
+    for (const terminalEvent of events)
+      this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
+  }
+
+  /** Prepares and publishes one Turn while its common admission remains held. */
+  private async createTurnPublication(
+    workspaceId: string,
+    threadId: string,
+    input: string,
+    triggerActor: ActorRef,
+    configVersion: number | null = null,
+    options: CreateTurnOptions = {}
+  ): Promise<Turn> {
+    const thread = this.getThread(workspaceId, threadId);
+    if (
+      !isSealedTurnTerminal(options.status ?? 'running') &&
+      (!options.admitThreadInNativeWriter || !this.dataRoot)
+    )
+      this.assertThreadIdle(workspaceId, threadId);
+    // Task Mode addresses its receiving Thread; checkpoints deliberately retain no Task record id.
+    const taskId =
+      thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
+    const captureCoverage =
+      options.captureCoverage ?? this.getLiveCaptureCoverage(workspaceId, taskId);
+    const timestamp = options.startedAt ?? now();
+    const turnId = options.turnId ?? allocateEntityId('tu');
+    this.assertNewTurnIdentity(workspaceId, turnId);
+
+    const turn = this.newWorkspaceTurn(
+      workspaceId,
+      threadId,
+      triggerActor,
+      configVersion,
+      options,
+      timestamp,
+      turnId
+    );
     if (options.fileInputs?.length) options.assertFileInputAdmission?.();
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
@@ -5853,8 +6143,7 @@ export class FsStore {
         pendingAdmission?.pending,
         options.publicationGuard
       );
-      if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
-      this.turnStream(turn.id);
+      this.acknowledgeTurnAdmission(turn.id, options.executorKind);
       return this.getTurn(workspaceId, threadId, turn.id);
     }
     this.turns.set(turn.id, turn);
@@ -6415,7 +6704,8 @@ export class FsStore {
     turnId: string,
     patch: Parameters<FsStore['updateTurn']>[1],
     publication: TerminalTurnPublication,
-    knownOwner?: Extract<ControlProductOwner, { kind: 'workspace' }>
+    knownOwner?: Extract<ControlProductOwner, { kind: 'workspace' }>,
+    planned?: PlannedTurnHistory
   ) {
     // A Boot walk carries the Workspace whose own records named this Turn.
     const owner =
@@ -6428,7 +6718,9 @@ export class FsStore {
     if (!owner) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     if (owner.kind === 'server') this.assertServerWorkMutationAvailable();
     const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
-    const history = scope ? readNativeTurnHistory(scope, turnId) : undefined;
+    // A grouped decision closes a Turn its earlier group admits: that admission's exact history.
+    const history: PlannedTurnHistory | undefined =
+      planned ?? (scope ? readNativeTurnHistory(scope, turnId) : undefined);
     // A selected Workspace owner answers for its Turn; a miss there is never a sibling's record.
     if (scope && owner.kind === 'workspace' && !history)
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
@@ -6469,8 +6761,9 @@ export class FsStore {
     });
     if (!isSealedTurnTerminal(turn.status) || !turn.completedAt)
       throw new Error('Terminal publication requires a decided outcome and completion timestamp.');
-    const events =
-      owner.kind === 'server'
+    const events = planned
+      ? []
+      : owner.kind === 'server'
         ? this.getServerTurnTranscript(turnId)
         : scope
           ? readWorkspaceTurnEvents(this.workspaceRootPath(owner.workspaceId), before)
@@ -6554,6 +6847,165 @@ export class FsStore {
     return { owner, scope, history, before, turn, prior, precedingEvents, event };
   }
 
+  /**
+   * The Workspace terminal tuple one prepared completion posts: its changed Items and terminal
+   * events, staged privately, the Turn record, a Session projection and the deciding commands.
+   */
+  private async workspaceCompletionTerminal(
+    scope: NativeProductScope,
+    prepared: ReturnType<FsStore['prepareTurnCompletion']>,
+    patch: Parameters<FsStore['updateTurn']>[1],
+    publication: TerminalTurnPublication
+  ): Promise<ControlTerminalTransition> {
+    const { owner, history, before, turn, prior, precedingEvents, event } = prepared;
+    const turnId = turn.id;
+    const entries: ControlProductEntry[] = [];
+    const revisions = readNativeProductEntries(scope, turnId, 'item');
+    // Exact replay compares supplied Items with the decided snapshot, not a later display head.
+    const retainedItems = prior && publication.execution ? turn.items : before.items;
+    for (const item of publication.items ?? []) {
+      const existing = retainedItems.find((candidate) => candidate.id === item.id);
+      if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
+      const previous = revisions.filter((row) => row.id === item.id).at(-1);
+      const content = await prepareRetainedProductJson(
+        scope.contentMount,
+        owner,
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+        writeRetainedV1(item)
+      );
+      entries.push({
+        kind: 'item',
+        turnId,
+        sequence: revisions.length + entries.length + 1,
+        expectedRevision: previous?.revision ?? 0,
+        ...content,
+      });
+    }
+    for (const terminalEvent of [...precedingEvents, event]) {
+      let content: Pick<ControlProductEntry, 'content' | 'publication'>;
+      if (prior) {
+        // Replay retains each original immutable descriptor, including preceding projections.
+        const reader = openControlStoreProductReadHandle(scope.path, owner);
+        try {
+          const entry = reader.entries(turnId, 'event', terminalEvent.sequence - 1, 1)[0];
+          if (!entry || entry.sequence !== terminalEvent.sequence)
+            throw terminalTurnPublicationConflict(turnId);
+          content = { content: entry.content };
+        } finally {
+          reader.close();
+        }
+      } else {
+        content = await prepareRetainedProductJson(
+          scope.contentMount,
+          owner,
+          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+          writeRetainedV1(terminalEvent)
+        );
+      }
+      entries.push({
+        kind: 'event',
+        turnId,
+        sequence: terminalEvent.sequence,
+        expectedRevision: 0,
+        ...content,
+      });
+    }
+    if (prior && isSealedTurnTerminal(before.status) && publication.execution) {
+      // Replay the original journal tuple, including omitted Items and preceding events.
+      const reader = openControlStoreProductReadHandle(scope.path, owner);
+      try {
+        const step = reader.sqlite
+          .prepare(
+            "SELECT s.control_json FROM control_execution_steps s JOIN control_executions e ON e.id=s.execution_id WHERE e.id=? AND e.work_id=? AND e.phase IN ('closing','closed') AND s.step_id=? AND s.state='completed' AND json_extract(s.control_json,'$.kind')='terminal-publication'"
+          )
+          .get(publication.execution.executionId, turnId, publication.execution.terminalStepId) as
+          | { control_json: string }
+          | undefined;
+        const refs: unknown = step && JSON.parse(step.control_json).outputRefs;
+        if (
+          !Array.isArray(refs) ||
+          !refs.length ||
+          refs.some((ref) => typeof ref !== 'string' || !ref)
+        )
+          throw terminalTurnPublicationConflict(turnId);
+        // Repeated Item bytes are valid; select the newest revision matching the journal digest.
+        const descriptor = reader.sqlite.prepare(
+          "SELECT schema_version AS schemaVersion,kind,sequence,revision,content_json FROM control_product_entries WHERE kind IN ('item','event') AND turn_id=? AND json_extract(content_json,'$.reference.contentDigest')=? ORDER BY revision DESC,sequence DESC LIMIT 1"
+        );
+        const original = refs.map((digest) => {
+          const row = descriptor.get(turnId, digest) as
+            | {
+                schemaVersion: number;
+                kind: string;
+                sequence: number;
+                revision: number;
+                content_json: string;
+              }
+            | undefined;
+          if (!row || row.schemaVersion !== 1) throw terminalTurnPublicationConflict(turnId);
+          return ControlProductEntrySchema.parse({
+            kind: row.kind,
+            turnId,
+            sequence: row.sequence,
+            expectedRevision: row.revision - 1,
+            content: JSON.parse(row.content_json),
+          });
+        });
+        for (const entry of entries)
+          if (!original.some((retained) => isDeepStrictEqual(retained, entry)))
+            throw terminalTurnPublicationConflict(turnId);
+        entries.splice(0, entries.length, ...original);
+      } finally {
+        reader.close();
+      }
+    }
+    const products: ControlTerminalTransition['products'] = [];
+    if (publication.agentSession) {
+      const candidate = publication.agentSession;
+      const current = readNativeProduct(scope, 'agent-session', candidate.id);
+      if (
+        owner.kind !== 'workspace' ||
+        candidate.id !== turn.agentSessionId ||
+        !current ||
+        current.record.workspaceId !== owner.workspaceId ||
+        current.record.threadId !== turn.threadId
+      )
+        throw new Error('Terminal Session projection requires the exact assigned Turn lineage.');
+      products.push({
+        kind: 'agent-session',
+        expectedRevision: current.revision,
+        record: writeRetainedV1(
+          AgentSessionRecordSchema.parse({ ...current.record, ...candidate })
+        ),
+      });
+    }
+    return {
+      owner,
+      turn: {
+        kind: 'turn',
+        expectedRevision: history!.revision,
+        record: workspaceTerminalTurnRecord(history!.metadata, patch, turn),
+      },
+      products,
+      entries,
+      pending:
+        owner.kind === 'workspace'
+          ? [
+              ...(publication.pending ?? []),
+              ...(this.pendingRequestServices
+                ? preparePendingDeliveryRelease(this.pendingRequestServices, turn)
+                : []),
+            ]
+          : [],
+      reap: { reason: turn.status, inferredBy: 'native-terminal-publication' },
+      evidence: publication.evidence ?? [],
+      evidenceContent: publication.evidenceContent ?? [],
+      command: publication.command ?? null,
+      ...(publication.interruptCommand ? { interruptCommand: publication.interruptCommand } : {}),
+      execution: publication.execution ?? null,
+    };
+  }
+
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async completeTurnPublication(
     turnId: string,
@@ -6629,106 +7081,12 @@ export class FsStore {
       return { turn: this.getServerTurnById(turnId), notify: false };
     }
     if (scope) {
-      const entries: ControlProductEntry[] = [];
-      const revisions = readNativeProductEntries(scope, turnId, 'item');
-      // Exact replay compares supplied Items with the decided snapshot, not a later display head.
-      const retainedItems = prior && publication.execution ? turn.items : before.items;
-      for (const item of publication.items ?? []) {
-        const existing = retainedItems.find((candidate) => candidate.id === item.id);
-        if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
-        const previous = revisions.filter((row) => row.id === item.id).at(-1);
-        const content = await prepareRetainedProductJson(
-          scope.contentMount,
-          owner,
-          join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-          writeRetainedV1(item)
-        );
-        entries.push({
-          kind: 'item',
-          turnId,
-          sequence: revisions.length + entries.length + 1,
-          expectedRevision: previous?.revision ?? 0,
-          ...content,
-        });
-      }
-      for (const terminalEvent of [...precedingEvents, event]) {
-        let content: Pick<ControlProductEntry, 'content' | 'publication'>;
-        if (prior) {
-          // Replay retains each original immutable descriptor, including preceding projections.
-          const reader = openControlStoreProductReadHandle(scope.path, owner);
-          try {
-            const entry = reader.entries(turnId, 'event', terminalEvent.sequence - 1, 1)[0];
-            if (!entry || entry.sequence !== terminalEvent.sequence)
-              throw terminalTurnPublicationConflict(turnId);
-            content = { content: entry.content };
-          } finally {
-            reader.close();
-          }
-        } else {
-          content = await prepareRetainedProductJson(
-            scope.contentMount,
-            owner,
-            join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-            writeRetainedV1(terminalEvent)
-          );
-        }
-        entries.push({
-          kind: 'event',
-          turnId,
-          sequence: terminalEvent.sequence,
-          expectedRevision: 0,
-          ...content,
-        });
-      }
-      if (prior && isSealedTurnTerminal(before.status) && publication.execution) {
-        // Replay the original journal tuple, including omitted Items and preceding events.
-        const reader = openControlStoreProductReadHandle(scope.path, owner);
-        try {
-          const step = reader.sqlite
-            .prepare(
-              "SELECT s.control_json FROM control_execution_steps s JOIN control_executions e ON e.id=s.execution_id WHERE e.id=? AND e.work_id=? AND e.phase IN ('closing','closed') AND s.step_id=? AND s.state='completed' AND json_extract(s.control_json,'$.kind')='terminal-publication'"
-            )
-            .get(publication.execution.executionId, turnId, publication.execution.terminalStepId) as
-            | { control_json: string }
-            | undefined;
-          const refs: unknown = step && JSON.parse(step.control_json).outputRefs;
-          if (
-            !Array.isArray(refs) ||
-            !refs.length ||
-            refs.some((ref) => typeof ref !== 'string' || !ref)
-          )
-            throw terminalTurnPublicationConflict(turnId);
-          // Repeated Item bytes are valid; select the newest revision matching the journal digest.
-          const descriptor = reader.sqlite.prepare(
-            "SELECT schema_version AS schemaVersion,kind,sequence,revision,content_json FROM control_product_entries WHERE kind IN ('item','event') AND turn_id=? AND json_extract(content_json,'$.reference.contentDigest')=? ORDER BY revision DESC,sequence DESC LIMIT 1"
-          );
-          const original = refs.map((digest) => {
-            const row = descriptor.get(turnId, digest) as
-              | {
-                  schemaVersion: number;
-                  kind: string;
-                  sequence: number;
-                  revision: number;
-                  content_json: string;
-                }
-              | undefined;
-            if (!row || row.schemaVersion !== 1) throw terminalTurnPublicationConflict(turnId);
-            return ControlProductEntrySchema.parse({
-              kind: row.kind,
-              turnId,
-              sequence: row.sequence,
-              expectedRevision: row.revision - 1,
-              content: JSON.parse(row.content_json),
-            });
-          });
-          for (const entry of entries)
-            if (!original.some((retained) => isDeepStrictEqual(retained, entry)))
-              throw terminalTurnPublicationConflict(turnId);
-          entries.splice(0, entries.length, ...original);
-        } finally {
-          reader.close();
-        }
-      }
+      const terminal = await this.workspaceCompletionTerminal(
+        scope,
+        { owner, scope, history, before, turn, prior, precedingEvents, event },
+        patch,
+        publication
+      );
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
       await client.open({
@@ -6740,51 +7098,7 @@ export class FsStore {
         productOwner: owner,
         contentMount: scope.contentMount,
       });
-      const products: ControlTerminalTransition['products'] = [];
-      if (publication.agentSession) {
-        const candidate = publication.agentSession;
-        const current = readNativeProduct(scope, 'agent-session', candidate.id);
-        if (
-          owner.kind !== 'workspace' ||
-          candidate.id !== turn.agentSessionId ||
-          !current ||
-          current.record.workspaceId !== owner.workspaceId ||
-          current.record.threadId !== turn.threadId
-        )
-          throw new Error('Terminal Session projection requires the exact assigned Turn lineage.');
-        products.push({
-          kind: 'agent-session',
-          expectedRevision: current.revision,
-          record: writeRetainedV1(
-            AgentSessionRecordSchema.parse({ ...current.record, ...candidate })
-          ),
-        });
-      }
-      await client.terminal(database, {
-        owner,
-        turn: {
-          kind: 'turn',
-          expectedRevision: history!.revision,
-          record: workspaceTerminalTurnRecord(history!.metadata, patch, turn),
-        },
-        products,
-        entries,
-        pending:
-          owner.kind === 'workspace'
-            ? [
-                ...(publication.pending ?? []),
-                ...(this.pendingRequestServices
-                  ? preparePendingDeliveryRelease(this.pendingRequestServices, turn)
-                  : []),
-              ]
-            : [],
-        reap: { reason: turn.status, inferredBy: 'native-terminal-publication' },
-        evidence: publication.evidence ?? [],
-        evidenceContent: publication.evidenceContent ?? [],
-        command: publication.command ?? null,
-        ...(publication.interruptCommand ? { interruptCommand: publication.interruptCommand } : {}),
-        execution: publication.execution ?? null,
-      });
+      await client.terminal(database, terminal);
     } else {
       for (const item of publication.items ?? []) {
         if (owner.kind === 'server') await this.createServerItem(item);
@@ -6800,19 +7114,10 @@ export class FsStore {
         stream.events.push(...([...precedingEvents, event] as never[]));
       }
     }
-    // Feedback is a separate file owner and can publish only after native terminal acknowledgement.
-    // Its file failure never revises that acknowledged decision; its owner creates the file on use.
-    if (scope && owner.kind === 'workspace' && turn.status === 'completed')
-      try {
-        ensureTurnFeedback(this, turn, turn.agentId ?? null);
-      } catch (error) {
-        console.error(
-          `Turn ${turnId} feedback could not be projected after its terminal acknowledgement.`,
-          error
-        );
-      }
-    for (const terminalEvent of [...precedingEvents, event])
-      this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
+    this.acknowledgeTerminalPublication(Boolean(scope && owner.kind === 'workspace'), turn, [
+      ...precedingEvents,
+      event,
+    ]);
     return {
       turn:
         owner.kind === 'server'

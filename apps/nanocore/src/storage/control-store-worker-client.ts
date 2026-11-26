@@ -262,6 +262,7 @@ import {
 } from './control-store-capability.js';
 import { commandInputHash, frameControlScalarText } from './control-store-input.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
+import type { ControlPendingPlan } from './control-store-pending-plan.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -1122,6 +1123,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'publication':
       return command.input.category === 'already-decided-publication';
     case 'pending':
+      // A grouped decision carries only decision and terminal groups.
+      if ('plan' in command.input) return true;
       return (
         command.input.admission === undefined &&
         [
@@ -1997,6 +2000,7 @@ class ControlStoreWorkerClient {
       this.fileAdmissions.set(resolve(root), admission);
     }
     const entries: ControlProductEntry[] = [];
+    let planBytes = 0n;
     switch (command.operation) {
       case 'products':
       case 'transition':
@@ -2007,11 +2011,14 @@ class ControlStoreWorkerClient {
         entries.push(...command.input.entries);
         break;
       case 'pending':
-        entries.push(
-          ...command.input.entries,
-          ...(command.input.terminal?.entries ?? []),
-          ...(command.input.admission?.entries ?? [])
-        );
+        // A grouped decision's bodies are already staged; its plan bounds what it can publish.
+        if ('plan' in command.input) planBytes = BigInt(command.input.plan.byteLength);
+        else
+          entries.push(
+            ...command.input.entries,
+            ...(command.input.terminal?.entries ?? []),
+            ...(command.input.admission?.entries ?? [])
+          );
         break;
       case 'goal':
         if ('kind' in command.input) break;
@@ -2022,7 +2029,10 @@ class ControlStoreWorkerClient {
         if (command.input.mode === 'submit') entries.push(...command.input.transition.entries);
         break;
     }
-    const stagingBytes = entries.reduce((sum, entry) => sum + BigInt(entry.content.byteLength), 0n);
+    const stagingBytes = entries.reduce(
+      (sum, entry) => sum + BigInt(entry.content.byteLength),
+      planBytes
+    );
     const priority = creditedCloseout || isControlCapacityCommand(command) ? 'control' : 'ordinary';
     const reservations: NativeCapacityReservation[] = [];
     try {
@@ -6632,7 +6642,7 @@ class ControlStoreWorkerClient {
   /** Commits the Pending owner and its complete local publication before returning IDs. */
   async pendingCommand(
     database: string,
-    input: ControlPendingTransition
+    input: ControlPendingTransition | ControlPendingPlan
   ): Promise<ControlPendingCommandResult> {
     try {
       const reply = await this.request({ operation: 'pending', database, input });

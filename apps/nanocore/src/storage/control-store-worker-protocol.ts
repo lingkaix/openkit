@@ -185,6 +185,7 @@ import {
   type ControlPendingTransition,
   ControlPendingTransitionSchema,
 } from './control-store-pending.js';
+import { type ControlPendingPlan, ControlPendingPlanSchema } from './control-store-pending-plan.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
@@ -1697,7 +1698,11 @@ export type ControlWorkerCommand =
           readonly content: ArrayBuffer;
         }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
-      | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
+      | {
+          readonly operation: 'pending';
+          // A grouped decision carries only its private plan reference.
+          readonly input: ControlPendingTransition | ControlPendingPlan;
+        }
       | {
           readonly operation: 'workspace-queue-input';
           readonly input: z.infer<typeof ControlWorkspaceQueueInputWireSchema>;
@@ -3868,7 +3873,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
             : value.operation === 'publication'
               ? ControlPublicationInputSchema
               : value.operation === 'pending'
-                ? ControlPendingTransitionSchema
+                ? typeof value.input === 'object' && value.input !== null && 'plan' in value.input
+                  ? ControlPendingPlanSchema
+                  : ControlPendingTransitionSchema
                 : value.operation === 'journal'
                   ? ControlExecutionJournalInputSchema
                   : value.operation === 'project-cleanup'

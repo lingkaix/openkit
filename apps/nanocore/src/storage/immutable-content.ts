@@ -203,7 +203,7 @@ export function plannedRetainedProductJson(
 }
 
 /** Keeps the existing file publication for large bodies and explicit immutable-file owners. */
-async function prepareProductFile(
+export async function prepareProductFile(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
