@@ -238,6 +238,15 @@ async function createFixture() {
   await transition('cleanup-pending');
   return {
     boot,
+    queueDelete(originalRequestId = requestId) {
+      const owner = physical!;
+      return dispatch.effect({
+        beforeDelivery: () => () => expect(authority.mayCarryWork(owner)).toBe(true),
+        kind: 'sandbox.delete',
+        input: deleteInput,
+        requestId: originalRequestId,
+      });
+    },
     /** Admits a fresh physical Epoch without replacing the dispatcher's completed-result memory. */
     async successor(physicalEpoch: string) {
       await authority.closePhysicalConnection(physical!);
@@ -307,11 +316,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('discards a lost delete acknowledgement on a new Core boot without changing stores or blocking the next poll', async () => {
     const fixture = await createFixture();
     try {
-      const pending = fixture.dispatch.effect({
-        kind: 'sandbox.delete',
-        input: deleteInput,
-        requestId,
-      });
+      const pending = fixture.queueDelete();
       expect(await fixture.post(deletePath, {})).toEqual({
         status: 200,
         body: JSON.stringify({ ...deleteInput, requestId }),
@@ -334,11 +339,7 @@ describe('cleaned backend delete delivery discard', () => {
       expect(fixture.snapshot()).toEqual(storedBefore);
       expect(await fixture.post(deletePath, {})).toEqual({ status: 204, body: '' });
       // A new real command still owns the operation; discard introduced no pending expectation.
-      const next = fixture.dispatch.effect({
-        kind: 'sandbox.delete',
-        input: deleteInput,
-        requestId: 'd'.repeat(64),
-      });
+      const next = fixture.queueDelete('d'.repeat(64));
       expect((await fixture.post(deletePath, {})).status).toBe(200);
       expect(
         await fixture.post(`${deletePath}/result`, { ...retainedResult, requestId: 'd'.repeat(64) })
@@ -357,11 +358,7 @@ describe('cleaned backend delete delivery discard', () => {
     async ({ completedRequestId, successStatus }) => {
       const fixture = await createFixture();
       try {
-        const pending = fixture.dispatch.effect({
-          kind: 'sandbox.delete',
-          input: deleteInput,
-          requestId: completedRequestId,
-        });
+        const pending = fixture.queueDelete(completedRequestId);
         const rejected = expect(pending).rejects.toThrow('effect_failed');
         expect((await fixture.post(deletePath, {})).status).toBe(200);
         const failure = { requestId: completedRequestId, failureCode: 'effect_failed' };
@@ -547,11 +544,7 @@ describe('cleaned backend delete delivery discard', () => {
     const fixture = await createFixture();
     try {
       await fixture.transition('physical-cleaned');
-      const pending = fixture.dispatch.effect({
-        kind: 'sandbox.delete',
-        input: deleteInput,
-        requestId: 'b'.repeat(64),
-      });
+      const pending = fixture.queueDelete('b'.repeat(64));
       expect((await fixture.post(deletePath, {})).status).toBe(200);
       expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(400);
       expect(
@@ -588,11 +581,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('strips inert delete additions before pending delivery and completed replay identity', async () => {
     const fixture = await createFixture();
     try {
-      const pending = fixture.dispatch.effect({
-        kind: 'sandbox.delete',
-        input: deleteInput,
-        requestId,
-      });
+      const pending = fixture.queueDelete();
       expect((await fixture.post(deletePath, {})).status).toBe(200);
       expect(
         await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: 'first' })
@@ -622,11 +611,7 @@ describe('cleaned backend delete delivery discard', () => {
     async (change) => {
       const fixture = await createFixture();
       try {
-        const pending = fixture.dispatch.effect({
-          kind: 'sandbox.delete',
-          input: deleteInput,
-          requestId,
-        });
+        const pending = fixture.queueDelete();
         let settled = false;
         void pending.then(() => {
           settled = true;

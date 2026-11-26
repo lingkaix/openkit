@@ -16,7 +16,7 @@ Owns the dedicated Pi SDK host, its private channel, and search-only native MCP.
 Does not own:
 
 - The shared adapter base. [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md) owns it.
-- Private Harness operations. [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
+- Private Worker Shim poll and keyed inputs. [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
 - The image. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns it.
 - Public live steer. [Task Mode](20260704-task_mode_worker_delegation.md) owns it.
 - Gateway model routing. [Gateway tier routing](../decisions/20261001-gateway_tier_routing_rulings.md) owns it.
@@ -96,6 +96,10 @@ Required host Extensions cannot be replaced, and local catalog presence gives th
 Native head-read, tail-shell, spill, and image behavior, and a permitted user context mode, are preserved. OpenKit neither ships nor depends on context-mode, and it does not force a native Tool rewrite.
 
 This pin has no retained-history barrier and no last-Turn comparison. Exact file and header identity, plus an acknowledged host close, are its local predicate.
+
+## Worker Stop
+
+The current Worker stop declaration is `best-effort`. The adapter owns one Pi runtime host for one binding. Its local proof covers direct-child stop and observed exit. It leaves descendant absence unproved. The [Worker Shim contract](20260629-worker_runtime_communication_model.md#worker-shim-contract) requires qualified whole-tree evidence for an `exact` declaration. When stop remains unproved, follow the Sandbox recycle rule.
 
 ## Unsupported Operations
 

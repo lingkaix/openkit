@@ -1706,7 +1706,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(runtime.turnExecutor).not.toHaveProperty('environmentBackend');
   });
 
-  it('projects OpenShell version 0.0.99 from the NanoHost backend capability observation', async () => {
+  it('projects OpenShell version 0.1.10 from the NanoHost backend capability observation', async () => {
     const runtime = createConfiguredWorkerLifecycleRuntime({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
@@ -1726,7 +1726,7 @@ describe('createConfiguredTurnExecutor', () => {
 
     await expect(backend.describeCapabilities()).resolves.toMatchObject({
       kind: 'openshell',
-      version: '0.0.99',
+      version: '0.1.10',
     });
   });
 
@@ -4728,7 +4728,7 @@ describe('createConfiguredTurnExecutor', () => {
     const peer = createFactoryNanoHostDispatch(effects);
     let observed = { sourceCommit: 'b'.repeat(40), releaseTag: null as string | null };
     const dispatch = vi
-      .spyOn(nanoHostDispatchOwner, 'createNanoHostSessionDispatch')
+      .spyOn(nanoHostDispatchOwner, 'createProductionNanoHostSessionDispatch')
       .mockReturnValue({
         ...peer,
         async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
@@ -6321,6 +6321,7 @@ describe('createConfiguredTurnExecutor', () => {
         const {
           beforeDelivery: _delivery,
           consumeResult: _consumer,
+          deliveryDeadlineUnixMs: _deadline,
           signal: _signal,
           ...transportRequest
         } = request;

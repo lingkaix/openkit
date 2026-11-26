@@ -283,8 +283,15 @@ export interface WorkerInferenceRuntimeHintMapping {
   ): Readonly<Record<string, unknown>> | undefined;
 }
 
+/** The adapter's qualified Worker stop scope. */
+export type WorkerStopDeclaration =
+  | { readonly kind: 'best-effort' }
+  | { readonly kind: 'exact'; readonly proofKind: string };
+
 /** Worker-side adapter for one resident native runtime. */
 export interface WorkerResidentAdapter {
+  /** Qualified stop scope. Legacy Harness injections may omit the declaration. */
+  readonly stop?: WorkerStopDeclaration;
   /** Pinned native inference mapping, bound once at session registration. */
   readonly inferenceRuntimeHintMapping?: WorkerInferenceRuntimeHintMapping;
   /**
@@ -306,8 +313,10 @@ export interface WorkerResidentAdapter {
  * outcomes (#773). The Harness refuses new and resumed bindings before native work until
  * released, correlated terminal evidence meets the DeepSeek adapter specification.
  */
-export const WORKER_ADAPTERS: Readonly<Record<string, WorkerResidentAdapter>> = {
-  codex: codexResidentAdapter,
-  opencode: opencodeAdapter,
-  pi: piResidentAdapter,
+export const WORKER_ADAPTERS: Readonly<
+  Record<string, WorkerResidentAdapter & { readonly stop: WorkerStopDeclaration }>
+> = {
+  codex: { ...codexResidentAdapter, stop: { kind: 'best-effort' } },
+  opencode: { ...opencodeAdapter, stop: { kind: 'best-effort' } },
+  pi: { ...piResidentAdapter, stop: { kind: 'best-effort' } },
 };

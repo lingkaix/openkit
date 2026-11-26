@@ -1,8 +1,8 @@
 //! Native OpenShell policy projection from exact Core-owned authorization intent.
 
 use openshell_sdk::raw::proto::{
-    FilesystemPolicy, L7Allow, L7Rule, LandlockPolicy, NetworkBinary, NetworkEndpoint,
-    NetworkPolicyRule, ProcessPolicy, SandboxPolicy,
+    FilesystemPolicy, L7Allow, L7Rule, LandlockPolicy, NetworkAccessPreset, NetworkBinary,
+    NetworkEndpoint, NetworkEnforcementMode, NetworkPolicyRule, ProcessPolicy, SandboxPolicy,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -570,8 +570,12 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
                     host,
                     port,
                     protocol,
-                    enforcement,
-                    access,
+                    enforcement: NetworkEnforcementMode::Enforce as i32,
+                    access: match access.as_str() {
+                        "read-only" => NetworkAccessPreset::ReadOnly,
+                        "read-write" => NetworkAccessPreset::ReadWrite,
+                        _ => NetworkAccessPreset::Unspecified,
+                    } as i32,
                     rules,
                     allow_encoded_slash: allow_encoded_slash.unwrap_or(false),
                     ..NetworkEndpoint::default()
@@ -594,6 +598,7 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
         }),
         network_policies,
         network_middlewares: HashMap::new(),
+        ..Default::default()
     })
 }
 
@@ -621,10 +626,16 @@ mod tests {
         );
         let direct = &policy.network_policies["direct_api"];
         assert_eq!(direct.binaries[0].path, "/usr/local/bin/codex");
-        assert_eq!(direct.endpoints[0].access, "read-only");
-        assert_eq!(direct.endpoints[0].enforcement, "enforce");
+        assert_eq!(
+            direct.endpoints[0].access,
+            NetworkAccessPreset::ReadOnly as i32
+        );
+        assert_eq!(
+            direct.endpoints[0].enforcement,
+            NetworkEnforcementMode::Enforce as i32
+        );
         let git = &policy.network_policies["github_git_read"].endpoints[0];
-        assert!(git.access.is_empty());
+        assert_eq!(git.access, NetworkAccessPreset::Unspecified as i32);
         assert_eq!(git.rules.len(), 2);
         let read = git.rules[0].allow.as_ref().expect("exact GET rule");
         assert_eq!(
@@ -699,8 +710,8 @@ mod tests {
             let policy = render_sandbox_policy(&intent).unwrap();
             let endpoint = &policy.network_policies["direct_api"].endpoints[0];
             assert_eq!(endpoint.allow_encoded_slash, setting.unwrap_or(false));
-            assert_eq!(endpoint.access, "read-only");
-            assert_eq!(endpoint.enforcement, "enforce");
+            assert_eq!(endpoint.access, NetworkAccessPreset::ReadOnly as i32);
+            assert_eq!(endpoint.enforcement, NetworkEnforcementMode::Enforce as i32);
             assert_eq!(endpoint.protocol, "rest");
             assert_eq!(endpoint.host, "api.example.com");
             assert_eq!(endpoint.port, 443);

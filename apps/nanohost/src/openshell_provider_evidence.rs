@@ -20,19 +20,29 @@ pub(crate) fn normalize_refresh_status(
     if !matches!(
         status.status.as_str(),
         "configured" | "refreshed" | "error" | "rotation_requested"
-    ) || [
-        status.expires_at_ms,
-        status.next_refresh_at_ms,
-        status.last_refresh_at_ms,
-    ]
-    .iter()
-    .any(|n| *n < 0)
-    {
+    ) {
         return Err(ProviderRefusal::EvidenceUnproved);
     }
+    let expires_at = timestamp_ms(status.expiration_time.as_ref())?;
+    let next_refresh = timestamp_ms(status.next_refresh_time.as_ref())?;
+    let last_refresh = timestamp_ms(status.last_refresh_time.as_ref())?;
     Ok(json!({"strategy":strategy,"status":status.status,
-        "expiresAtMs":status.expires_at_ms,"nextRefreshAtMs":status.next_refresh_at_ms,
-        "lastRefreshAtMs":status.last_refresh_at_ms,"hasError":!status.last_error.is_empty()}))
+        "expiresAtMs":expires_at,"nextRefreshAtMs":next_refresh,
+        "lastRefreshAtMs":last_refresh,"hasError":!status.last_error.is_empty()}))
+}
+
+fn timestamp_ms(value: Option<&prost_types::Timestamp>) -> Result<i64, ProviderRefusal> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if value.seconds < 0 || !(0..1_000_000_000).contains(&value.nanos) {
+        return Err(ProviderRefusal::EvidenceUnproved);
+    }
+    value
+        .seconds
+        .checked_mul(1000)
+        .and_then(|seconds| seconds.checked_add(i64::from(value.nanos / 1_000_000)))
+        .ok_or(ProviderRefusal::EvidenceUnproved)
 }
 
 /// Omits credential values, config, labels, annotations and account or native locators.
@@ -41,11 +51,15 @@ pub(crate) fn normalize_provider(provider: &Provider) -> Result<Value, ProviderR
     if provider.metadata.is_none()
         || provider.credentials.len() > 64
         || provider.config.len() > 64
-        || provider.credential_expires_at_ms.len() > 64
-        || provider.credential_expires_at_ms.values().any(|n| *n < 0)
+        || provider.credential_expiration_times.len() > 64
     {
         return Err(ProviderRefusal::EvidenceUnproved);
     }
-    Ok(json!({"credentialCount":provider.credentials.len(),
-        "expiringCredentialCount":provider.credential_expires_at_ms.values().filter(|n|**n>0).count()}))
+    let mut expiring_count = 0;
+    for value in provider.credential_expiration_times.values() {
+        expiring_count += usize::from(timestamp_ms(Some(value))? > 0);
+    }
+    Ok(
+        json!({"credentialCount":provider.credentials.len(),"expiringCredentialCount":expiring_count}),
+    )
 }

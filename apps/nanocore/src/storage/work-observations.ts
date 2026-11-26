@@ -11,6 +11,7 @@ import {
   ResourceDigestSchema,
 } from '@openkit/config-schema';
 import {
+  canonicalJsonText,
   RETAINED_FORMAT_VERSION,
   ReasoningEffortSchema,
   readRetainedV1,
@@ -37,6 +38,22 @@ import {
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { serverWorkUnavailable } from './server-work-command.js';
+import {
+  assertReapObservationPrefix,
+  fitsReap,
+  mergeReapCall,
+  NATIVE_OBSERVATION_BYTES,
+  ObservationCounterSchema,
+  ObservationCutoffSchema,
+  type ObservationOmissionResultSchema,
+  type ObservationTruncation,
+  ObservationTruncationSchema,
+  omission,
+  reapCallChange,
+  serializedCallBytes,
+  TURN_OBSERVATION_CONTROL_BYTES,
+  WORK_OBSERVATION_TRUNCATION_FEATURE,
+} from './work-observation-collection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
 /** A scoped citation; publication edges are minted only by the storage owner. */
@@ -253,6 +270,7 @@ const payloadSchemas = {
           .strip()
       ),
       inferredBy: z.string().min(1),
+      truncation: ObservationTruncationSchema.optional(),
     })
     .strip(),
   'env.bound': z
@@ -352,6 +370,11 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
       throw new Error('recovery_required: observation header identity mismatch');
   }
   row.payload = schema.parse(row.payload);
+  if (row.type === 'turn.reap' && row.payload.truncation !== undefined) {
+    const { firstOmittedSequence } = ObservationTruncationSchema.parse(row.payload.truncation);
+    if (firstOmittedSequence > row.seq)
+      throw new Error('recovery_required: invalid observation truncation boundary');
+  }
   if (
     ((row.type.startsWith('model.') || row.type === 'config.model') && row.obs !== 'llm-gateway') ||
     (row.type === 'runtime.observed' && row.obs !== 'worker-shim') ||
@@ -429,7 +452,7 @@ export function readWorkObservations(
 export async function appendWorkObservation(
   workspaceDb: WorkspaceDb | CoreDb,
   input: ControlWorkObservationPreparation
-): Promise<Pick<ControlWorkObservationResult, 'disposition' | 'observation'>> {
+): Promise<Pick<RetainedWorkObservation, 'disposition' | 'observation'>> {
   if (workspaceDb.sqlite.inTransaction)
     throw new Error('Observation submission cannot span a Main transaction');
   if (workspaceDb.scope === 'core') throw serverWorkUnavailable();
@@ -451,13 +474,17 @@ export async function appendWorkObservation(
   });
   // This is the existing expectation/publication lifecycle, not a second writer or a retry.
   // If independent evidence publication fails, the original expected observation remains available to its gap fact.
-  const expected = await client.observation(database, { ...prepared, publishBodies: false });
+  const expected = requireRetainedObservation(
+    await client.observation(database, { ...prepared, publishBodies: false })
+  );
   if (!prepared.publishBodies)
     return { disposition: expected.disposition, observation: expected.observation };
-  const result = await client.observation(
-    database,
-    prepared,
-    input.bodies.map((body) => body.bytes)
+  const result = requireRetainedObservation(
+    await client.observation(
+      database,
+      prepared,
+      input.bodies.map((body) => body.bytes)
+    )
   );
   return { disposition: expected.disposition, observation: result.observation };
 }
@@ -475,10 +502,32 @@ export interface ControlWorkObservationInput {
 }
 
 /** Savepoint result only: the worker must await outer FULL COMMIT before acknowledgement. */
-export interface ControlWorkObservationResult {
+export interface RetainedWorkObservation {
   readonly disposition: 'committed' | 'duplicate';
   readonly observation: WorkObservationRecord;
   readonly publication: WorkObservationRecord | null;
+}
+
+export type ControlWorkObservationResult =
+  | RetainedWorkObservation
+  | z.infer<typeof ObservationOmissionResultSchema>;
+
+/** Delivered after the native owner's FULL acknowledgement, never from a rolled-back savepoint. */
+export class ObservationCollectionStoppedError extends Error {
+  constructor(
+    readonly disposition: 'truncated' | 'closed',
+    readonly truncation: ObservationTruncation | null
+  ) {
+    super('Work observation collection is closed.');
+    this.name = 'ObservationCollectionStoppedError';
+  }
+}
+
+export function requireRetainedObservation<
+  T extends Pick<RetainedWorkObservation, 'disposition' | 'observation'>,
+>(result: T | z.infer<typeof ObservationOmissionResultSchema>): T {
+  if ('observation' in result) return result;
+  throw new ObservationCollectionStoppedError(result.disposition, result.truncation);
 }
 
 /** Producer-owned complete bytes; deferral records expectations without publication authority. */
@@ -555,7 +604,7 @@ export async function appendWorkObservationChunk(
     productOwner: owner,
     contentMount: scope.contentMount,
   });
-  await client.observation(database, input, [bytes]);
+  requireRetainedObservation(await client.observation(database, input, [bytes]));
 }
 
 /** Native index fields are checked against their frozen retained payload before use. */
@@ -588,6 +637,9 @@ const turnBindingSchema = StoredTurnV1Schema.pick({
   captureCoverage: true,
   requiredFeatures: true,
   reasoningEffort: true,
+}).extend({
+  observationCutoff: ObservationCutoffSchema.optional(),
+  observationCounter: ObservationCounterSchema.optional(),
 });
 
 /** Whitelist metadata before any row crosses the SQLite boundary. */
@@ -604,6 +656,7 @@ interface ObservationOwnerRow {
   readonly legacy_owner_absent: number;
   readonly status: string;
   readonly metadata: string;
+  readonly ordinary_bytes?: number;
 }
 
 function validObservationOwnerRow(
@@ -612,7 +665,9 @@ function validObservationOwnerRow(
   return (
     row !== undefined &&
     row.schema_version === RETAINED_FORMAT_VERSION &&
-    row.bytes <= 64 * 1024 &&
+    row.bytes <=
+      (row.ordinary_bytes === undefined ? 65_536 : 65_536 + TURN_OBSERVATION_CONTROL_BYTES) &&
+    (row.ordinary_bytes ?? row.bytes) <= 65_536 &&
     row.legacy_owner_absent === 1 &&
     Number.isSafeInteger(row.revision) &&
     row.revision >= 1
@@ -647,6 +702,7 @@ export function readControlWorkObservationTurnBinding(
   const turnRow = sqlite
     .prepare(`SELECT schema_version, revision, thread_id, agent_session_id, status,
       length(CAST(record_json AS BLOB)) AS bytes,
+      length(CAST(json_remove(record_json, '$.observationCutoff', '$.observationCounter', '$.requiredFeatures') AS BLOB)) AS ordinary_bytes,
       json_type(record_json, '$.workspaceId') IS NULL AS legacy_owner_absent,
       ${bindingProjection(turnBindingSchema.shape)}
       FROM control_turns WHERE id=?`)
@@ -682,6 +738,12 @@ export function readControlWorkObservationTurnBinding(
       (thread.requiredFeatures?.includes(NATIVE_THREAD_LOGIN_FEATURE) === true)
   )
     throw new Error('recovery_required: native observation owner lineage mismatch');
+  const truncated = turn.requiredFeatures?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE) === true;
+  if (
+    (truncated && !turn.requiredFeatures?.includes('openkit.work-observations.v1')) ||
+    (turn.observationCutoff && !truncated)
+  )
+    throw new Error('recovery_required: missing observation truncation feature');
   return { turn, revision: turnRow.revision, coverage: turn.captureCoverage ?? null };
 }
 
@@ -690,7 +752,7 @@ function decodeControlObservation(
   row: ControlObservationRow,
   turnId: string
 ): WorkObservationRecord {
-  if (row.schema_version !== 1 || Buffer.byteLength(row.record_json) > 64 * 1024)
+  if (row.schema_version !== 1 || Buffer.byteLength(row.record_json) > NATIVE_OBSERVATION_BYTES)
     throw new Error('recovery_required: unsupported native observation record');
   const raw = JSON.parse(row.record_json) as Record<string, unknown>;
   if (
@@ -717,6 +779,38 @@ function assertControlObservationManifest(
     throw new Error('recovery_required: missing native observation capture manifest');
 }
 
+function assertObservationTruncation(
+  sqlite: Database.Database,
+  binding: ReturnType<typeof readControlWorkObservationTurnBinding>,
+  record: WorkObservationRecord
+): void {
+  if (record.type !== 'turn.reap') return;
+  const truncated = record.payload.truncation !== undefined;
+  if (
+    truncated !==
+      (binding.turn.requiredFeatures?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE) === true) ||
+    (binding.turn.observationCutoff &&
+      !isDeepStrictEqual(record.payload.truncation, binding.turn.observationCutoff.summary))
+  )
+    throw new Error('recovery_required: inconsistent observation truncation feature or summary');
+  const summary = ObservationTruncationSchema.optional().parse(record.payload.truncation);
+  function* prior() {
+    const rows = sqlite
+      .prepare(
+        'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence<? ORDER BY sequence'
+      )
+      .iterate(record.turnId, record.seq) as Iterable<ControlObservationRow>;
+    for (const row of rows) yield decodeControlObservation(row, record.turnId);
+  }
+  assertReapObservationPrefix(
+    prior(),
+    summary,
+    record,
+    ['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt,
+    binding.turn.observationCutoff?.retainedSequence
+  );
+}
+
 /** Returns one committed native identity, including the original sequence on replay. */
 export function readControlWorkObservation(
   sqlite: Database.Database,
@@ -732,6 +826,7 @@ export function readControlWorkObservation(
   if (!row) return undefined;
   assertControlObservationManifest(binding);
   const record = decodeControlObservation(row, input.turnId);
+  assertObservationTruncation(sqlite, binding, record);
   assertControlObservationLineage(sqlite, owner, input, record);
   return record;
 }
@@ -772,6 +867,7 @@ export function readControlWorkObservations(
     const record = decodeControlObservation(row, input.turnId);
     if (record.seq !== after + index + 1)
       throw new Error('recovery_required: native observation sequence gap');
+    assertObservationTruncation(sqlite, binding, record);
     assertControlObservationLineage(sqlite, owner, input, record);
     return record;
   });
@@ -1176,11 +1272,173 @@ function assertControlBodyPublished(
   z.array(z.literal('openkit.work-observations.v1')).parse(JSON.parse(row.required_features_json));
 }
 
+type ObservationBinding = ReturnType<typeof readControlWorkObservationTurnBinding>;
+type ObservationCutoff = z.infer<typeof ObservationCutoffSchema>;
+type ObservationCounter = z.infer<typeof ObservationCounterSchema>;
+
+/** Only this owner changes collection state. The private fields survive ordinary Turn replacement. */
+function updateObservationManifest(
+  sqlite: Database.Database,
+  binding: ObservationBinding,
+  state: { cutoff?: ObservationCutoff; counter?: ObservationCounter; truncated?: boolean }
+): void {
+  const features = new Set(binding.turn.requiredFeatures ?? []);
+  features.add('openkit.work-observations.v1');
+  if (state.cutoff || state.truncated) features.add(WORK_OBSERVATION_TRUNCATION_FEATURE);
+  const fields = {
+    requiredFeatures: [...features],
+    ...(state.cutoff ? { observationCutoff: state.cutoff } : {}),
+    ...(state.counter ? { observationCounter: state.counter } : {}),
+  };
+  const patch = JSON.stringify(fields);
+  const changed = sqlite
+    .prepare(
+      `UPDATE control_turns SET
+       revision=revision+?, record_json=json_patch(record_json, ?)
+       WHERE id=? AND revision=?
+       AND length(CAST(json_patch(record_json, ?) AS BLOB)) <= ${65_536 + TURN_OBSERVATION_CONTROL_BYTES}`
+    )
+    .run(
+      features.size === (binding.turn.requiredFeatures?.length ?? 0) ? 0 : 1,
+      patch,
+      binding.turn.id,
+      binding.revision,
+      patch
+    );
+  if (changed.changes !== 1)
+    throw new Error('recovery_required: observation Turn revision conflict');
+}
+
+function observationDigest(record: WorkObservationRecord): string {
+  const { seq: _seq, ...meaning } = record;
+  return createHash('sha256').update(canonicalJsonText(meaning)).digest('hex');
+}
+
+function foldObservationPrefix(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: { readonly threadId: string; readonly turnId: string },
+  retainedSequence?: number
+) {
+  const calls = new Map<
+    string,
+    NonNullable<NonNullable<ReturnType<typeof reapCallChange>>['call']>
+  >();
+  let sequence = 0;
+  let intake = 0;
+  let callBytes = 0;
+  let lastObservedTs: string | null = null;
+  let cutoff: ObservationCutoff | undefined;
+  for (;;) {
+    const rows = readControlWorkObservations(sqlite, owner, { ...input, afterSequence: sequence });
+    for (const row of rows) {
+      if (retainedSequence !== undefined && row.seq > retainedSequence)
+        return {
+          calls,
+          lastObservedTs,
+          cutoff,
+          counter: { sequence, intake, callBytes, callCount: calls.size },
+        };
+      if (row.type === 'turn.reap') {
+        sequence = row.seq;
+        continue;
+      }
+      const ordinary = row.type !== 'content.published';
+      if (ordinary) intake += 1;
+      if (cutoff) {
+        if (ordinary)
+          cutoff.summary = {
+            ...cutoff.summary,
+            omittedCount: cutoff.summary.omittedCount + 1,
+            lastOmittedSequence: intake,
+          };
+        sequence = row.seq;
+        continue;
+      }
+      const change = reapCallChange(row);
+      const previous = change ? calls.get(change.key) : undefined;
+      const next = change ? mergeReapCall(previous, change.call) : null;
+      const prospectiveBytes =
+        callBytes - serializedCallBytes(previous) + serializedCallBytes(next);
+      const prospectiveCount = calls.size - Number(previous !== undefined) + Number(next !== null);
+      if (ordinary && !fitsReap(input.turnId, row.ts, prospectiveBytes, prospectiveCount)) {
+        cutoff = {
+          observationId: row.id,
+          digest: observationDigest(row),
+          retainedSequence: sequence,
+          summary: omission(intake),
+        };
+      } else {
+        if (change) {
+          if (next) calls.set(change.key, next);
+          else calls.delete(change.key);
+          callBytes = prospectiveBytes;
+        }
+        lastObservedTs = row.ts;
+      }
+      sequence = row.seq;
+    }
+    if (rows.length < 128)
+      return {
+        calls,
+        lastObservedTs,
+        cutoff,
+        counter: { sequence, intake, callBytes, callCount: calls.size },
+      };
+  }
+}
+
+/** Reconstruct only the affected call for a valid counter. Model responses bind their request ID. */
+function updateObservationCounter(
+  sqlite: Database.Database,
+  candidate: WorkObservationRecord,
+  counter: ObservationCounter
+): ObservationCounter {
+  const change = reapCallChange(candidate);
+  if (!change) return { ...counter, intake: counter.intake + 1 };
+  if (candidate.payload.direction === 'request')
+    return {
+      ...counter,
+      intake: counter.intake + 1,
+      callBytes: counter.callBytes + serializedCallBytes(change.call),
+      callCount: counter.callCount + 1,
+    };
+  const model = candidate.type === 'model.observed';
+  const rows = sqlite
+    .prepare(
+      model
+        ? `SELECT * FROM control_work_observations WHERE turn_id=?
+          AND (id=? OR json_extract(record_json, '$.parent')=?) ORDER BY sequence`
+        : `SELECT * FROM control_work_observations WHERE turn_id=?
+          AND json_extract(record_json, '$.type')='runtime.observed'
+          AND coalesce(json_extract(record_json, '$.corr'), json_extract(record_json, '$.payload.fact.callRef'))=?
+          ORDER BY sequence`
+    )
+    .iterate(
+      ...(model
+        ? [candidate.turnId, candidate.parent ?? candidate.id, candidate.parent ?? candidate.id]
+        : [candidate.turnId, change.correlation])
+    ) as Iterable<ControlObservationRow>;
+  let previous: typeof change.call | undefined;
+  for (const row of rows) {
+    const earlier = reapCallChange(decodeControlObservation(row, candidate.turnId));
+    if (earlier?.key === change.key) previous = mergeReapCall(previous ?? undefined, earlier.call);
+  }
+  const next = mergeReapCall(previous ?? undefined, change.call);
+  return {
+    ...counter,
+    intake: counter.intake + 1,
+    callBytes: counter.callBytes - serializedCallBytes(previous) + serializedCallBytes(next),
+    callCount: counter.callCount - Number(!!previous) + Number(!!next),
+  };
+}
+
 /** Applies native metadata/order and optional publication in the caller's existing savepoint, without filesystem effects or COMMIT. */
 export function applyControlWorkObservation(
   sqlite: Database.Database,
   owner: ControlProductOwner,
-  value: ControlWorkObservationInput
+  value: ControlWorkObservationInput,
+  terminalReap = false
 ): ControlWorkObservationResult {
   if (!sqlite.inTransaction || sqlite.readonly)
     throw new Error('Native observations require the owning SQL transaction');
@@ -1212,6 +1470,8 @@ export function applyControlWorkObservation(
     owner
   );
   assertControlObservationLineage(sqlite, owner, input, candidate);
+  if (!existing && Buffer.byteLength(JSON.stringify(candidate)) > NATIVE_OBSERVATION_BYTES)
+    throw new Error('Observation metadata exceeds the native bound');
   if (
     candidate.type === 'turn.reap' &&
     (['pending', 'running'].includes(binding.turn.status) ||
@@ -1232,6 +1492,47 @@ export function applyControlWorkObservation(
       (input.bodies.length > 0 && !isDeepStrictEqual(prior.payload.bodies, input.bodies)))
   )
     throw new Error('recovery_required: observation publication conflict');
+  let counter: ObservationCounter | undefined;
+  if (!existing) {
+    const cutoff = binding.turn.observationCutoff;
+    if (candidate.type === 'turn.reap') {
+      if (!terminalReap && (candidate.payload.truncation !== undefined || cutoff))
+        throw new Error('Observation truncation belongs to the terminal writer');
+    } else if (cutoff) {
+      if (cutoff.observationId !== candidate.id)
+        return { disposition: 'closed', truncation: cutoff.summary };
+      if (cutoff.digest !== observationDigest(candidate))
+        throw new Error('recovery_required: observation cutoff identity conflict');
+      return { disposition: 'truncated', truncation: cutoff.summary };
+    } else {
+      const previous =
+        binding.turn.observationCounter?.sequence === tail.count
+          ? { counter: binding.turn.observationCounter, cutoff: undefined }
+          : foldObservationPrefix(sqlite, owner, input);
+      counter = previous.cutoff
+        ? previous.counter
+        : updateObservationCounter(sqlite, candidate, previous.counter);
+      if (
+        previous.cutoff ||
+        !fitsReap(input.turnId, candidate.ts, counter.callBytes, counter.callCount)
+      ) {
+        const historicalReap = readControlWorkObservation(sqlite, owner, {
+          ...input,
+          id: `turn.reap:${input.turnId}`,
+        });
+        const summary = previous.cutoff?.summary ?? omission(counter.intake);
+        if (historicalReap) return { disposition: 'closed', truncation: null };
+        const seal = previous.cutoff ?? {
+          observationId: candidate.id,
+          digest: observationDigest(candidate),
+          retainedSequence: tail.count,
+          summary,
+        };
+        updateObservationManifest(sqlite, binding, { cutoff: seal });
+        return { disposition: previous.cutoff ? 'closed' : 'truncated', truncation: summary };
+      }
+    }
+  }
   if (input.publishBodies && input.bodies.length) {
     publication = parseWorkObservationRecord({
       v: 1,
@@ -1255,7 +1556,7 @@ export function applyControlWorkObservation(
   const insert = (record: WorkObservationRecord): void => {
     // New live rows admit parsed metadata only; retained rows are never rewritten here.
     const text = JSON.stringify(record);
-    if (Buffer.byteLength(text) > 64 * 1024)
+    if (Buffer.byteLength(text) > NATIVE_OBSERVATION_BYTES)
       throw new Error('Observation metadata exceeds the native bound');
     // Refuse an unknown required declaration even when the known-field parser would strip it.
     decodeControlObservation(
@@ -1274,19 +1575,18 @@ export function applyControlWorkObservation(
       )
       .run(input.turnId, record.seq, record.id, text);
   };
-  if (!binding.turn.requiredFeatures?.includes('openkit.work-observations.v1')) {
-    const requiredFeatures = JSON.stringify(['openkit.work-observations.v1']);
-    const changed = sqlite
-      .prepare(
-        `UPDATE control_turns SET revision=revision+1,
-         record_json=json_set(record_json, '$.requiredFeatures', json(?))
-         WHERE id=? AND revision=?
-         AND length(CAST(json_set(record_json, '$.requiredFeatures', json(?)) AS BLOB)) <= 65536`
-      )
-      .run(requiredFeatures, input.turnId, binding.revision, requiredFeatures);
-    if (changed.changes !== 1)
-      throw new Error('recovery_required: observation Turn revision conflict');
-  }
+  const truncated = candidate.type === 'turn.reap' && candidate.payload.truncation !== undefined;
+  if (!counter && publication && !prior && binding.turn.observationCounter?.sequence === tail.count)
+    counter = binding.turn.observationCounter;
+  if (
+    counter ||
+    truncated ||
+    !binding.turn.requiredFeatures?.includes('openkit.work-observations.v1')
+  )
+    updateObservationManifest(sqlite, binding, {
+      ...(counter ? { counter: { ...counter, sequence: publication?.seq ?? candidate.seq } } : {}),
+      truncated,
+    });
   if (!existing) insert(candidate);
   if (publication && !prior) insert(publication);
   return { disposition: existing ? 'duplicate' : 'committed', observation: candidate, publication };
@@ -1330,49 +1630,14 @@ export function prepareControlTurnReap(
       throw new Error('recovery_required: turn.reap identity conflict');
     return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
   }
-  const calls = new Map<string, { corr: string; type: string; name: string | null; ts: string }>();
-  let afterSequence = 0;
-  let lastObservedTs: string | null = null;
-  for (;;) {
-    const rows = readControlWorkObservations(sqlite, owner, { ...input, afterSequence });
-    for (const row of rows) {
-      lastObservedTs = row.ts;
-      if (row.type === 'model.observed' && row.corr) {
-        const key = JSON.stringify([
-          row.type,
-          row.corr,
-          row.payload.direction === 'request' ? row.id : row.parent,
-        ]);
-        if (row.payload.direction === 'request')
-          calls.set(key, { corr: row.corr, type: row.type, name: null, ts: row.ts });
-        else if (
-          row.parent &&
-          ['done', 'error', 'interrupted', 'truncated', 'failed'].includes(
-            String(row.payload.event)
-          )
-        )
-          calls.delete(key);
-      } else if (row.type === 'runtime.observed') {
-        const { fact } = WorkerObservationDataSchema.parse(row.payload);
-        if (fact.kind !== 'tool' || !fact.callRef) continue;
-        const corr = row.corr ?? fact.callRef;
-        const key = JSON.stringify([row.type, corr]);
-        if (['completed', 'failed', 'interrupted', 'closed'].includes(fact.phase ?? ''))
-          calls.delete(key);
-        else if (['started', 'running', 'updated'].includes(fact.phase ?? '')) {
-          const previous = calls.get(key);
-          calls.set(key, {
-            corr,
-            type: row.type,
-            name: previous?.name ?? fact.toolName ?? null,
-            ts: previous?.ts ?? row.ts,
-          });
-        }
-      }
-    }
-    if (rows.length < 128) break;
-    afterSequence = rows.at(-1)!.seq;
-  }
+  const cutoff = binding.turn.observationCutoff;
+  const prefix = foldObservationPrefix(sqlite, owner, input, cutoff?.retainedSequence);
+  const truncation = cutoff?.summary ?? prefix.cutoff?.summary;
+  if (
+    cutoff &&
+    (prefix.cutoff || cutoff.summary.firstOmittedSequence !== prefix.counter.intake + 1)
+  )
+    throw new Error('recovery_required: inconsistent native observation cutoff boundary');
   return {
     threadId: input.threadId,
     turnId: input.turnId,
@@ -1385,9 +1650,10 @@ export function prepareControlTurnReap(
       ret: 'turn-evidence',
       payload: {
         reason: input.reason,
-        lastObservedTs,
-        unresolvedCalls: [...calls.values()],
+        lastObservedTs: prefix.lastObservedTs,
+        unresolvedCalls: [...prefix.calls.values()],
         inferredBy: input.inferredBy,
+        ...(truncation ? { truncation } : {}),
       },
     },
   };
@@ -1402,7 +1668,10 @@ export function applyControlTurnReap(
   if (!sqlite.inTransaction || sqlite.readonly)
     throw new Error('Native observations require the owning SQL transaction');
   const prepared = prepareControlTurnReap(sqlite, owner, input);
-  return prepared ? applyControlWorkObservation(sqlite, owner, prepared).observation : null;
+  return prepared
+    ? requireRetainedObservation(applyControlWorkObservation(sqlite, owner, prepared, true))
+        .observation
+    : null;
 }
 
 /** Fixed adapter tool vocabulary permitted in ordinary timeline labels. */

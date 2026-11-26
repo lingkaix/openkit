@@ -962,10 +962,17 @@ function makeNanoHostReleaseFixture(architecture = 'arm64') {
     source: { commit },
     gateway: { targets: gatewayPins },
     supervisor: {
-      repository: 'ghcr.io/nvidia/openshell/supervisor',
+      repository: 'quay.io/ai-openshell/supervisor',
       platformDigests: {
         'linux/amd64': `sha256:${'1'.repeat(64)}`,
         'linux/arm64': `sha256:${'2'.repeat(64)}`,
+      },
+    },
+    sandboxRuntime: {
+      repository: 'quay.io/ai-openshell/sandbox',
+      platformDigests: {
+        'linux/amd64': `sha256:${'3'.repeat(64)}`,
+        'linux/arm64': `sha256:${'4'.repeat(64)}`,
       },
     },
     redistribution: {
@@ -987,11 +994,11 @@ function makeNanoHostReleaseFixture(architecture = 'arm64') {
   );
   writeFileSync(
     join(repoRoot, 'apps', 'nanohost', 'Cargo.toml'),
-    `[dependencies]\nopenshell-sdk = { git = "https://github.com/NVIDIA/OpenShell.git", rev = "${commit}" }\n`
+    `[dependencies]\nopenshell-sdk = { git = "https://github.com/ai-openshell/openshell.git", rev = "${commit}" }\n`
   );
   writeFileSync(
     join(repoRoot, 'apps', 'nanohost', 'Cargo.lock'),
-    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/NVIDIA/OpenShell.git?rev=${commit}#${commit}"\n`
+    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/ai-openshell/openshell.git?rev=${commit}#${commit}"\n`
   );
 
   git(repoRoot, ['init', '-q']);

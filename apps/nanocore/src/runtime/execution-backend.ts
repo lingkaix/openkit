@@ -37,19 +37,33 @@ export interface ExecutionReleaseProof {
   readonly routesRevoked: boolean;
 }
 
-/** NanoCore's four-operation backend boundary; preparation uses existing supply and Workspace owners. */
-export interface ExecutionBackend {
+/** The four operations owned by Compute Neutrality, lines 23–30. */
+export interface ExecutionBackendPort {
   readonly id: string;
-  /** Reports the installed private Login path, independent of current placement or Vault authority. */
-  supportsHarnessLogin?(): boolean;
+  /** Uses the original authority, finalized input and absolute deadline. */
   submit(
     input: ExecutionBackendCorrelation & {
       readonly deadline: string;
       readonly credentialBindings?: readonly WorkerCredentialFileBinding[];
     }
   ): Promise<ExecutionBackendObservation>;
+  /** Reads the original operation without starting work or extending provider lifetime. */
   inspect(input: ExecutionBackendCorrelation): Promise<ExecutionBackendObservation | null>;
+  /** Stops the original work after the Core fence. An acknowledgement does not prove release. */
   cancel(input: ExecutionBackendCorrelation): Promise<ExecutionBackendObservation>;
+  /** Reports scoped release evidence after the required handoffs. Core decides which claims it covers. */
+  release(input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }): Promise<
+    ExecutionBackendCorrelation & {
+      readonly state: 'pending' | 'released' | 'unknown';
+      readonly fenceRef: string | null;
+    }
+  >;
+}
+
+/** The serving backend also supports the existing optional Login and credential operations. */
+export interface ExecutionBackend extends ExecutionBackendPort {
+  /** Reports the installed private Login path, independent of current placement or Vault authority. */
+  supportsHarnessLogin?(): boolean;
   /** Live replacement uses the same admitted reference binding and private material supply. */
   replaceCredentialBinding?(
     input: ExecutionBackendCorrelation & {
@@ -68,12 +82,6 @@ export interface ExecutionBackend {
       readonly receiptId: string;
     }
   ): Promise<{ readonly state: 'removed' | 'unknown'; readonly fenceRef: string | null }>;
-  release(input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }): Promise<
-    ExecutionBackendCorrelation & {
-      readonly state: 'pending' | 'released' | 'unknown';
-      readonly fenceRef: string | null;
-    }
-  >;
 }
 
 /** Reject missing, surplus, mismatched or weaker protection before issuing Vault receipts. */

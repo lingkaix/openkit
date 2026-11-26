@@ -136,8 +136,16 @@ pub(crate) fn project_instance(
         }),
         r#type: projection.profile.id.clone(),
         credentials: HashMap::from([(env.into(), material)]),
-        credential_expires_at_ms: expires_at_ms
-            .map(|v| HashMap::from([(env.into(), v)]))
+        credential_expiration_times: expires_at_ms
+            .map(|v| {
+                HashMap::from([(
+                    env.into(),
+                    prost_types::Timestamp {
+                        seconds: v / 1000,
+                        nanos: ((v % 1000) * 1_000_000) as i32,
+                    },
+                )])
+            })
             .unwrap_or_default(),
         ..Default::default()
     })
@@ -154,7 +162,7 @@ pub(crate) fn profile_digest(profile: &ProviderProfile) -> Result<String, Provid
     let credentials=profile.credentials.iter().map(|credential| {
         let refresh=credential.refresh.as_ref().map(|refresh| json!({
             "strategy":refresh.strategy,"tokenUrl":refresh.token_url,"scopes":refresh.scopes,
-            "refreshBeforeSeconds":refresh.refresh_before_seconds,"maxLifetimeSeconds":refresh.max_lifetime_seconds,
+            "refreshBeforeSeconds":refresh.refresh_before.as_ref().map_or(0, |duration| duration.seconds),"maxLifetimeSeconds":refresh.max_lifetime.as_ref().map_or(0, |duration| duration.seconds),
             "material":refresh.material.iter().map(|m|json!({"name":m.name,"description":m.description,"required":m.required,"secret":m.secret})).collect::<Vec<_>>(),
             "additionalOutputs":refresh.additional_outputs.iter().map(|o|json!({"output":o.output,"credential":o.credential})).collect::<Vec<_>>()
         }));

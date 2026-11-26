@@ -441,15 +441,15 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.doesNotMatch(portableCommands, /v0\.0\.99|8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032/u);
   assert.doesNotMatch(portableCommands, /openshell-gateway-aarch64-unknown-linux-gnu\.tar\.gz/u);
   const releaseConsumer = portable.steps.find((candidate) =>
-    /github\.com\/NVIDIA\/OpenShell\/releases\/download/u.test(candidate.run ?? '')
+    /github\.com\/ai-openshell\/openshell\/releases\/download/u.test(candidate.run ?? '')
   );
   assert.ok(releaseConsumer, 'Portable packaging must download the parsed OpenShell coordinates');
   const releaseCoordinates = releaseConsumer.run
     .split('\n')
-    .filter((line) => line.includes('github.com/NVIDIA/OpenShell/releases/download'));
+    .filter((line) => line.includes('github.com/ai-openshell/openshell/releases/download'));
   const sourceCoordinate = releaseConsumer.run
     .split('\n')
-    .find((line) => line.includes('raw.githubusercontent.com/NVIDIA/OpenShell'));
+    .find((line) => line.includes('raw.githubusercontent.com/ai-openshell/openshell'));
   assert.equal(releaseCoordinates.length, 2, 'Both target Gateway archives must be downloaded');
   assert.ok(sourceCoordinate, 'Missing OpenShell source download coordinate');
   for (const [index, output] of ['amd64_archive', 'archive'].entries()) {

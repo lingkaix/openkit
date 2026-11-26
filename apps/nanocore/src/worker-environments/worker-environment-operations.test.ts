@@ -5,12 +5,20 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { createNanoHostTransportSessionAuthority } from '../auth/nanohost-transport-session.js';
 import { FsStore } from '../lib/store.js';
 import {
   createSchedulerExecutionAttempt,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import {
+  createProductionNanoHostSessionDispatch,
+  NanoHostEffectNotEnqueuedError,
+} from '../runtime/nanohost-session-dispatch.js';
+import {
+  createWorkerEnvironmentRuntimeEffects,
+  type WorkerEnvironmentRuntimeEffects,
+} from '../runtime/worker-environment-runtime-effects.js';
 import {
   type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
@@ -1014,6 +1022,51 @@ describe('Worker environment operations', () => {
       )
     ).toEqual(fixture.binding);
   });
+
+  it.each([
+    ['held', 'retained', 'idle'],
+    ['lost', 'unknown', 'unknown'],
+    ['partial', 'unknown', 'unknown'],
+    ['foreign refusal', 'unknown', 'unknown'],
+  ] as const)(
+    'settles a %s purge through the original reservation and replay',
+    async (mode, outcome, state) => {
+      const dispatch = createProductionNanoHostSessionDispatch({
+        sessionAuthority: createNanoHostTransportSessionAuthority(),
+      });
+      const effect = vi.spyOn(dispatch, 'effect');
+      const runtimeEffects = createWorkerEnvironmentRuntimeEffects(dispatch);
+      const fixture = await createFixture({ purgeStorage: runtimeEffects.purgeStorage });
+      if (mode === 'lost') effect.mockRejectedValueOnce(new Error('Original outcome unavailable.'));
+      if (mode === 'partial')
+        effect.mockResolvedValueOnce({ state: 'unknown', storageRef: fixture.binding.storageRef });
+      if (mode === 'foreign refusal')
+        effect.mockRejectedValueOnce(
+          new NanoHostEffectNotEnqueuedError('storage.purge', 'a'.repeat(64))
+        );
+      const input = {
+        confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
+        expectedRevision: fixture.binding.revision,
+        requestId: '00000000-0000-4000-8000-000000000001',
+        storageRef: fixture.binding.storageRef,
+      };
+      const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
+
+      const first = await fixture.operations.purge(context, input);
+      expect(first).toMatchObject({
+        outcome,
+        storageRef: input.storageRef,
+        requestId: input.requestId,
+      });
+      expect(
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          getWorkerStorageBinding({ sqlite }, input)
+        )
+      ).toMatchObject({ state });
+      await expect(fixture.operations.purge(context, input)).resolves.toEqual(first);
+      expect(effect).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('does not repeat the host purge when its committed native settlement reply is lost', async () => {
     let purgeCalls = 0;

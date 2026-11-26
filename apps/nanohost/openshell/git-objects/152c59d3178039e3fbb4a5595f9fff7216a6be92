@@ -1,0 +1,42 @@
+tree 7b67b7ce2816789aff4d334e1c4a9a0d7a7c1c9a
+parent 10b9d7106a22564cd74beac6e59eaae7a9ab3c7a
+author Drew Newberry <anewberry@nvidia.com> 1795482975 -0800
+committer GitHub <noreply@github.com> 1795482975 -0800
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJrBOVfCRC1aQ7uu5UhlAAAnyAQAGSWLKUq5g0ayEsirEJcQBBf
+ uDbYMJDCnVTt5c3MtfighWUdW6U2FayOZbppFiK/BrdIqmmr0q37fiIJywgPeiIq
+ 3yCOOmGXwrctkpeqoiplzqoFPdSnXOYUgm2WgwO+w6wABdFQE1nssLkLQKTx2tON
+ D4To1galLj43SXMOS5dOuyki7ADofnJrFqteKh3jZBvONlNrUCYHKA0kvQ9UvNqr
+ 1FTIRSQ6z9AptYFRj0YYqusFXDpA1fxA9S67+ykqSff7aCj3wKubDf01WNIw6Llm
+ R8/yxb317OvQKeeD4fZNZnlpLdaZOm8fHBIQvZe0ceg0lKbBSk9ccfxHoihBJMeb
+ V53QKtOtA2cswv1lnTZuQQ/FEuywQBY9Ke1Vfpulw68CMNZvmXhKS6515SZsJR0z
+ KHL7pgAcNzaqcgqC1xH8Hy6sQtjW3FhdCGwEGN9QvAQB3eAZqxa1jVwCor5eqDMQ
+ ecj4kWgSiM4NFpIjOBnaB10N6+UtdXq1Bd7FBY6KBlFU2Pz9fMwMtKm1kjDUNXNr
+ RTrEHg5bCiALd4OVm5vW65IrvIWpKAVU40xFMQzJiIBi0sS/R1Le8rTAlnCWrU5K
+ ugaetz4RJzOD6Jn/2COMnCNQhMEh9kOr/zPZmFzOakHe9m49RAcIem84HtnKVUc3
+ vQUkkYMrQVUdTIjZkU4Z
+ =KaCw
+ -----END PGP SIGNATURE-----
+ 
+
+feat(policy): support Cedar in development builds (#5006)
+
+Add Cedar-authored sandbox policy support behind the `experimental` Cargo
+feature flag on `openshell-gateway` and `openshell-supervisor`. Default,
+prerelease, and stable builds exclude Cedar.
+
+- Add `CedarPolicy` (tag 7), `provider_credential_rules` (tag 8), and
+  `endpoint_settings` (tag 9) to `SandboxPolicy`, plus
+  `supported_capabilities` on `SupervisorHello` and `GetSandboxConfigRequest`.
+- Keep Cedar parsing, analysis, and evaluation in dedicated crates behind
+  `openshell-policy-runtime-interface`, `openshell-policy-cedar-adapter`, and
+  `openshell-policy-cedar-runtime`.
+- Move cross-backend conformance tests to `tests/policy-conformance`.
+- Capture vendored git source replacements for offline RPM builds.
+
+Signed-off-by: Drew Newberry <anewberry@nvidia.com>
+Signed-off-by: Vishwanath Raman <vishwanathr@nvidia.com>
+Signed-off-by: Johnny Greco <jogreco@nvidia.com>
+Co-authored-by: Vishwanath Raman <vishwanathr@nvidia.com>
+Co-authored-by: Johnny Greco <jogreco@nvidia.com>

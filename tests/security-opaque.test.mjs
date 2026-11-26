@@ -28,7 +28,7 @@ function releaseFixture() {
   const release = JSON.parse(
     readFileSync(join(root, 'apps/nanohost/openshell/release.json'), 'utf8')
   );
-  release.version = '0.0.99';
+  release.version = '0.1.10';
   release.source.commit = 'a'.repeat(40);
   for (const [index, platform] of ['linux/amd64', 'linux/arm64'].entries()) {
     release.gateway.targets[platform].archive.sha256 = String(index * 2 + 1).repeat(64);
@@ -49,11 +49,11 @@ test('each reviewed target is an exact opaque vendor component with explicitly u
       'Opaque vendor input must not invent transitive components'
     );
     const vendor = result.components.find((component) => component.purl !== native.purl);
-    assert.equal(vendor.version, '0.0.99', 'Vendor component must retain the reviewed version');
+    assert.equal(vendor.version, '0.1.10', 'Vendor component must retain the reviewed version');
     assert.ok(
       typeof vendor.purl === 'string' &&
         vendor.purl.startsWith('pkg:') &&
-        vendor.purl.includes('@0.0.99'),
+        vendor.purl.includes('@0.1.10'),
       'Vendor must have a version-bound package identity'
     );
     assert.match(

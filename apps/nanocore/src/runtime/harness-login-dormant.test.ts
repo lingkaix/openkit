@@ -28,7 +28,7 @@ it('keeps the default App Login lifecycle uninstalled, unsupported and unavailab
   const coreDb = createTestCoreDb(dataRoot);
   const authority = createNanoHostTransportSessionAuthority();
   // Observe real composition: neither spy replaces a producer, consumer or handler.
-  const dispatchFactory = vi.spyOn(sessionDispatch, 'createNanoHostSessionDispatch');
+  const dispatchFactory = vi.spyOn(sessionDispatch, 'createProductionNanoHostSessionDispatch');
   const registration = vi.spyOn(operationRoutes, 'registerOperationJsonRoutes');
   let client: ReturnType<typeof connect> | undefined;
   let server: ReturnType<typeof createServer> | undefined;

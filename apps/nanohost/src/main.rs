@@ -493,6 +493,7 @@ fn execute_effect_command(
                     environment: parse_sandbox_environment(command.input.get("environment"))?,
                     providers: Vec::new(),
                     gpu: false,
+                    ..Default::default()
                 })
             } else {
                 None
@@ -995,7 +996,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
     };
     let mut image_backend = Some(DockerImageBackend::new(plan.docker_socket().to_path_buf()));
     let persistent_volume_store =
-        match PersistentVolumeStore::open_after_epoch_fence(plan.docker_socket().to_path_buf()) {
+        match PersistentVolumeStore::open_fixed(plan.docker_socket().to_path_buf()) {
             Ok(persistent_volume_store) => persistent_volume_store,
             Err(_) => {
                 let _ = evidence.export_invalidation(
@@ -1097,7 +1098,14 @@ fn commit_acknowledged_readiness(
         *fence_started = None;
         *initial_startup_deadline = None;
     }) {
-        Ok(()) => Ok(()),
+        Ok(()) => coordinator.release_renewed_writers().map_err(|reason| {
+            OuterSessionFailure::terminal(
+                OuterSessionStage::Readiness,
+                OuterSessionOperation::None,
+                None,
+                reason,
+            )
+        }),
         Err(()) => {
             if let Some(started) = removed {
                 let _ = restore_marker(started);
@@ -1902,8 +1910,7 @@ mod tests {
                     ] {
                         let clean = matches!(
                             case,
-                            "error-phase"
-                                | "invalid-argument"
+                            "invalid-argument"
                                 | "invalid-argument-delete-not-found"
                                 | "failed-precondition"
                                 | "resource-exhausted"
@@ -1924,6 +1931,7 @@ mod tests {
                         let storage = coordinator.inspect_storage("storage-one", 1);
                         coordinator.fixture_storage_layout = Some(layout.clone());
                         coordinator.fixture_gateway(client);
+                        coordinator.fixture_image_probe("/usr/bin/true".into());
                         let reports = coordinator.fixture_invalidation_reports(&root);
                         let members = coordinator.fixture_invalidation_requester();
                         std::fs::write(worktree.join("retained"), b"retained Worker bytes").unwrap();
@@ -2065,7 +2073,7 @@ mod tests {
                                     let observed: Vec<serde_json::Value> = std::fs::read_dir(&reports).unwrap()
                                         .map(|entry| serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap())
                                         .collect();
-                                    let expected_loss = if case == "error-phase" { "ready-error-phase" } else { "create-request-unproved" };
+                                    let expected_loss = "create-request-unproved";
                                     assert!(observed.iter().any(|report| report["fields"]["certainty_loss"] == expected_loss),
                                         "the intended native create failure must precede Host termination");
                                     panic!("proved-clean create ended Host for {case}: observed_create_loss={expected_loss} {failure}");
@@ -2109,8 +2117,10 @@ mod tests {
                         );
                         if matches!(
                             case,
-                            "delete-unproved" | "absence-error" | "delete-not-found-unproved"
+                            "error-phase" | "delete-unproved" | "absence-error" | "delete-not-found-unproved"
                         ) {
+                            let store = crate::persistent_volume::tests::test_store(&root.join("volumes"));
+                            assert_eq!(store.inspect("storage-one", 1)["state"], "attached");
                             // Runtime spec "Redacted contents and bounds": unknown create cleanup
                             // keeps the original bounded request lineage rather than erasing it.
                             let reports: Vec<serde_json::Value> = std::fs::read_dir(&reports)
@@ -2126,10 +2136,10 @@ mod tests {
                             assert_eq!(reports[0]["fields"]["attempt"], "a".repeat(64));
                             assert_eq!(
                                 reports[0]["fields"]["certainty_loss"],
-                                if case == "delete-not-found-unproved" {
-                                    "create-request-unproved"
-                                } else {
+                                if case == "error-phase" {
                                     "ready-error-phase"
+                                } else {
+                                    "create-request-unproved"
                                 }
                             );
                         }
@@ -2157,9 +2167,10 @@ mod tests {
                         );
                         if let Some((_, request)) = deletes.first() {
                             let name = b"sandbox-one";
-                            let mut exact = vec![0, 0, 0, 0, (name.len() + 2) as u8, 0x0a, name.len() as u8];
+                            let mut exact = vec![0, 0, 0, 0, (name.len() + 13) as u8, 0x0a, name.len() as u8];
                             exact.extend_from_slice(name);
-                            assert_eq!(*request, exact, "delete must use the exact expected name");
+                            exact.extend_from_slice(b"\x12\x09\x0a\x07default");
+                            assert_eq!(*request, exact, "delete must use the exact expected name in the default workspace");
                         }
                         drop(calls);
                         std::fs::remove_dir_all(&root).unwrap();
