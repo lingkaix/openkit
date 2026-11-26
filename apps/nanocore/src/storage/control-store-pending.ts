@@ -409,7 +409,7 @@ export function applyControlPendingTransition(
           .get(input.threadId)
       )
         assertControlPendingArchive(db, input.threadId, prepared);
-      if (archive) assertArchiveMutation(db, archive);
+      if (archive) assertArchiveMutation(db, archive, input.now);
       if (transition.admission) assertArchiveAdmission(input, transition.admission);
     }
     applyControlTerminal(db, transition.terminal, terminal);

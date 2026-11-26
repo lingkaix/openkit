@@ -243,23 +243,30 @@ export async function prepareProductFile(
     (await realpath(mount.root)) !== resolve(mount.root)
   )
     throw new Error('Native publication mount must not traverse a link.');
-  return withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
-    const content = immutableStageContent(input);
-    const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
-    const path = join(privateRoot, temporary);
-    const file = await open(path, 'wx', 0o600);
-    try {
-      ownBody?.(path);
-      await copyImmutableStage(input, file, content);
-      await file.chmod(0o444);
-    } catch (error) {
-      await unlink(path);
-      throw error;
-    } finally {
-      await file.close();
-    }
-    return { content, publication: { temporary } };
-  });
+  let discardDestination: (() => Promise<void>) | undefined;
+  try {
+    return await withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
+      const content = immutableStageContent(input);
+      const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
+      const path = join(privateRoot, temporary);
+      const file = await open(path, 'wx', 0o600);
+      discardDestination = async () => {
+        await unlink(path);
+      };
+      try {
+        ownBody?.(path);
+        await copyImmutableStage(input, file, content);
+        await file.chmod(0o444);
+      } finally {
+        await file.close();
+      }
+      return { content, publication: { temporary } };
+    });
+  } catch (error) {
+    // The destination is still ours if its close or the scratch discard refuses.
+    await discardDestination?.();
+    throw error;
+  }
 }
 
 /** Reads verified exact inline or immutable-file bytes under the owning scope, never a file-record fallback. */

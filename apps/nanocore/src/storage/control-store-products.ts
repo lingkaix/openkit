@@ -317,8 +317,12 @@ function withReceivedInfluence(
 }
 
 /** Both archive forms may change only the original Thread's archive status and clock. */
-export function assertArchiveMutation(db: WorkspaceDb, archive: ControlProductMutation): void {
-  assertRetainedMutation(db, archive, { status: 'archived', updatedAt: archive.record.updatedAt });
+export function assertArchiveMutation(
+  db: WorkspaceDb,
+  archive: ControlProductMutation,
+  closeoutAt: string
+): void {
+  assertRetainedMutation(db, archive, { status: 'archived', updatedAt: closeoutAt });
 }
 
 /** Ensures an operation replaces only its owned product fields, preserving retained annotations. */
@@ -2951,12 +2955,33 @@ function assertTerminalEntryDependencies(
 function assertTerminalItemCoverage(
   sqlite: Database.Database,
   turnId: string,
-  entries: readonly PreparedControlEntry[]
+  entries: readonly PreparedControlEntry[],
+  requireItemOrder = false
 ): void {
   const terminalEvent = entries.find(
     (entry) =>
       (preparedPayloads.get(entry) as { data?: { type?: string } }).data?.type === 'turn-completed'
   )!;
+  if (requireItemOrder) {
+    // Item revisions keep the position of their first entry in the resulting Turn history.
+    const order = sqlite
+      .prepare(
+        "SELECT id FROM control_product_entries WHERE kind='item' AND turn_id=? GROUP BY id ORDER BY min(sequence)"
+      )
+      .pluck()
+      .all(turnId);
+    const completion = preparedPayloads.get(terminalEvent) as {
+      data: { turn: { items: { id: string }[] } };
+    };
+    if (
+      !isDeepStrictEqual(
+        completion.data.turn.items.map(({ id }) => id),
+        order
+      )
+    )
+      throw new ControlProductPreconditionError();
+    return;
+  }
   if (
     sqlite
       .prepare(
@@ -2979,7 +3004,8 @@ export function controlTerminalTaskTurn(turn: Record<string, unknown>) {
 export function applyControlTerminal(
   db: CoreDb | WorkspaceDb,
   value: ControlTerminalTransition,
-  prepared: PreparedControlTerminal
+  prepared: PreparedControlTerminal,
+  requireItemOrder = false
 ): ControlTerminalResult {
   assertControlProductWriter(db.sqlite);
   const input = ControlTerminalTransitionSchema.parse(value);
@@ -3071,7 +3097,7 @@ export function applyControlTerminal(
     preparation.entries,
     String(turn.id)
   );
-  assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries);
+  assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries, requireItemOrder);
   if (!terminalOwners) throw new ControlProductPreconditionError();
   if (db.scope === 'workspace')
     terminalOwners.task.recordTaskTerminalFact(db, controlTerminalTaskTurn(turn));

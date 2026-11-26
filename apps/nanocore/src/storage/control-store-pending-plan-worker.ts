@@ -524,12 +524,9 @@ function assertOutcomeAdmission(
     error: null,
     items: [],
   });
-  if (
-    !isDeepStrictEqual(
-      turn.record,
-      writeRetainedV1({ ...expected, captureCoverage: turn.record.captureCoverage })
-    )
-  )
+  // The plan's independent coverage selection was verified before preparation.
+  const { captureCoverage: _captureCoverage, ...record } = turn.record;
+  if (!isDeepStrictEqual(record, writeRetainedV1(expected)))
     throw new ControlProductPreconditionError();
   assertRetainedMutation(db, thread, {
     preview: outcomeTurnSummary({ triggerSource }),
@@ -760,6 +757,16 @@ export async function prepareControlPendingPlan(
   )
     throw new ControlProductPreconditionError();
   assertPendingPlanOperation(header, framesToPrepare);
+  const outcomeCoverage = framesToPrepare.flatMap((group) => {
+    if (group.kind !== 'products') return [];
+    const { record } = group.transition.products.find(({ kind }) => kind === 'turn')!;
+    return [[record.id, record.captureCoverage]];
+  });
+  if (
+    (outcomeCoverage.length || plan.outcomeCoverageDigest !== undefined) &&
+    commandInputHash(outcomeCoverage) !== plan.outcomeCoverageDigest
+  )
+    throw new ControlProductPreconditionError();
   const boot =
     header.operation === 'pending-boot'
       ? await prepareBootCensus(db, mount, framesToPrepare)
@@ -1082,7 +1089,7 @@ function decideControlPendingPlan(
         group.input.pending![0]!,
         true
       );
-      applyControlTerminal(db, group.input, group.terminal);
+      applyControlTerminal(db, group.input, group.terminal, true);
     } else {
       assertPendingBootItem(
         db,

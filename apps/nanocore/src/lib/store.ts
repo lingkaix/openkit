@@ -3948,7 +3948,8 @@ export class FsStore {
   public preparePendingArchiveAdmission(
     workspaceId: string,
     threadId: string,
-    admission: Pick<ControlAdmission, 'receipt' | 'audit'>
+    admission: Pick<ControlAdmission, 'receipt' | 'audit'>,
+    closeoutAt: string
   ): ControlAdmission {
     const scope = this.nativeScope({ kind: 'workspace', workspaceId });
     const current = readNativeProduct(scope, 'thread', threadId);
@@ -3959,7 +3960,7 @@ export class FsStore {
         {
           kind: 'thread',
           expectedRevision: current.revision,
-          record: writeRetainedV1({ ...current.record, status: 'archived', updatedAt: now() }),
+          record: writeRetainedV1({ ...current.record, status: 'archived', updatedAt: closeoutAt }),
         },
       ],
       entries: [],
@@ -4550,7 +4551,12 @@ export class FsStore {
    */
   public async publishPendingPlan(
     workspaceId: string,
-    header: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'>,
+    {
+      outcomeCoverageDigest,
+      ...header
+    }: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'> & {
+      readonly outcomeCoverageDigest?: string;
+    },
     groups: readonly ControlPendingPlanGroup[],
     turns: readonly string[]
   ): Promise<ControlPendingCommandResult> {
@@ -4591,6 +4597,7 @@ export class FsStore {
             operation: header.operation,
             temporary,
             contentDigest: file.content.reference.contentDigest,
+            ...(outcomeCoverageDigest === undefined ? {} : { outcomeCoverageDigest }),
             byteLength: file.content.byteLength,
           },
         });
@@ -4688,6 +4695,7 @@ export class FsStore {
   ): Promise<{
     group: ControlPendingPlanGroup;
     history: PlannedTurnHistory;
+    captureCoverage: CaptureCoverageBinding;
     thread: { revision: number; record: Record<string, unknown> };
     acknowledge: () => void;
   }> {
@@ -4718,8 +4726,13 @@ export class FsStore {
       preview: input,
       updatedAt: timestamp,
     });
-    const turnRecord = writeRetainedV1({ ...turn, items: [], captureCoverage });
+    const turnRecord = writeRetainedV1({
+      ...turn,
+      items: [],
+      captureCoverage: { ...captureCoverage },
+    });
     return {
+      captureCoverage,
       group: {
         kind: 'products',
         transition: {
