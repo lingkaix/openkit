@@ -184,6 +184,15 @@ it.each(['before commit', 'after commit'] as const)(
       });
       expect(findNextDispatchableSchedulerAdmissionEntry(db)).toEqual(successor);
       const admitted = await createSchedulerExecutionAttempt(db, successorClaim);
+      for (const unproved of [
+        { ...release, correlation: { ...correlation, operationId: 'other-operation' } },
+        { ...release, fenceRef: 'conflicting-release-fence' },
+        { ...release, proof: { ...release.proof, routesRevoked: false } },
+      ]) {
+        await expect(closeSchedulerExecutionAttemptWithFence(db, unproved)).rejects.toThrow();
+        expect(requireSchedulerExecutionAttempt(db, predecessor.attemptId)).toEqual(closed);
+        expect(requireSchedulerExecutionAttempt(db, admitted.attemptId)).toEqual(admitted);
+      }
       expect(
         await closeSchedulerExecutionAttemptWithFence(db, {
           ...release,
