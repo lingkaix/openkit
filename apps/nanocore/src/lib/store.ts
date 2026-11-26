@@ -4194,14 +4194,14 @@ export class FsStore {
    * record and Items that the publication would post. It stages no content and writes nothing;
    * the Workspace writer still rechecks the same dependencies when the publication commits.
    *
-   * It then checks the packet the publication would post on the terminal writer's packet bound
-   * (descriptors computed in memory), and reads, on the writer's exact Turn record, the Task
-   * terminal fact through the Task owner and the reap row's bound through the observation owner.
+   * It then reads, on the writer's exact Turn record, the Task terminal fact through the Task owner
+   * and, on the planned terminal (descriptors computed in memory), the reap row's bound through the
+   * observation owner.
    *
    * @returns The Turn record the terminal posts, as a later delivery proof in the same
    * transaction reads it.
    * @throws terminal publication conflict when a retained completion contradicts the proposal.
-   * @throws ControlProductPreconditionError when the packet or the reap row exceeds its bound.
+   * @throws ControlProductPreconditionError when the reap row exceeds its bound.
    */
   public async provePendingRequestServiceTurn(
     workspaceId: string,
