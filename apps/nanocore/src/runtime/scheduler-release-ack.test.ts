@@ -139,6 +139,37 @@ it.each(['before commit', 'after commit'] as const)(
         expect(requireSchedulerExecutionAttempt(db, predecessor.attemptId)).toEqual(closing);
         expect(requireSchedulerAdmissionEntry(db, successor.queueEntryId)).toEqual(successor);
         expect(listSchedulerExecutionAttemptsByTurnId(db, successor.turnId)).toEqual([]);
+
+        const rejectedReleases = [
+          [
+            'different operation',
+            { ...release, correlation: { ...correlation, operationId: 'other-operation' } },
+          ],
+          [
+            'different binding',
+            { ...release, correlation: { ...correlation, bindingRef: 'other-binding' } },
+          ],
+          ...Object.keys(release.proof).map(
+            (handoff) =>
+              [
+                `missing ${handoff}`,
+                { ...release, proof: { ...release.proof, [handoff]: false } },
+              ] as const
+          ),
+        ] as const;
+        for (const [reason, unproved] of rejectedReleases) {
+          await expect(
+            closeSchedulerExecutionAttemptWithFence(db, unproved),
+            reason
+          ).rejects.toThrow();
+          expect(requireSchedulerExecutionAttempt(db, predecessor.attemptId), reason).toEqual(
+            closing
+          );
+          expect(requireSchedulerAdmissionEntry(db, successor.queueEntryId), reason).toEqual(
+            successor
+          );
+          expect(findNextDispatchableSchedulerAdmissionEntry(db), reason).toBeNull();
+        }
       }
 
       const closed = await closeSchedulerExecutionAttemptWithFence(db, {
