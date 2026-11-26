@@ -1,4 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { LifecycleDeadline } from '../../../../packages/worker-shim/src/lifecycle-deadline.js';
+import { FakeWorkerShim } from '../../../../packages/worker-shim/src/test-support/worker-shim-fake.js';
+import type {
+  WorkerShimDesiredSet,
+  WorkerShimInventory,
+  WorkerShimTurnInput,
+} from '../../../../packages/worker-shim/src/worker-shim-port.js';
 import type {
   ExecutionBackendCorrelation,
   ExecutionBackendObservation,
@@ -33,7 +40,10 @@ const handoffs = {
 } satisfies ExecutionReleaseProof;
 
 /** The independent evidence survives replacement of the port object in the fake. */
-function fakeFixture(cut: SubmitCut): ContractFixture {
+function fakeFixture(
+  cut: SubmitCut,
+  deliverInput?: (input: ExecutionBackendCorrelation) => Promise<void>
+): ContractFixture {
   const original: ExecutionBackendCorrelation = {
     attemptId: 'attempt',
     backendId: 'backend',
@@ -101,6 +111,7 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
         receiverHistory.set(key, { receipt: null, complete: true });
         throw new Error('Submit reply lost before acceptance');
       }
+      await deliverInput?.(input);
       nativeStarts++;
       if (cut === 'after-commit') {
         receiverHistory.set(key, { receipt: 'accepted', complete: true });
@@ -162,16 +173,29 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
   };
 }
 
-function expectUnproved(result: ExecutionBackendObservation | null): void {
-  if (result) expect(result.disposition).toBe('unknown');
+function expectedObservation(
+  original: ExecutionBackendCorrelation,
+  disposition: ExecutionBackendObservation['disposition'],
+  fenceRef: string | null = null
+): ExecutionBackendObservation {
+  return {
+    ...original,
+    disposition,
+    execution: disposition === 'accepted' ? 'pending' : 'unknown',
+    fenceRef,
+    outcomeRef: null,
+  };
 }
 
 function expectHeld(
   result: Awaited<ReturnType<ExecutionBackendPort['release']>>,
   original: ExecutionBackendCorrelation
 ): void {
-  expect(result).toMatchObject(original);
-  expect(result.state).toMatch(/^(pending|unknown)$/);
+  expect(result).toEqual({
+    ...original,
+    state: expect.stringMatching(/^(pending|unknown)$/),
+    fenceRef: null,
+  });
 }
 
 /** C = Compute Neutrality Target. S = Durable Scheduler Design. */
@@ -180,34 +204,32 @@ function executionBackendContract(
 ): void {
   it('C27, S132 refuses definitively before contact with zero starts', async () => {
     const f = await fixture('refused');
-    const refusal = { ...f.original, disposition: 'not_accepted' };
-    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject(refusal);
-    expect(await f.backend.inspect(f.original)).toMatchObject(refusal);
+    const refusal = expectedObservation(f.original, 'not_accepted');
+    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toEqual(refusal);
+    expect(await f.backend.inspect(f.original)).toEqual(refusal);
 
     const reopened = await f.reopen();
-    expect(await reopened.inspect(f.original)).toMatchObject(refusal);
+    expect(await reopened.inspect(f.original)).toEqual(refusal);
     expect(await f.readEffects()).toEqual({ nativeStarts: 0, releases: 0 });
   });
 
   it('C28, S128/170 reads the original committed key after reply loss and reopen without resending', async () => {
     const f = await fixture('after-commit');
-    expectUnproved(
-      await f.backend.submit({ ...f.original, deadline: f.deadline }).catch(() => null)
+    await expect(f.backend.submit({ ...f.original, deadline: f.deadline })).rejects.toThrow(
+      'Submit reply lost after acceptance'
     );
+    const unknown = expectedObservation(f.original, 'unknown');
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
     await f.setHistoryReadable(false);
-    expectUnproved(await f.backend.inspect(f.original));
+    expect(await f.backend.inspect(f.original)).toEqual(unknown);
     const reopened = await f.reopen();
-    expectUnproved(await reopened.inspect(f.original));
+    expect(await reopened.inspect(f.original)).toEqual(unknown);
     await f.setHistoryReadable(true);
     for (const [key, value] of Object.entries(f.original)) {
       const wrong = { ...f.original, [key]: `${value}-other` };
-      expectUnproved(await reopened.inspect(wrong));
+      expect(await reopened.inspect(wrong)).toBeNull();
     }
-    expect(await reopened.inspect(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'accepted',
-    });
+    expect(await reopened.inspect(f.original)).toEqual(expectedObservation(f.original, 'accepted'));
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
   });
 
@@ -215,42 +237,37 @@ function executionBackendContract(
     'C28, S130 requires quiescence and readable negative history after loss before commit (%s settles first)',
     async (first) => {
       const f = await fixture('before-commit');
-      expectUnproved(
-        await f.backend.submit({ ...f.original, deadline: f.deadline }).catch(() => null)
+      await expect(f.backend.submit({ ...f.original, deadline: f.deadline })).rejects.toThrow(
+        'Submit reply lost before acceptance'
       );
+      const unknown = expectedObservation(f.original, 'unknown');
       await f.advanceToDeadline();
-      expectUnproved(await f.backend.inspect(f.original));
+      expect(await f.backend.inspect(f.original)).toEqual(unknown);
       const reopened = await f.reopen();
-      expectUnproved(await reopened.inspect(f.original));
+      expect(await reopened.inspect(f.original)).toEqual(unknown);
       await f.fence();
       if (first === 'ingress') await f.closeIngress();
       else await f.joinAcceptedWork();
-      expectUnproved(await reopened.inspect(f.original));
+      expect(await reopened.inspect(f.original)).toEqual(unknown);
       await f.setHistoryReadable(false);
       if (first === 'ingress') await f.joinAcceptedWork();
       else await f.closeIngress();
-      expectUnproved(await reopened.inspect(f.original));
+      expect(await reopened.inspect(f.original)).toEqual(unknown);
       await f.setHistoryReadable(true);
-      expect(await reopened.inspect(f.original)).toMatchObject({
-        ...f.original,
-        disposition: 'not_accepted',
-      });
+      expect(await reopened.inspect(f.original)).toEqual(
+        expectedObservation(f.original, 'not_accepted')
+      );
       expect(await f.readEffects()).toEqual({ nativeStarts: 0, releases: 0 });
     }
   );
 
   it('C29–30/70, S145 holds after a stop ACK, expiry, early observation or foreign absence', async () => {
     const f = await fixture('no-readback');
-    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-    });
+    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toEqual(
+      expectedObservation(f.original, 'unknown')
+    );
     await f.fence();
-    expect(await f.backend.cancel(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-      fenceRef: null,
-    });
+    expect(await f.backend.cancel(f.original)).toEqual(expectedObservation(f.original, 'unknown'));
 
     const release = { ...f.original, proof: handoffs };
     expectHeld(await f.backend.release(release), f.original);
@@ -268,9 +285,10 @@ function executionBackendContract(
 
   it('C30/70, S145 releases once with each handoff and exact proof, even across reopen', async () => {
     const f = await fixture('no-readback');
-    await f.backend.submit({ ...f.original, deadline: f.deadline });
+    const unknown = expectedObservation(f.original, 'unknown');
+    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toEqual(unknown);
     await f.fence();
-    await f.backend.cancel(f.original);
+    expect(await f.backend.cancel(f.original)).toEqual(unknown);
     await f.closeIngress();
     await f.joinAcceptedWork();
     await f.observeAbsence(f.original);
@@ -284,14 +302,13 @@ function executionBackendContract(
 
     const release = { ...f.original, proof: handoffs };
     const foreign = { ...f.original, bindingRef: 'foreign-binding' };
-    const foreignResult = await f.backend
-      .release({ ...foreign, proof: handoffs })
-      .catch(() => null);
-    if (foreignResult) expectHeld(foreignResult, foreign);
+    await expect(f.backend.release({ ...foreign, proof: handoffs })).rejects.toThrow(
+      'Release lacks original fenced scope'
+    );
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
 
     const result = await f.backend.release(release);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       ...f.original,
       state: 'released',
       fenceRef: expect.any(String),
@@ -303,39 +320,160 @@ function executionBackendContract(
 
   it('C28/70, S130/134 keeps input unknown after physical absence and release', async () => {
     const f = await fixture('no-readback');
-    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-    });
-    expect(await f.backend.inspect(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-    });
+    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toEqual(
+      expectedObservation(f.original, 'unknown')
+    );
+    expect(await f.backend.inspect(f.original)).toEqual(expectedObservation(f.original, 'unknown'));
     await f.fence();
-    expect(await f.backend.cancel(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-      fenceRef: null,
-    });
+    expect(await f.backend.cancel(f.original)).toEqual(expectedObservation(f.original, 'unknown'));
     await f.closeIngress();
     await f.joinAcceptedWork();
     await f.observeAbsence(f.original);
-    expect(await f.backend.inspect(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-    });
-    expect(await f.backend.release({ ...f.original, proof: handoffs })).toMatchObject({
+    expect(await f.backend.inspect(f.original)).toEqual(expectedObservation(f.original, 'unknown'));
+    const released = await f.backend.release({ ...f.original, proof: handoffs });
+    expect(released).toEqual({
       ...f.original,
       state: 'released',
       fenceRef: expect.any(String),
     });
     const reopened = await f.reopen();
-    expect(await reopened.inspect(f.original)).toMatchObject({
-      ...f.original,
-      disposition: 'unknown',
-    });
+    expect(await reopened.inspect(f.original)).toEqual(
+      expectedObservation(f.original, 'unknown', released.fenceRef)
+    );
     expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 1 });
   });
 }
 
 describe('execution backend port S5 contract', () => executionBackendContract(fakeFixture));
+
+it('keeps the shim input unknown across reconnect and backend reopen after scoped release', async () => {
+  const session = { sandboxIncarnationId: 'incarnation', connectionGeneration: 1 };
+  const worker = {
+    workerId: 'worker',
+    adapterId: 'codex',
+    agentSessionId: 'agent-session',
+    workSlotRef: 'work-slot',
+    resume: null,
+  };
+  const nativeAcceptances: WorkerShimTurnInput[] = [];
+  const shim = new FakeWorkerShim(session.sandboxIncarnationId, {
+    input(input) {
+      nativeAcceptances.push(input);
+      throw new Error('lost result after native acceptance');
+    },
+  });
+  const desired = {
+    session,
+    revision: 1,
+    workers: [],
+    inputs: [],
+    steers: [],
+    interrupts: [],
+    acknowledgedOperations: [],
+  } satisfies WorkerShimDesiredSet;
+  const emptyReport: WorkerShimInventory = { session, workers: [], receipts: [], interrupts: [] };
+  const expectPoll = async (reply: WorkerShimDesiredSet, expected: WorkerShimInventory) => {
+    const reports: WorkerShimInventory[] = [];
+    const result = await shim.poll(reply.session, async (report) => {
+      reports.push(report);
+      return reply;
+    });
+    expect(reports).toEqual([expected]);
+    expect(result).toBe('applied');
+  };
+  const f = fakeFixture('no-readback', async ({ attemptId, inputRef, operationId }) => {
+    if (inputRef === null) throw new Error('Expected original input reference');
+    await expectPoll(
+      {
+        ...desired,
+        workers: [{ state: 'run', worker }],
+        inputs: [
+          {
+            attemptId,
+            inputRef,
+            operationId,
+            workerId: worker.workerId,
+            turnId: 'turn',
+            payloadDigest: 'digest',
+            routeGrant: 'grant',
+          },
+        ],
+      },
+      emptyReport
+    );
+  });
+  const release = { ...f.original, proof: handoffs };
+  const unknown = expectedObservation(f.original, 'unknown');
+  const receiptKey = {
+    workerId: worker.workerId,
+    operationId: f.original.operationId,
+    payloadDigest: 'digest',
+  };
+
+  expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toEqual(unknown);
+  expect(nativeAcceptances).toEqual([
+    {
+      ...receiptKey,
+      attemptId: f.original.attemptId,
+      inputRef: f.original.inputRef,
+      turnId: 'turn',
+      routeGrant: 'grant',
+    },
+  ]);
+  await f.fence();
+  expect(await f.backend.cancel(f.original)).toEqual(unknown);
+  const reconnected = { ...session, connectionGeneration: 2 };
+  const stoppingWorker = {
+    workerId: worker.workerId,
+    state: 'stopping',
+    stop: { kind: 'best-effort' },
+  } as const;
+  const stoppingReport: WorkerShimInventory = {
+    session: reconnected,
+    receipts: [{ kind: 'input', key: receiptKey, disposition: 'unknown' }],
+    workers: [stoppingWorker],
+    interrupts: [],
+  };
+  await expectPoll(
+    {
+      ...desired,
+      session: reconnected,
+      workers: [{ state: 'stop', workerId: worker.workerId }],
+    },
+    stoppingReport
+  );
+  await expectPoll({ ...desired, session: reconnected, revision: 2 }, stoppingReport);
+
+  expectHeld(await f.backend.release(release), f.original);
+  shim.observeChildExit(worker.workerId);
+  await expectPoll(
+    { ...desired, session: reconnected, revision: 3 },
+    {
+      ...stoppingReport,
+      workers: [{ ...stoppingWorker, state: 'exited' }],
+    }
+  );
+  await f.advanceToDeadline();
+  expect(await shim.waitUntilAbsent(worker.workerId, new LifecycleDeadline(0))).toEqual({
+    state: 'held',
+  });
+  await f.closeIngress();
+  await f.joinAcceptedWork();
+  expectHeld(await f.backend.release(release), f.original);
+  expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 0 });
+
+  await f.observeAbsence(f.original);
+  const released = await f.backend.release(release);
+  expect(released).toEqual({
+    ...f.original,
+    state: 'released',
+    fenceRef: expect.any(String),
+  });
+  const reopened = await f.reopen();
+  expect(await reopened.release(release)).toEqual(released);
+  expect(await reopened.inspect(f.original)).toEqual(
+    expectedObservation(f.original, 'unknown', released.fenceRef)
+  );
+  expect(nativeAcceptances).toHaveLength(1);
+  expect(await f.readEffects()).toEqual({ nativeStarts: 1, releases: 1 });
+});
