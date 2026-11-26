@@ -64,7 +64,9 @@ import {
 import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import { StoredTurnPayloadV1Shape } from './retained-work-metadata-v1.js';
 import {
+  assertReapObservationPrefix,
   NATIVE_OBSERVATION_BYTES,
+  type ObservationTruncation,
   ObservationTruncationSchema,
   WORK_OBSERVATION_TRUNCATION_FEATURE,
 } from './work-observation-collection.js';
@@ -297,7 +299,7 @@ export interface WriteWorkspaceExportTreeInput {
   runtimeProvenanceIndexes?: ReadonlyMap<string, string>;
   /** Committed Turn observation JSONL keyed by its owning Turn id. */
   turnObservations?: ReadonlyMap<string, string>;
-  truncatedObservationTurns?: ReadonlySet<string>;
+  turnObservationTruncations?: ReadonlyMap<string, ObservationTruncation>;
   /** Immutable historical capture bindings, separate from public Turn projections. */
   turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
   /** Workspace-scoped usage records to export as line-oriented records. */
@@ -463,6 +465,7 @@ export function writeWorkspaceExportTree(
       join(recordsRoot, 'turns.jsonl'),
       history.turns.map((turn) => {
         const binding = input.turnCaptureCoverage?.get(turn.id);
+        const truncation = input.turnObservationTruncations?.get(turn.id);
         return writeRetainedV1({
           ...turn,
           ...(binding ? { captureCoverage: CaptureCoverageBindingSchema.parse(binding) } : {}),
@@ -470,12 +473,11 @@ export function writeWorkspaceExportTree(
             ? {
                 requiredFeatures: [
                   'openkit.work-observations.v1',
-                  ...(input.truncatedObservationTurns?.has(turn.id)
-                    ? [WORK_OBSERVATION_TRUNCATION_FEATURE]
-                    : []),
+                  ...(truncation ? [WORK_OBSERVATION_TRUNCATION_FEATURE] : []),
                 ],
               }
             : {}),
+          ...(truncation ? { observationTruncation: truncation } : {}),
         });
       })
     );
@@ -501,10 +503,13 @@ export function writeWorkspaceExportTree(
       if (!input.turnCaptureCoverage?.has(turnId)) {
         throw new Error('Work observation export requires historical capture coverage.');
       }
+      const summary = input.turnObservationTruncations?.get(turnId);
       const rows = parsePortableWorkObservations(
         text,
         turnId,
-        input.truncatedObservationTurns?.has(turnId)
+        summary
+          ? { summary, live: turn.status === 'pending' || turn.status === 'running' }
+          : undefined
       );
       for (const row of rows) {
         for (const ref of row.refs ?? []) {
@@ -868,7 +873,7 @@ export function writeWorkspaceExportTree(
     if (input.turnObservations?.size) {
       requiredFeatures.push('openkit.work-observations.v1');
     }
-    if (input.truncatedObservationTurns?.size)
+    if (input.turnObservationTruncations?.size)
       requiredFeatures.push(WORK_OBSERVATION_TRUNCATION_FEATURE);
     const manifest: WorkspaceExportManifest = {
       schemaVersion: 1,
@@ -988,13 +993,12 @@ function isRestrictedPortableEvidenceBundle(record: unknown): record is Record<s
 export function parsePortableWorkObservations(
   text: string,
   turnId: string,
-  truncationRequired = false
+  truncation?: { readonly summary: ObservationTruncation; readonly live: boolean }
 ): WorkObservationRecord[] {
   const committed = text.slice(0, text.lastIndexOf('\n') + 1);
   const rows: WorkObservationRecord[] = [];
   const ids = new Set<string>();
-  let primaryCount = 0;
-  let sawTruncation = false;
+  let reap: WorkObservationRecord | undefined;
   for (const line of committed.split('\n').slice(0, -1)) {
     if (Buffer.byteLength(line) > NATIVE_OBSERVATION_BYTES)
       throw new Error('Portable observation exceeds the retained row bound.');
@@ -1005,23 +1009,23 @@ export function parsePortableWorkObservations(
     if (row.turnId !== turnId || row.seq !== rows.length + 1 || ids.has(row.id)) {
       throw new Error('Invalid portable work observation sequence or ownership.');
     }
-    if (row.type === 'turn.reap' && row.payload.truncation !== undefined) {
-      const summary = ObservationTruncationSchema.parse(row.payload.truncation);
+    if (row.type === 'turn.reap') {
       if (
-        !truncationRequired ||
-        sawTruncation ||
-        (primaryCount + 1 !== summary.firstOmittedSequence &&
-          primaryCount !== summary.lastOmittedSequence)
+        (truncation !== undefined || row.payload.truncation !== undefined) &&
+        (!truncation || reap || !isDeepStrictEqual(row.payload.truncation, truncation.summary))
       )
         throw new Error('Invalid portable observation truncation declaration or prefix.');
-      sawTruncation = true;
+      reap = row;
     }
-    if (row.type !== 'content.published' && row.type !== 'turn.reap') primaryCount++;
     ids.add(row.id);
     rows.push(row);
   }
-  if (truncationRequired && !sawTruncation)
-    throw new Error('Portable Turn lacks its required observation truncation summary.');
+  if (truncation) {
+    if (!reap && !truncation.live)
+      throw new Error('Portable terminal Turn lacks its required observation truncation summary.');
+    const prefix = reap ? rows.slice(0, reap.seq - 1) : rows;
+    assertReapObservationPrefix(prefix, truncation.summary, reap);
+  }
   return rows;
 }
 
@@ -1200,10 +1204,21 @@ export function verifyWorkspaceExportTree(
     const observationPath = `workspace-files/threads/${turn.threadId}/turns/${turn.id}/observations.jsonl`;
     const observations = fileContents.get(observationPath);
     const truncated = features?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE) === true;
+    const summary = ObservationTruncationSchema.optional().parse(raw.observationTruncation);
+    if (truncated !== (summary !== undefined))
+      throw new Error(
+        'Portable Turn observation truncation requires its exact feature and summary.'
+      );
     if (observations !== undefined) {
       if (!features?.includes('openkit.work-observations.v1'))
         throw new Error('Portable observations lack their Turn required feature.');
-      parsePortableWorkObservations(observations, turn.id, truncated);
+      parsePortableWorkObservations(
+        observations,
+        turn.id,
+        summary
+          ? { summary, live: turn.status === 'pending' || turn.status === 'running' }
+          : undefined
+      );
       observationPaths.add(observationPath);
     } else if (truncated)
       throw new Error('Portable Turn lacks its required observation truncation file.');

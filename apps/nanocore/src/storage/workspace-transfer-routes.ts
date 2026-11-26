@@ -81,7 +81,11 @@ import {
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
-import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
+import {
+  type ObservationTruncation,
+  ObservationTruncationSchema,
+  WORK_OBSERVATION_TRUNCATION_FEATURE,
+} from './work-observation-collection.js';
 import {
   parseWorkObservationRecord,
   readWorkObservations,
@@ -611,7 +615,7 @@ function createVerifiedWorkspaceExportFiles({
   resolvePortableDirectory(workspacesRoot, [workspaceId], true);
   const exportRoot = join(workspaceExportsRoot, exportId);
   const turnObservations = new Map<string, string>();
-  const truncatedObservationTurns = new Set<string>();
+  const turnObservationTruncations = new Map<string, ObservationTruncation>();
   for (const turn of turns) {
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
     const rawTurn = StoredTurnV1Schema.parse(readNativeProduct(scope, 'turn', turn.id)!.record);
@@ -630,8 +634,12 @@ function createVerifiedWorkspaceExportFiles({
         const input = { threadId: turn.threadId, turnId: turn.id };
         const binding = readWorkObservationTurnBinding(observationDb, input);
         const rows = readWorkObservations(observationDb, input);
-        if (binding.turn.requiredFeatures?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE))
-          truncatedObservationTurns.add(turn.id);
+        if (binding.turn.requiredFeatures?.includes(WORK_OBSERVATION_TRUNCATION_FEATURE)) {
+          const summary =
+            binding.turn.observationCutoff?.summary ??
+            rows.find((row) => row.type === 'turn.reap')?.payload.truncation;
+          turnObservationTruncations.set(turn.id, ObservationTruncationSchema.parse(summary));
+        }
         const raw = observationDb.sqlite
           .prepare(
             'SELECT record_json FROM control_work_observations WHERE turn_id=? ORDER BY sequence'
@@ -856,7 +864,7 @@ function createVerifiedWorkspaceExportFiles({
     runtimeProvenanceIndexes,
     restrictedEvidenceFiles,
     turnObservations,
-    truncatedObservationTurns,
+    turnObservationTruncations,
     turnCaptureCoverage,
     stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
     usageRecords: workspaceRowFamilies.usageRecords,

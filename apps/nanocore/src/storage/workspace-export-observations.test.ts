@@ -124,6 +124,18 @@ describe('work observation portable closure', () => {
             },
           });
         }
+        const exportSnapshot = (id: string) =>
+          createVerifiedWorkspaceExport({
+            fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+            requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            coreDb,
+            dataRoot,
+            exportId: testEntityId('wsexp', id),
+            repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
+            store,
+            workspaceId: workspace.id,
+          });
         if (truncated) {
           await expect(
             appendWorkObservation(db, {
@@ -151,6 +163,28 @@ describe('work observation portable closure', () => {
               },
             })
           ).rejects.toMatchObject({ disposition: 'truncated' });
+          const live = await exportSnapshot('export_runtime_joins_live');
+          expect(live.verified.manifest.requiredFeatures).toContain(
+            WORK_OBSERVATION_TRUNCATION_FEATURE
+          );
+          const turnBytes = live.verified.fileContents.get('records/turns.jsonl')!;
+          const header = JSON.parse(turnBytes.trim());
+          expect(header.observationTruncation).toEqual({
+            reason: 'unresolved-call-bytes',
+            omittedCount: 1,
+            firstOmittedSequence: 3,
+            lastOmittedSequence: 3,
+            tail: 'unknown',
+          });
+          expect(['pending', 'running']).toContain(header.status);
+          expect(header).not.toHaveProperty('observationCutoff');
+          expect(header).not.toHaveProperty('observationCounter');
+          const path = `workspace-files/threads/${thread.id}/turns/${turn.id}/observations.jsonl`;
+          const rows = live.verified.fileContents.get(path)!.trimEnd().split('\n');
+          expect(rows.map((row) => JSON.parse(row).type)).toEqual([
+            'runtime.observed',
+            'runtime.observed',
+          ]);
         }
         const terminal = await terminalizeGovernedWorkerTurn({
           agentSessionId: null,
@@ -179,17 +213,7 @@ describe('work observation portable closure', () => {
             ts: turn.startedAt,
           },
         ]);
-        const exported = await createVerifiedWorkspaceExport({
-          fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-          requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          coreDb,
-          dataRoot,
-          exportId: testEntityId('wsexp', 'export_runtime_joins'),
-          repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
-          store,
-          workspaceId: workspace.id,
-        });
+        const exported = await exportSnapshot('export_runtime_joins');
         expect(
           exported.verified.manifest.requiredFeatures.includes(WORK_OBSERVATION_TRUNCATION_FEATURE)
         ).toBe(truncated);

@@ -10,7 +10,10 @@ import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
-import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
+import {
+  type ObservationTruncation,
+  WORK_OBSERVATION_TRUNCATION_FEATURE,
+} from './work-observation-collection.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import {
   appendWorkObservation,
@@ -341,7 +344,7 @@ describe('native terminal recovery observations', () => {
     ];
     const append = (observation: WorkObservationDraft, db = f.db) =>
       appendWorkObservation(db, { ...f.owner, observation, bodies: [] });
-    const summary = {
+    const summary: ObservationTruncation = {
       reason: 'unresolved-call-bytes',
       omittedCount: 1,
       firstOmittedSequence: 3,
@@ -413,8 +416,61 @@ describe('native terminal recovery observations', () => {
       WORK_OBSERVATION_TRUNCATION_FEATURE
     );
     const jsonl = rows.map((row) => `${JSON.stringify(row)}\n`).join('');
-    expect(parsePortableWorkObservations(jsonl, f.owner.turnId, true)).toEqual(rows);
+    expect(parsePortableWorkObservations(jsonl, f.owner.turnId, { summary, live: false })).toEqual(
+      rows
+    );
     expect(() => parsePortableWorkObservations(jsonl, f.owner.turnId)).toThrow(/truncation/);
+  });
+
+  it('seals a Turn whose admitted metadata already fills its ordinary byte limit', async () => {
+    const f = await fixture();
+    await observe(f, model(randomUUID(), 'x'.repeat(60_000)));
+    await shutdownControlStoreWorkerClient();
+    const { record_json } = f.db.sqlite
+      .prepare('SELECT record_json FROM control_turns WHERE id=?')
+      .get(f.owner.turnId) as { record_json: string };
+    const stored = JSON.parse(record_json);
+    stored.triggerSource = { kind: 'user-input', summary: '' };
+    stored.triggerSource.summary = 's'.repeat(65_536 - Buffer.byteLength(JSON.stringify(stored)));
+    const full = JSON.stringify(stored);
+    expect(Buffer.byteLength(full)).toBe(65_536);
+    f.db.sqlite
+      .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+      .run(full, f.owner.turnId);
+
+    await expect(observe(f, model(randomUUID(), 'y'.repeat(2_000)))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { omittedCount: 1 },
+    });
+    expect(f.store.getTurnById(f.owner.turnId).triggerSource).toEqual(stored.triggerSource);
+    await expect(observe(f, model(randomUUID(), randomUUID()))).rejects.toMatchObject({
+      disposition: 'closed',
+    });
+    expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
+  });
+
+  it('rebuilds a cold admission counter through calls written after the first reap', async () => {
+    const f = await fixture();
+    await observe(f, model(randomUUID(), randomUUID()));
+    await recover(f);
+    await observe(f, model(randomUUID(), 'x'.repeat(60_000)));
+    const original = observationBytes(f);
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_turns SET record_json=json_remove(record_json,'$.observationCounter') WHERE id=?"
+      )
+      .run(f.owner.turnId);
+    f.db.sqlite.close();
+    const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(db);
+
+    const cold = { ...f, db };
+    await expect(observe(cold, model(randomUUID(), 'y'.repeat(2_000)))).rejects.toMatchObject({
+      disposition: 'closed',
+      truncation: null,
+    });
+    expect(observationBytes(cold)).toEqual(original);
   });
 
   it('reserves the reap envelope for a non-call observation timestamp', async () => {
@@ -485,6 +541,27 @@ describe('native terminal recovery observations', () => {
       unresolvedCalls: [{ corr: 'x'.repeat(60_000), type: 'model.observed' }],
     });
     expect(observationBytes(f).slice(0, -1)).toEqual(bytes);
+
+    const reap = rows.at(-1)!;
+    const summary: ObservationTruncation = {
+      ...(reap.payload.truncation as ObservationTruncation),
+      firstOmittedSequence: 1,
+      omittedCount: 258,
+    };
+    const contradictory = { ...reap, payload: { ...reap.payload, truncation: summary } };
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite
+      .prepare('UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=?')
+      .run(JSON.stringify(contradictory), f.owner.turnId, reap.seq);
+    expect
+      .soft(() => readWorkObservations(f.db, f.owner))
+      .toThrow(/contradicts its retained observation prefix/);
+    const jsonl = [...rows.slice(0, -1), contradictory]
+      .map((row) => `${JSON.stringify(row)}\n`)
+      .join('');
+    expect
+      .soft(() => parsePortableWorkObservations(jsonl, f.owner.turnId, { summary, live: false }))
+      .toThrow(/contradicts its retained observation prefix/);
   });
 
   it('reuses the exact committed snapshot after late observations and a cold retry', async () => {

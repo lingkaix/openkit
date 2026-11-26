@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { WorkObservationRecord } from './work-observations.js';
@@ -5,6 +6,8 @@ import type { WorkObservationRecord } from './work-observations.js';
 export const WORK_OBSERVATION_TRUNCATION_FEATURE = 'openkit.work-observations.truncation.v1';
 export const NATIVE_OBSERVATION_BYTES = 65_536;
 export const REAP_CALL_BYTES = 61_440;
+// At most 512 escaped identity characters, a digest, summary, counter and two feature IDs.
+export const TURN_OBSERVATION_CONTROL_BYTES = 4096;
 const reapEnvelopeBytes = NATIVE_OBSERVATION_BYTES - REAP_CALL_BYTES;
 
 export const ObservationTruncationSchema = z
@@ -32,7 +35,7 @@ export const ObservationOmissionResultSchema = z.discriminatedUnion('disposition
 
 /** The original crossing identity and the retained SQL boundary are private to the deciding owner. */
 export const ObservationCutoffSchema = z.strictObject({
-  observationId: z.string().min(1),
+  observationId: z.string().min(1).max(512),
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   retainedSequence: z.int().nonnegative(),
   summary: ObservationTruncationSchema,
@@ -44,6 +47,24 @@ export const ObservationCounterSchema = z.strictObject({
   callBytes: z.int().nonnegative(),
   callCount: z.int().nonnegative(),
 });
+
+/** Reserve bounded observation-owner metadata while preserving the ordinary Turn byte limit. */
+export function fitsTurnWithObservationControl(
+  record: Record<string, unknown>,
+  bytes: number
+): boolean {
+  const { observationCounter, observationCutoff, requiredFeatures, ...ordinary } = record;
+  if (
+    !ObservationCounterSchema.optional().safeParse(observationCounter).success ||
+    !ObservationCutoffSchema.optional().safeParse(observationCutoff).success
+  )
+    return false;
+  const control = JSON.stringify({ observationCounter, observationCutoff, requiredFeatures });
+  return (
+    Buffer.byteLength(control) <= TURN_OBSERVATION_CONTROL_BYTES &&
+    Buffer.byteLength(JSON.stringify(ordinary)) <= bytes
+  );
+}
 
 type Call = { corr: string; type: string; name: string | null; ts: string };
 
@@ -134,4 +155,65 @@ export function omission(position: number): ObservationTruncation {
     lastOmittedSequence: position,
     tail: 'unknown',
   };
+}
+
+/** Prove the declared logical prefix even when old physical rows include the omitted suffix. */
+export function assertReapObservationPrefix(
+  rows: Iterable<WorkObservationRecord>,
+  summary: ObservationTruncation,
+  reap: WorkObservationRecord | undefined,
+  retainedSequence?: number
+): void {
+  let position = 0;
+  let sequence = 0;
+  let callBytes = 0;
+  let prefixTimestamp: string | null = null;
+  let matchingBoundaryTimestamp = reap?.payload.lastObservedTs === null;
+  const calls = new Map<string, Call>();
+  const retained = summary.firstOmittedSequence - 1;
+  for (const row of rows) {
+    sequence += 1;
+    if (row.seq !== sequence) throw new Error('Invalid retained observation truncation sequence');
+    if (row.type === 'turn.reap') continue;
+    if (row.type !== 'content.published') {
+      position++;
+      const inPrefix = position <= retained;
+      if (retainedSequence !== undefined) {
+        const retainedInSql = row.seq <= retainedSequence;
+        if (retainedInSql !== inPrefix)
+          throw new Error('Invalid retained observation truncation boundary');
+      }
+      if (!inPrefix) continue;
+      const change = reapCallChange(row);
+      if (change) {
+        const previous = calls.get(change.key);
+        const next = mergeReapCall(previous, change.call);
+        if (next) calls.set(change.key, next);
+        else calls.delete(change.key);
+        callBytes += serializedCallBytes(next) - serializedCallBytes(previous);
+      }
+      if (2 + callBytes + Math.max(0, calls.size - 1) > REAP_CALL_BYTES)
+        throw new Error('Retained observation prefix exceeds its reap bound');
+      // Only the last primary row and its following companions can define the prefix clock.
+      matchingBoundaryTimestamp = false;
+    }
+    if (position <= retained) {
+      if (retainedSequence === undefined || row.seq <= retainedSequence) prefixTimestamp = row.ts;
+      matchingBoundaryTimestamp ||= row.ts === reap?.payload.lastObservedTs;
+    }
+  }
+  const historical = position === summary.lastOmittedSequence;
+  if (
+    (position !== retained && !historical) ||
+    (retainedSequence !== undefined && retainedSequence > sequence)
+  )
+    throw new Error('Invalid retained observation truncation prefix');
+  if (!reap) return;
+  if (
+    !isDeepStrictEqual(reap.payload.unresolvedCalls, [...calls.values()]) ||
+    (retainedSequence !== undefined || historical
+      ? reap.payload.lastObservedTs !== prefixTimestamp
+      : !matchingBoundaryTimestamp)
+  )
+    throw new Error('Reap contradicts its retained observation prefix');
 }

@@ -39,6 +39,7 @@ import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { serverWorkUnavailable } from './server-work-command.js';
 import {
+  assertReapObservationPrefix,
   fitsReap,
   mergeReapCall,
   NATIVE_OBSERVATION_BYTES,
@@ -50,6 +51,7 @@ import {
   omission,
   reapCallChange,
   serializedCallBytes,
+  TURN_OBSERVATION_CONTROL_BYTES,
   WORK_OBSERVATION_TRUNCATION_FEATURE,
 } from './work-observation-collection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
@@ -654,6 +656,7 @@ interface ObservationOwnerRow {
   readonly legacy_owner_absent: number;
   readonly status: string;
   readonly metadata: string;
+  readonly ordinary_bytes?: number;
 }
 
 function validObservationOwnerRow(
@@ -662,7 +665,9 @@ function validObservationOwnerRow(
   return (
     row !== undefined &&
     row.schema_version === RETAINED_FORMAT_VERSION &&
-    row.bytes <= 64 * 1024 &&
+    row.bytes <=
+      (row.ordinary_bytes === undefined ? 65_536 : 65_536 + TURN_OBSERVATION_CONTROL_BYTES) &&
+    (row.ordinary_bytes ?? row.bytes) <= 65_536 &&
     row.legacy_owner_absent === 1 &&
     Number.isSafeInteger(row.revision) &&
     row.revision >= 1
@@ -697,6 +702,7 @@ export function readControlWorkObservationTurnBinding(
   const turnRow = sqlite
     .prepare(`SELECT schema_version, revision, thread_id, agent_session_id, status,
       length(CAST(record_json AS BLOB)) AS bytes,
+      length(CAST(json_remove(record_json, '$.observationCutoff', '$.observationCounter', '$.requiredFeatures') AS BLOB)) AS ordinary_bytes,
       json_type(record_json, '$.workspaceId') IS NULL AS legacy_owner_absent,
       ${bindingProjection(turnBindingSchema.shape)}
       FROM control_turns WHERE id=?`)
@@ -789,14 +795,20 @@ function assertObservationTruncation(
     throw new Error('recovery_required: inconsistent observation truncation feature or summary');
   if (!truncated) return;
   const summary = ObservationTruncationSchema.parse(record.payload.truncation);
-  const { count } = sqlite
+  const rows = sqlite
     .prepare(
-      `SELECT COUNT(*) AS count FROM control_work_observations WHERE turn_id=? AND sequence<?
-      AND json_extract(record_json, '$.type') NOT IN ('content.published', 'turn.reap')`
+      'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence<? ORDER BY sequence'
     )
-    .get(record.turnId, record.seq) as { count: number };
-  if (count + 1 !== summary.firstOmittedSequence && count !== summary.lastOmittedSequence)
-    throw new Error('recovery_required: invalid retained observation truncation prefix');
+    .iterate(record.turnId, record.seq) as Iterable<ControlObservationRow>;
+  function* prior() {
+    for (const row of rows) yield decodeControlObservation(row, record.turnId);
+  }
+  assertReapObservationPrefix(
+    prior(),
+    summary,
+    record,
+    binding.turn.observationCutoff?.retainedSequence
+  );
 }
 
 /** Returns one committed native identity, including the original sequence on replay. */
@@ -1284,7 +1296,7 @@ function updateObservationManifest(
       `UPDATE control_turns SET
        revision=revision+?, record_json=json_patch(record_json, ?)
        WHERE id=? AND revision=?
-       AND length(CAST(json_patch(record_json, ?) AS BLOB)) <= 65536`
+       AND length(CAST(json_patch(record_json, ?) AS BLOB)) <= ${65_536 + TURN_OBSERVATION_CONTROL_BYTES}`
     )
     .run(
       features.size === (binding.turn.requiredFeatures?.length ?? 0) ? 0 : 1,
@@ -1320,16 +1332,17 @@ function foldObservationPrefix(
   for (;;) {
     const rows = readControlWorkObservations(sqlite, owner, { ...input, afterSequence: sequence });
     for (const row of rows) {
-      if (
-        row.type === 'turn.reap' ||
-        (retainedSequence !== undefined && row.seq > retainedSequence)
-      )
+      if (retainedSequence !== undefined && row.seq > retainedSequence)
         return {
           calls,
           lastObservedTs,
           cutoff,
           counter: { sequence, intake, callBytes, callCount: calls.size },
         };
+      if (row.type === 'turn.reap') {
+        sequence = row.seq;
+        continue;
+      }
       const ordinary = row.type !== 'content.published';
       if (ordinary) intake += 1;
       if (cutoff) {
