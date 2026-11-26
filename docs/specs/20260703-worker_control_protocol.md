@@ -379,6 +379,12 @@ Core cites the selected bound through its existing AEP association reference (`k
 
 The existing canonical event append accepts strict observation.recorded metadata and observation.content.chunk records under its existing outer lineage, revocation, sequence and replay checks. AEP projects the admitted Turn capture binding. Metadata is an observation-family fact, never an Item or child execution command. Chunks are canonical base64 with a maximum 48 KiB decoded length and validated index/offset; complete body length and digest are verified before publication. Metadata declares expected content first; each chunk ACK proves restricted staging, and a separate publication observation follows durable complete-body adoption. An unavailability record for already-declared content carries its exact expected observation identity; Core validates the earlier expected record within the same authenticated package and resolves that identity to the observation parent. A call reference alone is not an anchor because arguments, results and multiple events may share it. Receipt/fingerprint state contains only safe descriptors and digests, never content bytes. The acceptance/replay path must reconcile an interrupted publication before reporting its success. Full body admission, exclusions and failures follow 20260921-work_data_retention_format.md; there is no second transport, execution high-watermark or child-management API.
 
+### Observation Cutoff On The Worker Channel
+
+[Work Data Retention Format](20260921-work_data_retention_format.md#turn-collection-cutoff) owns the cutoff and its durable omission result. The Worker evidence response binds that result to the original event sequence and fingerprint. Acknowledge the crossing once as an omission. That acknowledgement cannot assert that the original observation or its body was retained. Source recovery uses the exact disposition to end resend for refused evidence.
+
+Fence the capture sender before it allocates another ordinary evidence event number. The control channel remains available for stop and settlement. Never advance the accepted-event watermark across an uninspected range of mixed control and evidence events. If already numbered traffic cannot be reconciled, preserve its unknown handoffs and take the existing interrupted or orphan exit. A final-status event behind refused evidence receives a successful acknowledgement only when its own sequence and settlement checks pass.
+
 ## Acceptance
 
 Cadence qualification runs under saturating permitted inference load during an active Turn and includes the existing end-to-end interrupt bound. One Sandbox holds at least two compatibility-distinct Harnesses, each with an independent private control handle and a Thread-retained root. Transport-loss adoption and Core-restart adoption and fencing both reuse the scheduler's deterministic NanoCore kill and restart scenario. No second recovery runner is added.
@@ -392,6 +398,7 @@ Cadence qualification runs under saturating permitted inference load during an a
 ## Implementation Gaps
 
 - Durable per-input proof - Worker control has not qualified exact receiver read-back against lost ACKs, equal-text input and successor exclusion - #947
+- Observation cutoff on the Worker channel - Exact omission acknowledgement, sender fencing and final-status sequencing await qualification - #951
 
 ## Decisions
 
