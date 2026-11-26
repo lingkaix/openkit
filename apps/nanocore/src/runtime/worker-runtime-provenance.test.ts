@@ -984,6 +984,80 @@ async function startGatewayCall(
   });
 }
 
+it.each(['node B', 'node C'] as const)(
+  'charges retained raw files after reopening %s data',
+  async (source) => {
+    const fixture = await createImportFixture('openkit-retained-provenance-budget-', 'on');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-provenance-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    const target = { threadId: fixture.lineage.threadId, turnId: fixture.lineage.turnId };
+    const beforeImport = fixture.workspaceDb.sqlite
+      .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+      .get(target.turnId) as { record_json: string; revision: number };
+    let db = fixture.workspaceDb;
+    try {
+      const published = await importCapture(fixture, capture);
+      expect(published.complete).toBe(true);
+      const bundles = listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId);
+      expect(bundles).toHaveLength(2);
+      const files = (root: string) => readdirSync(root, { recursive: true }).sort();
+      const evidence = join(fixture.workspaceRoot, 'evidence');
+      const inventory = files(evidence);
+      await shutdownControlStoreWorkerClient();
+      if (source === 'node B') {
+        // Node B published the identical bundle rows and directories without changing the Turn.
+        db.sqlite
+          .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+          .run(beforeImport.record_json, beforeImport.revision, target.turnId);
+        expect(JSON.parse(beforeImport.record_json)).not.toHaveProperty('observationCounter');
+      }
+      db.sqlite.close();
+      db = openWorkspaceDb(dirname(dirname(fixture.workspaceRoot)), fixture.lineage.workspaceId);
+      const append = (index: number) => {
+        const id = `legacy-${index}`;
+        const ts = '2026-07-13T00:00:00.000Z';
+        return appendWorkObservation(db, {
+          ...target,
+          observation: {
+            id,
+            ts,
+            obs: 'worker-shim',
+            type: 'runtime.observed',
+            payload: {
+              observationId: id,
+              sourceRef: 'legacy-budget',
+              sourceSequence: index,
+              observedAt: ts,
+              fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
+              content: {
+                state: 'expected',
+                boundary: 'tool-args',
+                mediaType: 'application/json',
+                bytes: 16 * 1024 * 1024,
+                chunkCount: 342,
+                sha256: `sha256:${'a'.repeat(64)}`,
+              },
+            },
+          },
+          bodies: [],
+        });
+      };
+      for (let index = 0; index < 3; index++)
+        expect(await append(index)).toMatchObject({ disposition: 'committed' });
+      await expect(append(3)).rejects.toMatchObject({
+        disposition: 'truncated',
+        truncation: { reason: 'body-bytes', firstOmittedSequence: 4 },
+      });
+      expect(listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)).toEqual(bundles);
+      expect(files(evidence)).toEqual(inventory);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (db.sqlite.open) db.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  }
+);
+
 /** Creates one migrated workspace and a provenance-required AEP. */
 async function createImportFixture(
   prefix: string,
@@ -1801,6 +1875,67 @@ describe('runtime provenance publication durability', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
+    'bounds complete raw staging copies across two pre-rename process losses',
+    async () => {
+      const fixture = await createImportFixture('openkit-provenance-stage-retry-', 'on');
+      const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-stage-capture-'));
+      const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+      const rawBundleId = createWorkerRuntimeProvenanceBundleId(
+        'worker-runtime-provenance-raw',
+        fixture.environmentPackage.snapshotId
+      );
+      const backend = join(fixture.workspaceRoot, 'evidence', 'backend');
+      const staged = () =>
+        readdirSync(backend).filter((name) => name.startsWith(`${rawBundleId}.tmp-`));
+      const verifyRaw = (root: string) => {
+        expect(readFileSync(join(root, 'raw-streams.json'))).toEqual(capture.manifestBytes);
+        expect(readFileSync(join(root, 'native-origin-index.jsonl'))).toEqual(
+          capture.nativeOriginIndexBytes
+        );
+        for (const [ref, bytes] of capture.streams)
+          expect(readFileSync(join(root, 'raw', ref))).toEqual(bytes);
+      };
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const exited = runNativeProvenanceCrashChild({ capture, fixture, beforeRawRename: true });
+          expect(exited.error).toBeUndefined();
+          expect(exited.stderr).toBe('');
+          expect(exited.signal).toBe('SIGKILL');
+          expect(exited.stdout).toBe('before-raw-rename');
+          const inventory = staged();
+          expect(inventory).toHaveLength(1);
+          verifyRaw(join(backend, inventory[0]!));
+          expect(existsSync(join(backend, rawBundleId))).toBe(false);
+        }
+        const db = openWorkspaceDb(
+          dirname(dirname(fixture.workspaceRoot)),
+          fixture.lineage.workspaceId
+        );
+        try {
+          expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toMatchObject({
+            complete: true,
+            rawBundleId,
+          });
+          expect(staged()).toEqual([]);
+          verifyRaw(join(backend, rawBundleId));
+          expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toMatchObject({
+            complete: true,
+            rawBundleId,
+          });
+          expect(staged()).toEqual([]);
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          db.sqlite.close();
+        }
+      } finally {
+        rmSync(captureRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'recovers exact provenance after SIGKILL between canonical directory sync and native SQL',
     async () => {
       const fixture = await createImportFixture('openkit-provenance-native-crash-');
@@ -2038,6 +2173,7 @@ describe('uncommitted ancestor evidence recovery', () => {
 
 /** Runs the real native owner until both published directories are durable and SQL has not begun. */
 function runNativeProvenanceCrashChild(input: {
+  beforeRawRename?: boolean;
   capture: RuntimeCaptureFixture;
   fixture: ImportFixture;
 }) {
@@ -2077,6 +2213,10 @@ threads.Worker = class extends RealWorker {
       };
       const rename = promises.rename.bind(promises);
       promises.rename = async (from, to) => {
+        if (workerData.beforeRawRename && String(to).includes('/evidence/backend/')) {
+          workerData.provenanceBoundaryPort.postMessage({ provenanceSqlBoundary: true });
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
         const result = await rename(from, to);
         publishedParents.add(dirname(String(to)));
         return result;
@@ -2109,11 +2249,12 @@ threads.Worker = class extends RealWorker {
         ...options?.workerData,
         provenanceDatabaseModule: require.resolve('better-sqlite3'),
         provenanceBoundaryPort: boundary.port2,
+        beforeRawRename: input.beforeRawRename,
       },
     });
     boundary.port1.on('message', (message) => {
       if (message?.provenanceSqlBoundary) {
-        fs.writeSync(1, 'after-directory-sync-before-sql');
+        fs.writeSync(1, input.beforeRawRename ? 'before-raw-rename' : 'after-directory-sync-before-sql');
         process.kill(process.pid, 'SIGKILL');
       }
     });
@@ -2139,6 +2280,7 @@ await importWorkerRuntimeProvenance({
       'tsx',
       childPath,
       JSON.stringify({
+        beforeRawRename: input.beforeRawRename,
         backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
         capture: {
           nativeOriginIndexPath: input.capture.nativeOriginIndexPath,

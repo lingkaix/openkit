@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -221,6 +221,112 @@ function runtimeBody(id: string, bytes: number, chunkCount: number, sha256 = 'a'
 }
 
 describe('ordinary observation collection budgets', () => {
+  it('settles the exact reserved model gap after cutoff and reopens it once', async () => {
+    const f = await fixture('on');
+    const base = model(randomUUID(), 'reserved-model');
+    const observation = { ...base, payload: { ...base.payload, content: { state: 'expected' } } };
+    const body = {
+      id: 'body',
+      bytes: Buffer.from('one'),
+      boundary: 'model.request',
+      mediaType: 'application/json',
+    };
+    const declared = { ...f.owner, observation, bodies: [body] };
+    const expectation = await appendWorkObservation(f.db, {
+      ...declared,
+      deferBodyPublication: true,
+    });
+    await observe(f, runtimeBody('fit', 4_092, 4_092));
+    await expect(observe(f, tool('cross', 'cross', 'completed'))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'row-count', firstOmittedSequence: 3 },
+    });
+    const cutoff = readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff;
+    const bundleId = workObservationBodyBundleId(
+      f.db.workspaceId,
+      f.owner.threadId,
+      f.owner.turnId,
+      observation.id,
+      body.id
+    );
+    const staged = join(
+      f.dataRoot,
+      'workspaces',
+      f.db.workspaceId,
+      'evidence',
+      'backend',
+      bundleId,
+      'raw',
+      'content'
+    );
+    expect(existsSync(staged)).toBe(false);
+    f.db.sqlite.exec(
+      "CREATE TRIGGER unavailable_body BEFORE INSERT ON evidence_bundles BEGIN SELECT RAISE(ABORT, 'test unavailable body'); END"
+    );
+    try {
+      await expect(appendWorkObservation(f.db, declared)).rejects.toThrow();
+      expect(readFileSync(staged)).toEqual(body.bytes);
+      expect(
+        f.db.sqlite
+          .prepare('SELECT 1 FROM evidence_bundles WHERE evidence_bundle_id=?')
+          .get(bundleId)
+      ).toBeUndefined();
+    } finally {
+      f.db.sqlite.exec('DROP TRIGGER unavailable_body');
+    }
+    const reason = 'capture-failed';
+    const gap = {
+      ...base,
+      id: `${base.id}:gap:${reason}`,
+      parent: base.id,
+      type: 'model.capture-gap',
+      payload: {
+        direction: 'request',
+        event: 'request',
+        attempt: 0,
+        content: { state: 'unavailable', reason },
+      },
+    };
+    const unrelated = { ...gap, id: 'unrelated-gap', corr: 'wrong-correlation' };
+    await expect(observe(f, unrelated)).rejects.toMatchObject({ disposition: 'closed' });
+    const first = await appendWorkObservation(f.db, { ...f.owner, observation: gap, bodies: [] });
+    expect(first).toMatchObject({
+      disposition: 'committed',
+      observation: {
+        type: 'model.capture-gap',
+        parent: base.id,
+        payload: { content: { state: 'unavailable', reason } },
+      },
+    });
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(db);
+    const cold = { ...f, db };
+    expect(await appendWorkObservation(db, { ...f.owner, observation: gap, bodies: [] })).toEqual({
+      disposition: 'duplicate',
+      observation: first.observation,
+    });
+    expect(await appendWorkObservation(db, { ...declared, deferBodyPublication: true })).toEqual({
+      ...expectation,
+      disposition: 'duplicate',
+    });
+    await expect(appendWorkObservation(db, declared)).rejects.toThrow();
+    expect(readWorkObservationTurnBinding(db, f.owner).turn.observationCutoff).toEqual(cutoff);
+    await recover(cold);
+    const rows = readWorkObservations(db, f.owner);
+    expect(rows.filter((row) => row.type === 'model.capture-gap')).toEqual([first.observation]);
+    expect(rows.filter((row) => row.type === 'content.published')).toEqual([]);
+    expect(rows.at(-1)?.payload.truncation).toEqual(cutoff?.summary);
+    expect(
+      parsePortableWorkObservations(
+        `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+        f.owner.turnId,
+        { summary: cutoff!.summary, live: false }
+      )
+    ).toEqual(rows);
+  });
+
   it('reserves 4096 units including one companion and the unique chunk inventory', async () => {
     const f = await fixture('on');
     await observe(f, runtimeBody('tiny-chunks', 4094, 4094));

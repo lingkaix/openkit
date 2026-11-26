@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -38,6 +38,11 @@ import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { ControlProvenanceInput } from '../storage/control-store-worker-protocol.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import {
+  assertEvidenceBundleDirectoryId,
+  type EvidenceBundleRow,
+  evidenceBundleFromRow,
+} from '../storage/evidence-bundle-records.js';
 import type { ObservationOmissionResultSchema } from '../storage/work-observation-collection.js';
 import {
   ObservationCollectionStoppedError,
@@ -270,6 +275,62 @@ function normalizedProvenanceBytes(verified: VerifiedRuntimeProvenance): Buffer 
   );
 }
 
+/** Measures B-era retained originals that predate the Turn's raw-body reservation. */
+export async function retainedRuntimeProvenanceBytes(
+  db: WorkspaceDb,
+  input: { threadId: string; turnId: string }
+): Promise<number> {
+  const rows = db.sqlite
+    .prepare(`
+    SELECT b.* FROM control_turns t
+    JOIN evidence_bundles b ON b.turn_id = t.id
+    WHERE t.id = ? AND b.thread_id = ? AND b.workspace_id = ?
+      AND json_type(t.record_json, '$.observationCounter.rawProvenance') IS NULL
+      AND b.source_kind IN ('worker-runtime-provenance-raw', 'worker-runtime-provenance-index')
+      AND b.import_status <> 'expired'
+  `)
+    .all(input.turnId, input.threadId, db.workspaceId) as EvidenceBundleRow[];
+  let bytes = 0;
+  for (const row of rows) {
+    const bundle = evidenceBundleFromRow(row);
+    assertEvidenceBundleDirectoryId(bundle.id);
+    const raw = bundle.sourceKind === 'worker-runtime-provenance-raw';
+    const root = join(
+      db.dataRoot,
+      'workspaces',
+      db.workspaceId,
+      'evidence',
+      raw ? 'backend' : 'bundles',
+      bundle.id
+    );
+    if (!(await lstat(root)).isDirectory())
+      throw new Error('Runtime provenance owner is unavailable.');
+    const refs = raw ? bundle.rawEvidenceRefs : bundle.redactedEvidenceRefs;
+    const files = new Set(refs.map((ref) => ref.ref));
+    if (files.size !== refs.length)
+      throw new Error('Runtime provenance retained inventory is contradictory.');
+    for (const relativePath of files) {
+      if (relativePath.startsWith('raw/')) {
+        if (
+          !raw ||
+          !WorkerRuntimeStreamRefSchema.safeParse(relativePath.slice(4)).success ||
+          !(await lstat(join(root, 'raw'))).isDirectory()
+        )
+          throw new Error('Runtime provenance stream is unavailable.');
+      } else if (
+        raw
+          ? relativePath !== 'native-origin-index.jsonl' && relativePath !== 'raw-streams.json'
+          : relativePath !== 'runtime-origin-index.jsonl'
+      )
+        throw new Error('Runtime provenance retained inventory is contradictory.');
+      const file = await lstat(safeEvidencePath(root, relativePath));
+      if (!file.isFile()) throw new Error('Runtime provenance file is unavailable.');
+      bytes += file.size;
+    }
+  }
+  return bytes;
+}
+
 /** Prepares the complete provenance family on its native owner before the one metadata transaction. */
 export async function prepareWorkerRuntimeProvenance(
   workspaceDb: WorkspaceDb,
@@ -303,6 +364,8 @@ export async function prepareWorkerRuntimeProvenance(
     : admitted.collectedAt;
   if (existingRawBundle?.import_status === 'expired')
     throw new Error('Runtime provenance has expired.');
+  if (!existingRawBundle && (await retainedRuntimeProvenanceBytes(workspaceDb, lineage)) > 0)
+    throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
 
   const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
   const declaration = admitted.environmentPackage.control.transcript?.runtimeProvenance;
@@ -354,12 +417,20 @@ export async function prepareWorkerRuntimeProvenance(
   });
   if (cutoff) return cutoff;
   await ensureCanonicalDirectoryAsync(dirname(rawRoot));
-  const stagingRoot = `${rawRoot}.tmp-${randomUUID()}`;
+  // This exact Turn and bundle already own the FIFO and the body reservation. Reclaim
+  // their one interrupted stage before allocating bytes on an exact retry.
+  const stagingRoot = `${rawRoot}.tmp-reserved`;
+  await removePrivateTree(stagingRoot);
+  const retained = await pathExists(rawRoot);
+  const sourceRoot = retained ? rawRoot : stagingRoot;
   try {
-    // Private entries become durable with the existing pre-rename tree sync, not before replay validation.
-    createDirectoryExclusive(stagingRoot, 0o700);
-    if (admitted.files.some((file) => file.relativePath.startsWith('raw/')))
-      createDirectoryExclusive(join(stagingRoot, 'raw'), 0o700);
+    if (!retained) {
+      createDirectoryExclusive(stagingRoot, 0o700);
+      if (admitted.files.some((file) => file.relativePath.startsWith('raw/')))
+        createDirectoryExclusive(join(stagingRoot, 'raw'), 0o700);
+    } else if (!isDeepStrictEqual(await listEvidenceFiles(rawRoot), [...seen].sort())) {
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+    }
     const assertSourceIdentity = async (file: ControlProvenanceInput['files'][number]) => {
       const metadata = await lstat(file.path, { bigint: true });
       if (
@@ -373,15 +444,20 @@ export async function prepareWorkerRuntimeProvenance(
     };
     for (const file of admitted.files) {
       await assertSourceIdentity(file);
-      const destinationPath = safeEvidencePath(stagingRoot, file.relativePath);
-      await copyVerifiedFile({
-        sourcePath: file.path,
-        destinationPath,
-        expectedBytes: file.byteLength,
-        expectedSha256: file.sha256,
-        maxBytes: file.byteLength,
-        mode: 0o600,
-      });
+      const destinationPath = safeEvidencePath(sourceRoot, file.relativePath);
+      if (retained) {
+        if ((await sha256File(destinationPath)) !== file.sha256)
+          throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+      } else {
+        await copyVerifiedFile({
+          sourcePath: file.path,
+          destinationPath,
+          expectedBytes: file.byteLength,
+          expectedSha256: file.sha256,
+          maxBytes: file.byteLength,
+          mode: 0o600,
+        });
+      }
     }
     const input: ImportWorkerRuntimeProvenanceInput = {
       workspaceDb,
@@ -391,12 +467,12 @@ export async function prepareWorkerRuntimeProvenance(
       environmentPackage: admitted.environmentPackage,
       capture: {
         streamManifestPath: seen.has('raw-streams.json')
-          ? join(stagingRoot, 'raw-streams.json')
+          ? join(sourceRoot, 'raw-streams.json')
           : null,
         nativeOriginIndexPath: seen.has('native-origin-index.jsonl')
-          ? join(stagingRoot, 'native-origin-index.jsonl')
+          ? join(sourceRoot, 'native-origin-index.jsonl')
           : null,
-        rawStreamsRoot: join(stagingRoot, 'raw'),
+        rawStreamsRoot: join(sourceRoot, 'raw'),
       },
     };
     const verified = await verifyRuntimeProvenance(input, lineage);
@@ -440,7 +516,12 @@ export async function prepareWorkerRuntimeProvenance(
       );
     }
     const complete = verified.errors.length === 0;
-    await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot);
+    if (retained) {
+      await syncCanonicalTreeAsync(rawRoot);
+      await syncCanonicalDirectoryAsync(dirname(rawRoot));
+    } else {
+      await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot);
+    }
     const normalizedBytes = complete ? normalized : null;
     const normalizedRoot = join(input.workspaceRoot, 'evidence', 'bundles', indexBundleId);
     if (normalizedBytes) {
@@ -974,6 +1055,8 @@ async function adoptEvidenceDirectory(
   files: Map<string, string | Buffer>,
   preparedRoot?: string
 ): Promise<void> {
+  const temporaryRoot = preparedRoot ?? `${targetRoot}.tmp-reserved`;
+  if (!preparedRoot) await removePrivateTree(temporaryRoot);
   if (await pathExists(targetRoot)) {
     if (!(await evidenceDirectoryMatches(targetRoot, files))) {
       throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
@@ -984,7 +1067,6 @@ async function adoptEvidenceDirectory(
     return;
   }
   await ensureCanonicalDirectoryAsync(dirname(targetRoot));
-  const temporaryRoot = preparedRoot ?? `${targetRoot}.tmp-${randomUUID()}`;
   try {
     for (const [relativePath, source] of preparedRoot ? [] : files) {
       const target = safeEvidencePath(temporaryRoot, relativePath);
@@ -1037,6 +1119,8 @@ async function evidenceDirectoryMatches(
 
 /** Recursively lists regular evidence files and rejects symbolic links. */
 async function listEvidenceFiles(root: string, prefix = ''): Promise<string[]> {
+  if (!prefix && !(await lstat(root)).isDirectory())
+    throw new Error('Runtime provenance evidence must be a directory.');
   const files: string[] = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;

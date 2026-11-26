@@ -3,7 +3,7 @@ import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error-core.js';
 import type { ControlProductOwner } from './control-store-product-records.js';
-import type { WorkObservationRecord } from './work-observations.js';
+import type { WorkObservationDraft, WorkObservationRecord } from './work-observations.js';
 
 export const WORK_OBSERVATION_TRUNCATION_FEATURE = 'openkit.work-observations.truncation.v1';
 export const NATIVE_OBSERVATION_BYTES = 65_536;
@@ -122,6 +122,37 @@ const RetainedBodySchema = z.object({
   bundleId: z.string(),
 });
 
+/** One model declaration reserves a slot for either its publication or its known failure. */
+export function reservedModelGap(
+  parent: WorkObservationRecord,
+  reason: unknown
+): WorkObservationDraft {
+  return {
+    id: `${parent.id}:publication`,
+    parent: parent.id,
+    type: 'model.capture-gap',
+    ts: parent.ts,
+    obs: parent.obs,
+    ...(parent.corr === undefined ? {} : { corr: parent.corr }),
+    ret: 'turn-evidence',
+    payload: {
+      direction: parent.payload.direction,
+      event: parent.payload.event,
+      attempt: parent.payload.attempt,
+      content: { state: 'unavailable', reason },
+    },
+  };
+}
+
+export function isObservationCompanion(row: WorkObservationRecord): boolean {
+  return (
+    row.type === 'content.published' ||
+    (row.type === 'model.capture-gap' &&
+      row.parent !== undefined &&
+      row.id === `${row.parent}:publication`)
+  );
+}
+
 /** Counts the original declaration once, including the largest possible companion and its upload slots. */
 export function chargeObservation(
   budget: ObservationBudget,
@@ -151,7 +182,7 @@ export function chargeObservation(
   }
   // A future companion can land at any ordinary position. Reserve the widest sequence and scope
   // spelling that it can use. Native callers supply the exact owner.
-  const publicationBytes = bodies.length
+  let publicationBytes = bodies.length
     ? Buffer.byteLength(
         JSON.stringify({
           v: 1,
@@ -180,6 +211,18 @@ export function chargeObservation(
         })
       )
     : 0;
+  if (bodies.length && row.type === 'model.observed')
+    publicationBytes = Math.max(
+      publicationBytes,
+      Buffer.byteLength(
+        JSON.stringify({
+          ...reservedModelGap(row, 'credential-excluded'),
+          v: 1,
+          turnId: row.turnId,
+          seq: MAX_OBSERVATION_UNITS,
+        })
+      )
+    );
   if (publicationBytes > NATIVE_OBSERVATION_BYTES)
     throw new Error('Observation publication metadata exceeds the native bound');
   return {
@@ -315,7 +358,7 @@ export function assertReapObservationPrefix(
     sequence += 1;
     if (row.seq !== sequence) throw new Error('Invalid retained observation truncation sequence');
     if (row.type === 'turn.reap') continue;
-    if (row.type !== 'content.published') {
+    if (!isObservationCompanion(row)) {
       position++;
       const inPrefix = position <= retained;
       if (retainedSequence !== undefined) {
