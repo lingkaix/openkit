@@ -7,6 +7,7 @@ import {
   findNextDispatchableSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -310,6 +311,100 @@ it('holds an unknown submission across reopen when its stop has no input read-ba
     expect(requireSchedulerAdmissionEntry(db, successor.queueEntryId)).toEqual(successor);
     expect(backend.cancel.mock.calls).toEqual([[request]]);
     expect(backend.inspect.mock.calls).toEqual([[request], [request]]);
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.release).not.toHaveBeenCalled();
+    expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
+  } finally {
+    await disposeTestStore(root, db);
+  }
+});
+
+it('preserves a submission that commits during preparation expiry', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-recovery-correlation-'));
+  const db = createTestCoreDb(root);
+  const expiredAt = () => '2026-07-05T02:00:01.000Z';
+  try {
+    ensureLocalUser(db);
+    const store = await createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({ coreDb: db, ownerUserId: FIXTURE_LOCAL_USER_ID, workspaceId });
+    const original = recoveryAttempt(db, 'expiry-races-submit', '2026-07-05T00:00:01.000Z', {
+      submitted: false,
+    });
+    const backend = {
+      id: 'nanohost',
+      inspect: vi.fn<ExecutionBackendPort['inspect']>().mockResolvedValue(null),
+      cancel: vi.fn<ExecutionBackendPort['cancel']>(async (request) => ({
+        ...request,
+        disposition: 'unknown',
+        execution: 'pending',
+        outcomeRef: null,
+        fenceRef: null,
+      })),
+      submit: vi.fn<ExecutionBackendPort['submit']>(),
+      release: vi.fn<ExecutionBackendPort['release']>(),
+    } satisfies ExecutionBackendPort;
+    const input = {
+      store,
+      executionBackend: backend,
+      now: expiredAt,
+      projectRecoveredTurn: vi.fn(async () => ({ status: 'missing' as const })),
+    };
+    const expiryReached = Promise.withResolvers<void>();
+    const allowExpiry = Promise.withResolvers<void>();
+    const client = getControlStoreWorkerClient();
+    const write = client.executionAttempt.bind(client);
+    const expiryDelivery = vi
+      .spyOn(client, 'executionAttempt')
+      .mockImplementation(async (...args) => {
+        const command = args[1];
+        if (command.kind === 'closing' && command.attemptId === original.attemptId) {
+          expiryReached.resolve();
+          await allowExpiry.promise;
+        }
+        return write(...args);
+      });
+    const maintenance = runSchedulerRecoveryMaintenance(db, input);
+    let submitted: SchedulerExecutionAttemptRecord;
+    try {
+      await Promise.race([
+        expiryReached.promise,
+        maintenance.then(() => {
+          throw new Error('Maintenance finished before posting preparation expiry.');
+        }),
+      ]);
+      submitted = await recordSchedulerExecutionOperation(db, {
+        attemptId: original.attemptId,
+        operationId: 'submit-while-expiry-waits',
+        submission: true,
+        now: expiredAt,
+      });
+      expect(submitted).toMatchObject({
+        phase: 'open',
+        disposition: 'unknown',
+        deadline: '2026-07-05T04:00:01.000Z',
+        terminalCause: null,
+      });
+    } finally {
+      allowExpiry.resolve();
+      try {
+        await maintenance;
+      } finally {
+        expiryDelivery.mockRestore();
+      }
+    }
+    expect.soft(requireSchedulerExecutionAttempt(db, original.attemptId)).toEqual(submitted);
+    expect(backend.cancel).not.toHaveBeenCalled();
+    expect(backend.inspect).not.toHaveBeenCalled();
+
+    await runSchedulerRecoveryMaintenance(db, {
+      ...input,
+      now: () => '2026-07-05T02:00:02.000Z',
+    });
+    expect(backend.inspect).toHaveBeenCalledExactlyOnceWith(
+      schedulerExecutionCorrelation(submitted)
+    );
+    expect(requireSchedulerExecutionAttempt(db, original.attemptId)).toEqual(submitted);
+    expect(backend.cancel).not.toHaveBeenCalled();
     expect(backend.submit).not.toHaveBeenCalled();
     expect(backend.release).not.toHaveBeenCalled();
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
