@@ -260,6 +260,7 @@ import {
   ControlProductEntrySchema,
   type ControlProductMutation,
   type ControlProductOwner,
+  ControlProductPreconditionError,
   type ControlStoreProductReadHandle,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
@@ -1236,6 +1237,8 @@ export class FsStore {
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
   private workspaceCaptureCoverageProjection?: (workspaceId: string) => WorkspaceConfig | undefined;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
+  // The coverage this Store selected for each outcome admission it planned, until its post.
+  private plannedOutcomeCoverage = new Map<string, CaptureCoverageBinding>();
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private pendingRequestServices: PendingAdmissionDependencies | null = null;
   private startupPendingDelivery: Promise<void> = Promise.resolve();
@@ -4551,12 +4554,7 @@ export class FsStore {
    */
   public async publishPendingPlan(
     workspaceId: string,
-    {
-      outcomeCoverageDigest,
-      ...header
-    }: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'> & {
-      readonly outcomeCoverageDigest?: string;
-    },
+    header: Omit<Parameters<typeof encodeControlPendingPlan>[0], 'workspaceId'>,
     groups: readonly ControlPendingPlanGroup[],
     turns: readonly string[]
   ): Promise<ControlPendingCommandResult> {
@@ -4564,7 +4562,7 @@ export class FsStore {
     const scope = this.nativeScope(owner);
     const root = scope.contentMount.root;
     const bodies = [...pendingPlanBodyNames(groups)];
-    const post = async (plan: Buffer) => {
+    const post = async (plan: Buffer, outcomeCoverageDigest: string | undefined) => {
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
       await client.open({
@@ -4611,14 +4609,35 @@ export class FsStore {
       }
     };
     try {
+      const coverage = this.takePlannedOutcomeCoverage(groups);
       const bytes = encodeControlPendingPlan({ workspaceId, ...header }, groups);
       // The Turn boundary carries no plan bytes; the post reads them from this closure.
-      if (turns.length) return await this.publishTurn(owner, turns, null, () => post(bytes));
+      if (turns.length)
+        return await this.publishTurn(owner, turns, null, () => post(bytes, coverage));
       const release = this.enterWorkspaceMutation(workspaceId);
-      return await post(bytes).finally(release);
+      return await post(bytes, coverage).finally(release);
     } finally {
       discardStagedFiles(bodies.map((name) => ({ temporary: join(root, name) })));
     }
+  }
+
+  /**
+   * Takes the coverage this Store selected when it planned each outcome admission, in plan order.
+   * The writer requires the staged Turn records to match it; the caller never supplies it.
+   */
+  private takePlannedOutcomeCoverage(
+    groups: readonly ControlPendingPlanGroup[]
+  ): string | undefined {
+    const coverage = groups.flatMap((group) => {
+      if (group.kind !== 'products') return [];
+      const turn = group.transition.products.find(({ kind }) => kind === 'turn');
+      const turnId = String(turn?.record.id);
+      const selected = this.plannedOutcomeCoverage.get(turnId);
+      this.plannedOutcomeCoverage.delete(turnId);
+      if (!selected) throw new ControlProductPreconditionError();
+      return [[turnId, selected]];
+    });
+    return coverage.length ? commandInputHash(coverage) : undefined;
   }
 
   /** Owns every loose body from first creation through assembly and transfer. */
@@ -4695,7 +4714,6 @@ export class FsStore {
   ): Promise<{
     group: ControlPendingPlanGroup;
     history: PlannedTurnHistory;
-    captureCoverage: CaptureCoverageBinding;
     thread: { revision: number; record: Record<string, unknown> };
     acknowledge: () => void;
   }> {
@@ -4731,8 +4749,8 @@ export class FsStore {
       items: [],
       captureCoverage: { ...captureCoverage },
     });
+    this.plannedOutcomeCoverage.set(turn.id, structuredClone(captureCoverage));
     return {
-      captureCoverage,
       group: {
         kind: 'products',
         transition: {
