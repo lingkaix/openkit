@@ -27,6 +27,7 @@ import {
   readCanonicalTextFile,
 } from '@openkit/storage';
 
+import { recordObservationBodyGrowth } from './storage/control-store-pressure-telemetry.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { assertWorkObservationPosition } from './storage/work-observation-collection.js';
 import type { ServerWorkObservationDb } from './storage/work-observations.js';
@@ -316,7 +317,10 @@ export function retainWorkObservationBody(
   if (existsSync(path)) {
     if (!readCanonicalFile(path).equals(Buffer.from(input.bytes)))
       throw new Error('recovery_required: observation body conflict');
-  } else writeFileAtomic(path, input.bytes);
+  } else {
+    writeFileAtomic(path, input.bytes);
+    recordObservationBodyGrowth(workspaceDb.sqlite, input.bytes.byteLength);
+  }
   recordWorkBody(workspaceDb, input, true);
   return 'retained';
 }
@@ -461,7 +465,10 @@ export async function stageWorkObservationChunk(
     writeFileAtomic(descriptorPath, JSON.stringify(descriptor));
     names.add(`chunk-${input.chunkIndex}.json`);
   }
-  if (!hasBytes) writeFileAtomic(path, input.bytes);
+  if (!hasBytes) {
+    writeFileAtomic(path, input.bytes);
+    recordObservationBodyGrowth(workspaceDb.sqlite, input.bytes.byteLength);
+  }
   names.add(`chunk-${input.chunkIndex}`);
   recordWorkBody(workspaceDb, input, false);
 
