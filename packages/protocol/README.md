@@ -19,6 +19,8 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 
 `Thread.entryPath` is a required immutable server-authored routing discriminator. Storage cutover explicitly stamps historical records as `conversation`; public create and update commands cannot set it.
 
+The shared entity ID codec covers `host`, `hepoch`, `sbx`, `sbxi`, and `wkr` in canonical lowercase UUIDv7 form. Each owning contract defines who issues its ID and when. [Protocol Identifiers And Enums](../../docs/specs/20261021-protocol_identifiers_and_enums.md#host-sandbox-and-worker-identities)
+
 ## Commands
 
 - `pnpm --filter @openkit/protocol test`
