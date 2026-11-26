@@ -244,6 +244,8 @@ describe('scheduler attempt maintenance service', () => {
       const overlap = service.runOnce();
       expect(overlap).toBe(active);
       const settled = Promise.allSettled([active, overlap]);
+      callbacks[0]!();
+      callbacks[0]!();
       await Promise.resolve();
       expect(attempts).toBe(1);
 
@@ -261,6 +263,45 @@ describe('scheduler attempt maintenance service', () => {
       await Promise.resolve();
       expect(attempts).toBe(2);
 
+      await service.stop();
+    }
+  });
+
+  it('reports a direct pass once when multiple timer ticks overlap it', async () => {
+    const ticks: Array<() => void> = [];
+    const held = Promise.withResolvers<void>();
+    const fault = new Error('Recovery failed during a direct pass');
+    const onError = vi.fn();
+    const scheduler = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => held.promise);
+    const service = startSchedulerAttemptMaintenanceService({
+      intervalMs: 30_000,
+      runRecoveryMaintenance: {
+        scheduler,
+        native: async () => {},
+        checkpoints: async () => {},
+      },
+      onError,
+      setInterval: (tick) => ticks.push(tick),
+      clearInterval: () => {},
+    });
+    try {
+      await service.runOnce();
+      const direct = service.runOnce();
+      const result = direct.catch((error: unknown) => error);
+      ticks[0]!();
+      ticks[0]!();
+      held.reject(fault);
+      const failure = await result;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(failure).toMatchObject({ errors: [fault] });
+      expect(scheduler).toHaveBeenCalledTimes(2);
+      expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+    } finally {
+      held.resolve();
       await service.stop();
     }
   });
