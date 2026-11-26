@@ -39,6 +39,7 @@ import {
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
 import {
+  BootWorkspaceConflict,
   bootWorkspaceWrite,
   withinBootWorkspaceBoundary,
 } from './bootstrap/boot-workspace-walk.js';
@@ -202,10 +203,14 @@ import {
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
 import {
+  controlBootWalkPlanInputs,
+  controlPendingPlanTerminalGroups,
+} from './storage/control-store-pending-plan.js';
+import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
   isCurrentAgentSessionStatus,
@@ -2651,21 +2656,7 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
       { dataRoot, workspaceId, stage: 'assistant-turn-recovery' },
       async () => {
         store.getWorkspace(workspaceId);
-        // Every read precedes the first interruption, so a refused read leaves this Workspace unchanged.
-        const orphans: { readonly threadId: string; readonly turnId: string }[] = [];
-        for (const thread of store.listThreads(workspaceId)) {
-          if (thread.entryPath !== 'conversation') continue;
-          const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
-          // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
-          if (
-            activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
-            activeTurn.agentSessionId ||
-            activeTurn.configVersion !== null ||
-            activeTurn.triggerSource
-          )
-            continue;
-          orphans.push({ threadId: thread.id, turnId: activeTurn.id });
-        }
+        const { orphans, inputs } = readAssistantOrphanWalk(store, dataRoot, workspaceId);
         const interruption = {
           status: 'interrupted' as const,
           completedAt: new Date().toISOString(),
@@ -2684,6 +2675,23 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
             orphan.turnId,
             interruption
           );
+        if (inputs !== undefined && orphans.length > 1) {
+          const planned: Awaited<ReturnType<FsStore['planTurnCompletion']>>[] = [];
+          for (const orphan of orphans)
+            planned.push(
+              await store.planTurnCompletion(workspaceId, orphan.turnId, interruption, {})
+            );
+          await bootWorkspaceWrite(() =>
+            store.publishPendingPlan(
+              workspaceId,
+              { operation: 'assistant-recovery', threadId: null, inputs },
+              planned.flatMap(({ group }) => controlPendingPlanTerminalGroups(group)),
+              orphans.map(({ turnId }) => turnId)
+            )
+          );
+          for (const { acknowledge } of planned) acknowledge();
+          return;
+        }
         // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
         for (const orphan of orphans)
           await bootWorkspaceWrite(() =>
@@ -2691,6 +2699,47 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
           );
       }
     );
+  }
+}
+
+/** Keeps the complete owned census with the inputs it selects for the writer. */
+function readAssistantOrphanWalk(store: FsStore, dataRoot: string | null, workspaceId: string) {
+  const select = () => {
+    const orphans: { readonly threadId: string; readonly turnId: string }[] = [];
+    for (const thread of store.listThreads(workspaceId)) {
+      if (thread.entryPath !== 'conversation') continue;
+      const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
+      // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
+      if (
+        activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
+        activeTurn.agentSessionId ||
+        activeTurn.configVersion !== null ||
+        activeTurn.triggerSource
+      )
+        continue;
+      orphans.push({ threadId: thread.id, turnId: activeTurn.id });
+    }
+    return orphans;
+  };
+  if (!dataRoot) return { orphans: select() };
+  const { sqlite } = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
+  try {
+    const revision = sqlite.pragma('data_version', { simple: true });
+    const orphans = select();
+    if (orphans.length < 2) return { orphans };
+    const inputs = sqlite.transaction(() =>
+      controlBootWalkPlanInputs(sqlite, workspaceId, 'assistant-recovery')
+    )();
+    // Store navigation uses its own read handle. A commit during selection could otherwise leave
+    // the writer comparing the new snapshot to a plan with an orphan missing from the old one.
+    if (sqlite.pragma('data_version', { simple: true }) !== revision)
+      throw new BootWorkspaceConflict(
+        'records',
+        'The Assistant orphan selection changed during Boot recovery.'
+      );
+    return { orphans, inputs };
+  } finally {
+    sqlite.close();
   }
 }
 

@@ -150,7 +150,6 @@ import {
 } from './runtime/worker-control-gateway.js';
 import type { WorkerArtifactCapture } from './runtime/worker-governance-backend.js';
 import {
-  type DecidedMcpPublicationRow,
   decidedMcpParentItemId,
   decidedMcpPublicationItem,
 } from './runtime/worker-mcp-decision.js';
@@ -182,6 +181,10 @@ import {
   ControlCapabilityCommandInputSchema,
   type ControlMcpItemCall,
 } from './storage/control-store-capability.js';
+import {
+  controlBootWalkPlanInputs,
+  readDecidedMcpBackfillRows,
+} from './storage/control-store-pending-plan.js';
 import { getWorkspaceProductReadHandle } from './storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
@@ -1463,40 +1466,16 @@ async function reconcileWorkspaceMcpItems(
 ): Promise<number> {
   store.getWorkspace(workspaceId);
   const decided = new Map<string, ReturnType<FsStore['listAllItems']>[number]>();
+  let inputs: string | undefined;
   const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
   try {
-    const rows = workspaceDb.sqlite
-      .prepare(
-        `SELECT
-           schema_version,
-           agent_id,
-           agent_session_id,
-           call_id,
-           completed_at,
-           error_code,
-           item_id,
-           package_snapshot_id,
-           provider_ref,
-           service_ref,
-           started_at,
-           status,
-           thread_id,
-           turn_id,
-           workspace_id
-         FROM capability_calls
-         WHERE family = 'mcp'
-           AND capability_id = 'mcp.call-tool'
-           AND operation = 'mcp.call-tool'
-           AND status NOT IN ('queued', 'running')
-           AND item_id IS NOT NULL
-           AND provider_ref IS NOT NULL
-           AND service_ref LIKE 'mcp-tool:%'
-           AND thread_id IS NOT NULL
-           AND turn_id IS NOT NULL
-           AND completed_at IS NOT NULL
-         ORDER BY completed_at, call_id`
-      )
-      .all() as DecidedMcpPublicationRow[];
+    const { sqlite } = workspaceDb;
+    const rows = sqlite.transaction(() => {
+      const sources = readDecidedMcpBackfillRows(sqlite);
+      if (sources.length > 1)
+        inputs = controlBootWalkPlanInputs(sqlite, workspaceId, 'mcp-backfill', sources);
+      return sources;
+    })();
     for (const row of rows) {
       readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
       // The physical Workspace owns its ledger; a contradicting owner column decides nothing here.
@@ -1547,12 +1526,25 @@ async function reconcileWorkspaceMcpItems(
   } finally {
     workspaceDb.sqlite.close();
   }
-  // Every missing Item is proved on its writer's own append rule before the first publication,
-  // so a later refusal cannot follow an earlier committed Item.
-  for (const item of decided.values())
-    store.proveWorkspaceItemAppend(item, 'already-decided-publication');
-  for (const item of decided.values())
-    await bootWorkspaceWrite(() => store.publishSettledTurnItem(item));
+  // Main preserves typed retained-record refusals before posting to the writer.
+  const items = [...decided.values()];
+  for (const item of items) store.proveWorkspaceItemAppend(item, 'already-decided-publication');
+  const plannedInputs = inputs;
+  if (items.length > 1 && plannedInputs !== undefined) {
+    await bootWorkspaceWrite(() =>
+      store.publishPendingPlan(
+        workspaceId,
+        { operation: 'mcp-backfill', threadId: null, inputs: plannedInputs },
+        items.map((item) => ({
+          kind: 'item',
+          input: { item, category: 'already-decided-publication' },
+        })),
+        [...new Set(items.map((item) => item.turnId))]
+      )
+    );
+  } else {
+    for (const item of items) await bootWorkspaceWrite(() => store.publishSettledTurnItem(item));
+  }
   return decided.size;
 }
 

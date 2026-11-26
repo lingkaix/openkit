@@ -1,10 +1,10 @@
 // openkit-test-platform: posix
 'use strict';
 
-// Fault fixture only: it refuses selected SQLite reads and writes nothing, except writerGoal.
+// Fault fixture only: it refuses selected SQLite reads and writes nothing, except the scheduled late source changes.
 // OPENKIT_TEST_BOOT_WALK_FAULT =
 //   { workspaceId?, fail?, within?, outside?, after?, times?, miss?, arm?, live?, shared?, census?,
-//     writer?, writerSql?, writerWithin?, writerAfter?, writerWatch?, writerGoal?, label }.
+//     writer?, writerSql?, writerWithin?, writerAfter?, writerWatch?, writerGoal?, writerGoalAtTurn?, writerMcpCall?, label }.
 // - fail: SQL text that throws on the named Workspace's own database in Main once armed.
 // - within / outside: the fail applies only while one listed function is / no listed function is
 //   on the stack.
@@ -26,7 +26,8 @@
 //   that enters the named Workspace's database, so a case can require that no write began there.
 // - writerGoal: in the control-store writer thread, once the named Workspace's grouped Pending
 //   decision is being prepared (after Main planned it), change only that Goal's intent, once, as a
-//   concurrent Goal owner would; the decision itself is left to the writer.
+//   concurrent Goal owner would. writerGoalAtTurn waits for that orphan's terminal preparation.
+// - writerMcpCall: change only the named call ledger row when its missing Item reaches the writer.
 // The Main fault covers Boot only: it disarms when the App listener binds, so live reads after Boot
 // run unfaulted, except reads under a listed `live` owner.
 (() => {
@@ -51,11 +52,11 @@
     }
   };
   if (!threads.isMainThread) {
-    if (!fault.writer && !fault.writerWatch && !fault.writerGoal) return;
+    if (!fault.writer && !fault.writerWatch && !fault.writerGoal && !fault.writerMcpCall) return;
     const probe = new Database(':memory:');
     const statement = Object.getPrototypeOf(probe.prepare('SELECT 1'));
     probe.close();
-    if (fault.writerGoal) {
+    if (fault.writerGoal || fault.writerMcpCall) {
       const get = statement.get;
       let changed = false;
       statement.get = function (...args) {
@@ -67,13 +68,31 @@
           !database.inTransaction &&
           stack().includes('prepareControlPendingPlan')
         ) {
-          changed = true;
-          const result = database
-            .prepare(
-              "UPDATE goals SET payload_json = json_set(payload_json, '$.intent', 'Changed after planning') WHERE goal_id = ?"
-            )
-            .run(fault.writerGoal);
-          process.stderr.write(`[boot-walk-fault] goal-changed ${fault.label} ${result.changes}\n`);
+          const turnId = fault.writerGoalAtTurn ?? fault.writerMcpCall?.turnId;
+          const owner = fault.writerMcpCall ? 'prepareControlItemAppend' : 'prepareControlTerminal';
+          if (
+            !turnId ||
+            (String(this.source) === 'SELECT * FROM control_turns WHERE id=?' &&
+              args[0] === turnId &&
+              stack().includes(owner))
+          ) {
+            changed = true;
+            const result = fault.writerMcpCall
+              ? database
+                  .prepare(
+                    "UPDATE capability_calls SET provider_ref='changed-provider' WHERE call_id=?"
+                  )
+                  .run(fault.writerMcpCall.callId)
+              : database
+                  .prepare(
+                    "UPDATE goals SET payload_json = json_set(payload_json, '$.intent', 'Changed after planning') WHERE goal_id = ?"
+                  )
+                  .run(fault.writerGoal);
+            const source = fault.writerMcpCall ? 'mcp-call' : 'goal';
+            process.stderr.write(
+              `[boot-walk-fault] ${source}-changed ${fault.label} ${result.changes}\n`
+            );
+          }
         }
         return get.apply(this, args);
       };

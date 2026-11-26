@@ -21,6 +21,7 @@ import {
   type ControlPendingPlan,
   ControlPendingPlanHeaderSchema,
   ControlPendingPlanSchema,
+  controlBootWalkPlanInputs,
   controlPendingPlanInputs,
   parseControlPendingPlanGroup,
 } from './control-store-pending-plan.js';
@@ -156,6 +157,7 @@ export async function prepareControlPendingPlan(
       }
   };
   const plannedSequence = new Map<string, number>();
+  const appendedTurnRevisions = new Map<string, number>();
   const note = (entries: readonly PreparedControlEntry[]) => {
     for (const entry of entries)
       if (entry.input.kind === 'item') {
@@ -170,6 +172,14 @@ export async function prepareControlPendingPlan(
   let carried: ControlProductEntry[] = [];
   for (const line of lines.slice(1)) {
     const group = parseControlPendingPlanGroup(JSON.parse(line));
+    if (
+      (header.operation === 'assistant-recovery' &&
+        group.kind !== 'terminal' &&
+        group.kind !== 'entries') ||
+      (header.operation === 'mcp-backfill' &&
+        (group.kind !== 'item' || group.input.category !== 'already-decided-publication'))
+    )
+      throw new ControlProductPreconditionError();
     if (
       carried.length &&
       group.kind !== 'entries' &&
@@ -237,11 +247,12 @@ export async function prepareControlPendingPlan(
     } else {
       const append = await prepareControlItemAppend(db, group.input, mount);
       const turnId = append.item.turnId!;
+      const headRevision = appendedTurnRevisions.get(turnId) ?? append.head.revision;
       if (append.replay) {
         groups.push({
           kind: 'item',
           turnId,
-          headRevision: append.head.revision,
+          headRevision,
           headRecord: append.head.record,
         });
       } else {
@@ -260,12 +271,14 @@ export async function prepareControlPendingPlan(
           ...body,
         };
         if (['pending', 'running'].includes(String(append.head.record.status))) {
+          // Each open-Turn append advances its head once within the same decision.
+          appendedTurnRevisions.set(turnId, headRevision + 1);
           const entries = await prepareControlEntries(owner, mount, [entry], content);
           note(entries);
           groups.push({
             kind: 'item',
             turnId,
-            headRevision: append.head.revision,
+            headRevision,
             headRecord: append.head.record,
             entries,
           });
@@ -281,7 +294,7 @@ export async function prepareControlPendingPlan(
           groups.push({
             kind: 'item',
             turnId,
-            headRevision: append.head.revision,
+            headRevision,
             headRecord: append.head.record,
             publication: { input, prepared },
           });
@@ -318,9 +331,12 @@ export function applyControlPendingPlan(
     // Inside one rollback boundary the recheck's place decides only which refusal is reported. A
     // Boot group refuses any changed input first, as its Workspace records; a live closeout lets
     // each owner report its own typed refusal first, then refuses an input no owner rechecks.
-    const unchanged =
-      controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId) === prepared.inputs;
-    if (prepared.operation === 'pending-boot' && !unchanged)
+    const inputs =
+      prepared.operation === 'assistant-recovery' || prepared.operation === 'mcp-backfill'
+        ? controlBootWalkPlanInputs(db.sqlite, db.workspaceId, prepared.operation)
+        : controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId);
+    const unchanged = inputs === prepared.inputs;
+    if (prepared.operation !== 'pending-closeout' && !unchanged)
       throw new ControlProductPreconditionError();
     return decideControlPendingPlan(db, owner, prepared, unchanged);
   } catch (error) {
