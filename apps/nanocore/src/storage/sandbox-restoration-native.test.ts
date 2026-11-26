@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
@@ -699,6 +700,114 @@ it.each([
   }
 );
 
+// S3b-r3 P4 (A8 FIX 4 item 2): the same schedules with the admitted settlement of an intervening
+// session.open instead of the binding writer alone. It is queued, dispatched and settled through
+// the admitted owner, so B's cell has a settled operation with its own id and sequences.
+it.each([
+  ['99', -1, 0],
+  ['101', 1, 2],
+] as const)(
+  'keeps a later claim when a released claim frame arrives again after reopen and a session.open settles at %s (S3b-r3 P4)',
+  async (_stamp, settleOffset, claimOffset) => {
+    const f = await fixture(false, false, true);
+    await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+    const frame = claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration);
+    await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+    expect(harnessRow(f.db)).toMatchObject({ drain: 'accepting', generation: null });
+    // A's restore ACK is lost after its commit; the process stops and keeps the frame.
+    const r = await reopen(f);
+    const lifecycle = r.owner.harnessTurnLifecycle;
+    // One more binding opens below A's revision. Its session.open settles at the deciding stamp:
+    // at 99 the settlement sets the Harness clock 1 ms below A's revision, so B claims at exactly
+    // A's revision. At 101 (the control) B claims at its own later stamp.
+    await openBindingAt(r.owner, f, at(-2));
+    const stamp = at(settleOffset);
+    await queueTestPreparedHarnessOperation(
+      r.db,
+      {
+        body: {
+          adapterId: 'codex',
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: testEntityId('as', 'restore-open-session'),
+          agentSessionRuntimeBindingId: 'restore-open-binding',
+          effectiveSetupGeneration: 1,
+          resume: null,
+          threadId: testEntityId('th', 'restore-open-thread'),
+          workspaceId: f.workspaceId,
+        },
+        harnessInstanceId: 'restore-harness',
+        operation: 'session.open',
+        timestamp: stamp,
+      },
+      lifecycle
+    );
+    const command = await lifecycle.dispatch({
+      sandboxIntegrationBindingRef: 'restore-integration',
+      now: () => stamp,
+    });
+    if (!command) throw new Error('Expected the dispatched session.open command.');
+    expect(command.operation).toBe('session.open');
+    expect(
+      await lifecycle.settle(
+        {
+          sandboxIntegrationBindingRef: 'restore-integration',
+          result: {
+            schemaVersion: 2,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            sequence: command.sequence,
+            disposition: 'succeeded',
+            body: {
+              state: 'open',
+              nativeHandleState: 'pending',
+              nativeHandleDigest: null,
+              maxActiveTurns: 1,
+            },
+          },
+          timestamp: stamp,
+        },
+        null
+      )
+    ).toBe('settled');
+    expect(harnessRow(r.db)).toMatchObject({
+      drain: 'accepting',
+      revision: stamp,
+      generation: null,
+    });
+    await claimNanoHostIdleCaptureDrain(
+      r.db,
+      { ...f.idleClaim, claimedAt: at(claimOffset), claimGeneration: 'cg_restore_later' },
+      lifecycle
+    );
+    const claimed = tuple(r.db);
+    expect(harnessRow(r.db)).toMatchObject({
+      life: 'open',
+      drain: 'draining',
+      revision: at(claimOffset),
+      generation: 'cg_restore_later',
+    });
+    // B's cell: the settled session.open, its operation id and its sequences.
+    const cell = readAdmittedTestNanoHost(r.db, (sqlite) =>
+      sqlite
+        .prepare(`SELECT operation, operation_id AS operationId, operation_state AS cell,
+        operation_sequence AS sequence, next_sequence AS nextSequence FROM harness_instance_records`)
+        .get()
+    );
+    expect(cell).toEqual({
+      operation: 'session.open',
+      operationId: command.operationId,
+      cell: 'settled',
+      sequence: command.sequence,
+      nextSequence: command.sequence + 1,
+    });
+    // A's original frame arrives: zero rows change. B keeps its drain, generation, cell and
+    // occupancy, also after reopen.
+    await restoreNanoHostSandboxAdmissionIfSafe(r.db, frame, r.join);
+    expect(tuple(r.db)).toEqual(claimed);
+    expect(await coldTuple({ ...f, db: r.db })).toEqual(claimed);
+  }
+);
+
 it('keeps a claim on a same-name recreated Harness when the retired claim frame arrives (S3b G3)', async () => {
   const f = await fixture(false, false, true);
   await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
@@ -1111,6 +1220,144 @@ it('refuses a real version-98 Worker reply and fails its host (S3b-r2 P8)', asyn
   // Main accepted no settlement from the older reply.
   expect(old).toHaveLength(1);
 });
+
+/**
+ * S3b-r3 P8 (A8 FIX 4 item 1): builds the control-store Worker with its private envelope version
+ * pinned. Since `fd151ab4f`, `control-store-worker.ts` is byte-same and the protocol differs only
+ * in this constant, so a build pinned at 98 has the v98 receiving path. The Vitest client starts
+ * its host from `<tmpdir>/nanocore-worker` (`control-store-worker-client.ts` `startWorker`). The
+ * pinned root is inside the global setup's root, so the bundle resolves its external packages
+ * through that root's `node_modules`. The Worker finds `drizzle` and `data-templates` from the
+ * working directory first (`migrate.ts`, `fs-layout.ts`).
+ */
+async function pinnedWorkerTmpdir(version: number): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), 'nanocore-worker', 'pinned-'));
+  roots.push(root);
+  const appRoot = fileURLToPath(new URL('../..', import.meta.url));
+  const { build } = await import('esbuild');
+  await build({
+    absWorkingDir: appRoot,
+    entryPoints: ['src/storage/control-store-worker.ts'],
+    outfile: join(root, 'nanocore-worker', 'dist', 'storage', 'control-store-worker.mjs'),
+    bundle: true,
+    // As the Vitest global setup builds the Worker.
+    external: ['better-sqlite3', '@napi-rs/canvas', 'jsonc-parser'],
+    banner: {
+      js: "import { createRequire as nativeRequire } from 'node:module'; const require = nativeRequire(import.meta.url);",
+    },
+    platform: 'node',
+    target: 'node24',
+    format: 'esm',
+    logLevel: 'warning',
+    plugins: [
+      {
+        name: 'pin-control-worker-version',
+        setup(builder) {
+          builder.onLoad({ filter: /control-store-worker-protocol\.ts$/ }, ({ path }) => {
+            const source = readFileSync(path, 'utf8');
+            const declaration = /export const CONTROL_WORKER_VERSION = \d+;/g;
+            if (source.match(declaration)?.length !== 1)
+              throw new Error('The private envelope version declaration was not found once.');
+            return {
+              contents: source.replace(
+                declaration,
+                `export const CONTROL_WORKER_VERSION = ${version};`
+              ),
+              loader: 'ts',
+            };
+          });
+        },
+      },
+    ],
+  });
+  return root;
+}
+
+it('refuses the real current restore envelope at a version-98 Worker before any mutation, and the matching pair restores (S3b-r3 P8)', async () => {
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = await pinnedWorkerTmpdir(98);
+  const spies: { mockRestore(): void }[] = [];
+  try {
+    // A matching version-98 Main for everything except the envelope under test: the shim
+    // rewrites only the version header, both ways.
+    let mixed = false;
+    const sent: Record<string, unknown>[] = [];
+    const answered: unknown[] = [];
+    const post = Worker.prototype.postMessage;
+    spies.push(
+      vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        message: unknown,
+        transfer?: Parameters<Worker['postMessage']>[1]
+      ) {
+        if (mixed && isRestoreEnvelope(message)) {
+          // The real current envelope, byte for byte.
+          sent.push(message);
+          return post.call(this, message, transfer);
+        }
+        const versioned =
+          typeof message === 'object' &&
+          message !== null &&
+          (message as { version?: unknown }).version === CONTROL_WORKER_VERSION;
+        return post.call(this, versioned ? { ...message, version: 98 } : message, transfer);
+      })
+    );
+    const client = getControlStoreWorkerClient() as unknown as {
+      receive(value: unknown, host: unknown): void;
+    };
+    const receive = client.receive;
+    spies.push(
+      vi.spyOn(client, 'receive').mockImplementation(function (
+        this: unknown,
+        value: unknown,
+        host: unknown
+      ) {
+        const old =
+          typeof value === 'object' &&
+          value !== null &&
+          (value as { version?: unknown }).version === 98;
+        if (mixed && old) answered.push(value);
+        return receive.call(
+          this,
+          old ? { ...value, version: CONTROL_WORKER_VERSION } : value,
+          host
+        );
+      })
+    );
+    const f = await fixture(false, false, true);
+    await claimNanoHostIdleCaptureDrain(f.db, f.idleClaim, f.owner.harnessTurnLifecycle);
+    const claimed = tuple(f.db);
+    const frame = claimFrame(f.idleClaim.claimedAt, f.idleClaim.claimGeneration);
+    mixed = true;
+    await expect(
+      restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin)
+    ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+    mixed = false;
+    // The version-98 Worker received the current envelope and refused it in its own version.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.version).not.toBe(98);
+    expect(answered).toEqual([
+      {
+        version: 98,
+        id: sent[0]!.id,
+        status: 'error',
+        code: 'invalid-request',
+        commit: 'not-committed',
+      },
+    ]);
+    // Refused before admission: no row changed.
+    expect(tuple(f.db)).toEqual(claimed);
+    // The matching pair: the same frame in the Worker's own version restores.
+    await restoreNanoHostSandboxAdmissionIfSafe(f.db, frame, f.drainJoin);
+    expect(harnessRow(f.db)).toMatchObject({ drain: 'accepting', generation: null });
+  } finally {
+    // The version-98 Worker stops through the same shim before the spies go.
+    await shutdownControlStoreWorkerClient();
+    for (const spy of spies) spy.mockRestore();
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+  }
+}, 120_000);
 
 it('refuses the ownerless whole-Sandbox restore at the admitted boundary before any row changes (S3b-r2 S7)', async () => {
   const f = await fixture(false, true);

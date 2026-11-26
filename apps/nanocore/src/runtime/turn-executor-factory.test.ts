@@ -9763,6 +9763,20 @@ describe('createConfiguredTurnExecutor', () => {
         open: number;
         active: number;
       };
+    /** S3b-r3: the co-resident claims at `claimedAt` with a fresh generation. */
+    const claimCoResident = async (
+      claim: (input: ClaimInput) => Promise<void>,
+      claimedAt: string,
+      generation: string
+    ) =>
+      await claim({
+        ...original!,
+        agentSessionId: coSession,
+        agentSessionRuntimeBindingId: coBinding,
+        attemptId: coAttempt,
+        claimedAt,
+        claimGeneration: generation,
+      });
     return {
       f,
       frames,
@@ -9792,15 +9806,9 @@ describe('createConfiguredTurnExecutor', () => {
           timestamp: new Date(Date.parse(revision) - 1).toISOString(),
           workspaceId: DEMO_WORKSPACE_ID,
         });
-        await claim({
-          ...original!,
-          agentSessionId: coSession,
-          agentSessionRuntimeBindingId: coBinding,
-          attemptId: coAttempt,
-          claimedAt: revision,
-          claimGeneration: generation,
-        });
+        await claimCoResident(claim, revision, generation);
       },
+      claimCoResident,
     };
   }
 
@@ -9887,6 +9895,59 @@ describe('createConfiguredTurnExecutor', () => {
         FROM harness_instance_records WHERE harness_instance_id=?`)
         .get(harnessInstanceId)
     ) as Record<string, unknown> | undefined;
+
+  /**
+   * S3b-r3 (A8 FIX 4 item 3): queues, dispatches and settles one Harness operation through the
+   * admitted owner at `stamp`, with the test host's route held. The host cannot carry it: Main's
+   * command consumer refuses a command with no live producer (F `acceptHarnessCommand`), and the
+   * host settles at the wall clock, not at the deciding stamp.
+   */
+  async function settleThroughOwner(
+    f: { coreDb: CoreDb; native: { outside: { integrationBindingRef: string | undefined } } },
+    input: {
+      harnessInstanceId: string;
+      operation: 'harness.drain' | 'session.open' | 'session.inspect';
+      body: Record<string, unknown>;
+      stamp: string;
+      result: (command: harnessRecords.NanoHostHarnessCommand) => Record<string, unknown>;
+    }
+  ) {
+    const lifecycle = currentAdmittedTestNanoHostOwner(f.coreDb)!.harnessTurnLifecycle;
+    const ref = f.native.outside.integrationBindingRef!;
+    const dispatch = lifecycle.dispatch;
+    const held = vi.spyOn(lifecycle, 'dispatch').mockResolvedValue(null);
+    try {
+      await queueNanoHostHarnessOperation(f.coreDb, {
+        body: input.body,
+        harnessInstanceId: input.harnessInstanceId,
+        operation: input.operation,
+        timestamp: input.stamp,
+      });
+      const command = await dispatch.call(lifecycle, {
+        sandboxIntegrationBindingRef: ref,
+        now: () => input.stamp,
+      });
+      if (!command) throw new Error(`Expected the dispatched ${input.operation} command.`);
+      expect(command.operation).toBe(input.operation);
+      const result = {
+        schemaVersion: 2 as const,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded' as const,
+        body: input.result(command),
+      };
+      expect(
+        await lifecycle.settle(
+          { sandboxIntegrationBindingRef: ref, result, timestamp: input.stamp },
+          null
+        )
+      ).toBe('settled');
+      return { command, result };
+    } finally {
+      held.mockRestore();
+    }
+  }
 
   /** S3b-r2: every idle Sandbox lifecycle post at the backend's admitted owner, in order. */
   function observeIdleSandboxPosts(backend: unknown) {
@@ -10179,19 +10240,28 @@ describe('createConfiguredTurnExecutor', () => {
     const claimed = harnessCell(f.coreDb, c.harnessInstanceId);
     expect(claimed).toMatchObject({ drain: 'draining', generation: 'cg_p6_replay_later' });
     const posts = observeIdleSandboxPosts(f.backend);
-    // The peer posts A's exact result again; Core answers from its durable consumption.
-    const owner = currentAdmittedTestNanoHostOwner(f.coreDb)!;
-    expect(
-      await owner.harnessTurnLifecycle.settle(
-        {
-          result,
-          sandboxIntegrationBindingRef: f.native.outside.integrationBindingRef!,
-          timestamp: new Date().toISOString(),
+    // S3b-r3 (A8 FIX 4 item 4): the peer posts A's exact result envelope again to the admitted
+    // result route. The route settles it (a replay), awaits the Core consumer and only then
+    // answers 204.
+    const consumed: unknown[] = [];
+    const runtime = f.native.runtime;
+    const answer = await postNativeHarnessPoll(
+      f.coreDb,
+      {
+        acceptNanoHostHarnessCommand: (command, signal) =>
+          runtime.acceptNanoHostHarnessCommand(command, signal),
+        acceptNanoHostHarnessResult: async (replayed, settlement) => {
+          consumed.push(settlement);
+          return await runtime.acceptNanoHostHarnessResult(replayed, settlement);
         },
-        null
-      )
-    ).toBe('replayed');
-    await f.native.runtime.acceptNanoHostHarnessResult(result, { disposition: 'replayed' });
+        failNanoHostHarnessDelivery: (command, failure) =>
+          runtime.failNanoHostHarnessDelivery(command, failure),
+      },
+      f.native.outside.integrationBindingRef!,
+      { result }
+    );
+    expect(answer).toEqual({ status: 204, body: '' });
+    expect(consumed).toEqual([{ disposition: 'replayed' }]);
     // C4: the replay gets its ACK and posts no restore frame. B's tuple and occupancy stay.
     expect(posts.posts).toEqual([]);
     expect(c.frames).toHaveLength(1);
@@ -10199,6 +10269,93 @@ describe('createConfiguredTurnExecutor', () => {
     await f.reopen();
     expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(claimed);
   }, 120_000);
+
+  // S3b-r3 P4 (A8 FIX 4 item 2): the claim-arm redelivery through Main after the admitted
+  // settlement of an intervening session.open, with B's claim at A's revision (99) or later (101).
+  it.each([
+    ['99', -1, 0],
+    ['101', 1, 2],
+  ] as const)(
+    'delivers a rolled-back claim frame again after a session.open settles at %s and a later claim, and changes no row (S3b-r3 P4)',
+    async (stampLabel, settleOffset, claimOffset) => {
+      const c = await admitCoResidentClose(`p4_settle_${stampLabel}`);
+      const { f } = c;
+      const { claim, release } = c.observeLatch();
+      f.gate();
+      const operation = f.close();
+      void operation.catch(() => undefined);
+      await f.entered;
+      // A definite refusal before any queue commit: the successor actor loses launch authority.
+      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.ownerUserId))();
+      f.release();
+      await expect(operation).rejects.toMatchObject({
+        name: 'WorkerGovernanceCapacityUnavailableError',
+      });
+      // Q6: A's rollback posts its claim arm, and the Harness accepts at A's revision.
+      expect(c.frames).toHaveLength(1);
+      const frame = c.frames[0]!;
+      const released = c.row();
+      expect(released).toMatchObject({ drain: 'accepting', generation: null });
+      expect(released.revision).toBe(c.original!.claimedAt);
+      const stampAt = (ms: number) => new Date(Date.parse(released.revision) + ms).toISOString();
+      // One more binding opens below A's revision. Its session.open settles at the deciding stamp
+      // through the admitted owner: at 99 the clock steps to 1 ms below A's revision, so the
+      // co-resident claims at exactly A's revision. At 101 (the control) it claims later.
+      const opened = {
+        agentSessionCompatibilityKey: 'd'.repeat(64),
+        agentSessionId: testEntityId('as', `p4_settle_${stampLabel}_open`),
+        agentSessionRuntimeBindingId: `agent-session-binding-p4-settle-${stampLabel}-open`,
+        effectiveSetupGeneration: 1,
+        threadId: testEntityId('th', `p4_settle_${stampLabel}_open`),
+        workspaceId: DEMO_WORKSPACE_ID,
+      };
+      await openNanoHostAgentSessionBinding(f.coreDb, {
+        ...opened,
+        harnessInstanceId: c.harnessInstanceId,
+        timestamp: stampAt(-2),
+      });
+      const { adapterId, maxActiveTurns } = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT adapter_id AS adapterId, max_active_turns AS maxActiveTurns
+          FROM harness_instance_records WHERE harness_instance_id=?`)
+          .get(c.harnessInstanceId)
+      ) as { adapterId: string; maxActiveTurns: number };
+      const { command } = await settleThroughOwner(f, {
+        harnessInstanceId: c.harnessInstanceId,
+        operation: 'session.open',
+        body: { ...opened, adapterId, resume: null },
+        stamp: stampAt(settleOffset),
+        result: () => ({
+          state: 'open',
+          nativeHandleState: 'pending',
+          nativeHandleDigest: null,
+          maxActiveTurns,
+        }),
+      });
+      expect(c.row()).toMatchObject({ drain: 'accepting', revision: stampAt(settleOffset) });
+      const generation = `cg_p4_settle_${stampLabel}_later`;
+      await c.claimCoResident(claim, stampAt(claimOffset), generation);
+      const claimed = harnessCell(f.coreDb, c.harnessInstanceId);
+      // B's cell: its drain and generation, the settled session.open with its id and sequences.
+      expect(claimed).toMatchObject({
+        drain: 'draining',
+        revision: stampAt(claimOffset),
+        generation,
+        operation: 'session.open',
+        operationId: command.operationId,
+        state: 'settled',
+        sequence: command.sequence,
+        nextSequence: command.sequence + 1,
+      });
+      // A's rollback frame arrives again (a lost restore ACK) through the Main owner: zero rows
+      // change, and B keeps its cell and occupancy, also after reopen.
+      await release(...frame);
+      expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(claimed);
+      await f.reopen();
+      expect(harnessCell(f.coreDb, c.harnessInstanceId)).toEqual(claimed);
+    },
+    120_000
+  );
 
   it('refuses the RC8 queue after an equal-clock generation clear under the latch, and the claim frame changes no row (S3b-r2 P5)', async () => {
     const f = await admitNativeReplacementClose('p5_equal_drain');
@@ -10211,25 +10368,57 @@ describe('createConfiguredTurnExecutor', () => {
     const claimed = harnessCell(f.coreDb, harnessInstanceId)!;
     expect(claimed).toMatchObject({ drain: 'draining', generation: expect.stringMatching(/^cg_/) });
     const claimedAt = claimed.revision as string;
-    // Written state for the W4b settlement at the RC3 stamp: the generation clears and the revision
-    // stays. NR W4b runs the same settlement file-backed through the owner API (R:1951 cut).
-    expect(
-      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
-        sqlite
-          .prepare(`UPDATE harness_instance_records SET claim_generation=NULL
-          WHERE harness_instance_id=? AND claim_generation=?`)
-          .run(harnessInstanceId, claimed.generation)
-      ).changes
-    ).toBe(1);
+    // S3b-r3 (A8 FIX 4 item 3): W4b inside the pause. An independent harness.drain is queued,
+    // dispatched and settled through the admitted owner at the RC3 stamp. The settlement clears
+    // the generation, keeps the revision and advances the cell.
+    const { command } = await settleThroughOwner(f, {
+      harnessInstanceId,
+      operation: 'harness.drain',
+      body: {},
+      stamp: claimedAt,
+      result: () => ({
+        activeTurns: claimed.active,
+        openSessions: claimed.open,
+        state: 'draining',
+      }),
+    });
     const cleared = harnessCell(f.coreDb, harnessInstanceId);
-    expect(cleared).toMatchObject({
-      life: 'open',
-      drain: 'draining',
+    expect(cleared).toEqual({
+      ...claimed,
       revision: claimedAt,
       generation: null,
+      operation: 'harness.drain',
+      operationId: command.operationId,
+      state: 'settled',
+      sequence: command.sequence,
+      nextSequence: command.sequence + 1,
     });
+    expect(command.sequence).toBe(claimed.nextSequence);
+    // A queued close cannot reach the peer behind the drain's receipt, so the outcome is the first
+    // of the close's own settlement and a committed session.close queue at the admitted owner.
+    const lifecycle = currentAdmittedTestNanoHostOwner(f.coreDb)!.harnessTurnLifecycle;
+    const queue = lifecycle.queue;
+    let closeQueued: (value: string) => void = () => undefined;
+    const queued = new Promise<string>((resolve) => {
+      closeQueued = resolve;
+    });
+    const observed = vi
+      .spyOn(lifecycle, 'queue')
+      .mockImplementation(async (input, authority) => {
+        const sequence = await queue(input, authority);
+        if (input.operation === 'session.close') closeQueued('session.close queued');
+        return sequence;
+      });
     f.release();
-    await expect(operation).rejects.toThrow();
+    const outcome = operation.then(
+      () => 'closed',
+      (error: unknown) => error
+    );
+    expect(await Promise.race([outcome, queued])).toMatchObject({
+      name: 'WorkerGovernanceCapacityUnavailableError',
+      closeCause: 'latch',
+    });
+    observed.mockRestore();
     // RC8 compares the owner's pair in the posting turn: no session.close is queued.
     expect(f.commands.filter(({ operation }) => operation === 'session.close')).toEqual([]);
     // The Q6 claim frame of this owner's own acquisition is posted and changes zero rows.
@@ -10578,18 +10767,40 @@ describe('createConfiguredTurnExecutor', () => {
     const harnessInstanceId = String(e.tuple().harnesses[0]!.harness_instance_id);
     let advanced: ReturnType<typeof e.tuple> | undefined;
     const s = failAfterIdleSandboxClaim(e, async () => {
-      // Written state for an operation that this eviction did not queue and that settles after
-      // the claim (V1-P's inspection case): the child's sequences advance by one.
-      expect(
-        mutateAdmittedTestNanoHost(e.coreDb, (sqlite) =>
-          sqlite
-            .prepare(`UPDATE harness_instance_records
-            SET operation_sequence=operation_sequence+1, next_sequence=next_sequence+1
-            WHERE harness_instance_id=? AND operation_state='settled'`)
-            .run(harnessInstanceId)
-        ).changes
-      ).toBe(1);
+      // S3b-r3 (A8 FIX 4 item 3): an inspection that this eviction did not queue settles after
+      // the claim (V1-P's inspection case). It is queued, dispatched and settled through the
+      // admitted owner, so the child's operation and sequences advance.
+      const pinned = e.tuple().harnesses[0]!;
+      const binding = readAdmittedTestNanoHost(e.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`SELECT agent_session_id AS agentSessionId,
+          agent_session_runtime_binding_id AS agentSessionRuntimeBindingId
+          FROM agent_session_runtime_bindings WHERE harness_instance_id=?`)
+          .all(harnessInstanceId)
+      ) as { agentSessionId: string; agentSessionRuntimeBindingId: string }[];
+      expect(binding).toHaveLength(1);
+      const stamp = new Date().toISOString();
+      const { command } = await settleThroughOwner({ coreDb: e.coreDb, native: e.native }, {
+        harnessInstanceId,
+        operation: 'session.inspect',
+        body: { ...binding[0]! },
+        stamp,
+        result: () => ({
+          state: 'open',
+          childState: 'absent',
+          cleanupState: 'clean',
+          nativeHandleState: 'ready',
+          nativeHandleDigest: 'a'.repeat(64),
+        }),
+      });
       advanced = e.tuple();
+      expect(advanced.harnesses[0]).toMatchObject({
+        operation: 'session.inspect',
+        operation_id: command.operationId,
+        operation_state: 'settled',
+        operation_sequence: Number(pinned.next_sequence),
+        next_sequence: Number(pinned.next_sequence) + 1,
+      });
     });
     await expect(e.evict()).rejects.toThrow();
     expect(s.injected()).toBe(true);
@@ -28825,6 +29036,7 @@ function readFactoryAdmissionInput(
  * Sends one native Harness poll over a real H2 connection to the production semantic routes,
  * which select the next queued command and hand it to the live runtime before any carriage.
  * Carriage authentication is the transport's concern; the route check admits the test connection.
+ * With `result`, it posts that exact result envelope to the result route instead (S3b-r3).
  */
 async function postNativeHarnessPoll(
   coreDb: ReturnType<typeof openCoreDb>,
@@ -28839,6 +29051,8 @@ async function postNativeHarnessPoll(
     readonly unwind?: () => void;
     /** Observes each native write of response bytes, with its byte count, when it is made. */
     readonly written?: (bytes: number) => void;
+    /** A Harness result envelope for the result route. */
+    readonly result?: unknown;
   } = {}
 ) {
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -28903,12 +29117,16 @@ async function postNativeHarnessPoll(
   try {
     const stream = client.request({
       ':method': 'POST',
-      ':path': '/worker-control/harness/poll',
+      ':path': options.result === undefined ? '/worker-control/harness/poll' : '/worker-control/harness/result',
       'content-type': 'application/json',
       'x-openkit-integration-binding': sandboxIntegrationBindingRef,
     });
     const headers = once(stream, 'response');
-    stream.end(JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY }));
+    stream.end(
+      JSON.stringify(
+        options.result ?? { schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY }
+      )
+    );
     const [received] = await headers;
     const chunks: Buffer[] = [];
     for await (const chunk of stream) chunks.push(Buffer.from(chunk));
