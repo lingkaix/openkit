@@ -114,7 +114,7 @@ outside every epoch, durable and inert
 
 ### Sandbox Incarnation Map
 
-NanoHost realizes Core's desired set by Sandbox incarnation ID. The [OpenShell adapter](20261116-nanohost_openshell_gateway.md) owns the private physical address mapping. The incarnation map retains the original Gateway, provider workspace, origin Host epoch and mapping version. The full inventory reports readiness, attachment, envelope and shim carrier against that incarnation. Core derives occupancy from its claims. V0.2.0 has one Host slot and one Worker per Sandbox incarnation. A compatibility check admits placement within the exact storage association and authorized envelope.
+NanoHost realizes Core's desired set by Sandbox incarnation ID. The [OpenShell adapter](20261116-nanohost_openshell_gateway.md#physical-sandbox-address) owns the private physical address mapping. The incarnation map retains the original Gateway, provider workspace, origin Host epoch and mapping version. The full inventory reports readiness, attachment, envelope and shim carrier against that incarnation. Core derives occupancy from its claims. V0.2.0 has one Host slot and one Worker per Sandbox incarnation. A compatibility check admits placement within the exact storage association and authorized envelope.
 
 Before create, Core records the original intent, target incarnation, payload binding and exclusions. Check current authority and required predecessor release. The incarnation row may enforce exclusive ownership of the derived address across overlapping and still-actionable calls in the original provider namespace.
 

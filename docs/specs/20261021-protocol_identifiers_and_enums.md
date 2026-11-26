@@ -114,17 +114,7 @@ An attempt refers to its Worker incarnation, the Worker to its Sandbox incarnati
 
 ### NanoHost Physical Sandbox Address
 
-PENDING ENGINEER: proposed nh- + 16 lowercase base32 [a-z2-7]{16}
-
-NanoHost allocates the address within the originating Host epoch and Gateway namespace. Uniqueness comes from durable allocation within that provider namespace. Read the incarnation map in either direction. The address is separate from the Core-issued Sandbox incarnation ID.
-
-Before the first Gateway Create, Core records the original create intent, target incarnation and exclusions. Check current authority and required predecessor release before provider contact. NanoHost durably reserves the address for the exact incarnation and origin epoch in the map. Allow one binding per incarnation and exclusive use of each address in the namespace. Return the winning binding to duplicate admissions. A local collision may select a fresh candidate before any possible Create. A failed reservation stops before provider contact.
-
-Once Create may have been sent, inspect, reconcile and delete through the recorded address. Retain the provider's immutable object ID when it becomes known and verify lineage before acting. A lost reply, a name conflict with unproved ownership, an empty Get or an elapsed deadline leaves the original claim held. Do not adopt a foreign object or issue Create under a new address. Keep the binding across recovery and exclude reuse of retired addresses within the epoch. A new epoch has its own namespace after proved predecessor termination and fresh-empty readiness.
-
-Use Core's incarnation ID for lifecycle keys. A one-shot operation retains the existing Core operation ID, target Worker ID and payload digest. Address allocation grants no authority and supplies no key input. Use the original correlation after a lost reply.
-
-Before freezing the address format, qualify two allocated addresses on the pinned Gateway. Exercise a reservation collision, recovery of the original binding after a lost reply and reopen, and refusal of a stale operation against a successor.
+The [NanoHost OpenShell adapter](20261116-nanohost_openshell_gateway.md#physical-sandbox-address) owns the deterministic provider address and its collision-checked binding. The short name is never a Core identity, operation key or authority. The incarnation or intent owner retains enough to resolve an outstanding operation under its original adapter mapping version, Host epoch and provider namespace. Lifecycle keys use Core's incarnation ID. One-shot operation keys use the existing Core operation ID, target Worker ID and payload digest.
 
 ### Retired NanoHost Derived Identities
 
