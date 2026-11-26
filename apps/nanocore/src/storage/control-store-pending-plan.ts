@@ -3,6 +3,7 @@ import {
   PendingExpectedSourceSchema,
   PendingInvalidatingEventSchema,
 } from '../runtime/pending-request-codecs.js';
+import type { DecidedMcpPublicationRow } from '../runtime/worker-mcp-decision.js';
 import { commandInputHash } from './control-store-input.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -35,7 +36,12 @@ export const ControlPendingPlanSchema = z
     plan: z
       .object({
         workspaceId: z.string().min(1),
-        operation: z.enum(['pending-boot', 'pending-closeout']),
+        operation: z.enum([
+          'pending-boot',
+          'pending-closeout',
+          'assistant-recovery',
+          'mcp-backfill',
+        ]),
         temporary: z.string().regex(/^\.[a-f0-9]{64}\.[0-9a-f-]{36}\.tmp$/),
         contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         byteLength: z.number().int().positive().max(CONTROL_PENDING_PLAN_BYTES),
@@ -288,4 +294,80 @@ export function controlPendingPlanInputs(
         .all(threadId)
     : sqlite.prepare('SELECT * FROM task_turn_terminal_facts ORDER BY turn_id').all();
   return commandInputHash({ rows, turns, items, threads, tasks, goals, facts });
+}
+
+/** The MCP ledger owns the same complete selection in Main and at the writer. */
+export function readDecidedMcpBackfillRows(
+  sqlite: WorkspaceDb['sqlite']
+): DecidedMcpPublicationRow[] {
+  return sqlite
+    .prepare(
+      `SELECT
+         schema_version,
+         agent_id,
+         agent_session_id,
+         call_id,
+         completed_at,
+         error_code,
+         item_id,
+         package_snapshot_id,
+         provider_ref,
+         service_ref,
+         started_at,
+         status,
+         thread_id,
+         turn_id,
+         workspace_id
+       FROM capability_calls
+       WHERE family = 'mcp'
+         AND capability_id = 'mcp.call-tool'
+         AND operation = 'mcp.call-tool'
+         AND status NOT IN ('queued', 'running')
+         AND item_id IS NOT NULL
+         AND provider_ref IS NOT NULL
+         AND service_ref LIKE 'mcp-tool:%'
+         AND thread_id IS NOT NULL
+         AND turn_id IS NOT NULL
+         AND completed_at IS NOT NULL
+       ORDER BY completed_at, call_id`
+    )
+    .all() as DecidedMcpPublicationRow[];
+}
+
+/** Fingerprints the local decisions a multi-member Boot walk planned before the first post. */
+export function controlBootWalkPlanInputs(
+  sqlite: WorkspaceDb['sqlite'],
+  workspaceId: string,
+  operation: 'assistant-recovery' | 'mcp-backfill',
+  mcpRows?: readonly DecidedMcpPublicationRow[]
+): string {
+  const events = sqlite
+    .prepare(
+      "SELECT id,revision,sequence,turn_id,json_extract(content_json,'$.reference.contentDigest') AS digest FROM control_product_entries WHERE kind='event' ORDER BY turn_id,sequence,revision"
+    )
+    .all();
+  if (operation === 'assistant-recovery') {
+    const observations = sqlite
+      .prepare('SELECT * FROM control_work_observations ORDER BY turn_id,sequence')
+      .all();
+    return commandInputHash({
+      records: controlPendingPlanInputs(sqlite, workspaceId, null),
+      events,
+      observations,
+    });
+  }
+  return commandInputHash({
+    rows: mcpRows ?? readDecidedMcpBackfillRows(sqlite),
+    turns: sqlite.prepare('SELECT id,revision,status FROM control_turns ORDER BY id').all(),
+    threads: sqlite.prepare('SELECT id,revision FROM control_threads ORDER BY id').all(),
+    sessions: sqlite
+      .prepare('SELECT id,revision,status FROM control_agent_sessions ORDER BY id')
+      .all(),
+    items: sqlite
+      .prepare(
+        "SELECT id,turn_id,MAX(revision) AS revision FROM control_product_entries WHERE kind='item' GROUP BY id,turn_id ORDER BY id,turn_id"
+      )
+      .all(),
+    events,
+  });
 }
