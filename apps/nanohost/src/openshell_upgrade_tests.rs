@@ -12,12 +12,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
+use openshell_sdk::DeleteOptions;
 use openshell_sdk::raw::proto::{
     CreateSandboxRequest, CreateSshSessionRequest, ExecSandboxRequest, FilesystemPolicy,
     LandlockPolicy, ProcessPolicy, RevokeSshSessionRequest, SandboxPolicy, SandboxSpec,
     SandboxTemplate, TcpForwardFrame, TcpForwardInit, TcpRelayTarget, exec_sandbox_event,
     tcp_forward_frame, tcp_forward_init,
 };
+use openshell_sdk::raw::proto::{NetworkAccessPreset, NetworkEnforcementMode, workspace_selector};
 use openshell_sdk::{EdgeAuthInterceptor, ListOptions, OpenShellClient, ServiceStatus};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -435,6 +437,7 @@ fn fixture_policy() -> SandboxPolicy {
         }),
         network_policies: HashMap::new(),
         network_middlewares: HashMap::new(),
+        ..Default::default()
     }
 }
 
@@ -455,7 +458,8 @@ async fn create_sandbox(client: &OpenShellClient, name: &str, image: &str) -> Sa
             name: name.to_string(),
             labels,
             annotations: HashMap::new(),
-            workspace: String::new(),
+            workspace_scope: Some(workspace_selector("default")),
+            ..Default::default()
         })
         .await
     {
@@ -521,16 +525,17 @@ async fn create_sandbox(client: &OpenShellClient, name: &str, image: &str) -> Sa
 
 fn start_peer(
     client: &OpenShellClient,
-    sandbox_id: &str,
+    sandbox_name: &str,
 ) -> (JoinHandle<Result<(), ()>>, mpsc::Receiver<PeerSignal>) {
     let client = client.clone();
-    let sandbox_id = sandbox_id.to_string();
+    let sandbox_name = sandbox_name.to_string();
     let (signal_tx, signal_rx) = mpsc::channel(8);
     let monitor = tokio::spawn(async move {
         let mut events = client
             .raw_grpc()
             .exec_sandbox(ExecSandboxRequest {
-                sandbox_id,
+                sandbox: sandbox_name,
+                workspace_scope: Some(workspace_selector("default")),
                 command: vec![
                     "node".to_string(),
                     "--input-type=module".to_string(),
@@ -539,11 +544,15 @@ fn start_peer(
                 ],
                 workdir: "/workspace".to_string(),
                 environment: HashMap::new(),
-                timeout_seconds: 30,
+                execution_timeout: Some(prost_types::Duration {
+                    seconds: 30,
+                    nanos: 0,
+                }),
                 stdin: Vec::new(),
                 tty: false,
                 cols: 0,
                 rows: 0,
+                ..Default::default()
             })
             .await
             .map_err(|_| ())?
@@ -701,9 +710,10 @@ async fn handle_request(
 
 async fn run_forward_slice(
     client: &OpenShellClient,
+    sandbox_name: &str,
     sandbox_id: &str,
 ) -> Result<ForwardObservation, ProbeFailure> {
-    let (peer, mut signals) = start_peer(client, sandbox_id);
+    let (peer, mut signals) = start_peer(client, sandbox_name);
     let mut peer = Some(peer);
     let ready = next_signal(&mut signals, |signal| matches!(signal, PeerSignal::Ready)).await;
     if let Err(failure) = ready {
@@ -714,7 +724,8 @@ async fn run_forward_slice(
     let mut grpc = client.raw_grpc();
     let session = match grpc
         .create_ssh_session(CreateSshSessionRequest {
-            sandbox_id: sandbox_id.to_string(),
+            sandbox: sandbox_name.to_string(),
+            workspace_scope: Some(workspace_selector("default")),
         })
         .await
     {
@@ -735,7 +746,10 @@ async fn run_forward_slice(
     if session.sandbox_id != sandbox_id {
         abort_peer(&mut peer).await;
         if grpc
-            .revoke_ssh_session(RevokeSshSessionRequest { token })
+            .revoke_ssh_session(RevokeSshSessionRequest {
+                token,
+                allow_missing: false,
+            })
             .await
             .is_err()
         {
@@ -755,7 +769,8 @@ async fn run_forward_slice(
         outbound
             .send(TcpForwardFrame {
                 payload: Some(tcp_forward_frame::Payload::Init(TcpForwardInit {
-                    sandbox_id: sandbox_id.to_string(),
+                    sandbox: sandbox_name.to_string(),
+                    workspace: "default".into(),
                     service_id: "openkit-upgrade-probe".to_string(),
                     target: Some(tcp_forward_init::Target::Tcp(TcpRelayTarget {
                         host: host.to_string(),
@@ -835,7 +850,10 @@ async fn run_forward_slice(
     .await;
     abort_peer(&mut peer).await;
     let revoked = grpc
-        .revoke_ssh_session(RevokeSshSessionRequest { token })
+        .revoke_ssh_session(RevokeSshSessionRequest {
+            token,
+            allow_missing: false,
+        })
         .await
         .is_ok();
     match (result, revoked) {
@@ -860,7 +878,7 @@ async fn cleanup_sandbox(
     expected_id: Option<&str>,
 ) -> Result<(), ProbeFailure> {
     let owned = client
-        .list_sandboxes(ListOptions {
+        .list_all_sandboxes(ListOptions {
             label_selector: Some(format!("openkit-upgrade-probe={name}")),
             ..ListOptions::default()
         })
@@ -873,11 +891,11 @@ async fn cleanup_sandbox(
                 && expected_id.is_none_or(|expected| sandbox.id == expected) =>
         {
             client
-                .delete_sandbox(name)
+                .delete_sandbox(name, DeleteOptions::default())
                 .await
                 .map_err(|_| ProbeFailure::new("cleanup", FailureOutcome::CleanupFailed))?;
             client
-                .wait_deleted(name, Duration::from_secs(120))
+                .wait_deleted(name, Duration::from_secs(120), None)
                 .await
                 .map_err(|_| ProbeFailure::new("cleanup", FailureOutcome::CleanupFailed))?;
         }
@@ -886,7 +904,7 @@ async fn cleanup_sandbox(
         }
     }
     let remaining = client
-        .list_sandboxes(ListOptions::default())
+        .list_all_sandboxes(ListOptions::default())
         .await
         .map_err(|_| ProbeFailure::new("cleanup", FailureOutcome::CleanupFailed))?;
     if !remaining.is_empty() {
@@ -932,7 +950,7 @@ async fn run_live(values: BTreeMap<String, String>) -> Result<(), ProbeFailure> 
         .await
         .map_err(|_| ProbeFailure::new("gateway", FailureOutcome::Error))?;
     let initial = client
-        .list_sandboxes(ListOptions::default())
+        .list_all_sandboxes(ListOptions::default())
         .await
         .map_err(|_| ProbeFailure::new("gateway", FailureOutcome::Error))?;
     if health.status != ServiceStatus::Healthy
@@ -954,7 +972,7 @@ async fn run_live(values: BTreeMap<String, String>) -> Result<(), ProbeFailure> 
     let attempt = observe_sandbox_attempt(
         async {
             match creation {
-                Ok(sandbox_id) => run_forward_slice(&client, &sandbox_id).await,
+                Ok(sandbox_id) => run_forward_slice(&client, &name, &sandbox_id).await,
                 Err(failure) => Err(failure),
             }
         },
@@ -1186,8 +1204,8 @@ fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
         host: "api.example.invalid".into(),
         port: 443,
         protocol: "rest".into(),
-        enforcement: "enforce".into(),
-        access: "read-only".into(),
+        enforcement: NetworkEnforcementMode::Enforce as i32,
+        access: NetworkAccessPreset::ReadOnly as i32,
         ..Default::default()
     };
     let mut projection = project_profile(
@@ -1223,7 +1241,10 @@ fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
         instance.metadata.as_ref().unwrap().name,
         "oki-deployment-workspace-grant"
     );
-    assert_eq!(instance.credential_expires_at_ms["GENERIC_TOKEN"], 2000000);
+    assert_eq!(
+        instance.credential_expiration_times["GENERIC_TOKEN"].seconds,
+        2000
+    );
     let material = HashMap::from([
         ("client_id".into(), "fixture-account".into()),
         ("client_secret".into(), "fixture-secret".into()),
@@ -1250,7 +1271,10 @@ fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
     );
     assert!(refresh.material.iter().all(|m| m.secret));
     assert_eq!(request.credential_key, "GENERIC_TOKEN");
-    assert_eq!(request.expires_at_ms, Some(2000000));
+    assert_eq!(
+        request.expiration_time.map(|value| value.seconds),
+        Some(2000)
+    );
     assert!(!format!("{refresh:?}").contains("fixture-secret"));
     let unchanged = projection.profile.clone();
     let rejected = prepare_delegated_refresh(

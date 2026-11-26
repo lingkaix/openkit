@@ -256,7 +256,7 @@ export const StoredTurnPayloadV1Shape = {
   captureCoverage: StoredCaptureCoverageV1Schema.optional(),
   requiredFeatures: z
     .array(
-      z.literal('openkit.work-observations.v1', {
+      z.literal(['openkit.work-observations.v1', 'openkit.work-observations.truncation.v1'], {
         error: ({ input }) => `Unsupported required Turn feature: ${JSON.stringify(input)}.`,
       })
     )

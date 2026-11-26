@@ -2,7 +2,7 @@ import { canonicalIdentifierName } from './canonical-json.js';
 
 export { canonicalIdentifierName } from './canonical-json.js';
 
-/** Entity kinds owned by Core Protocol. Selectors, request ids and native runtime ids are excluded. */
+/** Entity kinds owned by Core Protocol. Selectors, request IDs and provider-local IDs are excluded. */
 export const ENTITY_KINDS = [
   'usr',
   'ws',
@@ -37,6 +37,11 @@ export const ENTITY_KINDS = [
   'krt',
   'attempt',
   'wst',
+  'host',
+  'hepoch',
+  'sbx',
+  'sbxi',
+  'wkr',
   'vault',
   'grant',
   'vu',

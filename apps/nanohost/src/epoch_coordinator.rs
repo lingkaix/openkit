@@ -451,8 +451,6 @@ impl EpochPlan {
                     GATEWAY_PORT.into(),
                     "--db-url".into(),
                     format!("sqlite:{}", gateway_database_path.display()),
-                    "--drivers".into(),
-                    "docker".into(),
                 ],
                 env: vec![
                     ("HOME".into(), path_arg(&epoch_root.join("home"))),
@@ -1117,6 +1115,18 @@ impl DockerImageBackend {
         command
     }
 
+    /// Reads independent physical absence on the one-slot private daemon.
+    fn prove_empty_containers(&self, deadline: Instant) -> Result<(), EpochFault> {
+        let mut command = self.command();
+        command.args(["container", "ls", "--all", "--quiet"]);
+        let output = run_image_metadata_command(command, deadline)
+            .map_err(|_| EpochFault::DeleteOutcomeUncertain)?;
+        if !output.trim().is_empty() {
+            return Err(EpochFault::DeleteOutcomeUncertain);
+        }
+        Ok(())
+    }
+
     /// Reads the selected manifest descriptor, never a configuration ID or mutable tag identity.
     fn inspect_manifest(
         &self,
@@ -1315,6 +1325,24 @@ fn harness_bridge_is_live(
         && bootstrap_monitor.is_some_and(WorkerBootstrapMonitor::is_live)
 }
 
+/// Original writer absence or a retiring epoch's complete renewal proof.
+pub(crate) struct WriterAbsenceProof<'a>(Option<&'a str>);
+
+impl<'a> WriterAbsenceProof<'a> {
+    pub(crate) fn covers(&self, sandbox_id: &str) -> bool {
+        self.0.is_none_or(|original| original == sandbox_id)
+    }
+
+    pub(crate) fn is_renewal(&self) -> bool {
+        self.0.is_none()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(original: Option<&'a str>) -> Self {
+        Self(original)
+    }
+}
+
 /// Owns all child processes in one fresh Runtime Epoch.
 #[allow(dead_code)]
 pub struct EpochCoordinator {
@@ -1325,6 +1353,7 @@ pub struct EpochCoordinator {
     image_store: ImageStore,
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
+    renewed_writer_proof: Option<WriterAbsenceProof<'static>>,
     credential_carrier: Option<crate::credential_carrier::CredentialCarrier>,
     static_provider_bindings: Vec<crate::openshell_provider_delivery::StaticProviderBinding>,
     physical_epoch: String,
@@ -2029,6 +2058,30 @@ async fn await_gateway_health(
         .unwrap_or(Err(EpochFault::PartialStart))
 }
 
+/// After the process-start predecessor fence, prove the successor empty before any work.
+fn observe_fresh_writer_renewal(
+    runtime: &Handle,
+    client: &NanoHostOpenShellClient,
+    docker: &DockerImageBackend,
+    startup_deadline: tokio::time::Instant,
+) -> Result<WriterAbsenceProof<'static>, EpochFault> {
+    tokio::task::block_in_place(|| {
+        runtime.block_on(await_gateway_health(startup_deadline, async {
+            if !client
+                .list_sandboxes(ListOptions::default())
+                .await?
+                .is_empty()
+            {
+                return Err(EpochFault::PartialStart);
+            }
+            Ok(())
+        }))?;
+        let left = startup_deadline.saturating_duration_since(tokio::time::Instant::now());
+        docker.prove_empty_containers(Instant::now() + left.min(Duration::from_secs(2)))?;
+        Ok(WriterAbsenceProof(None))
+    })
+}
+
 /// Existing lifecycle state with optional delete-only, host-observed diagnostics.
 pub struct LifecycleEffectOutput {
     /// Unchanged lifecycle result state.
@@ -2272,6 +2325,21 @@ impl EpochCoordinator {
         };
 
         let (runtime, private_namespaces) = runtime;
+        let renewed_writer_proof =
+            match observe_fresh_writer_renewal(&runtime, &client, &image_backend, startup_deadline)
+            {
+                Ok(proof) => proof,
+                Err(_) => {
+                    fence_startup_failure(
+                        &evidence,
+                        &mut children,
+                        &EpochFault::PartialStart,
+                        PathBuf::from(REBUILD_FENCE_STARTED_PATH),
+                        &readiness,
+                    );
+                    return Err(EpochFault::PartialStart);
+                }
+            };
         // The handle comes from the owned Gateway child after its health proof.
         let inspection = children.last().and_then(|gateway| {
             crate::live_inspection::InspectionState::new(physical_epoch.clone(), gateway.id()).ok()
@@ -2298,6 +2366,7 @@ impl EpochCoordinator {
             image_store,
             image_backend,
             persistent_volumes,
+            renewed_writer_proof: Some(renewed_writer_proof),
             credential_carrier: None,
             static_provider_bindings: Vec::new(),
             physical_epoch,
@@ -2342,6 +2411,18 @@ impl EpochCoordinator {
         self.monitor
             .readiness
             .store(ReadinessProof::CoreAcknowledgement as u8, Ordering::Release);
+    }
+
+    /// Settles predecessor writers once, after the successor completes readiness.
+    pub(crate) fn release_renewed_writers(&mut self) -> Result<(), &'static str> {
+        if let Some(proof) = &self.renewed_writer_proof {
+            if self.monitor.member_failure_signal.is_failed() {
+                return Err("epoch writer renewal readiness unproved");
+            }
+            self.persistent_volumes.release_writer(proof)?;
+            self.renewed_writer_proof = None;
+        }
+        Ok(())
     }
 
     /// Returns the epoch-retained outer route projection for successor rebinding.
@@ -2410,6 +2491,7 @@ impl EpochCoordinator {
                     .unwrap(),
                 image_backend: DockerImageBackend::new(root.join("missing-docker")),
                 persistent_volumes,
+                renewed_writer_proof: None,
                 credential_carrier: None,
                 static_provider_bindings: Vec::new(),
                 physical_epoch: "a".repeat(64),
@@ -2657,10 +2739,11 @@ impl EpochCoordinator {
             .clone()
             .ok_or(EpochFault::IdentityMismatch)?;
         let deletion = tokio::task::block_in_place(|| {
-            self.runtime.block_on(
-                self.client
-                    .delete_sandbox(&sandbox.name, Duration::from_secs(120)),
-            )
+            self.runtime.block_on(self.client.delete_sandbox(
+                &sandbox.name,
+                Some(&sandbox.id),
+                Duration::from_secs(120),
+            ))
         });
         self.settle(deletion)?;
         self.remove_credentials_after_absence()?;
@@ -2748,12 +2831,16 @@ impl EpochCoordinator {
         Ok(())
     }
 
-    /// Releases attachment metadata for one proved Sandbox deletion without deleting bytes.
+    /// A settled original lifecycle operation also needs independent writer absence.
     fn release_deleted_sandbox_attachment(&mut self, name: &str) -> Result<(), EpochFault> {
-        if self.persistent_volumes.detach(name).is_err() {
-            return self.settle(Err(EpochFault::IdentityMismatch));
-        }
-        Ok(())
+        let physical = self
+            .image_backend
+            .prove_empty_containers(Instant::now() + Duration::from_secs(2));
+        self.settle(physical)?;
+        let released = self
+            .persistent_volumes
+            .release_writer(&WriterAbsenceProof(Some(name)));
+        self.settle(released.map_err(|_| EpochFault::IdentityMismatch))
     }
 
     fn fixture_named_sandbox_is_current(&self, name: &str) -> bool {
@@ -2801,9 +2888,19 @@ impl EpochCoordinator {
         deletion_timeout: Duration,
     ) -> Result<(), EpochFault> {
         self.begin_sandbox_deletion(name)?;
+        let Some(sandbox) = self
+            .current_sandbox
+            .as_ref()
+            .filter(|sandbox| sandbox.name == name)
+        else {
+            return self.settle(Err(EpochFault::IdentityMismatch));
+        };
         let result = tokio::task::block_in_place(|| {
-            self.runtime
-                .block_on(self.client.delete_sandbox(name, deletion_timeout))
+            self.runtime.block_on(self.client.delete_sandbox(
+                name,
+                Some(&sandbox.id),
+                deletion_timeout,
+            ))
         });
         self.settle(result)?;
         self.settle_definite_sandbox_deletion(name)
@@ -2844,11 +2941,6 @@ impl EpochCoordinator {
             self.worker_bootstrap_monitor.is_some(),
             create.is_some() || worker_bootstrap.is_some(),
         )? {
-            if request.kind() == LifecycleEffectKind::DeleteSandbox {
-                self.persistent_volumes
-                    .detach(request.sandbox_id())
-                    .map_err(|_| EpochFault::IdentityMismatch)?;
-            }
             return Ok(LifecycleEffectOutput {
                 state: result.to_string(),
                 resource_summary: None,
@@ -2883,20 +2975,16 @@ impl EpochCoordinator {
         let (result, resource_summary) = tokio::task::block_in_place(|| {
             self.runtime.block_on(async {
                 let operation_deadline = tokio::time::Instant::now() + lifecycle_timeout;
-                let deletion = async {
-                    let remaining = if request.kind() == LifecycleEffectKind::DeleteSandbox {
-                        operation_deadline.saturating_duration_since(tokio::time::Instant::now())
-                    } else {
-                        lifecycle_timeout
-                    };
-                    self.client
+                let client = &self.client;
+                let dispatch = |deletion_target| async move {
+                    client
                         .execute_lifecycle_effect(
                             request,
                             create,
                             bridge,
                             worker_bootstrap,
                             route_projection,
-                            remaining,
+                            deletion_target,
                         )
                         .await
                 };
@@ -2908,7 +2996,11 @@ impl EpochCoordinator {
                     match sandbox {
                         Ok(sandbox) => {
                             sandbox_delete_with_observation(
-                                deletion,
+                                async {
+                                    let remaining = operation_deadline
+                                        .saturating_duration_since(tokio::time::Instant::now());
+                                    dispatch(Some((sandbox.id.as_str(), remaining))).await
+                                },
                                 crate::resource_summary::observe_before_delete(
                                     self.image_backend.docker_socket(),
                                     &sandbox.id,
@@ -2921,7 +3013,7 @@ impl EpochCoordinator {
                         Err(fault) => (Err(fault), None),
                     }
                 } else {
-                    (deletion.await, None)
+                    (dispatch(None).await, None)
                 }
             })
         });
@@ -2932,14 +3024,13 @@ impl EpochCoordinator {
                     .clone()
                     .ok_or(EpochFault::IdentityMismatch)?;
                 let deletion = tokio::task::block_in_place(|| {
-                    self.runtime
-                        .block_on(self.client.delete_sandbox(&sandbox.name, lifecycle_timeout))
+                    self.runtime.block_on(self.client.delete_sandbox(
+                        &sandbox.name,
+                        Some(&sandbox.id),
+                        lifecycle_timeout,
+                    ))
                 });
-                if deletion.is_err() {
-                    return self
-                        .settle(Err(EpochFault::DeleteOutcomeUncertain))
-                        .map_err(Into::into);
-                }
+                self.settle(deletion)?;
                 self.release_deleted_sandbox_attachment(&sandbox.name)?;
                 self.remove_credentials_after_absence()?;
                 self.current_sandbox = None;
@@ -2948,17 +3039,7 @@ impl EpochCoordinator {
             }
             result => result,
         };
-        let result = match self.settle(result) {
-            Ok(result) => result,
-            Err(fault) => {
-                if request.kind() == LifecycleEffectKind::CreateSandbox {
-                    self.persistent_volumes
-                        .detach(request.sandbox_id())
-                        .map_err(|_| EpochFault::IdentityMismatch)?;
-                }
-                return Err(fault.into());
-            }
-        };
+        let result = self.settle(result)?;
         let state = match result {
             LifecycleEffectResult::SandboxCreateFailed => {
                 // Native absence alone cannot release credential sources or retained writers.
@@ -3361,7 +3442,7 @@ impl EpochCoordinator {
         let mut acknowledgement = Vec::new();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
-                &sandbox.id,
+                &sandbox.name,
                 &command,
                 source,
                 byte_length as usize,
@@ -3468,7 +3549,7 @@ impl EpochCoordinator {
         let mut acknowledgement = Vec::new();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
-                &sandbox.id,
+                &sandbox.name,
                 &command,
                 &mut source,
                 file.length() as usize,
@@ -3532,7 +3613,7 @@ impl EpochCoordinator {
         let mut empty = std::io::empty();
         let result = tokio::task::block_in_place(|| {
             self.runtime.block_on(self.client.exec_sandbox_interactive(
-                &sandbox.id,
+                &sandbox.name,
                 &command,
                 &mut empty,
                 0,
@@ -3630,13 +3711,10 @@ impl EpochCoordinator {
 }
 
 impl Drop for EpochCoordinator {
-    /// Stops the whole epoch before releasing its exact retained storage writer hint.
+    /// Stops the epoch. Writer settlement belongs to an absence proof.
     fn drop(&mut self) {
         self.inspection_server.take();
         self.monitor.stop();
-        if let Some(sandbox) = self.current_sandbox.take() {
-            let _ = self.persistent_volumes.detach(&sandbox.name);
-        }
     }
 }
 
@@ -3938,8 +4016,10 @@ fn path_arg(path: &Path) -> String {
 fn gateway_config(docker_socket: &Path, auth_path: &Path) -> io::Result<String> {
     let supervisor_image = openshell_release::supervisor_image()
         .ok_or_else(|| io::Error::other("OpenShell release metadata is invalid"))?;
+    let sandbox_runtime_image = openshell_release::sandbox_runtime_image()
+        .ok_or_else(|| io::Error::other("OpenShell release metadata is invalid"))?;
     Ok(format!(
-        "[openshell]\nversion = 1\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\nrequire_client_auth = true\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{supervisor_image}\"\nenable_bind_mounts = true\n",
+        "[openshell]\nversion = 2\n\n[openshell.gateway]\ncompute_driver = \"docker\"\nguest_tls_ca = \"{auth}/ca.crt\"\n\n[openshell.gateway.tls]\ncert_path = \"{auth}/server/tls.crt\"\nkey_path = \"{auth}/server/tls.key\"\nclient_ca_path = \"{auth}/ca.crt\"\n\n[openshell.gateway.mtls_auth]\nenabled = true\n\n[openshell.gateway.gateway_jwt]\nsigning_key_path = \"{auth}/jwt/signing.pem\"\npublic_key_path = \"{auth}/jwt/public.pem\"\nkid_path = \"{auth}/jwt/kid\"\ngateway_id = \"openkit-nanohost\"\nttl_secs = 3600\n\n[openshell.drivers.docker]\nsocket_path = \"{}\"\nsupervisor_image = \"{supervisor_image}\"\nsandbox_runtime_image = \"{sandbox_runtime_image}\"\nallow_driver_config = true\nenable_bind_mounts = true\n\n[openshell.drivers.docker.resource_admission]\nenabled = false\n",
         docker_socket.display(),
         auth = auth_path.display(),
     ))
@@ -5971,16 +6051,10 @@ mod tests {
             ]
         );
 
-        for rejected in ["--socket", "--auth-file", "--docker-host"] {
+        for rejected in ["--socket", "--auth-file", "--docker-host", "--drivers"] {
             assert!(!gateway.args().iter().any(|arg| arg == rejected));
         }
-        for required in [
-            "--config",
-            "--bind-address",
-            "--port",
-            "--db-url",
-            "--drivers",
-        ] {
+        for required in ["--config", "--bind-address", "--port", "--db-url"] {
             assert!(gateway.args().iter().any(|arg| arg == required));
         }
         let value_after = |flag: &str| {
@@ -5995,7 +6069,6 @@ mod tests {
                 .expect("Gateway flag value")
         };
         assert_eq!(value_after("--bind-address"), "127.0.0.1");
-        assert_eq!(value_after("--drivers"), "docker");
         assert!(value_after("--config").contains(&first.epoch_root().display().to_string()));
         assert!(value_after("--db-url").contains(&first.epoch_root().display().to_string()));
         let gateway_config = first.gateway_config_contents();
@@ -6003,6 +6076,8 @@ mod tests {
         assert!(gateway_config.contains(&first.gateway_auth_path().display().to_string()));
         let supervisor_image = crate::openshell_release::supervisor_image().unwrap();
         assert!(gateway_config.contains(&format!("supervisor_image = \"{supervisor_image}\"")));
+        assert!(gateway_config.contains("version = 2"));
+        assert!(gateway_config.contains("compute_driver = \"docker\""));
         assert!(gateway_config.contains("enable_bind_mounts = true"));
         assert!(
             !gateway_config.contains(
@@ -6064,6 +6139,246 @@ mod tests {
         );
     }
 
+    /// A typed Delete receipt for another native ID cannot settle or release the writer.
+    #[test]
+    fn foreign_delete_receipt_fences_without_releasing_writer() {
+        use crate::openshell_client::tests::{create_gateway_fixture, on_create_fixture_stack};
+
+        on_create_fixture_stack(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    for case in ["foreign-delete-completed", "foreign-delete-accepted"] {
+                        let root = std::env::temp_dir()
+                            .join(format!("nanohost-{}-{case}", std::process::id()));
+                        fs::create_dir_all(&root).unwrap();
+                        let (gateway, fixture) = create_gateway_fixture(case).await;
+                        let readback = gateway.clone();
+                        let (mut coordinator, worktree) =
+                            super::EpochCoordinator::collection_fixture(&root);
+                        coordinator.fixture_gateway(gateway);
+                        coordinator.fixture_invalidation_reports(&root);
+                        fs::write(worktree.join("retained"), b"original bytes").unwrap();
+                        let create = LifecycleEffectRequest::new(
+                            "create",
+                            "lease",
+                            "sandbox-one",
+                            LifecycleEffectKind::CreateSandbox,
+                        );
+                        let original = coordinator
+                            .execute_lifecycle_effect(
+                                &create,
+                                Some(openshell_sdk::SandboxSpec {
+                                    name: Some("sandbox-one".into()),
+                                    image: Some("fixture-image".into()),
+                                    ..Default::default()
+                                }),
+                                Some(openshell_sdk::raw::proto::SandboxPolicy::default()),
+                                Vec::new(),
+                                None,
+                            )
+                            .unwrap();
+                        assert_eq!(original.state, "sandbox-one");
+                        assert_eq!(
+                            coordinator.current_sandbox.as_ref().unwrap().id,
+                            "native-id"
+                        );
+                        assert_eq!(
+                            coordinator.inspect_storage("storage-one", 1)["state"],
+                            "attached"
+                        );
+
+                        let delete = LifecycleEffectRequest::new(
+                            "delete",
+                            "lease",
+                            "sandbox-one",
+                            LifecycleEffectKind::DeleteSandbox,
+                        );
+                        let result = coordinator.execute_lifecycle_effect(
+                            &delete,
+                            None,
+                            None,
+                            Vec::new(),
+                            None,
+                        );
+                        assert_eq!(
+                            coordinator.inspect_storage("storage-one", 1)["state"],
+                            "attached",
+                            "a foreign {case} receipt released the original writer",
+                        );
+                        assert!(matches!(
+                            result,
+                            Err(super::LifecycleEffectError::Epoch(
+                                EpochFault::IdentityMismatch
+                            ))
+                        ));
+                        assert!(root.join("fence-started").exists());
+                        assert!(matches!(
+                            readback.get_sandbox("sandbox-one").await,
+                            Err(openshell_sdk::SdkError::NotFound { .. })
+                        ));
+                        assert_eq!(
+                            fs::read(worktree.join("retained")).unwrap(),
+                            b"original bytes"
+                        );
+                        fixture.peer.abort();
+                        assert!(fixture.peer.await.unwrap_err().is_cancelled());
+                        drop(coordinator);
+                        let reopened =
+                            crate::persistent_volume::tests::test_store(&root.join("volumes"));
+                        assert_eq!(
+                            reopened.inspect("storage-one", 1)["state"],
+                            "attached",
+                            "coordinator drop released a writer after a foreign Delete receipt"
+                        );
+                        assert_eq!(
+                            reopened.inspect("storage-one", 1)["attachment"]["sandboxId"],
+                            "sandbox-one"
+                        );
+                        fs::remove_dir_all(root).unwrap();
+                    }
+                });
+        });
+    }
+
+    /// Timeout preserves durable writer identity through shutdown and unacknowledged renewal.
+    #[test]
+    fn accepted_create_timeout_retains_writer_until_renewal() {
+        use crate::openshell_client::tests::{create_gateway_fixture, on_create_fixture_stack};
+
+        on_create_fixture_stack(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let root = std::env::temp_dir()
+                        .join(format!("nanohost-accepted-timeout-{}", std::process::id()));
+                    let (mut original, worktree) =
+                        super::EpochCoordinator::collection_fixture(&root);
+                    let (gateway, fixture) = create_gateway_fixture("ready-stalled").await;
+                    original.fixture_gateway(gateway);
+                    original
+                        .client
+                        .fixture_create_ready_timeout(Duration::from_millis(100));
+                    original.fixture_invalidation_reports(&root);
+                    fs::write(worktree.join("retained"), b"original bytes").unwrap();
+                    let request = LifecycleEffectRequest::new(
+                        "create",
+                        "lease",
+                        "sandbox-one",
+                        LifecycleEffectKind::CreateSandbox,
+                    );
+                    let result = original.execute_lifecycle_effect(
+                        &request,
+                        Some(openshell_sdk::SandboxSpec {
+                            name: Some("sandbox-one".into()),
+                            image: Some("fixture-image".into()),
+                            ..Default::default()
+                        }),
+                        Some(openshell_sdk::raw::proto::SandboxPolicy::default()),
+                        Vec::new(),
+                        None,
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(super::LifecycleEffectError::Epoch(
+                            EpochFault::CreateOutcomeUncertain(super::CreateUncertainty {
+                                certainty_loss: CreateCertaintyLossPoint::ReadyTimeout,
+                                ..
+                            })
+                        ))
+                    ));
+                    assert_eq!(
+                        original.inspect_storage("storage-one", 1)["state"],
+                        "attached",
+                        "accepted Create timeout error released the original writer"
+                    );
+                    assert!(root.join("fence-started").exists());
+                    assert!(
+                        !fixture
+                            .calls
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|(method, _)| method == "DeleteSandbox")
+                    );
+                    fixture.peer.abort();
+                    assert!(fixture.peer.await.unwrap_err().is_cancelled());
+                    drop(original);
+
+                    let retained_root = root.join("volumes");
+                    let retained = crate::persistent_volume::tests::test_store(&retained_root);
+                    let held = retained.inspect("storage-one", 1);
+                    assert_eq!(held["state"], "attached");
+                    assert_eq!(held["attachment"]["sandboxId"], "sandbox-one");
+                    assert_eq!(held["attachment"]["generation"], 1);
+
+                    let (mut successor, _) =
+                        super::EpochCoordinator::collection_fixture(&root.join("successor"));
+                    successor.persistent_volumes = retained;
+                    successor.fixture_invalidation_reports(&root.join("successor"));
+                    successor.fixture_image_probe("/usr/bin/true".into());
+                    let deadline = || tokio::time::Instant::now() + Duration::from_secs(3);
+                    let (occupied, peer) = create_gateway_fixture("fresh-present").await;
+                    successor.fixture_gateway(occupied);
+                    assert!(
+                        super::observe_fresh_writer_renewal(
+                            &successor.runtime,
+                            &successor.client,
+                            &successor.image_backend,
+                            deadline(),
+                        )
+                        .is_err()
+                    );
+                    let observed = successor.inspect_storage("storage-one", 1);
+                    assert_eq!(observed["state"], "attached");
+                    assert_eq!(observed["attachment"], held["attachment"]);
+                    peer.peer.abort();
+                    assert!(peer.peer.await.unwrap_err().is_cancelled());
+
+                    let (empty, peer) = create_gateway_fixture("fresh-empty").await;
+                    successor.fixture_gateway(empty);
+                    successor.renewed_writer_proof = Some(
+                        super::observe_fresh_writer_renewal(
+                            &successor.runtime,
+                            &successor.client,
+                            &successor.image_backend,
+                            deadline(),
+                        )
+                        .unwrap(),
+                    );
+                    // An empty local successor alone leaves the old writer held.
+                    let observed = successor.inspect_storage("storage-one", 1);
+                    assert_eq!(observed["state"], "attached");
+                    assert_eq!(observed["attachment"], held["attachment"]);
+                    crate::commit_acknowledged_readiness(
+                        &mut successor,
+                        &mut None,
+                        &mut Some(deadline()),
+                        || Ok(()),
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                    let released = successor.inspect_storage("storage-one", 1);
+                    assert_eq!(released["state"], "available");
+                    assert!(released["attachment"].is_null());
+                    assert_eq!(
+                        fs::read(worktree.join("retained")).unwrap(),
+                        b"original bytes"
+                    );
+                    peer.peer.abort();
+                    assert!(peer.peer.await.unwrap_err().is_cancelled());
+                    drop(successor);
+                    fs::remove_dir_all(root).unwrap();
+                });
+        });
+    }
+
     #[tokio::test]
     async fn proved_sandbox_deletion_releases_attachment_without_deleting_bytes() {
         let root = std::env::temp_dir().join(format!(
@@ -6082,6 +6397,7 @@ mod tests {
             "attached"
         );
         coordinator.fixture_settle_named_sandbox = true;
+        coordinator.fixture_image_probe("/usr/bin/true".into());
         coordinator
             .settle_definite_sandbox_deletion("sandbox-one")
             .expect("proved deletion releases the attachment");
@@ -7646,7 +7962,7 @@ mod tests {
                     .expect("sandbox helper admission")
         );
         assert!(import.contains("sandbox_id: sandbox.name.clone()"));
-        assert!(import.contains("exec_sandbox_interactive(\n                &sandbox.id"));
+        assert!(import.contains("exec_sandbox_interactive(\n                &sandbox.name"));
         let acknowledgement_success = import
             .find("Ok(result) if result.exit_status == 0 && acknowledgement == expected.as_bytes()")
             .expect("exact helper acknowledgement success");
@@ -7743,7 +8059,7 @@ mod tests {
         assert!(export.contains("stage_export(request, stage, terminal_barrier_proved)"));
         assert!(export.contains("successor"));
         assert!(export.contains("sandbox.name.as_str()"));
-        assert!(export.contains("exec_sandbox_interactive(\n                &sandbox.id"));
+        assert!(export.contains("exec_sandbox_interactive(\n                &sandbox.name"));
         assert_eq!(
             export.matches("delete_sandbox(").count(),
             export.matches("delete_sandbox(&sandbox.name").count(),

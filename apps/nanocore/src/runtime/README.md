@@ -1,5 +1,7 @@
 # Runtime
 
+Scheduler recovery consumes the four-operation `ExecutionBackendPort` in `execution-backend.ts`. The existing Worker governance backend supplies this port and keeps its optional Login and credential operations. `execution-backend-contract.test.ts` exercises original-key read-back and scoped release with independently controlled backend evidence.
+
 Restart classifiers isolate failed attempt checks, log the existing recovery diagnostic, and boot degraded without blocking unrelated product work. Post-listen maintenance keeps unresolved original operations excluded. A lost unpublished Workspace handoff settles as interrupted only after physical cleanup is proved. Existing capture sources and published handles keep their collection and disposition guards; an unfenced original Epoch stays held. Retained Worker storage stays idle with its bytes kept.
 
 Heartbeat restart readback uses the native heartbeat writer. It confirms only a keyed request that matches the current durable sequence and its complete fingerprint after the same authority checks as adoption. Only an exact-next proof restores Worker control.

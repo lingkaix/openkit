@@ -48,3 +48,4 @@ Name the source change record as plain text, for example "Source: change record 
 Records are not listed in `docs/INDEX.md`. Reach them from the owner that links them, or list this directory; file names start with the decision date.
 
 - [Security Program Rulings](20261109-security_program_rulings.md): shared development and runtime security decisions, scope and rejected alternatives.
+- [Long-Running Sandbox And Worker Layer](20261126-long_running_sandbox_and_worker_layer.md) records the v0.2.0 foundation scope, the execution control model and the retained-format boundary.

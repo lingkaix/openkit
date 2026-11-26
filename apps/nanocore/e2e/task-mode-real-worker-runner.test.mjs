@@ -172,7 +172,7 @@ function createPassingTaskModeFixture(options) {
               {
                 agentSessionId,
                 backendType: 'openshell',
-                backendVersion: '0.0.99',
+                backendVersion: '0.1.10',
                 outcome: 'succeeded',
                 phase: 'transcript-collection',
                 requiredFeatures: ['worker.runtime-provenance.v1'],
@@ -742,7 +742,7 @@ describe('real Task Mode worker L3 test policy', () => {
               }),
               stdout: () => {},
             }),
-          /0\.0\.99/
+          /0\.1\.10/
         );
       } finally {
         rmSync(tempRoot, { force: true, recursive: true });
@@ -750,7 +750,7 @@ describe('real Task Mode worker L3 test policy', () => {
     });
   }
 
-  it('requires OpenShell backend version 0.0.99', async () => {
+  it('requires OpenShell backend version 0.1.10', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-backend-version-'));
     const evidenceDir = join(tempRoot, 'evidence');
     const workerImageRef = 'example.invalid/openkit-worker:test';
@@ -768,7 +768,7 @@ describe('real Task Mode worker L3 test policy', () => {
       return {
         runtimeEvidence: value.runtimeEvidence.map((record) => ({
           ...record,
-          backendVersion: '0.0.99',
+          backendVersion: '0.1.10',
         })),
       };
     };
@@ -784,7 +784,7 @@ describe('real Task Mode worker L3 test policy', () => {
       });
       assert.equal(result.status, 'ok');
       assert.equal(result.provenance.backendType, 'openshell');
-      assert.equal(result.provenance.backendVersion, '0.0.99');
+      assert.equal(result.provenance.backendVersion, '0.1.10');
       assert.equal(result.aep.providerId, derivedProviderId);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });

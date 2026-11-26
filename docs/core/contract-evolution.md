@@ -106,6 +106,17 @@ From `v0.1.0`, retained canonical data and authored configuration are `Durable` 
 - Opaque Worker volumes, native agent history, and retained images follow the same continuity start condition under Core Storage, without an OpenKit format promise. Rebuildable derivatives, caches, disposable diagnostics, and operational telemetry keep their owners' classifications.
 - Completed cutovers stand. After v0.1.0 the sole authorized reset is the v0.2.0 fresh-root cutover for dev, a1 and a2 described above. All other stable-release updates follow retained-data continuity. Retention holds, revocation, authorization, and unresolved effects remain binding during a reset. A reset is not boot-time rewriting, migration failure recovery, an external-effect replay, or permission to widen an existing automated update grant.
 
+### Retained Records And Views
+
+From the v0.2.0 baseline, one test decides whether a stored record of the execution environment is retained. [Fault Tolerance](fault-tolerance.md#planes) owns the two planes that the test uses. [Long-Running Sandbox And Worker Layer](../decisions/20261126-long_running_sandbox_and_worker_layer.md) records the decision.
+
+1. The meaning of an identifier, a hash input, a key input, a proof value and a receipt value is final at the v0.2.0 baseline.
+2. Every record of the Decision Plane is retained: a decision with its desired state, its draining state and its latches; an exclusion claim; an effect; a receipt. Each reference that recovery follows after a lifetime ended is retained too: a join to a previous execution-substrate epoch, an open operation key, a fingerprint, an attachment generation. A retained record changes only by an additive forward migration.
+3. A record of the Observation Plane is a view: observed state, readiness, heartbeat, counts, the capacity view, and private runtime directories of a Host. The test for a view is this: when every such record is dropped at any moment, the result is a new report and never a decision. A release MAY drop views when it opens a root. A private runtime directory is dropped only after its writer is fenced.
+4. An observation that a decision cites as its proof is retained with that decision.
+5. For a record in doubt, name its last durable reader. A reader that runs after the lifetime of the writer ended makes the record retained. The lifetime of an execution-substrate epoch is not an exemption: recovery reads records of a previous epoch.
+6. A reader of a retained record handles several rows where the model allows several units. A limit on the number of units is configuration and is not part of a format.
+
 ## Operation Semantic Promise
 
 Before the launch boundary, an operation's semantic contract is `Release-coupled` and may change with the coordinated release under the release-coupled rules in this document. The launch boundary is publication of the first stable `v0.1.0` release. Publication starts the promise below. [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md) records the original promise.
@@ -266,6 +277,8 @@ Discovery may include:
 - permission, sandbox, or authority summary support
 
 The exact endpoint or transport shape belongs to the owning projection.
+
+The wire shapes between Core, an environment provider and a Worker Shim are `Release-coupled`. They are not retained formats, and OpenKit promises no compatibility for them between releases. Each peer sends its exact release identity, and a peer with a different version MUST be refused before any effect. The exit after a refusal belongs to the unit, not to the wire: Core recycles the refused Sandbox incarnation once onto the current image, and a refused Host needs a compatible payload through an authorized replacement before it opens a new execution-substrate epoch. If the mismatch stays, retries stop and a maintenance hold is shown. A message from a refused peer authorizes nothing. [Sandbox](sandbox.md#version-mismatch) owns the recycle and [Fault Tolerance](fault-tolerance.md#exit-of-every-hold) owns the hold.
 
 ## Storage Strictness Versus Live Projection Strictness
 

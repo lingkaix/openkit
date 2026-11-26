@@ -3718,9 +3718,15 @@ mod tests {
                             let endpoint =
                                 &policy.network_policies["scoped_package_read"].endpoints[0];
                             assert!(endpoint.allow_encoded_slash);
-                            assert_eq!(endpoint.access, "read-only");
+                            assert_eq!(
+                                endpoint.access,
+                                openshell_sdk::raw::proto::NetworkAccessPreset::ReadOnly as i32
+                            );
                             assert_eq!(endpoint.protocol, "rest");
-                            assert_eq!(endpoint.enforcement, "enforce");
+                            assert_eq!(
+                                endpoint.enforcement,
+                                openshell_sdk::raw::proto::NetworkEnforcementMode::Enforce as i32
+                            );
                             assert_eq!(endpoint.host, "packages.example.com");
                             assert_eq!(endpoint.port, 443);
                             assert!(endpoint.rules.is_empty());
@@ -5307,7 +5313,7 @@ mod tests {
 
     #[tokio::test]
     async fn wp5_r8_rejects_missing_duplicate_or_invalid_image_build_input_headers() {
-        for case in ["missing", "duplicate", "invalid"] {
+        for case in ["missing", "duplicate", "invalid", "truncated"] {
             let (client_io, server_io) = tokio::io::duplex(4096);
             let (mut sender, connection) = h2::client::handshake(client_io)
                 .await
@@ -5376,7 +5382,7 @@ mod tests {
                 )
                 .await
                 .is_err(),
-                "{case} required header was accepted"
+                "{case} image build input was accepted"
             );
             server.await.expect("server task");
             client_driver.abort();

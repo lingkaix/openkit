@@ -13,7 +13,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
-import { commandRequestExpiresAt, commandRequestKey, type FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -46,8 +46,12 @@ import {
 } from '../runtime/worker-control-gateway.js';
 import { waitForWorkerControlFinalStatus } from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
-import { WorkerGovernanceTurnExecutor } from '../runtime/worker-governance-turn-executor.js';
+import {
+  prepareWorkerTurnJournalIntents,
+  WorkerGovernanceTurnExecutor,
+} from '../runtime/worker-governance-turn-executor.js';
 import { workerStorageScopeDigest } from '../runtime/worker-storage-bindings.js';
+import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { publishWorkspaceCapture } from '../runtime/workspace-capture-publication.js';
 import {
   hasPendingWorkspaceCapture,
@@ -1653,6 +1657,19 @@ describe('K8b accepted-final readback', () => {
 
     // A crash before Native FULL leaves the Core intake and no Native final: the expiry path stays.
     const absent = await createFixture();
+    const workspace = openWorkspaceDb(absent.dataRoot, absent.lineage.workspaceId);
+    try {
+      const { backendKind, runtimeTargetId, sandboxBindingRef } = absent.session();
+      const journalIntents = prepareWorkerTurnJournalIntents(
+        workspace,
+        absent.environmentPackage,
+        absent.original.lease.attempt,
+        { backendKind, targetId: runtimeTargetId, allocationRef: sandboxBindingRef }
+      );
+      await absent.store.updateTurn(absent.turnId, { status: 'running' }, { journalIntents });
+    } finally {
+      workspace.sqlite.close();
+    }
     const crash = crashBeforeFinalStage('settle');
     await expect(absent.recordFinal()).rejects.toThrow('Injected crash before settle.');
     crash.mockRestore();
@@ -1664,15 +1681,169 @@ describe('K8b accepted-final readback', () => {
     const absentPorts = recoveryPorts(() => clock);
     await absent.restart(absentPorts);
     absent.readyFreshEpoch();
-    clock = absent.original.lease.grant.deadline;
     const boot = bootSelection(
       absent,
       vi.fn(async () => {})
     );
+    const close = vi.spyOn(boot.admittedNanoHostRecovery.value, 'close');
+    const early = await runNanoHostAttemptRecoveryMaintenance(absent.coreDb, {
+      ...absentPorts,
+      ...boot,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(close).not.toHaveBeenCalled();
+    expect(boot.cleanup).not.toHaveBeenCalled();
+    expect(early).toBeUndefined();
+    clock = absent.original.lease.grant.deadline;
     await expect(
       runNanoHostAttemptRecoveryMaintenance(absent.coreDb, { ...absentPorts, ...boot })
     ).rejects.toThrow('Native attempt recovery failed.');
     expect(boot.cleanup).toHaveBeenCalledTimes(1);
+
+    // The admitted Native owner can prove absence in the successor Epoch. That exact cleanup
+    // receipt still does not let the restart projector decide the original Worker outcome.
+    const owner = currentAdmittedTestNanoHostOwner(absent.coreDb)!;
+    const original = readRetainedNanoHostSubmission(absent.coreDb, ATTEMPT_ID)!;
+    const { session, proof, target } = readAdmittedTestNanoHost(absent.coreDb, (sqlite) => {
+      const lease = readNanoHostRecoveryLease(sqlite, original.lease);
+      return {
+        ...lease,
+        target: getNanoHostRuntimeTarget({ sqlite }, lease.session.runtimeTargetId)!,
+      };
+    });
+    await expect(
+      owner.classifyRecovery({
+        kind: 'transition',
+        toState: 'physical-cleaned',
+        target,
+        lease: original.lease,
+        expectedSession: session,
+        expectedRecovery: proof,
+        observedAt: clock,
+      } as Parameters<typeof owner.classifyRecovery>[0])
+    ).resolves.toMatchObject({ state: 'ready', value: { state: 'physical-cleaned' } });
+    const before = absent.store.getTurnById(absent.turnId);
+    const events = absent.store.getTurnEvents(absent.turnId);
+    absentPorts.projectRecoveredTurn.mockImplementation(async (subject) => {
+      const { status } = await terminalizeGovernedWorkerTurn({
+        agentSessionId: subject.agentSessionId,
+        completedAt: clock,
+        errorCode: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during scheduler recovery.',
+        outcome: 'interrupted',
+        requestId: absent.lineage.requestId,
+        store: absent.store,
+        turnId: subject.turnId,
+      });
+      return { status };
+    });
+    const held = await runNanoHostAttemptRecoveryMaintenance(absent.coreDb, {
+      ...absentPorts,
+      ...boot,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const reopened = new FsStore({ dataRoot: absent.dataRoot });
+    expect(reopened.getTurnById(absent.turnId)).toEqual(before);
+    expect(reopened.getTurnEvents(absent.turnId)).toEqual(events);
+    expect(absentPorts.projectRecoveredTurn).not.toHaveBeenCalled();
+    expect((held as AggregateError).errors.map(String)).toContain(
+      'Error: The original Worker final still owns Turn publication.'
+    );
+  });
+
+  it('W24 holds cleanup when Core final intake wins during the absence walk', async () => {
+    const fixture = await createFixture();
+    const { attempt } = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      readNanoHostRecoveryLease(sqlite, fixture.original.lease)
+    );
+    const livenessDeadline = attempt.startupDeadline;
+    expect(livenessDeadline < fixture.original.lease.grant.deadline).toBe(true);
+    const originalSession = fixture.session();
+    const intakeEntered = Promise.withResolvers<void>();
+    const allowIntake = Promise.withResolvers<void>();
+    const stoppedBeforeNative = new Error('Injected stop before Native FULL.');
+    const client = getControlStoreWorkerClient() as unknown as FinalStageClient;
+    const stage = client.workerControlFinalStage.bind(client);
+    const finalStage = vi
+      .spyOn(client, 'workerControlFinalStage')
+      .mockImplementation(async (...args) => {
+        if (args[2].kind === 'intake') {
+          intakeEntered.resolve();
+          await allowIntake.promise;
+        }
+        if (args[2].kind === 'settle') throw stoppedBeforeNative;
+        return stage(...args);
+      });
+    const capture = vi.mocked(hasPendingWorkspaceCapture);
+    const readCapture = capture.getMockImplementation();
+    if (!readCapture) throw new Error('Capture spy has no original implementation.');
+    vi.setSystemTime(Date.parse(livenessDeadline) - 1);
+    const final = fixture.recordFinal().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    try {
+      await Promise.race([
+        intakeEntered.promise,
+        final.then(() => {
+          throw new Error('The original final did not reach the Core intake boundary.');
+        }),
+      ]);
+      // Maintenance has read absence and is awaiting the real capture census before posting close.
+      capture.mockImplementationOnce(async (...args) => {
+        const result = await readCapture(...args);
+        allowIntake.resolve();
+        expect(await final).toBe(stoppedBeforeNative);
+        expect(fixture.finalSteps().map(({ stepId }) => stepId)).toEqual([
+          'worker-route-fixture-submit',
+          'worker-final-intake',
+        ]);
+        expect(fixture.readback()).toEqual({ state: 'held', reason: 'missing' });
+        return result;
+      });
+
+      vi.setSystemTime(Date.parse(livenessDeadline));
+      const ports = recoveryPorts(() => livenessDeadline);
+      const boot = bootSelection(
+        fixture,
+        vi.fn(async () => {})
+      );
+      const close = vi.spyOn(boot.admittedNanoHostRecovery.value, 'close');
+      const commit = vi.spyOn(boot.admittedNanoHostRecovery.value, 'commit');
+      const held = await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, {
+        ...ports,
+        ...boot,
+      }).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(close).toHaveBeenCalledOnce();
+      const retained = fixture.session();
+      expect({
+        nativeState: retained.state,
+        recoveryWrites: commit.mock.calls.length,
+        cleanupCalls: boot.cleanup.mock.calls.length,
+      }).toEqual({ nativeState: originalSession.state, recoveryWrites: 0, cleanupCalls: 0 });
+      expect(retained).toEqual(originalSession);
+      await expect(close.mock.results[0]!.value).resolves.toMatchObject({
+        state: 'unavailable',
+        reason: 'recovery-required',
+      });
+      expect(held).toBeInstanceOf(AggregateError);
+      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'worker-final-status',
+        fenceRef: null,
+      });
+    } finally {
+      allowIntake.resolve();
+      await final;
+      finalStage.mockRestore();
+    }
   });
 
   it('W8 holds an absent receipt when the original execution history has a gap', async () => {
@@ -2396,6 +2567,77 @@ describe('K8b accepted-final readback', () => {
     expectDurableTurn(launch, coreDb, restarted.cold, durable);
     await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
     await expectCompletedOnce(launch, coreDb, restarted);
+  });
+
+  it('W23 preserves accepted-final recovery when the collection uncertainty ACK is lost', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: true });
+    const { attemptId, entry, store } = launch;
+    const restarted = await restartWithFencedTarget(launch, { offline: true });
+    const { coreDb, native, recovery, closeout } = restarted;
+    const workspace = new FsStore({ dataRoot: launch.dataRoot });
+    const durable = {
+      turn: workspace.getTurnById(entry.turnId),
+      phase: requireSchedulerExecutionAttempt(coreDb, attemptId).phase,
+    };
+    const exclusions = readExecutionJournalRoot(
+      coreDb,
+      launch.original.receipt.intent.target.execution
+    ).exclusionRefs;
+    const lostAck = new Error('Lost ACK after reopened collection settled unknown');
+    let collectionStep: string | undefined;
+    let dropped = false;
+    const write = store.writeWorkspaceExecutionJournalIntent;
+    const settle = store.settleWorkspaceExecutionJournalStep;
+    store.writeWorkspaceExecutionJournalIntent = async (...args) => {
+      const ack = await write.apply(store, args);
+      if (args[1].carriage.operation === 'worker.collect.transcript')
+        collectionStep = args[1].stepId;
+      return ack;
+    };
+    store.settleWorkspaceExecutionJournalStep = async (...args) => {
+      const ack = await settle.apply(store, args);
+      if (!dropped && args[1].ref.stepId === collectionStep && args[1].state === 'unknown') {
+        dropped = true;
+        throw lostAck;
+      }
+      return ack;
+    };
+    try {
+      await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toBeInstanceOf(
+        AggregateError
+      );
+    } finally {
+      store.writeWorkspaceExecutionJournalIntent = write;
+      store.settleWorkspaceExecutionJournalStep = settle;
+    }
+    expect(dropped).toBe(true);
+    expect(new FsStore({ dataRoot: launch.dataRoot }).getTurnById(entry.turnId)).toEqual(
+      durable.turn
+    );
+    expectDurableTurn(launch, coreDb, restarted.cold, durable);
+    expect(
+      readExecutionJournalRoot(coreDb, launch.original.receipt.intent.target.execution)
+        .exclusionRefs
+    ).toEqual(exclusions);
+    expect(closeout).toHaveBeenCalledTimes(1);
+    const error = await closeout.mock.results[0]!.value.catch((cause: unknown) => cause);
+    const causes = causeChain(error);
+    expect(causes).toContain(lostAck);
+    expect(causes).toContainEqual(
+      expect.objectContaining({
+        message: 'NanoHost current physical Epoch authority is unavailable.',
+      })
+    );
+
+    await readmitOriginalPeer(coreDb, native, attemptId);
+    restarted.reconnect();
+    await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
+    await expectCompletedOnce(launch, coreDb, restarted);
+    const reopened = new FsStore({ dataRoot: launch.dataRoot });
+    expect(reopened.getTurnById(entry.turnId).status).toBe('completed');
+    expect(
+      reopened.getTurnEvents(entry.turnId).filter((event) => event.event === 'turn.completed')
+    ).toHaveLength(1);
   });
 
   it('W20 settles an existing cleanup receipt after reconnect without reminting it', async () => {

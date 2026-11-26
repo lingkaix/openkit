@@ -821,13 +821,18 @@ export function readNativeProduct(
       const raw = statement.get(id) as {
         record_json: string;
       };
+      const rawRecord = JSON.parse(raw.record_json) as Record<string, unknown>;
+      if (kind === 'turn') {
+        // Collection state belongs only to the native observation owner.
+        delete rawRecord.observationCounter;
+        delete rawRecord.observationCutoff;
+      }
       return {
         revision: known.revision,
-        record: preserveDescriptiveRecord(
-          JSON.parse(raw.record_json),
-          known.record,
-          known.record
-        ) as Record<string, unknown>,
+        record: preserveDescriptiveRecord(rawRecord, known.record, known.record) as Record<
+          string,
+          unknown
+        >,
       };
     })();
   } finally {

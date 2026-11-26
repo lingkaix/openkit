@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
-  "version": "0.0.99",
+  "version": "0.1.10",
   "source": {
-    "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
+    "commit": "152c59d3178039e3fbb4a5595f9fff7216a6be92"
   },
   "gateway": {
     "targets": {
@@ -10,45 +10,52 @@
         "archive": {
           "name": "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
           "target": "linux/amd64",
-          "sha256": "640d204dc3c6bc28bffa1f3d870897fc23bbc5ec0151a6c642083e958455cb49"
+          "sha256": "2d609a3fa586aacdd29834f66379bb6ec565549a6dc572285115d2c129d078ac"
         },
         "executable": {
           "name": "openshell-gateway",
           "derivedFrom": "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "05bd6c982dd72b73364b91ab694487c026bc56d0cd869f4289b44cc392a5c2ba"
+          "sha256": "ae8aeaf1e498ae605bc81953a941daffe0fd150c6b69ac46df90341c34f7619c"
         }
       },
       "linux/arm64": {
         "archive": {
           "name": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
           "target": "linux/arm64",
-          "sha256": "3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09"
+          "sha256": "d8ec5fd2646e482856d64fdac36940c7345314ada1ffd752b67aed3e440b2c5d"
         },
         "executable": {
           "name": "openshell-gateway",
           "derivedFrom": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571"
+          "sha256": "328fbb84b32bf2730d831b687c37bb85864431914532ec55f567324f7c93906a"
         }
       }
     }
   },
   "supervisor": {
-    "repository": "ghcr.io/nvidia/openshell/supervisor",
+    "repository": "quay.io/ai-openshell/supervisor",
     "platformDigests": {
-      "linux/amd64": "sha256:4adea8392a81ef34b3cc3284e693ac3cc6c13362fad84a492d95b53b3eb403b9",
-      "linux/arm64": "sha256:b548fd939331d830cd9197f20fca9a5d95383c5e67f64929d632a37403115f38"
+      "linux/amd64": "sha256:763bef3798ce974a36b0d70a4c22773b5e2727d2a52fa735723dbc6320886376",
+      "linux/arm64": "sha256:c34cf70085bf21269e566460818d0592d849898470982c468147a4aa00be9b93"
+    }
+  },
+  "sandboxRuntime": {
+    "repository": "quay.io/ai-openshell/sandbox",
+    "platformDigests": {
+      "linux/amd64": "sha256:ec66d924370f5f7382086090e3d00aeb651eadbde2f2eb55da71faf058843e68",
+      "linux/arm64": "sha256:34c3a2b10fa28d87a9f6b9c094bbbb3135eb9f02824437935436bf80af42c0fe"
     }
   },
   "redistribution": {
     "license": {
       "sourcePath": "LICENSE",
       "bundlePath": "licenses/openshell-LICENSE",
-      "sha256": "b967d1c87b93b7d61ebcf4f8737e6ad79e5433e743e49dff395a36fb3c327047"
+      "sha256": "d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45"
     },
     "notices": {
       "sourcePath": "THIRD-PARTY-NOTICES",
       "bundlePath": "licenses/openshell-THIRD-PARTY-NOTICES",
-      "sha256": "8c35aead093cbdfb3e11345d88cf2cb179f86391e859e4a7bc11539a0cc601f8"
+      "sha256": "38553317c4658e42d36b5a59ec7a580a03efe830842eab84cefa2bf35234ac05"
     }
   }
 }

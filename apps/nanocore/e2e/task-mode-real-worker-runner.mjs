@@ -230,8 +230,8 @@ export function assertTaskModeRuntimeProvenance(input) {
   );
   assert(
     transcriptEvidence.backendType === 'openshell' &&
-      transcriptEvidence.backendVersion === '0.0.99',
-    'Runtime provenance did not come from the pinned OpenShell 0.0.99 target.'
+      transcriptEvidence.backendVersion === '0.1.10',
+    'Runtime provenance did not come from the pinned OpenShell 0.1.10 target.'
   );
   const summary = PROVENANCE_SUMMARY_PATTERN.exec(transcriptEvidence.summary ?? '');
   assert(summary, 'Task Mode runtime provenance summary was incomplete.');

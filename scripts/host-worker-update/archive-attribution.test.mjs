@@ -104,10 +104,17 @@ function fixture(t) {
       source: { commit: sdkCommit },
       gateway: { targets },
       supervisor: {
-        repository: 'ghcr.io/nvidia/openshell/supervisor',
+        repository: 'quay.io/ai-openshell/supervisor',
         platformDigests: {
           'linux/amd64': `sha256:${'1'.repeat(64)}`,
           'linux/arm64': `sha256:${'2'.repeat(64)}`,
+        },
+      },
+      sandboxRuntime: {
+        repository: 'quay.io/ai-openshell/sandbox',
+        platformDigests: {
+          'linux/amd64': `sha256:${'3'.repeat(64)}`,
+          'linux/arm64': `sha256:${'4'.repeat(64)}`,
         },
       },
       redistribution: {
@@ -126,11 +133,11 @@ function fixture(t) {
   );
   writeFileSync(
     path.join(repoRoot, 'apps/nanohost/Cargo.toml'),
-    `[dependencies]\nopenshell-sdk = { git = "https://github.com/NVIDIA/OpenShell.git", rev = "${sdkCommit}" }\n`
+    `[dependencies]\nopenshell-sdk = { git = "https://github.com/ai-openshell/openshell.git", rev = "${sdkCommit}" }\n`
   );
   writeFileSync(
     path.join(repoRoot, 'apps/nanohost/Cargo.lock'),
-    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/NVIDIA/OpenShell.git?rev=${sdkCommit}#${sdkCommit}"\n`
+    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/ai-openshell/openshell.git?rev=${sdkCommit}#${sdkCommit}"\n`
   );
   const binaryPath = path.join(root, 'nanohost');
   elf(binaryPath, 183, 3);

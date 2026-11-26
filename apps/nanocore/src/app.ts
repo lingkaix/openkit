@@ -223,7 +223,7 @@ import {
   inspectNanoHostIdleCloseConsumption,
 } from './runtime/nanohost-harness-records.js';
 import {
-  createNanoHostSessionDispatch,
+  createProductionNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
@@ -1468,7 +1468,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     getControlStoreWorkerClient().setFileStorageAdmission(mutationDataRoot, fileAdmission);
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
-    createNanoHostSessionDispatch({
+    createProductionNanoHostSessionDispatch({
       fileAdmission,
       nativeStorage: nanoHostStorage,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
