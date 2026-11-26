@@ -189,6 +189,7 @@ import {
 } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { SECURITY_CANARY_AUDIT_FACT } from './storage/standalone-audit-codecs.js';
+import { readAdmittedObservationCutoff } from './storage/work-observations.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
@@ -711,7 +712,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 environmentPackage.scope.workspaceId
               );
 
-              requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
+              requireWorkerCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               const requireCurrentBuiltinToolPolicy = () => {
                 if (!workerMcpExposureAvailable(input)) throw mcpDeniedError();
                 const operation = Object.entries(OPERATION_REGISTRY).find(
@@ -861,7 +862,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         signal: toolCancellation.signal,
                         requireAdmission: () => {
                           requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-                          requireRawOutputCapabilityAdmission(workspaceDb!, environmentPackage);
+                          requireWorkerCapabilityAdmission(workspaceDb!, environmentPackage);
                           requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
                           if (
                             [
@@ -1222,7 +1223,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 input.coreDb!.dataRoot,
                 environmentPackage.scope.workspaceId
               );
-              requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
+              requireWorkerCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               return await callWorkerMcpTool({
                 interception,
                 arguments: request.params.arguments ?? {},
@@ -2001,6 +2002,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
             !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
           )
             throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+          requireWorkerObservationAdmission(input.workspaceDb, input.environmentPackage);
           if (observed.credentials || input.resolved.scope === 'server')
             assertCurrentMcpVaultBindings(input, observed.injections);
         },
@@ -3870,12 +3872,13 @@ function hasCurrentMcpWorkspaceAuthority(
 }
 
 /** No new capability effect may pass a proved exhausted or unmeasurable Worker output bound. */
-function requireRawOutputCapabilityAdmission(
+function requireWorkerCapabilityAdmission(
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage
 ): void {
   const reader = borrowWorkspaceReadDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
   try {
+    requireWorkerObservationAdmission(reader, environmentPackage);
     requireWorkerRawOutputAvailable(reader, environmentPackage.scope);
   } catch (error) {
     if (
@@ -3889,6 +3892,19 @@ function requireRawOutputCapabilityAdmission(
       );
     throw error;
   }
+}
+
+/** A durable cutoff revokes new Tool contact for this Turn at the last admission boundary. */
+function requireWorkerObservationAdmission(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  if (readAdmittedObservationCutoff(workspaceDb, environmentPackage.scope))
+    throw new WorkerControlGatewayError(
+      'observation_limit_reached',
+      'Work observation collection is closed.',
+      409
+    );
 }
 
 /** Rejects every capability admission after an exact same-Turn Gate becomes durable. */

@@ -1,4 +1,5 @@
 import { WorkerControlGatewayError } from '../operation-error.js';
+import { ObservationCollectionStoppedError } from '../storage/work-observations.js';
 import type {
   ControlWorkerFinalStatusCommand,
   ControlWorkerFinalStatusResult,
@@ -75,6 +76,29 @@ export function workerControlEventReceipt(record: WorkerCanonicalEventRecord): u
       },
     },
   };
+}
+
+function observationOmissionFingerprint(record: WorkerCanonicalEventRecord): string {
+  return canonicalJsonText({
+    observationOmitted: true,
+    sha256: createHash('sha256')
+      .update(canonicalJsonText(workerControlEventReceipt(record)))
+      .digest('hex'),
+  });
+}
+
+function observationOmissionAck(sequence: number): WorkerControlResponseEnvelope {
+  return WorkerControlResponseEnvelopeSchema.parse({
+    accepted: false,
+    diagnostics: [
+      {
+        code: 'observation_limit_reached',
+        message: 'Observation omitted at the collection limit.',
+      },
+    ],
+    nextExpectedSequence: sequence + 1,
+    schemaVersion: 2,
+  });
 }
 
 /**
@@ -266,6 +290,8 @@ export interface WorkerControlGatewayOptions {
   now?: () => string;
   /** Optional durable recorder for accepted worker-control records. */
   acceptedRecordRecorder?: WorkerControlAcceptedRecordRecorder;
+  onObservationStop?: (lineage: WorkerControlLineage) => Promise<void>;
+  readObservationOmission?: (input: WorkerControlSequenceRecorderInput) => boolean;
   /** Optional durable sandbox binding resolver for live lease enforcement. */
   resolveTokenBinding?: WorkerControlTokenBindingResolver;
   /** Optional durable sequence fingerprint recorder. */
@@ -403,6 +429,7 @@ export interface WorkerControlSequenceRecorderInput {
   readonly lineage: WorkerControlLineage;
   /** Control operation stream. */
   readonly operation: string;
+  readonly requireContinuous?: true | undefined;
   /** Worker sequence within the operation stream. */
   readonly sequence: number;
   /** Stable fingerprint of the accepted request payload. */
@@ -540,6 +567,8 @@ export class WorkerControlGateway {
   private readonly createCapabilityToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
+  private readonly onObservationStop: WorkerControlGatewayOptions['onObservationStop'];
+  private readonly readObservationOmission: WorkerControlGatewayOptions['readObservationOmission'];
   private readonly publishControlOperation: WorkerControlGatewayOptions['publishControlOperation'];
   private readonly publishHeartbeat: WorkerControlGatewayOptions['publishHeartbeat'];
   private readonly heartbeatClock: WorkerControlGatewayOptions['now'];
@@ -569,6 +598,8 @@ export class WorkerControlGateway {
     this.publishFinalStatus = options.publishFinalStatus;
     this.publishHeartbeat = options.publishHeartbeat;
     this.publishControlOperation = options.publishControlOperation;
+    this.onObservationStop = options.onObservationStop;
+    this.readObservationOmission = options.readObservationOmission;
     this.heartbeatClock = options.now;
     this.onFinalStatusAccepted = options.onFinalStatusAccepted ?? null;
     this.onFinalStatusCommitted = options.onFinalStatusCommitted ?? null;
@@ -1327,7 +1358,18 @@ export class WorkerControlGateway {
       record: unknown;
     }
   ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
-    const state = this.requireSession(input);
+    let live: WorkerControlSessionState | WorkerControlGatewayError;
+    try {
+      live = this.requireSession(input);
+    } catch (error) {
+      if (
+        !(error instanceof WorkerControlGatewayError) ||
+        error.code !== 'worker_control_lease_not_live' ||
+        !this.readObservationOmission
+      )
+        throw error;
+      live = error;
+    }
     const parsed = WorkerCanonicalEventRecordReaderSchema.safeParse(input.record);
 
     if (!parsed.success) {
@@ -1356,8 +1398,33 @@ export class WorkerControlGateway {
       );
     }
 
+    if (live instanceof WorkerControlGatewayError) {
+      if (record.event.type !== 'observation.recorded') throw live;
+      const { state: replayState, token } = this.requireFinalStatusSession(input);
+      const binding = this.resolveFinalStatusTokenBinding?.({
+        lineage: input.lineage,
+        token,
+        tokenFamily: 'worker-control',
+        sandboxBindingRef: this.requireSandboxBindingRef(replayState),
+      });
+      if (
+        binding?.status !== 'accepted' ||
+        !this.readObservationOmission?.({
+          lineage: record.lineage,
+          operation: 'event_append',
+          sequence: record.sequence,
+          fingerprint: observationOmissionFingerprint(record),
+        })
+      )
+        throw live;
+      input.onAuthenticated?.({ ...replayState.lineage });
+      return observationOmissionAck(record.sequence);
+    }
+
+    const state = live;
+
     if (this.publishControlOperation) {
-      const publish = () =>
+      const publish = (omitted = false) =>
         this.publishNonterminal(
           state,
           {
@@ -1368,10 +1435,15 @@ export class WorkerControlGateway {
             sequence: record.sequence,
             acceptedAt: this.now(),
           },
-          canonicalJsonText(workerControlEventReceipt(record)),
-          input.recheckAdmission
+          omitted
+            ? observationOmissionFingerprint(record)
+            : canonicalJsonText(workerControlEventReceipt(record)),
+          input.recheckAdmission,
+          omitted
         ).then((sequence) => {
-          const fingerprint = canonicalJsonText(workerControlEventReceipt(record));
+          const fingerprint = omitted
+            ? observationOmissionFingerprint(record)
+            : canonicalJsonText(workerControlEventReceipt(record));
           const previous = state.eventFingerprintsBySequence.get(record.sequence);
           state.eventFingerprintsBySequence.set(record.sequence, fingerprint);
           state.highestEventSequence = Math.max(
@@ -1384,6 +1456,7 @@ export class WorkerControlGateway {
             record.event.type !== 'observation.content.chunk'
           )
             state.snapshot.events.push(cloneCanonicalEventRecord(record));
+          if (omitted) return observationOmissionAck(record.sequence);
           return WorkerControlResponseEnvelopeSchema.parse({
             accepted: true,
             diagnostics: [],
@@ -1394,7 +1467,25 @@ export class WorkerControlGateway {
       return (record.event.type === 'observation.recorded' ||
         record.event.type === 'observation.content.chunk') &&
         this.acceptedRecordRecorder?.prepareObservation
-        ? this.acceptedRecordRecorder.prepareObservation(record).then(publish)
+        ? this.acceptedRecordRecorder.prepareObservation(record).then(
+            () => publish(),
+            async (error: unknown) => {
+              if (!(error instanceof ObservationCollectionStoppedError)) throw error;
+              try {
+                if (
+                  error.disposition === 'truncated' &&
+                  record.event.type === 'observation.recorded'
+                )
+                  return await publish(true);
+                throw new WorkerControlGatewayError(error.code, error.message, 409);
+              } finally {
+                if (error.disposition === 'truncated')
+                  void Promise.resolve()
+                    .then(() => this.onObservationStop?.(record.lineage))
+                    .catch(() => undefined);
+              }
+            }
+          )
         : publish();
     }
     const accept = (): WorkerControlResponseEnvelope => {
@@ -1803,7 +1894,8 @@ export class WorkerControlGateway {
     state: WorkerControlSessionState,
     payload: ControlWorkerOperationCommand['payload'],
     fingerprint: string,
-    recheckAdmission?: () => void
+    recheckAdmission?: () => void,
+    omitObservation = false
   ): Promise<ControlWorkerOperationResult> {
     if (!this.publishControlOperation)
       throw new Error('Worker control publication is unavailable.');
@@ -1814,6 +1906,7 @@ export class WorkerControlGateway {
       tokenHash: state.workerControlTokenHash,
       payload,
       fingerprint,
+      ...(omitObservation ? { omitObservation: true } : {}),
     });
     if (payload.operation !== 'event_append') {
       let fingerprints = state.operationFingerprintsBySequence.get(payload.operation);

@@ -204,6 +204,10 @@ import {
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
+  ObservationCollectionStoppedError,
+  readWorkspaceObservationCutoff,
+} from './storage/work-observations.js';
+import {
   isCurrentAgentSessionStatus,
   verifyTurnFileInputs,
 } from './storage/workspace-file-records.js';
@@ -2640,14 +2644,26 @@ export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<vo
         activeTurn.triggerSource
       )
         continue;
+      const cutoff =
+        dataRoot &&
+        readWorkspaceObservationCutoff(dataRoot, {
+          workspaceId,
+          threadId: thread.id,
+          turnId: activeTurn.id,
+        });
       await store.completeTurn(activeTurn.id, {
         status: 'interrupted',
         completedAt: new Date().toISOString(),
-        error: {
-          code: 'recovery_required',
-          message:
-            'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
-        },
+        error: cutoff
+          ? {
+              code: 'observation_limit_reached',
+              message: 'Work observation collection reached its limit.',
+            }
+          : {
+              code: 'recovery_required',
+              message:
+                'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+            },
       });
     }
   }
@@ -4541,6 +4557,7 @@ export function createConversationService({
               deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
             },
             signal: controller.signal,
+            onCollectionStop: (error) => controller.abort(error),
           });
           if (controller.signal.aborted) {
             throw new TurnStartValidationError(
@@ -4562,23 +4579,31 @@ export function createConversationService({
           result.assertContextCurrent?.();
           proposedHandoff = fixedTools.proposedHandoff();
         } catch (error) {
+          const collectionStop =
+            controller.signal.reason instanceof ObservationCollectionStoppedError
+              ? controller.signal.reason
+              : error instanceof ObservationCollectionStoppedError && !controller.signal.aborted
+                ? error
+                : undefined;
           const aborted =
             controller.signal.aborted ||
             (error instanceof TurnStartValidationError && error.code === 'provider_call_aborted');
           try {
             await completeAssistantTurn(
               {
-                status: aborted ? 'interrupted' : 'failed',
+                status: aborted || collectionStop ? 'interrupted' : 'failed',
                 completedAt: new Date().toISOString(),
-                error: aborted
-                  ? {
-                      code: 'provider_call_aborted',
-                      message: 'Quick chat provider call was aborted.',
-                    }
-                  : (internalContextFailure(error) ?? {
-                      code: 'chat_provider_failed',
-                      message: 'Chat model work did not complete.',
-                    }),
+                error: collectionStop
+                  ? { code: collectionStop.code, message: collectionStop.message }
+                  : aborted
+                    ? {
+                        code: 'provider_call_aborted',
+                        message: 'Quick chat provider call was aborted.',
+                      }
+                    : (internalContextFailure(error) ?? {
+                        code: 'chat_provider_failed',
+                        message: 'Chat model work did not complete.',
+                      }),
               },
               {
                 requestId: chatInput.requestId,
@@ -5505,8 +5530,14 @@ export function createConversationService({
             }),
         });
         assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork);
+        const run = new AbortController();
         const result = await withTurnModelCapture(
-          { store, turn, environment: { systemPrompt, tools: fixedTools.tools } },
+          {
+            store,
+            turn,
+            environment: { systemPrompt, tools: fixedTools.tools },
+            onCollectionStop: (error) => run.abort(error),
+          },
           (capture) =>
             runAssistantModel({
               systemPrompt,
@@ -5540,7 +5571,7 @@ export function createConversationService({
                 maxToolCalls: 48,
                 deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
               },
-              signal: new AbortController().signal,
+              signal: run.signal,
               assertCurrent: () => {
                 history.assertCurrent();
                 if (
@@ -5631,6 +5662,14 @@ export function createConversationService({
         };
         await store.completeTurn(turn.id, { status: 'completed', completedAt }, { items: [item] });
       } catch (error) {
+        if (error instanceof ObservationCollectionStoppedError && !handoffEffectStarted) {
+          await store.completeTurn(turn.id, {
+            status: 'interrupted',
+            completedAt: new Date().toISOString(),
+            error: { code: error.code, message: error.message },
+          });
+          return;
+        }
         if (handoffRecord?.assistantHandoff && !handoffEffectStarted) {
           const at = new Date().toISOString();
           const item: Item = {

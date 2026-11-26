@@ -351,6 +351,7 @@ import {
   prepareControlVaultRead,
   prepareHarnessLoginActivationRead,
 } from './vault-policy-read.js';
+import { OBSERVATION_POSITION_CONFLICT } from './work-observation-collection.js';
 import {
   applyControlWorkObservation,
   type ControlWorkObservationInput,
@@ -1245,6 +1246,13 @@ function domainRefusal(
       message: error.message,
       status: 409,
     };
+  if (
+    operation === 'observation' &&
+    error instanceof OperationError &&
+    error.code === OBSERVATION_POSITION_CONFLICT.code &&
+    error.message === OBSERVATION_POSITION_CONFLICT.message
+  )
+    return OBSERVATION_POSITION_CONFLICT;
   if (
     operation === 'provenance' &&
     error instanceof OperationError &&

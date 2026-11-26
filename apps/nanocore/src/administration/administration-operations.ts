@@ -60,6 +60,7 @@ import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { readSecurityAlarmPublication } from '../security/publication.js';
 import { selectSecurityThread } from '../security/threads.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { ObservationCollectionStoppedError } from '../storage/work-observations.js';
 import {
   type AdministrationEnvironmentTools,
   createAdministrationTools,
@@ -669,7 +670,12 @@ export function createAdministrationOperationImplementations(input: Administrati
                 input.runtimeConfig().openKitConfig.security?.pauseAgentWork
               );
               const loopResult = await withTurnModelCapture(
-                { store, turn, environment: { systemPrompt, tools } },
+                {
+                  store,
+                  turn,
+                  environment: { systemPrompt, tools },
+                  onCollectionStop: (error) => controller.abort(error),
+                },
                 async (capture) => {
                   const provider = createInternalAgentGatewayProvider({
                     assertExecutionAvailable: () =>
@@ -833,6 +839,12 @@ export function createAdministrationOperationImplementations(input: Administrati
               }
             } catch (error) {
               if (error instanceof AdministrationRecoveryRequiredError) throw error;
+              if (controller.signal.reason instanceof ObservationCollectionStoppedError)
+                return await fail(
+                  controller.signal.reason.code,
+                  controller.signal.reason.message,
+                  'interrupted'
+                );
               if (controller.signal.aborted)
                 return await fail(
                   'internal_agent_aborted',

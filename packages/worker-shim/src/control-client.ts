@@ -396,7 +396,8 @@ export class WorkerControlClient {
     return this.request(
       async () =>
         requireAcceptedControlResponse(
-          await this.postJson('/events/append', { record: validated }, signal)
+          await this.postJson('/events/append', { record: validated }, signal),
+          validated.event.type === 'observation.recorded' ? validated.sequence : undefined
         ),
       signal
     );
@@ -850,14 +851,25 @@ function parseJson(text: string): unknown {
  * @returns Validated accepted response envelope.
  * @throws Error when the response is malformed or explicitly rejected.
  */
-function requireAcceptedControlResponse(value: unknown): WorkerControlResponseEnvelope {
+function requireAcceptedControlResponse(
+  value: unknown,
+  observationSequence?: number
+): WorkerControlResponseEnvelope {
   const result = WorkerControlResponseEnvelopeReaderSchema.safeParse(value);
 
   if (!result.success) {
     throw new WorkerControlError('worker_control_invalid_response', 200, result.error.message);
   }
 
-  if (!result.data.accepted) {
+  if (
+    !result.data.accepted &&
+    !(
+      observationSequence !== undefined &&
+      result.data.nextExpectedSequence === observationSequence + 1 &&
+      result.data.diagnostics.length === 1 &&
+      result.data.diagnostics[0]?.code === 'observation_limit_reached'
+    )
+  ) {
     throw new WorkerControlError('worker_control_not_accepted', 200, null);
   }
 

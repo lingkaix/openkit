@@ -40,6 +40,7 @@ import {
   recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
+import { runSchedulerRecoveryMaintenance } from './runtime/scheduler-restart-recovery.js';
 import { projectWorkerBackendCleanup } from './runtime/worker-backend-cleanup-projection.js';
 import {
   getWorkerBackendSession,
@@ -96,6 +97,11 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import {
+  appendWorkObservation,
+  readWorkObservations,
+  readWorkObservationTurnBinding,
+} from './storage/work-observations.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
@@ -1694,6 +1700,497 @@ describe('worker control routes', () => {
       expect(fingerprints()).toEqual(originalFingerprints);
     }
   );
+
+  it.each([
+    'ordinary',
+    'expected',
+    'empty',
+    'unavailable',
+    'staged chunk',
+    'published chunk',
+    'omission',
+  ] as const)(
+    'binds %s to the original Worker event across a Workspace-only commit and seal',
+    async (kind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-observation-cutoff-'));
+      const coreDb = createTestCoreDb(dataRoot);
+      workerControlCoreFixtures.push(coreDb);
+      ensureLocalUser(coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb,
+        true
+      );
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const suffix = 'observation_omission';
+      const binding = await createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        suffix
+      );
+      await store.createAgentSession({
+        id: lineage.agentSessionId,
+        agentId: environmentPackage.agent.agentId,
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+        status: 'busy',
+        message: null,
+        createdAt: environmentPackage.createdAt,
+        updatedAt: environmentPackage.createdAt,
+      });
+      await store.updateTurn(lineage.turnId, { agentSessionId: lineage.agentSessionId });
+      const workspace = openWorkspaceDb(dataRoot, lineage.workspaceId);
+      onTestFinished(() => workspace.sqlite.close());
+      await appendWorkObservation(workspace, {
+        ...lineage,
+        bodies: [],
+        observation: {
+          id: 'near-full-model-call',
+          corr: 'c'.repeat(61_300),
+          ts: environmentPackage.createdAt,
+          type: 'model.observed',
+          obs: 'llm-gateway',
+          payload: {
+            attempt: 0,
+            runtimeOriginRef: null,
+            content: { state: 'off' },
+            direction: 'request',
+            event: 'request',
+            model: 'model',
+            providerRef: 'provider',
+            systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+            sampling: {
+              temperature: null,
+              topP: null,
+              maxOutputTokens: null,
+              reasoningEffort: null,
+              reasoningSummary: null,
+              reasoningContext: null,
+            },
+          },
+        },
+      });
+
+      const lostNotice = vi.fn(async () => {
+        throw new Error('Stop notice lost.');
+      });
+      const gateway = createDefaultWorkerControlGateway(coreDb, undefined, lostNotice);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
+      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const post = (route: string, value: unknown) =>
+        app.request(`/api/worker-control/${route}`, {
+          method: 'POST',
+          body: JSON.stringify(value),
+          headers: {
+            authorization: `Bearer ${registration.token}`,
+            'content-type': 'application/json',
+          },
+        });
+      const event = {
+        kind: 'event',
+        schemaVersion: 1,
+        lineage,
+        sequence: 0,
+        event: {
+          type: 'observation.recorded',
+          data: {
+            observationId: 'crossing',
+            sourceRef: 'native-source',
+            sourceSequence: 0,
+            observedAt: environmentPackage.createdAt,
+            content: {
+              state: 'expected',
+              bytes: 1,
+              chunkCount: 1,
+              mediaType: 'text/plain',
+              boundary: 'tool-input',
+              sha256: `sha256:${createHash('sha256').update('a').digest('hex')}`,
+            },
+            fact: {
+              kind: 'tool',
+              runtimeOriginRef: null,
+              callRef: 'another-tool-call',
+              phase: 'started',
+              toolName: 't'.repeat(128),
+            },
+          },
+        },
+      } satisfies WorkerCanonicalEventRecord;
+
+      const append = (record: WorkerCanonicalEventRecord) =>
+        post('events/append', { lineage, record });
+      const isChunk = kind === 'staged chunk' || kind === 'published chunk';
+      const initial = {
+        ...event,
+        sequence: 0,
+        event: {
+          type: 'observation.recorded',
+          data: {
+            ...event.event.data,
+            observationId: 'retained-before-seal',
+            fact: {
+              kind: 'assistant',
+              runtimeOriginRef: null,
+              phase: 'updated',
+              messageRef: 'message',
+              representation: 'delta',
+            },
+            content:
+              kind === 'ordinary'
+                ? { state: 'off' }
+                : kind === 'unavailable'
+                  ? { state: 'unavailable', reason: 'unsupported' }
+                  : {
+                      ...event.event.data.content,
+                      bytes: kind === 'empty' ? 0 : kind === 'staged chunk' ? 2 : 1,
+                      chunkCount: kind === 'empty' ? 0 : kind === 'staged chunk' ? 2 : 1,
+                      boundary: 'assistant.text',
+                      sha256: `sha256:${createHash('sha256')
+                        .update(kind === 'empty' ? '' : kind === 'staged chunk' ? 'ab' : 'a')
+                        .digest('hex')}`,
+                    },
+          },
+        },
+      } satisfies WorkerCanonicalEventRecord;
+      if (isChunk) expect((await append(initial)).status).toBe(200);
+
+      const retained: WorkerCanonicalEventRecord =
+        kind === 'omission'
+          ? { ...event, sequence: 1 }
+          : isChunk
+            ? {
+                ...event,
+                sequence: 2,
+                event: {
+                  type: 'observation.content.chunk',
+                  data: {
+                    observationId: initial.event.data.observationId,
+                    chunkIndex: 0,
+                    byteOffset: 0,
+                    encoding: 'base64',
+                    data: 'YQ==',
+                  },
+                },
+              }
+            : { ...initial, sequence: 1 };
+      const openPosition = retained.sequence - 1;
+      const fingerprints = () =>
+        coreDb.sqlite
+          .prepare(
+            "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id=? AND operation='event_append' ORDER BY sequence"
+          )
+          .all(lineage.packageSnapshotId);
+      const before = fingerprints();
+      const cut = vi.spyOn(getControlStoreWorkerClient(), 'workerControlRecord');
+      // A sealed omission reaches Core's own continuity check. Retained evidence uses
+      // the injected transport cut to stop after the Workspace FULL acknowledgement.
+      if (kind !== 'omission') cut.mockRejectedValueOnce(new Error('Cut before Core fingerprint.'));
+      try {
+        const interrupted = await append(retained);
+        expect(cut).toHaveBeenCalledTimes(1);
+        expect(interrupted.status).toBeGreaterThanOrEqual(400);
+      } finally {
+        cut.mockRestore();
+      }
+      expect(fingerprints()).toEqual(before);
+      const rows = readWorkObservations(workspace, lineage);
+      if (kind !== 'omission') {
+        expect(
+          rows.some((row) => row.payload.observationId === initial.event.data.observationId)
+        ).toBe(true);
+        expect(rows.filter((row) => row.type === 'content.published')).toHaveLength(
+          kind === 'empty' || kind === 'published chunk' ? 1 : 0
+        );
+        if (isChunk)
+          expect(
+            workspace.sqlite
+              .prepare(
+                "SELECT COUNT(*) AS count FROM evidence_bundles WHERE turn_id=? AND source_kind='work-observation-body'"
+              )
+              .get(lineage.turnId)
+          ).toEqual({ count: 1 });
+
+        const crossing = await append({ ...event, sequence: retained.sequence + 1 });
+        expect(crossing.status).toBe(409);
+      }
+      expect(
+        readWorkObservationTurnBinding(workspace, lineage).turn.observationCutoff
+      ).toMatchObject({ workerSequence: kind === 'omission' ? 1 : retained.sequence + 1 });
+      expect(fingerprints()).toEqual(before);
+      await shutdownControlStoreWorkerClient();
+      const rejectedEvidence = () =>
+        listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId);
+      const beforeRejected = rejectedEvidence();
+
+      const shifted = await append({ ...retained, sequence: openPosition });
+      expect(shifted.status).toBe(409);
+      expect(await shifted.json()).toMatchObject({
+        code:
+          kind === 'omission' ? 'observation_limit_reached' : 'worker_control_sequence_conflict',
+      });
+      expect(fingerprints()).toEqual(before);
+      expect(readWorkObservations(workspace, lineage)).toEqual(rows);
+
+      expect(
+        (
+          await append({
+            ...event,
+            sequence: openPosition,
+            event: { type: 'worker.ready', data: {} },
+          })
+        ).status
+      ).toBe(200);
+      const original = await append(retained);
+      expect(original.status).toBe(200);
+      const originalAck = await original.json();
+      expect(originalAck).toMatchObject({
+        accepted: kind !== 'omission',
+        nextExpectedSequence: retained.sequence + 1,
+      });
+      const after = fingerprints();
+      expect(after.map((row) => (row as { sequence: number }).sequence)).toEqual(
+        Array.from({ length: retained.sequence + 1 }, (_, sequence) => sequence)
+      );
+      const shiftedAfterCommit = await append({ ...retained, sequence: retained.sequence + 2 });
+      expect(shiftedAfterCommit.status).toBe(409);
+      expect(fingerprints()).toEqual(after);
+      expect(await (await append(retained)).json()).toEqual(originalAck);
+      expect(fingerprints()).toEqual(after);
+      expect(readWorkObservations(workspace, lineage)).toEqual(rows);
+      expect(rejectedEvidence()).toEqual(beforeRejected);
+    }
+  );
+
+  it('replays an exact observation omission and holds final status behind missing Worker evidence after a lost stop notice', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-observation-cutoff-'));
+    const coreDb = createTestCoreDb(dataRoot);
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+      [],
+      coreDb,
+      true
+    );
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: lineage.workspaceId,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const suffix = 'observation_omission';
+    const binding = await createDurableWorkerControlLease(
+      coreDb,
+      environmentPackage,
+      lineage,
+      suffix
+    );
+    await store.createAgentSession({
+      id: lineage.agentSessionId,
+      agentId: environmentPackage.agent.agentId,
+      workspaceId: lineage.workspaceId,
+      threadId: lineage.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: environmentPackage.createdAt,
+      updatedAt: environmentPackage.createdAt,
+    });
+    await store.updateTurn(lineage.turnId, { agentSessionId: lineage.agentSessionId });
+    const workspace = openWorkspaceDb(dataRoot, lineage.workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    await appendWorkObservation(workspace, {
+      ...lineage,
+      bodies: [],
+      observation: {
+        id: 'near-full-model-call',
+        corr: 'c'.repeat(61_300),
+        ts: environmentPackage.createdAt,
+        type: 'model.observed',
+        obs: 'llm-gateway',
+        payload: {
+          attempt: 0,
+          runtimeOriginRef: null,
+          content: { state: 'off' },
+          direction: 'request',
+          event: 'request',
+          model: 'model',
+          providerRef: 'provider',
+          systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+          sampling: {
+            temperature: null,
+            topP: null,
+            maxOutputTokens: null,
+            reasoningEffort: null,
+            reasoningSummary: null,
+            reasoningContext: null,
+          },
+        },
+      },
+    });
+
+    const lostNotice = vi.fn(async () => {
+      throw new Error('Stop notice lost.');
+    });
+    const gateway = createDefaultWorkerControlGateway(coreDb, undefined, lostNotice);
+    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+    let app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+    const post = (route: string, value: unknown) =>
+      app.request(`/api/worker-control/${route}`, {
+        method: 'POST',
+        body: JSON.stringify(value),
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+      });
+    const event: WorkerCanonicalEventRecord = {
+      kind: 'event',
+      schemaVersion: 1,
+      lineage,
+      sequence: 0,
+      event: {
+        type: 'observation.recorded',
+        data: {
+          observationId: 'crossing',
+          sourceRef: 'native-source',
+          sourceSequence: 0,
+          observedAt: environmentPackage.createdAt,
+          content: {
+            state: 'expected',
+            bytes: 1,
+            chunkCount: 1,
+            mediaType: 'text/plain',
+            boundary: 'tool-input',
+            sha256: `sha256:${createHash('sha256').update('a').digest('hex')}`,
+          },
+          fact: {
+            kind: 'tool',
+            runtimeOriginRef: null,
+            callRef: 'another-tool-call',
+            phase: 'started',
+            toolName: 't'.repeat(128),
+          },
+        },
+      },
+    };
+    const first = await post('events/append', { lineage, record: event });
+    expect(first.status).toBe(200);
+    const omission = await first.json();
+    expect(omission).toMatchObject({
+      accepted: false,
+      diagnostics: [{ code: 'observation_limit_reached' }],
+      nextExpectedSequence: 1,
+    });
+    expect(lostNotice).toHaveBeenCalledExactlyOnceWith(lineage);
+    const fingerprints = () =>
+      coreDb.sqlite
+        .prepare(
+          "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE operation='event_append' AND package_snapshot_id=? ORDER BY sequence"
+        )
+        .all(lineage.packageSnapshotId);
+    expect(readWorkObservationTurnBinding(workspace, lineage).turn.observationCutoff).toMatchObject(
+      { workerSequence: 0 }
+    );
+    const originalFingerprint = fingerprints();
+    expect(originalFingerprint).toEqual([{ sequence: 0, fingerprint: expect.any(String) }]);
+    const shifted = await post('events/append', { lineage, record: { ...event, sequence: 1 } });
+    expect(shifted.status).toBe(409);
+    expect(await shifted.json()).toMatchObject({ code: 'observation_limit_reached' });
+    expect(fingerprints()).toEqual(originalFingerprint);
+    expect(readWorkObservations(workspace, lineage).map((row) => row.id)).toEqual([
+      'near-full-model-call',
+    ]);
+    expect(listWorkerControlAcceptedEvents(coreDb, lineage)).toEqual([]);
+    const rejectedBefore = listWorkerControlRejectedEvidenceForWorkspace(
+      coreDb,
+      lineage.workspaceId
+    );
+    for (let replay = 0; replay < 2; replay++) {
+      const refusedChunk = await post('events/append', {
+        lineage,
+        record: {
+          ...event,
+          sequence: 1,
+          event: {
+            type: 'observation.content.chunk',
+            data: {
+              observationId: 'crossing',
+              chunkIndex: 0,
+              byteOffset: 0,
+              encoding: 'base64',
+              data: 'YQ==',
+            },
+          },
+        },
+      });
+      expect(refusedChunk.status).toBe(409);
+      expect(await refusedChunk.json()).toMatchObject({ code: 'observation_limit_reached' });
+    }
+    expect(listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId)).toEqual(
+      rejectedBefore
+    );
+
+    expect(lostNotice).toHaveBeenCalledTimes(1);
+    // Reopen the writer with the committed cutoff and no successful stop delivery.
+    await shutdownControlStoreWorkerClient();
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    const original = attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    const backend = new SimulatedTurnExecutor({ coreDb });
+    const correlation = attemptActionOwners.schedulerExecutionCorrelation(original);
+    const cancel = vi.spyOn(backend, 'cancel').mockResolvedValue({
+      ...correlation,
+      disposition: 'accepted',
+      execution: 'unknown',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    const projectRecoveredTurn = vi.fn(async () => ({ status: 'interrupted' as const }));
+    await runSchedulerRecoveryMaintenance(coreDb, {
+      executionBackend: backend,
+      projectRecoveredTurn,
+    });
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(correlation);
+    expect(projectRecoveredTurn).not.toHaveBeenCalled();
+    expect(attemptActionOwners.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+      phase: 'closing',
+      terminalCause: 'observation_limit_reached',
+      fenceRef: null,
+    });
+
+    const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
+    registerDurableWorkerControlSession(rebuiltGateway, environmentPackage, binding);
+    app = createApp({ coreDb, mode: 'server', store, workerControlGateway: rebuiltGateway });
+    const replay = await post('events/append', { lineage, record: event });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(omission);
+    expect(fingerprints()).toEqual(originalFingerprint);
+    const final = (sequence: number) =>
+      post('final-status', {
+        body: { status: 'interrupted', stopReason: 'aborted' },
+        lineage,
+        operation: 'final_status',
+        schemaVersion: 2,
+        sequence,
+      });
+    const refused = await final(2);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'worker_control_sequence_conflict' });
+    expect(listWorkerControlAcceptedEvents(coreDb, lineage)).toEqual([]);
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints WHERE operation='final_status' AND package_snapshot_id=?"
+        )
+        .get(lineage.packageSnapshotId)
+    ).toEqual({ count: 0 });
+  });
 
   it('replays an ordinary native event with retained descriptive additions without a second live event', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-event-descriptive-receipt-'));

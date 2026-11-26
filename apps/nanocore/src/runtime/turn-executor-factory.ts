@@ -6424,7 +6424,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
       await this.joinHarnessLoginDeliveries(session);
     }
-    if (session?.turnStarted) await this.interruptTurn(session.environmentPackage.snapshotId);
+    if (session?.turnStarted) {
+      // The capture notice and maintenance can claim the same committed cutoff in parallel.
+      // Join the original private Harness decision even when its disposition remains unknown.
+      if (attempt.terminalCause === 'observation_limit_reached' && session.turnStopSettlement)
+        await session.turnStopSettlement;
+      else await this.interruptTurn(session.environmentPackage.snapshotId);
+    }
     return {
       ...input,
       disposition: session?.turnStarted ? 'accepted' : 'unknown',

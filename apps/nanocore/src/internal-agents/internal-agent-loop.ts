@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isRecord } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
+import { ObservationCollectionStoppedError } from '../storage/work-observations.js';
 
 import { redactInternalAgentText } from './redaction.js';
 
@@ -227,7 +228,11 @@ export async function runInternalAgentLoop(
           providerCancelled ?? {
             kind: 'failed',
             messages,
-            code: error instanceof InternalAgentProviderError ? error.code : 'provider_call_failed',
+            code:
+              error instanceof InternalAgentProviderError ||
+              error instanceof ObservationCollectionStoppedError
+                ? error.code
+                : 'provider_call_failed',
           }
         );
       }

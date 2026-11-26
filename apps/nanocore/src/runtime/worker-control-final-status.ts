@@ -6,6 +6,7 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import type { ControlWorkerFinalStatusCommand } from '../storage/worker-control-final-status-codecs.js';
 import type { ControlWorkerHeartbeatCommand } from '../storage/worker-control-heartbeat-codecs.js';
 import type {
@@ -108,7 +109,12 @@ export async function publishWorkerControlOperation(
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  const { payload, fingerprint, ...coordinates } = snapshot;
+  const { payload, fingerprint, omitObservation, ...coordinates } = snapshot;
+  if (
+    omitObservation &&
+    (payload.operation !== 'event_append' || payload.record.event.type !== 'observation.recorded')
+  )
+    throw new ControlStoreWorkerError('invalid-request', 'not-committed');
   try {
     const result = await client.workerControlRecord(database, {
       ...coordinates,
@@ -117,11 +123,15 @@ export async function publishWorkerControlOperation(
         operation: payload.operation,
         sequence: payload.sequence,
         fingerprint,
+        ...(payload.operation === 'event_append' &&
+        (omitObservation || readWorkspaceObservationCutoff(db.dataRoot, coordinates.lineage))
+          ? { requireContinuous: true }
+          : {}),
       },
     });
     if (result.kind !== 'sequence')
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    if (!result.duplicate || payload.operation === 'event_append')
+    if (!omitObservation && (!result.duplicate || payload.operation === 'event_append'))
       await client.workerControlRecord(database, { ...coordinates, payload });
     // A duplicate after lost ACK must read the original descriptive receipt, never fabricate its timestamp.
     let record: ControlWorkerOperationCommand['payload']['record'] | undefined;

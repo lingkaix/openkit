@@ -22,6 +22,7 @@ export const ControlWorkerFinalStatusPayloadSchema = z
     sequence: WorkerSequenceSchema,
     acceptedAt: z.string(),
     eventAcceptedAt: z.string(),
+    requireContinuous: z.literal(true).optional(),
   })
   .strict();
 

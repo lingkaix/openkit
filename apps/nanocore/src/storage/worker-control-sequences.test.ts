@@ -71,6 +71,40 @@ describe('retained Worker control sequence fingerprints', () => {
     ).toEqual([{ fingerprint: original }]);
   });
 
+  it('keeps accepted observation metadata and chunks at their original positions after a cutoff', () => {
+    const recorder = createWorkerControlSequenceRecorder(coreDb);
+    const accept = (sequence: number, type: string, data: Record<string, unknown>) =>
+      recorder.accept({
+        ...input,
+        operation: 'event_append',
+        requireContinuous: true,
+        sequence,
+        fingerprint: JSON.stringify({ sequence, event: { type, data } }),
+      });
+    const metadata = { observationId: 'original-observation' };
+    const chunk = { ...metadata, chunkIndex: 0, byteOffset: 0, sha256: 'a'.repeat(64) };
+    expect(accept(0, 'observation.recorded', metadata)).toMatchObject({ status: 'accepted' });
+    expect(accept(1, 'observation.recorded', metadata)).toMatchObject({
+      status: 'conflict',
+      code: 'worker_control_sequence_conflict',
+    });
+    expect(accept(1, 'observation.content.chunk', chunk)).toMatchObject({ status: 'accepted' });
+    expect(accept(2, 'observation.content.chunk', chunk)).toMatchObject({
+      status: 'conflict',
+      code: 'worker_control_sequence_conflict',
+    });
+    expect(accept(1, 'observation.content.chunk', chunk)).toMatchObject({
+      status: 'accepted',
+      duplicate: true,
+      nextExpectedSequence: 2,
+    });
+    expect(accept(2, 'observation.content.chunk', { ...chunk, chunkIndex: 1 })).toMatchObject({
+      status: 'accepted',
+      duplicate: false,
+      nextExpectedSequence: 3,
+    });
+  });
+
   it('refuses malformed retained JSON even when a retry supplies identical text', () => {
     expect(
       createWorkerControlSequenceRecorder(coreDb).accept({ ...input, fingerprint: original })
