@@ -331,12 +331,68 @@ test('one exact-source build cache feeds every authoritative shard without omitt
   assert.ok(!uploaded.with.name.startsWith('l0-l2-'), 'build cache is not a shard observation');
   const shards = jobs['l0-l2-shards'];
   assert.ok(shards.needs.includes('l0-l2-build'));
+  assert.doesNotMatch(shards.if ?? '', /\b(?:always|failure|cancelled)\s*\(/i);
+  assert.ok(!build['continue-on-error']);
   const downloaded = shards.steps.find((step) => step.name === 'Restore shared build cache');
-  assert.equal(downloaded.with.name, uploaded.with.name);
+  assert.equal(build.outputs['artifact-attempt'], '$' + '{{ github.run_attempt }}');
+  assert.equal(
+    downloaded.with.name,
+    uploaded.with.name.replace('github.run_attempt', 'needs.l0-l2-build.outputs.artifact-attempt')
+  );
   assert.equal(downloaded.with.path, '.turbo/cache');
-  assert.ok(!downloaded.with['run-id']);
+  assert.equal(downloaded.with['run-id'], '$' + '{{ github.run_id }}');
+  assert.equal(downloaded.with['github-token'], '$' + '{{ secrets.GITHUB_TOKEN }}');
   assert.ok(!downloaded['continue-on-error']);
   assert.ok(shards.steps.some((step) => /pnpm install --frozen-lockfile/.test(step.run ?? '')));
+
+  const runShardStep = shards.steps.find((step) => /ci-l0-l2\.mjs --run/.test(step.run ?? ''));
+  assert.ok(shards.steps.indexOf(runShardStep) > shards.steps.indexOf(downloaded));
+  assert.equal(runShardStep.if, downloaded.if);
+  assert.equal(shards.permissions.actions, 'read');
+
+  // Resolve only the context expressions used by these artifact selectors.
+  const resolve = (template, context) =>
+    template.replace(/\$\{\{ ([\w.-]+) \}\}/g, (_, key) => {
+      assert.ok(Object.hasOwn(context, key), `Unexpected artifact expression: ${key}`);
+      return context[key];
+    });
+  const producer = {
+    'github.run_id': '101',
+    'github.sha': 'source-sha',
+    'github.run_attempt': '1',
+  };
+  const uploadedArtifact = (context) => [
+    context['github.run_id'],
+    resolve(uploaded.with.name, context),
+  ];
+  const restore = (shardAttempt, buildAttempt) => {
+    const context = {
+      ...producer,
+      'github.run_attempt': shardAttempt,
+      'needs.l0-l2-build.outputs.artifact-attempt': resolve(build.outputs['artifact-attempt'], {
+        ...producer,
+        'github.run_attempt': buildAttempt,
+      }),
+    };
+    return [resolve(downloaded.with['run-id'], context), resolve(downloaded.with.name, context)];
+  };
+
+  const firstUpload = uploadedArtifact(producer);
+  assert.deepEqual(restore('1', '1'), firstUpload, 'first attempt selects its own build');
+  assert.deepEqual(restore('2', '1'), firstUpload, 'shard rerun selects its successful build');
+  const rebuilt = restore('2', '2');
+  assert.deepEqual(rebuilt, uploadedArtifact({ ...producer, 'github.run_attempt': '2' }));
+  assert.notDeepEqual(rebuilt, firstUpload, 'a prior failed build upload cannot match');
+  assert.notDeepEqual(
+    restore('2', '1'),
+    uploadedArtifact({ ...producer, 'github.sha': 'other-sha' }),
+    'a different source cannot match'
+  );
+  assert.notDeepEqual(
+    restore('2', '1'),
+    uploadedArtifact({ ...producer, 'github.run_id': '102' }),
+    'a different run cannot match'
+  );
 });
 
 test('completed worker-width probes are retired without changing authoritative coverage or workers', () => {
