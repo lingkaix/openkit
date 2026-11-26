@@ -12,7 +12,10 @@ import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  acceptSchedulerExecutionObservation,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempts.js';
 import type { ExecutionBackendObservation, ExecutionBackendPort } from './execution-backend.js';
@@ -20,8 +23,8 @@ import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 
-/** Records a submitted attempt whose native disposition is still unknown. */
-function submittedAttempt(db: CoreDb, name: string, at: string) {
+/** Records a prepared attempt or an unknown submission for recovery. */
+function recoveryAttempt(db: CoreDb, name: string, at: string, submitted = true) {
   const turnId = testEntityId('tu', name);
   const entry = createSchedulerAdmissionEntry(db, {
     backendId: 'nanohost',
@@ -43,7 +46,7 @@ function submittedAttempt(db: CoreDb, name: string, at: string) {
     bindingRef: `binding_${name}`,
     sessionCompatibilityKey: 'recovery-correlation',
     now: () => at,
-    operationId: `operation_${name}`,
+    ...(submitted ? { operationId: `operation_${name}` } : {}),
   });
 }
 
@@ -60,8 +63,8 @@ it.each(['inspect', 'cancel'] as const)(
         ownerUserId: FIXTURE_LOCAL_USER_ID,
         workspaceId,
       });
-      const original = submittedAttempt(db, 'original-recovery', '2026-07-05T00:00:01.000Z');
-      const newer = submittedAttempt(db, 'newer-recovery', '2026-07-05T00:01:00.000Z');
+      const original = recoveryAttempt(db, 'original-recovery', '2026-07-05T00:00:01.000Z');
+      const newer = recoveryAttempt(db, 'newer-recovery', '2026-07-05T00:01:00.000Z');
       const [target, foreign] = operation === 'inspect' ? [newer, original] : [original, newer];
       const requested = schedulerExecutionCorrelation(target);
       const received: ExecutionBackendObservation = {
@@ -123,3 +126,98 @@ it.each(['inspect', 'cancel'] as const)(
     }
   }
 );
+
+it('rejects submission evidence from a pending preparation inspection of the same attempt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-recovery-correlation-'));
+  const db = createTestCoreDb(root);
+  const now = () => '2026-07-05T00:00:02.000Z';
+  try {
+    ensureLocalUser(db);
+    const store = await createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({
+      coreDb: db,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId,
+    });
+    const { attemptId } = recoveryAttempt(
+      db,
+      'advancing-recovery',
+      '2026-07-05T00:00:01.000Z',
+      false
+    );
+    const preparation = schedulerExecutionCorrelation(
+      await recordSchedulerExecutionOperation(db, { attemptId, operationId: 'prepare', now })
+    );
+    const delivery = Promise.withResolvers<ExecutionBackendObservation | null>();
+    const backend = {
+      id: 'nanohost',
+      inspect: vi.fn<ExecutionBackendPort['inspect']>(async () => delivery.promise),
+      cancel: vi.fn<ExecutionBackendPort['cancel']>(),
+      submit: vi.fn<ExecutionBackendPort['submit']>(),
+      release: vi.fn<ExecutionBackendPort['release']>(),
+    } satisfies ExecutionBackendPort;
+    const input = {
+      store,
+      executionBackend: backend,
+      now,
+      projectRecoveredTurn: vi.fn(async () => ({ status: 'missing' as const })),
+    };
+
+    const pending = runSchedulerRecoveryMaintenance(db, input);
+    let submitted: SchedulerExecutionAttemptRecord;
+    try {
+      await vi.waitFor(() => expect(backend.inspect).toHaveBeenCalledWith(preparation));
+      await acceptSchedulerExecutionObservation(db, {
+        ...preparation,
+        disposition: 'accepted',
+        execution: 'terminal',
+        outcomeRef: null,
+        fenceRef: null,
+      });
+      submitted = await recordSchedulerExecutionOperation(db, {
+        attemptId,
+        operationId: 'submit',
+        submission: true,
+        now,
+      });
+      delivery.resolve({
+        ...schedulerExecutionCorrelation(submitted),
+        disposition: 'accepted',
+        execution: 'terminal',
+        outcomeRef: 'crossed-outcome',
+        fenceRef: 'crossed-fence',
+      });
+    } finally {
+      delivery.resolve(null);
+      await pending;
+    }
+    expect(submitted).toMatchObject({ disposition: 'unknown', outcomeRef: null, fenceRef: null });
+    expect(backend.inspect.mock.calls).toEqual([[preparation]]);
+    const afterCrossedReply = requireSchedulerExecutionAttempt(db, attemptId);
+
+    const submission = schedulerExecutionCorrelation(submitted);
+    expect(submission).toEqual({ ...preparation, operationId: 'submit' });
+    const exact: ExecutionBackendObservation = {
+      ...submission,
+      disposition: 'accepted',
+      execution: 'terminal',
+      outcomeRef: 'submission-outcome',
+      fenceRef: 'submission-fence',
+    };
+    backend.inspect.mockResolvedValue(exact);
+    await runSchedulerRecoveryMaintenance(db, input);
+    expect(backend.inspect.mock.calls).toEqual([[preparation], [submission]]);
+    expect.soft(afterCrossedReply).toEqual(submitted);
+    expect.soft(requireSchedulerExecutionAttempt(db, attemptId)).toMatchObject({
+      disposition: 'accepted',
+      outcomeRef: exact.outcomeRef,
+      fenceRef: exact.fenceRef,
+    });
+    expect(backend.cancel).not.toHaveBeenCalled();
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.release).not.toHaveBeenCalled();
+    expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
+  } finally {
+    await disposeTestStore(root, db);
+  }
+});
