@@ -162,6 +162,8 @@ const CLOSED_OUT_ITEMS = 32;
 const LARGE_ANSWER_BYTES = 96 * 1024;
 /** Retained Pending rows of the long-history gate: past one writer frame of census sources. */
 const HISTORY_SOURCES = 12_000;
+/** A census longer than the reads one indexed history needs, so a scan per source shows. */
+const INDEXED_SOURCES = 64;
 /** Agent named by seeded Worker approvals; no Boot configuration declares it. */
 const WORKER_AGENT_ID = 'agent_b5_worker';
 
@@ -1585,6 +1587,66 @@ describe('B5 attributed Boot recovery', () => {
     },
     CASE_TIMEOUT_MS
   );
+
+  // The same census on one indexed history: A's walk validates every source on the Items it
+  // indexed once, never by scanning the whole history again for each source. A scan per source
+  // makes the 12,000-source Boot quadratic in its history.
+  it("validates A's whole Boot census on one indexed history, reading each Turn's Items once per walk", async () => {
+    const root = await seedRoot(['Indexed history']);
+    const [workspaceId] = root.workspaceIds as [string];
+    const { template, claim } = await withSeedStore(root, async (store) => {
+      const [template] = await seedDecidedApprovals(store, root, [workspaceId], {
+        requesterKind: 'person',
+        decision: null,
+        services: 'none',
+      });
+      return { template: template!, claim: await seedClaimedPending(store, root, workspaceId) };
+    });
+    copyRetainedPendingHistory(
+      root.dataRoot,
+      workspaceId,
+      template.requestIds[0]!,
+      INDEXED_SOURCES - 1
+    );
+    // Boot's derived-index owner fills the copies' indexes before any walk.
+    rebuildInvalidExistingWorkspaceDerivedIndexes(root.dataRoot);
+    const store = createTestStore({ dataRoot: root.dataRoot });
+    const coreDb = createTestCoreDb(root.dataRoot);
+    const pending = {
+      coreDb,
+      openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+    };
+    // Every read of a listed Turn's Items counts, wherever the walk reads them.
+    let reads = 0;
+    const listThreadTurns = store.listThreadTurns.bind(store);
+    vi.spyOn(store, 'listThreadTurns').mockImplementation((...args) =>
+      listThreadTurns(...args).map((turn) =>
+        Object.defineProperty({ ...turn }, 'items', {
+          enumerable: true,
+          get: () => {
+            reads++;
+            return turn.items;
+          },
+        })
+      )
+    );
+    try {
+      store.startPendingRequestDelivery(pending);
+      await recoverPendingRequestsAtBoot(store, pending);
+      expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+      expect(readPendingRow(root.dataRoot, workspaceId, claim.requestId)).toMatchObject({
+        claim: 'finished',
+        disposition: 'outcome-unknown',
+        disposition_reason: 'restart',
+      });
+      expect(reads).toBeLessThan(INDEXED_SOURCES);
+    } finally {
+      vi.restoreAllMocks();
+      closeTestCoreDb(coreDb);
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(root.dataRoot);
+    }
+  });
 
   // V1-P vehicle gate, decide-then-link: A's person outcome close publishes a user-input answer
   // over the inline bound, so A's one grouped decision carries a new body. Its last group is
