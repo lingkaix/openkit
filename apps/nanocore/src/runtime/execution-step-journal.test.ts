@@ -534,6 +534,7 @@ describe('persisted execution journal contracts', () => {
         submission: true,
       });
       if (decision.state === 'admitted-now') {
+        expect(decision.grant.bindingRef).toBe(candidate.session.sandboxIncarnationId);
         expect(await deliverStart(candidate, 1, beforeReply)).toBe('applied');
       }
       return decision;
