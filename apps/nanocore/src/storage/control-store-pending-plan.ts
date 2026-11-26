@@ -3,6 +3,7 @@ import { open, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   applyControlPendingCommand,
   type ControlPendingCommandInput,
@@ -11,7 +12,6 @@ import {
   pendingOutcomeBatchDraft,
   readPendingRequest,
 } from '../runtime/pending-requests.js';
-import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import { commandInputHash } from './control-store-input.js';
 import {
   applyControlPendingTransition,
@@ -196,20 +196,14 @@ export function controlPendingPlanTerminalGroups(
     } else chunk = next;
   }
   groups.push({ kind: 'entries', entries: chunk });
-  const last = controlPendingPlanTransmittedTerminal(terminal);
+  // The terminal-bearing group transmits only the terminal's last entry.
+  const last = { ...terminal, entries: terminal.entries.slice(-1) };
   groups.push(
     group.kind === 'terminal'
       ? { kind: 'terminal', input: last }
       : { kind: 'pending', input: { ...group.input, terminal: last } }
   );
   return groups;
-}
-
-/** The part of a terminal a plan transmits in its terminal-bearing group: its last entry. */
-export function controlPendingPlanTransmittedTerminal(
-  terminal: ControlTerminalTransition
-): ControlTerminalTransition {
-  return { ...terminal, entries: terminal.entries.slice(-1) };
 }
 
 /**

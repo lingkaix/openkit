@@ -246,7 +246,6 @@ import type { ControlPendingTransition } from '../storage/control-store-pending.
 import {
   type ControlPendingPlanGroup,
   controlPendingPlanTerminalGroups,
-  controlPendingPlanTransmittedTerminal,
   encodeControlPendingPlan,
 } from '../storage/control-store-pending-plan.js';
 import {
@@ -261,7 +260,6 @@ import {
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
 import {
-  assertControlTerminalPacketBound,
   type ControlItemAppend,
   ControlItemAppendError,
   type ControlPublicationInput,
@@ -350,6 +348,7 @@ import {
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
   parseWorkspaceKnowledgeProposalDocument,
+  plannedNativeTurn,
   preserveDescriptiveRecord,
   projectWorkspaceSystemRecord,
   publishCanonicalPath,
@@ -374,7 +373,6 @@ import {
   readWorkspaceTurnEvents,
   refuseWorkspaceIdentityConflicts,
   serializeKnowledgeProposalRecord,
-  plannedNativeTurn,
   type ThreadTimelineSnapshot,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   TurnReaderSchema,
@@ -4244,8 +4242,7 @@ export class FsStore {
       scope.owner
     );
     if (!this.dataRoot) return terminal;
-    // The packet the publication would post, on the terminal writer's own bound: a deterministic
-    // oversize refuses here, locally and before any settlement, as the writer itself would refuse.
+    // The terminal the publication would post, whose reap row is proved below.
     const planned = await this.pendingServiceTerminal(
       scope,
       threadId,
@@ -4253,8 +4250,6 @@ export class FsStore {
       input,
       true
     );
-    // The plan carries the earlier entries in bounded groups; the transmitted part keeps the bound.
-    assertControlTerminalPacketBound(controlPendingPlanTransmittedTerminal(planned));
     const taskTurn = controlTerminalTaskTurn(terminal);
     const { task, observations } = await loadControlTerminalOwners();
     const db = openWorkspaceReadDb(this.dataRoot, workspaceId);
@@ -4620,7 +4615,11 @@ export class FsStore {
     threadId: string,
     input: string,
     triggerActor: ActorRef,
-    options: CreateTurnOptions & { readonly turnId: string },
+    // Only the original Pending controls: no file input, command receipt or capture binding.
+    options: Pick<
+      CreateTurnOptions,
+      'startedAt' | 'status' | 'executorKind' | 'agentId' | 'triggerSource'
+    > & { readonly turnId: string },
     plannedThread?: { readonly revision: number; readonly record: Record<string, unknown> }
   ): Promise<{
     group: ControlPendingPlanGroup;
@@ -4634,14 +4633,6 @@ export class FsStore {
       plannedThread ??
       readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'thread', threadId);
     if (!previousThread) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
-    const status = options.status ?? 'running';
-    if (
-      isSealedTurnTerminal(status) ||
-      options.fileInputs?.length ||
-      options.commandReceipt ||
-      options.captureCoverage
-    )
-      throw new Error('A planned outcome admission carries only its original Pending controls.');
     const taskId =
       thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
     const captureCoverage = this.getLiveCaptureCoverage(workspaceId, taskId);
