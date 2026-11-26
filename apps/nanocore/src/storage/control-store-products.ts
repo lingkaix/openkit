@@ -411,12 +411,15 @@ function applyProducts(
         !['pending', 'running'].includes(String(previous.record.status));
       if ((previous?.revision ?? 0) !== input.expectedRevision && !terminalReplay)
         throw new ControlProductPreconditionError();
+      if (
+        kind === 'turn' &&
+        (Object.hasOwn(input.record, 'observationCounter') ||
+          Object.hasOwn(input.record, 'observationCutoff'))
+      )
+        throw new ControlProductPreconditionError();
       if (terminalReplay) {
         const candidate = { ...record };
-        if (
-          candidate.requiredFeatures === undefined &&
-          previous.record.requiredFeatures !== undefined
-        )
+        if (previous.record.requiredFeatures !== undefined)
           candidate.requiredFeatures = previous.record.requiredFeatures;
         // An exact replay can fill missing references without advancing metadata or the Goal marker.
         if (isDeepStrictEqual(previous.record, candidate)) continue;
@@ -530,11 +533,7 @@ function applyProducts(
         previous?.record,
         input.record
       ) as Record<string, unknown>;
-      if (
-        terminalReplay &&
-        replacement.requiredFeatures === undefined &&
-        previous.record.requiredFeatures !== undefined
-      )
+      if (kind === 'turn' && previous?.record.requiredFeatures !== undefined)
         replacement.requiredFeatures = previous.record.requiredFeatures;
       if (kind === 'thread') {
         if (previous?.record.login !== undefined) replacement.login = previous.record.login;

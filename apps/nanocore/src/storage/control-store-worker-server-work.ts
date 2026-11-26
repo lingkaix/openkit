@@ -160,12 +160,12 @@ export function applyServerWorkOwnerMutation(
   }
   if (mutation.kind === 'append-observation') {
     if (prepared?.kind !== 'observation') throw new ControlProductPreconditionError();
-    const { disposition, observation } = applyServerTurnObservation(
-      sqlite,
-      mutation.admission,
-      prepared.value
-    );
-    return { kind: mutation.kind, value: { disposition, observation } };
+    const result = applyServerTurnObservation(sqlite, mutation.admission, prepared.value);
+    const value =
+      'observation' in result
+        ? { disposition: result.disposition, observation: result.observation }
+        : result;
+    return { kind: mutation.kind, value };
   }
   if (mutation.kind === 'publish-turn-progress') {
     if (prepared?.kind !== 'progress') throw new ControlProductPreconditionError();

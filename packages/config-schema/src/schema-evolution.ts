@@ -106,6 +106,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Thread, Turn and Item history has an immutable Server owner without a Workspace anchor.',
   },
+  'openkit.work-observations.truncation.v1': {
+    id: 'openkit.work-observations.truncation.v1',
+    status: 'active',
+    description:
+      'A Turn reap reports the retained observation prefix and its bounded omission summary.',
+  },
   'openkit.work-observations.v1': {
     id: 'openkit.work-observations.v1',
     status: 'active',

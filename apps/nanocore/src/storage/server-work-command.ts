@@ -24,6 +24,7 @@ import {
 import type {
   ControlWorkObservationPreparation,
   ControlWorkObservationResult,
+  RetainedWorkObservation,
 } from './work-observations.js';
 
 type Kernel = Pick<ControlKernelStore, 'decideServerWork' | 'inspectServerWork'>;
@@ -66,7 +67,8 @@ export interface ServerWorkCommandBinding {
     ): Promise<
       StorageResult<
         'server-work',
-        Pick<ControlWorkObservationResult, 'disposition' | 'observation'>
+        | Pick<RetainedWorkObservation, 'disposition' | 'observation'>
+        | Exclude<ControlWorkObservationResult, RetainedWorkObservation>
       >
     >;
   };
