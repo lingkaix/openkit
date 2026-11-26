@@ -134,8 +134,13 @@ const NativeRaisePendingRequestSchema = z
   });
 
 /** A Main-selected usable record is admitted only while its complete current source still matches. */
-const PendingExpectedSourceSchema = z
+export const PendingExpectedSourceSchema = z
   .object({ requestId: z.string().min(1), sourceHash: z.string().regex(/^sha256:[a-f0-9]{64}$/) })
+  .strict();
+
+/** Original source and reason for an authority-loss closeout. */
+export const PendingInvalidatingEventSchema = z
+  .object({ requestId: z.string().min(1), event: z.string().min(1) })
   .strict();
 
 const nativePendingScope = {
@@ -260,9 +265,7 @@ export const ControlPendingCommandInputSchema = z.discriminatedUnion('action', [
       expectedThreadCensus: z.array(z.string().min(1)),
       actor: PendingNativeActorSchema,
       now: z.string().datetime(),
-      invalidatingEvents: z
-        .array(z.object({ requestId: z.string().min(1), event: z.string().min(1) }).strict())
-        .optional(),
+      invalidatingEvents: z.array(PendingInvalidatingEventSchema).optional(),
     })
     .strict(),
   z

@@ -26,7 +26,10 @@ import {
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
-import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
+import type {
+  ControlPendingCommandInput,
+  PreparedControlPendingCommand,
+} from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
 import {
   contextInfluenceWasCleared,
@@ -2565,22 +2568,25 @@ export async function prepareControlTerminal(
   value: ControlTerminalTransition,
   contentMount: ControlProductContentMount | undefined,
   newDirectories?: ControlContentPreparation,
-  carried: readonly ControlProductEntry[] = []
+  carried: readonly ControlProductEntry[] = [],
+  carriedCloseout?: Extract<ControlPendingCommandInput, { action: 'closeout' }>
 ): Promise<PreparedControlTerminal> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   await loadControlTerminalOwners();
   if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  const input = ControlTerminalTransitionSchema.parse(value);
-  terminalOwner(db, input.owner);
-  const turn = decode('turn', input.turn.record, input.owner);
+  const packet = ControlTerminalTransitionSchema.parse(value);
+  terminalOwner(db, packet.owner);
+  const turn = decode('turn', packet.turn.record, packet.owner);
   if (
     ['pending', 'running'].includes(String(turn.status)) ||
     !turn.completedAt ||
-    input.products.some((product) => product.kind === 'turn') ||
-    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
-    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
+    packet.products.some((product) => product.kind === 'turn') ||
+    packet.products.length + packet.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
+    Buffer.byteLength(controlProductMetadataJson(packet)) > CONTROL_PRODUCT_LIMITS.metadataBytes
   )
     throw new ControlProductPreconditionError();
+  // The grouped reader checked each census frame before assembling this one native command.
+  const input = carriedCloseout ? { ...packet, pending: [carriedCloseout] } : packet;
   for (const content of input.evidenceContent)
     await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
   // A grouped decision carries a terminal's earlier entries in their own bounded groups; this

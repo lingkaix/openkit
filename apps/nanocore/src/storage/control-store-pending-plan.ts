@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  PendingExpectedSourceSchema,
+  PendingInvalidatingEventSchema,
+} from '../runtime/pending-request-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -53,11 +57,26 @@ export const ControlPendingPlanHeaderSchema = z
   })
   .strict();
 
+// Keep even the expected-source field within the existing Pending packet budget.
+const CLOSEOUT_SOURCES_PER_GROUP = 2048;
+const CloseoutSourcesSchema = z
+  .object({
+    kind: z.literal('closeout-sources'),
+    census: z.array(z.string().min(1)).max(CLOSEOUT_SOURCES_PER_GROUP),
+    expected: z.array(PendingExpectedSourceSchema).max(CLOSEOUT_SOURCES_PER_GROUP),
+    events: z.array(PendingInvalidatingEventSchema).max(CLOSEOUT_SOURCES_PER_GROUP),
+  })
+  .strict();
+
+/** One bounded contribution to the original Thread census and exact selection. */
+export type ControlPendingCloseoutSources = z.infer<typeof CloseoutSourcesSchema>;
+
 /**
  * One ordered group of a plan. Each is an existing writer packet, read and checked on its own
  * existing frame bound; `entries` carries a following terminal's earlier entries in bounded groups.
  */
 const PlanGroupSchema = z.discriminatedUnion('kind', [
+  CloseoutSourcesSchema,
   z
     .object({ kind: z.literal('pending'), input: z.lazy(() => ControlPendingTransitionSchema) })
     .strict(),
@@ -83,6 +102,7 @@ const PlanGroupSchema = z.discriminatedUnion('kind', [
 ]);
 /** One ordered writer packet of a grouped Pending plan. */
 export type ControlPendingPlanGroup =
+  | ControlPendingCloseoutSources
   | { readonly kind: 'pending'; readonly input: ControlPendingTransition }
   | { readonly kind: 'products'; readonly transition: ControlProductTransition }
   | { readonly kind: 'terminal'; readonly input: ControlTerminalTransition }
@@ -98,7 +118,9 @@ function assertGroupBound(group: z.infer<typeof PlanGroupSchema>): void {
         ? Buffer.byteLength(controlProductMetadataJson(group.transition))
         : group.kind === 'entries'
           ? Buffer.byteLength(controlProductMetadataJson({ entries: group.entries }))
-          : 0;
+          : group.kind === 'closeout-sources'
+            ? Buffer.byteLength(JSON.stringify(group))
+            : 0;
   const limit =
     group.kind === 'products'
       ? 2 * 1024 * 1024
@@ -145,6 +167,42 @@ export function encodeControlPendingPlan(
  * whatever the closeout's size, and the one terminal decision covers every entry.
  */
 export function controlPendingPlanTerminalGroups(
+  group: Extract<ControlPendingPlanGroup, { kind: 'pending' | 'terminal' }>
+): ControlPendingPlanGroup[] {
+  if (group.kind !== 'pending' || group.input.input.action !== 'closeout')
+    return carryTerminalEntries(group);
+  const { input: closeout, terminal } = group.input;
+  const census = closeout.expectedThreadCensus;
+  const expected = closeout.expected ?? [];
+  const events = closeout.invalidatingEvents ?? [];
+  const sources: ControlPendingPlanGroup[] = [];
+  const size = Math.max(census.length, expected.length, events.length);
+  for (let start = 0; start < size; start += CLOSEOUT_SOURCES_PER_GROUP) {
+    const end = start + CLOSEOUT_SOURCES_PER_GROUP;
+    sources.push({
+      kind: 'closeout-sources',
+      census: census.slice(start, end),
+      expected: expected.slice(start, end),
+      events: events.slice(start, end),
+    });
+  }
+  const input = {
+    ...closeout,
+    expectedThreadCensus: [],
+    expected: [],
+    ...(closeout.invalidatingEvents ? { invalidatingEvents: [] } : {}),
+  };
+  return [
+    ...sources,
+    ...carryTerminalEntries({
+      kind: 'pending',
+      input: { ...group.input, input, terminal: terminal && { ...terminal, pending: [input] } },
+    }),
+  ];
+}
+
+/** Carries the terminal's earlier entries separately from the final deciding packet. */
+function carryTerminalEntries(
   group: Extract<ControlPendingPlanGroup, { kind: 'pending' | 'terminal' }>
 ): ControlPendingPlanGroup[] {
   const terminal = group.kind === 'terminal' ? group.input : group.input.terminal;
