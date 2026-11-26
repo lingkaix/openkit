@@ -19,7 +19,7 @@ The engineer approved the product model, the control model and the release scope
 | L4 | Scheduling accepts the trade-offs of a distributed system instead of a perfect scheduler. Unknown is not failure. Exclusion stays until proof. One reconciler owns the read-back of the original key, with a bound and an exit. |
 | L5 | v0.2.0 is limited in features and final in foundation. It ships one Host slot and one Worker for each Sandbox, with the final identities, contracts and retained formats. Later releases are additive: Workers that share a Sandbox, then more slots, then quota and share controls, then multi-user use. None of them changes a contract or a retained format. |
 | L6 | The Worker layer lands in its final form in v0.2.0: the final identity and contract. In v0.2.0 a Worker is replaced by the recycle of its Sandbox. |
-| L7 | Identity uses the UUID family, with these prefixes: `host_`, `hepoch_`, `sbx_`, `sbxi_`, `wkr_`. The physical name of a Sandbox incarnation under NanoHost is `nh-` and the 32 hexadecimal digits of the incarnation UUID. The physical name is confirmed after the provider spike proves the round trip. |
+| L7 | Identity uses the UUID family, with these prefixes: `host_`, `hepoch_`, `sbx_`, `sbxi_`, `wkr_`. For OpenShell, use a deterministic provider address and collision-checked binding in the [adapter specification](../specs/20261116-nanohost_openshell_gateway.md#physical-sandbox-address). The address remains provider-private. |
 | L8 | When the stop of a Worker in a shared Sandbox is not proved, the Sandbox enters a degraded mode that is accepted explicitly and is visible. It admits no new attempt and no new Worker. Sibling attempts that were already admitted may finish inside their own attempt deadline, which is at most 7,200 s and is never extended. Then Core recycles the Sandbox. The Sandbox owner or an administrator may order the recycle at once. Physical release needs its own proof, and an unknown claim stays charged. |
 | L9 | The evidence for steer and interrupt is retained. Core keeps the original steer obligation and the interrupt settlement. Non-commit is proved only from authoritative history. The regular exchange between Core and the Worker Shim carries this evidence; there is no separate lookup call. |
 | L10 | There is no wire-compatibility promise between Core, the provider and the Worker Shim across 0.2.x releases. A peer with a different version is refused before any effect. Core recycles a mismatched Sandbox once onto the current image. If the mismatch stays, retries stop and a maintenance hold is shown. |
@@ -79,7 +79,7 @@ A work slot inside a Sandbox is not a containment: all Workers run as one user i
 
 - The Worker stop spike or the cold-wake spike fails so that a VM-class provider must move to the near path.
 - The kernel probe finds a deciding fact that the attempt, the step or the scoped hold cannot represent.
-- The provider spike shows that the physical name cannot carry the incarnation UUID.
+- S2 showed that OpenShell cannot carry the full incarnation UUID in its name. L7 therefore supersedes the injective address rule in draft r2 §3.5 for OpenShell. The adapter address must pass its freeze gate at the shipping pin.
 - Measured cold-wake numbers differ from the first tolerances.
 - The native Login Worker is enabled.
 
