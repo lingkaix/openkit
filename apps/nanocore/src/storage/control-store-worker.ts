@@ -2817,8 +2817,7 @@ async function prepareAfterPredecessors(
         if (
           request.operation === 'terminal' ||
           request.operation === 'publication' ||
-          (request.operation === 'pending' &&
-            ('plan' in request.input || request.input.terminal))
+          (request.operation === 'pending' && ('plan' in request.input || request.input.terminal))
         ) {
           // These opaque native proof tokens do not expose their verified Item identities.
           await request.settled;
@@ -6161,7 +6160,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               await prepareAfterPredecessors(owner, queued, earlier);
             let preparedPlan: PreparedControlPendingPlan | undefined;
             if (value.operation === 'pending' && 'plan' in value.input) {
-              if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner || !owner.contentMount)
+              if (
+                owner.scopeDb?.scope !== 'workspace' ||
+                !owner.productOwner ||
+                !owner.contentMount
+              )
                 throw new ControlProductPreconditionError();
               preparedPlan = await prepareControlPendingPlan(
                 owner.scopeDb,
@@ -6171,7 +6174,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               );
               Object.assign(queued, { preparedPlan });
             }
-            if (value.operation === 'pending' && !('plan' in value.input) && !value.input.terminal) {
+            if (
+              value.operation === 'pending' &&
+              !('plan' in value.input) &&
+              !value.input.terminal
+            ) {
               if (!owner.productOwner) throw new ControlProductPreconditionError();
               preparedEntries = await prepareControlEntries(
                 owner.productOwner,
