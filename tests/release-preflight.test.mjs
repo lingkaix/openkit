@@ -764,11 +764,11 @@ function makeReleaseFixture(options = {}) {
   const lockRev = options.nanoHostLockRev ?? cargoRev;
   writeFileSync(
     join(root, 'apps', 'nanohost', 'Cargo.toml'),
-    `[dependencies]\nopenshell-sdk = { git = "https://github.com/NVIDIA/OpenShell.git", rev = "${cargoRev}" }\n`
+    `[dependencies]\nopenshell-sdk = { git = "https://github.com/ai-openshell/openshell.git", rev = "${cargoRev}" }\n`
   );
   writeFileSync(
     join(root, 'apps', 'nanohost', 'Cargo.lock'),
-    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/NVIDIA/OpenShell.git?rev=${lockRev}#${lockRev}"\n`
+    `[[package]]\nname = "openshell-sdk"\nversion = "0.0.0"\nsource = "git+https://github.com/ai-openshell/openshell.git?rev=${lockRev}#${lockRev}"\n`
   );
 
   mkdirSync(join(root, 'apps', 'web'), { recursive: true });
@@ -891,12 +891,19 @@ function makeOpenShellRelease(options = {}) {
       ),
     },
     supervisor: {
-      repository: 'ghcr.io/nvidia/openshell/supervisor',
+      repository: 'quay.io/ai-openshell/supervisor',
       platformDigests: {
         'linux/amd64': `sha256:${'1'.repeat(64)}`,
         ...(options.omitNanoHostSupervisorArm64
           ? {}
           : { 'linux/arm64': `sha256:${'2'.repeat(64)}` }),
+      },
+    },
+    sandboxRuntime: {
+      repository: 'quay.io/ai-openshell/sandbox',
+      platformDigests: {
+        'linux/amd64': `sha256:${'3'.repeat(64)}`,
+        'linux/arm64': `sha256:${'4'.repeat(64)}`,
       },
     },
     redistribution: {

@@ -401,7 +401,7 @@ test('release notes compare mode accepts one matching body and rejects a differe
 
 test('publisher and verifier annotate their own records and render the same notes', () => {
   const disclosure =
-    '- OpenShell Gateway 0.0.99 is an opaque vendor component: CycloneDX composition is unknown; vulnerability lookup is component-version-only. Its transitive coverage grants no completeness, clearance or purge authority. Upstream SBOM/provenance: https://github.com/lingkaix/openkit/issues/719.';
+    '- OpenShell Gateway 0.1.10 is an opaque vendor component: CycloneDX composition is unknown; vulnerability lookup is component-version-only. Its transitive coverage grants no completeness, clearance or purge authority. Upstream SBOM/provenance: https://github.com/lingkaix/openkit/issues/719.';
   const annotate = (records) =>
     spawnSync(
       process.execPath,

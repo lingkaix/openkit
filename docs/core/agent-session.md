@@ -53,6 +53,8 @@ Before a successor becomes current, the predecessor MUST be terminal and non-reu
 
 A Harness Instance may host multiple AgentSessions only when they belong to distinct Threads. Each retains independent identity, authorization, sequence, cancellation, evidence, native conversation, and terminal outcome.
 
+In an environment that uses the Worker Shim contract, the runtime host instance of an AgentSession is a Worker incarnation. There, an AgentSession has at most one live Worker incarnation and stays bound to it for its whole life. A Worker incarnation may carry multiple AgentSessions only when its adapter declares that and the AgentSessions belong to distinct Threads. [Sandbox](sandbox.md#long-running-sandbox) owns the Worker incarnation.
+
 Each AgentSession has at most one active Turn. The Thread single-flight rule independently permits at most one active Turn for that Thread.
 
 ## Durable Authority And Projections
@@ -85,7 +87,7 @@ Creation succeeds only after Core binds the exact Workspace and Thread, confirms
 
 ### Exact Reconnect
 
-A physical connection may reconnect without changing AgentSession identity only when the runtime proves the same AgentSession, the same surviving runtime host instance and binding, the active Turn when present, scheduler attempt, worker identity, authorization lineage, and next protocol sequence under the accepted reconnect contract. A reconnect to a shared host restores only the bindings it validates, never blanket authority over every conversation on that host.
+A physical connection may reconnect without changing AgentSession identity only when the runtime proves the same AgentSession, the same surviving runtime host instance and binding, the active Turn when present, scheduler attempt, worker identity, authorization lineage, and next protocol sequence under the accepted reconnect contract. A reconnect to a shared host restores only the bindings it validates, never blanket authority over every conversation on that host. In an environment that uses the Worker Shim contract, this proof requires the same Worker incarnation in the same Sandbox incarnation. A new Worker Shim, Worker incarnation or Sandbox incarnation never satisfies this proof.
 
 An exact reconnect changes connection generation. It does not create a successor AgentSession, replay a Turn, or replace Core history.
 
@@ -101,6 +103,8 @@ Core creates a successor AgentSession only after the predecessor is terminal and
 
 Replacement may follow an explicit or idle close, loss of the runtime host instance, a setup change the live binding cannot apply, or recovery that cannot prove the surviving binding. The successor opens a new binding, then resumes the Thread's exact retained native conversation, and only after the resume succeeds does it receive work. Resume restores context; it never reruns the predecessor's last Turn, and replaying native history for display MUST NOT append duplicate canonical Items.
 
+The end of a Worker ends the binding of each AgentSession that it carried. This includes a stop that Core ordered, a recycle of the Sandbox incarnation, and a sleep. A wake of the Sandbox therefore always uses replacement: the successor AgentSession gets a new Worker in the new incarnation and resumes the exact retained native conversation from the retained Volume. A stopped Worker never starts again under its ID, so no binding returns from a previous incarnation.
+
 When the Thread has no retained native conversation, as on its first binding or after an explicit runtime switch, the successor starts a new native conversation, whose context comes from Core-owned Thread history. A missing, corrupt, incompatible, or mismatched retained conversation is an explicit resume failure. It MUST NOT be silently replaced by a new empty conversation or by reconstruction from visible messages, and the successor MUST NOT inherit unproved native state. Absence of an expected reference is a resume failure, never permission to start fresh. After a resume failure, the Thread keeps its history and truthful Turn outcomes. An authorized actor continues work in a new Thread with the old Thread as its parent. The new Thread uses authorized Core records as context. [Fault Tolerance](fault-tolerance.md) owns this continuation policy.
 
 An active Turn is never moved, resumed, or replayed through a successor AgentSession. If continuity is lost during an active Turn, that Turn retains the truthful result its lifecycle owner determined. [Fault Tolerance](fault-tolerance.md#principles) owns effect uncertainty and recovery responsibility when continuity is lost. Only a new authorized Turn may run on the successor.
@@ -109,12 +113,12 @@ An active Turn is never moved, resumed, or replayed through a successor AgentSes
 
 Closing or terminal failure ends AgentSession reuse and its binding without deleting the Thread, Turns, Items, accepted outputs, the retained native conversation, or a compatible shared Sandbox. Ordinary termination closes only the AgentSession-local binding and resources owned by that binding:
 - **Dedicated process.** Closing stops the bound work and terminates that conversation process.
-- **Shared host.** Closing stops the conversation's admitted work, revokes its routes and callbacks, and detaches or unloads it where the runtime supports that, while the host and sibling AgentSessions continue. An unsubscribe response alone is not evidence that work stopped. The adapter MUST prove that the released binding can produce no further effect under the old authority.
+- **Shared host.** Closing stops the conversation's admitted work, revokes its routes and callbacks, and detaches or unloads it where the runtime supports that, while the host and sibling AgentSessions continue. An unsubscribe response alone is not evidence that work stopped. The adapter MUST prove that the released binding can produce no further effect under the old authority. When the adapter cannot prove this for a Worker in a Sandbox that uses the provider and shim contracts, the Sandbox follows [Draining](sandbox.md#draining).
 - **Late events.** A delayed event from a released binding MUST NOT be attributed to a successor merely because the native conversation identity is the same. Attribution uses a drained event boundary or native request correlation, and ambiguous attribution stays unresolved rather than becoming success.
 
 NanoCore MAY close an idle AgentSession under an explicit idle-reclamation policy. Time away from the browser is not proof of idleness, and active Turns, compaction, and owned background work MUST be considered first. No idle threshold is defined yet. Closing an AgentSession does not end the Thread's pending requests.
 
-Sandbox or Runtime Epoch invalidation may affect several AgentSessions at once, but their identities and outcomes remain independent. Shared failure does not create shared continuity or let one AgentSession's cleanup proof stand for another.
+A Sandbox recycle, a drain, or Runtime Epoch invalidation may affect several AgentSessions at once, but their identities and outcomes remain independent. Shared failure does not create shared continuity or let one AgentSession's cleanup proof stand for another.
 
 ### Retry And Recovery
 

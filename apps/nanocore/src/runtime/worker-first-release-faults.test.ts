@@ -227,7 +227,15 @@ function onNative<Value>(
 }
 
 /** Composes real scheduler, Core attempt, control routes, private poll/result routes and Turn closeout over the existing external-effect double. */
-async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
+async function faultFixture({
+  alignFixtureWall = false,
+  heartbeatClock,
+  schedulerFault,
+}: {
+  alignFixtureWall?: boolean;
+  heartbeatClock?: () => string;
+  schedulerFault?: Promise<never>;
+} = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
@@ -242,6 +250,16 @@ async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
+  if (alignFixtureWall) {
+    const write = store.writeWorkspaceExecutionJournalIntent.bind(store);
+    vi.spyOn(store, 'writeWorkspaceExecutionJournalIntent').mockImplementation(async (...args) => {
+      const acknowledged = await write(...args);
+      // The native journal writer uses real time. Keep the test's virtual time at or past its ACK.
+      const admittedMs = Number(acknowledged.clock.admittedUnixNano / 1_000_000n);
+      if (Date.now() < admittedMs) vi.setSystemTime(admittedMs);
+      return acknowledged;
+    });
+  }
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -252,7 +270,6 @@ async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
   const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   // A virtual-time case carries its clock to the owner as the caller-supplied `acceptedAt`; the real
   // acknowledged owner still validates and commits every heartbeat.
-  const { heartbeatClock } = options;
   const gatewayStorage: typeof nanoHostStorage =
     heartbeatClock && nanoHostStorage.state === 'ready'
       ? {
@@ -508,6 +525,8 @@ async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
     'session.open': enqueueSignal(),
     'turn.start': enqueueSignal(),
     'session.inspect': enqueueSignal(),
+    'session.close': enqueueSignal(),
+    'turn.interrupt': enqueueSignal(),
   };
   const queueOperation = harnessRecords.queueNanoHostHarnessOperation;
   // Observe the committed real enqueue, including one that precedes its readiness waiter.
@@ -541,8 +560,7 @@ async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
         originalTask = task;
         originalEntered.resolve({ task });
       }
-      // Preserve the identical arguments, original Promise identity and original outcome.
-      return task;
+      return schedulerFault ? Promise.race([task, schedulerFault]) : task;
     });
   const publicDispatch = runSchedulerDispatchLoop({
     agentManifests: [setup.manifest],
@@ -672,6 +690,24 @@ async function faultFixture(options: { heartbeatClock?: () => string } = {}) {
     coreDb,
     store,
     requestId,
+    schedulerClaim: () => originalClaim!,
+    turnExecutor: runtime.turnExecutor,
+    interrupt: (turnId: string) => runtime.turnExecutor.interruptTurn!(store, turnId),
+    retireEpoch: async () => {
+      const { getNanoHostRuntimeTarget } = await import('./nanohost-runtime-target.js');
+      const readTarget = () =>
+        onNative(coreDb, (owner) => getNanoHostRuntimeTarget(owner, 'fault-host'))!;
+      const target = readTarget();
+      expect(target.ready).toBe(true);
+      const result = await nanoHostStorage.value.owner.beginEpochRetirement({
+        deploymentId: target.deploymentId,
+        runtimeTargetId: target.targetId,
+        physicalEpoch: target.physicalEpoch!,
+        generation: String(target.connectionGeneration),
+      });
+      expect(result.state).toBe('ready');
+      expect(readTarget().ready).toBe(false);
+    },
     maintenance: () =>
       runNanoHostAttemptRecoveryMaintenance(coreDb, {
         executionBackend: runtime.turnExecutor.executionBackend!,
@@ -1106,7 +1142,7 @@ describe('Workspace execution journal producer boundaries', () => {
     async ({ boundary, operation }) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
       const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
@@ -1223,7 +1259,7 @@ describe('Workspace execution journal producer boundaries', () => {
     async (operation) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
       try {
@@ -1312,7 +1348,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (mode) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       const controller = new AbortController();
       let release!: () => void;
       let entered!: () => void;
@@ -1445,7 +1481,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     vi.setSystemTime(vi.getRealSystemTime());
     // This case deliberately advances Main's verification clock. The Worker-control Gateway carries
     // it to the real native owner as each heartbeat's acceptedAt, which the owner validates and commits.
-    const f = await faultFixture({ heartbeatClock: () => new Date().toISOString() });
+    const f = await faultFixture({
+      alignFixtureWall: true,
+      heartbeatClock: () => new Date().toISOString(),
+    });
     const workspaceDb = openWorkspaceDb(
       f.coreDb.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -1598,7 +1637,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (loss) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1684,7 +1723,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (finished) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1713,9 +1752,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         // No successor poll: the Worker died. One poll interval plus the header bound fits within this independent ceiling.
         await vi.advanceTimersByTimeAsync(2_000);
         // Join native failure publication without advancing the original virtual deadline.
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(
           f.isSettled(),
           'missing non-receipt proof must fail within seconds, not the 300-second result budget'
@@ -1770,7 +1809,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (kind) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1807,9 +1846,9 @@ describe('first-release worker faults (real Core crossings)', () => {
               ];
         expect([204, 409]).toContain((await f.poll(invalid)).status);
         await vi.advanceTimersByTimeAsync(2_000);
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(/turn.start.*unknown/u);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(f.isSettled()).toBe(true);
         const failedTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
         expect(failedTurn.status).toBe('failed');
@@ -1859,7 +1898,7 @@ describe('first-release worker faults (real Core crossings)', () => {
     async (finished) => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
       vi.setSystemTime(vi.getRealSystemTime());
-      const f = await faultFixture();
+      const f = await faultFixture({ alignFixtureWall: true });
       try {
         const opened = await f.dispatch('session.open');
         await f.result(opened, {
@@ -1890,9 +1929,9 @@ describe('first-release worker faults (real Core crossings)', () => {
         // below; accepted Worker evidence is append-only, so the settled absence covers this earlier read.
         const expectedFailure = 'NanoHost Harness turn.start delivery incomplete: outcome unknown.';
         await vi.advanceTimersByTimeAsync(100);
-        const failureTime = Date.now();
+        const failureTime = performance.now();
         await expect(f.running).rejects.toThrow(expectedFailure);
-        expect(Date.now()).toBe(failureTime);
+        expect(performance.now()).toBe(failureTime);
         expect(f.isSettled()).toBe(true);
         const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
         expect(turn.status).toBe('failed');
@@ -1964,9 +2003,12 @@ describe('first-release worker faults (real Core crossings)', () => {
   );
 
   it('fails closed when a dispatched session.inspect result is held for the 300-second budget', async () => {
+    const { readExecutionJournalRoot } = await import('./execution-journal.js');
+    const { NanoHostHarnessOutageError } = await import('./nanohost-runtime-target-records.js');
+    const { readStoppedTestNanoHost } = await import('../test-support/admitted-nanohost.js');
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(vi.getRealSystemTime());
-    const f = await faultFixture();
+    const f = await faultFixture({ alignFixtureWall: true });
     try {
       const opened = await f.dispatch('session.open');
       await f.result(opened, {
@@ -1992,64 +2034,61 @@ describe('first-release worker faults (real Core crossings)', () => {
       });
       await vi.advanceTimersByTimeAsync(100);
       const inspect = await f.dispatch('session.inspect');
-      const accepted = onNative(f.coreDb, (owner) =>
-        getWorkerControlAcceptedFinalStatus(owner, lineage)
-      );
-      expect(accepted).not.toBeNull();
+      const readNativeEvidence = (sqlite: Database.Database) => ({
+        accepted: getWorkerControlAcceptedFinalStatus({ sqlite }, lineage),
+        session: getWorkerBackendSession({ sqlite }, lineage.attemptId),
+      });
+      const nativeEvidence = readAdmittedTestNanoHost(f.coreDb, readNativeEvidence);
+      expect(nativeEvidence.accepted).not.toBeNull();
+      expect(nativeEvidence.session).not.toBeNull();
       const oldShim = await f.post('/worker-control/harness/poll', { schemaVersion: 2 });
       expect(oldShim.status).toBe(409);
       expect(JSON.parse(oldShim.body)).toMatchObject({ code: 'worker_release_incompatible' });
       expect(await f.poll()).toEqual({ status: 204, body: '' });
       await vi.advanceTimersByTimeAsync(299_999);
       expect(f.isSettled()).toBe(false);
-      expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('running');
+      const turn = f.store.getTurnById(lineage.turnId);
+      expect(turn.status).toBe('running');
+      const readAttempt = () => requireSchedulerExecutionAttempt(f.coreDb, lineage.attemptId);
+      const attempt = readAttempt();
+      expect(attempt.disposition).toBe('accepted');
+      const execution = { owner: { kind: 'server' as const }, executionId: attempt.attemptId };
+      const readExclusions = () => readExecutionJournalRoot(f.coreDb, execution).exclusionRefs;
+      const exclusions = readExclusions();
+      expect(exclusions).toContain(`workspace:${lineage.workspaceId}`);
       expect(
         f.store
           .getTurnEvents(testEntityId('tu', 'fault-turn'))
           .filter((event) => event.event === 'turn.completed')
       ).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
-      await expect(f.running).rejects.toThrow(
-        'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
-      );
-      const turn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
-      expect(turn.status).toBe('failed');
-      expect(turn.error?.message).toContain(
-        'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.'
-      );
-      expect(
-        onNative(f.coreDb, (owner) => getWorkerControlAcceptedFinalStatus(owner, lineage))
-      ).toEqual(accepted);
-      expect(f.effects.map((effect) => effect.kind)).not.toContain('file.export');
-      expect(f.effects.map((effect) => effect.kind)).toContain('sandbox.delete');
-      expect(inspect.operation).toBe('session.inspect');
-      expect(
-        f.store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({
-            type: 'turn-completed',
-            stopReason: 'error',
-            turn: expect.objectContaining({ status: 'failed' }),
-          }),
-        }),
-      ]);
-      expect(new FsStore({ dataRoot: f.coreDb.dataRoot }).getTurnById(turn.id)).toEqual(turn);
-      expect(
-        onNative(f.coreDb, (owner) =>
-          getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
-        )?.state
-      ).toBe('cleaned');
-      markSchedulerAttemptForTerminalTurn(f.coreDb, turn);
-      // Submission was accepted, but held inspection leaves collection/evidence unproved.
-      expect(
-        requireSchedulerExecutionAttempt(f.coreDb, testEntityId('attempt', 'fault-lease'))
-      ).toMatchObject({
-        phase: 'closing',
-        disposition: 'accepted',
-        operationId: expect.any(String),
-        fenceRef: null,
+      // K8b class closure §T3: inspection timeout preserves the durable Turn and exclusions.
+      await expect(f.running).rejects.toMatchObject({
+        cause: expect.any(NanoHostHarnessOutageError),
       });
+      await expect(f.running).rejects.toMatchObject({
+        message: 'NanoHost terminal inspection is unavailable.',
+        cause: {
+          cause: {
+            message:
+              'NanoHost Harness session.inspect result outage budget expired: dispatched-awaiting-result.',
+          },
+        },
+      });
+      await shutdownControlStoreWorkerClient();
+      const cold = new FsStore({ dataRoot: f.coreDb.dataRoot });
+      expect(cold.getTurnById(turn.id)).toEqual(turn);
+      expect(
+        cold
+          .getTurnEvents(turn.id)
+          .filter((event) => event.event === 'turn.completed' || event.event === 'turn.interrupted')
+      ).toEqual([]);
+      expect(readAttempt()).toEqual(attempt);
+      expect(readExclusions()).toEqual(exclusions);
+      expect(readStoppedTestNanoHost(f.coreDb, readNativeEvidence)).toEqual(nativeEvidence);
+      expect(f.effects.map((effect) => effect.kind)).not.toContain('file.export');
+      expect(f.effects.map((effect) => effect.kind)).not.toContain('sandbox.delete');
+      expect(inspect.operation).toBe('session.inspect');
       expect(f.coreDb.sqlite.prepare('PRAGMA integrity_check').get()).toEqual({
         integrity_check: 'ok',
       });
@@ -2058,6 +2097,426 @@ describe('first-release worker faults (real Core crossings)', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each([
+    ['Epoch retirement', 'NanoHost current physical Epoch authority is unavailable.'],
+    ['lost collection ACK', 'NanoHost terminal inspection is unavailable.'],
+    [
+      'binding close timeout',
+      'NanoHost Harness session.close result outage budget expired: dispatched-awaiting-result.',
+    ],
+    [
+      'turnStopSettlement timeout',
+      'NanoHost Harness turn.interrupt result outage budget expired: dispatched-awaiting-result.',
+    ],
+  ] as const)(
+    'preserves the accepted final on %s',
+    async (fault, expectedCause) => {
+      const { readExecutionJournalRoot } = await import('./execution-journal.js');
+      const { readStoppedTestNanoHost } = await import('../test-support/admitted-nanohost.js');
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.setSystemTime(vi.getRealSystemTime());
+      const f = await faultFixture({ alignFixtureWall: true });
+      const attemptId = testEntityId('attempt', 'fault-lease');
+      const turnId = testEntityId('tu', 'fault-turn');
+      let collectionStep: string | undefined;
+      let droppedAck: Parameters<FsStore['settleWorkspaceExecutionJournalStep']>[1] | undefined;
+      const lostAck = new Error('Collection settlement acknowledgement lost');
+      try {
+        const open = await f.dispatch('session.open');
+        await f.result(open, { ...ready, state: 'open', maxActiveTurns: open.body.maxActiveTurns });
+        const start = await f.dispatch('turn.start');
+        const lineage = {
+          ...onNative(f.coreDb, (owner) => getWorkerBackendSession(owner, attemptId))!,
+          requestId: f.requestId,
+        };
+        await f.result(start, { ...ready, state: 'started' });
+        const control = f.controlClient(start);
+        await control.recordHeartbeat({ status: 'starting' });
+        await control.recordHeartbeat({ status: 'running' });
+        const write = f.store.writeWorkspaceExecutionJournalIntent.bind(f.store);
+        f.store.writeWorkspaceExecutionJournalIntent = async (...args) => {
+          const ack = await write(...args);
+          const proposal = args[1];
+          if (proposal.carriage.operation === 'worker.collect.transcript') {
+            collectionStep = proposal.stepId;
+            if (fault === 'Epoch retirement') await f.retireEpoch();
+          }
+          return ack;
+        };
+        if (fault === 'lost collection ACK') {
+          const settle = f.store.settleWorkspaceExecutionJournalStep.bind(f.store);
+          f.store.settleWorkspaceExecutionJournalStep = async (...args) => {
+            const ack = await settle(...args);
+            if (
+              !droppedAck &&
+              args[1].ref.stepId === collectionStep &&
+              args[1].state === 'unknown'
+            ) {
+              droppedAck = args[1];
+              throw lostAck;
+            }
+            return ack;
+          };
+        }
+        const stopping = fault === 'turnStopSettlement timeout';
+        const stop = stopping ? f.interrupt(turnId).catch((error: unknown) => error) : null;
+        if (stop) await f.dispatch('turn.interrupt');
+        f.sealTranscript(start);
+        const final = stopping
+          ? ({ status: 'cancelled', stopReason: 'aborted' } as const)
+          : ({ status: 'completed', stopReason: 'completed' } as const);
+        expect(await control.recordFinalStatus({ sequence: 1, ...final })).toMatchObject({
+          accepted: true,
+        });
+        const turn = f.store.getTurnById(turnId);
+        expect(turn.status).toBe('running');
+        const attempt = requireSchedulerExecutionAttempt(f.coreDb, attemptId);
+        const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+        const exclusions = readExecutionJournalRoot(f.coreDb, execution).exclusionRefs;
+        expect(exclusions).toContain(`workspace:${lineage.workspaceId}`);
+        await vi.advanceTimersByTimeAsync(100);
+        if (fault === 'binding close timeout' || fault === 'lost collection ACK') {
+          const inspect = await f.dispatch('session.inspect');
+          if (fault === 'binding close timeout') {
+            await f.result(inspect, {
+              state: 'open',
+              childState: 'running',
+              cleanupState: 'clean',
+              nativeHandleState: 'absent',
+              nativeHandleDigest: null,
+            });
+            await f.dispatch('session.close');
+          }
+        }
+        if (fault !== 'Epoch retirement') await vi.advanceTimersByTimeAsync(300_000);
+        if (stop) {
+          let cause = await stop;
+          while (cause instanceof Error && cause.cause instanceof Error) cause = cause.cause;
+          expect(cause).toMatchObject({ message: expectedCause });
+        }
+        const rejected = await f.running.then(
+          () => null,
+          (error: unknown) => error
+        );
+        expect(collectionStep).toEqual(expect.any(String));
+        await shutdownControlStoreWorkerClient();
+        const cold = new FsStore({ dataRoot: f.coreDb.dataRoot });
+        // K8b T3 keeps the original Turn until evidence permits publishing its final outcome.
+        expect(cold.getTurnById(turnId)).toEqual(turn);
+        expect(
+          cold
+            .getTurnEvents(turnId)
+            .filter(
+              (event) => event.event === 'turn.completed' || event.event === 'turn.interrupted'
+            )
+        ).toEqual([]);
+        expect(requireSchedulerExecutionAttempt(f.coreDb, attemptId)).toEqual(attempt);
+        expect(readExecutionJournalRoot(f.coreDb, execution).exclusionRefs).toEqual(exclusions);
+        expect(
+          readStoppedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+          )
+        ).toMatchObject(final);
+        expect(f.effects.map(({ kind }) => kind)).not.toContain('sandbox.delete');
+        expect(f.dispatchedCommands.some(({ operation }) => operation === 'session.inspect')).toBe(
+          !stopping && fault !== 'Epoch retirement'
+        );
+        const causes: Error[] = [];
+        for (let cause = rejected; cause instanceof Error; cause = cause.cause) causes.push(cause);
+        expect(causes.map(({ message }) => message)).toContain(expectedCause);
+        if (fault === 'lost collection ACK') {
+          expect(droppedAck).toMatchObject({ ref: { stepId: collectionStep }, state: 'unknown' });
+          expect(causes.find((cause) => cause instanceof AggregateError)?.errors).toContain(
+            lostAck
+          );
+        }
+      } finally {
+        if (!f.isSettled()) await vi.advanceTimersByTimeAsync(600_000);
+        await f.close();
+        vi.useRealTimers();
+      }
+    },
+    60_000
+  );
+
+  it.each([
+    'Core intake wins',
+    'failure close wins',
+    'close refused',
+    'close times out before commit',
+    'close commits but ACK is lost',
+    'cancellation final still eligible',
+    'intake wins while scheduler closes',
+  ] as const)(
+    'orders first final with the failure writer when %s',
+    async (order) => {
+      const records = await import('./worker-control-records.js');
+      const { ControlStoreWorkerError } = await import('../storage/control-store-worker-error.js');
+      const { hasCoreWorkerFinalIntake } = await import('../storage/core-journal-native.js');
+      const { readExecutionJournalRoot } = await import('./execution-journal.js');
+      const { markSchedulerExecutionAttemptClosing } = await import('./execution-attempts.js');
+      const { readStoppedTestNanoHost } = await import('../test-support/admitted-nanohost.js');
+      const intakeWins =
+        order === 'Core intake wins' || order === 'intake wins while scheduler closes';
+      const failureWins =
+        order === 'failure close wins' || order === 'close commits but ACK is lost';
+      const schedulerWrites = order === 'intake wins while scheduler closes';
+      const cancellation = order === 'cancellation final still eligible';
+      const schedulerFault = Promise.withResolvers<never>();
+      let unavailable = false;
+      let readsRefused = 0;
+      const wait = records.waitForWorkerControlFinalStatus;
+      const waitSpy = vi
+        .spyOn(records, 'waitForWorkerControlFinalStatus')
+        .mockImplementation((db, input, read) =>
+          wait(db, input, (query) => {
+            if (unavailable) {
+              unavailable = false;
+              readsRefused += 1;
+              return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+            }
+            return read!(query);
+          })
+        );
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.setSystemTime(vi.getRealSystemTime());
+      const f = await faultFixture({
+        alignFixtureWall: true,
+        ...(schedulerWrites ? { schedulerFault: schedulerFault.promise } : {}),
+      });
+      const client = getControlStoreWorkerClient();
+      const attemptId = testEntityId('attempt', 'fault-lease');
+      const turnId = testEntityId('tu', 'fault-turn');
+      const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+      const decide = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const decides = Promise.withResolvers<Awaited<ReturnType<typeof client.executionAttempt>>>();
+      const reply = Promise.withResolvers<void>();
+      const failurePost = Promise.withResolvers<void>();
+      const allowPost = Promise.withResolvers<void>();
+      const beforeNativeHold = Promise.withResolvers<void>();
+      const allowNative = Promise.withResolvers<void>();
+      let closePosts = 0;
+      let lateFailurePosts = 0;
+      let finalPosts = 0;
+      let withholdNative = false;
+      const originalClose = client.executionAttempt.bind(client);
+      const closeSpy = vi
+        .spyOn(client, 'executionAttempt')
+        .mockImplementation(async (db, input) => {
+          if (
+            input.kind !== 'closing' ||
+            input.attemptId !== attemptId ||
+            input.cause !==
+              (schedulerWrites ? 'preparation-or-execution-failed' : 'execution-failed')
+          )
+            return originalClose(db, input);
+          if (++closePosts > 1) return originalClose(db, input);
+          entered.resolve();
+          await decide.promise;
+          if (order === 'close refused') throw new ControlStoreWorkerError('busy', 'not-committed');
+          if (order === 'close times out before commit')
+            throw new ControlStoreWorkerError('commit-unknown', 'unknown');
+          const ack = await originalClose(db, input);
+          decides.resolve(ack);
+          await reply.promise;
+          if (order === 'close commits but ACK is lost')
+            throw new ControlStoreWorkerError('commit-unknown', 'unknown');
+          return ack;
+        });
+      const pause = client.pauseForDataRootBackup.bind(client);
+      const pauseSpy = vi
+        .spyOn(client, 'pauseForDataRootBackup')
+        .mockImplementation(async (path) => {
+          // Wait before acquiring the Core writer hold for Native settle. Intake has committed.
+          if (withholdNative && hasCoreWorkerFinalIntake(f.coreDb, attemptId)) {
+            withholdNative = false;
+            beforeNativeHold.resolve();
+            await allowNative.promise;
+          }
+          return pause(path);
+        });
+      type FinalClient = { workerControlFinalStage(...args: unknown[]): Promise<unknown> };
+      const stages = client as unknown as FinalClient;
+      const finalStage = stages.workerControlFinalStage.bind(stages);
+      const finalSpy = vi
+        .spyOn(stages, 'workerControlFinalStage')
+        .mockImplementation(async (...args) => {
+          const stage = args[2] as { kind: string };
+          if (stage.kind === 'settle') finalPosts += 1;
+          return finalStage(...args);
+        });
+      // A losing branch cannot clean up an unproved physical state. Keep this refusal independent
+      // of Native settle so a mistaken failure post can finish and be detected after reopen.
+      const executor = f.turnExecutor as unknown as { cleanupBackendLifecycle(): Promise<void> };
+      const cleanup = failureWins
+        ? undefined
+        : vi
+            .spyOn(executor, 'cleanupBackendLifecycle')
+            .mockRejectedValue(new Error('Physical cleanup is unavailable in this schedule.'));
+      const complete = f.store.completeTurn.bind(f.store);
+      f.store.completeTurn = async (...args) => {
+        if (args[1]?.status === 'failed' || args[1]?.status === 'interrupted') {
+          lateFailurePosts += 1;
+          failurePost.resolve();
+          await allowPost.promise;
+        }
+        return complete(...args);
+      };
+      const running = f.running.catch((error: unknown) => error);
+      let final: Promise<unknown> | undefined;
+      try {
+        const open = await f.dispatch('session.open');
+        await f.result(open, { ...ready, state: 'open', maxActiveTurns: open.body.maxActiveTurns });
+        const start = await f.dispatch('turn.start');
+        const lineage = {
+          ...onNative(f.coreDb, (owner) => getWorkerBackendSession(owner, attemptId))!,
+          requestId: f.requestId,
+        };
+        await f.result(start, { ...ready, state: 'started' });
+        const control = f.controlClient(start);
+        await control.recordHeartbeat({ status: 'starting' });
+        await control.recordHeartbeat({ status: 'running' });
+        const turn = f.store.getTurnById(turnId);
+        expect(turn.status).toBe('running');
+        const exclusions = readExecutionJournalRoot(f.coreDb, execution).exclusionRefs;
+        expect(exclusions).toContain(`workspace:${lineage.workspaceId}`);
+        expect(hasCoreWorkerFinalIntake(f.coreDb, attemptId)).toBe(false);
+        if (cancellation)
+          await markSchedulerExecutionAttemptClosing(f.coreDb, {
+            attemptId,
+            cause: 'turn-cancelled',
+          });
+        const payload = cancellation
+          ? ({ sequence: 1, status: 'cancelled', stopReason: 'aborted' } as const)
+          : ({ sequence: 1, status: 'completed', stopReason: 'completed' } as const);
+        const failureCaller = schedulerWrites
+          ? f.schedulerClaim().catch((error: unknown) => error)
+          : running;
+        if (schedulerWrites)
+          schedulerFault.reject(new Error('Scheduler-side completion observation failed'));
+        else {
+          unavailable = true;
+          await vi.advanceTimersByTimeAsync(200);
+        }
+        await Promise.race([
+          entered.promise,
+          failureCaller.then((error) => {
+            throw error;
+          }),
+        ]);
+        if (intakeWins) {
+          withholdNative = true;
+          final = control.recordFinalStatus(payload);
+          void final.catch(() => undefined);
+          await Promise.race([
+            beforeNativeHold.promise,
+            final.then(() => {
+              throw new Error('Native final was not withheld.');
+            }),
+          ]);
+          expect(hasCoreWorkerFinalIntake(f.coreDb, attemptId)).toBe(true);
+          expect(finalPosts).toBe(0);
+        }
+        decide.resolve();
+        if (intakeWins || cancellation || failureWins) {
+          const ack = await Promise.race([
+            decides.promise,
+            failureCaller.then((error) => {
+              throw error;
+            }),
+          ]);
+          expect(ack).toMatchObject({
+            phase: 'closing',
+            terminalCause: intakeWins
+              ? 'worker-final-status'
+              : cancellation
+                ? 'turn-cancelled'
+                : 'execution-failed',
+          });
+          expect(lateFailurePosts).toBe(0);
+          if (failureWins) {
+            await expect(control.recordFinalStatus(payload)).rejects.toMatchObject({
+              code: 'worker_control_lease_not_live',
+            });
+            expect(hasCoreWorkerFinalIntake(f.coreDb, attemptId)).toBe(false);
+            expect(f.store.getTurnById(turnId)).toEqual(turn);
+          }
+        }
+        reply.resolve();
+        if (!failureWins) {
+          await Promise.race([failurePost.promise, failureCaller]);
+          if (!intakeWins)
+            expect(requireSchedulerExecutionAttempt(f.coreDb, attemptId).phase).toBe(
+              cancellation ? 'closing' : 'open'
+            );
+          allowNative.resolve();
+          expect(await (final ?? control.recordFinalStatus(payload))).toMatchObject({
+            accepted: true,
+          });
+          if (schedulerWrites) {
+            unavailable = true;
+            await vi.advanceTimersByTimeAsync(200);
+          }
+        }
+        allowPost.resolve();
+        const { setTimeout: realDelay } =
+          await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
+        for (let n = 0; n < 4 && !f.isSettled(); n += 1) {
+          await realDelay(100);
+          if (failureWins) await vi.advanceTimersByTimeAsync(300_000);
+        }
+        await running;
+        expect(readsRefused).toBe(1);
+        await shutdownControlStoreWorkerClient();
+        const reopened = new FsStore({ dataRoot: f.coreDb.dataRoot });
+        const retained = reopened.getTurnById(turnId);
+        const events = reopened
+          .getTurnEvents(turnId)
+          .filter(
+            (event) => event.event === 'turn.completed' || event.event === 'turn.interrupted'
+          );
+        const accepted = readStoppedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+        );
+        if (failureWins) {
+          expect(retained.status).toBe('failed');
+          expect(events).toHaveLength(1);
+          expect(accepted).toBeNull();
+        } else {
+          expect(retained).toEqual(turn);
+          expect(events).toEqual([]);
+          expect(accepted).toMatchObject({
+            status: payload.status,
+            stopReason: payload.stopReason,
+          });
+          expect(requireSchedulerExecutionAttempt(f.coreDb, attemptId)).toMatchObject({
+            phase: 'closing',
+            terminalCause: cancellation ? 'turn-cancelled' : 'worker-final-status',
+            fenceRef: null,
+          });
+          expect(readExecutionJournalRoot(f.coreDb, execution).exclusionRefs).toEqual(exclusions);
+          expect(cleanup).not.toHaveBeenCalled();
+          expect(f.effects.map(({ kind }) => kind)).not.toContain('sandbox.delete');
+        }
+      } finally {
+        decide.resolve();
+        reply.resolve();
+        allowPost.resolve();
+        allowNative.resolve();
+        if (!f.isSettled()) await vi.advanceTimersByTimeAsync(600_000);
+        await f.close();
+        closeSpy.mockRestore();
+        finalSpy.mockRestore();
+        pauseSpy.mockRestore();
+        cleanup?.mockRestore();
+        waitSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+    60_000
+  );
 });
 
 // G4: same-schema old/missing identity must never release the pending material-bearing command.

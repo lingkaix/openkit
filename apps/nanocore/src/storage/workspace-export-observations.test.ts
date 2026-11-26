@@ -25,8 +25,10 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { WORK_OBSERVATION_TRUNCATION_FEATURE } from './work-observation-collection.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
 import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
@@ -39,136 +41,280 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
   return db;
 }
 
+/** Re-seals an altered fixture member so the offline check reaches semantic validation. */
+function replaceArchiveFixtureMember(
+  exportRoot: string,
+  manifestText: string,
+  path: string,
+  text: string
+): void {
+  const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+  writeFileSync(join(exportRoot, path), text);
+  const manifest = JSON.parse(manifestText) as {
+    contentDigest: string;
+    contentInventory: Array<{ path: string; bytes: number; digest: string }>;
+  };
+  const entry = manifest.contentInventory.find((row) => row.path === path)!;
+  entry.bytes = Buffer.byteLength(text);
+  entry.digest = digest(text);
+  manifest.contentDigest = digest(JSON.stringify(manifest.contentInventory));
+  writeFileSync(
+    join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
+}
+
 describe('work observation portable closure', () => {
-  it('recovers implicit callRef and explicit runtime corr before archive download', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Runtime joins');
-    const thread = await store.createThread(workspace.id, 'Runtime joins');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
-    const turn = await store.createTurn(
-      workspace.id,
-      thread.id,
-      'Portable runtime recovery',
-      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      null,
-      { captureCoverage: { scope: 'workspace', value: 'off' } }
-    );
-    const db = workspaceDb(dataRoot, workspace.id);
-    const owner = { threadId: thread.id, turnId: turn.id };
-    try {
-      const agentSetup = createTestAgentSetup();
-      const session = await store.createAgentSession({
-        id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
-        agentId: agentSetup.manifest.id,
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        status: 'idle',
-        message: null,
-        createdAt: turn.startedAt!,
-        updatedAt: turn.startedAt!,
-      });
-      const environmentPackage = await resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'workspace', value: 'off' },
-        agentSetup,
-        agentSessionId: session.id,
-        triggerActor: turn.triggerActor,
-        backend: { kind: 'openshell' },
-        requestId: 'portable-runtime',
-        turn,
-        turnInput: 'Portable runtime recovery',
-        workspaceCwd: '/workspace',
-        workspaceRoots: [],
-      });
-      await recordAgentEnvironmentPackageSnapshot(db, {
-        createdAt: turn.startedAt!,
-        environmentPackage,
-      });
-      await store.updateAgentSession(session.id, {
-        environmentPackageSnapshotId: environmentPackage.snapshotId,
-      });
-      for (const [index, corr] of [undefined, 'explicit-runtime-group'].entries()) {
-        await appendWorkObservation(db, {
-          ...owner,
-          bodies: [],
-          observation: {
-            id: `runtime_${index}`,
-            type: 'runtime.observed',
-            obs: 'worker-shim',
-            ts: turn.startedAt!,
-            ...(corr === undefined ? {} : { corr }),
-            payload: {
-              observationId: `runtime_${index}`,
-              sourceRef: `source_${index}`,
-              sourceSequence: index + 1,
-              observedAt: turn.startedAt!,
-              fact: {
-                kind: 'tool',
-                runtimeOriginRef: null,
-                callRef: index === 0 ? 'runtime-call-source' : 'runtime-explicit-call-source',
-                phase: 'started',
-                toolName: 'example.read',
-              },
-              content: { state: 'off' },
-            },
-          },
-        });
-      }
-      const terminal = await terminalizeGovernedWorkerTurn({
-        agentSessionId: null,
-        completedAt: turn.startedAt!,
-        errorCode: 'worker_governance_restart_recovery',
-        message: 'Worker execution was interrupted during NanoCore restart recovery.',
-        outcome: 'interrupted',
-        requestId: null,
-        store,
-        turnId: turn.id,
-      });
-      const reap = await appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
-      const sourceRows = readWorkObservations(db, owner);
-      expect(sourceRows[0]).not.toHaveProperty('corr');
-      expect(reap.payload.unresolvedCalls).toEqual([
-        {
-          corr: 'runtime-call-source',
-          type: 'runtime.observed',
-          name: 'example.read',
-          ts: turn.startedAt,
-        },
-        {
-          corr: 'explicit-runtime-group',
-          type: 'runtime.observed',
-          name: 'example.read',
-          ts: turn.startedAt,
-        },
-      ]);
-      const exported = await createVerifiedWorkspaceExport({
-        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  it.each([false, true])(
+    'recovers implicit callRef and explicit runtime corr before archive download (truncated=%s)',
+    async (truncated) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const workspace = await store.createWorkspace('Runtime joins');
+      const thread = await store.createThread(workspace.id, 'Runtime joins');
+      recordWorkspaceOwnerMembership({
         coreDb,
-        dataRoot,
-        exportId: testEntityId('wsexp', 'export_runtime_joins'),
-        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
-        store,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-      const app = createApp({ coreDb, dataRoot, store });
-      const archive = await app.request(
-        `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
+      const turn = await store.createTurn(
+        workspace.id,
+        thread.id,
+        'Portable runtime recovery',
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        null,
+        { captureCoverage: { scope: 'workspace', value: 'off' } }
       );
-      expect(archive.status).toBe(200);
-    } finally {
-      db.sqlite.close();
-      coreDb.sqlite.close();
+      const db = workspaceDb(dataRoot, workspace.id);
+      const owner = { threadId: thread.id, turnId: turn.id };
+      try {
+        const agentSetup = createTestAgentSetup();
+        const session = await store.createAgentSession({
+          id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
+          agentId: agentSetup.manifest.id,
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          status: 'idle',
+          message: null,
+          createdAt: turn.startedAt!,
+          updatedAt: turn.startedAt!,
+        });
+        const environmentPackage = await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'workspace', value: 'off' },
+          agentSetup,
+          agentSessionId: session.id,
+          triggerActor: turn.triggerActor,
+          backend: { kind: 'openshell' },
+          requestId: 'portable-runtime',
+          turn,
+          turnInput: 'Portable runtime recovery',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        });
+        await recordAgentEnvironmentPackageSnapshot(db, {
+          createdAt: turn.startedAt!,
+          environmentPackage,
+        });
+        await store.updateAgentSession(session.id, {
+          environmentPackageSnapshotId: environmentPackage.snapshotId,
+        });
+        for (const [index, corr] of [undefined, 'explicit-runtime-group'].entries()) {
+          await appendWorkObservation(db, {
+            ...owner,
+            bodies: [],
+            observation: {
+              id: `runtime_${index}`,
+              type: 'runtime.observed',
+              obs: 'worker-shim',
+              ts: turn.startedAt!,
+              ...(corr === undefined ? {} : { corr }),
+              payload: {
+                observationId: `runtime_${index}`,
+                sourceRef: `source_${index}`,
+                sourceSequence: index + 1,
+                observedAt: turn.startedAt!,
+                fact: {
+                  kind: 'tool',
+                  runtimeOriginRef: null,
+                  callRef: index === 0 ? 'runtime-call-source' : 'runtime-explicit-call-source',
+                  phase: 'started',
+                  toolName: 'example.read',
+                },
+                content: { state: 'off' },
+              },
+            },
+          });
+        }
+        const exportSnapshot = (
+          id: string,
+          repositoryWorkspaceDb = (workspace: string) => workspaceDb(dataRoot, workspace)
+        ) =>
+          createVerifiedWorkspaceExport({
+            fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+            requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            coreDb,
+            dataRoot,
+            exportId: testEntityId('wsexp', id),
+            repositoryWorkspaceDb,
+            store,
+            workspaceId: workspace.id,
+          });
+        const readTurnHead = () =>
+          db.sqlite
+            .prepare('SELECT record_json AS json, status FROM control_turns WHERE id=?')
+            .get(turn.id) as { json: string; status: string };
+        let liveHead: ReturnType<typeof readTurnHead> | undefined;
+        if (truncated) {
+          await expect(
+            appendWorkObservation(db, {
+              ...owner,
+              bodies: [],
+              observation: {
+                id: 'runtime_overflow',
+                type: 'runtime.observed',
+                obs: 'worker-shim',
+                corr: 'x'.repeat(61_440),
+                ts: turn.startedAt!,
+                payload: {
+                  observationId: 'runtime_overflow',
+                  sourceRef: 'source_0',
+                  sourceSequence: 3,
+                  observedAt: turn.startedAt!,
+                  fact: {
+                    kind: 'tool',
+                    runtimeOriginRef: null,
+                    callRef: 'overflow',
+                    phase: 'started',
+                  },
+                  content: { state: 'off' },
+                },
+              },
+            })
+          ).rejects.toMatchObject({ disposition: 'truncated' });
+          liveHead = readTurnHead();
+          const live = await exportSnapshot('export_runtime_joins_live');
+          expect(live.verified.manifest.requiredFeatures).toContain(
+            WORK_OBSERVATION_TRUNCATION_FEATURE
+          );
+          const turnBytes = live.verified.fileContents.get('records/turns.jsonl')!;
+          const header = JSON.parse(turnBytes.trim());
+          expect(header.observationTruncation).toEqual({
+            reason: 'unresolved-call-bytes',
+            omittedCount: 1,
+            firstOmittedSequence: 3,
+            lastOmittedSequence: 3,
+            tail: 'unknown',
+          });
+          expect(['pending', 'running']).toContain(header.status);
+          expect(header).not.toHaveProperty('observationCutoff');
+          expect(header).not.toHaveProperty('observationCounter');
+          const path = `workspace-files/threads/${thread.id}/turns/${turn.id}/observations.jsonl`;
+          const rows = live.verified.fileContents.get(path)!.trimEnd().split('\n');
+          expect(rows.map((row) => JSON.parse(row).type)).toEqual([
+            'runtime.observed',
+            'runtime.observed',
+          ]);
+        }
+        const terminal = await terminalizeGovernedWorkerTurn({
+          agentSessionId: null,
+          completedAt: turn.startedAt!,
+          errorCode: 'worker_governance_restart_recovery',
+          message: 'Worker execution was interrupted during NanoCore restart recovery.',
+          outcome: 'interrupted',
+          requestId: null,
+          store,
+          turnId: turn.id,
+        });
+        const reap = await appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
+        const sourceRows = readWorkObservations(db, owner);
+        expect(sourceRows[0]).not.toHaveProperty('corr');
+        expect(reap.payload.unresolvedCalls).toEqual([
+          {
+            corr: 'runtime-call-source',
+            type: 'runtime.observed',
+            name: 'example.read',
+            ts: turn.startedAt,
+          },
+          {
+            corr: 'explicit-runtime-group',
+            type: 'runtime.observed',
+            name: 'example.read',
+            ts: turn.startedAt,
+          },
+        ]);
+        const exported = await exportSnapshot('export_runtime_joins');
+        expect(
+          exported.verified.manifest.requiredFeatures.includes(WORK_OBSERVATION_TRUNCATION_FEATURE)
+        ).toBe(truncated);
+        if (truncated) {
+          expect(reap.payload.truncation).toEqual({
+            reason: 'unresolved-call-bytes',
+            omittedCount: 1,
+            firstOmittedSequence: 3,
+            lastOmittedSequence: 3,
+            tail: 'unknown',
+          });
+          const path = `workspace-files/threads/${thread.id}/turns/${turn.id}/observations.jsonl`;
+          const rows = exported.verified.fileContents.get(path)!.trimEnd().split('\n');
+          expect(JSON.parse(rows.at(-1)!).payload.truncation).toEqual(reap.payload.truncation);
+        }
+        const app = createApp({ coreDb, dataRoot, store });
+        const archive = await app.request(
+          `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
+        );
+        expect(archive.status).toBe(200);
+        if (liveHead) {
+          await shutdownControlStoreWorkerClient();
+          const terminalHead = readTurnHead();
+          const setTurnHead = (head: ReturnType<typeof readTurnHead>) =>
+            db.sqlite
+              .prepare('UPDATE control_turns SET record_json=?, status=? WHERE id=?')
+              .run(head.json, head.status, turn.id);
+          setTurnHead(liveHead);
+          try {
+            expect
+              .soft(() => readWorkObservations(db, owner))
+              .toThrow(/live Turn cannot carry a terminal observation reap/);
+            await expect(
+              exportSnapshot('export_runtime_joins_race', (id) => {
+                setTurnHead(terminalHead);
+                return workspaceDb(dataRoot, id);
+              })
+            ).rejects.toThrow(/Turn changed while selecting its observation snapshot/);
+          } finally {
+            setTurnHead(terminalHead);
+          }
+
+          const exportRoot = join(
+            dataRoot,
+            'server',
+            'exports',
+            'workspaces',
+            workspace.id,
+            exported.verified.manifest.id
+          );
+          const path = 'records/turns.jsonl';
+          const header = JSON.parse(exported.verified.fileContents.get(path)!.trim());
+          replaceArchiveFixtureMember(
+            exportRoot,
+            exported.verified.manifestText,
+            path,
+            `${JSON.stringify({ ...header, status: liveHead.status, completedAt: null })}\n`
+          );
+          expect
+            .soft(() => verifyWorkspaceExportTree({ exportRoot }))
+            .toThrow(/live Turn cannot carry a terminal observation reap/);
+        }
+      } finally {
+        db.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each([null, 'ws_00000000-0000-7f9c-aa14-53566c621405'])(
     'validates env.bound source owner (%s)',
@@ -301,20 +447,11 @@ describe('work observation portable closure', () => {
           retained.payload.workspaceId = foreignOwner;
           lines[0] = JSON.stringify(retained);
           const text = lines.join('\n');
-          writeFileSync(join(exportRoot, observationFile), text);
-          const manifest = JSON.parse(exported.verified.manifestText) as {
-            contentDigest: string;
-            contentInventory: Array<{ path: string; bytes: number; digest: string }>;
-          };
-          const entry = manifest.contentInventory.find((row) => row.path === observationFile)!;
-          entry.bytes = Buffer.byteLength(text);
-          entry.digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
-          manifest.contentDigest = `sha256:${createHash('sha256')
-            .update(JSON.stringify(manifest.contentInventory))
-            .digest('hex')}`;
-          writeFileSync(
-            join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
-            `${JSON.stringify(manifest, null, 2)}\n`
+          replaceArchiveFixtureMember(
+            exportRoot,
+            exported.verified.manifestText,
+            observationFile,
+            text
           );
           exported.verified = verifyWorkspaceExportTree({ exportRoot });
           expect(

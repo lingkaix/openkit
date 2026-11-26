@@ -16,10 +16,11 @@ use openshell_sdk::raw::proto::{
     ExecSandboxRequest, GpuResourceRequirements, ResourceRequirements, RevokeSshSessionRequest,
     SandboxPolicy, SandboxSpec as RawSandboxSpec, SandboxTemplate, TcpForwardFrame, TcpForwardInit,
     TcpRelayTarget, exec_sandbox_event, exec_sandbox_input, tcp_forward_frame, tcp_forward_init,
+    workspace_selector,
 };
 use openshell_sdk::{
-    EdgeAuthInterceptor, ListOptions, OpenShellClient, SandboxPhase, SandboxRef, SandboxSpec,
-    ServiceStatus,
+    DeleteOptions, DeletionOutcome, EdgeAuthInterceptor, ListOptions, OpenShellClient,
+    SandboxPhase, SandboxRef, SandboxSpec, ServiceStatus,
 };
 use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
 use tokio::sync::{mpsc, oneshot};
@@ -438,6 +439,7 @@ pub struct NanoHostOpenShellClient {
     auth_path: PathBuf,
     network_namespace: Option<Arc<OwnedFd>>,
     client: Option<OpenShellClient>,
+    ready_timeout: Duration,
 }
 
 #[allow(dead_code)]
@@ -496,6 +498,7 @@ impl NanoHostOpenShellClient {
             auth_path,
             network_namespace: None,
             client: None,
+            ready_timeout: READY_POLL_TIMEOUT,
         }
     }
 
@@ -619,112 +622,25 @@ impl NanoHostOpenShellClient {
         use crate::openshell_provider_policy::verify_effective_policy;
         use crate::openshell_provider_refresh::{ProviderFacilities, require_facilities};
         use openshell_sdk::raw::proto::{
-            AttachSandboxProviderRequest, GetGatewayConfigRequest, GetSandboxConfigRequest,
-            ListSandboxProvidersRequest, PolicySource, setting_value,
+            AttachSandboxProviderRequest, GetSandboxConfigRequest, ListSandboxProvidersRequest,
+            PolicySource,
         };
         let unproved = ProviderRefusal::NativeUnproved;
         let client = self.connected().map_err(|_| unproved)?;
-        let mut config = client
-            .raw_grpc()
-            .get_gateway_config(GetGatewayConfigRequest {})
-            .await
-            .map_err(|_| unproved)?
-            .into_inner();
-        let mut before = client
+        let before = client
             .raw_grpc()
             .get_sandbox_config(GetSandboxConfigRequest {
-                sandbox_id: sandbox.id.clone(),
+                name: sandbox.name.clone(),
+                workspace_scope: Some(workspace_selector("default")),
+                ..Default::default()
             })
             .await
             .map_err(|_| unproved)?
             .into_inner();
-        // A registered-but-unset facility can be initialized once for this private Gateway.
-        // Never override explicit false/unknown settings, an existing projection, or foreign attachment.
-        let gateway_unset = config
-            .settings
-            .get("providers_v2_enabled")
-            .is_some_and(|value| value.value.is_none());
-        let sandbox_unset = before
-            .settings
-            .get("providers_v2_enabled")
-            .is_some_and(|value| {
-                value
-                    .value
-                    .as_ref()
-                    .is_none_or(|value| value.value.is_none())
-            });
-        if gateway_unset && sandbox_unset && prior.is_empty() {
-            if before.policy_source != PolicySource::Sandbox as i32
-                || before.global_policy_version != 0
-                || !before.supervisor_middleware_services.is_empty()
-                || !["", "fail_closed"].contains(&before.policy_validation_failure_mode.as_str())
-            {
-                return Err(ProviderRefusal::PolicyUnproved);
-            }
-            verify_effective_policy(
-                &binding.base_policy,
-                before
-                    .policy
-                    .as_ref()
-                    .ok_or(ProviderRefusal::PolicyUnproved)?,
-            )?;
-            let attached = client
-                .raw_grpc()
-                .list_sandbox_providers(ListSandboxProvidersRequest {
-                    sandbox_name: sandbox.name.clone(),
-                    workspace: "default".into(),
-                })
-                .await
-                .map_err(|_| unproved)?
-                .into_inner();
-            if !attached.providers.is_empty() {
-                return Err(ProviderRefusal::PolicyUnproved);
-            }
-            client
-                .raw_grpc()
-                .update_config(openshell_sdk::raw::proto::UpdateConfigRequest {
-                    global: true,
-                    setting_key: "providers_v2_enabled".into(),
-                    setting_value: Some(openshell_sdk::raw::proto::SettingValue {
-                        value: Some(setting_value::Value::BoolValue(true)),
-                    }),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|_| unproved)?;
-            config = client
-                .raw_grpc()
-                .get_gateway_config(GetGatewayConfigRequest {})
-                .await
-                .map_err(|_| unproved)?
-                .into_inner();
-            before = client
-                .raw_grpc()
-                .get_sandbox_config(GetSandboxConfigRequest {
-                    sandbox_id: sandbox.id.clone(),
-                })
-                .await
-                .map_err(|_| unproved)?
-                .into_inner();
-        }
-        let providers_v2 = matches!(
-            config
-                .settings
-                .get("providers_v2_enabled")
-                .and_then(|value| value.value.as_ref()),
-            Some(setting_value::Value::BoolValue(true))
-        );
-        let effective_v2 = matches!(
-            before
-                .settings
-                .get("providers_v2_enabled")
-                .and_then(|value| value.value.as_ref())
-                .and_then(|value| value.value.as_ref()),
-            Some(setting_value::Value::BoolValue(true))
-        );
+        // Provider facilities are always enabled on the pinned 0.1 Gateway.
         require_facilities(
             &ProviderFacilities {
-                providers_v2: Some(providers_v2 && effective_v2),
+                providers_v2: Some(true),
                 effective_policy: Some(before.policy.is_some()),
                 ..Default::default()
             },
@@ -744,6 +660,21 @@ impl NanoHostOpenShellClient {
                 .as_ref()
                 .ok_or(ProviderRefusal::PolicyUnproved)?,
         )?;
+        if prior.is_empty() {
+            let attached = client
+                .raw_grpc()
+                .list_sandbox_providers(ListSandboxProvidersRequest {
+                    sandbox: sandbox.name.clone(),
+                    workspace_scope: Some(workspace_selector("default")),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|_| unproved)?
+                .into_inner();
+            if !attached.providers.is_empty() || !attached.next_page_token.is_empty() {
+                return Err(ProviderRefusal::PolicyUnproved);
+            }
+        }
         let existing = prior
             .iter()
             .find(|value| value.provider_name == binding.provider_name);
@@ -783,10 +714,10 @@ impl NanoHostOpenShellClient {
             client
                 .raw_grpc()
                 .attach_sandbox_provider(AttachSandboxProviderRequest {
-                    sandbox_name: sandbox.name.clone(),
-                    provider_name: binding.provider_name.clone(),
-                    expected_resource_version: 0,
-                    workspace: "default".into(),
+                    sandbox: sandbox.name.clone(),
+                    provider: binding.provider_name.clone(),
+                    workspace_scope: Some(workspace_selector("default")),
+                    ..Default::default()
                 })
                 .await
                 .map_err(|_| unproved)?;
@@ -800,8 +731,9 @@ impl NanoHostOpenShellClient {
         let listed = client
             .raw_grpc()
             .list_sandbox_providers(ListSandboxProvidersRequest {
-                sandbox_name: sandbox.name.clone(),
-                workspace: "default".into(),
+                sandbox: sandbox.name.clone(),
+                workspace_scope: Some(workspace_selector("default")),
+                ..Default::default()
             })
             .await
             .map_err(|_| unproved)?
@@ -828,13 +760,15 @@ impl NanoHostOpenShellClient {
             .collect();
         observed_names.sort();
         expected_names.sort();
-        if observed_names != expected_names {
+        if observed_names != expected_names || !listed.next_page_token.is_empty() {
             return Err(ProviderRefusal::PolicyUnproved);
         }
         let after = client
             .raw_grpc()
             .get_sandbox_config(GetSandboxConfigRequest {
-                sandbox_id: sandbox.id.clone(),
+                name: sandbox.name.clone(),
+                workspace_scope: Some(workspace_selector("default")),
+                ..Default::default()
             })
             .await
             .map_err(|_| unproved)?
@@ -860,7 +794,7 @@ impl NanoHostOpenShellClient {
         let mut output = Vec::new();
         let completion = self
             .exec_sandbox_interactive(
-                &sandbox.id,
+                &sandbox.name,
                 &["/usr/bin/printenv".into(), key.into()],
                 &mut io::empty(),
                 0,
@@ -899,7 +833,8 @@ impl NanoHostOpenShellClient {
                 .raw_grpc()
                 .delete_provider(openshell_sdk::raw::proto::DeleteProviderRequest {
                     name: binding.provider_name.clone(),
-                    workspace: "default".into(),
+                    workspace_scope: Some(workspace_selector("default")),
+                    ..Default::default()
                 })
                 .await
             {
@@ -911,7 +846,7 @@ impl NanoHostOpenShellClient {
                 .raw_grpc()
                 .get_provider(openshell_sdk::raw::proto::GetProviderRequest {
                     name: binding.provider_name.clone(),
-                    workspace: "default".into(),
+                    workspace_scope: Some(workspace_selector("default")),
                 })
                 .await
             {
@@ -972,8 +907,8 @@ impl NanoHostOpenShellClient {
             }),
             name: expected_name.clone(),
             labels: spec.labels,
-            annotations: HashMap::new(),
-            workspace: String::new(),
+            workspace_scope: Some(workspace_selector("default")),
+            ..Default::default()
         };
         let response = client.raw_grpc().create_sandbox(request).await;
         let sandbox = match response {
@@ -1007,20 +942,14 @@ impl NanoHostOpenShellClient {
         if expected_name != sandbox.name {
             return Err(EpochFault::IdentityMismatch.into());
         }
-        let deadline = tokio::time::Instant::now() + READY_POLL_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + self.ready_timeout;
         let mut delay = READY_POLL_INITIAL_DELAY;
         loop {
             let observation =
                 match tokio::time::timeout_at(deadline, client.get_sandbox(&sandbox.name)).await {
                     Ok(observation) => observation,
-                    Err(_) => {
-                        return Err(self
-                            .failed_create_after_absence(
-                                &expected_name,
-                                uncertain(CreateCertaintyLossPoint::ReadyTimeout),
-                            )
-                            .await);
-                    }
+                    // Gateway absence cannot join an accepted provisioning task.
+                    Err(_) => return Err(uncertain(CreateCertaintyLossPoint::ReadyTimeout).into()),
                 };
             let classified = classify_ready_observation(
                 observation
@@ -1041,14 +970,7 @@ impl NanoHostOpenShellClient {
                     tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline))
                         .await;
                 }
-                Err(ReadinessFailure::Uncertain(
-                    point @ (CreateCertaintyLossPoint::ReadyErrorPhase
-                    | CreateCertaintyLossPoint::ReadyTimeout),
-                )) => {
-                    return Err(self
-                        .failed_create_after_absence(&expected_name, uncertain(point))
-                        .await);
-                }
+                // The stock Gateway can publish Error before timed-out compute is reclaimed.
                 Err(ReadinessFailure::Uncertain(point)) => return Err(uncertain(point).into()),
                 Err(ReadinessFailure::IdentityMismatch) => {
                     return Err(EpochFault::IdentityMismatch.into());
@@ -1065,7 +987,11 @@ impl NanoHostOpenShellClient {
         unproved: EpochFault,
     ) -> LifecycleEffectError {
         let deadline = tokio::time::Instant::now() + READY_POLL_TIMEOUT;
-        match tokio::time::timeout_at(deadline, self.delete_sandbox(name, READY_POLL_TIMEOUT)).await
+        match tokio::time::timeout_at(
+            deadline,
+            self.delete_sandbox(name, None, READY_POLL_TIMEOUT),
+        )
+        .await
         {
             Ok(Ok(())) => LifecycleEffectError::CreateCleanupProved,
             // Keep the original create lineage, loss point, and elapsed evidence
@@ -1102,7 +1028,7 @@ impl NanoHostOpenShellClient {
     ) -> Result<Vec<SandboxRef>, EpochFault> {
         let sandboxes = self
             .connected()?
-            .list_sandboxes(options)
+            .list_all_sandboxes(options)
             .await
             .map_err(|_| EpochFault::MemberExited(None))?;
         if sandboxes
@@ -1120,10 +1046,34 @@ impl NanoHostOpenShellClient {
     ///
     /// Returns delete uncertainty unless a native acknowledgement or NotFound
     /// is followed by a separate terminal-absence proof through the typed SDK.
-    pub async fn delete_sandbox(&self, name: &str, timeout: Duration) -> Result<(), EpochFault> {
-        match self.connected()?.delete_sandbox(name).await {
-            Ok(_) | Err(openshell_sdk::SdkError::NotFound { .. }) => {}
-            Err(_) => return Err(EpochFault::DeleteOutcomeUncertain),
+    pub async fn delete_sandbox(
+        &self,
+        name: &str,
+        expected_native_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<(), EpochFault> {
+        match self
+            .connected()?
+            .delete_sandbox(name, DeleteOptions::default())
+            .await
+        {
+            Ok(result)
+                if matches!(
+                    result.outcome,
+                    DeletionOutcome::Completed | DeletionOutcome::Accepted
+                ) =>
+            {
+                if let Some(expected) = expected_native_id
+                    && result.sandbox_id.as_deref() != Some(expected)
+                {
+                    return Err(EpochFault::IdentityMismatch);
+                }
+                if !result.sandbox_id.as_ref().is_some_and(|id| !id.is_empty()) {
+                    return Err(EpochFault::DeleteOutcomeUncertain);
+                }
+            }
+            Err(openshell_sdk::SdkError::NotFound { .. }) => {}
+            _ => return Err(EpochFault::DeleteOutcomeUncertain),
         }
         // A missing delete target is not enough: a separate exact-name observation
         // must still prove native NotFound before any owner releases resources.
@@ -1137,7 +1087,7 @@ impl NanoHostOpenShellClient {
     /// Returns delete uncertainty when terminal absence is not proved.
     pub async fn wait_deleted(&self, name: &str, timeout: Duration) -> Result<(), EpochFault> {
         self.connected()?
-            .wait_deleted(name, timeout)
+            .wait_deleted(name, timeout, None)
             .await
             .map_err(|_| EpochFault::DeleteOutcomeUncertain)
     }
@@ -1153,6 +1103,7 @@ impl NanoHostOpenShellClient {
     /// initialization, or the stock forward RPC fails.
     pub async fn open_sandbox_bridge(
         &self,
+        sandbox_name: &str,
         sandbox_id: &str,
         sandbox_integration_binding_ref: String,
         route_projection: OuterRouteProjection,
@@ -1161,7 +1112,8 @@ impl NanoHostOpenShellClient {
         let mut grpc = client.raw_grpc();
         let session = grpc
             .create_ssh_session(CreateSshSessionRequest {
-                sandbox_id: sandbox_id.to_string(),
+                sandbox: sandbox_name.to_string(),
+                workspace_scope: Some(workspace_selector("default")),
             })
             .await
             .map_err(|_| EpochFault::MemberExited(None))?
@@ -1183,7 +1135,8 @@ impl NanoHostOpenShellClient {
             if outbound
                 .send(TcpForwardFrame {
                     payload: Some(tcp_forward_frame::Payload::Init(TcpForwardInit {
-                        sandbox_id: sandbox_id.to_string(),
+                        sandbox: sandbox_name.to_string(),
+                        workspace: "default".into(),
                         service_id: "openkit-sandbox-integration".to_string(),
                         target: Some(tcp_forward_init::Target::Tcp(TcpRelayTarget {
                             host: host.to_string(),
@@ -1199,6 +1152,7 @@ impl NanoHostOpenShellClient {
                 let _ = grpc
                     .revoke_ssh_session(RevokeSshSessionRequest {
                         token: session.token,
+                        allow_missing: false,
                     })
                     .await;
                 return Err(EpochFault::MemberExited(None));
@@ -1217,6 +1171,7 @@ impl NanoHostOpenShellClient {
                         let _ = grpc
                             .revoke_ssh_session(RevokeSshSessionRequest {
                                 token: session.token,
+                                allow_missing: false,
                             })
                             .await;
                         return Err(EpochFault::MemberExited(None));
@@ -1227,6 +1182,7 @@ impl NanoHostOpenShellClient {
                     let _ = grpc
                         .revoke_ssh_session(RevokeSshSessionRequest {
                             token: session.token,
+                            allow_missing: false,
                         })
                         .await;
                     return Err(EpochFault::MemberExited(None));
@@ -1306,6 +1262,7 @@ impl NanoHostOpenShellClient {
                     let _ = grpc
                         .revoke_ssh_session(RevokeSshSessionRequest {
                             token: session.token,
+                            allow_missing: false,
                         })
                         .await;
                     return Err(EpochFault::MemberExited(None));
@@ -1315,6 +1272,7 @@ impl NanoHostOpenShellClient {
             let _ = grpc
                 .revoke_ssh_session(RevokeSshSessionRequest {
                     token: session.token,
+                    allow_missing: false,
                 })
                 .await;
             return Err(EpochFault::MemberExited(None));
@@ -1331,7 +1289,10 @@ impl NanoHostOpenShellClient {
         let token = bridge.into_close_parts();
         self.connected()?
             .raw_grpc()
-            .revoke_ssh_session(RevokeSshSessionRequest { token })
+            .revoke_ssh_session(RevokeSshSessionRequest {
+                token,
+                allow_missing: false,
+            })
             .await
             .map_err(|_| EpochFault::MemberExited(None))?;
         Ok(())
@@ -1353,7 +1314,7 @@ impl NanoHostOpenShellClient {
         bridge: Option<OpenSandboxBridge>,
         worker_bootstrap: Option<WorkerBootstrapRequest>,
         route_projection: Option<OuterRouteProjection>,
-        deletion_timeout: Duration,
+        deletion_target: Option<(&str, Duration)>,
     ) -> Result<LifecycleEffectResult, EpochFault> {
         request
             .validate()
@@ -1388,7 +1349,8 @@ impl NanoHostOpenShellClient {
                 Ok(LifecycleEffectResult::SandboxCreated(sandbox))
             }
             LifecycleEffectKind::DeleteSandbox => {
-                self.delete_sandbox(request.sandbox_id(), deletion_timeout)
+                let (native_id, timeout) = deletion_target.ok_or(EpochFault::IdentityMismatch)?;
+                self.delete_sandbox(request.sandbox_id(), Some(native_id), timeout)
                     .await?;
                 Ok(LifecycleEffectResult::SandboxDeleted)
             }
@@ -1398,9 +1360,12 @@ impl NanoHostOpenShellClient {
                 let sandbox_id = worker_bootstrap.sandbox_id.clone();
                 let sandbox_integration_binding_ref =
                     worker_bootstrap.sandbox_integration_binding_ref.clone();
-                let mut exec_monitor = self.exec_sandbox_worker_bootstrap(worker_bootstrap).await?;
+                let mut exec_monitor = self
+                    .exec_sandbox_worker_bootstrap(worker_bootstrap, request.sandbox_id())
+                    .await?;
                 let (bridge, route_monitor) = tokio::select! {
                     bridge = self.open_sandbox_bridge(
+                        request.sandbox_id(),
                         &sandbox_id,
                         sandbox_integration_binding_ref,
                         route_projection,
@@ -1442,14 +1407,14 @@ impl NanoHostOpenShellClient {
     /// The caller interprets status two only for an optional export.
     pub async fn exec_sandbox_interactive(
         &self,
-        sandbox_id: &str,
+        sandbox_name: &str,
         command: &[String],
         stdin: &mut dyn Read,
         stdin_length: usize,
         stdout: &mut dyn Write,
         output_limit: usize,
     ) -> Result<ExecSandboxInteractiveResult, EpochFault> {
-        if sandbox_id.is_empty()
+        if sandbox_name.is_empty()
             || command.is_empty()
             || stdin_length > FILE_EFFECT_MAX_BYTES
             || output_limit > FILE_EFFECT_MAX_BYTES
@@ -1462,15 +1427,20 @@ impl NanoHostOpenShellClient {
         let (input, input_rx) = mpsc::channel(4);
         let start = ExecSandboxInput {
             payload: Some(exec_sandbox_input::Payload::Start(ExecSandboxRequest {
-                sandbox_id: sandbox_id.to_string(),
+                sandbox: sandbox_name.to_string(),
+                workspace_scope: Some(workspace_selector("default")),
                 command: command.to_vec(),
                 workdir: String::new(),
                 environment: Default::default(),
-                timeout_seconds: 300,
+                execution_timeout: Some(prost_types::Duration {
+                    seconds: 300,
+                    nanos: 0,
+                }),
                 stdin: Vec::new(),
                 tty: false,
                 cols: 0,
                 rows: 0,
+                ..Default::default()
             })),
         };
         if input.send(start).await.is_err() {
@@ -1569,10 +1539,11 @@ impl NanoHostOpenShellClient {
     pub async fn exec_sandbox_worker_bootstrap(
         &self,
         request: WorkerBootstrapRequest,
+        sandbox_name: &str,
     ) -> Result<WorkerBootstrapMonitor, EpochFault> {
         request.validate()?;
         let WorkerBootstrapRequest {
-            sandbox_id,
+            sandbox_id: _,
             request_id,
             sandbox_integration_binding_ref: _,
         } = request;
@@ -1581,15 +1552,17 @@ impl NanoHostOpenShellClient {
             .connected()?
             .raw_grpc()
             .exec_sandbox(ExecSandboxRequest {
-                sandbox_id,
+                sandbox: sandbox_name.to_string(),
+                workspace_scope: Some(workspace_selector("default")),
                 command: vec!["/usr/local/bin/openkit-worker-shim".to_string()],
                 workdir: "/workspace".to_string(),
                 environment: HashMap::new(),
-                timeout_seconds: 0,
+                execution_timeout: None,
                 stdin: Vec::new(),
                 tty: false,
                 cols: 0,
                 rows: 0,
+                ..Default::default()
             })
             .await
             .map_err(|_| EpochFault::MemberExited(None))?
@@ -1712,7 +1685,7 @@ pub(crate) async fn dormant_provider_import(
                 profile: Some(profile.clone()),
                 source: String::new(),
             }],
-            workspace: String::new(),
+            ..Default::default()
         })
         .await
         .map_err(|_| NativeUnproved)?
@@ -1757,7 +1730,8 @@ pub(crate) async fn dormant_provider_create(
         .raw_grpc()
         .create_provider(openshell_sdk::raw::proto::CreateProviderRequest {
             provider: Some(provider),
-            workspace: "default".into(),
+            workspace_scope: Some(workspace_selector("default")),
+            ..Default::default()
         })
         .await
         .map_err(|_| NativeUnproved)?
@@ -1798,7 +1772,7 @@ pub(crate) async fn dormant_provider_configure_refresh(
         .map_err(|_| NativeUnproved)?
         .into_inner();
     let observed = response.status.ok_or(NativeUnproved)?;
-    if observed.provider_name != expected_provider
+    if observed.provider != expected_provider
         || observed.credential_key != expected_key
         || observed.strategy != expected_strategy
     {
@@ -1835,7 +1809,7 @@ pub(crate) async fn dormant_provider_refresh_status(
         || response
             .credentials
             .iter()
-            .any(|s| s.provider_name != expected_provider || s.credential_key != expected_key)
+            .any(|s| s.provider != expected_provider || s.credential_key != expected_key)
     {
         return Err(NativeUnproved);
     }
@@ -1848,6 +1822,11 @@ pub(crate) async fn dormant_provider_refresh_status(
 
 #[cfg(test)]
 impl NanoHostOpenShellClient {
+    /// Shortens only the test caller's accepted-Create readiness deadline.
+    pub(crate) fn fixture_create_ready_timeout(&mut self, timeout: Duration) {
+        self.ready_timeout = timeout;
+    }
+
     /// Installs a fixture-owned channel at the external Gateway boundary.
     pub(crate) fn fixture_client(&mut self, client: OpenShellClient) {
         self.client = Some(client);
@@ -1965,20 +1944,25 @@ pub(crate) mod tests {
                             if matches!(method.as_str(), "GetSandbox" | "DeleteSandbox") {
                                 // Name is the pinned native lookup key for both deletion and NotFound proof.
                                 let name = b"sandbox-one";
-                                let mut expected = vec![0, 0, 0, 0, (name.len() + 2) as u8, 0x0a, name.len() as u8];
+                                let mut expected = vec![0, 0, 0, 0, (name.len() + 13) as u8, 0x0a, name.len() as u8];
                                 expected.extend_from_slice(name);
-                                assert_eq!(bytes, expected, "native cleanup must address the exact expected name");
+                                expected.extend_from_slice(b"\x12\x09\x0a\x07default");
+                                assert_eq!(bytes, expected, "native cleanup must address the exact expected name in the default workspace");
                             }
                             observed.lock().unwrap().push((method.clone(), bytes));
                             let absent = deleted.load(std::sync::atomic::Ordering::SeqCst);
                             if (method == "DeleteSandbox" && case == "delete-stalled")
-                                || (method == "GetSandbox" && absent && case == "absence-stalled") {
+                                || (method == "GetSandbox" && absent && case == "absence-stalled")
+                                || (method == "GetSandbox" && !absent && case == "ready-stalled") {
                                 std::future::pending::<()>().await;
                             }
                             let (code, payload) = match method.as_str() {
+                                "ListSandboxes" if case == "fresh-empty" => ("0", Vec::new()),
+                                "ListSandboxes" if case == "fresh-present" => ("0", sandbox_response("native-id", "sandbox-one", 2)),
                                 "CreateSandbox" => match case {
                                     "invalid-argument" | "invalid-argument-delete-not-found"
-                                        | "delete-not-found-unproved" => ("3", Vec::new()),
+                                        | "delete-not-found-unproved" | "delete-unproved" | "absence-error"
+                                        | "absence-unproved" | "delete-stalled" | "absence-stalled" => ("3", Vec::new()),
                                     "failed-precondition" => ("9", Vec::new()),
                                     "resource-exhausted" => ("8", Vec::new()),
                                     "unavailable" => ("14", Vec::new()),
@@ -1997,6 +1981,7 @@ pub(crate) mod tests {
                                     "wrong-error-id" => ("0", sandbox_response("other-id", "sandbox-one", 3)),
                                     "wrong-pending-name" => ("0", sandbox_response("native-id", "other-name", 1)),
                                     "timeout" => ("0", sandbox_response("native-id", "sandbox-one", 1)),
+                                    "foreign-delete-completed" | "foreign-delete-accepted" => ("0", sandbox_response("native-id", "sandbox-one", 2)),
                                     _ => ("0", sandbox_response("native-id", "sandbox-one", 3)),
                                 },
                                 "DeleteSandbox" => {
@@ -2005,7 +1990,11 @@ pub(crate) mod tests {
                                         "delete-unproved" => "14",
                                         "invalid-argument-delete-not-found" | "delete-not-found-unproved" => "5",
                                         _ => "0",
-                                    }, vec![0x08, 1])
+                                    }, match case {
+                                        "foreign-delete-completed" => b"\x10\x01\x1a\x08other-id".to_vec(),
+                                        "foreign-delete-accepted" => b"\x10\x02\x1a\x08other-id".to_vec(),
+                                        _ => b"\x10\x01\x1a\x09native-id".to_vec(),
+                                    })
                                 }
                                 _ => panic!("unexpected Gateway method"),
                             };
@@ -2057,10 +2046,12 @@ pub(crate) mod tests {
                 .block_on(async {
                     for case in [
                         "timeout",
+                        "ready-stalled",
                         "absence-unproved",
                         "delete-stalled",
                         "absence-stalled",
                     ] {
+                        let ready_timeout = matches!(case, "timeout" | "ready-stalled");
                         let (sdk, fixture) = create_gateway_fixture(case).await;
                         let mut client = super::NanoHostOpenShellClient::new("fixture".into(), PathBuf::new());
                         client.fixture_client(sdk);
@@ -2074,6 +2065,7 @@ pub(crate) mod tests {
                                 environment: Default::default(),
                                 providers: Vec::new(),
                                 gpu: false,
+                                ..Default::default()
                             },
                             SandboxPolicy::default(),
                             "request-one",
@@ -2094,7 +2086,7 @@ pub(crate) mod tests {
                                     .iter()
                                     .position(|(method, _)| method == "DeleteSandbox");
                                 !advanced
-                                    && if case == "timeout" {
+                                    && if ready_timeout {
                                         calls.iter().any(|(method, _)| method == "GetSandbox")
                                     } else if case == "delete-stalled" {
                                         deleted_at.is_some()
@@ -2115,7 +2107,7 @@ pub(crate) mod tests {
                                         () = tokio::task::yield_now() => {}
                                     }
                                 }
-                                if case == "timeout" {
+                                if ready_timeout {
                                     assert!(
                                         !fixture
                                             .calls
@@ -2144,25 +2136,15 @@ pub(crate) mod tests {
                         });
                         eprintln!("native deadline case={case} elapsed={:?} result={result:?}",
                             tokio::time::Instant::now() - started);
-                        if case == "timeout" {
-                            assert!(
-                                matches!(
-                                    result,
-                                    Err(super::LifecycleEffectError::CreateCleanupProved)
-                                ),
-                                "ready timeout is request-local only after native absence"
-                            );
-                        } else {
-                            assert!(
-                                matches!(
-                                    result,
-                                    Err(super::LifecycleEffectError::Epoch(
-                                        crate::epoch_coordinator::EpochFault::CreateOutcomeUncertain(_)
-                                    ))
-                                ),
-                                "missing NotFound proof cannot become definite failure"
-                            );
-                        }
+                        assert!(
+                            matches!(
+                                result,
+                                Err(super::LifecycleEffectError::Epoch(
+                                    crate::epoch_coordinator::EpochFault::CreateOutcomeUncertain(_)
+                                ))
+                            ),
+                            "case={case}: accepted Create timeout or incomplete cleanup must fence the epoch"
+                        );
                         let elapsed = tokio::time::Instant::now() - started;
                         assert!(
                             elapsed >= Duration::from_secs(120)
@@ -2172,15 +2154,18 @@ pub(crate) mod tests {
                             let calls = fixture.calls.lock().unwrap();
                             let deletion = calls
                                 .iter()
-                                .position(|(method, _)| method == "DeleteSandbox")
-                                .expect("exact-name cleanup");
-                            if case != "delete-stalled" {
+                                .position(|(method, _)| method == "DeleteSandbox");
+                            if ready_timeout {
+                                assert!(deletion.is_none(), "timed-out accepted Create must keep the claim for fencing");
+                            } else if case != "delete-stalled" {
                                 assert!(
-                                    calls[deletion + 1..]
+                                    calls[deletion.expect("exact-name cleanup") + 1..]
                                         .iter()
                                         .any(|(method, _)| method == "GetSandbox"),
                                     "delete acknowledgement alone cannot prove absence"
                                 );
+                            } else {
+                                assert!(deletion.is_some());
                             }
                         }
                         fixture.peer.abort();
@@ -2941,7 +2926,7 @@ pub(crate) mod tests {
         assert_eq!(bridge.matches("route_server.await").count(), 1);
         assert_eq!(bridge.matches(&create_rpc).count(), 1);
         assert_eq!(bridge.matches("SANDBOX_INTEGRATION_TARGET").count(), 1);
-        assert!(bridge[attempt_loop..].contains("sandbox_id: sandbox_id.to_string()"));
+        assert!(bridge[attempt_loop..].contains("sandbox: sandbox_name.to_string()"));
         assert!(bridge[attempt_loop..].contains("authorization_token: session.token.clone()"));
         for forbidden in [
             ".exec_sandbox(",
@@ -3301,7 +3286,7 @@ pub(crate) mod tests {
         for bootstrap_rule in [
             "/usr/local/bin/openkit-worker-shim",
             "workdir: \"/workspace\"",
-            "timeout_seconds: 0",
+            "execution_timeout: None",
             "tty: false",
             "environment: HashMap::new()",
             "stdin: Vec::new()",

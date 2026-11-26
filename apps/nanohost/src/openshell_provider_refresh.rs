@@ -131,8 +131,9 @@ pub(crate) fn prepare_delegated_refresh(
         strategy,
         material,
         secret_material_keys: keys,
-        expires_at_ms: provider.credential_expires_at_ms.get(env).copied(),
-        workspace: "default".into(),
+        expiration_time: provider.credential_expiration_times.get(env).cloned(),
+        workspace_scope: Some(openshell_sdk::raw::proto::workspace_selector("default")),
+        ..Default::default()
     };
     profile.credentials[0].refresh = Some(refresh);
     Ok(request)

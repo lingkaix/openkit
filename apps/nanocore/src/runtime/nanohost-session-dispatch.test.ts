@@ -50,8 +50,10 @@ import type { NanoHostHarnessResult } from './nanohost-harness.js';
 import type { AllocateNanoHostRuntimeTargetConnectionGenerationInput } from './nanohost-runtime-target.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import {
+  type CreateNanoHostSessionDispatchInput,
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
+  type NanoHostSessionEffectRequest,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
   type SettleNanoHostPreparedImage,
@@ -72,6 +74,28 @@ function allocateDispatchTarget(
   }: AllocateNanoHostRuntimeTargetConnectionGenerationInput
 ) {
   return fixture.transition({ kind: 'allocate', targetId, identityId, deploymentId, observedAt });
+}
+
+/** Models an initiating owner for the test-only commands on the real routes. */
+function createFixtureDispatch(input: CreateNanoHostSessionDispatchInput) {
+  const dispatch = createNanoHostSessionDispatch(input);
+  const effect = dispatch.effect;
+  dispatch.effect = (
+    request: object | NanoHostSessionEffectRequest,
+    carried?: NanoHostSessionEffectRequest
+  ) => {
+    if (carried) return effect(request, carried);
+    const original = request as NanoHostSessionEffectRequest;
+    return effect({
+      ...original,
+      beforeDelivery:
+        original.beforeDelivery ??
+        (() => () => {
+          original.signal?.throwIfAborted();
+        }),
+    });
+  };
+  return dispatch;
 }
 
 describe('authoritative NanoHost session dispatch', () => {
@@ -138,7 +162,7 @@ describe('authoritative NanoHost session dispatch', () => {
       const coreDb = openCoreDb(root);
       applyMigrations(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
-      const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
       const exporter = new InMemorySpanExporter();
       const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
       await allocateDispatchTarget(nanoHost, {
@@ -362,7 +386,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
     const target = { deploymentId: 'resources', identityId: 'resources', targetId: 'resources' };
     await allocateDispatchTarget(nanoHost, {
       ...target,
@@ -565,7 +589,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
     const target = {
       deploymentId: 'skill-import',
       identityId: 'skill-import',
@@ -861,7 +885,7 @@ describe('authoritative NanoHost session dispatch', () => {
               ? { ...fixture.input, futureAuthority: true }
               : fixture.input,
         };
-        const current = createNanoHostSessionDispatch({
+        const current = createFixtureDispatch({
           coreDb,
           fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
           sessionAuthority: authority,
@@ -1029,7 +1053,7 @@ describe('authoritative NanoHost session dispatch', () => {
           );
       }
       // Exercise the live extension through the same physical-session and handwritten validator owners.
-      const live = createNanoHostSessionDispatch({
+      const live = createFixtureDispatch({
         coreDb,
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         sessionAuthority: authority,
@@ -1158,7 +1182,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-cleanup-poll-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       coreDb,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
@@ -1276,7 +1300,7 @@ describe('authoritative NanoHost session dispatch', () => {
       const coreDb = openCoreDb(root);
       applyMigrations(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
-      const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
       const target = {
         deploymentId: 'cleanup-join',
         identityId: 'cleanup-join',
@@ -1435,7 +1459,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       coreDb,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
@@ -1867,7 +1891,7 @@ describe('authoritative NanoHost session dispatch', () => {
     });
     const imageExecution = { actor, workId: publicationTurn.id, authorize: () => true };
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       coreDb,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
@@ -2002,7 +2026,7 @@ describe('authoritative NanoHost session dispatch', () => {
       evidence: { resultingImageDigest: 'sha256:image' },
       status: 'succeeded',
     }));
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       effectHandler,
       routeHandler,
       sessionAuthority: authority,
@@ -2058,7 +2082,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
     const target = {
       coreDb,
       nativeStorage: nanoHost.storage,
@@ -2293,7 +2317,7 @@ describe('authoritative NanoHost session dispatch', () => {
 
   it('settles exact ordinary and import typed failures and preserves successor result fences', async () => {
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ sessionAuthority: authority });
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-typed-effect-failure-')));
     applyMigrations(coreDb);
     const nanoHost = openNanoHostTestOwner();
@@ -2749,7 +2773,7 @@ describe('authoritative NanoHost session dispatch', () => {
     applyMigrations(coreDb);
     const nanoHost = openNanoHostTestOwner();
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ sessionAuthority: authority });
     const target = {
       coreDb,
       nativeStorage: nanoHost.storage,
@@ -2928,7 +2952,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-effect-epoch-origin-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       coreDb,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       sessionAuthority: authority,
@@ -3120,7 +3144,7 @@ describe('authoritative NanoHost session dispatch', () => {
         );
       });
     });
-    const dispatch = createNanoHostSessionDispatch({
+    const dispatch = createFixtureDispatch({
       coreDb,
       nativeStorage: { state: 'ready', value: nanoHost },
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
@@ -3547,7 +3571,7 @@ async function privateLoginDispatchFixture(
   const nanoHost = openNanoHostTestOwner();
   const coreDb = openCoreDb(root);
   const authority = createNanoHostTransportSessionAuthority();
-  const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+  const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
   const target = {
     deploymentId: 'private-login',
     identityId: 'private-login',
@@ -3909,7 +3933,7 @@ describe('private NanoHost Effect result route outside the owner acknowledgement
       },
     };
     const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const dispatch = createFixtureDispatch({ coreDb, sessionAuthority: authority });
     const app = new Hono<{ Variables: AuthVariables }>();
     registerNanoHostSessionSemanticRoutes({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,

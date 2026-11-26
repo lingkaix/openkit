@@ -109,6 +109,14 @@ Prepare and start MUST refuse a 0.1.x to v0.2.0 update before receipt, job or Ap
 
 After the cutover, the helper compares the App, Core, User and Workspace journals. Service and extension journals sit outside that comparison. When a service-only update satisfies the unchanged four-journal and existing deployment eligibility requirements, use the in-platform path. Its owner verifies the recovery copy and migrates independently after kernel readiness. Preserve normal candidate-identity and readiness checks, configured NanoHost readiness and authenticated credential-inventory checks. Exercise the changed service through a normal operation. If an older image cannot read the service version, leave that route unavailable. A fallback to old tables cannot establish authority. Use the existing compatibility and recovery assessment before restoring the App or data.
 
+### Runtime Peer Version Refusal
+
+The runtime wire can change across v0.2.x releases. A mismatched peer is refused before effects. [Contract Evolution](../core/contract-evolution.md#version-and-capability-discovery) owns the refusal. The existing update preflight still checks for active work.
+
+A Sandbox refusal leads Core to order one recycle onto the current image. Each live Sandbox incurs a cold wake and ordinary release proof still applies to its predecessor. If its successor is refused again, stop retries and show a maintenance hold. Keep the retained Volume and use fresh authority at wake.
+
+A Host refusal requires a compatible payload through authorized [installed release replacement](20260802-nanohost_runtime_and_transport.md#installed-release-replacement) before epoch renewal. If authorized replacement is unavailable or the Host still refuses, stop retries and show a maintenance hold. A refusal from a peer grants no authorization to tear down that peer. Fresh-empty readiness still requires the predecessor fence.
+
 ### Attestation Verification After v0.1.0
 
 After v0.1.0, `prepare` MUST verify the selected App digest's release attestation before accepting the target. Its signer MUST be the fixed repository's release workflow at a release tag, with GitHub Actions OIDC as issuer. Missing or mismatched provenance MUST refuse preparation. Producing attestations is required for v0.1.0; update-side verification is tracked in [#690](https://github.com/lingkaix/openkit/issues/690). [Development Security](20261109-development_security.md) owns the attestation predicate.
@@ -116,6 +124,8 @@ After v0.1.0, `prepare` MUST verify the selected App digest's release attestatio
 ## Acceptance
 
 The predecessor update attempt returns the fresh-install requirement for the exact v0.2.0 target with no receipt, job or running App change. After fresh installation, an eligible service-only update exercises the independent migration and normal App readiness, configured NanoHost and credential checks. On service-ledger mismatch, prove typed service refusal and no retired table read.
+
+Verify refusal before effects, one Sandbox recycle on the current image, and a visible hold if the mismatch persists. A refused Host needs authorized compatible replacement before epoch renewal. When that path is unavailable, verify the maintenance hold.
 
 No acceptance record treats a mocked receipt or `docker ps` alone as a successful update.
 
@@ -131,6 +141,7 @@ A host-domain test proves that the job survives caller disconnect and App replac
 
 ## Implementation Gaps
 
+- Runtime peer refusal exit - The one Sandbox recycle and Host compatible replacement or maintenance hold remain to qualify - #951
 - Storage cutover refusal and service-only update qualification - The exact incompatible-root update refusal and post-cutover independent service migration fixtures await implementation - #619, #766
 
 - Agent-mediated prepare, start, and status honor the exact user approval binding - On main, those operations return `unsupported_operation` before any host call. Preflight stays read-only and deployment-admin only - #757

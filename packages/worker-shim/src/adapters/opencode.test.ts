@@ -2510,7 +2510,8 @@ describe('OpenCode resident adapter', () => {
   );
 
   it('registers the production adapter and resolves only the pinned CLI', () => {
-    expect(WORKER_ADAPTERS.opencode).toBe(opencodeAdapter);
+    expect(WORKER_ADAPTERS.opencode?.openSession).toBe(opencodeAdapter.openSession);
+    expect(WORKER_ADAPTERS.opencode?.stop).toEqual({ kind: 'best-effort' });
     expect(OPENCODE_PROVIDER_ID).toBe('openkit-worker-inference');
     expect(OPENCODE_PROVIDER_ID.includes('/')).toBe(false);
     expect(OPENCODE_LISTS_TOOLS_AT_TURN_START).toBe(false);

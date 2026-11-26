@@ -144,7 +144,7 @@ export function addOpaqueGateway(bom, { release, platform }) {
   const target = release?.gateway?.targets?.[platform];
   if (
     release?.schemaVersion !== 2 ||
-    release.version !== '0.0.99' ||
+    release.version !== '0.1.10' ||
     !platformPattern.test(platform) ||
     !sha256.test(`sha256:${target?.archive?.sha256}`) ||
     !sha256.test(`sha256:${target?.executable?.sha256}`) ||
@@ -165,7 +165,7 @@ export function addOpaqueGateway(bom, { release, platform }) {
     externalReferences: [
       {
         type: 'distribution',
-        url: `https://github.com/NVIDIA/OpenShell/releases/download/v${release.version}/${target.archive.name}`,
+        url: `https://github.com/ai-openshell/openshell/releases/download/v${release.version}/${target.archive.name}`,
         hashes: [{ alg: 'SHA-256', content: target.archive.sha256 }],
       },
     ],

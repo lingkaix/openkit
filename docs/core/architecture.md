@@ -29,6 +29,8 @@ OpenKit borrows external standards' resource structure and naming, but its speci
 
 Core MUST retain scheduling and management authority over admission, placement, start, stop, cancellation, budgets, and deadlines; external platforms are its executors. OpenKit MUST retain user-data ownership with Core as the system of record; adapters MUST return user data to OpenKit storage, and Core MUST refuse platforms that cannot return the data required by the work.
 
+A platform that gives OpenKit an environment, such as a container, a microVM, or a machine with its own operating system, integrates through the environment provider contract and the Worker Shim contract behind the execution backend port. The shim pulls over one authenticated session. On NanoHost it can pull over the Host relay. A platform that runs its own agent loop implements the execution backend port directly. For environments using the provider and shim contracts, the adapter declares how its Worker stops and the provider declares how absence is proved. A weaker declaration changes the failure domain and does not block the integration.
+
 ## Architecture Shape
 
 OpenKit uses an `App + Core + Agent` architecture.
@@ -54,6 +56,8 @@ Core may coordinate context, capabilities, workspace changes, evidence, audit, a
 
 When Core cannot prove whether an external runtime effect occurred, it may preserve the accepted lineage and expose an interrupted or uncertain outcome that requires inspection or a new authorized attempt. It must not guess, duplicate the effect, or create a settlement workflow solely to hide that boundary.
 
+Core expresses its authority over execution as desired state: which Sandbox incarnation is present, which Workers run, and which Turn is interrupted. The delegated parts converge on that state and report what they observe. A report is evidence; Core alone decides admission, exclusion, release and replacement. [Fault Tolerance](fault-tolerance.md#planes) owns the split between facts that hold during a doubt and views that are replaced.
+
 Core has three Server storage responsibility levels under the [Control Kernel and Service Storage decision](../decisions/20261120-control_kernel_and_service_storage.md).
 
 - The **Control Kernel** owns the common transactional facts that Core needs to govern and repair accepted work. It owns identity, current grants and revocation, admission, attempts, input obligations, and their deciding evidence.
@@ -77,6 +81,18 @@ Adding an agent runtime must not require runtime-specific branches in Core produ
 An Agent Runtime performs bounded heavy execution under the supplied assignment and authority. It may produce candidate output, evidence, native session state, and effect requests through its adapter.
 
 Runtime durability preserves useful working bytes independently of a replaceable execution resource. Container or VM technology remains behind the execution boundary; retained storage and image selection MUST NOT turn NanoCore into a backend-specific VM manager. Runtime durability does not make runtime-native state authoritative for Core product records. A runtime must not write Core-owned product state directly or bypass the adapter and Core validation boundary.
+
+### Environment Provider And Worker Shim
+
+Execution has two delegated control roles beside the Agent Adapter.
+
+| Part | Trust position | Owns |
+| --- | --- | --- |
+| Environment provider | Outside the Sandbox, trusted by Core | The presence and absence of a Sandbox incarnation, its edge, its Volume attachment, and the proof of absence |
+| Worker Shim | Inside the Sandbox, in the trust domain of the work | The start and stop of Worker processes, the Agent Adapters, and the reports from inside |
+| Worker | Inside the Sandbox, not trusted to stop | Heavy execution through its Harness |
+
+In environments that use the Worker Shim contract, the shim is the one OpenKit control process inside the environment. It pulls over the authenticated session. Its reports are evidence. Release requires proof beyond the shim report. When the provider owns an outside stop unit, it can remove the Sandbox incarnation if the Worker or shim cannot be proved stopped. A bare-metal environment without out-of-band control may declare no outside stop unit. In that case exclusion stays held pending proof. [Runtime Model](runtime-model.md#environment-provider-and-worker-shim) owns the contracts as a model, and [Sandbox](sandbox.md#long-running-sandbox) owns the Sandbox incarnation and the Worker.
 
 ## Workspace Services
 
@@ -137,6 +153,8 @@ Product target selection and runtime placement are independent. A product surfac
 - The NanoCore-user, NanoCore-NanoHost, and NanoCore-Worker-Agent interaction boundaries MUST remain stable while the internal Agent loop, internal-role assembly, Goal scheduling, Goal worker pinning, and placement remain private changeable NanoCore strategies; those strategies MUST NOT leak role or Goal semantics or runtime identities across those edges.
 - Workspace services MUST expose governed Core contracts and MUST NOT expose raw storage, credentials, provider clients, sandbox control, or adapter internals.
 - Deployment placement, storage backend, and release artifacts MUST NOT change the Core semantics of workspace, thread, turn, item, artifact, approval, agent, AgentSession, knowledge, vault, audit, or usage. This includes their ownership, policy authority, review semantics, trust boundaries, audit meaning, and usage attribution.
+- A part inside a Sandbox MUST NOT be the only proof of a stop or of an absence.
+- The environment provider and the Worker Shim MUST converge on desired state from Core and MUST NOT become a second source of admission, placement or lifecycle truth.
 
 ## Relationships To Other Core Aspects
 

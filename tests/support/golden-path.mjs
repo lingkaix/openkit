@@ -135,7 +135,7 @@ async function bundle() {
   const release = JSON.parse(await fs.readFile('apps/nanohost/openshell/release.json', 'utf8'));
   const archive = release.gateway.targets[`linux/${process.env.ARCHITECTURE}`].archive;
   await download(
-    `https://github.com/NVIDIA/OpenShell/releases/download/v${release.version}/${archive.name}`,
+    `https://github.com/ai-openshell/openshell/releases/download/v${release.version}/${archive.name}`,
     path.join(root, archive.name),
     archive.sha256
   );
@@ -144,7 +144,7 @@ async function bundle() {
     ['notices', 'THIRD-PARTY-NOTICES'],
   ])
     await download(
-      `https://raw.githubusercontent.com/NVIDIA/OpenShell/${release.source.commit}/${name}`,
+      `https://raw.githubusercontent.com/ai-openshell/openshell/${release.source.commit}/${name}`,
       path.join(root, name),
       release.redistribution[key].sha256
     );

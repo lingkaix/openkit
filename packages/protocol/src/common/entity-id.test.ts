@@ -10,6 +10,27 @@ import {
 const turnId = 'tu_01890f3e-0000-7000-8000-000000000001';
 
 describe('canonical entity identifiers', () => {
+  it.each(['host', 'hepoch', 'sbx', 'sbxi', 'wkr'] as const)(
+    'admits independent UUIDv7 for runtime kind %s',
+    (kind) => {
+      const uuid = '01890f3e-0000-7000-8000-000000000001';
+      expect(isEntityId(kind, `${kind}_${uuid}`)).toBe(true);
+      expect(isEntityId(kind, allocateEntityId(kind))).toBe(true);
+      expect(isEntityId(kind, `ws_${uuid}`)).toBe(false);
+      expect(isEntityId(kind, `${kind}_01890f3e-0000-5000-8000-000000000001`)).toBe(false);
+      expect(isEntityId(kind, `${kind}_01890f3e-0000-7000-c000-000000000001`)).toBe(false);
+    }
+  );
+
+  it.each([
+    'SBXI_01890f3e-0000-7000-8000-000000000001',
+    'sbxi_01890F3E-0000-7000-8000-000000000001',
+    'sbxi_01890f3e000070008000000000000001',
+    'sbxi_01890f3e-0000-7000-8000-000000000001\n',
+  ])('refuses noncanonical Sandbox incarnation ID %j', (id) => {
+    expect(isEntityId('sbxi', id)).toBe(false);
+  });
+
   it('allocates independent v7 ids with the admitted timestamp and variant for every kind', () => {
     for (const kind of ENTITY_KINDS) {
       const id = allocateEntityId(kind, new Date(0x01890f3e0000));

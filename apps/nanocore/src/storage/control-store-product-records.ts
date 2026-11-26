@@ -28,6 +28,8 @@ import {
 } from './retained-work-metadata-v1.js';
 import { serverWorkUnavailable } from './server-work-command.js';
 
+import { fitsTurnWithObservationControl } from './work-observation-collection.js';
+
 /** Current finite metadata/page defaults; exact work bodies use inline bytes or immutable Storage objects. */
 export const CONTROL_PRODUCT_LIMITS = {
   metadataBytes: 64 * 1024,
@@ -252,7 +254,10 @@ export function decode(
     (kind === 'workspace' ? record.id : record.workspaceId) !== owner.workspaceId
   )
     throw new ControlProductPreconditionError();
-  if (Buffer.byteLength(JSON.stringify(value)) > CONTROL_PRODUCT_LIMITS.metadataBytes)
+  if (
+    Buffer.byteLength(JSON.stringify(value)) > CONTROL_PRODUCT_LIMITS.metadataBytes &&
+    (kind !== 'turn' || !fitsTurnWithObservationControl(raw, CONTROL_PRODUCT_LIMITS.metadataBytes))
+  )
     throw new ControlProductPreconditionError();
   return record;
 }

@@ -13,13 +13,14 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
-import { commandRequestExpiresAt, commandRequestKey, type FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   listOpenSchedulerExecutionAttempts,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import { markSchedulerExecutionAttemptClosing } from '../runtime/execution-attempts.js';
 import { readExecutionJournalRoot } from '../runtime/execution-journal.js';
 import {
   type AdmittedNanoHostAttemptRecovery,
@@ -42,12 +43,17 @@ import {
   hashWorkerRouteToken,
   WorkerControlGateway,
   WorkerControlGatewayError,
+  type WorkerControlGatewayOptions,
   type WorkerControlLineage,
 } from '../runtime/worker-control-gateway.js';
 import { waitForWorkerControlFinalStatus } from '../runtime/worker-control-records.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
-import { WorkerGovernanceTurnExecutor } from '../runtime/worker-governance-turn-executor.js';
+import {
+  prepareWorkerTurnJournalIntents,
+  WorkerGovernanceTurnExecutor,
+} from '../runtime/worker-governance-turn-executor.js';
 import { workerStorageScopeDigest } from '../runtime/worker-storage-bindings.js';
+import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { publishWorkspaceCapture } from '../runtime/workspace-capture-publication.js';
 import {
   hasPendingWorkspaceCapture,
@@ -404,6 +410,60 @@ function crashBeforeFinalStage(stage: FinalStage) {
       if (input.kind !== stage) return originalStage(database, command, input);
       throw new Error(`Injected crash before ${stage}.`);
     });
+}
+
+/** Pauses the authenticated aborted final after its first clocks are sampled, before any post. */
+async function pauseCancellationFinal(fixture: Fixture, loseReply = false) {
+  const { attempt } = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    readNanoHostRecoveryLease(sqlite, fixture.original.lease)
+  );
+  const { startupDeadline: livenessDeadline } = attempt;
+  await markSchedulerExecutionAttemptClosing(fixture.coreDb, {
+    attemptId: ATTEMPT_ID,
+    cause: 'turn-cancelled',
+    now: () => fixture.now,
+  });
+  const entered =
+    Promise.withResolvers<
+      () => ReturnType<NonNullable<WorkerControlGatewayOptions['publishFinalStatus']>>
+    >();
+  const publish = Promise.withResolvers<void>();
+  const gateway = fixture.gateway as unknown as {
+    publishFinalStatus: NonNullable<WorkerControlGatewayOptions['publishFinalStatus']>;
+  };
+  const original = gateway.publishFinalStatus.bind(gateway);
+  const spy = vi.spyOn(gateway, 'publishFinalStatus').mockImplementation(async (command) => {
+    entered.resolve(() => original(command));
+    await publish.promise;
+    const ack = await original(command);
+    if (loseReply) throw new Error('Injected loss of the Worker final reply.');
+    return ack;
+  });
+  vi.setSystemTime(Date.parse(livenessDeadline) - 1);
+  const reply = fixture.gateway.recordFinalStatus({
+    authorization: `Bearer ${CONTROL_TOKEN}`,
+    lineage: fixture.lineage,
+    sequence: SEQUENCE,
+    status: 'cancelled',
+    stopReason: 'aborted',
+  });
+  const restore = async () => {
+    publish.resolve();
+    await reply.catch(() => undefined);
+    spy.mockRestore();
+  };
+  try {
+    const replay = await Promise.race([
+      entered.promise,
+      reply.then(() => {
+        throw new Error('The fixture final did not reach the original publisher.');
+      }),
+    ]);
+    return { livenessDeadline, release: publish.resolve, reply, replay, restore };
+  } catch (error) {
+    await restore();
+    throw error;
+  }
 }
 
 /** Effect-only ports; any unexpected effect fails instead of fabricating authority or cleanup. */
@@ -1653,6 +1713,19 @@ describe('K8b accepted-final readback', () => {
 
     // A crash before Native FULL leaves the Core intake and no Native final: the expiry path stays.
     const absent = await createFixture();
+    const workspace = openWorkspaceDb(absent.dataRoot, absent.lineage.workspaceId);
+    try {
+      const { backendKind, runtimeTargetId, sandboxBindingRef } = absent.session();
+      const journalIntents = prepareWorkerTurnJournalIntents(
+        workspace,
+        absent.environmentPackage,
+        absent.original.lease.attempt,
+        { backendKind, targetId: runtimeTargetId, allocationRef: sandboxBindingRef }
+      );
+      await absent.store.updateTurn(absent.turnId, { status: 'running' }, { journalIntents });
+    } finally {
+      workspace.sqlite.close();
+    }
     const crash = crashBeforeFinalStage('settle');
     await expect(absent.recordFinal()).rejects.toThrow('Injected crash before settle.');
     crash.mockRestore();
@@ -1664,15 +1737,517 @@ describe('K8b accepted-final readback', () => {
     const absentPorts = recoveryPorts(() => clock);
     await absent.restart(absentPorts);
     absent.readyFreshEpoch();
-    clock = absent.original.lease.grant.deadline;
     const boot = bootSelection(
       absent,
       vi.fn(async () => {})
     );
+    const close = vi.spyOn(boot.admittedNanoHostRecovery.value, 'close');
+    const early = await runNanoHostAttemptRecoveryMaintenance(absent.coreDb, {
+      ...absentPorts,
+      ...boot,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(close).not.toHaveBeenCalled();
+    expect(boot.cleanup).not.toHaveBeenCalled();
+    expect(early).toBeUndefined();
+    clock = absent.original.lease.grant.deadline;
     await expect(
       runNanoHostAttemptRecoveryMaintenance(absent.coreDb, { ...absentPorts, ...boot })
     ).rejects.toThrow('Native attempt recovery failed.');
     expect(boot.cleanup).toHaveBeenCalledTimes(1);
+
+    // The admitted Native owner can prove absence in the successor Epoch. That exact cleanup
+    // receipt still does not let the restart projector decide the original Worker outcome.
+    const owner = currentAdmittedTestNanoHostOwner(absent.coreDb)!;
+    const original = readRetainedNanoHostSubmission(absent.coreDb, ATTEMPT_ID)!;
+    const { session, proof, target } = readAdmittedTestNanoHost(absent.coreDb, (sqlite) => {
+      const lease = readNanoHostRecoveryLease(sqlite, original.lease);
+      return {
+        ...lease,
+        target: getNanoHostRuntimeTarget({ sqlite }, lease.session.runtimeTargetId)!,
+      };
+    });
+    await expect(
+      owner.classifyRecovery({
+        kind: 'transition',
+        toState: 'physical-cleaned',
+        target,
+        lease: original.lease,
+        expectedSession: session,
+        expectedRecovery: proof,
+        observedAt: clock,
+      } as Parameters<typeof owner.classifyRecovery>[0])
+    ).resolves.toMatchObject({ state: 'ready', value: { state: 'physical-cleaned' } });
+    const before = absent.store.getTurnById(absent.turnId);
+    const events = absent.store.getTurnEvents(absent.turnId);
+    absentPorts.projectRecoveredTurn.mockImplementation(async (subject) => {
+      const { status } = await terminalizeGovernedWorkerTurn({
+        agentSessionId: subject.agentSessionId,
+        completedAt: clock,
+        errorCode: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during scheduler recovery.',
+        outcome: 'interrupted',
+        requestId: absent.lineage.requestId,
+        store: absent.store,
+        turnId: subject.turnId,
+      });
+      return { status };
+    });
+    const held = await runNanoHostAttemptRecoveryMaintenance(absent.coreDb, {
+      ...absentPorts,
+      ...boot,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const reopened = new FsStore({ dataRoot: absent.dataRoot });
+    expect(reopened.getTurnById(absent.turnId)).toEqual(before);
+    expect(reopened.getTurnEvents(absent.turnId)).toEqual(events);
+    expect(absentPorts.projectRecoveredTurn).not.toHaveBeenCalled();
+    expect((held as AggregateError).errors.map(String)).toContain(
+      'Error: The original Worker final still owns Turn publication.'
+    );
+  });
+
+  it('W24 holds cleanup when Core final intake wins during the absence walk', async () => {
+    const fixture = await createFixture();
+    const { attempt } = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      readNanoHostRecoveryLease(sqlite, fixture.original.lease)
+    );
+    const livenessDeadline = attempt.startupDeadline;
+    expect(livenessDeadline < fixture.original.lease.grant.deadline).toBe(true);
+    const originalSession = fixture.session();
+    const intakeEntered = Promise.withResolvers<void>();
+    const allowIntake = Promise.withResolvers<void>();
+    const stoppedBeforeNative = new Error('Injected stop before Native FULL.');
+    const client = getControlStoreWorkerClient() as unknown as FinalStageClient;
+    const stage = client.workerControlFinalStage.bind(client);
+    const finalStage = vi
+      .spyOn(client, 'workerControlFinalStage')
+      .mockImplementation(async (...args) => {
+        if (args[2].kind === 'intake') {
+          intakeEntered.resolve();
+          await allowIntake.promise;
+        }
+        if (args[2].kind === 'settle') throw stoppedBeforeNative;
+        return stage(...args);
+      });
+    const capture = vi.mocked(hasPendingWorkspaceCapture);
+    const readCapture = capture.getMockImplementation();
+    if (!readCapture) throw new Error('Capture spy has no original implementation.');
+    vi.setSystemTime(Date.parse(livenessDeadline) - 1);
+    const final = fixture.recordFinal().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    try {
+      await Promise.race([
+        intakeEntered.promise,
+        final.then(() => {
+          throw new Error('The original final did not reach the Core intake boundary.');
+        }),
+      ]);
+      // Maintenance has read absence and is awaiting the real capture census before posting close.
+      capture.mockImplementationOnce(async (...args) => {
+        const result = await readCapture(...args);
+        allowIntake.resolve();
+        expect(await final).toBe(stoppedBeforeNative);
+        expect(fixture.finalSteps().map(({ stepId }) => stepId)).toEqual([
+          'worker-route-fixture-submit',
+          'worker-final-intake',
+        ]);
+        expect(fixture.readback()).toEqual({ state: 'held', reason: 'missing' });
+        return result;
+      });
+
+      vi.setSystemTime(Date.parse(livenessDeadline));
+      const ports = recoveryPorts(() => livenessDeadline);
+      const boot = bootSelection(
+        fixture,
+        vi.fn(async () => {})
+      );
+      const close = vi.spyOn(boot.admittedNanoHostRecovery.value, 'close');
+      const held = await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, {
+        ...ports,
+        ...boot,
+      }).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(close).toHaveBeenCalledOnce();
+      const retained = fixture.session();
+      expect({
+        nativeState: retained.state,
+        cleanupCalls: boot.cleanup.mock.calls.length,
+      }).toEqual({ nativeState: originalSession.state, cleanupCalls: 0 });
+      expect(retained).toEqual(originalSession);
+      await expect(close.mock.results[0]!.value).resolves.toMatchObject({
+        state: 'ready',
+        value: { phase: 'closing', terminalCause: 'worker-final-status', fenceRef: null },
+      });
+      expect(held).toBeInstanceOf(AggregateError);
+      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'worker-final-status',
+        fenceRef: null,
+      });
+    } finally {
+      allowIntake.resolve();
+      await final;
+      finalStage.mockRestore();
+    }
+  });
+
+  it.each([
+    { order: 'intake before ACK delivery', cut: 'settle', releaseAtClose: true, state: 'held' },
+    { order: 'intake after ACK delivery', cut: 'settle', releaseAtClose: false, state: 'held' },
+    { order: 'Native-only after ACK', cut: 'observe', releaseAtClose: false, state: 'native-only' },
+    { order: 'settled after ACK', cut: null, releaseAtClose: false, state: 'settled' },
+    {
+      order: 'settled with lost reply after ACK',
+      cut: null,
+      releaseAtClose: false,
+      state: 'settled',
+    },
+  ] as const)(
+    'W25 gives the cancellation final the attempt when $order wins',
+    async ({ order, cut, releaseAtClose, state }) => {
+      const fixture = await createFixture();
+      const original = fixture.session();
+      const turn = fixture.store.getTurnById(fixture.turnId);
+      const events = fixture.store.getTurnEvents(fixture.turnId);
+      const exclusions = fixture.exclusions();
+      const dropped = cut ? crashBeforeFinalStage(cut) : undefined;
+      const final = await pauseCancellationFinal(fixture, order.includes('lost reply'));
+      const allowFinal = async () => {
+        final.release();
+        if (cut) await expect(final.reply).rejects.toThrow(`Injected crash before ${cut}.`);
+        else if (order.includes('lost reply'))
+          await expect(final.reply).rejects.toThrow('Injected loss of the Worker final reply.');
+        else await expect(final.reply).resolves.toMatchObject({ accepted: true });
+        expect(fixture.readback().state).toBe(state);
+      };
+      try {
+        vi.setSystemTime(Date.parse(final.livenessDeadline));
+        const ports = recoveryPorts(() => final.livenessDeadline);
+        const closeout = vi.fn(async () => {});
+        const boot = bootSelection(fixture, closeout);
+        const owner = boot.admittedNanoHostRecovery.value;
+        const close = owner.close.bind(owner);
+        const ack = vi.spyOn(owner, 'close').mockImplementationOnce(async (...args) => {
+          const reply = await close(...args);
+          expect(reply).toMatchObject({
+            state: 'ready',
+            value: { terminalCause: 'turn-cancelled' },
+          });
+          if (releaseAtClose) await allowFinal();
+          return reply;
+        });
+        if (!releaseAtClose) {
+          const commit = owner.commit.bind(owner);
+          vi.spyOn(owner, 'commit').mockImplementationOnce(async (...args) => {
+            await allowFinal();
+            return commit(...args);
+          });
+        }
+        const held = await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, {
+          ...ports,
+          ...boot,
+        }).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        expect(ack).toHaveBeenCalledOnce();
+        expect({
+          nativeState: fixture.session().state,
+          cleanupCalls: boot.cleanup.mock.calls.length,
+        }).toEqual({ nativeState: original.state, cleanupCalls: 0 });
+        expect(fixture.session()).toEqual(original);
+        expect(closeout).toHaveBeenCalledTimes(state === 'settled' ? 1 : 0);
+        if (state === 'settled') expect(held).toBeUndefined();
+        else expect(held).toBeInstanceOf(AggregateError);
+        expect(fixture.finalSteps().map(({ stepId }) => stepId)).toContain('worker-final-intake');
+        expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+          phase: 'closing',
+          terminalCause: 'turn-cancelled',
+          fenceRef: null,
+        });
+        expect(fixture.exclusions()).toEqual(exclusions);
+        expect(fixture.store.getTurnById(fixture.turnId)).toEqual(turn);
+        expect(fixture.store.getTurnEvents(fixture.turnId)).toEqual(events);
+      } finally {
+        await final.restore();
+        dropped?.mockRestore();
+      }
+    }
+  );
+
+  it.each(['prepared Native post', 'after cleanup-pending', 'at physical handoff'] as const)(
+    'W26 the effective expiry cleanup excludes a late first final at %s',
+    async (when) => {
+      const fixture = await createFixture();
+      const final = await pauseCancellationFinal(fixture);
+      const deadline = fixture.original.lease.grant.deadline;
+      let clock = new Date(Date.parse(deadline) - 1).toISOString();
+      const ports = recoveryPorts(() => clock);
+      const closeout = vi.fn(async () => {});
+      const boot = bootSelection(fixture, closeout);
+      const pass = () =>
+        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...boot }).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      type NativePost = {
+        request(
+          input: {
+            operation: string;
+            mutation?: { kind: string; input: { classification?: { toState?: string } } };
+          },
+          ...rest: unknown[]
+        ): Promise<unknown>;
+      };
+      const writer = getControlStoreWorkerClient() as unknown as NativePost;
+      const request = writer.request.bind(writer);
+      const realTimers =
+        await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
+      let posts = 0;
+      // A real final can reach its admitted owner here. The recovery hold keeps intake behind the write.
+      const releaseWhileHeld = async () => {
+        final.release();
+        await Promise.race([final.reply.catch(() => undefined), realTimers.setTimeout(1_000)]);
+      };
+      const post = vi.spyOn(writer, 'request').mockImplementation(async (input, ...rest) => {
+        if (
+          input.operation === 'nanohost-owner' &&
+          input.mutation?.kind === 'recovery-classification' &&
+          input.mutation.input.classification?.toState === 'cleanup-pending'
+        ) {
+          posts += 1;
+          if (when === 'prepared Native post') await releaseWhileHeld();
+        }
+        return request(input, ...rest);
+      });
+      try {
+        vi.setSystemTime(Date.parse(clock));
+        expect(await pass()).toBeInstanceOf(AggregateError);
+        expect(posts).toBe(0);
+        expect(boot.cleanup).not.toHaveBeenCalled();
+        expect(fixture.session().state).toBe('launching');
+
+        clock = deadline;
+        vi.setSystemTime(Date.parse(clock));
+        if (when === 'after cleanup-pending') {
+          const owner = boot.admittedNanoHostRecovery.value;
+          const commit = owner.commit.bind(owner);
+          vi.spyOn(owner, 'commit').mockImplementationOnce((input, cleanup) =>
+            commit(input, {
+              authorize: cleanup!.authorize,
+              handoff: async (session) => {
+                await releaseWhileHeld();
+                return cleanup!.handoff(session);
+              },
+            })
+          );
+        }
+        if (when === 'at physical handoff') {
+          const cleanup = boot.cleanup.getMockImplementation()!;
+          boot.cleanup.mockImplementationOnce(async (...args) => {
+            final.release();
+            return cleanup(...args);
+          });
+        }
+        expect(await pass()).toBeInstanceOf(AggregateError);
+        // The opposite order is covered by W25. Here expiry wins and writes exactly one pending row.
+        expect(posts).toBe(1);
+        expect(boot.cleanup).toHaveBeenCalledTimes(1);
+        expect(fixture.session().state).toBe('cleanup-pending');
+        await expect(final.reply).rejects.toMatchObject({ code: 'worker_control_lease_not_live' });
+        expect(fixture.finalSteps().map(({ stepId }) => stepId)).toEqual([
+          'worker-route-fixture-submit',
+        ]);
+        expect(closeout).not.toHaveBeenCalled();
+      } finally {
+        post.mockRestore();
+        await final.restore();
+      }
+    }
+  );
+
+  it.each([
+    'settlement during the Core close',
+    'settlement before handoff',
+    'settlement races an acknowledged cleanup-pending write',
+    'physical handoff before settlement',
+  ] as const)('W27 orders a Native-only expiry when %s wins', async (order) => {
+    const fixture = await createFixture();
+    const dropped = crashBeforeFinalStage('observe');
+    const final = await pauseCancellationFinal(fixture);
+    try {
+      final.release();
+      await expect(final.reply).rejects.toThrow('Injected crash before observe.');
+      dropped.mockRestore();
+      expect(fixture.readback().state).toBe('native-only');
+      const deadline = fixture.original.lease.grant.deadline;
+      const ports = recoveryPorts(() => deadline);
+      const closeout = vi.fn(async () => {});
+      const boot = bootSelection(fixture, closeout);
+      const owner = boot.admittedNanoHostRecovery.value;
+      const commit = owner.commit.bind(owner);
+      const pass = () =>
+        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...boot }).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      let observing: ReturnType<typeof final.replay> | undefined;
+      let atHandoff: string | undefined;
+      vi.setSystemTime(Date.parse(deadline));
+      if (order === 'settlement during the Core close') {
+        const close = owner.close.bind(owner);
+        vi.spyOn(owner, 'close').mockImplementationOnce(async (...args) => {
+          await final.replay();
+          expect(fixture.readback().state).toBe('settled');
+          return close(...args);
+        });
+        expect(await pass()).toBeInstanceOf(AggregateError);
+        expect(boot.cleanup).not.toHaveBeenCalled();
+        expect(await pass()).toBeUndefined();
+      } else if (order === 'settlement before handoff') {
+        vi.spyOn(owner, 'commit').mockImplementationOnce(async (...args) => {
+          await final.replay();
+          expect(fixture.readback().state).toBe('settled');
+          return commit(...args);
+        });
+        expect(await pass()).toBeUndefined();
+        expect(boot.cleanup).not.toHaveBeenCalled();
+        expect(fixture.session().state).toBe('launching');
+      } else {
+        const startObservation = () => {
+          observing = final.replay();
+          void observing.catch(() => undefined);
+          return observing;
+        };
+        if (order === 'settlement races an acknowledged cleanup-pending write') {
+          const realTimers =
+            await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
+          vi.spyOn(owner, 'commit').mockImplementationOnce((input, cleanup) =>
+            commit(input, {
+              authorize: cleanup!.authorize,
+              handoff: async (session) => {
+                expect(session.state).toBe('cleanup-pending');
+                await Promise.race([startObservation(), realTimers.setTimeout(1_000)]);
+                return cleanup!.handoff(session);
+              },
+            })
+          );
+        }
+        const cleanup = boot.cleanup.getMockImplementation()!;
+        boot.cleanup.mockImplementationOnce(async (...args) => {
+          atHandoff = fixture.readback().state;
+          if (!observing) startObservation();
+          return cleanup(...args);
+        });
+        expect(await pass()).toBeInstanceOf(AggregateError);
+        expect(boot.cleanup).toHaveBeenCalledTimes(1);
+        expect(fixture.session().state).toBe('cleanup-pending');
+        expect(atHandoff).toBe('native-only');
+        expect(observing).toBeDefined();
+        await observing;
+        expect(fixture.readback().state).toBe('settled');
+        expect(await pass()).toBeUndefined();
+        expect(boot.cleanup).toHaveBeenCalledTimes(1);
+      }
+      expect(closeout).toHaveBeenCalledTimes(1);
+      expect(fixture.readback().state).toBe('settled');
+      expect(ports.executionBackend.submit).not.toHaveBeenCalled();
+    } finally {
+      await final.restore();
+      dropped.mockRestore();
+    }
+  });
+
+  it('W28 holds an unreceipted cleanup-pending session on reopen', async () => {
+    const fixture = await createFixture();
+    const { attempt } = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      readNanoHostRecoveryLease(sqlite, fixture.original.lease)
+    );
+    const ports = recoveryPorts(() => attempt.startupDeadline);
+    const boot = bootSelection(
+      fixture,
+      vi.fn(async () => {})
+    );
+    await expect(
+      runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...boot })
+    ).rejects.toBeInstanceOf(AggregateError);
+    expect(boot.cleanup).toHaveBeenCalledTimes(1);
+    const pending = fixture.session();
+    expect(pending.state).toBe('cleanup-pending');
+    const retained = fixture.store.getTurnById(fixture.turnId);
+    const events = fixture.store.getTurnEvents(fixture.turnId);
+    const exclusions = fixture.exclusions();
+    await fixture.restart(ports);
+    fixture.readyFreshEpoch();
+    const restarted = bootSelection(
+      fixture,
+      vi.fn(async () => {})
+    );
+    await expect(
+      runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...restarted })
+    ).rejects.toBeInstanceOf(AggregateError);
+    expect(restarted.cleanup).not.toHaveBeenCalled();
+    expect(fixture.session()).toEqual(pending);
+    expect(fixture.exclusions()).toEqual(exclusions);
+    const reopened = new FsStore({ dataRoot: fixture.dataRoot });
+    expect(reopened.getTurnById(fixture.turnId)).toEqual(retained);
+    expect(reopened.getTurnEvents(fixture.turnId)).toEqual(events);
+  });
+
+  it('W29 revalidates an exact close after losing its ACK across reopen', async () => {
+    const fixture = await createFixture();
+    const { attempt } = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      readNanoHostRecoveryLease(sqlite, fixture.original.lease)
+    );
+    let clock = attempt.startupDeadline;
+    const ports = recoveryPorts(() => clock);
+    const boot = bootSelection(
+      fixture,
+      vi.fn(async () => {})
+    );
+    const owner = boot.admittedNanoHostRecovery.value;
+    const close = owner.close.bind(owner);
+    vi.spyOn(owner, 'close').mockImplementationOnce(async (...args) => {
+      expect(await close(...args)).toMatchObject({ state: 'ready' });
+      return { state: 'unavailable', owner: 'control-kernel', reason: 'recovery-required' };
+    });
+    await expect(
+      runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...boot })
+    ).rejects.toBeInstanceOf(AggregateError);
+    expect(boot.cleanup).not.toHaveBeenCalled();
+    expect(fixture.session().state).toBe('launching');
+    expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+      phase: 'closing',
+      terminalCause: 'native-liveness-expired',
+      fenceRef: null,
+    });
+
+    clock = fixture.original.lease.grant.deadline;
+    await fixture.restart(ports);
+    fixture.readyFreshEpoch();
+    const restarted = bootSelection(
+      fixture,
+      vi.fn(async () => {})
+    );
+    const acknowledged = vi.spyOn(restarted.admittedNanoHostRecovery.value, 'close');
+    await expect(
+      runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, { ...ports, ...restarted })
+    ).rejects.toBeInstanceOf(AggregateError);
+    expect(restarted.cleanup).toHaveBeenCalledOnce();
+    expect(fixture.session().state).toBe('cleanup-pending');
+    await expect(acknowledged.mock.results[0]!.value).resolves.toMatchObject({
+      state: 'ready',
+      value: { phase: 'closing', terminalCause: 'native-liveness-expired', fenceRef: null },
+    });
   });
 
   it('W8 holds an absent receipt when the original execution history has a gap', async () => {
@@ -2396,6 +2971,77 @@ describe('K8b accepted-final readback', () => {
     expectDurableTurn(launch, coreDb, restarted.cold, durable);
     await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
     await expectCompletedOnce(launch, coreDb, restarted);
+  });
+
+  it('W23 preserves accepted-final recovery when the collection uncertainty ACK is lost', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: true });
+    const { attemptId, entry, store } = launch;
+    const restarted = await restartWithFencedTarget(launch, { offline: true });
+    const { coreDb, native, recovery, closeout } = restarted;
+    const workspace = new FsStore({ dataRoot: launch.dataRoot });
+    const durable = {
+      turn: workspace.getTurnById(entry.turnId),
+      phase: requireSchedulerExecutionAttempt(coreDb, attemptId).phase,
+    };
+    const exclusions = readExecutionJournalRoot(
+      coreDb,
+      launch.original.receipt.intent.target.execution
+    ).exclusionRefs;
+    const lostAck = new Error('Lost ACK after reopened collection settled unknown');
+    let collectionStep: string | undefined;
+    let dropped = false;
+    const write = store.writeWorkspaceExecutionJournalIntent;
+    const settle = store.settleWorkspaceExecutionJournalStep;
+    store.writeWorkspaceExecutionJournalIntent = async (...args) => {
+      const ack = await write.apply(store, args);
+      if (args[1].carriage.operation === 'worker.collect.transcript')
+        collectionStep = args[1].stepId;
+      return ack;
+    };
+    store.settleWorkspaceExecutionJournalStep = async (...args) => {
+      const ack = await settle.apply(store, args);
+      if (!dropped && args[1].ref.stepId === collectionStep && args[1].state === 'unknown') {
+        dropped = true;
+        throw lostAck;
+      }
+      return ack;
+    };
+    try {
+      await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)).rejects.toBeInstanceOf(
+        AggregateError
+      );
+    } finally {
+      store.writeWorkspaceExecutionJournalIntent = write;
+      store.settleWorkspaceExecutionJournalStep = settle;
+    }
+    expect(dropped).toBe(true);
+    expect(new FsStore({ dataRoot: launch.dataRoot }).getTurnById(entry.turnId)).toEqual(
+      durable.turn
+    );
+    expectDurableTurn(launch, coreDb, restarted.cold, durable);
+    expect(
+      readExecutionJournalRoot(coreDb, launch.original.receipt.intent.target.execution)
+        .exclusionRefs
+    ).toEqual(exclusions);
+    expect(closeout).toHaveBeenCalledTimes(1);
+    const error = await closeout.mock.results[0]!.value.catch((cause: unknown) => cause);
+    const causes = causeChain(error);
+    expect(causes).toContain(lostAck);
+    expect(causes).toContainEqual(
+      expect.objectContaining({
+        message: 'NanoHost current physical Epoch authority is unavailable.',
+      })
+    );
+
+    await readmitOriginalPeer(coreDb, native, attemptId);
+    restarted.reconnect();
+    await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
+    await expectCompletedOnce(launch, coreDb, restarted);
+    const reopened = new FsStore({ dataRoot: launch.dataRoot });
+    expect(reopened.getTurnById(entry.turnId).status).toBe('completed');
+    expect(
+      reopened.getTurnEvents(entry.turnId).filter((event) => event.event === 'turn.completed')
+    ).toHaveLength(1);
   });
 
   it('W20 settles an existing cleanup receipt after reconnect without reminting it', async () => {

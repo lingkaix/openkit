@@ -11667,6 +11667,13 @@ describe('nanocore server', () => {
       };
     };
 
+    /** Pins the fixture owner's original accepted connection through the write. */
+    const fixtureProof = () => {
+      const original = acceptedSessions.find((session) => authority.mayCarryWork(session));
+      if (!original) throw new Error('Missing authoritative fixture connection.');
+      return () => () => expect(authority.mayCarryWork(original)).toBe(true);
+    };
+
     /** Sends one private effect poll or result over the already-admitted connection. */
     const postEffect = async (
       client: ClientHttp2Session,
@@ -11782,6 +11789,7 @@ describe('nanocore server', () => {
       );
       expect(unavailableBuildInput.status).toBe(409);
       const buildEffect = dispatch.effect({
+        beforeDelivery: fixtureProof(),
         input: {
           arguments: { NODE_VERSION: '24.16.0' },
           argumentsDigest: `sha256:${'1'.repeat(64)}`,
@@ -11856,6 +11864,7 @@ describe('nanocore server', () => {
       let importSettled = false;
       const importEffect = dispatch
         .effect({
+          beforeDelivery: fixtureProof(),
           input: {
             body: importBytes,
             byteLength: importBytes.byteLength,
@@ -11921,6 +11930,7 @@ describe('nanocore server', () => {
       const exportRequestId = 'c'.repeat(64);
       const exportSha256 = `sha256:${createHash('sha256').update(exportBytes).digest('hex')}`;
       const exportEffect = dispatch.effect({
+        beforeDelivery: fixtureProof(),
         input: {
           maxByteLength: 268_435_456,
           presence: 'required',
@@ -12137,6 +12147,7 @@ describe('nanocore server', () => {
       const requiredBytes = Buffer.from('required-output');
       const requiredSha256 = `sha256:${createHash('sha256').update(requiredBytes).digest('hex')}`;
       const requiredEffect = dispatch.effect({
+        beforeDelivery: fixtureProof(),
         input: {
           maxByteLength: 268_435_456,
           presence: 'required',
@@ -12178,6 +12189,7 @@ describe('nanocore server', () => {
 
       const optionalRequestId = '7'.repeat(64);
       const optionalEffect = dispatch.effect({
+        beforeDelivery: fixtureProof(),
         input: {
           maxByteLength: 268_435_456,
           presence: 'optional',

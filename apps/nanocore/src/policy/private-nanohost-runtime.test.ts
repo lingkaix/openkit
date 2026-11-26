@@ -591,6 +591,7 @@ it('closes native NanoHost effect delivery after real Token verification and phy
   const imageDigest = `sha256:${randomBytes(32).toString('hex')}`;
   expect(NANO_HOST_EFFECT_OPERATIONS).toContain('image.inspect');
   const effect = dispatch.effect({
+    beforeDelivery: () => () => abort.signal.throwIfAborted(),
     kind: 'image.inspect',
     requestId,
     // The actual owner accepts exactly this one input field and adds requestId itself.

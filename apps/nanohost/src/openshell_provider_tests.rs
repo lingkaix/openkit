@@ -9,6 +9,7 @@ use openshell_sdk::raw::proto::{
     NetworkPolicyRule, ProcessPolicy, Provider, ProviderCredentialRefreshStatus,
     ProviderCredentialRefreshStrategy, SandboxPolicy,
 };
+use openshell_sdk::raw::proto::{NetworkAccessPreset, NetworkEnforcementMode, NetworkTlsMode};
 use serde_json::json;
 
 use crate::openshell_provider_evidence::{
@@ -33,9 +34,9 @@ fn policy() -> SandboxPolicy {
         host: "api.example.invalid".into(),
         port: 443,
         protocol: "rest".into(),
-        tls: "terminate".into(),
-        enforcement: "enforce".into(),
-        access: "read-only".into(),
+        tls: NetworkTlsMode::Unspecified as i32,
+        enforcement: NetworkEnforcementMode::Enforce as i32,
+        access: NetworkAccessPreset::ReadOnly as i32,
         ..Default::default()
     };
     let rule = NetworkPolicyRule {
@@ -122,7 +123,7 @@ fn provider_policy_equality_covers_complete_authority_and_layer_set() {
             endpoint(p).port = 8443;
         },
         |p| {
-            endpoint(p).access = "full".into();
+            endpoint(p).access = NetworkAccessPreset::Full as i32;
         },
         |p| {
             endpoint(p).allow_encoded_slash = true;
@@ -204,13 +205,13 @@ fn provider_policy_missing_or_unsupported_authority_refuses_even_when_equal() {
             endpoint(p).protocol = "unknown-protocol".into();
         },
         |p| {
-            endpoint(p).tls = "unknown-tls".into();
+            endpoint(p).tls = i32::MAX;
         },
         |p| {
-            endpoint(p).enforcement = "unknown-enforcement".into();
+            endpoint(p).enforcement = i32::MAX;
         },
         |p| {
-            endpoint(p).access = "unknown-access".into();
+            endpoint(p).access = i32::MAX;
         },
         |p| {
             endpoint(p).request_body_credential_rewrite = true;
@@ -262,15 +263,25 @@ fn provider_policy_missing_or_unsupported_authority_refuses_even_when_equal() {
 
 fn refresh_status() -> ProviderCredentialRefreshStatus {
     ProviderCredentialRefreshStatus {
-        provider_name: SENTINELS[3].into(),
+        provider: SENTINELS[3].into(),
         provider_id: SENTINELS[4].into(),
         credential_key: SENTINELS[0].into(),
         strategy: ProviderCredentialRefreshStrategy::Oauth2RefreshToken as i32,
         status: "refreshed".into(),
-        expires_at_ms: 2_000_000,
-        next_refresh_at_ms: 1_900_000,
-        last_refresh_at_ms: 1_000_000,
+        expiration_time: Some(prost_types::Timestamp {
+            seconds: 2000,
+            nanos: 0,
+        }),
+        next_refresh_time: Some(prost_types::Timestamp {
+            seconds: 1900,
+            nanos: 0,
+        }),
+        last_refresh_time: Some(prost_types::Timestamp {
+            seconds: 1000,
+            nanos: 0,
+        }),
         last_error: SENTINELS.join(" "),
+        ..Default::default()
     }
 }
 
@@ -322,7 +333,10 @@ fn provider_refresh_unknown_or_malformed_evidence_refuses_without_echo() {
         assert_no_secrets(normalize_refresh_status(&native).unwrap_err());
     }
     let mut native = refresh_status();
-    native.expires_at_ms = -1;
+    native.expiration_time = Some(prost_types::Timestamp {
+        seconds: -1,
+        nanos: 999_000_000,
+    });
     assert_no_secrets(normalize_refresh_status(&native).unwrap_err());
 }
 
@@ -356,8 +370,17 @@ fn provider_record_evidence_drops_credentials_config_and_account_metadata() {
         ]
         .into_iter()
         .collect(),
-        credential_expires_at_ms: [(SENTINELS[3].into(), 2_000_000)].into_iter().collect(),
+        credential_expiration_times: [(
+            SENTINELS[3].into(),
+            prost_types::Timestamp {
+                seconds: 2000,
+                nanos: 0,
+            },
+        )]
+        .into_iter()
+        .collect(),
         profile_workspace: SENTINELS[3].into(),
+        ..Default::default()
     };
     let summary = normalize_provider(&native).unwrap();
     assert!(summary.is_object());
