@@ -46,7 +46,10 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
   let submitted = false;
   let nativeStarts = 0;
   let releases = 0;
-  const receiverHistory = new Map<string, { receipt: 'accepted' | null; complete: boolean }>();
+  const receiverHistory = new Map<
+    string,
+    { receipt: 'accepted' | 'not_accepted' | null; complete: boolean }
+  >();
   let historyReadable = true;
   let fenced = false;
   let ingressClosed = false;
@@ -89,9 +92,11 @@ function fakeFixture(cut: SubmitCut): ContractFixture {
       if (!matches(input) || input.deadline !== deadline || submitted)
         throw new Error('Submission lacks original unused admission');
       submitted = true;
-      if (cut === 'refused' || fenced || now >= Date.parse(deadline))
-        return observation('not_accepted');
       const key = correlationKey(input);
+      if (cut === 'refused' || fenced || now >= Date.parse(deadline)) {
+        receiverHistory.set(key, { receipt: 'not_accepted', complete: true });
+        return observation('not_accepted');
+      }
       if (cut === 'before-commit') {
         receiverHistory.set(key, { receipt: null, complete: true });
         throw new Error('Submit reply lost before acceptance');
@@ -175,10 +180,12 @@ function executionBackendContract(
 ): void {
   it('C27, S132 refuses definitively before contact with zero starts', async () => {
     const f = await fixture('refused');
-    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject({
-      ...f.original,
-      disposition: 'not_accepted',
-    });
+    const refusal = { ...f.original, disposition: 'not_accepted' };
+    expect(await f.backend.submit({ ...f.original, deadline: f.deadline })).toMatchObject(refusal);
+    expect(await f.backend.inspect(f.original)).toMatchObject(refusal);
+
+    const reopened = await f.reopen();
+    expect(await reopened.inspect(f.original)).toMatchObject(refusal);
     expect(await f.readEffects()).toEqual({ nativeStarts: 0, releases: 0 });
   });
 
