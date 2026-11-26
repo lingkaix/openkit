@@ -10,6 +10,8 @@ import {
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -19,6 +21,10 @@ import { recordTestNativeRuntimeTarget } from '../test-support/native-environmen
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  listSchedulerExecutionAttemptsByTurnId,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import { startTurn } from './orchestrator.js';
@@ -186,7 +192,7 @@ async function fixture(kind: SupplyCase) {
 }
 
 /** Readiness refusal must precede every external runtime operation. */
-function expectNoRuntimeEffects(f: ReturnType<typeof fixture>) {
+function expectNoRuntimeEffects(f: Awaited<ReturnType<typeof fixture>>) {
   expect(f.prepare).not.toHaveBeenCalled();
   expect(f.execute).not.toHaveBeenCalled();
   expect(f.backend.submit).not.toHaveBeenCalled();
@@ -196,7 +202,7 @@ function expectNoRuntimeEffects(f: ReturnType<typeof fixture>) {
 }
 
 /** Publishes a real queued request, pending Turn and command receipt for scheduler re-evaluation. */
-async function enqueue(f: ReturnType<typeof fixture>) {
+async function enqueue(f: Awaited<ReturnType<typeof fixture>>) {
   const turnInput = 'Recheck current provider supply.';
   const entry = await createTestQueueEntry(f.coreDb, {
     backendId: f.backend.id,
@@ -226,6 +232,7 @@ async function enqueue(f: ReturnType<typeof fixture>) {
       input: turnInput,
     }),
   });
+  return entry;
 }
 
 /** Prepares the original command facts for the native Turn owner, before admission or dispatch. */
@@ -423,6 +430,77 @@ describe('provider readiness at Turn boundaries', () => {
 });
 
 describe('scheduler to orchestrator readiness handoff', () => {
+  it('waits for the native admission claim before entering runtime preparation', async () => {
+    const f = await fixture('healthy');
+    const entry = await enqueue(f);
+    const dispatch = () =>
+      runSchedulerDispatchLoop({
+        ...f.hooks,
+        agentManifests: [f.manifest],
+        coreDb: f.coreDb,
+        executionBackend: f.backend,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        store: f.store,
+        turnExecutor: f.executor,
+      });
+    const reachedClaim = Promise.withResolvers<void>();
+    const dropClaim = Promise.withResolvers<void>();
+    const lost = new Error('Native admission claim lost before commit');
+    const client = getControlStoreWorkerClient();
+    const write = client.executionAttempt.bind(client);
+    const delivery = vi.spyOn(client, 'executionAttempt').mockImplementation(async (...args) => {
+      const command = args[1];
+      if (command.kind === 'create' && command.queueEntryId === entry.queueEntryId) {
+        reachedClaim.resolve();
+        await dropClaim.promise;
+        throw lost;
+      }
+      return write(...args);
+    });
+    const settled = dispatch().then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    try {
+      await Promise.race([
+        reachedClaim.promise,
+        settled.then(() => {
+          throw new Error('Dispatch resolved before reaching the native claim');
+        }),
+      ]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expectNoRuntimeEffects(f);
+      expect(listSchedulerExecutionAttemptsByTurnId(f.coreDb, entry.turnId)).toEqual([]);
+    } finally {
+      dropClaim.resolve();
+      await settled;
+      delivery.mockRestore();
+    }
+    expect(await settled).toEqual({ error: lost });
+    expectNoRuntimeEffects(f);
+    expect(listSchedulerExecutionAttemptsByTurnId(f.coreDb, entry.turnId)).toEqual([]);
+    expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
+    expect(f.store.getTurnById(entry.turnId).status).toBe('pending');
+
+    f.prepare.mockImplementationOnce(async (_store, preparation) => {
+      expect(requireSchedulerExecutionAttempt(f.coreDb, preparation.attemptId)).toMatchObject({
+        queueEntryId: entry.queueEntryId,
+        turnId: entry.turnId,
+        phase: 'open',
+      });
+      expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId).status).toBe('admitted');
+      throw new WorkerGovernanceCapacityUnavailableError();
+    });
+    expect(await dispatch()).toEqual({
+      startedTurns: [],
+      terminalResult: { status: 'queued', reason: 'backend-busy' },
+    });
+    expect(f.prepare).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.backend.submit).not.toHaveBeenCalled();
+  });
+
   it.each(['healthy', 'healthy-account'] as const)(
     'rechecks %s supply after preparation and before executor start',
     async (kind) => {
