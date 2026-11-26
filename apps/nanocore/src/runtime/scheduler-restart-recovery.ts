@@ -14,7 +14,7 @@ import {
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempts.js';
-import type { ExecutionBackendObservation, ExecutionBackendPort } from './execution-backend.js';
+import type { ExecutionBackendPort } from './execution-backend.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import { releaseExpiredSchedulerPreparation } from './scheduler-dispatch-loop.js';
 
@@ -95,13 +95,24 @@ export function schedulerRestartRecoveryOutcome(
   };
 }
 
-/** Rejects replies for another attempt before the writer checks the remaining correlation. */
-async function acceptRecoveryObservation(
+/** Checks the reply against the request before the writer checks the current retained operation. */
+async function observeRecoveryOperation(
   coreDb: CoreDb,
-  requestedAttemptId: string,
-  observation: ExecutionBackendObservation | null
+  backend: ExecutionBackendPort,
+  method: 'inspect' | 'cancel',
+  attempt: SchedulerExecutionAttemptRecord
 ): Promise<void> {
-  if (observation && observation.attemptId !== requestedAttemptId) return;
+  const request = schedulerExecutionCorrelation(attempt);
+  const observation = await backend[method](request);
+  if (
+    !observation ||
+    observation.attemptId !== request.attemptId ||
+    observation.backendId !== request.backendId ||
+    observation.bindingRef !== request.bindingRef ||
+    observation.inputRef !== request.inputRef ||
+    observation.operationId !== request.operationId
+  )
+    return;
   await acceptSchedulerExecutionObservation(coreDb, observation);
 }
 
@@ -144,11 +155,7 @@ export async function runSchedulerRecoveryMaintenance(
         // The native submission intent might have won while the expiry check awaited the writer.
         if (preparationFence && current.terminalCause !== 'preparation-deadline') continue;
         if (current.operationId)
-          await acceptRecoveryObservation(
-            coreDb,
-            current.attemptId,
-            await input.executionBackend.cancel(schedulerExecutionCorrelation(current))
-          );
+          await observeRecoveryOperation(coreDb, input.executionBackend, 'cancel', current);
         else if (!preparationFence) {
           await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
             attemptId: current.attemptId,
@@ -160,11 +167,7 @@ export async function runSchedulerRecoveryMaintenance(
         }
       }
       if (current.operationId)
-        await acceptRecoveryObservation(
-          coreDb,
-          current.attemptId,
-          await input.executionBackend.inspect(schedulerExecutionCorrelation(current))
-        );
+        await observeRecoveryOperation(coreDb, input.executionBackend, 'inspect', current);
       else if (current.phase === 'closing' && current.terminalCause === 'preparation-deadline')
         await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
           attemptId: current.attemptId,
