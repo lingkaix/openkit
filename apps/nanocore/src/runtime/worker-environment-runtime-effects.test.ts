@@ -16,10 +16,11 @@ import {
 import { disposeTestStore } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
-import type {
-  NanoHostResultOnlyExpectation,
-  NanoHostSessionDispatch,
-  NanoHostSessionEffectRequest,
+import {
+  NanoHostEffectNotEnqueuedError,
+  type NanoHostResultOnlyExpectation,
+  type NanoHostSessionDispatch,
+  type NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import {
   createWorkerEnvironmentRuntimeEffects,
@@ -406,6 +407,31 @@ describe('Worker environment runtime effects', () => {
       result = invalid;
       await expect(effects.purgeStorage(request)).rejects.toThrow();
     }
+  });
+
+  it('propagates a refusal for a different operation with the same purge request ID', async () => {
+    const binding = {
+      state: 'purge-pending',
+      storageRef: 'wst_00000000-0000-746a-bd34-30778524d47b',
+      attachmentGeneration: 2,
+    } as WorkerStorageBinding;
+    const commandRequestId = 'purge_test';
+    const requestId = workerEnvironmentEffectRequestId(commandRequestId, 'storage.purge');
+    const refusal = new NanoHostEffectNotEnqueuedError('image.acquire', requestId);
+    const effect = vi.fn(async () => {
+      throw refusal;
+    });
+    const effects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(effect),
+      TEST_WORKER_RELEASE_IDENTITY
+    );
+
+    await expect(
+      effects.purgeStorage({ authorize: () => true, binding, commandRequestId })
+    ).rejects.toBe(refusal);
+    expect(effect).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: 'storage.purge', requestId })
+    );
   });
 
   it('refuses missing and unknown storage core facts after ignoring additions', async () => {
