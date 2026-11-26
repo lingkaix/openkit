@@ -181,10 +181,6 @@ import {
   controlKnowledgeContentSchema,
   decodeControlKnowledgeHead,
 } from './control-store-knowledge-heads.js';
-import {
-  type ControlPendingTransition,
-  ControlPendingTransitionSchema,
-} from './control-store-pending.js';
 import { type ControlPendingPlan, ControlPendingPlanSchema } from './control-store-pending-plan.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -200,15 +196,19 @@ import {
   type ControlEventAppend,
   type ControlEventAppendResult,
   ControlEventAppendSchema,
+  type ControlTerminalResult,
+} from './control-store-products.js';
+import {
   type ControlItemAppend,
   ControlItemAppendSchema,
+  type ControlPendingTransition,
+  ControlPendingTransitionSchema,
   type ControlPublicationInput,
   ControlPublicationInputSchema,
-  type ControlTerminalResult,
   type ControlTerminalTransition,
   ControlTerminalTransitionSchema,
   controlProductMetadataJson,
-} from './control-store-products.js';
+} from './control-store-publication-codecs.js';
 import type {
   ControlRecoveryCaptureInput,
   ControlRecoveryCleanupInput,

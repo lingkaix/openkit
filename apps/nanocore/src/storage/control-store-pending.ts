@@ -1,6 +1,4 @@
 import { isDeepStrictEqual } from 'node:util';
-import { RequestIdSchema } from '@openkit/protocol';
-import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-native.js';
 import { approveMcpDefinitionInDb } from '../runtime/mcp-tool-schema-snapshots.js';
@@ -23,64 +21,30 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { applyControlAdmission } from './control-store-admission.js';
-import { ControlAdmissionSchema } from './control-store-admission-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import {
-  CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductEntry,
   ControlProductEntrySchema,
-  ControlProductMutationSchema,
 } from './control-store-product-records.js';
 import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlTerminal,
-  ControlTerminalTransitionSchema,
   type PreparedControlEntry,
   type PreparedControlTerminal,
   prepareControlEntries,
   prepareRetainedControlEntries,
   readPreparedControlEntry,
 } from './control-store-products.js';
+import {
+  type ControlPendingTransition,
+  ControlPendingTransitionSchema,
+} from './control-store-publication-codecs.js';
 import type { WorkspaceDb } from './db.js';
 import { prepareWorkspaceQueueInputBatch } from './workspace-queue-inputs.js';
 
-/** Original Pending command receipts; no separate execution or settlement ledger. */
-export const ControlPendingReceiptSchema = z
-  .object({
-    key: z.string().min(1),
-    command: z.enum(['approval.respond', 'user_input.answer', 'pending_request.withdraw']),
-    requestId: RequestIdSchema,
-    scope: z.record(z.string(), z.string()),
-    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    responseKind: z.enum(['approval', 'pending_request']),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-/** Complete native Pending publication packet; all immutable bytes are synchronized before SQL. */
-export const ControlPendingTransitionSchema = z
-  .object({
-    input: z.lazy(() => ControlPendingCommandInputSchema),
-    terminal: z.lazy(() => ControlTerminalTransitionSchema).optional(),
-    admission: z.lazy(() => ControlAdmissionSchema).optional(),
-    products: z.lazy(() =>
-      z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries)
-    ),
-    entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
-    receipt: z
-      .object({
-        original: ControlPendingReceiptSchema,
-        input: z.unknown(),
-        responseId: z.string().min(1),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-/** Closed Pending body and existing dependent local projections. */
-export type ControlPendingTransition = z.infer<typeof ControlPendingTransitionSchema>;
+export type { ControlPendingTransition } from './control-store-publication-codecs.js';
 
 /** Prepares only immutable Item proof outside SQL; retained descriptors never become new writes. The optional verified entries are the existing terminal owner's native-local preparation, including its terminal event. */
 export async function prepareControlPendingCommands(
