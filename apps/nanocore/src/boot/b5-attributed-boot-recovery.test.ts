@@ -458,7 +458,11 @@ describe('B5 attributed Boot recovery', () => {
       const claim = readPendingRow(root.dataRoot, held, claimed.requestId);
       expect(claim).toMatchObject({ claim: 'claimed', disposition: null });
 
-      const server = await startServer(root);
+      const server = await startServer(root, {
+        workspaceId: held,
+        writerWatch: true,
+        label: 'tail-invalidation',
+      });
       await expectHeld(server, held, 'check=records; stage=pending-request-recovery');
       await expectServed(server, [healthy], held);
       await stopServer(server);
@@ -467,6 +471,8 @@ describe('B5 attributed Boot recovery', () => {
       expect(bootDecisionLines(server)).toContain(
         'Pending service publication requires its original Core-local Turn.'
       );
+      // The intact preflight refuses before A's writer: no write entered A's database.
+      expect(server.output()).not.toContain('[boot-walk-fault] writer-entered');
       expect(readPendingRow(root.dataRoot, held, claimed.requestId)).toEqual(claim);
       expectEvidenceUnchanged(root.dataRoot, held, original);
 
@@ -1519,7 +1525,7 @@ describe('B5 attributed Boot recovery', () => {
     'settles one unfinished claim once beside 12,000 valid historical Pending sources and binds every Workspace',
     async () => {
       const root = await seedRoot(['Long history', 'Healthy']);
-      const [long, healthy] = root.workspaceIds as [string, string];
+      const [long] = root.workspaceIds as [string, string];
       const { template, claims } = await withSeedStore(root, async (store) => {
         // A waiting request its completed Turn raised: the shape of every retained history row.
         const [template] = await seedDecidedApprovals(store, root, [long], {
