@@ -14,7 +14,7 @@ import {
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempts.js';
-import type { ExecutionBackend } from './execution-backend.js';
+import type { ExecutionBackendPort } from './execution-backend.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import { releaseExpiredSchedulerPreparation } from './scheduler-dispatch-loop.js';
 
@@ -32,7 +32,7 @@ export interface PreAnchorRecoveryContext {
 /** Generic restart dependencies contain no native liveness or placement policy. */
 export interface RunSchedulerRestartRecoveryInput {
   readonly store?: FsStore;
-  readonly executionBackend: ExecutionBackend;
+  readonly executionBackend: ExecutionBackendPort;
   readonly isTurnExecutionActive?: (turnId: string) => boolean;
   readonly now?: () => string;
   readonly projectRecoveredTurn: (
