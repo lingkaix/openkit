@@ -1725,12 +1725,14 @@ export interface CanonicalLoadFailure {
  *
  * @param record Authoritative record.
  * @param turns Turns on the same Thread.
+ * @param loaded The same Turns' Items, indexed once for a census.
  * @returns Failure, or null when the record is usable.
  */
 export function validateCanonicalLoad(
   record: PendingRequestRecord,
   turns: readonly Turn[],
-  receipts: readonly CommandRequestRecord[] = []
+  receipts: readonly CommandRequestRecord[] = [],
+  loaded?: CanonicalLoadItems
 ): CanonicalLoadFailure | null {
   const raising = turns.find((turn) => turn.id === record.raisingTurnId);
   if (
@@ -1740,8 +1742,16 @@ export function validateCanonicalLoad(
   ) {
     return { requestId: record.requestId, reason: 'raising-turn-lineage' };
   }
-  const items = turns.flatMap((turn) => turn.items);
-  const requestItems = items.filter(
+  const scanned = loaded ? [] : turns.flatMap((turn) => turn.items);
+  // Each filter's predicate holds only for Items under its keys: an indexed history selects them in
+  // scan order, so each filter selects what a scan of every Item selects.
+  const items = (keys: readonly string[]): readonly Item[] =>
+    loaded
+      ? [...new Set(keys.flatMap((key) => loaded.positions.get(key) ?? []))]
+          .sort((left, right) => left - right)
+          .map((position) => loaded.items[position]!)
+      : scanned;
+  const requestItems = items([`id:${record.requestItemId}`, `request:${record.requestId}`]).filter(
     (item) => item.id === record.requestItemId || requestItemMatches(item, record)
   );
   if (
@@ -2056,7 +2066,7 @@ export function validateCanonicalLoad(
   ) {
     return { requestId: record.requestId, reason: 'delivery-executor' };
   }
-  const decisionItems = items.filter(
+  const decisionItems = items([`request:${record.requestId}`]).filter(
     (item) => item.type === 'approval-decision' && item.approvalRequestId === record.requestId
   );
   if (decisionItems.length > 1) return { requestId: record.requestId, reason: 'two-resolutions' };
@@ -2081,7 +2091,7 @@ export function validateCanonicalLoad(
       return { requestId: record.requestId, reason: 'item-ahead-of-record' };
     }
   }
-  const answerItems = items.filter(
+  const answerItems = items([`request:${record.requestId}`]).filter(
     (item) => item.type === 'user-input-response' && item.userInputRequestId === record.requestId
   );
   if (answerItems.length > 1) return { requestId: record.requestId, reason: 'two-resolutions' };
@@ -2132,7 +2142,7 @@ export function validateCanonicalLoad(
   const roles = ['disposition', 'disposition-status', 'ending', 'invalidation'] as const;
   for (const role of roles) {
     const id = pendingRequestItemId(record.requestId, role);
-    const matching = items.filter(
+    const matching = items([`id:${id}`, `cause:${record.requestItemId}`]).filter(
       (item) =>
         item.id === id ||
         (item.causationId === record.requestItemId &&
@@ -2506,6 +2516,39 @@ function requestItemMatches(item: Item, record: PendingRequestRecord): boolean {
   if (item.type === 'approval-request') return item.approvalRequestId === record.requestId;
   if (item.type === 'user-input-request') return item.userInputRequestId === record.requestId;
   return false;
+}
+
+/** One unchanged history's Items with their positions by Item id, named request and causation. */
+export interface CanonicalLoadItems {
+  readonly items: readonly Item[];
+  readonly positions: ReadonlyMap<string, readonly number[]>;
+}
+
+/**
+ * Indexes one history's Items once, for a census of records the canonical-load rule validates on
+ * that same unchanged history.
+ */
+export function canonicalLoadItems(turns: readonly Turn[]): CanonicalLoadItems {
+  const items = turns.flatMap((turn) => turn.items);
+  const positions = new Map<string, number[]>();
+  for (const [position, item] of items.entries()) {
+    const request =
+      'approvalRequestId' in item
+        ? item.approvalRequestId
+        : 'userInputRequestId' in item
+          ? item.userInputRequestId
+          : undefined;
+    for (const key of [
+      `id:${item.id}`,
+      ...(request ? [`request:${request}`] : []),
+      ...(item.causationId ? [`cause:${item.causationId}`] : []),
+    ]) {
+      const at = positions.get(key);
+      if (at) at.push(position);
+      else positions.set(key, [position]);
+    }
+  }
+  return { items, positions };
 }
 
 function pendingRequestTableExists(sqlite: Database.Database): boolean {
