@@ -301,6 +301,7 @@ import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreJournal,
+  hasCoreWorkerFinalIntake,
   inspectAcceptedNanoHostFinalInDb,
   observeAcceptedNanoHostFinalInDb,
   readNanoHostFinalCloseDecision,
@@ -1817,14 +1818,14 @@ function applyNanoHostRecoveryClose(
         const { session, proof } = readNanoHostRecoveryLease(sqlite, lease);
         if (hashNanoHostRecoveryObservation({ lease, session, proof }) !== captured.observationHash)
           throw new ServerOwnerAdmissionError('recovery-required');
-        // K8b: the proved Native-only final or absence that this close consumes, in this same snapshot,
-        // before its revocation. A newly settled receipt or changed evidence holds for the next pass.
+        // K8b: recheck the final commitment before revocation. A Core intake can win during
+        // the capture walk even when Native absence still matches. It keeps the original deadline.
         if (captured.finalHash !== undefined) {
           const final = readNanoHostFinalCloseDecision(core, sqlite, input.attemptId, session);
           if (
             final.state === 'held' ||
-            (final.state === 'native-only' &&
-              (input.observedAt === undefined || input.observedAt < lease.grant.deadline)) ||
+            ((input.observedAt === undefined || input.observedAt < lease.grant.deadline) &&
+              (final.state === 'native-only' || hasCoreWorkerFinalIntake(core, input.attemptId))) ||
             hashNanoHostFinalDecision(final) !== captured.finalHash
           )
             throw new ServerOwnerAdmissionError('recovery-required');
