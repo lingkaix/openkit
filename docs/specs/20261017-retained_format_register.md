@@ -52,7 +52,7 @@ The named fresh-root cutover freezes the target below. Compare the predecessor a
 | Registered Server work feature | `openkit.server-threads.v1` | Same string | Schema Evolution and Server work |
 | Artifact head and immutable version descriptor | `schemaVersion` 1 | 1 | Work Resource Interaction |
 | Conversation file-input inventory | Turn `schemaVersion` 1 | 1 | Workspace Turn owner |
-| Work observation header, row and required feature | `schema_version` 1, `v=1`, `openkit.work-observations.v1` | Same | Work Data Retention, Workspace or Server work |
+| Work observation header, row and required feature | `schema_version` 1, `v=1`, `openkit.work-observations.v1` | Same base. A Turn with a cutoff also requires `openkit.work-observations.truncation.v1` and the [reap truncation contract](20260921-work_data_retention_format.md#reap-truncation-summary). | Work Data Retention, Workspace or Server work |
 | Normalized runtime evidence, restricted capture metadata and unaccepted capture source | `schemaVersion` or `schema_version` 1; `runtime.evidence.v1`, `worker.runtime-provenance.v1` where used | Same | Work Data Retention, Workspace or Server work evidence |
 | EvidenceBundle metadata and registered family | `schema_version` 1, `evidence.bundle.v1` | Same | Audit, Usage And Evidence, Workspace or Server work |
 | SQL CapabilityCall and Usage JSON | `schema_version` 1 | 1 | Workspace or Server work |

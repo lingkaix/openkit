@@ -313,12 +313,14 @@ import {
   ControlVaultResultSchema,
   isControlVaultRefusal,
 } from './vault-native-codecs.js';
+import { ObservationOmissionResultSchema } from './work-observation-collection.js';
 import {
   ControlWorkObservationChunkInputSchema,
   type ControlWorkObservationCommandInput,
   ControlWorkObservationInputSchema,
   type ControlWorkObservationResult,
   parseWorkObservationRecord,
+  type RetainedWorkObservation,
 } from './work-observations.js';
 import {
   type ControlBackendSessionInput,
@@ -1147,17 +1149,20 @@ const serverWorkOwnerResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('publish-turn-progress'), value: z.null() }),
   z.strictObject({
     kind: z.literal('append-observation'),
-    value: z.strictObject({
-      disposition: z.enum(['committed', 'duplicate']),
-      observation: z.custom<ControlWorkObservationResult['observation']>((value) => {
-        try {
-          parseWorkObservationRecord(value);
-          return true;
-        } catch {
-          return false;
-        }
+    value: z.union([
+      ObservationOmissionResultSchema,
+      z.strictObject({
+        disposition: z.enum(['committed', 'duplicate']),
+        observation: z.custom<RetainedWorkObservation['observation']>((value) => {
+          try {
+            parseWorkObservationRecord(value);
+            return true;
+          } catch {
+            return false;
+          }
+        }),
       }),
-    }),
+    ]),
   }),
   z.strictObject({ kind: z.literal('write-route-lineage'), value: z.number().int().nonnegative() }),
   z.strictObject({ kind: z.literal('publish-containment'), value: z.null() }),
@@ -2356,6 +2361,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'capability')
     return ControlCapabilityCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'observation') {
+    if (ObservationOmissionResultSchema.safeParse(reply.result).success) return true;
     if (
       !isRecord(reply.result) ||
       (reply.result.disposition !== 'committed' && reply.result.disposition !== 'duplicate')
