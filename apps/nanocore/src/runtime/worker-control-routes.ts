@@ -13,6 +13,7 @@ import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { CoreDb } from '../storage/db.js';
+import { OBSERVATION_POSITION_CONFLICT } from '../storage/work-observation-collection.js';
 import { createCredentialHelperHandler } from './credential-helper-exchange.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
@@ -545,7 +546,10 @@ async function quarantineWorkerControlRejection(input: {
     !input.lineage ||
     !(input.error instanceof WorkerControlGatewayError) ||
     input.error.code === 'worker_control_reconnect_required' ||
-    input.error.code === 'observation_limit_reached'
+    input.error.code === 'observation_limit_reached' ||
+    // A shifted replay must not replace its refused fingerprint with other durable growth.
+    (input.error.code === OBSERVATION_POSITION_CONFLICT.code &&
+      input.error.message === OBSERVATION_POSITION_CONFLICT.message)
   ) {
     return;
   }

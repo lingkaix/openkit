@@ -43,6 +43,7 @@ import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-met
 import { serverWorkUnavailable } from './server-work-command.js';
 import {
   assertReapObservationPrefix,
+  assertWorkObservationPosition,
   fitsReap,
   mergeReapCall,
   NATIVE_OBSERVATION_BYTES,
@@ -503,6 +504,7 @@ export interface ControlWorkObservationInput {
   readonly bodies: readonly WorkObservationBodyDescriptor[];
   readonly publishBodies?: boolean | undefined;
   readonly workerSequence?: number | undefined;
+  readonly originalWorkerReplay?: boolean | undefined;
 }
 
 /** Savepoint result only: the worker must await outer FULL COMMIT before acknowledgement. */
@@ -584,6 +586,7 @@ export interface ControlWorkObservationPreparation {
   readonly bodies: readonly AdmittedWorkBody[];
   readonly deferBodyPublication?: true;
   readonly workerSequence?: number | undefined;
+  readonly originalWorkerReplay?: boolean | undefined;
 }
 
 /** Scoped selectors are not paths and cannot select a second owning database. */
@@ -598,6 +601,7 @@ export const ControlWorkObservationInputSchema = controlObservationSelectorSchem
     bodies: z.array(bodyDescriptorSchema.strict()),
     publishBodies: z.boolean().optional(),
     workerSequence: z.int().nonnegative().optional(),
+    originalWorkerReplay: z.boolean().optional(),
   })
   .strict();
 
@@ -620,6 +624,7 @@ export const ControlWorkObservationChunkInputSchema = controlObservationSelector
         chunkIndex: z.number().int().nonnegative(),
         byteOffset: z.number().int().nonnegative(),
         replay: z.boolean(),
+        workerSequence: z.int().nonnegative().optional(),
       })
       .strict(),
   })
@@ -863,10 +868,11 @@ function assertObservationTruncation(
 export function readControlWorkObservation(
   sqlite: Database.Database,
   owner: ControlProductOwner,
-  input: { readonly threadId: string; readonly turnId: string; readonly id: string }
+  input: { readonly threadId: string; readonly turnId: string; readonly id: string },
+  replay?: Pick<ControlWorkObservationInput, 'workerSequence' | 'originalWorkerReplay'>
 ): WorkObservationRecord | undefined {
   if (!sqlite.inTransaction)
-    return sqlite.transaction(() => readControlWorkObservation(sqlite, owner, input))();
+    return sqlite.transaction(() => readControlWorkObservation(sqlite, owner, input, replay))();
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
   const row = sqlite
     .prepare('SELECT * FROM control_work_observations WHERE turn_id=? AND id=?')
@@ -874,6 +880,12 @@ export function readControlWorkObservation(
   if (!row) return undefined;
   assertControlObservationManifest(binding);
   const record = decodeControlObservation(row, input.turnId);
+  if (replay?.workerSequence !== undefined)
+    assertWorkObservationPosition(
+      JSON.parse(row.record_json).workerSequence,
+      replay.workerSequence,
+      replay.originalWorkerReplay
+    );
   assertObservationTruncation(sqlite, binding, record);
   assertControlObservationLineage(sqlite, owner, input, record);
   return record;
@@ -1091,6 +1103,7 @@ export function prepareControlWorkObservation(
     bodies,
     publishBodies: bodies.length > 0 && !input.deferBodyPublication,
     ...(input.workerSequence !== undefined ? { workerSequence: input.workerSequence } : {}),
+    ...(input.originalWorkerReplay ? { originalWorkerReplay: true } : {}),
   };
 }
 
@@ -1117,10 +1130,12 @@ export function publishControlWorkObservationBodies(
   const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, input);
   if (!binding.coverage || (prepared.bodies.length && binding.coverage.value !== 'on'))
     throw new Error('Observation capture coverage does not permit bodies');
-  const existing = readControlWorkObservation(db.sqlite, owner, {
-    ...input,
-    id: input.observation.id,
-  });
+  const existing = readControlWorkObservation(
+    db.sqlite,
+    owner,
+    { ...input, id: input.observation.id },
+    prepared
+  );
   controlObservationCandidate(prepared, existing, existing?.seq ?? 1, owner);
   const prior = readControlWorkObservation(db.sqlite, owner, {
     ...input,
@@ -1196,6 +1211,8 @@ export function prepareControlWorkObservationCommand(
       chunkCount: expected.chunkCount,
       chunkIndex: parsed.chunk.chunkIndex,
       byteOffset: parsed.chunk.byteOffset,
+      workerSequence: parsed.chunk.workerSequence,
+      originalWorkerReplay: parsed.chunk.replay,
       bytes: new Uint8Array(content ?? new ArrayBuffer(0)),
     });
     if (staged.state === 'expired' && !parsed.chunk.replay)
@@ -1500,10 +1517,12 @@ export function applyControlWorkObservation(
   if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
   if (input.bodies.length && binding.coverage.value !== 'on')
     throw new Error('Capture coverage is off');
-  const existing = readControlWorkObservation(sqlite, owner, {
-    ...input,
-    id: input.observation.id,
-  });
+  const existing = readControlWorkObservation(
+    sqlite,
+    owner,
+    { ...input, id: input.observation.id },
+    input
+  );
   const tail = sqlite
     .prepare(
       'SELECT MAX(sequence) AS last, COUNT(*) AS count FROM control_work_observations WHERE turn_id=?'
@@ -1603,9 +1622,11 @@ export function applyControlWorkObservation(
       for (const body of input.bodies) assertControlBodyPublished(sqlite, owner, input, body);
   }
   // The caller's savepoint rolls back the manifest and both rows on any bound or SQL failure.
-  const insert = (record: WorkObservationRecord): void => {
-    // New live rows admit parsed metadata only; retained rows are never rewritten here.
-    const text = JSON.stringify(record);
+  const insert = (record: WorkObservationRecord, workerSequence?: number): void => {
+    // The original position commits with the row and is stripped from public observation reads.
+    const text = JSON.stringify(
+      workerSequence === undefined ? record : { ...record, workerSequence }
+    );
     if (Buffer.byteLength(text) > NATIVE_OBSERVATION_BYTES)
       throw new Error('Observation metadata exceeds the native bound');
     // Refuse an unknown required declaration even when the known-field parser would strip it.
@@ -1637,7 +1658,7 @@ export function applyControlWorkObservation(
       ...(counter ? { counter: { ...counter, sequence: publication?.seq ?? candidate.seq } } : {}),
       truncated,
     });
-  if (!existing) insert(candidate);
+  if (!existing) insert(candidate, input.workerSequence);
   if (publication && !prior) insert(publication);
   return { disposition: existing ? 'duplicate' : 'committed', observation: candidate, publication };
 }

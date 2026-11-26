@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { type AgentEnvironmentPackage, NativeLogMaxBytesSchema } from '@openkit/config-schema';
 import {
+  canonicalJsonText,
   readRetainedV1,
   type StopReason,
   StopReasonSchema,
@@ -23,7 +24,9 @@ import {
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
+import { WorkerControlGatewayError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
   appendWorkObservation,
@@ -52,6 +55,7 @@ import type {
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
 import { workerControlEventReceipt } from './worker-control-gateway.js';
+import { matchesAcceptedWorkerControlSequence } from './worker-control-sequences.js';
 
 type WorkerControlReceiptDb = { readonly sqlite: Database.Database };
 
@@ -214,7 +218,7 @@ export async function recoverWorkerObservationSource(
     throw new Error('recovery_required: observation source lineage mismatch');
   const content = metadata.event.data.content;
   if (content.state !== 'expected') throw new Error('Observation source has no admitted body');
-  const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): void => {
+  const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): boolean => {
     const fingerprint = coreDb.sqlite
       .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
       WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND sequence=?`)
@@ -242,13 +246,14 @@ export async function recoverWorkerObservationSource(
         ))
     )
       throw new Error('recovery_required: original observation acceptance missing or conflicting');
+    return !!(row || fingerprint);
   };
   checkReceipt(metadata, true);
   const source = await open(
     input.sourcePath,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
   );
-  const chunks: WorkerCanonicalEventRecord[] = [];
+  const chunks: { record: WorkerCanonicalEventRecord; replay: boolean }[] = [];
   try {
     const stat = await source.stat();
     if (!stat.isFile() || stat.size < 1 || stat.size > WORKER_OBSERVATION_SOURCE_MAX_BYTES)
@@ -288,10 +293,10 @@ export async function recoverWorkerObservationSource(
           bytes + decoded.length > content.bytes
         )
           throw new Error('Observation source chunk coordinates conflict');
-        checkReceipt(record);
+        const replay = checkReceipt(record);
         hash.update(decoded);
         bytes += decoded.length;
-        chunks.push(record);
+        chunks.push({ record, replay });
       }
     }
     if (
@@ -304,9 +309,9 @@ export async function recoverWorkerObservationSource(
     await source.close();
   }
   // Source collection restores evidence only. It never fills stale live sequences or receipts.
-  for (const chunk of chunks) {
+  for (const { record, replay } of chunks) {
     input.assertPublicationAuthority();
-    await recordWorkerObservation(coreDb, chunk, false);
+    await recordWorkerObservation(coreDb, record, replay);
   }
 }
 
@@ -398,7 +403,21 @@ function prepareWorkerControlObservation(
     )
   )
     throw new Error('recovery_required: worker receipt identity conflict');
-  return recordWorkerObservation(coreDb, event, existing !== undefined);
+  const replay =
+    existing !== undefined ||
+    matchesAcceptedWorkerControlSequence(coreDb, {
+      lineage: event.lineage,
+      operation: 'event_append',
+      sequence: event.sequence,
+      fingerprint: canonicalJsonText(workerControlEventReceipt(event)),
+    }) === true;
+  return recordWorkerObservation(coreDb, event, replay).catch((error: unknown) => {
+    if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'observation') {
+      const { code, message, status } = error.domain;
+      throw new WorkerControlGatewayError(code, message, status);
+    }
+    throw error;
+  });
 }
 
 /** Retains one observation under verified outer lineage before a sanitized control receipt can be acknowledged. */
@@ -602,6 +621,7 @@ async function recordWorkerObservation(
         ...owner,
         observation,
         workerSequence: event.sequence,
+        originalWorkerReplay: replay,
         bodies:
           data.content.state === 'expected' && data.content.bytes === 0
             ? [
@@ -643,6 +663,7 @@ async function recordWorkerObservation(
           byteLength: bytes.byteLength,
           chunkIndex: chunk.chunkIndex,
           byteOffset: chunk.byteOffset,
+          workerSequence: event.sequence,
           replay,
         },
       },
