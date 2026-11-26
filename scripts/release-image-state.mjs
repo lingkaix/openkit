@@ -42,7 +42,7 @@ export function inspectReleaseImageState(input) {
 /**
  * Resolves one registry reference to its OCI digest.
  *
- * A recognized registry not-found response is the only failure projected as absence.
+ * A completed registry command with a recognized not-found error reports absence.
  *
  * @param {string} reference Image reference.
  * @param {(reference: string) => import('node:child_process').SpawnSyncReturns<string>} [inspect] Registry command adapter used by tests.
@@ -61,7 +61,7 @@ export function resolveImageDigest(reference, inspect = inspectWithDocker) {
     }
     return digest;
   }
-  if (NOT_FOUND.test(output)) return '';
+  if (Number.isInteger(result.status) && result.status > 0 && NOT_FOUND.test(output)) return '';
   throw new Error(`Unable to inspect ${reference}: ${output || `exit ${result.status}`}`);
 }
 

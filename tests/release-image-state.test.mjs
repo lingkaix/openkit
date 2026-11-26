@@ -80,13 +80,24 @@ test -f "$DOCKER_CONFIG/private-subject-fixture"
 });
 
 test('registry inspection treats only a recognized missing manifest as absent', () => {
+  const missingReference = 'ghcr.io/openkit/missing:v1';
+  const missing = {
+    status: 1,
+    stderr: 'ERROR: ghcr.io/openkit/missing:v1: not found',
+    stdout: '',
+  };
   assert.equal(
-    resolveImageDigest('ghcr.io/openkit/missing:v1', () => ({
-      status: 1,
-      stderr: 'ERROR: ghcr.io/openkit/missing:v1: not found',
-      stdout: '',
-    })),
+    resolveImageDigest(missingReference, () => missing),
     ''
+  );
+  assert.throws(
+    () =>
+      resolveImageDigest(missingReference, () => ({
+        ...missing,
+        status: null,
+        signal: 'SIGTERM',
+      })),
+    /Unable to inspect/
   );
   assert.throws(
     () =>
