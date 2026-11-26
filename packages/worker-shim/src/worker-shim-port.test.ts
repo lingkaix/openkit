@@ -112,6 +112,10 @@ describe('Worker Shim contract', () => {
       ...runningReport,
       session: successor,
     });
+    await expectPoll(shim, desired(2, { session: successor }), {
+      ...runningReport,
+      session: successor,
+    });
     const obsolete = vi.fn(async () => desired(100, { workers: run }));
     expect(await shim.poll(session, obsolete)).toBe('stale');
     expect(obsolete).not.toHaveBeenCalled();
@@ -233,6 +237,10 @@ describe('Worker Shim contract', () => {
       ...runningReport,
       receipts: [acceptedInput, receipt('steer', steer, 'unknown')],
     });
+    await expectPoll(shim, desired(3), {
+      ...runningReport,
+      receipts: [acceptedInput, receipt('steer', steer, 'unknown')],
+    });
     expect(receiveSteer).toHaveBeenCalledExactlyOnceWith(steer);
     expect(shim.contacted).toEqual([input.operationId, steer.operationId]);
 
@@ -276,8 +284,12 @@ describe('Worker Shim contract', () => {
         interrupts: [{ ...interrupt, disposition: 'unknown' }, refusal],
       }
     );
-    shim.observeInterruptSettlement(interrupt);
     await expectPoll(shim, desired(3), {
+      ...fenced,
+      interrupts: [{ ...interrupt, disposition: 'unknown' }, refusal],
+    });
+    shim.observeInterruptSettlement(interrupt);
+    await expectPoll(shim, desired(4), {
       ...fenced,
       interrupts: [{ ...interrupt, disposition: 'cancelled' }, refusal],
     });
@@ -311,6 +323,12 @@ describe('Worker Shim contract', () => {
       interrupts: [{ ...interrupt, disposition: 'unknown' }],
       receipts: [receipt('input', input, 'refused')],
     });
+    await expectPoll(shim, desired(3), {
+      ...runningReport,
+      interrupts: [{ ...interrupt, disposition: 'unknown' }],
+      receipts: [receipt('input', input, 'refused')],
+    });
+    expect(shim.interrupted).toEqual([]);
     expect(shim.contacted).toEqual([]);
     expect(await shim.waitUntilAbsent(start.workerId, new LifecycleDeadline(0))).toEqual({
       state: 'held',
