@@ -30,6 +30,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import {
   pendingPlanStagePath,
@@ -54,6 +55,7 @@ import {
 } from './pending-request-flow.js';
 import {
   pendingRequestItemId,
+  pendingRequestSystemActor,
   readPendingRequest,
   validateCanonicalLoad,
 } from './pending-requests.js';
@@ -61,8 +63,30 @@ import {
 const archiveReadFault = vi.hoisted(() => ({
   gate: undefined as Int32Array | undefined,
   planIo: undefined as Int32Array | undefined,
+  failPlanCopy: false,
+  planCopyFailures: 0,
   workers: 0,
 }));
+
+vi.mock('node:fs/promises', async (load) => {
+  const fs = await load<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const file = await fs.open(...args);
+      if (archiveReadFault.failPlanCopy && args[1] === 'wx' && String(args[0]).endsWith('.tmp')) {
+        const write = file.write;
+        file.write = (async (...parts: unknown[]) => {
+          await Reflect.apply(write, file, parts);
+          archiveReadFault.failPlanCopy = false;
+          archiveReadFault.planCopyFailures++;
+          throw Object.assign(new Error('Partial encoded plan copy refused'), { code: 'EIO' });
+        }) as typeof file.write;
+      }
+      return file;
+    },
+  };
+});
 
 /** Replaces the staged plan for a writer fault, keeping the original body's staging ownership. */
 async function replaceGroupedPlan(
@@ -157,7 +181,9 @@ vi.mock('node:worker_threads', async (load) => {
             return file;
           };
           fs.linkSync = function(...args) {
-            if (Atomics.load(io, 0) === 3 && String(new Error().stack).includes('linkStagedFiles')) {
+            const mode = Atomics.load(io, 0);
+            if (String(new Error().stack).includes('linkStagedFiles') &&
+                (mode === 3 || (mode === 6 && Atomics.add(io, 1, 1) === 1))) {
               Atomics.add(io, 2, 1);
               throw Object.assign(new Error('grouped link failed'), {code: 'EIO'});
             }
@@ -1208,7 +1234,13 @@ describe('native standalone archive and concurrent Pending raise', () => {
     ).toHaveLength(1);
   }, 300_000);
 
-  it.each(['reference operation', 'group count', 'live Thread', 'Boot operation'] as const)(
+  it.each([
+    'reference operation',
+    'group count',
+    'live Thread',
+    'Boot operation',
+    'authority-loss archive',
+  ] as const)(
     'refuses a grouped closeout at the writer with a mismatched %s before effects',
     async (fault) => {
       const f = await fixture();
@@ -1251,6 +1283,40 @@ describe('native standalone archive and concurrent Pending raise', () => {
           header.operation = 'pending-boot';
           header.threadId = null;
         }
+        if (fault === 'authority-loss archive') {
+          for (let index = 1; index < lines.length - 1; index++) {
+            const frame = JSON.parse(lines[index]!);
+            if (frame.kind === 'closeout-sources')
+              frame.events = frame.expected.map(({ requestId }: { requestId: string }) => ({
+                requestId,
+                event: 'membership-revoked',
+              }));
+            if (frame.kind === 'pending') {
+              const actor = pendingRequestSystemActor(null);
+              const triggerSource = {
+                kind: 'system-input',
+                summary: 'Requester authority was lost.',
+              };
+              const terminal = frame.input.terminal;
+              const command = {
+                ...frame.input.input,
+                actor: { kind: actor.kind, id: actor.id },
+                invalidatingEvents: [],
+              };
+              frame.input.input = command;
+              terminal.pending = [command];
+              Object.assign(terminal.turn.record, { triggerActor: actor, triggerSource });
+              const event = terminal.entries[0];
+              const envelope = JSON.parse(event.content.reference.body);
+              Object.assign(envelope.data.turn, { triggerActor: actor, triggerSource });
+              terminal.entries[0] = {
+                ...event,
+                ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+              };
+            }
+            lines[index] = JSON.stringify(frame);
+          }
+        }
         header.inputs = controlPendingPlanInputs(f.reader.sqlite, f.workspace.id, header.threadId);
         lines[0] = JSON.stringify(header);
         const plan = await replaceGroupedPlan(scope, input.plan, Buffer.from(lines.join('\n')));
@@ -1274,8 +1340,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
     90_000
   );
 
-  it.each(['terminal', 'receipt'] as const)(
-    'refuses a rename smuggled into the archive $0 mutation',
+  it.each(['terminal rename', 'receipt rename', 'receipt resource'] as const)(
+    'refuses an unrelated change in the archive $0 mutation',
     async (form) => {
       const f = await fixture();
       await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
@@ -1289,14 +1355,16 @@ describe('native standalone archive and concurrent Pending raise', () => {
         (workspaceId, header, groups, turns) => {
           const target = groups.find((group) => group.kind === 'pending');
           if (!target?.input.terminal) throw new Error('Missing original archive closeout.');
-          const owner = form === 'receipt' ? target.input.admission : target.input.terminal;
+          const owner = form === 'terminal rename' ? target.input.terminal : target.input.admission;
           if (!owner?.products[0]) throw new Error('Missing original archive mutation.');
-          owner.products[0].record.name = 'Independent rename';
+          if (form === 'receipt resource')
+            target.input.admission!.audit.resource = 'Unrelated resource';
+          else owner.products[0].record.name = 'Independent rename';
           return publish(workspaceId, header, groups, turns);
         }
       );
       const result =
-        form === 'receipt'
+        form !== 'terminal rename'
           ? archiveThread(f.archive, f.dependencies, actor)
           : archiveThreadWithCloseout(
               f.store,
@@ -1313,63 +1381,157 @@ describe('native standalone archive and concurrent Pending raise', () => {
     90_000
   );
 
-  it('refuses a grouped Boot person freeze without its completion', async () => {
-    const f = await fixture();
-    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
-    const pending = {
-      openWorkspace: f.dependencies.repositoryWorkspaceDb,
-      agentAuthority: () => true,
-    };
-    await respondRecordedApproval({
-      store: f.store,
-      sqlite: f.reader.sqlite,
-      workspaceId: f.workspace.id,
-      threadId: f.thread.id,
-      approvalRequestId: f.raise.requestId,
-      decision: 'denied',
-      actorId: userId,
-      coreDb: undefined,
-      requestActor: actor,
-      dependencies: pending,
-    });
-    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
-    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)?.delivery).toBe('undelivered');
-    const original = workspaceEvidence(f.root, f.workspace.id);
-    const publish = f.store.publishPendingPlan.bind(f.store);
-    let refusal: unknown;
-    const plans = vi
-      .spyOn(f.store, 'publishPendingPlan')
-      .mockImplementationOnce(async (workspaceId, header, groups, turns) => {
-        const admission = groups.find((group) => group.kind === 'products')?.transition
-          .pending?.[0];
-        const completion = groups.find((group) => group.kind === 'terminal');
-        expect(admission).toMatchObject({ action: 'freeze', executor: 'person' });
-        expect(completion?.input.pending).toEqual([
-          expect.objectContaining({
-            action: 'delivery-prove',
-            turnId: completion!.input.turn.record.id,
-          }),
-        ]);
-        try {
-          return await publish(
-            workspaceId,
-            header,
-            groups.filter((group) => group !== completion),
-            turns
-          );
-        } catch (error) {
-          refusal = error;
-          throw error;
-        }
+  it.each([
+    'without its completion',
+    'with an unrelated Thread rename',
+    'with an unowned Item in the admission',
+    'with an unowned Item carried into the terminal',
+    'without a usable settlement source',
+    'with a person batch marked unknown before completion',
+    'with a substituted outcome start status',
+  ] as const)(
+    'refuses a grouped Boot person freeze %s',
+    async (fault) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      const pending = {
+        openWorkspace: f.dependencies.repositoryWorkspaceDb,
+        agentAuthority: () => true,
+      };
+      await respondRecordedApproval({
+        store: f.store,
+        sqlite: f.reader.sqlite,
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        approvalRequestId: f.raise.requestId,
+        decision: 'denied',
+        actorId: userId,
+        coreDb: undefined,
+        requestActor: actor,
+        dependencies: pending,
       });
-    f.store.startPendingRequestDelivery(pending);
-    await recoverPendingRequestsAtBoot(f.store, pending);
-    expect(plans).toHaveBeenCalledTimes(1);
-    expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
-    closeFixtureReaders();
-    await shutdownControlStoreWorkerClient();
-    expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
-  }, 90_000);
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)?.delivery).toBe('undelivered');
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const publish = f.store.publishPendingPlan.bind(f.store);
+      let refusal: unknown;
+      const plans = vi
+        .spyOn(f.store, 'publishPendingPlan')
+        .mockImplementationOnce(async (workspaceId, header, groups, turns) => {
+          const products = groups.find((group) => group.kind === 'products');
+          const completion = groups.find((group) => group.kind === 'terminal');
+          if (!products || !completion) throw new Error('Missing real person outcome groups.');
+          expect(products.transition.pending?.[0]).toMatchObject({
+            action: 'freeze',
+            executor: 'person',
+          });
+          expect(completion.input.pending).toEqual([
+            expect.objectContaining({
+              action: 'delivery-prove',
+              turnId: completion.input.turn.record.id,
+            }),
+          ]);
+          let modified = [...groups];
+          if (fault === 'without its completion')
+            modified = modified.filter((group) => group !== completion);
+          if (fault === 'with an unrelated Thread rename')
+            products.transition.products.find((entry) => entry.kind === 'thread')!.record.name =
+              'Independent rename';
+          if (fault === 'with a substituted outcome start status')
+            products.transition.products.find((entry) => entry.kind === 'turn')!.record.status =
+              'pending';
+          if (fault === 'without a usable settlement source') {
+            const settlement = groups.find(
+              (g) => g.kind === 'pending' && g.input.input.action === 'settle-unfinished'
+            );
+            if (
+              settlement?.kind !== 'pending' ||
+              settlement.input.input.action !== 'settle-unfinished'
+            )
+              throw new Error('Missing real settlement census.');
+            settlement.input.input.expected = [];
+          }
+          if (fault === 'with a person batch marked unknown before completion') {
+            const freeze = products.transition.pending?.[0];
+            if (freeze?.action !== 'freeze') throw new Error('Missing person freeze.');
+            modified.splice(modified.indexOf(completion), 0, {
+              kind: 'pending',
+              input: {
+                input: {
+                  action: 'delivery-unknown',
+                  workspaceId,
+                  turnId: freeze.turnId,
+                  now: freeze.now,
+                },
+                products: [],
+                entries: [],
+                receipt: null,
+              },
+            });
+          }
+          if (
+            fault === 'with an unowned Item in the admission' ||
+            fault === 'with an unowned Item carried into the terminal'
+          ) {
+            const scope = nativeProductScope(f.root, f.turn.owner);
+            const event = completion.input.entries[0]!;
+            const reference = event.content.reference;
+            if (!('representation' in reference)) throw new Error('Expected inline completion.');
+            const envelope = JSON.parse(reference.body);
+            const item = {
+              schemaVersion: 1,
+              id: allocateEntityId('it'),
+              owner: f.turn.owner,
+              threadId: f.thread.id,
+              turnId: event.turnId,
+              type: 'status',
+              status: 'completed',
+              title: 'Unrelated',
+              summary: 'Unrelated to this Pending batch.',
+              level: 'info',
+              createdAt: envelope.timestamp,
+              completedAt: envelope.timestamp,
+            };
+            const extra = {
+              kind: 'item' as const,
+              turnId: event.turnId,
+              sequence: products.transition.entries.length + 1,
+              expectedRevision: 0,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, item),
+            };
+            envelope.data.turn.items.push(item);
+            completion.input.entries[0] = {
+              ...event,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+            };
+            if (fault === 'with an unowned Item in the admission')
+              products.transition.entries.push(extra);
+            else
+              modified.splice(modified.indexOf(completion), 0, {
+                kind: 'entries',
+                entries: [extra],
+              });
+          }
+          try {
+            return await publish(workspaceId, header, modified, turns);
+          } catch (error) {
+            refusal = error;
+            throw error;
+          }
+        });
+      f.store.startPendingRequestDelivery(pending);
+      await recoverPendingRequestsAtBoot(f.store, pending);
+      expect(plans).toHaveBeenCalledTimes(1);
+      expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
 
   it('refuses an unselected Item in the original closeout Turn', async () => {
     const f = await fixture();
@@ -1453,6 +1615,20 @@ describe('native standalone archive and concurrent Pending raise', () => {
         },
         [
           {
+            kind: 'pending',
+            input: {
+              input: {
+                action: 'settle-unfinished',
+                workspaceId: f.workspace.id,
+                now: f.turn.startedAt!,
+                expected: [],
+              },
+              products: [],
+              entries: [],
+              receipt: null,
+            },
+          },
+          {
             kind: 'item',
             input: {
               category: 'already-decided-publication',
@@ -1480,6 +1656,61 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
   }, 90_000);
 
+  it.each(['partial plan copy', 'pre-admission post'] as const)(
+    'releases the producer staging after a refused %s',
+    async (fault) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const scope = nativeProductScope(f.root, f.turn.owner);
+      await prepareProductFile(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+        Buffer.from('Independent staged bytes')
+      );
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const client = getControlStoreWorkerClient();
+      const post = vi.spyOn(client, 'pendingCommand');
+      archiveReadFault.planCopyFailures = 0;
+      if (fault === 'partial plan copy') archiveReadFault.failPlanCopy = true;
+      else
+        post.mockImplementationOnce(async (_database, input) => {
+          if (!('plan' in input)) throw new Error('Missing assembled grouped plan.');
+          expect(
+            readdirSync(pendingPlanStagePath(scope.contentMount.root, input.plan.temporary))
+          ).toContain('plan');
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+        });
+      try {
+        await expect(
+          archiveThreadWithCloseout(
+            f.store,
+            { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+            f.workspace.id,
+            f.thread.id,
+            { kind: 'user', id: userId }
+          )
+        ).rejects.toMatchObject(
+          fault === 'partial plan copy'
+            ? { code: 'EIO' }
+            : { code: 'busy', commit: 'not-committed' }
+        );
+      } finally {
+        archiveReadFault.failPlanCopy = false;
+      }
+      expect(post).toHaveBeenCalledTimes(fault === 'partial plan copy' ? 0 : 1);
+      if (fault === 'partial plan copy') expect(archiveReadFault.planCopyFailures).toBe(1);
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
   it.each([
     { mode: 0, phase: 'Workspace binding', code: 'precondition' },
     { mode: 0, phase: 'staged-name binding', code: 'precondition' },
@@ -1491,6 +1722,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     { mode: 0, phase: 'header operation', code: 'precondition' },
     { mode: 2, phase: 'body preparation', code: 'precondition' },
     { mode: 3, phase: 'grouped link', code: 'sql-failed' },
+    { mode: 6, phase: 'second grouped link', code: 'sql-failed' },
   ])(
     'keeps retained rows and file inventories intact after $phase fails',
     async ({ mode, phase, code }) => {
@@ -1498,6 +1730,18 @@ describe('native standalone archive and concurrent Pending raise', () => {
       archiveReadFault.planIo = io;
       const f = await fixture();
       await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      if (mode === 6)
+        await f.store.createItem({
+          id: allocateEntityId('it'),
+          owner: f.turn.owner,
+          threadId: f.thread.id,
+          turnId: f.turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: 'Retained body '.repeat(7_000),
+          createdAt: f.turn.startedAt!,
+          completedAt: f.turn.startedAt!,
+        });
       await f.store.completeTurn(f.turn.id, {
         status: 'completed',
         completedAt: f.turn.startedAt!,
@@ -1593,8 +1837,22 @@ describe('native standalone archive and concurrent Pending raise', () => {
       if (mode === 2) expect(Atomics.load(io, 1)).toBe(2);
       closeFixtureReaders();
       await shutdownControlStoreWorkerClient();
-      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
-      expect(afterWriter).toEqual(original);
+      const reopened = workspaceEvidence(f.root, f.workspace.id);
+      expect(afterWriter).toEqual(reopened);
+      if (mode === 6) {
+        expect(Atomics.load(io, 1)).toBe(2);
+        expect(
+          Object.keys(original.files).some((name) => name.startsWith('evidence/backend/sha256/'))
+        ).toBe(true);
+        expect(reopened.content).toEqual(original.content);
+        expect(reopened.files).toMatchObject(original.files);
+        const additions = Object.keys(reopened.files).filter((name) => !(name in original.files));
+        expect(additions).toEqual([
+          expect.stringMatching(/^evidence\/backend\/sha256\/[a-f0-9]{64}$/),
+        ]);
+      } else {
+        expect(reopened).toEqual(original);
+      }
       expect(failure).toMatchObject({ code, commit: 'not-committed' });
     },
     90_000

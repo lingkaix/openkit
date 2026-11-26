@@ -148,12 +148,13 @@ export async function prepareRetainedProductJson(
   owner: ControlProductOwner,
   stagingRoot: string,
   value: unknown,
-  privateRoot?: string
+  privateRoot?: string,
+  ownBody?: (path: string) => void
 ): Promise<Pick<ControlProductEntry, 'content' | 'publication'>> {
   const body = JSON.stringify(value);
   const bytes = Buffer.from(body, 'utf8');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.inlineBytes)
-    return prepareProductFile(mount, owner, stagingRoot, bytes, privateRoot);
+    return prepareProductFile(mount, owner, stagingRoot, bytes, privateRoot, ownBody);
   if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
@@ -226,7 +227,8 @@ export async function prepareProductFile(
   owner: ControlProductOwner,
   stagingRoot: string,
   bytes: Buffer,
-  privateRoot = mount.root
+  privateRoot = mount.root,
+  ownBody?: (path: string) => void
 ): Promise<{ content: StorageContent; publication: { temporary: string } }> {
   for (const path of [dirname(mount.root), dirname(stagingRoot)])
     if ((await realpath(path)) !== resolve(path))
@@ -247,6 +249,7 @@ export async function prepareProductFile(
     const path = join(privateRoot, temporary);
     const file = await open(path, 'wx', 0o600);
     try {
+      ownBody?.(path);
       await copyImmutableStage(input, file, content);
       await file.chmod(0o444);
     } catch (error) {

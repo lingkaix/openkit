@@ -1413,6 +1413,61 @@ export function markFrozenDeliveryUnknown(
   return moveFrozenDelivery(sqlite, turnId, 'delivery-unknown', now);
 }
 
+/** Prepares the existing closeout communication; native SQL still decides and validates every changed source. */
+export function closeoutProjection(
+  records: readonly PendingRequestRecord[],
+  turnId: string,
+  actor: PendingRequestActor,
+  now: string,
+  event: (record: PendingRequestRecord) => string
+): PendingRequestRecord[] {
+  return records
+    .map((record) => {
+      let next = record;
+      if (next.state === 'pending' && next.claim === 'unclaimed')
+        next = {
+          ...next,
+          state: 'ended',
+          ending: 'invalidated',
+          invalidatingEvent: event(record),
+          endingActor: actor,
+          endedAt: now,
+          updatedAt: now,
+        };
+      if (
+        isCommandIntentApproval(next) &&
+        next.resolution === 'granted' &&
+        next.claim === 'unclaimed' &&
+        next.disposition === null
+      )
+        next = {
+          ...next,
+          disposition: 'denied-not-executed',
+          dispositionReason: event(record),
+          invalidationTurnId: next.invalidationTurnId ?? turnId,
+          updatedAt: now,
+        };
+      if (
+        isCommandIntentApproval(next) &&
+        next.resolution === 'granted' &&
+        next.disposition === 'denied-not-executed' &&
+        next.invalidationTurnId === null
+      )
+        next = { ...next, invalidationTurnId: turnId, updatedAt: now };
+      if (next.delivery === 'undelivered' && isFinalOutcome(next))
+        next = {
+          ...next,
+          delivery: 'closed-out',
+          publicationTurnId: next.publicationTurnId ?? turnId,
+          updatedAt: now,
+        };
+      return next;
+    })
+    .filter(
+      (record) => record.publicationTurnId === turnId || record.invalidationTurnId === turnId
+    );
+}
+
 /**
  * Ends a Thread's pending requests and closes out every selected undelivered outcome on one publication Turn.
  *
@@ -2770,6 +2825,8 @@ export type ControlPendingCommandResult = z.infer<typeof ControlPendingCommandRe
 
 /** Native-local immutable Item proof retained separately from new product writes. */
 export interface PreparedControlPendingCommand {
+  /** Boot can defer proof of a missing Item to its publication owner in the same transaction. */
+  readonly laterItems?: ReadonlySet<string>;
   readonly entries: readonly PreparedControlEntry[];
   readonly dependencies: readonly {
     readonly entry: PreparedControlEntry;
@@ -2865,11 +2922,12 @@ function pendingPreparedItem(db: WorkspaceDb, entry: PreparedControlEntry): Item
 }
 
 /** Compares decided rows with their actual request, original publication and invalidation Items. */
-function assertPendingPreparedProjection(
+export function assertPendingPreparedProjection(
   db: WorkspaceDb,
   record: PendingRequestRecord,
   prepared: PreparedControlPendingCommand,
-  now: string
+  now: string,
+  allowMissing: ReadonlySet<string> | true | undefined = prepared.laterItems
 ): void {
   const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const items = new Map<string, Item>();
@@ -2894,7 +2952,12 @@ function assertPendingPreparedProjection(
   }
   decidePendingProjection(
     record,
-    { items, newIds, turn: (id) => readProduct(db.sqlite, owner, 'turn', id)?.record },
+    {
+      items,
+      newIds,
+      allowMissing,
+      turn: (id) => readProduct(db.sqlite, owner, 'turn', id)?.record,
+    },
     now
   );
 }
@@ -2998,6 +3061,7 @@ export function decidePendingProjection(
   evidence: {
     readonly items: ReadonlyMap<string, Item>;
     readonly newIds: ReadonlySet<string>;
+    readonly allowMissing?: ReadonlySet<string> | true | undefined;
     readonly turn: (turnId: string) => Record<string, unknown> | undefined;
   },
   now: string
@@ -3033,8 +3097,10 @@ export function decidePendingProjection(
   const expectedIds = new Set([record.requestItemId, ...expected.map((item) => item.id)]);
   for (const item of expected) {
     const actual = items.get(item.id);
-    if (!actual)
+    if (!actual) {
+      if (evidence.allowMissing === true || evidence.allowMissing?.has(item.id)) continue;
       pendingNativeConflict('The decided Pending tuple is missing its exact projected Item.');
+    }
     const clock = newIds.has(item.id) ? now : actual.createdAt;
     const expectedAtClock =
       item.id === pendingRequestItemId(record.requestId, 'invalidation')
@@ -3560,6 +3626,47 @@ export function applyControlPendingCommand(
       return result(selected);
     }
   }
+}
+
+/** Derives the original outcome admission controls from the batch the writer freezes. */
+export function pendingOutcomeTrigger(records: readonly PendingRequestRecord[]) {
+  const approvals = records.filter((record) => record.kind === 'approval').length;
+  const inputs = records.length - approvals;
+  return {
+    kind: approvals ? ('approval-resolution' as const) : ('user-input' as const),
+    summary: `${approvals} approval outcome${approvals === 1 ? '' : 's'} and ${inputs} user-input outcome${inputs === 1 ? '' : 's'} are ready.`,
+  };
+}
+
+export function outcomeTurnSummary(choice: {
+  readonly triggerSource: { readonly kind: string };
+}): string {
+  return choice.triggerSource.kind === 'approval-resolution'
+    ? 'Approval outcomes'
+    : 'User-input outcomes';
+}
+
+export function pendingOutcomeActorId(first: PendingRequestRecord): string {
+  return first.requesterKind === 'worker' || first.requesterKind === 'assistant'
+    ? first.responsibleUserId
+    : (first.decidingActor?.id ?? first.responsibleUserId);
+}
+
+export function outcomeTriggerActor(choice: { readonly actorId: string }) {
+  return choice.actorId === 'system'
+    ? pendingRequestSystemActor(null)
+    : { kind: 'user' as const, id: choice.actorId };
+}
+
+export function outcomeTurnAgentId(choice: {
+  readonly executor: PendingExecutorKind;
+  readonly agentId: string | null;
+}): string | null {
+  return choice.executor === 'worker' || choice.executor === 'coordinator'
+    ? choice.agentId
+    : choice.executor === 'assistant'
+      ? 'quick-chat'
+      : null;
 }
 
 /** Renders only the existing Pending outcome Items from decided canonical rows; it performs no Store or SQL effect. */
