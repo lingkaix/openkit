@@ -129,9 +129,7 @@ export async function prepareControlPendingCommands(
       );
     for (const source of command.expected ?? []) requestIds.add(source.requestId);
     if ('requestId' in command) requestIds.add(command.requestId);
-    // A grouped decision freezes on the rows its earlier groups produce, so it derives the
-    // Worker input batch from the deciding selection inside its rollback boundary instead.
-    if (command.action === 'freeze' && command.executor === 'worker' && !newDirectories?.deferred) {
+    if (command.action === 'freeze' && command.executor === 'worker') {
       const selected = command.expectedSelection.map((requestId) => {
         const record = readPendingRequest(db.sqlite, requestId);
         if (!record)
