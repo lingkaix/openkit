@@ -71,16 +71,17 @@ impl EnvironmentProvider for FakeProvider {
                 monitor: (),
             }),
             KeepPresent::Provision { template: name, .. } => {
-                let mut entries = self.entries.borrow_mut();
-                let original = entries.entry(name.clone()).or_insert_with(|| Seen {
-                    name: name.clone(),
-                    id: operation_id.to_owned(),
-                    ready: false,
-                });
-                if original.id != operation_id {
-                    return Err(EpochFault::IdentityMismatch.into());
+                {
+                    let mut entries = self.entries.borrow_mut();
+                    let original = entries.entry(name.clone()).or_insert_with(|| Seen {
+                        name: name.clone(),
+                        id: operation_id.to_owned(),
+                        ready: false,
+                    });
+                    if original.id != operation_id {
+                        return Err(EpochFault::IdentityMismatch.into());
+                    }
                 }
-                drop(entries);
                 loop {
                     let changed = self.progressed.notified();
                     match self.entries.borrow().get(&name) {

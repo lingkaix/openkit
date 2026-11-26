@@ -324,7 +324,7 @@ pub enum LifecycleEffectResult {
     /// Failed creation after exact native Sandbox absence; coordinator cleanup is still required.
     SandboxCreateFailed,
     /// Exact created sandbox identity returned by OpenShell.
-    SandboxCreated(SandboxRef),
+    SandboxCreated(Box<SandboxRef>),
     /// Exact Gateway deletion read-back. Physical proof is still pending.
     SandboxDeleteObserved,
     /// Live fixed-target bridge and independent worker response monitor.
@@ -1370,7 +1370,7 @@ impl NanoHostOpenShellClient {
                 request
                     .validate_result_identity(request.request_id(), &sandbox.name)
                     .map_err(|_| EpochFault::IdentityMismatch)?;
-                Ok(LifecycleEffectResult::SandboxCreated(sandbox))
+                Ok(LifecycleEffectResult::SandboxCreated(Box::new(sandbox)))
             }
             LifecycleEffectKind::DeleteSandbox => {
                 let (native_id, timeout) = deletion_target.ok_or(EpochFault::IdentityMismatch)?;

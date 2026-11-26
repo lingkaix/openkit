@@ -76,7 +76,6 @@ pub(crate) fn project_profile(
             || *binary
                 != (NetworkBinary {
                     path: binary.path.clone(),
-                    ..Default::default()
                 })
         {
             return Err(invalid);

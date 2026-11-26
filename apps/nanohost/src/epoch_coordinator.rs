@@ -3028,6 +3028,7 @@ impl EpochCoordinator {
                 return Err(LifecycleEffectError::CreateCleanupProved);
             }
             LifecycleEffectResult::SandboxCreated(sandbox) => {
+                let sandbox = *sandbox;
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
                     return self
                         .settle(Err(EpochFault::IdentityMismatch))
