@@ -462,7 +462,7 @@ export class WorkerControlClient {
             this.retryingRequests += 1;
           }
           presentReconnectKey = isReconnectRequired(error);
-          await this.waitForRetry(signal);
+          await this.waitForRetry(error, signal);
         }
       }
     } finally {
@@ -581,12 +581,13 @@ export class WorkerControlClient {
           if (isReconnectRequired(error)) {
             try {
               await this.reconnect(signal);
+              this.requireRetryable(error);
               continue;
             } catch (reconnectError) {
               this.requireRetryable(reconnectError);
             }
           }
-          await this.waitForRetry(signal);
+          await this.waitForRetry(error, signal);
         }
       }
     } finally {
@@ -640,14 +641,15 @@ export class WorkerControlClient {
     }
   }
 
-  /** Waits once inside the original outage budget. */
-  private async waitForRetry(signal?: AbortSignal): Promise<void> {
+  /** Waits inside the original outage budget and rechecks whether recovery is still enabled. */
+  private async waitForRetry(error: unknown, signal?: AbortSignal): Promise<void> {
     await delay(
       this.outageDeadline?.remainingMs(LIFECYCLE_DEFAULTS.workerControlRetryMs) ??
         LIFECYCLE_DEFAULTS.workerControlRetryMs,
       undefined,
       signal ? { signal } : undefined
     );
+    if (!this.postLaunchRecoveryEnabled) throw error;
     if (this.outageDeadline && this.outageDeadline.remainingMs() <= 0) {
       throw new Error('Worker control outage budget expired.');
     }
