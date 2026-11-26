@@ -20,8 +20,8 @@ import {
   retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db';
-import { applyMigrations } from './storage/migrate';
+import { openCoreDb, openWorkspaceDb } from './storage/db';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate';
 import { readNanoHostRecoveryLease } from './storage/nanohost-recovery-native.js';
 import { readRetainedNanoHostSubmission } from './storage/nanohost-submitted-lease.js';
 import { resolveAdmittedNanoHostWorkerBinding } from './storage/nanohost-worker-binding.js';
@@ -1738,6 +1738,12 @@ describe('admitted NanoHost scheduler replacements', () => {
   it('R14 preserves exclusion for an unanchored closing attempt after Native timeout', async () => {
     const fixture = await admittedSchedulerCase();
     const { coreDb, submit, executionBackend } = fixture;
+    const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(workspace);
+    } finally {
+      workspace.sqlite.close();
+    }
     const stale = submit('lease_recovery_stale');
     const release = submit('lease_recovery_release', 'pkg_release');
     const startup = submit('lease_recovery_startup', 'pkg_startup');
