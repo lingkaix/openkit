@@ -332,9 +332,14 @@ test('one exact-source build cache feeds every authoritative shard without omitt
   const shards = jobs['l0-l2-shards'];
   assert.ok(shards.needs.includes('l0-l2-build'));
   const downloaded = shards.steps.find((step) => step.name === 'Restore shared build cache');
-  assert.equal(downloaded.with.name, uploaded.with.name);
+  assert.equal(build.outputs['artifact-attempt'], '$' + '{{ github.run_attempt }}');
+  assert.equal(
+    downloaded.with.name,
+    uploaded.with.name.replace('github.run_attempt', 'needs.l0-l2-build.outputs.artifact-attempt')
+  );
   assert.equal(downloaded.with.path, '.turbo/cache');
-  assert.ok(!downloaded.with['run-id']);
+  assert.equal(downloaded.with['run-id'], '$' + '{{ github.run_id }}');
+  assert.equal(downloaded.with['github-token'], '$' + '{{ secrets.GITHUB_TOKEN }}');
   assert.ok(!downloaded['continue-on-error']);
   assert.ok(shards.steps.some((step) => /pnpm install --frozen-lockfile/.test(step.run ?? '')));
 });
