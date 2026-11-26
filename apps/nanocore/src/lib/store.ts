@@ -3866,6 +3866,15 @@ export class FsStore {
   public async prepareNativeTurnPendingAdmission(
     turn: Turn,
     executor?: CreateTurnOptions['executorKind']
+  ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
+    const { entries, pending } = await this.nativeTurnPendingAdmission(turn, executor);
+    return { entries, pending };
+  }
+
+  /** The same admission with the Items it freezes, for a plan that also plans the Turn's history. */
+  private async nativeTurnPendingAdmission(
+    turn: Turn,
+    executor?: CreateTurnOptions['executorKind']
   ): Promise<{
     entries: ControlProductEntry[];
     items: readonly Item[];
@@ -4648,7 +4657,7 @@ export class FsStore {
       timestamp,
       options.turnId
     );
-    const admission = await this.prepareNativeTurnPendingAdmission(turn, options.executorKind);
+    const admission = await this.nativeTurnPendingAdmission(turn, options.executorKind);
     const threadRecord = writeRetainedV1({
       ...previousThread.record,
       preview: input,
