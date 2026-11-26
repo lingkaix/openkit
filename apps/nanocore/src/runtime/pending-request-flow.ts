@@ -1687,11 +1687,16 @@ export async function archiveThreadWithCloseout(
       .get(workspaceId, threadId) as { count: number };
     // Inspect-only reads may omit damaged rows; archive needs the complete addressed Thread.
     if (census.length !== rawCensus.count) throw associationGap();
-    return {
-      census,
-      records: census.filter((record) => canonicalRecordIsUsable(store, sqlite, record)),
-      inputs,
-    };
+    walkLoadHistory.set(sqlite, {});
+    try {
+      return {
+        census,
+        records: census.filter((record) => canonicalRecordIsUsable(store, sqlite, record)),
+        inputs,
+      };
+    } finally {
+      walkLoadHistory.delete(sqlite);
+    }
   });
   if (records.some((record) => record.claim === 'claimed' && record.disposition === null))
     throw new PendingRequestCommandError(
