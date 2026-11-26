@@ -29,6 +29,7 @@ import { z } from 'zod';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
 import { OperationError } from '../operation-error.js';
+import { recordObservationBodyGrowth } from '../storage/control-store-pressure-telemetry.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { ControlProvenanceInput } from '../storage/control-store-worker-protocol.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -678,16 +679,23 @@ export async function prepareWorkerRuntimeProvenance(
     if (retained) {
       await syncCanonicalTreeAsync(rawRoot);
       await syncCanonicalDirectoryAsync(dirname(rawRoot));
-    } else {
-      await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot);
+    } else if (await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot)) {
+      recordObservationBodyGrowth(
+        workspaceDb.sqlite,
+        admitted.files.reduce((sum, file) => sum + file.byteLength, 0)
+      );
     }
     const normalizedBytes = complete ? normalized : null;
     if (normalizedBytes) {
-      await adoptEvidenceDirectory(
+      const stagedIndexRoot =
+        pending?.indexRoot === normalizedRoot ? undefined : pending?.indexRoot;
+      const adopted = await adoptEvidenceDirectory(
         normalizedRoot,
         new Map([['runtime-origin-index.jsonl', normalizedBytes]]),
-        pending?.indexRoot === normalizedRoot ? undefined : pending?.indexRoot
+        stagedIndexRoot
       );
+      if (adopted && stagedIndexRoot === undefined)
+        recordObservationBodyGrowth(workspaceDb.sqlite, normalizedBytes.byteLength);
     }
     const normalizedDigest = normalizedBytes ? sha256(normalizedBytes) : null;
     const summary = runtimeProvenanceSummary(
@@ -1242,7 +1250,7 @@ async function adoptEvidenceDirectory(
   targetRoot: string,
   files: Map<string, string | Buffer>,
   preparedRoot?: string
-): Promise<void> {
+): Promise<boolean> {
   const temporaryRoot = preparedRoot ?? `${targetRoot}.tmp-reserved`;
   if (!preparedRoot) await removePrivateTree(temporaryRoot);
   if (await pathExists(targetRoot)) {
@@ -1252,7 +1260,7 @@ async function adoptEvidenceDirectory(
     // A prior rename can be visible even when its directory synchronization failed.
     await syncCanonicalTreeAsync(targetRoot);
     await syncCanonicalDirectoryAsync(dirname(targetRoot));
-    return;
+    return false;
   }
   await ensureCanonicalDirectoryAsync(dirname(targetRoot));
   try {
@@ -1270,6 +1278,7 @@ async function adoptEvidenceDirectory(
       }
     }
     await publishCanonicalPathAsync(temporaryRoot, targetRoot);
+    return true;
   } catch (error) {
     await removePrivateTree(temporaryRoot);
     const code = (error as NodeJS.ErrnoException).code;
@@ -1280,7 +1289,7 @@ async function adoptEvidenceDirectory(
     ) {
       await syncCanonicalTreeAsync(targetRoot);
       await syncCanonicalDirectoryAsync(dirname(targetRoot));
-      return;
+      return false;
     }
     throw error;
   }

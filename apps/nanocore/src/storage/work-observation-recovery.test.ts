@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -562,6 +563,143 @@ describe('ordinary observation collection budgets', () => {
       reason: 'body-bytes',
       firstOmittedSequence: 6,
       omittedCount: 1,
+    });
+  });
+});
+
+describe('observation collection qualification', () => {
+  it.each(['on', 'off'] as const)(
+    'completes a healthy cross-page model stream after a sibling cutoff with capture %s',
+    async (value) => {
+      const f = await fixture(value);
+      await observe(f, model(randomUUID(), 'x'.repeat(61_000)));
+      await expect(observe(f, model(randomUUID(), 'y'.repeat(2_000)))).rejects.toMatchObject({
+        disposition: 'truncated',
+      });
+      const thread = await f.store.createThread(f.db.workspaceId, 'Healthy sibling');
+      const turn = await f.store.createTurn(
+        f.db.workspaceId,
+        thread.id,
+        'Continue',
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        null,
+        { captureCoverage: { scope: 'server', value } }
+      );
+      const sibling = { threadId: thread.id, turnId: turn.id };
+      const capture = new ModelCapture(
+        { ...sibling, workspaceDb: f.db, corr: randomUUID() },
+        [],
+        'provider_test'
+      );
+      await capture.request({ model: 'model_test', input: 'Complete the stream.' });
+      const chunks = 140;
+      for (let index = 0; index < chunks; index++)
+        await capture.event({ type: 'text_delta', delta: `chunk ${index}: é "quoted" ` });
+      await capture.event({ type: 'done' });
+      const endedAt = new Date().toISOString();
+      const terminal = await f.store.completeTurn(turn.id, {
+        status: 'completed',
+        completedAt: endedAt,
+      });
+      expect(terminal).toMatchObject({ status: 'completed', completedAt: endedAt });
+
+      await shutdownControlStoreWorkerClient();
+      const rows = readWorkObservations(f.db, sibling);
+      expect(rows.map((row) => row.seq)).toEqual(rows.map((_, index) => index + 1));
+      expect(
+        rows.filter((row) => row.type === 'model.observed' && row.payload.event === 'text_delta')
+      ).toHaveLength(chunks);
+      expect(rows.filter((row) => row.type === 'content.published')).toHaveLength(
+        value === 'on' ? chunks + 2 : 0
+      );
+      expect(rows.at(-1)).toMatchObject({ type: 'turn.reap', payload: { unresolvedCalls: [] } });
+      expect(rows.at(-1)?.payload).not.toHaveProperty('truncation');
+      expect(readWorkObservationTurnBinding(f.db, sibling).turn.observationCutoff).toBeUndefined();
+      expect(
+        readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff?.summary
+      ).toMatchObject({ firstOmittedSequence: 2, omittedCount: 1, tail: 'unknown' });
+    }
+  );
+
+  it('recovers one cutoff after writer process loss on both sides of COMMIT', async () => {
+    const f = await fixture();
+    const crossing = model(randomUUID(), 'y'.repeat(2_000));
+    await observe(f, model(randomUUID(), 'x'.repeat(61_000)));
+    const before = observationBytes(f);
+    await shutdownControlStoreWorkerClient();
+
+    // Exit without closing the database or returning an observation acknowledgement.
+    const child = `
+      const input = JSON.parse(process.argv[1]);
+      const { openWorkspaceDb } = await import(input.dbModule);
+      const { applyControlWorkObservation } = await import(input.observationModule);
+      const { controlStoreFor } = await import(input.writerModule);
+      const { sqlite } = openWorkspaceDb(input.dataRoot, input.workspaceId);
+      const owner = { kind: 'workspace', workspaceId: input.workspaceId };
+      const writer = controlStoreFor(sqlite);
+      const outcome = writer.write((db) => {
+        const result = applyControlWorkObservation(db, owner, input.draft);
+        if (result.disposition !== 'truncated') process.exit(78);
+        if (!input.commit) process.exit(77);
+        return result;
+      });
+      if (outcome.disposition !== 'truncated') process.exit(78);
+      process.exit(77);
+    `;
+    const loseProcess = (commit: boolean) => {
+      const exited = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '--eval',
+          child,
+          JSON.stringify({
+            dbModule: new URL('./db.ts', import.meta.url).href,
+            observationModule: new URL('./work-observations.ts', import.meta.url).href,
+            writerModule: new URL('./control-store.ts', import.meta.url).href,
+            dataRoot: f.dataRoot,
+            workspaceId: f.db.workspaceId,
+            draft: { ...f.owner, observation: crossing, bodies: [] },
+            commit,
+          }),
+        ],
+        { encoding: 'utf8', timeout: 10_000 }
+      );
+      expect(exited.status, exited.stderr).toBe(77);
+    };
+    loseProcess(false);
+    expect(readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff).toBeUndefined();
+    expect(observationBytes(f)).toEqual(before);
+    loseProcess(true);
+    const summary = {
+      reason: 'unresolved-call-bytes',
+      firstOmittedSequence: 2,
+      lastOmittedSequence: 2,
+      omittedCount: 1,
+      tail: 'unknown',
+    };
+    expect(observationBytes(f)).toEqual(before);
+    expect(readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff).toMatchObject({
+      summary,
+    });
+    await expect(observe(f, crossing)).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: summary,
+    });
+    for (let index = 0; index < 16; index++)
+      await expect(observe(f, tool(`late-${index}`, 'late', 'completed'))).rejects.toMatchObject({
+        disposition: 'closed',
+        truncation: summary,
+      });
+    expect(observationBytes(f)).toEqual(before);
+    await recover(f);
+    const rows = readWorkObservations(f.db, f.owner);
+    expect(rows.at(-1)).toMatchObject({
+      seq: 2,
+      type: 'turn.reap',
+      payload: { truncation: summary },
     });
   });
 });
