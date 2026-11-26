@@ -15,7 +15,7 @@ import {
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
 } from './execution-attempts.js';
-import type { ExecutionBackendPort } from './execution-backend.js';
+import type { ExecutionBackendObservation, ExecutionBackendPort } from './execution-backend.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import { releaseExpiredSchedulerPreparation } from './scheduler-dispatch-loop.js';
 
@@ -99,6 +99,16 @@ export function schedulerRestartRecoveryOutcome(
   };
 }
 
+/** Rejects replies for another attempt before the writer checks the remaining correlation. */
+async function acceptRecoveryObservation(
+  coreDb: CoreDb,
+  requestedAttemptId: string,
+  observation: ExecutionBackendObservation | null
+): Promise<void> {
+  if (observation && observation.attemptId !== requestedAttemptId) return;
+  await acceptSchedulerExecutionObservation(coreDb, observation);
+}
+
 /** After listen, inspect the original operation and revoke expired authority without replay. */
 export async function runSchedulerRecoveryMaintenance(
   coreDb: CoreDb,
@@ -145,8 +155,9 @@ export async function runSchedulerRecoveryMaintenance(
         // The native submission intent might have won while the expiry check awaited the writer.
         if (preparationFence && current.terminalCause !== 'preparation-deadline') continue;
         if (current.operationId)
-          await acceptSchedulerExecutionObservation(
+          await acceptRecoveryObservation(
             coreDb,
+            current.attemptId,
             await input.executionBackend.cancel(schedulerExecutionCorrelation(current))
           );
         else if (!preparationFence) {
@@ -160,8 +171,9 @@ export async function runSchedulerRecoveryMaintenance(
         }
       }
       if (current.operationId)
-        await acceptSchedulerExecutionObservation(
+        await acceptRecoveryObservation(
           coreDb,
+          current.attemptId,
           await input.executionBackend.inspect(schedulerExecutionCorrelation(current))
         );
       else if (current.phase === 'closing' && current.terminalCause === 'preparation-deadline')
