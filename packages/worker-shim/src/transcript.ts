@@ -204,23 +204,36 @@ export class WorkerTranscriptWriter {
       admitted = !this.observationDeliveryStopped;
       return admitted;
     });
-    const appended =
+    // Reserve the local source's position, but wait for the owner's declaration ACK before
+    // spooling bytes. A failed or omitted declaration leaves no restricted local source.
+    let decideDeclaration: (admitted: boolean) => void = () => {};
+    const declaration = new Promise<boolean>((resolve) => {
+      decideDeclaration = resolve;
+    });
+    const source =
       body === undefined
-        ? metadata
+        ? undefined
         : this.appendJsonl(
             workerObservationSourceRelativePath(record.sequence),
             [record, ...chunks],
-            () => admitted
+            () => declaration
           );
-    await this.enqueueLive(appended, async () => {
-      if (!admitted) return false;
-      await this.appendLive(record);
-      for (const chunk of chunks) {
-        if (this.observationDeliveryStopped) return false;
-        await this.appendLive(chunk);
-      }
-      return true;
-    });
+    void source?.catch(() => undefined);
+    try {
+      await this.enqueueLive(metadata, async () => {
+        if (!admitted) return false;
+        await this.appendLive(record);
+        decideDeclaration(!this.observationDeliveryStopped);
+        await source;
+        for (const chunk of chunks) {
+          if (this.observationDeliveryStopped) return false;
+          await this.appendLive(chunk);
+        }
+        return !this.observationDeliveryStopped;
+      });
+    } finally {
+      decideDeclaration(false);
+    }
   }
 
   /** Checks cancellation at each effect boundary, including between restricted content chunks. */

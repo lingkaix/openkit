@@ -6,7 +6,13 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { isRecord, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  canonicalJsonText,
+  compareCodeUnits,
+  isRecord,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import {
   copyVerifiedFile,
   createDirectoryExclusive,
@@ -32,6 +38,11 @@ import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { ControlProvenanceInput } from '../storage/control-store-worker-protocol.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import type { ObservationOmissionResultSchema } from '../storage/work-observation-collection.js';
+import {
+  ObservationCollectionStoppedError,
+  reserveWorkObservationProvenance,
+} from '../storage/work-observations.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { snapshotDigest } from './aep-snapshot-ledger.js';
 import {
@@ -224,29 +235,30 @@ export async function importWorkerRuntimeProvenance(
   });
   const client = getControlStoreWorkerClient();
   const database = `workspace:${scope.path}`;
-  return (
-    await Promise.all([
-      client.open({
-        database,
-        path: scope.path,
-        dataRoot: input.workspaceDb.dataRoot,
-        create: false,
-        initialize: 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      }),
-      client.provenance(database, {
-        workspaceId: lineage.workspaceId,
-        turnId: lineage.turnId,
-        backend: input.backend,
-        collectedAt: input.collectedAt,
-        environmentPackage: input.environmentPackage,
-        files,
-        normalizedBytes: normalized.byteLength,
-        normalizedDigest: sha256(normalized),
-      }),
-    ])
-  )[1];
+  const [, result] = await Promise.all([
+    client.open({
+      database,
+      path: scope.path,
+      dataRoot: input.workspaceDb.dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    }),
+    client.provenance(database, {
+      workspaceId: lineage.workspaceId,
+      turnId: lineage.turnId,
+      backend: input.backend,
+      collectedAt: input.collectedAt,
+      environmentPackage: input.environmentPackage,
+      files,
+      normalizedBytes: normalized.byteLength,
+      normalizedDigest: sha256(normalized),
+    }),
+  ]);
+  if ('disposition' in result)
+    throw new ObservationCollectionStoppedError(result.disposition, result.truncation);
+  return result;
 }
 
 /** Uses the existing deterministic row encoder for the exact normalized-byte forecast and publication. */
@@ -262,7 +274,7 @@ function normalizedProvenanceBytes(verified: VerifiedRuntimeProvenance): Buffer 
 export async function prepareWorkerRuntimeProvenance(
   workspaceDb: WorkspaceDb,
   admitted: ControlProvenanceInput
-): Promise<WorkerRuntimeProvenanceMetadataInput> {
+): Promise<WorkerRuntimeProvenanceMetadataInput | z.infer<typeof ObservationOmissionResultSchema>> {
   const lineage = lineageFromPackage(admitted.environmentPackage);
   if (
     admitted.workspaceId !== workspaceDb.workspaceId ||
@@ -295,7 +307,19 @@ export async function prepareWorkerRuntimeProvenance(
   const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
   const declaration = admitted.environmentPackage.control.transcript?.runtimeProvenance;
   let streamBytes = 0;
+  const seen = new Set<string>();
   for (const file of admitted.files) {
+    if (
+      seen.has(file.relativePath) ||
+      !(
+        file.relativePath === 'raw-streams.json' ||
+        file.relativePath === 'native-origin-index.jsonl' ||
+        (file.relativePath.startsWith('raw/') &&
+          WorkerRuntimeStreamRefSchema.safeParse(file.relativePath.slice(4)).success)
+      )
+    )
+      throw new Error('Runtime provenance source inventory is invalid.');
+    seen.add(file.relativePath);
     if (!Number.isSafeInteger(file.byteLength) || file.byteLength < 0)
       throw new Error('Runtime provenance source size is invalid.');
     if (file.relativePath === 'raw-streams.json' && file.byteLength > MAX_MANIFEST_BYTES)
@@ -309,6 +333,26 @@ export async function prepareWorkerRuntimeProvenance(
   }
   if (streamBytes > (declaration?.maxTotalBytes ?? 256 * 1024 * 1024))
     throw new Error('Runtime provenance exceeds its AEP byte limit.');
+  const cutoff = reserveWorkObservationProvenance(workspaceDb, lineage, {
+    id: rawBundleId,
+    bytes: admitted.files.reduce((sum, file) => sum + file.byteLength, admitted.normalizedBytes),
+    digest: createHash('sha256')
+      .update(
+        canonicalJsonText({
+          files: admitted.files
+            .map(({ relativePath, byteLength, sha256 }) => ({
+              relativePath,
+              byteLength,
+              sha256,
+            }))
+            .sort((left, right) => compareCodeUnits(left.relativePath, right.relativePath)),
+          normalizedBytes: admitted.normalizedBytes,
+          normalizedDigest: admitted.normalizedDigest,
+        })
+      )
+      .digest('hex'),
+  });
+  if (cutoff) return cutoff;
   await ensureCanonicalDirectoryAsync(dirname(rawRoot));
   const stagingRoot = `${rawRoot}.tmp-${randomUUID()}`;
   try {
@@ -316,7 +360,6 @@ export async function prepareWorkerRuntimeProvenance(
     createDirectoryExclusive(stagingRoot, 0o700);
     if (admitted.files.some((file) => file.relativePath.startsWith('raw/')))
       createDirectoryExclusive(join(stagingRoot, 'raw'), 0o700);
-    const seen = new Set<string>();
     const assertSourceIdentity = async (file: ControlProvenanceInput['files'][number]) => {
       const metadata = await lstat(file.path, { bigint: true });
       if (
@@ -329,17 +372,6 @@ export async function prepareWorkerRuntimeProvenance(
         throw new Error('Runtime provenance source changed after admission.');
     };
     for (const file of admitted.files) {
-      if (
-        seen.has(file.relativePath) ||
-        !(
-          file.relativePath === 'raw-streams.json' ||
-          file.relativePath === 'native-origin-index.jsonl' ||
-          (file.relativePath.startsWith('raw/') &&
-            WorkerRuntimeStreamRefSchema.safeParse(file.relativePath.slice(4)).success)
-        )
-      )
-        throw new Error('Runtime provenance source inventory is invalid.');
-      seen.add(file.relativePath);
       await assertSourceIdentity(file);
       const destinationPath = safeEvidencePath(stagingRoot, file.relativePath);
       await copyVerifiedFile({
