@@ -39,6 +39,11 @@ export const ControlPendingPlanSchema = z
         operation: z.enum(['pending-boot', 'pending-closeout']),
         temporary: z.string().regex(PENDING_PLAN_TEMPORARY_NAME),
         contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        // Digest of the installed coverage selected for each new outcome Turn.
+        outcomeCoverageDigest: z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .optional(),
         byteLength: z.number().int().positive().max(CONTROL_PENDING_PLAN_BYTES),
       })
       .strict(),
