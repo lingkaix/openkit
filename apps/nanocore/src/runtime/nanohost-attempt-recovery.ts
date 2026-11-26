@@ -17,7 +17,9 @@ import { hashNanoHostFinalDecision } from '../storage/control-store-worker-proto
 import {
   hasCoreWorkerFinalIntake,
   hasSurvivingNanoHostFinalEvidence,
+  inspectAcceptedNanoHostFinalInDb,
   type NanoHostFinalCloseDecision,
+  readNanoHostFinalCloseDecision,
   verifyNanoHostCleanupSubmitPlacement,
 } from '../storage/core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -63,6 +65,7 @@ import {
   type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
 } from './worker-backend-session-records.js';
+import { isWorkerCancellationFinalCause } from './worker-control-final-receipt.js';
 import {
   type AcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
@@ -105,7 +108,13 @@ export interface AdmittedNanoHostAttemptRecovery {
     final: AcceptedWorkerFinalStatus
   ): Promise<'closed' | Extract<NanoHostFinalCloseDecision, { readonly state: 'native-only' }>>;
   commit(
-    input: NanoHostRecoveryMutation
+    input: NanoHostRecoveryMutation,
+    cleanup?: {
+      /** Runs under the existing Core hold before posting the first Native cleanup transition. */
+      readonly authorize: () => boolean;
+      /** Hands off first cleanup before the same hold releases final admission. */
+      readonly handoff: (session: WorkerBackendSessionRecord) => Promise<void>;
+    }
   ): Promise<StorageResult<'nanohost' | 'control-kernel', WorkerBackendSessionRecord>>;
   /** Rechecks this exact target and the same decided cleanup scope at the physical carriage boundary. */
   cleanup(
@@ -173,7 +182,8 @@ async function commitRecoveryStage(
   expectedSession: WorkerBackendSessionRecord,
   stage: RecoveryStage,
   observedAt: string,
-  originalProof?: ReturnType<typeof readNanoHostRecoveryLease>['proof']
+  originalProof?: ReturnType<typeof readNanoHostRecoveryLease>['proof'],
+  cleanup?: Parameters<AdmittedNanoHostAttemptRecovery['commit']>[1]
 ): Promise<WorkerBackendSessionRecord> {
   const lease = retainedLease(coreDb, expectedSession.attemptId);
   const current = readRecovery(recovery, (sqlite) => readNanoHostRecoveryLease(sqlite, lease));
@@ -182,13 +192,14 @@ async function commitRecoveryStage(
     (originalProof && !isDeepStrictEqual(current.proof, originalProof))
   )
     throw new Error('NanoHost recovery state changed before submission.');
-  const result = await recovery.commit({
+  const request = {
     ...stage,
     lease,
     observedAt,
     expectedSession,
     expectedRecovery: current.proof,
-  });
+  };
+  const result = cleanup ? await recovery.commit(request, cleanup) : await recovery.commit(request);
   if (result.state !== 'ready')
     throw new Error('NanoHost recovery requires the original writer acknowledgement.');
   return result.value;
@@ -421,15 +432,17 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         )
           continue;
       }
-      await closeAdmittedAttempt(
+      const closeClock = now();
+      const closed = await closeAdmittedAttempt(
         coreDb,
         recovery,
         observation,
         livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
-        now(),
+        closeClock,
         undefined,
         finalDecision
       );
+      const cleanupAuthority = { closed, closeClock, finalDecision };
       // Revoke stale native authority before deferring to a live completion waiter. Its phase
       // observation wakes that owner; the guard prevents a second physical cleanup takeover.
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
@@ -478,7 +491,16 @@ export async function runNanoHostAttemptRecoveryMaintenance(
             target.physicalEpoch === session.originPhysicalEpoch
           )
             continue;
-          session = await cleanupPhysicalSession(coreDb, recovery, session, now, target);
+          const cleaned = await cleanupPhysicalSession(
+            coreDb,
+            recovery,
+            session,
+            now,
+            target,
+            cleanupAuthority
+          );
+          if (!cleaned) continue;
+          session = cleaned;
           // Publication can finish while cleanup awaits its native acknowledgement.
           // New rows still belong to the existing takeover/disposition owner, never the empty-table path.
           anyHandoffRows =
@@ -508,7 +530,16 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           )
             continue;
         }
-        session = await cleanupPhysicalSession(coreDb, recovery, session, now);
+        const cleaned = await cleanupPhysicalSession(
+          coreDb,
+          recovery,
+          session,
+          now,
+          undefined,
+          cleanupAuthority
+        );
+        if (!cleaned) continue;
+        session = cleaned;
         const projection = await projectCleanup(
           workspace.db,
           session,
@@ -643,7 +674,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         captureWorkspace.db.sqlite.close();
       }
       const cleaned = await cleanupPhysicalSession(coreDb, recovery, session, now);
-      if (cleaned.state === 'physical-cleaned')
+      if (cleaned?.state === 'physical-cleaned')
         await commitRecoveryStage(coreDb, recovery, cleaned, { kind: 'retire-orphan' }, now());
     } catch (error) {
       logNativeRecoveryFailure(
@@ -754,8 +785,13 @@ async function cleanupPhysicalSession(
   recovery: AdmittedNanoHostAttemptRecovery,
   originalSession: WorkerBackendSessionRecord,
   now: () => string,
-  expectedTarget?: NanoHostRuntimeTargetRecord
-): Promise<WorkerBackendSessionRecord> {
+  expectedTarget?: NanoHostRuntimeTargetRecord,
+  authority?: {
+    readonly closed: SchedulerExecutionAttemptRecord;
+    readonly closeClock: string;
+    readonly finalDecision: NanoHostFinalCloseDecision;
+  }
+): Promise<WorkerBackendSessionRecord | null> {
   const target = requireRecoveryTarget(recovery, originalSession);
   if (expectedTarget && !isDeepStrictEqual(target, expectedTarget))
     throw new Error('NanoHost recovery RuntimeTarget changed.');
@@ -769,25 +805,72 @@ async function cleanupPhysicalSession(
     if (!receipt) throw new Error('NanoHost recovery has no exact physical cleanup receipt.');
     return receipt.session;
   }
-  let session = originalSession;
-  if (session.state !== 'cleanup-pending')
-    session = await commitRecoveryStage(
-      coreDb,
-      recovery,
-      session,
-      { kind: 'transition', toState: 'cleanup-pending', target },
-      now()
+  const handoff = (session: WorkerBackendSessionRecord) => {
+    if (!isDeepStrictEqual(requireRecoveryTarget(recovery, session), target))
+      throw new Error('NanoHost recovery RuntimeTarget changed before physical cleanup.');
+    return recovery.cleanup(
+      toRestartBackendIdentity(session),
+      target,
+      retainedLease(coreDb, session.attemptId)
     );
-  if (!isDeepStrictEqual(requireRecoveryTarget(recovery, session), target))
-    throw new Error('NanoHost recovery RuntimeTarget changed before physical cleanup.');
-  const cleaned = await recovery.cleanup(
-    toRestartBackendIdentity(session),
-    target,
-    retainedLease(coreDb, session.attemptId)
-  );
-  if (cleaned.state !== 'ready')
+  };
+  const transition = { kind: 'transition', toState: 'cleanup-pending', target } as const;
+  const { attemptId } = originalSession;
+  let cleaned: Awaited<ReturnType<typeof handoff>> | undefined;
+  if (authority) {
+    // On reopen the phase alone cannot prove whether the first physical post ran.
+    if (originalSession.state === 'cleanup-pending')
+      throw new Error('NanoHost recovery requires the original physical cleanup receipt.');
+    const winner: { final: AcceptedWorkerFinalStatus | null } = { final: null };
+    try {
+      await commitRecoveryStage(coreDb, recovery, originalSession, transition, now(), undefined, {
+        authorize: () =>
+          readRecovery(recovery, (sqlite) => {
+            const readback = inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId);
+            if (readback.state === 'settled') {
+              winner.final = getWorkerControlAcceptedFinalStatus({ sqlite }, readback.lineage);
+              return false;
+            }
+            const lease = retainedLease(coreDb, attemptId);
+            const current = readNanoHostFinalCloseDecision(
+              coreDb,
+              sqlite,
+              attemptId,
+              originalSession
+            );
+            return (
+              isDeepStrictEqual(lease.attempt, authority.closed) &&
+              isDeepStrictEqual(current, authority.finalDecision) &&
+              (authority.closeClock >= lease.grant.deadline ||
+                (current.state === 'absent' &&
+                  !isWorkerCancellationFinalCause(lease.attempt.terminalCause) &&
+                  !hasCoreWorkerFinalIntake(coreDb, attemptId)))
+            );
+          }),
+        handoff: async (session) => {
+          cleaned = await handoff(session);
+        },
+      });
+    } catch (error) {
+      if (!winner.final) throw error;
+      // Closeout uses the same owner holds, so it runs after the refused cleanup releases them.
+      await recovery.reconcileFinal(
+        retainedLease(coreDb, attemptId),
+        originalSession,
+        winner.final
+      );
+      return null;
+    }
+  } else {
+    const session =
+      originalSession.state === 'cleanup-pending'
+        ? originalSession
+        : await commitRecoveryStage(coreDb, recovery, originalSession, transition, now());
+    cleaned = await handoff(session);
+  }
+  if (cleaned?.state !== 'ready')
     throw new Error('NanoHost recovery has no exact physical cleanup acknowledgement.');
-  const retained = retainedLease(coreDb, session.attemptId);
+  const retained = retainedLease(coreDb, attemptId);
   const receipt = readRecovery(recovery, (sqlite) =>
     readNanoHostPhysicalCleanupReceipt(sqlite, retained, target)
   );

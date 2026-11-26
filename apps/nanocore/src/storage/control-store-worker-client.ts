@@ -775,7 +775,8 @@ export interface NanoHostOwnerBinding
   classifyRecovery(
     input: NanoHostRecoveryMutation & {
       readonly kind: Exclude<NanoHostRecoveryMutation['kind'], 'retire-orphan'>;
-    }
+    },
+    cleanup?: Parameters<AdmittedNanoHostAttemptRecovery['commit']>[1]
   ): ReturnType<AdmittedNanoHostAttemptRecovery['commit']>;
 
   workerStorageBinding(input: NanoHostLocalWorkerStorageInput): Promise<WorkerStorageBinding>;
@@ -4381,7 +4382,7 @@ class ControlStoreWorkerClient {
               if (nativeHeld) delete opening.nanoHostWritePending;
             }
           },
-          classifyRecovery: async (input) => {
+          classifyRecovery: async (input, cleanup) => {
             const { lease, expectedSession, expectedRecovery, observedAt, ...classification } =
               structuredClone(input);
             const closeout =
@@ -4399,8 +4400,10 @@ class ControlStoreWorkerClient {
             const release = this.enterScope(scope, workspaceId, 'capture');
             if (!release) return { state: 'unavailable', owner, reason: 'recovery-required' };
             try {
-              const commit = (identity: string) =>
-                result(
+              const commit = async (identity: string) => {
+                if (cleanup && !cleanup.authorize())
+                  throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+                const acknowledged = await result(
                   async () =>
                     (
                       await write({
@@ -4423,6 +4426,10 @@ class ControlStoreWorkerClient {
                       })
                     ).value
                 );
+                if (cleanup && acknowledged.state === 'ready')
+                  await cleanup.handoff(acknowledged.value);
+                return acknowledged;
+              };
               return await this.runOperation(
                 () => (closeout ? withCoreHold(commit) : commit(coreIdentity)),
                 undefined,

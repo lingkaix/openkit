@@ -26,10 +26,11 @@ export function bindBootNanoHostAttemptRecovery(
   return {
     owner,
     close: owner.closeRecovery,
-    commit: async (input) => {
+    commit: async (input, cleanup) => {
       if (input.kind === 'retire-orphan') return hold;
       return owner.classifyRecovery(
-        input as Parameters<NanoHostOwnerBinding['classifyRecovery']>[0]
+        input as Parameters<NanoHostOwnerBinding['classifyRecovery']>[0],
+        cleanup
       );
     },
     reconcileFinal: async (lease, session) => {
