@@ -563,7 +563,7 @@ describe('work observation portable closure', () => {
           sha256,
         })
       ).toEqual(bytes);
-      stageWorkObservationChunk(db, {
+      await stageWorkObservationChunk(db, {
         bundleId: 'evb_unpublished',
         threadId: demo.thread.id,
         turnId: turn.id,

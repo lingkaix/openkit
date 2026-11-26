@@ -36,6 +36,7 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { appendWorkObservation } from '../storage/work-observations.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -116,6 +117,65 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
+  it('refuses a raw provenance bundle before copying when declared observation bodies fill the allowance', async () => {
+    const fixture = await createImportFixture('openkit-provenance-over-budget-', 'on');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-budget-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    try {
+      for (let index = 0; index < 4; index++) {
+        const id = `observation-${index}`;
+        const ts = '2026-07-13T00:00:00.000Z';
+        await appendWorkObservation(fixture.workspaceDb, {
+          threadId: fixture.lineage.threadId,
+          turnId: fixture.lineage.turnId,
+          observation: {
+            id,
+            ts,
+            obs: 'worker-shim',
+            type: 'runtime.observed',
+            payload: {
+              observationId: id,
+              sourceRef: 'provenance-budget',
+              sourceSequence: index,
+              observedAt: ts,
+              fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
+              content: {
+                state: 'expected',
+                boundary: 'tool-args',
+                mediaType: 'application/json',
+                bytes: 16 * 1024 * 1024,
+                chunkCount: 342,
+                sha256: `sha256:${'a'.repeat(64)}`,
+              },
+            },
+          },
+          bodies: [],
+        });
+      }
+      const backend = join(fixture.workspaceRoot, 'evidence', 'backend');
+      const before = existsSync(backend) ? readdirSync(backend) : [];
+      const expected = {
+        code: 'observation_limit_reached',
+        disposition: 'truncated',
+        truncation: { reason: 'body-bytes', firstOmittedSequence: 5, omittedCount: 1 },
+      };
+      await expect(importCapture(fixture, capture)).rejects.toMatchObject(expected);
+      await shutdownControlStoreWorkerClient();
+      await expect(importCapture(fixture, capture)).rejects.toMatchObject(expected);
+      expect(existsSync(backend) ? readdirSync(backend) : []).toEqual(before);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('preserves original extension-bearing raw bytes and digests while publishing only normalized known fields', async () => {
     const fixture = await createImportFixture('openkit-provenance-extensions-');
     const capture = createRuntimeCaptureFixture(
@@ -925,16 +985,16 @@ async function startGatewayCall(
 }
 
 /** Creates one migrated workspace and a provenance-required AEP. */
-async function createImportFixture(prefix: string): Promise<ImportFixture> {
+async function createImportFixture(
+  prefix: string,
+  value: 'on' | 'off' = 'off'
+): Promise<ImportFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  // Keep native source publication separate from the importer's empty database.
-  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-source-'));
   onTestFinished(async () => {
     await shutdownControlStoreWorkerClient();
-    rmSync(sourceRoot, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = await createDemoStore({ dataRoot: sourceRoot });
+  const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -942,7 +1002,9 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
-    }
+    },
+    null,
+    { captureCoverage: { scope: 'server', value } }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     await resolveAgentEnvironmentPackage({
@@ -965,6 +1027,7 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     })
   );
 
+  const workspaceDb = openWorkspaceDb(dataRoot, environmentPackage.scope.workspaceId);
   applyScopedMigrations(workspaceDb);
   return {
     environmentPackage,

@@ -11,6 +11,7 @@ export { recordWorkspaceEvidenceBundle } from './storage/evidence-bundle-records
 
 import { createHash } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
+import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type EvidenceBundleRecord,
@@ -315,8 +316,7 @@ export function retainWorkObservationBody(
   if (existsSync(path)) {
     if (!readCanonicalFile(path).equals(Buffer.from(input.bytes)))
       throw new Error('recovery_required: observation body conflict');
-  }
-  writeFileAtomic(path, input.bytes);
+  } else writeFileAtomic(path, input.bytes);
   recordWorkBody(workspaceDb, input, true);
   return 'retained';
 }
@@ -337,7 +337,7 @@ export function readWorkObservationBody(
 }
 
 /** Stages a bounded chunk durably and returns complete bytes only after full digest/length verification. */
-export function stageWorkObservationChunk(
+export async function stageWorkObservationChunk(
   workspaceDb: WorkspaceDb,
   input: WorkObservationEvidenceInput & {
     readonly totalBytes: number;
@@ -348,10 +348,11 @@ export function stageWorkObservationChunk(
     readonly originalWorkerReplay?: boolean | undefined;
     readonly bytes: Uint8Array;
   }
-):
+): Promise<
   | { readonly state: 'staged' }
   | { readonly state: 'complete'; readonly bytes: Uint8Array }
-  | { readonly state: 'expired' } {
+  | { readonly state: 'expired' }
+> {
   if (
     !Number.isSafeInteger(input.totalBytes) ||
     input.totalBytes < 0 ||
@@ -364,6 +365,7 @@ export function stageWorkObservationChunk(
     input.chunkIndex >= input.chunkCount ||
     !Number.isSafeInteger(input.byteOffset) ||
     input.byteOffset < 0 ||
+    input.bytes.byteLength === 0 ||
     input.bytes.byteLength > 48 * 1024 ||
     input.byteOffset + input.bytes.byteLength > input.totalBytes
   )
@@ -431,15 +433,46 @@ export function stageWorkObservationChunk(
   }
   if (hasBytes && !readCanonicalFile(path).equals(Buffer.from(input.bytes)))
     throw new Error('recovery_required: observation chunk bytes conflict');
-  // Commit the position first. A crash may leave an incomplete body, but cannot rekey it.
-  if (!hasDescriptor) writeFileAtomic(descriptorPath, JSON.stringify(descriptor));
+
+  // A distinct chunk spends its reserved bytes before any file grows. The descriptor goes
+  // first so a crash cannot leave an uncharged file. Legacy file-only staging still counts.
+  const names = new Set(await readdir(root));
+  if (!hasDescriptor) {
+    let total = input.bytes.byteLength;
+    for (const name of names) {
+      if (/^chunk-\d+\.json$/.test(name) && name !== `chunk-${input.chunkIndex}.json`) {
+        const saved = JSON.parse(readCanonicalTextFile(join(root, name))) as { bytes: number };
+        if (!Number.isSafeInteger(saved.bytes) || saved.bytes <= 0 || saved.bytes > 48 * 1024)
+          throw new Error('recovery_required: corrupt staged observation chunk');
+        total += saved.bytes;
+      } else if (
+        /^chunk-\d+$/.test(name) &&
+        name !== `chunk-${input.chunkIndex}` &&
+        !names.has(`${name}.json`)
+      ) {
+        // Only the previous file-first implementation could have left this half completed.
+        const stat = await lstat(join(root, name));
+        if (!stat.isFile()) throw new Error('recovery_required: corrupt staged observation chunk');
+        total += stat.size;
+      }
+    }
+    if (total > input.totalBytes)
+      throw new Error('Observation content length exceeds its declaration');
+    writeFileAtomic(descriptorPath, JSON.stringify(descriptor));
+    names.add(`chunk-${input.chunkIndex}.json`);
+  }
   if (!hasBytes) writeFileAtomic(path, input.bytes);
+  names.add(`chunk-${input.chunkIndex}`);
   recordWorkBody(workspaceDb, input, false);
+
+  // Check completion before reading any of the preceding bodies again.
+  for (let index = 0; index < input.chunkCount; index += 1)
+    if (!names.has(`chunk-${index}`) || !names.has(`chunk-${index}.json`))
+      return { state: 'staged' };
   const chunks: Buffer[] = [];
   let offset = 0;
   for (let index = 0; index < input.chunkCount; index += 1) {
     const chunkPath = join(root, `chunk-${index}`);
-    if (!existsSync(`${chunkPath}.json`)) return { state: 'staged' };
     const saved = JSON.parse(readCanonicalTextFile(`${chunkPath}.json`)) as {
       byteOffset: number;
       bytes: number;

@@ -230,23 +230,35 @@ export class WorkerTranscriptWriter {
       return;
     }
     const metadata = original ? this.appendQueue : this.appendJsonl('events.jsonl', record, admit);
-    const appended =
+    // Wait for the original declaration ACK before writing restricted source bytes.
+    let decideDeclaration: (admitted: boolean) => void = () => {};
+    const declaration = new Promise<boolean>((resolve) => {
+      decideDeclaration = resolve;
+    });
+    const source =
       body === undefined
-        ? metadata
+        ? undefined
         : this.appendJsonl(
             workerObservationSourceRelativePath(record.sequence),
             [record, ...chunks],
-            original ? admit : () => admitted
+            () => declaration
           );
-    await this.enqueueLive(appended, async () => {
-      if (!admitted) return false;
-      if (!original) await this.appendLive(record);
-      for (const chunk of chunks) {
-        if (this.observationDeliveryStopped) return false;
-        await this.appendLive(chunk);
-      }
-      return true;
-    });
+    void source?.catch(() => undefined);
+    try {
+      await this.enqueueLive(metadata, async () => {
+        if ((!original && !admitted) || this.observationDeliveryStopped) return false;
+        if (!original) await this.appendLive(record);
+        decideDeclaration(!this.observationDeliveryStopped);
+        await source;
+        for (const chunk of chunks) {
+          if (this.observationDeliveryStopped) return false;
+          await this.appendLive(chunk);
+        }
+        return !this.observationDeliveryStopped;
+      });
+    } finally {
+      decideDeclaration(false);
+    }
   }
 
   /** Checks cancellation at each effect boundary, including between restricted content chunks. */

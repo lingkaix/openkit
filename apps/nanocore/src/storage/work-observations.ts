@@ -29,6 +29,7 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
+import { OperationError } from '../operation-error-core.js';
 import type { ControlProductOwner } from './control-store-product-records.js';
 import { getWorkspaceProductReadHandle } from './control-store-product-records.js';
 import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
@@ -44,6 +45,8 @@ import { serverWorkUnavailable } from './server-work-command.js';
 import {
   assertReapObservationPrefix,
   assertWorkObservationPosition,
+  chargeObservation,
+  EMPTY_OBSERVATION_BUDGET,
   fitsReap,
   mergeReapCall,
   NATIVE_OBSERVATION_BYTES,
@@ -52,6 +55,7 @@ import {
   type ObservationOmissionResultSchema,
   type ObservationTruncation,
   ObservationTruncationSchema,
+  observationBudgetLimit,
   omission,
   reapCallChange,
   serializedCallBytes,
@@ -834,6 +838,7 @@ function assertControlObservationManifest(
 
 function assertObservationTruncation(
   sqlite: Database.Database,
+  owner: ControlProductOwner,
   binding: ReturnType<typeof readControlWorkObservationTurnBinding>,
   record: WorkObservationRecord
 ): void {
@@ -853,14 +858,18 @@ function assertObservationTruncation(
         'SELECT * FROM control_work_observations WHERE turn_id=? AND sequence<? ORDER BY sequence'
       )
       .iterate(record.turnId, record.seq) as Iterable<ControlObservationRow>;
-    for (const row of rows) yield decodeControlObservation(row, record.turnId);
+    for (const row of rows)
+      yield {
+        record: decodeControlObservation(row, record.turnId),
+        bytes: Buffer.byteLength(row.record_json),
+      };
   }
   assertReapObservationPrefix(
     prior(),
     summary,
     record,
     ['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt,
-    binding.turn.observationCutoff?.retainedSequence
+    { retainedSequence: binding.turn.observationCutoff?.retainedSequence, owner }
   );
 }
 
@@ -886,7 +895,7 @@ export function readControlWorkObservation(
       replay.workerSequence,
       replay.originalWorkerReplay
     );
-  assertObservationTruncation(sqlite, binding, record);
+  assertObservationTruncation(sqlite, owner, binding, record);
   assertControlObservationLineage(sqlite, owner, input, record);
   return record;
 }
@@ -902,8 +911,21 @@ export function readControlWorkObservations(
     readonly limit?: number;
   }
 ): readonly WorkObservationRecord[] {
+  return readControlObservationPage(sqlite, owner, input).map(({ record }) => record);
+}
+
+function readControlObservationPage(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: {
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly afterSequence?: number;
+    readonly limit?: number;
+  }
+): readonly { record: WorkObservationRecord; bytes: number }[] {
   if (!sqlite.inTransaction)
-    return sqlite.transaction(() => readControlWorkObservations(sqlite, owner, input))();
+    return sqlite.transaction(() => readControlObservationPage(sqlite, owner, input))();
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
   const after = z
     .number()
@@ -927,9 +949,9 @@ export function readControlWorkObservations(
     const record = decodeControlObservation(row, input.turnId);
     if (record.seq !== after + index + 1)
       throw new Error('recovery_required: native observation sequence gap');
-    assertObservationTruncation(sqlite, binding, record);
+    assertObservationTruncation(sqlite, owner, binding, record);
     assertControlObservationLineage(sqlite, owner, input, record);
-    return record;
+    return { record, bytes: Buffer.byteLength(row.record_json) };
   });
 }
 
@@ -1136,6 +1158,8 @@ export function publishControlWorkObservationBodies(
     { ...input, id: input.observation.id },
     prepared
   );
+  if (prepared.publishBodies && !existing)
+    throw new Error('Observation body publication requires a committed declaration');
   controlObservationCandidate(prepared, existing, existing?.seq ?? 1, owner);
   const prior = readControlWorkObservation(db.sqlite, owner, {
     ...input,
@@ -1168,11 +1192,11 @@ export function publishControlWorkObservationBodies(
 }
 
 /** Prepares the complete WorkBody family outside SQL on the existing native scope and FIFO slot. */
-export function prepareControlWorkObservationCommand(
+export async function prepareControlWorkObservationCommand(
   db: WorkspaceDb | CoreDb,
   input: ControlWorkObservationCommandInput,
   content: ArrayBuffer | undefined
-): ControlWorkObservationInput {
+): Promise<ControlWorkObservationInput> {
   if (db.scope === 'core') throw serverWorkUnavailable();
   if ('chunk' in input) {
     const parsed = ControlWorkObservationChunkInputSchema.parse(input);
@@ -1195,7 +1219,7 @@ export function prepareControlWorkObservationCommand(
     )
       throw new Error('Observation has no matching expected content');
     const expected = declaration.content;
-    const staged = stageWorkObservationChunk(db, {
+    const staged = await stageWorkObservationChunk(db, {
       threadId: parsed.threadId,
       turnId: parsed.turnId,
       bundleId: workObservationBodyBundleId(
@@ -1342,6 +1366,91 @@ type ObservationBinding = ReturnType<typeof readControlWorkObservationTurnBindin
 type ObservationCutoff = z.infer<typeof ObservationCutoffSchema>;
 type ObservationCounter = z.infer<typeof ObservationCounterSchema>;
 
+/** Rebuild ordinary charges from rows without losing the independent raw-file reservation. */
+function readObservationCollection(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  binding: ObservationBinding,
+  input: { threadId: string; turnId: string },
+  sequence: number
+): { counter: ObservationCounter; cutoff: ObservationCutoff | undefined } {
+  const retained = binding.turn.observationCounter;
+  if (retained?.sequence === sequence && retained.budget)
+    return { counter: retained, cutoff: undefined };
+  const folded = foldObservationPrefix(sqlite, owner, input);
+  return {
+    cutoff: folded.cutoff,
+    counter: { ...folded.counter, rawProvenance: retained?.rawProvenance },
+  };
+}
+
+/** The Workspace FIFO durably admits the exact raw provenance family before private file growth. */
+export function reserveWorkObservationProvenance(
+  db: WorkspaceDb,
+  input: { threadId: string; turnId: string },
+  raw: NonNullable<ObservationCounter['rawProvenance']>
+): z.infer<typeof ObservationOmissionResultSchema> | undefined {
+  const { sqlite } = db;
+  if (
+    sqlite.inTransaction ||
+    sqlite.readonly ||
+    sqlite.pragma('synchronous', { simple: true }) !== 2
+  )
+    throw new Error('Raw observation admission requires the independent FULL Workspace writer.');
+  const owner = { kind: 'workspace', workspaceId: db.workspaceId } as const;
+  return sqlite
+    .transaction(() => {
+      const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
+      if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
+      const existing = binding.turn.observationCounter?.rawProvenance;
+      if (existing) {
+        if (!isDeepStrictEqual(existing, raw))
+          throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+        return;
+      }
+      const cutoff = binding.turn.observationCutoff;
+      if (cutoff) {
+        if (cutoff.observationId !== raw.id || cutoff.workerSequence !== undefined)
+          return { disposition: 'closed', truncation: cutoff.summary } as const;
+        if (cutoff.digest !== raw.digest)
+          throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+        return { disposition: 'truncated', truncation: cutoff.summary } as const;
+      }
+      const tail = sqlite
+        .prepare(
+          'SELECT COALESCE(MAX(sequence),0) AS sequence FROM control_work_observations WHERE turn_id=?'
+        )
+        .get(input.turnId) as { sequence: number };
+      const previous = readObservationCollection(sqlite, owner, binding, input, tail.sequence);
+      const budget = previous.counter.budget ?? EMPTY_OBSERVATION_BUDGET;
+      const reason = observationBudgetLimit({ ...budget, bodyBytes: budget.bodyBytes + raw.bytes });
+      if (previous.cutoff || reason) {
+        // An already published terminal snapshot cannot acquire a new cutoff.
+        if (
+          readControlWorkObservation(sqlite, owner, { ...input, id: `turn.reap:${input.turnId}` })
+        )
+          return { disposition: 'closed', truncation: null } as const;
+        const summary = previous.cutoff?.summary ?? omission(previous.counter.intake + 1, reason);
+        updateObservationManifest(sqlite, binding, {
+          cutoff: previous.cutoff ?? {
+            observationId: raw.id,
+            digest: raw.digest,
+            retainedSequence: tail.sequence,
+            summary,
+          },
+        });
+        return {
+          disposition: previous.cutoff ? 'closed' : 'truncated',
+          truncation: summary,
+        } as const;
+      }
+      updateObservationManifest(sqlite, binding, {
+        counter: { ...previous.counter, rawProvenance: raw },
+      });
+    })
+    .immediate();
+}
+
 /** Only this owner changes collection state. The private fields survive ordinary Turn replacement. */
 function updateObservationManifest(
   sqlite: Database.Database,
@@ -1393,17 +1502,18 @@ function foldObservationPrefix(
   let sequence = 0;
   let intake = 0;
   let callBytes = 0;
+  let budget = EMPTY_OBSERVATION_BUDGET;
   let lastObservedTs: string | null = null;
   let cutoff: ObservationCutoff | undefined;
   for (;;) {
-    const rows = readControlWorkObservations(sqlite, owner, { ...input, afterSequence: sequence });
-    for (const row of rows) {
+    const rows = readControlObservationPage(sqlite, owner, { ...input, afterSequence: sequence });
+    for (const { record: row, bytes } of rows) {
       if (retainedSequence !== undefined && row.seq > retainedSequence)
         return {
           calls,
           lastObservedTs,
           cutoff,
-          counter: { sequence, intake, callBytes, callCount: calls.size },
+          counter: { sequence, intake, callBytes, callCount: calls.size, budget },
         };
       if (row.type === 'turn.reap') {
         sequence = row.seq;
@@ -1427,12 +1537,18 @@ function foldObservationPrefix(
       const prospectiveBytes =
         callBytes - serializedCallBytes(previous) + serializedCallBytes(next);
       const prospectiveCount = calls.size - Number(previous !== undefined) + Number(next !== null);
-      if (ordinary && !fitsReap(input.turnId, row.ts, prospectiveBytes, prospectiveCount)) {
+      if (ordinary) budget = chargeObservation(budget, row, bytes, owner);
+      const reason =
+        ordinary &&
+        (!fitsReap(input.turnId, row.ts, prospectiveBytes, prospectiveCount)
+          ? 'unresolved-call-bytes'
+          : observationBudgetLimit(budget));
+      if (reason) {
         cutoff = {
           observationId: row.id,
           digest: observationDigest(row),
           retainedSequence: sequence,
-          summary: omission(intake),
+          summary: omission(intake, reason),
         };
       } else {
         if (change) {
@@ -1449,7 +1565,7 @@ function foldObservationPrefix(
         calls,
         lastObservedTs,
         cutoff,
-        counter: { sequence, intake, callBytes, callCount: calls.size },
+        counter: { sequence, intake, callBytes, callCount: calls.size, budget },
       };
   }
 }
@@ -1538,7 +1654,21 @@ export function applyControlWorkObservation(
     owner
   );
   assertControlObservationLineage(sqlite, owner, input, candidate);
-  if (!existing && Buffer.byteLength(JSON.stringify(candidate)) > NATIVE_OBSERVATION_BYTES)
+  if (
+    !existing &&
+    binding.coverage.value !== 'on' &&
+    candidate.type === 'runtime.observed' &&
+    WorkerObservationDataSchema.parse(candidate.payload).content.state === 'expected'
+  )
+    throw new Error('Capture coverage is off');
+  // The exact stored envelope includes the private Worker position.
+  const candidateText = JSON.stringify(
+    input.workerSequence === undefined
+      ? candidate
+      : { ...candidate, workerSequence: input.workerSequence }
+  );
+  const candidateBytes = Buffer.byteLength(candidateText);
+  if (!existing && candidateBytes > NATIVE_OBSERVATION_BYTES)
     throw new Error('Observation metadata exceeds the native bound');
   if (
     candidate.type === 'turn.reap' &&
@@ -1573,22 +1703,26 @@ export function applyControlWorkObservation(
         throw new Error('recovery_required: observation cutoff identity conflict');
       return { disposition: 'truncated', truncation: cutoff.summary };
     } else {
-      const previous =
-        binding.turn.observationCounter?.sequence === tail.count
-          ? { counter: binding.turn.observationCounter, cutoff: undefined }
-          : foldObservationPrefix(sqlite, owner, input);
-      counter = previous.cutoff
-        ? previous.counter
-        : updateObservationCounter(sqlite, candidate, previous.counter);
-      if (
-        previous.cutoff ||
-        !fitsReap(input.turnId, candidate.ts, counter.callBytes, counter.callCount)
-      ) {
+      const previous = readObservationCollection(sqlite, owner, binding, input, tail.count);
+      counter = previous.counter;
+      const priorBudget = counter.budget ?? EMPTY_OBSERVATION_BUDGET;
+      const budget = previous.cutoff
+        ? priorBudget
+        : chargeObservation(priorBudget, candidate, candidateBytes, owner);
+      if (!previous.cutoff) counter = updateObservationCounter(sqlite, candidate, counter);
+      const reason = !fitsReap(input.turnId, candidate.ts, counter.callBytes, counter.callCount)
+        ? 'unresolved-call-bytes'
+        : observationBudgetLimit({
+            ...budget,
+            bodyBytes: budget.bodyBytes + (counter.rawProvenance?.bytes ?? 0),
+          });
+      counter = { ...counter, budget };
+      if (previous.cutoff || reason) {
         const historicalReap = readControlWorkObservation(sqlite, owner, {
           ...input,
           id: `turn.reap:${input.turnId}`,
         });
-        const summary = previous.cutoff?.summary ?? omission(counter.intake);
+        const summary = previous.cutoff?.summary ?? omission(counter.intake, reason);
         if (historicalReap) return { disposition: 'closed', truncation: null };
         const seal = previous.cutoff ?? {
           observationId: candidate.id,
@@ -1622,11 +1756,7 @@ export function applyControlWorkObservation(
       for (const body of input.bodies) assertControlBodyPublished(sqlite, owner, input, body);
   }
   // The caller's savepoint rolls back the manifest and both rows on any bound or SQL failure.
-  const insert = (record: WorkObservationRecord, workerSequence?: number): void => {
-    // The original position commits with the row and is stripped from public observation reads.
-    const text = JSON.stringify(
-      workerSequence === undefined ? record : { ...record, workerSequence }
-    );
+  const insert = (record: WorkObservationRecord, text: string): void => {
     if (Buffer.byteLength(text) > NATIVE_OBSERVATION_BYTES)
       throw new Error('Observation metadata exceeds the native bound');
     // Refuse an unknown required declaration even when the known-field parser would strip it.
@@ -1658,8 +1788,8 @@ export function applyControlWorkObservation(
       ...(counter ? { counter: { ...counter, sequence: publication?.seq ?? candidate.seq } } : {}),
       truncated,
     });
-  if (!existing) insert(candidate, input.workerSequence);
-  if (publication && !prior) insert(publication);
+  if (!existing) insert(candidate, candidateText);
+  if (publication && !prior) insert(publication, JSON.stringify(publication));
   return { disposition: existing ? 'duplicate' : 'committed', observation: candidate, publication };
 }
 
