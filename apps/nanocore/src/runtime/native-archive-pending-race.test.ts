@@ -1445,6 +1445,9 @@ describe('native standalone archive and concurrent Pending raise', () => {
       expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)?.delivery).toBe('undelivered');
       const original = workspaceEvidence(f.root, f.workspace.id);
       const publish = f.store.publishPendingPlan.bind(f.store);
+      const client = getControlStoreWorkerClient();
+      const posts = vi.spyOn(client, 'pendingCommand');
+      let outcomeTurnId: unknown;
       let refusal: unknown;
       const plans = vi
         .spyOn(f.store, 'publishPendingPlan')
@@ -1479,6 +1482,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
             );
             admission.record.captureCoverage = { scope: 'server', value: 'on' };
             completion.input.turn.record.captureCoverage = admission.record.captureCoverage;
+            outcomeTurnId = admission.record.id;
           }
           if (fault === 'with reversed completion Item order') {
             const scope = nativeProductScope(f.root, f.turn.owner);
@@ -1576,6 +1580,17 @@ describe('native standalone archive and concurrent Pending raise', () => {
       await recoverPendingRequestsAtBoot(f.store, pending);
       expect(plans).toHaveBeenCalledTimes(1);
       expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      if (fault === 'with substituted capture coverage')
+        // The reference carries the Store's own selection; no caller input reaches it.
+        expect(posts.mock.calls.flatMap(([, input]) => ('plan' in input ? [input] : []))).toEqual([
+          {
+            plan: expect.objectContaining({
+              outcomeCoverageDigest: commandInputHash([
+                [outcomeTurnId, { scope: 'server', value: 'off' }],
+              ]),
+            }),
+          },
+        ]);
       closeFixtureReaders();
       await shutdownControlStoreWorkerClient();
       expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
