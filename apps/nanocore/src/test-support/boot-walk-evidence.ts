@@ -180,6 +180,28 @@ export function readPendingRow(
   }
 }
 
+/** Leaves a stopped publication missing its trailing Item, with no retained sequence gap. */
+export function removeTrailingPublicationItem(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  itemId: string
+): number {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite
+      .prepare(
+        `DELETE FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=?
+         AND sequence=(SELECT max(sequence) FROM control_product_entries WHERE kind='item' AND turn_id=?)`
+      )
+      .run(turnId, itemId, turnId).changes;
+  } finally {
+    sqlite.close();
+  }
+}
+
 /** Reads every retained Pending record of one Workspace through the production record reader. */
 export function readPendingRecords(dataRoot: string, workspaceId: string): PendingRequestRecord[] {
   const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {

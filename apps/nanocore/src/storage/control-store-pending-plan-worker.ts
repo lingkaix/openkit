@@ -3,20 +3,38 @@ import { constants } from 'node:fs';
 import { type FileHandle, open, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { writeRetainedV1 } from '@openkit/protocol';
+import {
+  deriveEntityId,
+  type Item,
+  ItemSchema,
+  TurnSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { linkStagedFiles } from '@openkit/storage';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   applyControlPendingCommand,
+  archiveSelects,
+  assertPendingPreparedProjection,
   type ControlPendingCommandInput,
   type ControlPendingCommandResult,
-  PENDING_PROJECTION_ROLES,
+  closeoutProjection,
+  outcomeTriggerActor,
+  outcomeTurnAgentId,
+  outcomeTurnSummary,
+  type PendingRequestRecord,
   type PreparedControlPendingCommand,
+  pendingOutcomeActorId,
   pendingOutcomeBatchDraft,
-  pendingRequestItemId,
+  pendingOutcomeTrigger,
+  pendingRequestSystemActor,
   readPendingRequest,
+  readPendingRequestForRecovery,
+  renderPendingInvalidationItem,
   renderPendingOutcomeItems,
 } from '../runtime/pending-requests.js';
+import { commandInputHash } from './control-store-input.js';
 import {
   applyControlPendingTransition,
   type ControlPendingTransition,
@@ -42,6 +60,7 @@ import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
+  assertRetainedMutation,
   type ControlContentPreparation,
   type ControlPublicationInput,
   type ControlTerminalTransition,
@@ -54,6 +73,7 @@ import {
   prepareControlTerminal,
   preparedControlPublicationEntries,
   preparedControlTerminalEntries,
+  readPreparedControlEntry,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
 import { pendingPlanStagePath, prepareRetainedProductJson } from './immutable-content.js';
@@ -97,6 +117,11 @@ export interface PreparedControlPendingPlan {
   readonly threadId: string | null;
   readonly inputs: string;
   readonly groups: readonly PreparedGroup[];
+  readonly boot?: {
+    readonly now: string;
+    readonly omitted: readonly PendingRequestRecord[];
+    readonly prepared: PreparedControlPendingCommand;
+  };
   readonly content: ControlContentPreparation & {
     readonly deferred: { readonly temporary: string; readonly path: string }[];
   };
@@ -212,7 +237,25 @@ function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGro
   if (header.operation === 'pending-closeout' && deciding.length !== 1)
     throw new ControlProductPreconditionError();
   const admitted = new Set<string>();
+  const settlement = new Set<string>();
+  let settlementClock: string | undefined;
+  let settlementEnded = false;
   for (const group of deciding) {
+    if (header.operation === 'pending-boot') {
+      if (group.kind === 'pending' && group.input.input.action === 'settle-unfinished') {
+        const command = group.input.input;
+        settlementClock ??= command.now;
+        if (settlementEnded || command.now !== settlementClock || !command.expected)
+          throw new ControlProductPreconditionError();
+        for (const { requestId } of command.expected) {
+          if (settlement.has(requestId)) throw new ControlProductPreconditionError();
+          settlement.add(requestId);
+        }
+      } else {
+        if (!settlementClock) throw new ControlProductPreconditionError();
+        settlementEnded = true;
+      }
+    }
     if (group.kind === 'pending') {
       const { input: pending, terminal, products, entries, admission, receipt } = group.input;
       if (
@@ -220,6 +263,12 @@ function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGro
         entries.length ||
         receipt ||
         pending.workspaceId !== header.workspaceId
+      )
+        throw new ControlProductPreconditionError();
+      if (
+        pending.action === 'closeout' &&
+        Boolean(admission || terminal?.products.length) ===
+          (pending.invalidatingEvents !== undefined)
       )
         throw new ControlProductPreconditionError();
       if (header.operation === 'pending-closeout') {
@@ -266,6 +315,7 @@ function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGro
       if (
         pending?.length !== 1 ||
         freeze?.action !== 'freeze' ||
+        freeze.cause !== 'outcome' ||
         freeze.workspaceId !== header.workspaceId ||
         products.length !== 2 ||
         !turn ||
@@ -294,26 +344,8 @@ function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGro
   if (admitted.size) throw new ControlProductPreconditionError();
 }
 
-/** Limits a closeout's entries to its one completion and its selected requests' projections. */
-function assertCloseoutEntries(
-  terminal: PreparedControlTerminal,
-  command: Extract<ControlPendingCommandInput, { action: 'closeout' }>
-): void {
-  const items = new Set(
-    command.expected?.flatMap(({ requestId }) =>
-      PENDING_PROJECTION_ROLES.map((role) => pendingRequestItemId(requestId, role))
-    )
-  );
-  const entries = preparedControlTerminalEntries(terminal);
-  if (
-    entries.filter(({ input }) => input.kind === 'event').length !== 1 ||
-    entries.some(({ id, input }) => input.kind === 'item' && !items.has(id))
-  )
-    throw new ControlProductPreconditionError();
-}
-
 /** Accepts a Boot append only when the current Pending owner renders that original Outcome Item. */
-function assertPendingBootItem(db: WorkspaceDb, item: import('@openkit/protocol').Item): void {
+function assertPendingBootItem(db: WorkspaceDb, item: Item, now: string): void {
   const causationId = 'causationId' in item ? item.causationId : undefined;
   const matches = db.sqlite
     .prepare(
@@ -326,13 +358,369 @@ function assertPendingBootItem(db: WorkspaceDb, item: import('@openkit/protocol'
       return (
         record &&
         (record.publicationTurnId === item.turnId || record.invalidationTurnId === item.turnId) &&
-        renderPendingOutcomeItems([record], item.turnId, item.createdAt).some((projected) =>
+        renderPendingOutcomeItems([record], item.turnId, now).some((projected) =>
           isDeepStrictEqual(projected, item)
         )
       );
     })
   )
     throw new ControlProductPreconditionError();
+}
+
+/** Prepares omitted sources using the same Pending projection owner as settlement. */
+async function prepareBootCensus(
+  db: WorkspaceDb,
+  mount: ControlProductContentMount,
+  frames: readonly PlanGroup[]
+): Promise<NonNullable<PreparedControlPendingPlan['boot']>> {
+  const settlements = frames.flatMap((group) =>
+    group.kind === 'pending' && group.input.input.action === 'settle-unfinished'
+      ? [group.input.input]
+      : []
+  );
+  const first = settlements[0];
+  if (!first) throw new ControlProductPreconditionError();
+  const ids = new Set(
+    settlements.flatMap((command) => (command.expected ?? []).map(({ requestId }) => requestId))
+  );
+  const rows = db.sqlite
+    .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
+    .all(db.workspaceId) as { request_id: string }[];
+  const omitted = rows.flatMap(({ request_id }) => {
+    if (ids.has(request_id)) return [];
+    const record = readPendingRequestForRecovery(db.sqlite, request_id);
+    return record && record !== 'malformed' ? [record] : [];
+  });
+  const prepared = omitted.length
+    ? await prepareControlPendingCommands(
+        db,
+        [
+          {
+            ...first,
+            expected: omitted.map((record) => ({
+              requestId: record.requestId,
+              sourceHash: commandInputHash(record),
+            })),
+          },
+        ],
+        mount,
+        []
+      )
+    : { entries: [], dependencies: [] };
+  return { now: first.now, omitted, prepared };
+}
+
+/** A well-formed plan cannot leave a usable source out of its settlement census. */
+function assertBootCensus(
+  db: WorkspaceDb,
+  census: NonNullable<PreparedControlPendingPlan['boot']>
+) {
+  for (const record of census.omitted) {
+    try {
+      assertPendingPreparedProjection(db, record, census.prepared, census.now, true);
+    } catch (error) {
+      if (error instanceof PendingRequestCommandError) continue;
+      throw error;
+    }
+    throw new ControlProductPreconditionError();
+  }
+}
+
+/** Only the original, possibly contacted non-person frozen batch can move to unknown delivery. */
+function assertUncertainDelivery(
+  db: WorkspaceDb,
+  owner: ControlProductOwner,
+  command: Extract<ControlPendingCommandInput, { action: 'delivery-unknown' }>
+): void {
+  const turn = readProduct(db.sqlite, owner, 'turn', command.turnId);
+  const rows = db.sqlite
+    .prepare(
+      "SELECT requester_kind FROM pending_requests WHERE workspace_id=? AND delivery='frozen' AND delivery_turn_id=?"
+    )
+    .all(db.workspaceId, command.turnId) as { requester_kind: string }[];
+  if (
+    !turn ||
+    turn.record.status === 'pending' ||
+    !rows.length ||
+    rows.some((row) => row.requester_kind === 'person')
+  )
+    throw new ControlProductPreconditionError();
+}
+
+/** Binds new Item bytes and append coordinates to the consuming owner's missing projections. */
+function assertPendingItems(
+  db: WorkspaceDb,
+  turnId: string,
+  entries: readonly PreparedControlEntry[],
+  projected: readonly Item[]
+): void {
+  const lookup = db.sqlite.prepare(
+    "SELECT turn_id FROM control_product_entries WHERE kind='item' AND id=? LIMIT 1"
+  );
+  const missing = projected.filter((item) => {
+    const existing = lookup.get(item.id) as { turn_id: string } | undefined;
+    if (existing && existing.turn_id !== turnId) throw new ControlProductPreconditionError();
+    return !existing;
+  });
+  const items = entries.filter(({ input }) => input.kind === 'item');
+  const { sequence } = db.sqlite
+    .prepare(
+      "SELECT COALESCE(MAX(sequence),0) AS sequence FROM control_product_entries WHERE kind='item' AND turn_id=?"
+    )
+    .get(turnId) as { sequence: number };
+  if (
+    items.length !== missing.length ||
+    items.some(({ id, input }, index) => {
+      const expected = missing[index]!;
+      const body = JSON.stringify(writeRetainedV1(ItemSchema.parse(expected)));
+      return (
+        id !== expected.id ||
+        input.turnId !== turnId ||
+        input.expectedRevision !== 0 ||
+        input.sequence !== sequence + index + 1 ||
+        input.content.reference.contentDigest !== `sha256:${sha256Hex(body)}`
+      );
+    })
+  )
+    throw new ControlProductPreconditionError();
+}
+
+function pendingRecords(db: WorkspaceDb, ids: readonly string[]): PendingRequestRecord[] {
+  return ids.map((id) => {
+    const record = readPendingRequest(db.sqlite, id);
+    if (!record || record.workspaceId !== db.workspaceId)
+      throw new ControlProductPreconditionError();
+    return record;
+  });
+}
+
+/** Entry 9 owns this Turn, exact Thread preview, and the selected missing Items only. */
+function assertOutcomeAdmission(
+  db: WorkspaceDb,
+  owner: ControlProductOwner,
+  group: Extract<PreparedGroup, { kind: 'products' }>
+): void {
+  const freeze = group.transition.pending?.[0];
+  if (freeze?.action !== 'freeze') throw new ControlProductPreconditionError();
+  const batch = pendingRecords(db, freeze.expectedSelection);
+  const first = batch[0];
+  if (!first || batch.some((record) => record.threadId !== freeze.threadId))
+    throw new ControlProductPreconditionError();
+  const triggerSource = pendingOutcomeTrigger(batch);
+  const turn = group.transition.products.find((entry) => entry.kind === 'turn')!;
+  const thread = group.transition.products.find((entry) => entry.kind === 'thread')!;
+  const expected = TurnSchema.parse({
+    id: freeze.turnId,
+    owner,
+    threadId: freeze.threadId,
+    triggerActor: outcomeTriggerActor({ actorId: pendingOutcomeActorId(first) }),
+    triggerSource,
+    agentId: outcomeTurnAgentId({ executor: freeze.executor, agentId: first.agentId }),
+    configVersion: null,
+    status: freeze.executor === 'worker' ? 'pending' : 'running',
+    startedAt: freeze.now,
+    completedAt: null,
+    durationMs: null,
+    error: null,
+    items: [],
+  });
+  if (
+    !isDeepStrictEqual(
+      turn.record,
+      writeRetainedV1({ ...expected, captureCoverage: turn.record.captureCoverage })
+    )
+  )
+    throw new ControlProductPreconditionError();
+  assertRetainedMutation(db, thread, {
+    preview: outcomeTurnSummary({ triggerSource }),
+    updatedAt: freeze.now,
+  });
+  const frozen = batch.map((record) => ({
+    ...record,
+    publicationTurnId: record.publicationTurnId ?? freeze.turnId,
+  }));
+  assertPendingItems(
+    db,
+    freeze.turnId,
+    group.entries,
+    renderPendingOutcomeItems(frozen, freeze.turnId, freeze.now)
+  );
+}
+
+/** A grouped terminal owns one completion and only the projections its Pending source permits. */
+function assertPendingTerminalEffects(
+  db: WorkspaceDb,
+  owner: ControlProductOwner,
+  terminal: ControlTerminalTransition,
+  prepared: PreparedControlTerminal,
+  command: ControlPendingCommandInput,
+  paired: boolean
+): void {
+  if (
+    command.action !== 'closeout' &&
+    command.action !== 'associate-invalidation' &&
+    command.action !== 'delivery-prove'
+  )
+    throw new ControlProductPreconditionError();
+  const turnId = String(terminal.turn.record.id);
+  const current = readProduct(db.sqlite, owner, 'turn', turnId);
+  const entries = preparedControlTerminalEntries(prepared);
+  const events = entries.filter(({ input }) => input.kind === 'event');
+  const event =
+    events[0] &&
+    (readPreparedControlEntry(events[0]) as {
+      requestId: string | null;
+      timestamp: string;
+      data: { stopReason: string };
+    });
+  if (
+    events.length !== 1 ||
+    event?.requestId !== null ||
+    event.timestamp !== terminal.turn.record.completedAt ||
+    event.data.stopReason !== 'completed' ||
+    terminal.reap?.reason !== 'completed' ||
+    terminal.reap.inferredBy !==
+      (paired ? 'native-terminal-publication' : 'pending-request-publication') ||
+    terminal.turn.record.agentId ||
+    terminal.turn.record.agentSessionId
+  )
+    throw new ControlProductPreconditionError();
+  if (current) {
+    const completedAt = current.record.completedAt ?? command.now;
+    assertRetainedMutation(db, terminal.turn, {
+      status: 'completed',
+      completedAt,
+      durationMs:
+        current.record.durationMs ??
+        (paired
+          ? Date.parse(String(completedAt)) - Date.parse(String(current.record.startedAt))
+          : 0),
+    });
+  } else {
+    const closeout = command.action === 'closeout' ? command : undefined;
+    const archive = closeout && !closeout.invalidatingEvents;
+    const summary = closeout
+      ? archive
+        ? 'Archive closeout'
+        : 'Requester authority was lost.'
+      : 'Person grant invalidations';
+    const expected = TurnSchema.parse({
+      id: turnId,
+      owner,
+      threadId: terminal.turn.record.threadId,
+      triggerActor: pendingRequestSystemActor(archive ? closeout.actor.id : null),
+      agentId: null,
+      agentSessionId: null,
+      configVersion: null,
+      error: null,
+      items: [],
+      status: 'completed',
+      startedAt: command.now,
+      completedAt: command.now,
+      durationMs: 0,
+      triggerSource: { kind: 'system-input', summary },
+    });
+    if (
+      !isDeepStrictEqual(
+        terminal.turn.record,
+        writeRetainedV1({
+          ...expected,
+          captureCoverage: terminal.turn.record.captureCoverage,
+        })
+      )
+    )
+      throw new ControlProductPreconditionError();
+  }
+  if (paired) {
+    if (
+      !current ||
+      command.action !== 'delivery-prove' ||
+      terminal.turn.record.completedAt !== command.now
+    )
+      throw new ControlProductPreconditionError();
+    assertPendingItems(db, turnId, entries, []);
+    return;
+  }
+  let expected: Item[];
+  if (command.action === 'closeout') {
+    const selected = pendingRecords(db, command.expected?.map(({ requestId }) => requestId) ?? []);
+    if (!selected.some(archiveSelects)) throw new ControlProductPreconditionError();
+    const reasons = new Map(
+      command.invalidatingEvents?.map(({ requestId, event }) => [requestId, event])
+    );
+    if (
+      command.invalidatingEvents &&
+      (reasons.size !== selected.length ||
+        command.invalidatingEvents.length !== selected.length ||
+        selected.some((row) => {
+          const reason = reasons.get(row.requestId);
+          return (
+            row.claim === 'claimed' ||
+            (reason !== 'membership-revoked' &&
+              !(reason === 'agent-authority-revoked' && row.requesterKind === 'worker'))
+          );
+        }))
+    )
+      throw new ControlProductPreconditionError();
+    expected = renderPendingOutcomeItems(
+      closeoutProjection(
+        selected,
+        turnId,
+        command.actor,
+        command.now,
+        (record) => reasons.get(record.requestId) ?? 'thread-archived'
+      ),
+      turnId,
+      command.now
+    );
+  } else if (command.action === 'associate-invalidation') {
+    if (
+      !command.requestIds.length ||
+      !isDeepStrictEqual(
+        command.expected?.map(({ requestId }) => requestId),
+        command.requestIds
+      ) ||
+      current ||
+      turnId !== deriveEntityId('tu', ['invalidation', command.requestIds[0]!]) ||
+      db.sqlite
+        .prepare(
+          "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running')"
+        )
+        .get(command.threadId)
+    )
+      throw new ControlProductPreconditionError();
+    expected = pendingRecords(db, command.requestIds).map((record) =>
+      renderPendingInvalidationItem({ ...record, invalidationTurnId: turnId }, turnId, command.now)
+    );
+  } else if (command.action === 'delivery-prove') {
+    const rows = db.sqlite
+      .prepare('SELECT request_id FROM pending_requests WHERE workspace_id=?')
+      .all(db.workspaceId) as { request_id: string }[];
+    const records = rows.flatMap(({ request_id }) => {
+      const record = readPendingRequestForRecovery(db.sqlite, request_id);
+      return record &&
+        record !== 'malformed' &&
+        (record.publicationTurnId === turnId || record.invalidationTurnId === turnId)
+        ? [record]
+        : [];
+    });
+    if (
+      !current ||
+      !records.length ||
+      current.record.threadId !== terminal.turn.record.threadId ||
+      current.record.agentId ||
+      current.record.agentSessionId
+    )
+      throw new ControlProductPreconditionError();
+    expected = renderPendingOutcomeItems(
+      records,
+      turnId,
+      String(current.record.startedAt ?? command.now)
+    );
+  } else {
+    throw new ControlProductPreconditionError();
+  }
+  assertPendingItems(db, turnId, entries, expected);
 }
 
 /**
@@ -372,7 +760,12 @@ export async function prepareControlPendingPlan(
   )
     throw new ControlProductPreconditionError();
   assertPendingPlanOperation(header, framesToPrepare);
-  return await preparePendingPlanGroups(db, owner, mount, header, framesToPrepare, stage);
+  const boot =
+    header.operation === 'pending-boot'
+      ? await prepareBootCensus(db, mount, framesToPrepare)
+      : undefined;
+  const prepared = await preparePendingPlanGroups(db, owner, mount, header, framesToPrepare, stage);
+  return boot ? { ...prepared, boot } : prepared;
 }
 
 /** Prepares authenticated groups without linking any new canonical name. */
@@ -494,8 +887,6 @@ async function preparePendingPlanGroups(
         );
         note(entries);
       }
-      if (terminal && group.input.input.action === 'closeout')
-        assertCloseoutEntries(terminal, group.input.input);
       const pending = await prepareControlPendingCommands(
         db,
         [group.input.input],
@@ -538,7 +929,9 @@ async function preparePendingPlanGroups(
     } else {
       const append = await prepareControlItemAppend(db, group.input, mount);
       const turnId = append.item.turnId!;
-      if (append.replay) {
+      if (append.previous && !isDeepStrictEqual(append.previous, group.input.item))
+        throw new ControlProductPreconditionError();
+      if (append.replay || append.previous) {
         groups.push({
           kind: 'item',
           item: append.item,
@@ -625,6 +1018,7 @@ export function applyControlPendingPlan(
     controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId) === prepared.inputs;
   if (prepared.operation === 'pending-boot' && !unchanged)
     throw new ControlProductPreconditionError();
+  if (prepared.boot) assertBootCensus(db, prepared.boot);
   return decideControlPendingPlan(db, owner, prepared, unchanged);
 }
 
@@ -636,16 +1030,41 @@ function decideControlPendingPlan(
   unchanged: boolean
 ): ControlPendingCommandResult {
   const requestIds: string[] = [];
+  const laterItems = new Set<string>();
+  for (const group of prepared.groups) {
+    if (group.kind === 'item' && (group.entries || group.publication))
+      laterItems.add(group.item.id);
+    if (group.kind === 'pending' && group.input.input.action === 'delivery-prove' && group.terminal)
+      for (const entry of preparedControlTerminalEntries(group.terminal))
+        if (entry.input.kind === 'item') laterItems.add(entry.id);
+  }
   for (const group of prepared.groups) {
     if (group.kind === 'pending') {
+      if (group.input.input.action === 'delivery-unknown')
+        assertUncertainDelivery(db, owner, group.input.input);
+      if (unchanged && group.input.terminal && group.terminal)
+        assertPendingTerminalEffects(
+          db,
+          owner,
+          group.input.terminal,
+          group.terminal,
+          group.input.input,
+          false
+        );
+      const action = group.input.input.action;
+      const pending =
+        action === 'settle-unfinished' || action === 'delivery-unknown'
+          ? { ...group.pending, laterItems }
+          : group.pending;
       const result = applyControlPendingTransition(
         db,
         group.input,
-        withWorkerInputs(db, [group.input.input], group.pending),
+        withWorkerInputs(db, [group.input.input], pending),
         group.terminal
       );
       requestIds.push(...result.requestIds);
     } else if (group.kind === 'products') {
+      assertOutcomeAdmission(db, owner, group);
       applyControlProducts(db.sqlite, owner, group.transition.products, group.entries);
       const pending = withWorkerInputs(
         db,
@@ -655,9 +1074,21 @@ function decideControlPendingPlan(
       for (const command of group.transition.pending ?? [])
         requestIds.push(...applyControlPendingCommand(db, command, pending).requestIds);
     } else if (group.kind === 'terminal') {
+      assertPendingTerminalEffects(
+        db,
+        owner,
+        group.input,
+        group.terminal,
+        group.input.pending![0]!,
+        true
+      );
       applyControlTerminal(db, group.input, group.terminal);
     } else {
-      assertPendingBootItem(db, group.item);
+      assertPendingBootItem(
+        db,
+        group.item,
+        group.entries || group.publication ? prepared.boot!.now : group.item.createdAt
+      );
       if (readProduct(db.sqlite, owner, 'turn', group.turnId)?.revision !== group.headRevision)
         throw new ControlProductPreconditionError();
       if (group.publication)

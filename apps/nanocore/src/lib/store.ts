@@ -3831,7 +3831,8 @@ export class FsStore {
   private async prepareNativeItems(
     scope: NativeProductScope,
     items: readonly Item[],
-    planned = false
+    planned = false,
+    ownBody?: (path: string) => void
   ): Promise<ControlProductEntry[]> {
     const counts = new Map<string, number>();
     const entries: ControlProductEntry[] = [];
@@ -3862,7 +3863,9 @@ export class FsStore {
               scope.contentMount,
               scope.owner,
               join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-              writeRetainedV1(item)
+              writeRetainedV1(item),
+              undefined,
+              ownBody
             )),
       });
       counts.set(item.turnId, offset + 1);
@@ -3882,7 +3885,8 @@ export class FsStore {
   /** The same admission with the Items it freezes, for a plan that also plans the Turn's history. */
   private async nativeTurnPendingAdmission(
     turn: Turn,
-    executor?: CreateTurnOptions['executorKind']
+    executor?: CreateTurnOptions['executorKind'],
+    ownBody?: (path: string) => void
   ): Promise<{
     entries: ControlProductEntry[];
     items: readonly Item[];
@@ -3894,7 +3898,9 @@ export class FsStore {
         : undefined;
     const entries = await this.prepareNativeItems(
       this.nativeScope(turn.owner),
-      admission?.items ?? []
+      admission?.items ?? [],
+      false,
+      ownBody
     );
     return { entries, items: admission?.items ?? [], pending: admission?.pending ?? [] };
   }
@@ -4395,11 +4401,12 @@ export class FsStore {
       'existing' | 'turn' | 'priorEvent'
     >,
     input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2],
-    planned: boolean
+    planned: boolean,
+    ownBody?: (path: string) => void
   ): Promise<ControlTerminalTransition> {
     const { existing, turn, priorEvent } = proposal;
     const workspaceId = workspaceIdForOwner(scope.owner);
-    const entries = await this.prepareNativeItems(scope, input.items, planned);
+    const entries = await this.prepareNativeItems(scope, input.items, planned, ownBody);
     const event =
       priorEvent ??
       SseEventEnvelopeSchema.parse({
@@ -4432,7 +4439,9 @@ export class FsStore {
             scope.contentMount,
             scope.owner,
             join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-            writeRetainedV1(event)
+            writeRetainedV1(event),
+            undefined,
+            ownBody
           );
     }
     entries.push({
@@ -4605,14 +4614,27 @@ export class FsStore {
     }
   }
 
+  /** Owns every loose body from first creation through assembly and transfer. */
+  public async withPendingPlanBodies<T>(
+    build: (ownBody: (path: string) => void) => Promise<T>
+  ): Promise<T> {
+    const owned = new Set<string>();
+    try {
+      return await build((path) => owned.add(path));
+    } finally {
+      discardStagedFiles([...owned].map((temporary) => ({ temporary })));
+    }
+  }
+
   /**
    * The plan groups of one Pending service publication: the terminal tuple the publication posts,
    * with its entries carried ahead of it in bounded groups.
    */
   public async pendingServiceTurnGroups(
-    ...[workspaceId, threadId, input]: Parameters<
-      FsStore['publishPendingRequestServiceTurnPublication']
-    >
+    workspaceId: string,
+    threadId: string,
+    input: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>[2],
+    ownBody?: (path: string) => void
   ): Promise<ControlPendingPlanGroup[]> {
     const { scope, existing, turn, priorEvent } = this.pendingServiceTurnProposal(
       workspaceId,
@@ -4627,7 +4649,8 @@ export class FsStore {
       threadId,
       { existing, turn, priorEvent },
       input,
-      false
+      false,
+      ownBody
     );
     return controlPendingPlanTerminalGroups({
       kind: 'pending',
@@ -4660,7 +4683,8 @@ export class FsStore {
       CreateTurnOptions,
       'startedAt' | 'status' | 'executorKind' | 'agentId' | 'triggerSource'
     > & { readonly turnId: string },
-    plannedThread?: { readonly revision: number; readonly record: Record<string, unknown> }
+    plannedThread?: { readonly revision: number; readonly record: Record<string, unknown> },
+    ownBody?: (path: string) => void
   ): Promise<{
     group: ControlPendingPlanGroup;
     history: PlannedTurnHistory;
@@ -4688,7 +4712,7 @@ export class FsStore {
       timestamp,
       options.turnId
     );
-    const admission = await this.nativeTurnPendingAdmission(turn, options.executorKind);
+    const admission = await this.nativeTurnPendingAdmission(turn, options.executorKind, ownBody);
     const threadRecord = writeRetainedV1({
       ...previousThread.record,
       preview: input,
@@ -4735,7 +4759,8 @@ export class FsStore {
     workspaceId: string,
     history: PlannedTurnHistory,
     patch: Parameters<FsStore['updateTurn']>[1],
-    publication: TerminalTurnPublication
+    publication: TerminalTurnPublication,
+    ownBody?: (path: string) => void
   ): Promise<{ group: ControlPendingPlanGroup; acknowledge: () => void }> {
     const owner = { kind: 'workspace' as const, workspaceId };
     const prepared = this.prepareTurnCompletion(
@@ -4749,7 +4774,8 @@ export class FsStore {
       prepared.scope!,
       prepared,
       patch,
-      publication
+      publication,
+      ownBody
     );
     return {
       group: { kind: 'terminal', input: terminal },
@@ -6886,7 +6912,8 @@ export class FsStore {
     scope: NativeProductScope,
     prepared: ReturnType<FsStore['prepareTurnCompletion']>,
     patch: Parameters<FsStore['updateTurn']>[1],
-    publication: TerminalTurnPublication
+    publication: TerminalTurnPublication,
+    ownBody?: (path: string) => void
   ): Promise<ControlTerminalTransition> {
     const { owner, history, before, turn, prior, precedingEvents, event } = prepared;
     const turnId = turn.id;
@@ -6902,7 +6929,9 @@ export class FsStore {
         scope.contentMount,
         owner,
         join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-        writeRetainedV1(item)
+        writeRetainedV1(item),
+        undefined,
+        ownBody
       );
       entries.push({
         kind: 'item',
@@ -6930,7 +6959,9 @@ export class FsStore {
           scope.contentMount,
           owner,
           join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
-          writeRetainedV1(terminalEvent)
+          writeRetainedV1(terminalEvent),
+          undefined,
+          ownBody
         );
       }
       entries.push({

@@ -318,18 +318,26 @@ function withReceivedInfluence(
 
 /** Both archive forms may change only the original Thread's archive status and clock. */
 export function assertArchiveMutation(db: WorkspaceDb, archive: ControlProductMutation): void {
+  assertRetainedMutation(db, archive, { status: 'archived', updatedAt: archive.record.updatedAt });
+}
+
+/** Ensures an operation replaces only its owned product fields, preserving retained annotations. */
+export function assertRetainedMutation(
+  db: WorkspaceDb,
+  mutation: ControlProductMutation,
+  patch: Readonly<Record<string, unknown>>
+): void {
   const row = db.sqlite
-    .prepare('SELECT record_json FROM control_threads WHERE id=?')
-    .get(archive.record.id as string) as { record_json: string } | undefined;
+    .prepare(`SELECT record_json FROM ${tables[mutation.kind]} WHERE id=?`)
+    .get(mutation.record.id as string) as { record_json: string } | undefined;
   if (!row) throw new ControlProductPreconditionError();
   const raw: unknown = JSON.parse(row.record_json);
-  const original = decode('thread', raw, { kind: 'workspace', workspaceId: db.workspaceId });
+  const original = decode(mutation.kind, raw, { kind: 'workspace', workspaceId: db.workspaceId });
   const expected = preserveDescriptiveRecord(raw, original, {
     ...original,
-    status: 'archived',
-    updatedAt: archive.record.updatedAt,
+    ...patch,
   });
-  if (!isDeepStrictEqual(archive.record, expected)) throw new ControlProductPreconditionError();
+  if (!isDeepStrictEqual(mutation.record, expected)) throw new ControlProductPreconditionError();
 }
 
 /** Shared SQL mechanics; only the complete terminal owner supplies its exact terminal identity. */
