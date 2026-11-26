@@ -23,6 +23,7 @@ import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
   createSchedulerExecutionAttempt,
+  listSchedulerExecutionAttemptsByTurnId,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
@@ -132,6 +133,14 @@ it.each(['before commit', 'after commit'] as const)(
       expect(requireSchedulerExecutionAttempt(db, predecessor.attemptId)).toEqual(decided);
       expect(findNextDispatchableSchedulerAdmissionEntry(db)).toEqual(nextAfterLoss);
 
+      const successorClaim = { entry: successor, preparationInput: { admission: successor } };
+      if (!commitBeforeLoss) {
+        await expect(createSchedulerExecutionAttempt(db, successorClaim)).rejects.toThrow();
+        expect(requireSchedulerExecutionAttempt(db, predecessor.attemptId)).toEqual(closing);
+        expect(requireSchedulerAdmissionEntry(db, successor.queueEntryId)).toEqual(successor);
+        expect(listSchedulerExecutionAttemptsByTurnId(db, successor.turnId)).toEqual([]);
+      }
+
       const closed = await closeSchedulerExecutionAttemptWithFence(db, {
         ...release,
         now: () => retryAt,
@@ -143,10 +152,7 @@ it.each(['before commit', 'after commit'] as const)(
         updatedAt: commitBeforeLoss ? releaseAt : retryAt,
       });
       expect(findNextDispatchableSchedulerAdmissionEntry(db)).toEqual(successor);
-      const admitted = await createSchedulerExecutionAttempt(db, {
-        entry: successor,
-        preparationInput: { admission: successor },
-      });
+      const admitted = await createSchedulerExecutionAttempt(db, successorClaim);
       expect(
         await closeSchedulerExecutionAttemptWithFence(db, {
           ...release,
