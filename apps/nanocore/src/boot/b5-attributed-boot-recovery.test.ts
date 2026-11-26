@@ -34,6 +34,7 @@ import {
 } from '../runtime/pending-requests.js';
 import * as productTurns from '../runtime/product-turn-start.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
@@ -45,6 +46,10 @@ import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from '../storage/index-rebuild.js';
 import { appendWorkObservation } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../storage/workspace-owner-records.js';
+import {
+  findWorkspaceQueueInputRef,
+  readWorkspaceQueueInput,
+} from '../storage/workspace-queue-inputs.js';
 import {
   createTestAgentSetup,
   recordTestAgentEnvironmentPackage,
@@ -3232,6 +3237,122 @@ describe('B5 attributed Boot recovery', () => {
           claim: 'finished',
           disposition: 'outcome-unknown',
         });
+      }
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  // A Worker call claim a restart left unfinished settles as outcome-unknown, so the same walk's
+  // tail finds it ready for its Worker. A's one grouped decision settles it and freezes it on one
+  // admitted Worker outcome Turn; the writer derives that Turn's input from the settled row the
+  // earlier group produced, not from the claimed row the plan was read on.
+  it(
+    "settles A's unfinished Worker call claim and freezes its settled outcome on one admitted Worker Turn in one grouped decision",
+    async () => {
+      const root = await seedRoot(['Worker settlement']);
+      const [workspaceId] = root.workspaceIds as [string];
+      const call = await withSeedStore(root, async (store) => {
+        const [seeded] = await seedDecidedApprovals(store, root, [workspaceId], {
+          requesterKind: 'worker',
+          decision: null,
+          services: 'none',
+        });
+        const requestId = seeded!.requestIds[0]!;
+        // The grant's own external execution reservation, as the approval route posts it after
+        // its preflights; the restart then leaves the reserved call unfinished.
+        const source = readPendingRecord(root.dataRoot, workspaceId, requestId)!;
+        const reserved = await store.applyPendingRequestCommand(workspaceId, {
+          action: 'claim',
+          workspaceId,
+          threadId: seeded!.threadId,
+          requestId,
+          actor: { kind: 'user', id: root.ownerUserId },
+          now: new Date().toISOString(),
+          decisionContext: { kind: 'local', userId: root.ownerUserId },
+          expected: [{ requestId, sourceHash: commandInputHash(source) }],
+        });
+        expect(reserved.applied).toBe('claimed');
+        return { ...seeded!, requestId };
+      });
+      expect(readPendingRecord(root.dataRoot, workspaceId, call.requestId)).toMatchObject({
+        resolution: 'granted',
+        claim: 'claimed',
+        disposition: null,
+      });
+      expect(readPendingRow(root.dataRoot, workspaceId, call.requestId)).toMatchObject({
+        delivery: 'undelivered',
+      });
+      const store = createTestStore({ dataRoot: root.dataRoot });
+      const coreDb = createTestCoreDb(root.dataRoot);
+      // Boot's configuration still declares the Worker agent: the requester keeps its authority.
+      const pending = {
+        coreDb,
+        agentAuthority: () => true,
+        openWorkspace: (id: string) => openAdmittedWorkspaceReadDb(root.dataRoot, id),
+      };
+      const plans = vi.spyOn(store, 'publishPendingPlan');
+      try {
+        store.startPendingRequestDelivery(pending);
+        await recoverPendingRequestsAtBoot(store, pending);
+        expect(isScopeAdmitted(root.dataRoot, 'workspace', workspaceId)).toBe(true);
+        // One plan carries the settlement and the Worker freeze that selects the settled row.
+        expect(plans).toHaveBeenCalledTimes(1);
+        const commands = plans.mock.calls[0]![2].flatMap((group) =>
+          group.kind === 'pending'
+            ? [group.input.input]
+            : group.kind === 'products'
+              ? (group.transition.pending ?? [])
+              : []
+        );
+        expect(commands).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ action: 'settle-unfinished' }),
+            expect.objectContaining({
+              action: 'freeze',
+              executor: 'worker',
+              expectedSelection: [call.requestId],
+            }),
+          ])
+        );
+        const row = readPendingRow(root.dataRoot, workspaceId, call.requestId);
+        expect(row).toMatchObject({
+          claim: 'finished',
+          disposition: 'outcome-unknown',
+          disposition_reason: 'restart',
+          delivery: 'frozen',
+          delivery_turn_id: expect.any(String),
+        });
+        const turnId = row.delivery_turn_id as string;
+        const admitted = store
+          .listThreadTurns(workspaceId, call.threadId)
+          .filter((turn) => turn.agentId === WORKER_AGENT_ID && turn.id !== call.raisingTurnId);
+        expect(admitted.map((turn) => turn.id)).toEqual([turnId]);
+        // The admitted Turn's frozen input is the settled outcome, with its original association.
+        const scope = { workspaceId, threadId: call.threadId, turnId };
+        const manifestRef = findWorkspaceQueueInputRef(root.dataRoot, scope, {
+          inputId: turnId,
+          originalInvocationId: turnId,
+        });
+        const manifest = JSON.parse(
+          readWorkspaceQueueInput(root.dataRoot, scope, manifestRef!)!.text
+        ) as { inputId: string; digest: string }[];
+        expect(manifest).toHaveLength(1);
+        const member = readWorkspaceQueueInput(root.dataRoot, scope, {
+          owner: { kind: 'workspace', workspaceId },
+          ...manifest[0]!,
+        });
+        expect(JSON.parse(member!.text)).toMatchObject({
+          requestId: call.requestId,
+          publicationTurnId: turnId,
+          resolution: 'granted',
+          disposition: 'outcome-unknown',
+          reason: 'restart',
+        });
+      } finally {
+        vi.restoreAllMocks();
+        closeTestCoreDb(coreDb);
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root.dataRoot);
       }
     },
     CASE_TIMEOUT_MS
