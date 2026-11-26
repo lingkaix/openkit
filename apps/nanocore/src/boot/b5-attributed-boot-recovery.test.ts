@@ -1179,13 +1179,12 @@ describe('B5 attributed Boot recovery', () => {
     CASE_TIMEOUT_MS
   );
 
-  // V1-P release witness, input 2 (interim form): a busy Worker Thread's 16 denials resolve without
-  // delivery and their requester loses authority before restart. The idle closeout's original
-  // packet carries a decision and a denied-disposition Item per row plus the completion event, 33
-  // entries past the terminal writer's 32-entry bound; that bound refuses before the settlement.
-  // Cold-Boot input 2: the idle tail closes every waiting denial of one Thread out on one Core-local
-  // Turn in A's one grouped decision, past the 32-entry terminal packet, and the next Boot finds
-  // nothing left to decide.
+  // V1-P release witness, cold-Boot input 2: a busy Worker Thread's 16 denials resolve without
+  // delivery and their requester loses authority before restart. The idle closeout carries a
+  // decision and a denied-disposition Item per row plus the completion event, 33 entries past the
+  // terminal writer's 32-entry packet; A's one grouped decision carries the earlier entries in
+  // bounded groups, so the idle tail closes every denial out on one Core-local Turn and the next
+  // Boot finds nothing left to decide.
   it(
     "closes the idle tail's 16 denials out on one completed Turn with every original association, exactly once across restart",
     async () => {
