@@ -123,6 +123,7 @@ import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   prepareWorkerRuntimeProvenance,
   recordWorkerRuntimeProvenanceMetadata,
+  retainedRuntimeProvenanceBytes,
 } from '../runtime/worker-runtime-provenance.js';
 import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
@@ -559,6 +560,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedTargetProof?: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
   readonly preparedProvenance?: Awaited<ReturnType<typeof prepareWorkerRuntimeProvenance>>;
   readonly preparedObservation?: ControlWorkObservationInput | undefined;
+  readonly retainedProvenanceBytes?: number | undefined;
   readonly preparedResolvedSetup?: PreparedResolvedAgentSetup;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
@@ -3789,7 +3791,9 @@ function flush(owner: OwnedDatabase): void {
             const result = applyControlWorkObservation(
               sqlite,
               owner.productOwner,
-              request.preparedObservation
+              request.preparedObservation,
+              false,
+              request.retainedProvenanceBytes
             );
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -5143,6 +5147,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             | Awaited<ReturnType<typeof prepareWorkerRuntimeProvenance>>
             | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
+          let retainedProvenanceBytes: number | undefined;
           let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
             if (value.operation === 'server-work-owner') {
@@ -5316,7 +5321,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedProvenance = await prepareWorkerRuntimeProvenance(owner.scopeDb, value.input);
             }
             if (value.operation === 'observation') {
-              if (!owner.scopeDb) throw new ControlProductPreconditionError();
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              if (!('chunk' in value.input) && !value.input.publishBodies)
+                retainedProvenanceBytes = await retainedRuntimeProvenanceBytes(
+                  owner.scopeDb,
+                  value.input
+                );
               preparedObservation = await prepareControlWorkObservationCommand(
                 owner.scopeDb,
                 value.input,
@@ -5619,6 +5629,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedTargetProof,
               preparedRecoveryHistory,
               preparedObservation,
+              retainedProvenanceBytes,
               preparedResolvedSetup,
               preparedProvenance,
               preparedMaterial,

@@ -48,6 +48,7 @@ import {
   chargeObservation,
   EMPTY_OBSERVATION_BUDGET,
   fitsReap,
+  isObservationCompanion,
   mergeReapCall,
   NATIVE_OBSERVATION_BYTES,
   ObservationCounterSchema,
@@ -58,6 +59,7 @@ import {
   observationBudgetLimit,
   omission,
   reapCallChange,
+  reservedModelGap,
   serializedCallBytes,
   TURN_OBSERVATION_CONTROL_BYTES,
   WORK_OBSERVATION_TRUNCATION_FEATURE,
@@ -983,7 +985,7 @@ function assertControlObservationLineage(
       .get(input.turnId, record.parent) as { identity_json: string } | undefined;
     const item = itemRow ? (JSON.parse(itemRow.identity_json) as Record<string, unknown>) : null;
     if (
-      record.type !== 'content.published' &&
+      !isObservationCompanion(record) &&
       !(record.type === 'model.observed' && record.payload.direction === 'response') &&
       item?.id === record.parent &&
       item.turnId === input.turnId &&
@@ -1005,6 +1007,15 @@ function assertControlObservationLineage(
       parent.payload.attempt !== record.payload.attempt)
   )
     throw new Error('recovery_required: model observation request lineage mismatch');
+  if (record.type === 'model.capture-gap' && isObservationCompanion(record)) {
+    const { v: _version, seq: _sequence, turnId: _turnId, ...draft } = record;
+    const content = record.payload.content as { reason?: unknown };
+    if (
+      !admitsReservedModelGap(parent, draft) ||
+      !isDeepStrictEqual(draft, reservedModelGap(parent, content.reason))
+    )
+      throw new Error('recovery_required: reserved model gap lineage mismatch');
+  }
   if (record.type === 'content.published') {
     const bodies = z.array(bodyDescriptorSchema).parse(record.payload.bodies);
     // Import remints observation and bundle identities through their exact maps. Retained meaning uses the bound descriptors and refs, not a live producer's id derivation.
@@ -1017,6 +1028,21 @@ function assertControlObservationLineage(
     )
       throw new Error('recovery_required: native observation publication lineage mismatch');
   }
+}
+
+function admitsReservedModelGap(parent: WorkObservationRecord, gap: WorkObservationDraft): boolean {
+  return (
+    parent.type === 'model.observed' &&
+    Array.isArray(parent.payload.bodies) &&
+    parent.payload.bodies.length > 0 &&
+    gap.parent === parent.id &&
+    gap.ts === parent.ts &&
+    gap.obs === parent.obs &&
+    gap.corr === parent.corr &&
+    gap.payload.attempt === parent.payload.attempt &&
+    gap.payload.direction === parent.payload.direction &&
+    gap.payload.event === parent.payload.event
+  );
 }
 
 /** Checks prepared identities against the deterministic body owner and the producer's expected-content declaration. */
@@ -1519,7 +1545,7 @@ function foldObservationPrefix(
         sequence = row.seq;
         continue;
       }
-      const ordinary = row.type !== 'content.published';
+      const ordinary = !isObservationCompanion(row);
       if (ordinary) intake += 1;
       if (cutoff) {
         if (ordinary)
@@ -1620,15 +1646,32 @@ export function applyControlWorkObservation(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   value: ControlWorkObservationInput,
-  terminalReap = false
+  terminalReap = false,
+  retainedProvenanceBytes = 0
 ): ControlWorkObservationResult {
   if (!sqlite.inTransaction || sqlite.readonly)
     throw new Error('Native observations require the owning SQL transaction');
   const parsed = ControlWorkObservationInputSchema.parse(value);
-  const input: ControlWorkObservationInput = {
-    ...parsed,
-    observation: parsed.observation as unknown as WorkObservationDraft,
-  };
+  let observation = parsed.observation as unknown as WorkObservationDraft;
+  if (
+    observation.type === 'model.capture-gap' &&
+    observation.parent &&
+    !Object.hasOwn(observation, 'requiredFeatures')
+  ) {
+    const content = payloadSchemas['model.capture-gap'].parse(observation.payload).content;
+    const parent = readControlWorkObservation(sqlite, owner, {
+      ...parsed,
+      id: observation.parent,
+    });
+    if (
+      parent &&
+      admitsReservedModelGap(parent, observation) &&
+      observation.id === `${parent.id}:gap:${content.reason}` &&
+      !readControlWorkObservation(sqlite, owner, { ...parsed, id: observation.id })
+    )
+      observation = reservedModelGap(parent, content.reason);
+  }
+  const input: ControlWorkObservationInput = { ...parsed, observation };
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
   if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
   if (input.bodies.length && binding.coverage.value !== 'on')
@@ -1678,16 +1721,17 @@ export function applyControlWorkObservation(
       candidate.id !== `turn.reap:${input.turnId}`)
   )
     throw new Error('turn.reap requires the native terminal Turn in the same transition');
-  const prior = readControlWorkObservation(sqlite, owner, {
+  const priorCompanion = readControlWorkObservation(sqlite, owner, {
     ...input,
     id: `${candidate.id}:publication`,
   });
+  const prior = priorCompanion?.type === 'content.published' ? priorCompanion : undefined;
   let publication = prior ?? null;
   if (
-    prior &&
-    (prior.type !== 'content.published' ||
-      prior.parent !== candidate.id ||
-      (input.bodies.length > 0 && !isDeepStrictEqual(prior.payload.bodies, input.bodies)))
+    priorCompanion &&
+    (priorCompanion.parent !== candidate.id ||
+      (!prior && (priorCompanion.type !== 'model.capture-gap' || input.publishBodies)) ||
+      (prior && input.bodies.length > 0 && !isDeepStrictEqual(prior.payload.bodies, input.bodies)))
   )
     throw new Error('recovery_required: observation publication conflict');
   let counter: ObservationCounter | undefined;
@@ -1696,6 +1740,10 @@ export function applyControlWorkObservation(
     if (candidate.type === 'turn.reap') {
       if (!terminalReap && (candidate.payload.truncation !== undefined || cutoff))
         throw new Error('Observation truncation belongs to the terminal writer');
+    } else if (candidate.type === 'model.capture-gap' && isObservationCompanion(candidate)) {
+      // The parent already paid for this exact closeout slot.
+      if (binding.turn.observationCounter?.sequence === tail.count)
+        counter = binding.turn.observationCounter;
     } else if (cutoff) {
       if (cutoff.observationId !== candidate.id || cutoff.workerSequence !== input.workerSequence)
         return { disposition: 'closed', truncation: cutoff.summary };
@@ -1714,7 +1762,7 @@ export function applyControlWorkObservation(
         ? 'unresolved-call-bytes'
         : observationBudgetLimit({
             ...budget,
-            bodyBytes: budget.bodyBytes + (counter.rawProvenance?.bytes ?? 0),
+            bodyBytes: budget.bodyBytes + (counter.rawProvenance?.bytes ?? retainedProvenanceBytes),
           });
       counter = { ...counter, budget };
       if (previous.cutoff || reason) {
