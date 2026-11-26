@@ -33,6 +33,7 @@ import {
   publishCanonicalPath,
   readCanonicalFile,
   readCanonicalTextFile,
+  removePrivateTreeSync,
   removeUnkeptCanonicalDirectories as removeStaleDirectories,
   syncCanonicalDirectory,
   throwCanonicalLinkError,
@@ -192,7 +193,7 @@ import {
   ensureWorkspaceLayoutRoot,
   WorkOwnershipViolationError,
 } from './fs-layout.js';
-import { readImmutableProductJson } from './immutable-content.js';
+import { isPendingPlanStageName, readImmutableProductJson } from './immutable-content.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredArtifactSnapshotV1Schema,
@@ -2258,6 +2259,8 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
       if (!current?.isDirectory() || current.isSymbolicLink()) break;
       if (part === 'backend' || part === 'sha256') {
         for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (part === 'backend' && entry.isDirectory() && isPendingPlanStageName(entry.name))
+            removePrivateTreeSync(join(directory, entry.name));
           if (
             entry.isFile() &&
             /^\.[0-9a-f]{64}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/.test(
