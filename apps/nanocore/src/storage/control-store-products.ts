@@ -2682,25 +2682,6 @@ export function applyServerTerminalProducts(
   assertTerminalItemCoverage(sqlite, String(turn.id), preparation.entries);
 }
 
-/**
- * The terminal owner's packet bound on one terminal tuple: its Turn, companion products and entries
- * share the entry limit, and its metadata, with inline bodies blanked, fits the metadata limit.
- * Preparation refuses a packet past either bound; a Boot proof checks the exact packet it plans
- * before its first write. Both refusals are the writer's definite local noncommit.
- *
- * @throws ControlProductPreconditionError past either bound.
- */
-export function assertControlTerminalPacketBound(
-  input: Pick<ControlTerminalTransition, 'products' | 'entries'> &
-    Parameters<typeof controlProductMetadataJson>[0]
-): void {
-  if (
-    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
-    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
-  )
-    throw new ControlProductPreconditionError();
-}
-
 /** Synchronizes actual immutable terminal bodies and captures dependencies outside SQL, never on Main. */
 export async function prepareControlTerminal(
   db: CoreDb | WorkspaceDb,
@@ -2718,15 +2699,15 @@ export async function prepareControlTerminal(
   if (
     ['pending', 'running'].includes(String(turn.status)) ||
     !turn.completedAt ||
-    input.products.some((product) => product.kind === 'turn')
+    input.products.some((product) => product.kind === 'turn') ||
+    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
+    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
   )
     throw new ControlProductPreconditionError();
-  assertControlTerminalPacketBound(input);
   for (const content of input.evidenceContent)
     await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
   // A grouped decision carries a terminal's earlier entries in their own bounded groups; this
   // packet keeps its ordinary bound and the one terminal decision covers every entry.
-  if (carried.length && !newDirectories?.deferred) throw new ControlProductPreconditionError();
   const { entries, dependencies } = await prepareTerminalEntries(
     db,
     input.owner,
