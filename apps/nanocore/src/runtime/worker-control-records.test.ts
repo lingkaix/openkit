@@ -1523,114 +1523,130 @@ function retainedObservationSource(
 }
 
 // SOURCE-RETENTION and RET Incremental Runtime And Model Content: exact evidence, no control replay.
-it('recovers an admitted body after a lost chunk ACK without filling the live control stream', async () => {
-  const f = await nativeReceiver();
-  // The admitted 48-KiB wire boundary splits the UTF-8 snow character between real chunks.
-  const bytes = Buffer.concat([
-    Buffer.alloc(48 * 1024 - 1, 0x61),
-    Buffer.from('\u96ea'),
-    Buffer.from([255, 0, 10]),
-  ]);
-  const data = WorkerObservationDataSchema.parse(
-    nativeMetadata(f, 'retained-source', bytes, {
-      kind: 'native-transcript',
-      chunkCount: 2,
-    })
-  );
-  const sessionDir = join(f.root, 'capture');
-  const sourcePath = join(sessionDir, 'runtime', 'observations', '1.jsonl');
-  const delivered: WorkerCanonicalEventRecord[] = [];
-  const lostAck = new Error('Synthetic lost ACK after Core accepted the first chunk.');
-  {
-    // This is the real producer-to-consumer crossing; neither owner is replaced by a double.
-    const writer = new WorkerTranscriptWriter({
-      sessionDir,
-      lineage: { ...f.lineage },
-      appendEvent: async (record) => {
-        if (record.event.type === 'observation.recorded') {
-          // SOURCE-RETENTION requires all restricted bytes before first live exposure.
-          const source = readFileSync(sourcePath, 'utf8');
-          expect(source.endsWith('\n')).toBe(true);
-          const retained = source
-            .slice(0, -1)
-            .split('\n')
-            .map((line) => WorkerCanonicalEventRecordSchema.parse(JSON.parse(line)));
-          expect(retained[0]).toEqual(record);
-          expect(retained.map((entry) => entry.sequence)).toEqual([1, 2, 3]);
-          const chunks = retained.slice(1).map((entry) => {
-            if (entry.event.type !== 'observation.content.chunk')
-              throw new Error('Expected the real writer restricted chunk envelope.');
-            return entry.event.data;
-          });
-          expect(chunks.map((chunk) => [chunk.chunkIndex, chunk.byteOffset])).toEqual([
-            [0, 0],
-            [1, 48 * 1024],
-          ]);
-          expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.data, 'base64')))).toEqual(
-            bytes
-          );
-        }
-        delivered.push(record);
-        const result = await f.send(record.sequence, record.event.type, record.event.data);
-        expect(result.accepted).toBe(true);
-        if (record.sequence === 2) throw lostAck;
-      },
+it.each([false, true])(
+  'recovers an admitted body after a lost chunk ACK without filling the live control stream (deferred=%s)',
+  async (deferred) => {
+    const firstChunk = deferred ? 3 : 2;
+    const f = await nativeReceiver();
+    // The admitted 48-KiB wire boundary splits the UTF-8 snow character between real chunks.
+    const bytes = Buffer.concat([
+      Buffer.alloc(48 * 1024 - 1, 0x61),
+      Buffer.from('\u96ea'),
+      Buffer.from([255, 0, 10]),
+    ]);
+    const data = WorkerObservationDataSchema.parse(
+      nativeMetadata(f, 'retained-source', bytes, {
+        kind: 'native-transcript',
+        chunkCount: 2,
+      })
+    );
+    const sessionDir = join(f.root, 'capture');
+    const sourcePath = join(sessionDir, 'runtime', 'observations', '1.jsonl');
+    const delivered: WorkerCanonicalEventRecord[] = [];
+    const lostAck = new Error('Synthetic lost ACK after Core accepted the first chunk.');
+    {
+      // This is the real producer-to-consumer crossing; neither owner is replaced by a double.
+      const writer = new WorkerTranscriptWriter({
+        sessionDir,
+        lineage: { ...f.lineage },
+        appendEvent: async (record) => {
+          if (
+            deferred ? record.sequence === firstChunk : record.event.type === 'observation.recorded'
+          ) {
+            // SOURCE-RETENTION requires all restricted bytes before first live exposure.
+            const source = readFileSync(sourcePath, 'utf8');
+            expect(source.endsWith('\n')).toBe(true);
+            const retained = source
+              .slice(0, -1)
+              .split('\n')
+              .map((line) => WorkerCanonicalEventRecordSchema.parse(JSON.parse(line)));
+            expect(retained[0]).toEqual(deferred ? delivered[1] : record);
+            expect(retained.map((entry) => entry.sequence)).toEqual([
+              1,
+              firstChunk,
+              firstChunk + 1,
+            ]);
+            const chunks = retained.slice(1).map((entry) => {
+              if (entry.event.type !== 'observation.content.chunk')
+                throw new Error('Expected the real writer restricted chunk envelope.');
+              return entry.event.data;
+            });
+            expect(chunks.map((chunk) => [chunk.chunkIndex, chunk.byteOffset])).toEqual([
+              [0, 0],
+              [1, 48 * 1024],
+            ]);
+            expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.data, 'base64')))).toEqual(
+              bytes
+            );
+          }
+          delivered.push(record);
+          const result = await f.send(record.sequence, record.event.type, record.event.data);
+          expect(result.accepted).toBe(true);
+          if (record.sequence === firstChunk) throw lostAck;
+        },
+      });
+      // The fixture's existing sequence-0 heartbeat receipt must replay identically.
+      await writer.writeAndAppendEvent({ type: 'worker.heartbeat', data: { status: 'running' } });
+      if (deferred) {
+        await writer.writeObservation(data);
+        await writer.writeAndAppendEvent({ type: 'worker.heartbeat', data: { status: 'running' } });
+      }
+      await expect(writer.writeObservation(data, bytes)).rejects.toBe(lostAck);
+    }
+    // No originating writer or callback is used after this point; recovery reads its actual file.
+    expect(delivered.map((record) => record.sequence)).toEqual(deferred ? [0, 1, 2, 3] : [0, 1, 2]);
+    const metadata = delivered[1]!;
+    expect(metadata.event.type).toBe('observation.recorded');
+    expect(nativeBodies(f)).toEqual([]);
+    const originalRows = f.rows();
+    const originalReceipts = f.receipts();
+    f.restart();
+    await recoverWorkerObservationSource(f.coreDb, {
+      environmentPackage: f.pkg,
+      metadata,
+      sourcePath,
+      assertPublicationAuthority: () => undefined,
     });
-    // The fixture's existing sequence-0 heartbeat receipt must replay identically.
-    await writer.writeAndAppendEvent({ type: 'worker.heartbeat', data: { status: 'running' } });
-    await expect(writer.writeObservation(data, bytes)).rejects.toBe(lostAck);
-  }
-  // No originating writer or callback is used after this point; recovery reads its actual file.
-  expect(delivered.map((record) => record.sequence)).toEqual([0, 1, 2]);
-  const metadata = delivered[1]!;
-  expect(metadata.event.type).toBe('observation.recorded');
-  expect(nativeBodies(f)).toEqual([]);
-  const originalRows = f.rows();
-  const originalReceipts = f.receipts();
-  f.restart();
-  await recoverWorkerObservationSource(f.coreDb, {
-    environmentPackage: f.pkg,
-    metadata,
-    sourcePath,
-    assertPublicationAuthority: () => undefined,
-  });
-  expect(f.receipts()).toEqual(originalReceipts);
-  expect(f.rows().filter((row) => row.type === 'runtime.observed')).toEqual(originalRows);
-  const [published] = nativeBodies(f);
-  expect(published!.bytes).toEqual(bytes);
-  const publishedRows = f.rows();
-  const originalRef = published!.ref;
+    expect(f.receipts()).toEqual(originalReceipts);
+    expect(f.rows().filter((row) => row.type === 'runtime.observed')).toEqual(originalRows);
+    const [published] = nativeBodies(f);
+    expect(published!.bytes).toEqual(bytes);
+    const publishedRows = f.rows();
+    const originalRef = published!.ref;
 
-  // Reopen a separate reader after recovery; in-memory caller state cannot prove durability.
-  const reopened = openWorkspaceDb(f.root, f.lineage.workspaceId);
-  try {
-    expect(readWorkObservations(reopened, f.owner)).toEqual(publishedRows);
-    expect(
-      Buffer.from(
-        readWorkObservationBody(reopened, {
-          ...f.owner,
-          bundleId: originalRef.locator,
-          createdAt: data.observedAt,
-          sha256: originalRef.digest!,
-        })!
-      )
-    ).toEqual(bytes);
-  } finally {
-    reopened.sqlite.close();
+    // Reopen a separate reader after recovery; in-memory caller state cannot prove durability.
+    const reopened = openWorkspaceDb(f.root, f.lineage.workspaceId);
+    try {
+      expect(readWorkObservations(reopened, f.owner)).toEqual(publishedRows);
+      expect(
+        Buffer.from(
+          readWorkObservationBody(reopened, {
+            ...f.owner,
+            bundleId: originalRef.locator,
+            createdAt: data.observedAt,
+            sha256: originalRef.digest!,
+          })!
+        )
+      ).toEqual(bytes);
+    } finally {
+      reopened.sqlite.close();
+    }
+    await recoverWorkerObservationSource(f.coreDb, {
+      environmentPackage: f.pkg,
+      metadata,
+      sourcePath,
+      assertPublicationAuthority: () => undefined,
+    });
+    expect(f.rows()).toEqual(publishedRows);
+    expect(nativeBodies(f)).toEqual([{ ref: originalRef, bytes }]);
+    expect(f.receipts()).toEqual(originalReceipts);
+    expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+    // The missing final chunk's sequence has no receipt or fingerprint from evidence recovery.
+    expect((await f.send(firstChunk + 1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(
+      true
+    );
   }
-  await recoverWorkerObservationSource(f.coreDb, {
-    environmentPackage: f.pkg,
-    metadata,
-    sourcePath,
-    assertPublicationAuthority: () => undefined,
-  });
-  expect(f.rows()).toEqual(publishedRows);
-  expect(nativeBodies(f)).toEqual([{ ref: originalRef, bytes }]);
-  expect(f.receipts()).toEqual(originalReceipts);
-  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
-  // The missing final chunk's sequence has no receipt or fingerprint from evidence recovery.
-  expect((await f.send(3, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
-});
+);
 
 // The caller owns current Policy; the evidence owner must propagate its submission refusal.
 it('refuses recovered body publication when the current caller authority check fails', async () => {

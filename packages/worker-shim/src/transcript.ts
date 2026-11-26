@@ -1,5 +1,6 @@
 import { appendFile, mkdir, open, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   WORKER_CONTROL_EVENT_APPEND_MAX_BYTES,
@@ -8,6 +9,7 @@ import {
   type WorkerCanonicalNonTerminalEventType,
   type WorkerCanonicalTerminalEventDataInput,
   type WorkerLineage,
+  WorkerObservationDataSchema,
   type WorkerTextPart,
   WorkerTranscriptItemRecordEmissionSchema,
   workerObservationSourceRelativePath,
@@ -78,6 +80,8 @@ export class WorkerTranscriptWriter {
   private readonly lineage: WorkerLineage;
   private readonly sessionDir: string;
   private readonly createdFiles = new Set<string>();
+  /** An expected body may wait for the semantic unit's credential check after its metadata ACK. */
+  private readonly deferredObservations = new Map<string, WorkerCanonicalEventRecord>();
   private sequence = 0;
   private readonly recordLifecycleFact: TurnLifecycleRecorder | undefined;
 
@@ -111,12 +115,14 @@ export class WorkerTranscriptWriter {
   public stopLiveEvents(reason: Error): void {
     this.eventsSealed = true;
     this.liveStopReason ??= reason;
+    this.deferredObservations.clear();
   }
 
   /** Stops dispatch of further live observations and chunks without cancelling an entered append. */
   public stopObservationDelivery(): void {
     this.observationDeliveryStopped = true;
     this.liveIncomplete = true;
+    this.deferredObservations.clear();
   }
 
   /**
@@ -164,10 +170,25 @@ export class WorkerTranscriptWriter {
     } else if (input.content.state !== 'expected' && body !== undefined) {
       throw new Error('Runtime observation body was not admitted.');
     }
-    const record = WorkerCanonicalEventRecordEmissionSchema.parse({
-      ...this.nextBaseRecord('event'),
-      event: { type: 'observation.recorded', data: input },
-    });
+    const original = this.deferredObservations.get(input.observationId);
+    if (
+      original &&
+      (body === undefined ||
+        original.event.type !== 'observation.recorded' ||
+        !isDeepStrictEqual(original.event.data, WorkerObservationDataSchema.parse(input)))
+    )
+      throw new Error('Deferred Worker body does not match its original observation.');
+    if (original) this.deferredObservations.delete(input.observationId);
+    const record =
+      original ??
+      WorkerCanonicalEventRecordEmissionSchema.parse({
+        ...this.nextBaseRecord('event'),
+        event: { type: 'observation.recorded', data: input },
+      });
+    if (input.content.state === 'expected' && body === undefined)
+      this.deferredObservations.set(input.observationId, record);
+    if (input.content.state === 'unavailable' && input.content.expectedObservationId)
+      this.deferredObservations.delete(input.content.expectedObservationId);
     const chunkCount =
       input.content.state === 'expected' && body !== undefined ? input.content.chunkCount : 0;
     const firstChunkSequence = this.sequence;
@@ -198,23 +219,28 @@ export class WorkerTranscriptWriter {
     // before either transcript can retain it. Once admitted, the same owner joins its append.
     const predecessor = this.liveQueue;
     let admitted = false;
-    const metadata = this.appendJsonl('events.jsonl', record, async () => {
+    const admit = async () => {
       // Local I/O still settles if earlier live delivery failed.
       await predecessor.catch(() => undefined);
       admitted = !this.observationDeliveryStopped;
       return admitted;
-    });
+    };
+    if (original && chunks.length === 0) {
+      await predecessor;
+      return;
+    }
+    const metadata = original ? this.appendQueue : this.appendJsonl('events.jsonl', record, admit);
     const appended =
       body === undefined
         ? metadata
         : this.appendJsonl(
             workerObservationSourceRelativePath(record.sequence),
             [record, ...chunks],
-            () => admitted
+            original ? admit : () => admitted
           );
     await this.enqueueLive(appended, async () => {
       if (!admitted) return false;
-      await this.appendLive(record);
+      if (!original) await this.appendLive(record);
       for (const chunk of chunks) {
         if (this.observationDeliveryStopped) return false;
         await this.appendLive(chunk);
@@ -305,6 +331,7 @@ export class WorkerTranscriptWriter {
     input: WorkerTerminalOutcomeInput
   ): Promise<WorkerCanonicalEventRecord> {
     this.eventsSealed = true;
+    this.deferredObservations.clear();
     const sequence = this.sequence;
     this.sequence += 1;
     const record = buildWorkerCanonicalTerminalEventRecord({

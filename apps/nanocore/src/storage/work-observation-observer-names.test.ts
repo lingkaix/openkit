@@ -112,7 +112,10 @@ function nativeBytes(db: WorkspaceDb, turnId: string): string[] {
 }
 
 /** Decodes the raw native records independently of the observer-name reader under test. */
-function nativeRows(db: WorkspaceDb, turnId: string): WorkObservationRecord[] {
+function nativeRows(
+  db: WorkspaceDb,
+  turnId: string
+): (WorkObservationRecord & { workerSequence?: number })[] {
   return nativeBytes(db, turnId).map((record) => JSON.parse(record));
 }
 
@@ -325,7 +328,7 @@ describe('retained observer names', () => {
     f.db.sqlite.close();
     const reopened = workspaceDb(f.dataRoot, f.db.workspaceId);
     const rows = readWorkObservations(reopened, f.owner);
-    expect(rows).toEqual(retained);
+    expect(rows).toEqual(retained.map(({ workerSequence: _privatePosition, ...row }) => row));
     expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
     expect(
       reopened.sqlite.prepare('SELECT record_json FROM control_turns WHERE id=?').get(f.turn.id)

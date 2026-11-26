@@ -427,8 +427,12 @@ it('carries expected-only metadata through the real transcript writer before a u
     expect(accepted.map((record) => record.event.type)).toEqual(['observation.recorded']);
     await capture.emit('source', { ...fact, phase: 'completed' });
     await capture.flushCompleted();
-    expect(accepted.map((record) => record.sequence)).toEqual([0, 1, 2, 3]);
-    const chunk = accepted[3]!.event.data as { data: string };
+    expect(accepted.map((record) => [record.sequence, record.event.type])).toEqual([
+      [0, 'observation.recorded'],
+      [1, 'observation.recorded'],
+      [2, 'observation.content.chunk'],
+    ]);
+    const chunk = accepted[2]!.event.data as { data: string };
     expect(Buffer.from(chunk.data, 'base64').toString()).toBe('original 💡');
   } finally {
     await rm(sessionDir, { recursive: true, force: true });

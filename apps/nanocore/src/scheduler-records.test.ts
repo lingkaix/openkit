@@ -32,8 +32,8 @@ import {
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records';
-import { openCoreDb } from './storage/db';
-import { applyMigrations } from './storage/migrate';
+import { openCoreDb, openWorkspaceDb } from './storage/db';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -1461,6 +1461,12 @@ describe('scheduler records', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
+      const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        applyScopedMigrations(workspace);
+      } finally {
+        workspace.sqlite.close();
+      }
       createPreparedAttempt(coreDb, 'lease_recovery_stale');
       createPreparedAttempt(coreDb, 'lease_recovery_release');
       createPreparedAttempt(coreDb, 'lease_recovery_startup');
