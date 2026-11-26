@@ -885,11 +885,13 @@ describe('Pi resume proof', () => {
   });
 
   it('registers the image executable and fails closed when that binary is absent', async () => {
-    expect(WORKER_ADAPTERS.pi).toBe(piResidentAdapter);
+    const registered = WORKER_ADAPTERS.pi!;
+    expect(registered.openSession).toBe(piResidentAdapter.openSession);
+    expect(registered.stop).toEqual({ kind: 'best-effort' });
     const dirs = await createDirs();
     const inferenceCredential = credential();
     await expect(
-      piResidentAdapter.openSession({
+      registered.openSession({
         agentSessionId: 'session-a',
         controlRoot: join(dirs.root, 'control'),
         environment: {
