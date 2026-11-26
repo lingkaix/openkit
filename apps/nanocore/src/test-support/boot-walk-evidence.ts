@@ -5,7 +5,12 @@ import Database from 'better-sqlite3';
 import type { FsStore } from '../lib/store.js';
 import { StoredGoalCardTaskV1Schema, StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
-import { type PendingRequestRecord, readPendingRequest } from '../runtime/pending-requests.js';
+import {
+  PENDING_PROJECTION_ROLES,
+  type PendingRequestRecord,
+  pendingRequestItemId,
+  readPendingRequest,
+} from '../runtime/pending-requests.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 
@@ -38,9 +43,120 @@ export async function withSeedWorkspaceDb<T>(
 export function raiseSeedPendingRequest(
   store: FsStore,
   db: WorkspaceDb,
-  input: Parameters<typeof raiseRecordedPendingRequest>[2]
+  input: Parameters<typeof raiseRecordedPendingRequest>[2],
+  requestItem?: Parameters<typeof raiseRecordedPendingRequest>[3]
 ) {
-  return raiseRecordedPendingRequest(store, db.sqlite, input);
+  return raiseRecordedPendingRequest(store, db.sqlite, input, requestItem);
+}
+
+/**
+ * Seeds a long valid Pending history while NanoCore is stopped: `count` copies of one retained
+ * request that names no Turn but its completed raising Turn, each with its own request identity
+ * and its own request Item appended to that Turn in sequence order. Each inline Item body keeps
+ * its descriptor exact (digest and length over the copied body). Seed state only, so a Boot walk
+ * meets a history too long for one writer frame.
+ * @returns The copies' request ids.
+ */
+export function copyRetainedPendingHistory(
+  dataRoot: string,
+  workspaceId: string,
+  requestId: string,
+  count: number
+): string[] {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    const row = sqlite
+      .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
+      .get(requestId) as Record<string, unknown> | undefined;
+    if (
+      !row ||
+      row.execution_call_id !== null ||
+      row.publication_turn_id !== null ||
+      row.invalidation_turn_id !== null ||
+      row.delivery_turn_id !== null
+    )
+      throw new Error('The history template must name no Turn but its raising Turn.');
+    const roles = ['request', ...PENDING_PROJECTION_ROLES] as const;
+    const itemIds = roles.map((role) => pendingRequestItemId(requestId, role));
+    const entries = sqlite
+      .prepare(
+        `SELECT turn_id,sequence,id,revision,schema_version,content_json,identity_json,read_metadata_json
+         FROM control_product_entries WHERE kind='item' AND id IN (${itemIds.map(() => '?').join(',')})
+         ORDER BY turn_id,sequence`
+      )
+      .all(...itemIds) as Record<string, string | number | null>[];
+    if (!entries.some((entry) => entry.id === row.request_item_id))
+      throw new Error('The history template has no retained request Item.');
+    const last = sqlite.prepare(
+      "SELECT MAX(sequence) FROM control_product_entries WHERE kind='item' AND turn_id = ?"
+    );
+    const sequences = new Map<string, number>();
+    for (const entry of entries) {
+      const turnId = String(entry.turn_id);
+      if (!sequences.has(turnId)) sequences.set(turnId, Number(last.pluck().get(turnId)));
+    }
+    const columns = Object.keys(row);
+    const insertRow = sqlite.prepare(
+      `INSERT INTO pending_requests (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`
+    );
+    const insertEntry = sqlite.prepare(
+      `INSERT INTO control_product_entries
+       (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json,read_metadata_json)
+       VALUES ('item',?,?,?,?,?,?,?,?)`
+    );
+    const copies: string[] = [];
+    sqlite.transaction(() => {
+      for (let index = 0; index < count; index++) {
+        const copy = `${requestId}h${index.toString(36).padStart(4, '0')}`;
+        const swaps = [
+          ...roles.map((role) => [
+            pendingRequestItemId(requestId, role),
+            pendingRequestItemId(copy, role),
+          ]),
+          [requestId, copy],
+        ] as const;
+        const swap = (value: unknown) =>
+          typeof value === 'string'
+            ? swaps.reduce((text, [from, to]) => text.split(from).join(to), value)
+            : value;
+        insertRow.run(...columns.map((column) => swap(row[column])));
+        for (const entry of entries) {
+          const content = JSON.parse(swap(entry.content_json) as string) as {
+            reference: { representation: string; body?: string; contentDigest: string };
+            byteLength: number;
+          };
+          if (content.reference.representation !== 'inline' || !content.reference.body)
+            throw new Error('The history template Item must be inline.');
+          const bytes = Buffer.from(content.reference.body, 'utf8');
+          const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+          const original = content.reference.contentDigest;
+          const descriptor = (value: unknown) =>
+            typeof value === 'string' ? value.split(original).join(digest) : value;
+          content.reference.contentDigest = digest;
+          content.byteLength = bytes.length;
+          const turnId = String(entry.turn_id);
+          const sequence = sequences.get(turnId)! + 1;
+          sequences.set(turnId, sequence);
+          insertEntry.run(
+            turnId,
+            sequence,
+            swap(entry.id),
+            entry.revision,
+            entry.schema_version,
+            JSON.stringify(content),
+            descriptor(swap(entry.identity_json)),
+            descriptor(swap(entry.read_metadata_json))
+          );
+        }
+        copies.push(copy);
+      }
+    })();
+    return copies;
+  } finally {
+    sqlite.close();
+  }
 }
 
 /** Reads one retained Pending row's claim, disposition, publication pointer and delivery. */
@@ -59,6 +175,24 @@ export function readPendingRow(
         'SELECT claim, disposition, disposition_reason, publication_turn_id, delivery, delivery_turn_id, invalidation_turn_id FROM pending_requests WHERE request_id = ?'
       )
       .get(requestId) as Record<string, unknown>;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/** Reads every retained Pending record of one Workspace through the production record reader. */
+export function readPendingRecords(dataRoot: string, workspaceId: string): PendingRequestRecord[] {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    return (
+      sqlite
+        .prepare('SELECT request_id FROM pending_requests ORDER BY request_id')
+        .pluck()
+        .all() as string[]
+    ).map((requestId) => readPendingRequest(sqlite, requestId)!);
   } finally {
     sqlite.close();
   }
@@ -166,6 +300,26 @@ export function writePendingDisposition(
         'UPDATE pending_requests SET disposition = ?, disposition_reason = ? WHERE request_id = ?'
       )
       .run(disposition, reason, requestId).changes;
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Changes only one Goal's intent, as a concurrent Goal owner may between a planned Pending decision
+ * and its writer. The Task terminal owner accepts the changed Goal.
+ * @returns Number of changed rows.
+ */
+export function reviseGoalIntent(dataRoot: string, workspaceId: string, goalId: string): number {
+  const sqlite = new Database(workspaceDatabasePath(dataRoot, workspaceId), {
+    fileMustExist: true,
+  });
+  try {
+    return sqlite
+      .prepare(
+        "UPDATE goals SET payload_json = json_set(payload_json, '$.intent', 'Changed after planning') WHERE goal_id = ?"
+      )
+      .run(goalId).changes;
   } finally {
     sqlite.close();
   }

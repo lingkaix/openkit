@@ -1,10 +1,10 @@
 // openkit-test-platform: posix
 'use strict';
 
-// Fault fixture only: it refuses selected SQLite reads and never writes.
+// Fault fixture only: it refuses selected SQLite reads and writes nothing, except writerGoal.
 // OPENKIT_TEST_BOOT_WALK_FAULT =
 //   { workspaceId?, fail?, within?, outside?, after?, times?, miss?, arm?, live?, shared?, census?,
-//     writer?, writerSql?, writerWithin?, writerAfter?, writerWatch?, label }.
+//     writer?, writerSql?, writerWithin?, writerAfter?, writerWatch?, writerGoal?, label }.
 // - fail: SQL text that throws on the named Workspace's own database in Main once armed.
 // - within / outside: the fail applies only while one listed function is / no listed function is
 //   on the stack.
@@ -24,6 +24,9 @@
 //   matching writer reads that still succeed first.
 // - writerWatch: in the control-store writer thread, report (never refuse) the first table write
 //   that enters the named Workspace's database, so a case can require that no write began there.
+// - writerGoal: in the control-store writer thread, once the named Workspace's grouped Pending
+//   decision is being prepared (after Main planned it), change only that Goal's intent, once, as a
+//   concurrent Goal owner would; the decision itself is left to the writer.
 // The Main fault covers Boot only: it disarms when the App listener binds, so live reads after Boot
 // run unfaulted, except reads under a listed `live` owner.
 (() => {
@@ -48,10 +51,33 @@
     }
   };
   if (!threads.isMainThread) {
-    if (!fault.writer && !fault.writerWatch) return;
+    if (!fault.writer && !fault.writerWatch && !fault.writerGoal) return;
     const probe = new Database(':memory:');
     const statement = Object.getPrototypeOf(probe.prepare('SELECT 1'));
     probe.close();
+    if (fault.writerGoal) {
+      const get = statement.get;
+      let changed = false;
+      statement.get = function (...args) {
+        const database = this.database;
+        const name = typeof database?.name === 'string' ? database.name : '';
+        if (
+          !changed &&
+          name.endsWith(scoped) &&
+          !database.inTransaction &&
+          stack().includes('prepareControlPendingPlan')
+        ) {
+          changed = true;
+          const result = database
+            .prepare(
+              "UPDATE goals SET payload_json = json_set(payload_json, '$.intent', 'Changed after planning') WHERE goal_id = ?"
+            )
+            .run(fault.writerGoal);
+          process.stderr.write(`[boot-walk-fault] goal-changed ${fault.label} ${result.changes}\n`);
+        }
+        return get.apply(this, args);
+      };
+    }
     if (fault.writerWatch) {
       const run = statement.run;
       let entered = false;

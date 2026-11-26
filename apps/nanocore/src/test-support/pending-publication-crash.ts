@@ -6,6 +6,7 @@ import { createApp } from '../app.js';
 import { assertScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import {
+  admitIfIdle,
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
 } from '../runtime/pending-request-flow.js';
@@ -234,15 +235,50 @@ if (retainedRoot) {
     return loseConsumerAcknowledgement();
   };
   client.pendingCommand = async (database, input) => {
-    if (!input.terminal || mode === 'shared-closeout') return pendingCommand(database, input);
+    if ('plan' in input || !input.terminal || mode === 'shared-closeout')
+      return pendingCommand(database, input);
     if (phase === 'before-association') return retainMissingAssociation(input.terminal.turn.record);
     awaitingAtomicReply = 'pending';
     await pendingCommand(database, input);
     awaitingAtomicReply = null;
     return loseConsumerAcknowledgement();
   };
+  // A closeout is one grouped decision: the same boundaries apply to its plan's terminal group.
+  const publishPendingPlan = store.publishPendingPlan.bind(store);
+  store.publishPendingPlan = async (workspaceId, header, groups, turns) => {
+    const terminal = groups
+      .flatMap((group) =>
+        group.kind === 'terminal'
+          ? [group.input]
+          : group.kind === 'pending' && group.input.terminal
+            ? [group.input.terminal]
+            : []
+      )
+      .at(-1);
+    if (!terminal || mode === 'shared-closeout')
+      return publishPendingPlan(workspaceId, header, groups, turns);
+    if (phase === 'before-association') return retainMissingAssociation(terminal.turn.record);
+    awaitingAtomicReply = 'pending';
+    await publishPendingPlan(workspaceId, header, groups, turns);
+    awaitingAtomicReply = null;
+    return loseConsumerAcknowledgement();
+  };
   if (mode === 'delivery' && phase === 'between')
     await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
+  if (mode === 'authority-closeout') {
+    // The requester's current authority is lost: the idle Thread's admission closes both out.
+    await admitIfIdle(
+      store,
+      {
+        coreDb,
+        openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
+        requesterAuthority: () => false,
+      },
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001'
+    );
+    throw new Error('The authority-loss closeout did not reach its acknowledgement boundary.');
+  }
   const response =
     mode === 'delivery' || mode === 'throw'
       ? await respond(0)
