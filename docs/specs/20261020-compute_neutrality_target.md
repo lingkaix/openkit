@@ -35,7 +35,7 @@ A provider-native agent loop implements this port directly. If the harness and i
 
 ## Environment Provider Contract
 
-The environment provider acts outside the Sandbox. The NanoHost backend supplies Core's full desired set to the provider on the current Host session. The provider refuses superseded desired sets from that session and sets from an old session. Core decides placement and keeps its claims. The provider owns its runtime calls and physical read-back.
+The environment provider acts outside the Sandbox. The NanoHost backend supplies Core's full desired set to the provider on the current Host session. The provider refuses superseded desired sets from that session and sets from an old session. Core decides placement and keeps its claims. Bind readiness to the enrolled Host, the deployment and the current connection generation. Stamp the originating Host epoch on the claim and settle it only by evidence that covers that predecessor. The provider owns its runtime calls and physical read-back.
 
 | Operation | Contract |
 | --- | --- |
