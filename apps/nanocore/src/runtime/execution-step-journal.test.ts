@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
 import { policyDigest, sha256CanonicalJson } from '@openkit/protocol/digest';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { FakeWorkerShim } from '../../../../packages/worker-shim/src/test-support/worker-shim-fake.js';
 import { listServerAuditEvents } from '../audit-events.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -26,6 +27,7 @@ import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-co
 import { controlStoreFor } from '../storage/control-store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, serverStoragePath } from '../storage/db.js';
+import { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { storageRequestId } from '../storage/storage-owner.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -369,24 +371,23 @@ describe('persisted execution journal contracts', () => {
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
   });
 
-  function schedulerGrantFixture(createdAt?: string) {
-    const f = journalFixture();
-    const workspaceId = testEntityId('ws', 'original-grant');
+  function schedulerGrantFixture(
+    createdAt?: string,
+    { f = journalFixture(), key = 'original-grant', exclusionRefs = f.execution.exclusionRefs } = {}
+  ) {
+    const workspaceId = testEntityId('ws', key);
+    const turnId = key === 'original-grant' ? f.execution.workId : testEntityId('tu', key);
     const userId = ensureLocalUser(f.db);
     const actor = { kind: 'user' as const, id: userId };
     recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
     const entry = createSchedulerAdmissionEntry(f.db, {
-      queueEntryId: 'original-grant-queue',
+      queueEntryId: `${key}-queue`,
       backendId: 'nanohost',
       triggerActor: actor,
       workspaceId,
-      threadId: testEntityId('th', 'original-grant'),
-      turnId: f.execution.workId,
-      inputRef: schedulerFixtureInput(
-        workspaceId,
-        f.execution.workId,
-        'Original preparation grant'
-      ),
+      threadId: testEntityId('th', key),
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original preparation grant'),
       requestedAgentId: 'agent_worker',
     });
     const attempt = createSchedulerExecutionAttempt(f.db, {
@@ -394,13 +395,15 @@ describe('persisted execution journal contracts', () => {
       preparationInput: {},
       ...(createdAt === undefined ? {} : { now: () => createdAt }),
     });
-    const operationId = 'original-preparation-grant';
+    const operationId = key === 'original-grant' ? 'original-preparation-grant' : `${key}-submit`;
     const draft = f.intent();
     const execution = {
       ...draft.execution,
       ref: { owner: { kind: 'server' as const }, executionId: attempt.attemptId },
       definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
       fingerprint: entry.inputHash,
+      workId: turnId,
+      exclusionRefs,
     };
     const proposal: ExecutionJournalIntent = {
       ...draft,
@@ -408,6 +411,7 @@ describe('persisted execution journal contracts', () => {
       control: {
         ...draft.control,
         kind: 'admit',
+        workId: turnId,
         actor,
         definitionVersion: execution.definitionVersion,
         attemptId: attempt.attemptId,
@@ -481,6 +485,101 @@ describe('persisted execution journal contracts', () => {
         execution: { ...execution, fingerprint: 'substituted-work' },
       })
     ).toThrow('Execution grant conflicts with the admitted work.');
+  });
+
+  it('charges one placement and realizes one start across competing admission and replay', async () => {
+    const f = journalFixture();
+    const slot = 'host-slot:gate3-fixture';
+    const contender = (key: string) => {
+      const grant = schedulerGrantFixture(undefined, { f, key, exclusionRefs: [slot] });
+      const { attemptId } = grant.attempt;
+      const agentSessionId = testEntityId('as', key);
+      const session = { sandboxIncarnationId: testEntityId('sbxi', key), connectionGeneration: 1 };
+      bindSchedulerExecutionAttemptSession(f.db, { attemptId, agentSessionId });
+      finalizeSchedulerExecutionAttemptInput(f.db, {
+        attemptId,
+        inputRef: `${key}-input`,
+        bindingRef: session.sandboxIncarnationId,
+      });
+      const worker = {
+        workerId: testEntityId('wkr', key),
+        adapterId: 'codex',
+        agentSessionId,
+        workSlotRef: `${key}-work-slot`,
+        resume: null,
+      };
+      return { ...grant, session, worker, shim: new FakeWorkerShim(session.sandboxIncarnationId) };
+    };
+    const first = contender('gate3-first');
+    const second = contender('gate3-second');
+    const deliverStart = (
+      { shim, session, worker }: typeof first,
+      revision: number,
+      beforeReply?: () => Promise<void>
+    ) =>
+      shim.poll(session, async () => {
+        if (beforeReply) await beforeReply();
+        return {
+          session,
+          revision,
+          workers: [{ state: 'run', worker }],
+          inputs: [],
+          steers: [],
+          interrupts: [],
+          acknowledgedOperations: [],
+        };
+      });
+    const admit = async (candidate: typeof first, beforeReply?: () => Promise<void>) => {
+      const decision = candidate.reserve(true, 'gate3-generation', candidate.proposal, {
+        submission: true,
+      });
+      if (decision.state === 'admitted-now') {
+        expect(await deliverStart(candidate, 1, beforeReply)).toBe('applied');
+      }
+      return decision;
+    };
+
+    const startedDelivery = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<void>();
+    const firstAdmission = admit(first, async () => {
+      startedDelivery.resolve();
+      await reply.promise;
+    });
+    try {
+      expect(await Promise.race([firstAdmission, startedDelivery.promise])).toBeUndefined();
+      expect(readExecutionJournalRoot(f.db, first.execution.ref).exclusionRefs).toEqual([slot]);
+      expect(first.shim.started).toEqual([]);
+      const [competing, replay] = await Promise.allSettled([admit(second), admit(first)]);
+      expect(competing).toEqual({
+        status: 'rejected',
+        reason: expect.any(ExecutionAttemptRefusal),
+      });
+      expect(replay).toEqual({
+        status: 'fulfilled',
+        value: {
+          state: 'inspect-original',
+          grant: readKernelSchedulerGrantInDb(f.db, first.execution.ref, first.operationId),
+        },
+      });
+      expect(first.shim.started).toEqual([]);
+    } finally {
+      reply.resolve();
+      await firstAdmission.catch(() => undefined);
+    }
+
+    const winner = await firstAdmission;
+    expect(winner.state).toBe('admitted-now');
+    expect(await deliverStart(first, 2)).toBe('applied');
+    expect(first.shim.started).toEqual([first.worker.workerId]);
+    expect(second.shim.started).toEqual([]);
+    f.reopen();
+    expect(readExecutionJournalRoot(f.db, first.execution.ref).exclusionRefs).toEqual([slot]);
+    expect(kernelSchedulerScopeIsHeld(f.db, [slot], first.attempt.attemptId)).toBe(false);
+    expect(readKernelSchedulerGrantInDb(f.db, first.execution.ref, first.operationId)).toEqual(
+      winner.grant
+    );
+    expect(readKernelSchedulerGrantInDb(f.db, second.execution.ref, second.operationId)).toBeNull();
+    expect(requireSchedulerExecutionAttempt(f.db, second.attempt.attemptId).operationId).toBeNull();
   });
 
   it('refuses new grants after the attempt preparation budget or proposed step deadline expires', () => {
