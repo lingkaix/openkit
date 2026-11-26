@@ -40,3 +40,22 @@ export {
   type WorkerTranscriptWriterOptions,
 } from './transcript.js';
 export type { WorkerShimEnvironment } from './turn.js';
+export type {
+  WorkerShimAbsence,
+  WorkerShimDesiredSet,
+  WorkerShimDesiredWorker,
+  WorkerShimDisposition,
+  WorkerShimInterrupt,
+  WorkerShimInterruptReceipt,
+  WorkerShimInventory,
+  WorkerShimKeyedWork,
+  WorkerShimObservation,
+  WorkerShimOperationKey,
+  WorkerShimPort,
+  WorkerShimReceipt,
+  WorkerShimSession,
+  WorkerShimStart,
+  WorkerShimTurn,
+  WorkerShimTurnInput,
+  WorkerStopDeclaration,
+} from './worker-shim-port.js';

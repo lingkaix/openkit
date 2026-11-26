@@ -16,6 +16,10 @@ Catalog Skill targets are imported independently of the adapter, then passed to 
 
 Runtime provenance declarations are checked before capture creation or native work against the exact admitted Thread, stable adapter id, and Turn using `workerTurnCapturePaths`. Raw streams, their manifest, and the native-origin index must all name that Turn's `runtime/` capture directory. A retired root, sibling Thread or Turn, different runtime, mixed index, or non-positive bound is refused. `src/turn-provenance.test.ts` checks this pre-launch boundary for all four adapters.
 
+## Incarnation Contract
+
+`src/worker-shim-port.ts` defines the incarnation-scoped boundary from the [Worker Shim specification](../../docs/specs/20260629-worker_runtime_communication_model.md#worker-shim-contract). Its six operations cover local start, stop and observed absence, keyed input and steer, and one authenticated pull of full desired state. Interrupt uses that desired state, including the exact Turn and attempt cause. The deterministic fake exercises the contract in `src/worker-shim-port.test.ts`. The current binary still runs the Harness implementation described below.
+
 ## Sandbox Integration
 
 Before any native work, the shim accepts the stock Supervisor connection only on its image-owned `127.0.0.1:17891` binding and establishes one standard HTTP/2 client session. That session exposes only `/worker-control/*`, `/inference/*`, and `/capabilities/*`; the Harness itself uses only the credential-free `/worker-control/harness/poll` and `/worker-control/harness/result`. The worker receives no NanoCore, Gateway, upstream MCP, or caller-selected transport address.
