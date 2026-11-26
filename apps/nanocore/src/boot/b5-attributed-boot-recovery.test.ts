@@ -112,6 +112,8 @@ interface BootWalkFault {
   readonly writerAfter?: number;
   readonly writerWatch?: boolean;
   readonly writerGoal?: string;
+  readonly writerGoalAtTurn?: string;
+  readonly writerMcpCall?: { readonly turnId: string; readonly callId: string };
   readonly arm?: string;
   readonly live?: string | readonly string[];
   readonly shared?: boolean;
@@ -2001,6 +2003,148 @@ describe('B5 attributed Boot recovery', () => {
       expect(outcome.output).not.toContain('Boot recovery held Workspace');
       expect(outcome.output).not.toContain('App server is running');
       expect(outcome.output).not.toContain('NanoHost server is running');
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "holds both Assistant orphans when the second orphan's Goal changes at the owner",
+    async () => {
+      const root = await seedRoot(['Assistant walk', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const { orphans, sibling, goalThreadId } = await withSeedStore(root, async (store) => {
+        const first = await seedOrphanAssistantTurn(store, root, held);
+        const second = await seedOrphanAssistantTurn(store, root, held);
+        const order = store.listThreads(held).map((thread) => thread.id);
+        const orphans = [first, second].sort(
+          (left, right) => order.indexOf(left.threadId) - order.indexOf(right.threadId)
+        );
+        // The earlier interruption would link a file-backed completion body if it committed.
+        await store.createItem({
+          id: testEntityId('it', 'it_b5_late_orphan_first'),
+          owner: { kind: 'workspace', workspaceId: held },
+          threadId: orphans[0]!.threadId,
+          turnId: orphans[0]!.turnId,
+          type: 'assistant-message',
+          text: LARGE_BODY,
+          status: 'completed',
+          createdAt: COMPLETED_AT,
+          completedAt: COMPLETED_AT,
+        });
+        // Item publication can touch navigation order. Fix the fault target from the walk's order.
+        const finalOrder = store.listThreads(held).map((thread) => thread.id);
+        orphans.sort(
+          (left, right) => finalOrder.indexOf(left.threadId) - finalOrder.indexOf(right.threadId)
+        );
+        return {
+          orphans,
+          sibling: await seedOrphanAssistantTurn(store, root, healthy),
+          goalThreadId: (await store.createThread(held, 'Goal coordination')).id,
+        };
+      });
+      const second = orphans[1]!;
+      const goalId = seedEndedGoalTask(root.dataRoot, held, {
+        taskThreadId: second.threadId,
+        goalThreadId,
+        userId: root.actor.id,
+      });
+      const original = workspaceEvidence(root.dataRoot, held);
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        writerGoal: goalId,
+        writerGoalAtTurn: second.turnId,
+        label: 'assistant-second-orphan',
+      };
+      const refused = await startServer(root, fault);
+      expect(refused.output()).toContain(
+        '[boot-walk-fault] goal-changed assistant-second-orphan 1'
+      );
+      await expectHeld(refused, held, 'check=records; stage=assistant-turn-recovery');
+      await expectServed(refused, [healthy], held);
+      await stopServer(refused);
+      const current = workspaceEvidence(root.dataRoot, held);
+      expect(current.files).toEqual(original.files);
+      const { goals: originalGoals, ...originalRows } = original.content;
+      const { goals: currentGoals, ...currentRows } = current.content;
+      expect(currentGoals).not.toEqual(originalGoals);
+      expect(currentRows).toEqual(originalRows);
+      await withSeedStore(root, (store) => {
+        expect(store.getTurn(healthy, sibling.threadId, sibling.turnId).status).toBe('interrupted');
+      });
+
+      const recovered = await startServer(root);
+      await expectNotHeld(recovered, held);
+      await stopServer(recovered);
+      const completed = workspaceEvidence(root.dataRoot, held);
+      await withSeedStore(root, (store) => {
+        for (const orphan of orphans)
+          expect(store.getTurn(held, orphan.threadId, orphan.turnId).status).toBe('interrupted');
+      });
+      const repeated = await startServer(root);
+      await expectNotHeld(repeated, held);
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, completed);
+    },
+    CASE_TIMEOUT_MS
+  );
+
+  it(
+    "holds every MCP backfill when the second append's ledger row changes at the owner",
+    async () => {
+      const root = await seedRoot(['MCP walk', 'Healthy']);
+      const [held, healthy] = root.workspaceIds as [string, string];
+      const [walk, sibling] = await withSeedStore(root, async (store) => [
+        await seedMcpCallsAcrossTurns(store, root, held, true),
+        await seedMcpCallsAcrossTurns(store, root, healthy),
+      ]);
+      const second = walk.calls[1]!;
+      const callCounts = root.workspaceIds.map((id) => capabilityCallCount(root.dataRoot, id));
+      const original = workspaceEvidence(root.dataRoot, held);
+      const fault: BootWalkFault = {
+        workspaceId: held,
+        writerMcpCall: second,
+        label: 'mcp-second-append',
+      };
+      const refused = await startServer(root, fault);
+      expect(refused.output()).toContain('[boot-walk-fault] mcp-call-changed mcp-second-append 1');
+      await expectHeld(refused, held, 'check=records; stage=mcp-item-backfill');
+      await expectServed(refused, [healthy], held);
+      await stopServer(refused);
+      const current = workspaceEvidence(root.dataRoot, held);
+      expect(current.files).toEqual(original.files);
+      const { capability_calls: originalCalls, ...originalRows } = original.content;
+      const { capability_calls: currentCalls, ...currentRows } = current.content;
+      expect(currentCalls).not.toEqual(originalCalls);
+      expect(currentRows).toEqual(originalRows);
+      await withSeedStore(root, (store) => {
+        for (const call of sibling.calls)
+          expect(store.getThreadItem(healthy, sibling.threadId, call.itemId)).toMatchObject({
+            server: 'echo',
+            causationId: call.callId,
+          });
+      });
+
+      const recovered = await startServer(root);
+      await expectNotHeld(recovered, held);
+      await stopServer(recovered);
+      const completed = workspaceEvidence(root.dataRoot, held);
+      // Both open-Turn appends share the same head and allocate distinct sequences.
+      await withSeedStore(root, (store) => {
+        for (const call of walk.calls)
+          expect(store.getThreadItem(held, walk.threadId, call.itemId)).toMatchObject({
+            server: call === second ? 'changed-provider' : 'echo',
+            causationId: call.callId,
+            arguments: null,
+            result: null,
+          });
+      });
+      const repeated = await startServer(root);
+      await expectNotHeld(repeated, held);
+      await stopServer(repeated);
+      expectEvidenceUnchanged(root.dataRoot, held, completed);
+      expect(root.workspaceIds.map((id) => capabilityCallCount(root.dataRoot, id))).toEqual(
+        callCounts
+      );
     },
     CASE_TIMEOUT_MS
   );
@@ -4043,7 +4187,12 @@ async function seedMcpCalls(
  * Records one terminal MCP call with a missing Item in each of two Turns of one Thread: the first
  * Turn sealed, the second still running under its AgentSession, as a stopped Core leaves them.
  */
-async function seedMcpCallsAcrossTurns(store: FsStore, root: SeededRoot, workspaceId: string) {
+async function seedMcpCallsAcrossTurns(
+  store: FsStore,
+  root: SeededRoot,
+  workspaceId: string,
+  repeatOpenTurn = false
+) {
   const thread = await store.createThread(workspaceId, 'MCP backfill');
   const sessionId = testEntityId('as', `as_b5_open_${workspaceId.slice(-12)}`);
   await store.createAgentSession({
@@ -4084,6 +4233,7 @@ async function seedMcpCallsAcrossTurns(store: FsStore, root: SeededRoot, workspa
       parentItemId,
     });
   }
+  if (repeatOpenTurn) turns.push(turns[1]!);
   const calls: { callId: string; itemId: string; turnId: string }[] = [];
   await withSeedWorkspaceDb(root.dataRoot, workspaceId, async (workspaceDb) => {
     try {

@@ -27,6 +27,7 @@ import {
   type ControlPendingPlan,
   ControlPendingPlanHeaderSchema,
   ControlPendingPlanSchema,
+  controlBootWalkPlanInputs,
   controlPendingPlanInputs,
   parseControlPendingPlanGroup,
 } from './control-store-pending-plan.js';
@@ -206,6 +207,20 @@ function isPendingPlanTerminal(
 
 /** Binds one authenticated transport to its original operation and only that owner's effects. */
 function assertPendingPlanOperation(header: PlanHeader, groups: readonly PlanGroup[]): void {
+  if (header.operation === 'assistant-recovery') {
+    if (groups.some((group) => group.kind !== 'terminal' && group.kind !== 'entries'))
+      throw new ControlProductPreconditionError();
+    return;
+  }
+  if (header.operation === 'mcp-backfill') {
+    if (
+      groups.some(
+        (group) => group.kind !== 'item' || group.input.category !== 'already-decided-publication'
+      )
+    )
+      throw new ControlProductPreconditionError();
+    return;
+  }
   const deciding = groups.filter(
     (group) => group.kind !== 'entries' && group.kind !== 'closeout-sources'
   );
@@ -406,6 +421,7 @@ async function preparePendingPlanGroups(
       }
   };
   const plannedSequence = new Map<string, number>();
+  const appendedTurnRevisions = new Map<string, number>();
   const note = (entries: readonly PreparedControlEntry[]) => {
     for (const entry of entries)
       if (entry.input.kind === 'item') {
@@ -538,12 +554,13 @@ async function preparePendingPlanGroups(
     } else {
       const append = await prepareControlItemAppend(db, group.input, mount);
       const turnId = append.item.turnId!;
+      const headRevision = appendedTurnRevisions.get(turnId) ?? append.head.revision;
       if (append.replay) {
         groups.push({
           kind: 'item',
           item: append.item,
           turnId,
-          headRevision: append.head.revision,
+          headRevision,
           headRecord: append.head.record,
         });
       } else {
@@ -563,13 +580,15 @@ async function preparePendingPlanGroups(
           ...body,
         };
         if (['pending', 'running'].includes(String(append.head.record.status))) {
+          // Each open-Turn append advances its head once within the same decision.
+          appendedTurnRevisions.set(turnId, headRevision + 1);
           const entries = await prepareControlEntries(owner, mount, [entry], content);
           note(entries);
           groups.push({
             kind: 'item',
             item: append.item,
             turnId,
-            headRevision: append.head.revision,
+            headRevision,
             headRecord: append.head.record,
             entries,
           });
@@ -586,7 +605,7 @@ async function preparePendingPlanGroups(
             kind: 'item',
             item: append.item,
             turnId,
-            headRevision: append.head.revision,
+            headRevision,
             headRecord: append.head.record,
             publication: { input, prepared },
           });
@@ -621,9 +640,12 @@ export function applyControlPendingPlan(
     throw new ControlProductPreconditionError();
   // Inside one rollback boundary Boot refuses changing inputs first; a live closeout lets each
   // owner report its own typed refusal before the complete selection comparison.
-  const unchanged =
-    controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId) === prepared.inputs;
-  if (prepared.operation === 'pending-boot' && !unchanged)
+  const inputs =
+    prepared.operation === 'assistant-recovery' || prepared.operation === 'mcp-backfill'
+      ? controlBootWalkPlanInputs(db.sqlite, db.workspaceId, prepared.operation)
+      : controlPendingPlanInputs(db.sqlite, db.workspaceId, prepared.threadId);
+  const unchanged = inputs === prepared.inputs;
+  if (prepared.operation !== 'pending-closeout' && !unchanged)
     throw new ControlProductPreconditionError();
   return decideControlPendingPlan(db, owner, prepared, unchanged);
 }
@@ -657,7 +679,7 @@ function decideControlPendingPlan(
     } else if (group.kind === 'terminal') {
       applyControlTerminal(db, group.input, group.terminal);
     } else {
-      assertPendingBootItem(db, group.item);
+      if (prepared.operation === 'pending-boot') assertPendingBootItem(db, group.item);
       if (readProduct(db.sqlite, owner, 'turn', group.turnId)?.revision !== group.headRevision)
         throw new ControlProductPreconditionError();
       if (group.publication)

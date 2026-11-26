@@ -4726,20 +4726,22 @@ export class FsStore {
   }
 
   /**
-   * Plans the completion of a Turn an earlier group of the same grouped decision admits, as its
-   * terminal group, on that admission's exact history and with no earlier event.
-   *
-   * @returns The group and the acknowledgement this terminal owns after the decision's ACK.
+   * Plans the original terminal packet for an existing Workspace Turn or a Turn an earlier group
+   * admits. Its events become visible to the caller only after the grouped FULL acknowledgement.
    */
   public async planTurnCompletion(
     workspaceId: string,
-    history: PlannedTurnHistory,
+    turnOrHistory: string | PlannedTurnHistory,
     patch: Parameters<FsStore['updateTurn']>[1],
     publication: TerminalTurnPublication
-  ): Promise<{ group: ControlPendingPlanGroup; acknowledge: () => void }> {
+  ): Promise<{
+    group: Extract<ControlPendingPlanGroup, { kind: 'terminal' }>;
+    acknowledge: () => void;
+  }> {
     const owner = { kind: 'workspace' as const, workspaceId };
+    const history = typeof turnOrHistory === 'string' ? undefined : turnOrHistory;
     const prepared = this.prepareTurnCompletion(
-      history.turn.id,
+      typeof turnOrHistory === 'string' ? turnOrHistory : turnOrHistory.turn.id,
       patch,
       publication,
       owner,
