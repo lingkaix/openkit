@@ -10,8 +10,9 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
+import { lstat, readlink, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import {
   DATA_ROOT_BACKUP_FORMAT_VERSION,
   type DataRootBackupManifest,
@@ -488,35 +489,22 @@ function verifyDataRootBackupInventory(
 export async function restoreDataRootBackup(
   input: RestoreDataRootBackupInput
 ): Promise<VerifiedDataRootBackupManifest> {
-  const verified = verifyDataRootBackupInventory({ backupRoot: input.backupRoot });
-  const stagingRoot = input.stagingRoot ?? `${input.dataRoot}.restore-staging`;
+  const backupRoot = await realpath(input.backupRoot);
+  const verified = verifyDataRootBackupInventory({ backupRoot });
+  const stagingInput = input.stagingRoot ?? `${input.dataRoot}.restore-staging`;
+  // Resolve the parent while keeping the leaf entry that removal will act on.
+  const stagingRoot = join(await resolveRestorePath(dirname(stagingInput)), basename(stagingInput));
   const previousRoot = `${input.dataRoot}.restore-previous`;
   const targetParent = dirname(resolve(input.dataRoot));
-  const stagingParent = dirname(resolve(stagingRoot));
+  const stagingParent = dirname(stagingRoot);
 
-  assertPathOutsideRoot(
+  await assertRestorePathsSeparate(
     input.backupRoot,
-    input.dataRoot,
-    'Backup root must be outside the target data root.'
-  );
-  assertPathOutsideRoot(
-    input.dataRoot,
-    input.backupRoot,
-    'Target data root must be outside the backup root.'
-  );
-  assertPathOutsideRoot(
-    stagingRoot,
-    input.backupRoot,
-    'Restore staging root must be outside the backup root.'
-  );
-  assertPathOutsideRoot(
+    backupRoot,
     stagingRoot,
     input.dataRoot,
-    'Restore staging root must be outside the target data root.'
+    previousRoot
   );
-  const stagingOverlap = 'Restore staging root must be separate from the predecessor root.';
-  assertPathOutsideRoot(stagingRoot, previousRoot, stagingOverlap);
-  assertPathOutsideRoot(previousRoot, stagingRoot, stagingOverlap);
   if (readLayoutDirectory(targetParent).some((entry) => entry.name === basename(previousRoot))) {
     throw new Error(
       `Restore predecessor already exists at ${previousRoot}. Recovery is required. See Recover A Stopped Restore Hold in the NanoCore operations guide.`
@@ -527,7 +515,7 @@ export async function restoreDataRootBackup(
   if (stagingParent !== targetParent)
     ensureCanonicalDirectory(stagingParent, 0o777, 'retry-creation');
   rmSync(stagingRoot, { recursive: true, force: true });
-  copyBackupTree(input.backupRoot, stagingRoot);
+  copyBackupTree(backupRoot, stagingRoot);
 
   let predecessor: 'original' | 'unacknowledged' | 'moved' = 'original';
   try {
@@ -622,9 +610,112 @@ function assertBackupRootOutsideDataRoot(dataRoot: string, backupRoot: string): 
 function assertPathOutsideRoot(path: string, root: string, message: string): void {
   const candidate = resolve(path);
   const parent = resolve(root);
+  const prefix = parent.endsWith(sep) ? parent : `${parent}${sep}`;
 
-  if (candidate === parent || candidate.startsWith(`${parent}${sep}`)) {
+  if (candidate === parent || candidate.startsWith(prefix)) {
     throw new Error(message);
+  }
+}
+
+/**
+ * Refuses overlapping restore paths before restore creates, clears or moves any of them.
+ *
+ * Invariant: after resolving aliases, the backup and every entry its supplied path traverses lie
+ * outside each restore root, and the restore roots lie outside the backup and each other. A parent
+ * component applies to the directory reached after the preceding alias, as the operating system does.
+ * Publication renames staging away, so no entry the supplied target traverses is staging or lies
+ * inside it. Every entry the derived predecessor traverses before its leaf is also a target entry,
+ * and the root comparisons cover that leaf.
+ *
+ * @param backupInput Backup root as supplied.
+ * @param backupRoot Resolved backup root.
+ * @param stagingRoot Staging entry with a resolved parent.
+ * @param targetRoot Target data root as supplied.
+ * @param previousRoot Predecessor root derived from the supplied target.
+ * @throws Error naming the first overlapping pair.
+ */
+async function assertRestorePathsSeparate(
+  backupInput: string,
+  backupRoot: string,
+  stagingRoot: string,
+  targetRoot: string,
+  previousRoot: string
+): Promise<void> {
+  const backupEntries = [...(await traversedPathEntries(backupInput)), backupRoot];
+  const restoreRoots = [
+    ['Restore staging root', stagingRoot],
+    ['Target data root', targetRoot],
+    ['Predecessor root', previousRoot],
+  ] as const;
+  const roots: [string, string][] = [];
+  for (const [name, path] of restoreRoots) {
+    // Compare both the entry restore acts on and, for an alias, its destination.
+    const entry = join(await resolveRestorePath(dirname(path)), basename(path));
+    roots.push([name, entry], [name, await resolveRestorePath(entry)]);
+  }
+
+  for (const [name, root] of roots) {
+    for (const entry of backupEntries) {
+      assertPathOutsideRoot(entry, root, `Backup root must be outside the ${name.toLowerCase()}.`);
+    }
+    assertPathOutsideRoot(root, backupRoot, `${name} must be outside the backup root.`);
+    for (const [otherName, other] of roots) {
+      const message = `${name} must be separate from the ${otherName.toLowerCase()}.`;
+      if (otherName !== name) assertPathOutsideRoot(root, other, message);
+    }
+  }
+  const message = 'Target data root lookup must not pass through the restore staging root.';
+  for (const entry of await traversedPathEntries(targetRoot)) {
+    assertPathOutsideRoot(entry, stagingRoot, message);
+  }
+}
+
+/**
+ * Lists the start directory and each entry the operating system visits to resolve a path.
+ *
+ * A missing entry can appear later only as a directory that restore creates, so the walk continues
+ * through it as an ordinary directory.
+ *
+ * @param path Path as supplied.
+ * @returns Entries in visit order, including the entries inside each followed alias.
+ */
+async function traversedPathEntries(path: string): Promise<string[]> {
+  const separator = sep === '\\' ? /[\\/]/ : sep;
+  const pathRoot = parse(path).root;
+  let directory = pathRoot ? resolve(pathRoot) : process.cwd();
+  const entries = [directory];
+  const pending = path.slice(pathRoot.length).split(separator);
+  let links = 0;
+
+  for (let name = pending.shift(); name !== undefined; name = pending.shift()) {
+    const entry = join(directory, name);
+    entries.push(entry);
+    const stat = await lstat(entry).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!stat?.isSymbolicLink()) {
+      directory = entry;
+      continue;
+    }
+    // Linux follows at most 40 links in one resolution.
+    if (++links > 40) throw new Error(`Restore path follows too many aliases: ${path}`);
+    const target = await readlink(entry);
+    const targetRoot = parse(target).root;
+    if (targetRoot) directory = resolve(directory, targetRoot);
+    pending.unshift(...target.slice(targetRoot.length).split(separator));
+  }
+  return entries;
+}
+
+/** Resolves the existing portion of a restore path before appending any missing leaf entries. */
+async function resolveRestorePath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    const parent = dirname(path);
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || parent === path) throw error;
+    return join(await resolveRestorePath(parent), basename(path));
   }
 }
 

@@ -4,16 +4,20 @@ import {
   chmodSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -55,6 +59,7 @@ import {
   writeColdDataRootBackupManifest,
   writeHotDataRootBackup,
 } from './data-root-backup.js';
+import { runDataRootRestoreCli } from './data-root-restore-cli.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -1079,6 +1084,162 @@ describe('data-root backup manifest', () => {
         })
       )
     ).rejects.toThrow('Restore staging root must be outside the backup root.');
+  });
+
+  // Directory aliases are the subject of every case; Windows link creation needs extra privileges.
+  describe.skipIf(process.platform === 'win32')('restore path matrix', () => {
+    /** Records every entry under a fixture so a refusal can show that it changed nothing. */
+    function fixtureTree(root: string): Record<string, string> {
+      const tree: Record<string, string> = {};
+      const visit = (path: string) => {
+        const stat = lstatSync(path);
+        const key = relative(root, path);
+        if (stat.isSymbolicLink()) tree[key] = `link ${readlinkSync(path)}`;
+        else if (stat.isFile())
+          tree[key] = createHash('sha256').update(readFileSync(path)).digest('hex');
+        else {
+          tree[key] = 'directory';
+          for (const name of readdirSync(path)) visit(join(path, name));
+        }
+      };
+      visit(root);
+      return tree;
+    }
+
+    /** Paths for one restore path-form case. Parent components stay unnormalized. */
+    interface RestorePathCase {
+      parent: string;
+      backupRoot: string;
+      dataRoot: string;
+      staging: string;
+      link: (target: string, path: string) => string;
+    }
+    const raw = (...parts: string[]) => parts.join(sep);
+    const sourceInStaging = 'Backup root must be outside the restore staging root.';
+    const restorePathForms: Record<
+      string,
+      (
+        c: RestorePathCase
+      ) => [source: string, stagingRoot: string | undefined, refusal: string, target?: string]
+    > = {
+      direct: (c) => [c.backupRoot, c.backupRoot, sourceInStaging],
+      alias: (c) => [
+        c.link(c.backupRoot, join(c.parent, 'backup-alias')),
+        dirname(c.backupRoot),
+        sourceInStaging,
+      ],
+      'alias/..': (c) => [
+        raw(c.link(c.backupRoot, join(c.parent, 'backup-alias')), '..', 'backup'),
+        dirname(c.backupRoot),
+        sourceInStaging,
+      ],
+      'nested alias': (c) => [
+        c.backupRoot,
+        join(
+          c.link(
+            c.link(c.backupRoot, join(c.parent, 'backup-alias')),
+            join(c.parent, 'nested-alias')
+          ),
+          'files'
+        ),
+        'Restore staging root must be outside the backup root.',
+      ],
+      relative: (c) => [
+        relative(process.cwd(), c.backupRoot),
+        dirname(c.backupRoot),
+        sourceInStaging,
+      ],
+      'trailing slash': (c) => [
+        `${c.backupRoot}${sep}`,
+        `${dirname(c.backupRoot)}${sep}`,
+        sourceInStaging,
+      ],
+      'staged alias/.. with disjoint destinations': (c) => {
+        const subdirectory = join(dirname(c.backupRoot), 'subdir');
+        mkdirSync(subdirectory);
+        const alias = c.link(subdirectory, join(c.staging, 'source'));
+        return [raw(alias, '..', '..', 'external', 'backup'), c.staging, sourceInStaging];
+      },
+      'staged alias': (c) => [
+        join(c.link(dirname(c.backupRoot), join(c.staging, 'source')), 'backup'),
+        c.staging,
+        sourceInStaging,
+      ],
+      'outside alias to a staged alias': (c) => {
+        const staged = c.link(dirname(c.backupRoot), join(c.staging, 'source'));
+        return [
+          join(c.link(staged, join(c.parent, 'outside-source')), 'backup'),
+          c.staging,
+          sourceInStaging,
+        ];
+      },
+      'relative from inside staging': (c) => {
+        const cwd = process.cwd();
+        onTestFinished(() => process.chdir(cwd));
+        process.chdir(c.staging);
+        return [raw('..', 'external', 'backup'), c.staging, sourceInStaging];
+      },
+      'target alias/..': (c) => {
+        const subdirectory = join(dirname(c.backupRoot), 'subdir');
+        mkdirSync(subdirectory);
+        const alias = c.link(subdirectory, join(c.dataRoot, 'source'));
+        return [
+          raw(alias, '..', '..', 'external', 'backup'),
+          undefined,
+          'Backup root must be outside the target data root.',
+        ];
+      },
+      'staging through a target alias': (c) => [
+        c.backupRoot,
+        join(c.link(c.dataRoot, join(c.parent, 'data-alias')), 'files'),
+        'Restore staging root must be separate from the target data root.',
+      ],
+      'staging inside the predecessor': (c) => [
+        c.backupRoot,
+        join(`${c.dataRoot}.restore-previous`, 'stage'),
+        'Restore staging root must be separate from the predecessor root.',
+      ],
+      'target through staging/..': (c) => [
+        c.backupRoot,
+        c.staging,
+        'Target data root lookup must not pass through the restore staging root.',
+        raw(c.staging, '..', 'data'),
+      ],
+    };
+
+    for (const [pathForm, selectPaths] of Object.entries(restorePathForms)) {
+      it(`refuses ${pathForm} before changing any path`, async () => {
+        const { parent, input, backupRoot, dataRoot } = backupPublicationFixture();
+        input.sourceDeploymentId = initializeRestoreSource(dataRoot);
+        await captureBackup('cold', input);
+        const staging = join(parent, 'staging');
+        mkdirSync(staging);
+        writeFileSync(join(staging, 'marker.txt'), 'staging bytes\n');
+        const link = (target: string, alias: string) => {
+          symlinkSync(target, alias, 'dir');
+          return alias;
+        };
+        const [source, stagingRoot, refusal, target = dataRoot] = selectPaths({
+          parent,
+          backupRoot,
+          dataRoot,
+          staging,
+          link,
+        });
+        const physicalBackup = realpathSync.native(backupRoot);
+        const physicalTarget = realpathSync.native(dataRoot);
+        expect(realpathSync.native(source)).toBe(physicalBackup);
+        expect(realpathSync.native(target)).toBe(physicalTarget);
+        const before = fixtureTree(parent);
+
+        const argv = ['--backup-root', source, '--data-root', target];
+        if (stagingRoot) argv.push('--staging-root', stagingRoot);
+        await expect(runDataRootRestoreCli(argv, () => {})).rejects.toThrow(refusal);
+        expect(fixtureTree(parent)).toEqual(before);
+        expect(realpathSync.native(source)).toBe(physicalBackup);
+        expect(realpathSync.native(target)).toBe(physicalTarget);
+      });
+    }
   });
 
   it('preserves immutable Light App snapshots through hot backup and restore', async () => {
