@@ -171,7 +171,7 @@ and are not listed here.
 
 ### sandbox
 
-- `docs/specs/20260629-worker_runtime_communication_model.md` — Accepted, Partial — Owns the shared communication boundary, four-plane projection, Sandbox Integration role, internal execution backend port, and resident runtime adapter base…
+- `docs/specs/20260629-worker_runtime_communication_model.md` — Accepted, Partial — Owns the shared communication boundary, four-plane projection, Worker Shim role and lifetime, and resident runtime adapter base contract between NanoCore and…
 - `docs/specs/20260703-workspace_synchronization.md` — Accepted, Partial — Owns workspace collection, the snapshot chain, durable review, apply, and recovery for one worker Turn.
 - `docs/specs/20260709-worker_sandbox_freedom_policy.md` — Accepted, Partial — Worker sandbox freedom principles for process execution, filesystem access, network access, and user-provided secret injection.
 - `docs/specs/20260721-worker_execution_environment_images.md` — Accepted, Implemented — Owns the common Worker execution-environment baseline, the published common base, and the shared image build.

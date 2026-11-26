@@ -16,7 +16,7 @@ Owns the OpenCode V2 server mapping, its private handle, and its host plugin.
 Does not own:
 
 - The shared adapter base. [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md) owns it.
-- Private Harness operations. [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
+- Private Worker Shim poll and keyed inputs. [Worker Control Protocol](20260703-worker_control_protocol.md) owns them.
 - The image. [Worker Execution Environment Images](20260721-worker_execution_environment_images.md) owns it.
 - Public live steer. [Task Mode](20260704-task_mode_worker_delegation.md) owns it.
 - Native volume placement. [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) owns it.
@@ -86,6 +86,10 @@ Before the next prompt, the adapter revalidates the published immediately preced
 Idle close is a normal stdio EOF, finalizers, a zero exit, child close, and both output EOFs, without error. A forced exit or an active close cannot supply flush proof. A pre-prompt refusal uses the same graceful path.
 
 No narrower download-disable is available. `lsp: false` is the disablement, and the file watcher remains available. Parser limits and generated native tool limits are distinct.
+
+## Worker Stop
+
+The current Worker stop declaration is `best-effort`. The adapter owns one local serve process for one binding. Its local proof covers TERM/KILL and observed server leader exit. It leaves descendant absence unproved. The [Worker Shim contract](20260629-worker_runtime_communication_model.md#worker-shim-contract) requires qualified whole-tree evidence for an `exact` declaration. When stop remains unproved, follow the Sandbox recycle rule.
 
 ## Unsupported Operations
 
