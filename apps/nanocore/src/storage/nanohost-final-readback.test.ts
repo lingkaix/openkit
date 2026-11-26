@@ -908,7 +908,9 @@ async function launchNativeOnlyTurn() {
 type SettledLaunch = Awaited<ReturnType<typeof launchSettledTurn>>;
 
 /** A cold Core runtime over the current owners. The Boot binding hands off to its factory closeout. */
-async function coldRestartRecovery(launch: SettledLaunch) {
+async function coldRestartRecovery(
+  launch: Pick<SettledLaunch, 'owned' | 'store' | 'options' | 'live'>
+) {
   const { coreDb } = launch.owned;
   const cold = await createNativeTaskAdmissionFixture(
     coreDb,
@@ -2480,6 +2482,143 @@ describe('K8b accepted-final readback', () => {
     expect(read().proof).toEqual(cleaned.proof);
     expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
   });
+
+  it('W21 keeps capture unpublished when an absent final settles before the Workspace post', async () => {
+    const launch = await admitLaunchedTurn();
+    const { attemptId, entry, live, owned, store } = launch;
+    const { coreDb } = owned;
+    const client = getControlStoreWorkerClient();
+    const finalStages = client as unknown as FinalStageClient;
+    const originalStage = finalStages.workerControlFinalStage.bind(finalStages);
+    let finalCommand: Parameters<AdmittedTestOwner['workerControlFinalStatus']>[0] | undefined;
+    let withheld = 0;
+    let allowNative = false;
+    const stage = vi
+      .spyOn(finalStages, 'workerControlFinalStage')
+      .mockImplementation(async (db, command, input) => {
+        if (input.kind === 'settle' && !allowNative) {
+          finalCommand = command as typeof finalCommand;
+          withheld++;
+          throw new Error('Injected lost reply before Native final settlement.');
+        }
+        if (input.kind === 'observe') throw new Error('Injected loss before Core observation.');
+        return originalStage(db, command, input);
+      });
+    onTestFinished(() => stage.mockRestore());
+    live.executionFor(entry.turnId).completion.resolve();
+    await vi.waitFor(() => expect(withheld).toBe(2));
+    expect(executionSteps(coreDb, attemptId).at(-1)).toBe('worker-final-intake');
+    const readback = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        inspectAcceptedNanoHostFinalInDb(coreDb, sqlite, attemptId)
+      );
+    expect(readback()).toEqual({ state: 'held', reason: 'missing' });
+
+    await live.restore();
+    const { recovery, submit } = await coldRestartRecovery(launch);
+    const { grant } = readRetainedNanoHostSubmission(coreDb, attemptId)!.lease;
+    const input = { ...recovery, now: () => grant.deadline };
+    const selection = input.admittedNanoHostRecovery;
+    if (selection?.state !== 'ready' || !finalCommand)
+      throw new Error('The original final and the Boot recovery owner are required.');
+    const capture = await stagePendingTurnEndCapture(launch);
+    const close = vi.spyOn(selection.value, 'close');
+    const cleanup = vi.spyOn(selection.value, 'cleanup');
+    const publish = client.workspaceCapture.bind(client);
+    const command = finalCommand;
+    const posting = vi.spyOn(client, 'workspaceCapture').mockImplementationOnce(async (...args) => {
+      expect(args[1].action).toBe('recover');
+      allowNative = true;
+      await expect(selection.value.owner.workerControlFinalStatus(command)).rejects.toThrow(
+        'Injected loss before Core observation.'
+      );
+      expect(readback()).toMatchObject({ state: 'native-only' });
+      return publish(...args);
+    });
+    const refusal = await runNanoHostAttemptRecoveryMaintenance(coreDb, input)
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      )
+      .finally(() => posting.mockRestore());
+    expect(capture.publications()).toEqual([]);
+    expect(capture.preserved()).toBe(true);
+    expect(causeChain(refusal).map(String)).toContain(
+      'Error: Workspace capture final proof changed before publication.'
+    );
+    expect(close).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(store.getTurnById(entry.turnId).status).toBe('running');
+
+    const commitClose = selection.value.owner.closeRecovery;
+    close.mockImplementationOnce(async (proposal) => {
+      expect(capture.publications()).toEqual([]);
+      expect(cleanup).not.toHaveBeenCalled();
+      const acknowledgement = await commitClose(proposal);
+      expect(capture.publications()).toEqual([]);
+      expect(cleanup).not.toHaveBeenCalled();
+      return acknowledgement;
+    });
+    await expect(runNanoHostAttemptRecoveryMaintenance(coreDb, input)).rejects.toBeInstanceOf(
+      AggregateError
+    );
+    expect(close).toHaveBeenCalledOnce();
+    await expect(close.mock.results[0]?.value).resolves.toMatchObject({
+      state: 'ready',
+      value: { phase: 'closing', terminalCause: 'worker-final-status' },
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(capture.publications()).toEqual([]);
+    expect(capture.preserved()).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+  }, 120_000);
+
+  it('W22 holds one unavailable pre-queue authority read and finishes the original Turn on retry', async () => {
+    const launch = await launchSettledTurn({ loseObservationAck: true });
+    const { attemptId, entry, store } = launch;
+    const restarted = await restartWithFencedTarget(launch, { offline: false });
+    const { coreDb, cold, native, recovery } = restarted;
+    await readmitOriginalPeer(coreDb, native, attemptId);
+    const durable = {
+      turn: store.getTurnById(entry.turnId),
+      phase: requireSchedulerExecutionAttempt(coreDb, attemptId).phase,
+    };
+    const exclusions = () =>
+      readExecutionJournalRoot(coreDb, launch.original.grant.execution).exclusionRefs;
+    const before = exclusions();
+    const backend = (
+      cold.runtime.turnExecutor as unknown as {
+        backend: { nanoHostOwner: { value: AdmittedTestOwner } };
+      }
+    ).backend;
+    const owner = backend.nanoHostOwner.value;
+    const readNative = owner.read.bind(owner);
+    let faults = 0;
+    const fault = vi.spyOn(owner, 'read').mockImplementation((query) => {
+      const stack = new Error().stack;
+      if (
+        faults === 0 &&
+        stack?.includes('requireCurrentBackendPhysicalEpoch') &&
+        stack.includes('inspectTerminalHarnessSession')
+      ) {
+        faults++;
+        return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+      }
+      return readNative(query);
+    });
+    const held = await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      )
+      .finally(() => fault.mockRestore());
+    expect(faults).toBe(1);
+    expectDurableTurn(launch, coreDb, cold, durable);
+    expect(exclusions()).toEqual(before);
+    expect(held).toBeInstanceOf(AggregateError);
+    await runNanoHostAttemptRecoveryMaintenance(coreDb, recovery);
+    await expectCompletedOnce(launch, coreDb, restarted);
+  }, 120_000);
 
   it('W19 holds the Turn while a readmitted peer leaves the inspection unanswered past the real 5-minute budget', async () => {
     const launch = await launchSettledTurn({ loseObservationAck: true });

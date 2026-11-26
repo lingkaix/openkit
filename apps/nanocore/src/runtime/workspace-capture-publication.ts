@@ -3,7 +3,10 @@ import { isDeepStrictEqual } from 'node:util';
 import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { hashNanoHostFinalDecision } from '../storage/control-store-worker-protocol.js';
-import type { NanoHostAcceptedFinalCommitment } from '../storage/core-journal-native.js';
+import type {
+  NanoHostAcceptedFinalCommitment,
+  NanoHostFinalCloseDecision,
+} from '../storage/core-journal-native.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   type ControlWorkspaceCapture,
@@ -20,12 +23,14 @@ import {
 } from './workspace-snapshot-chain.js';
 
 /**
- * K8b: the accepted-final commitment that one capture publication consumes. The deciding Workspace
+ * K8b: the expected final proof that one capture publication consumes. The deciding Workspace
  * commit rechecks it in the admitted Core and Native files while their writers are held.
  */
 export interface NanoHostFinalPublicationGuard {
   readonly attemptId: string;
-  readonly commitment: NanoHostAcceptedFinalCommitment;
+  readonly commitment:
+    | NanoHostAcceptedFinalCommitment
+    | Extract<NanoHostFinalCloseDecision, { readonly state: 'absent' }>;
 }
 
 /** Opens the existing actual Workspace physical owner before submitting one exact stage. */

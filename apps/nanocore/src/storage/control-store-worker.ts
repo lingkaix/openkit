@@ -1654,7 +1654,7 @@ function withCurrentPeerRead<Value>(
 }
 
 /**
- * K8b: the deciding capture write rechecks the accepted-final commitment that it consumes. It reads the
+ * K8b: the deciding capture write rechecks the final proof that it consumes. It reads the
  * pinned Core and Native files query-only. Their writers are held by the caller through this commit.
  */
 function requireNanoHostFinalCommitment(
@@ -1676,19 +1676,37 @@ function requireNanoHostFinalCommitment(
             (nanoHost) =>
               nanoHost
                 .transaction(() => {
-                  const proof = inspectAcceptedNanoHostFinalInDb(
-                    bindCoreSqlite(core, root),
-                    nanoHost,
-                    guard.attemptId
-                  );
-                  const { identity } = request.input;
+                  const db = bindCoreSqlite(core, root);
+                  const { input } = request;
+                  const expectedAbsence =
+                    guard.commitmentHash === hashNanoHostFinalDecision({ state: 'absent' });
+                  const session = expectedAbsence
+                    ? getWorkerBackendSession({ sqlite: nanoHost }, guard.attemptId)
+                    : null;
                   if (
-                    proof.state !== 'settled' ||
-                    proof.lineage.workspaceId !== identity.workspaceId ||
-                    proof.lineage.threadId !== identity.threadId ||
-                    proof.lineage.turnId !== identity.turnId ||
-                    proof.lineage.agentSessionId !== identity.agentSessionId ||
-                    proof.lineage.packageSnapshotId !== identity.packageSnapshotId
+                    expectedAbsence &&
+                    (!session ||
+                      !('anchor' in input) ||
+                      session.attemptId !== input.anchor.attemptId ||
+                      session.backendSessionId !== input.anchor.backendSessionId)
+                  )
+                    return undefined;
+                  const proof = session
+                    ? readNanoHostFinalCloseDecision(db, nanoHost, guard.attemptId, session)
+                    : inspectAcceptedNanoHostFinalInDb(db, nanoHost, guard.attemptId);
+                  const lineage =
+                    proof.state === 'settled'
+                      ? proof.lineage
+                      : proof.state === 'absent'
+                        ? session
+                        : null;
+                  if (
+                    !lineage ||
+                    lineage.workspaceId !== input.identity.workspaceId ||
+                    lineage.threadId !== input.identity.threadId ||
+                    lineage.turnId !== input.identity.turnId ||
+                    lineage.agentSessionId !== input.identity.agentSessionId ||
+                    lineage.packageSnapshotId !== input.identity.packageSnapshotId
                   )
                     return undefined;
                   return hashNanoHostFinalDecision(proof);

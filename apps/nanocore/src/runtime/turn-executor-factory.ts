@@ -10216,7 +10216,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     await session.turnStopSettlement;
     // K8b: only the original peer's current Epoch authority may receive this inspection. Without it,
     // the inspection is not queued and the caller keeps the durable Turn. The export rechecks it.
-    this.requireCurrentBackendPhysicalEpoch(session.identity);
+    try {
+      this.requireCurrentBackendPhysicalEpoch(session.identity);
+    } catch (cause) {
+      if (cause instanceof OperationError && cause.code === 'operation_storage_unavailable')
+        throw new NanoHostHarnessOutageError('NanoHost terminal inspection is unavailable.', {
+          cause,
+        });
+      throw cause;
+    }
     const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,

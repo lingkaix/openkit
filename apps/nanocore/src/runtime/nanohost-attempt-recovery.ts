@@ -375,7 +375,9 @@ export async function runNanoHostAttemptRecoveryMaintenance(
               captureWorkspace.db,
               session,
               captureWorkspace.environmentPackage,
-              input.store
+              input.store,
+              undefined,
+              { attemptId: attempt.attemptId, commitment: finalDecision }
             )
           )
             continue;
