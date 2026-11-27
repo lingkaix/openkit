@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { GoalView, ThreadDashboardResponse } from '@openkit/app-api-schemas';
+import {
+  type GoalView,
+  GoalViewSchema,
+  type ThreadDashboardResponse,
+} from '@openkit/app-api-schemas';
 import { isSealedTurnTerminal } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { testGoalDomainProposal } from '../dist/test-support/goal-domain.js';
@@ -10,6 +14,34 @@ import {
   removeDataRoot,
   startNanoCoreHarness,
 } from './_lib/harness.js';
+
+async function readApprovalOutcome(
+  baseUrl: string,
+  { workspaceId, threadId, goalId, pendingRequestId }: Record<string, unknown>
+): Promise<string> {
+  try {
+    const response = await fetch(`${baseUrl}/api/app/operations/goal.read`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, threadId, goalId }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (response.ok) {
+      const view = GoalViewSchema.parse(await response.json());
+      const request = view.requests.find((item) => item.requestId === pendingRequestId);
+      if (view.goal && request) {
+        return JSON.stringify({
+          resolution: request.resolution,
+          claim: request.claim,
+          planActive: view.goal.activePlanVersionId !== null,
+        });
+      }
+    }
+  } catch {
+    // Readback is diagnostic. The approval response still determines the assertion.
+  }
+  return 'readback unavailable';
+}
 
 let harness: NanoCoreHarness | null = null;
 afterEach(async () => {
@@ -23,18 +55,22 @@ describe('Goal atomic cutover e2e', () => {
   it('uses derived commands for one continuous intent, exact proposed Plan, human resolution, cards and cancellation', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
     async function operation<T = GoalView>(id: string, input: Record<string, unknown>): Promise<T> {
-      const response = await fetchWhenCaptureAllows(
-        `${harness!.baseUrl}/api/app/operations/${id}`,
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(id === 'goal.read' ? {} : { 'x-openkit-request-id': randomUUID() }),
-          },
-          body: JSON.stringify(input),
-        }
-      );
-      expect(response.status, await response.clone().text()).toBe(200);
+      const requestId = id === 'goal.read' ? undefined : randomUUID();
+      const send = id === 'goal.plan.approve' ? fetch : fetchWhenCaptureAllows;
+      const response = await send(`${harness!.baseUrl}/api/app/operations/${id}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(requestId === undefined ? {} : { 'x-openkit-request-id': requestId }),
+        },
+        body: JSON.stringify(input),
+      });
+      const message = await response.clone().text();
+      const diagnostic =
+        id === 'goal.plan.approve' && response.status === 500
+          ? `\n${id} request ${requestId}: ${await readApprovalOutcome(harness!.baseUrl, input)}`
+          : '';
+      expect(response.status, message + diagnostic).toBe(200);
       return (await response.json()) as T;
     }
     const created = await operation('goal.create', {
