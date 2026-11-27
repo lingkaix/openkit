@@ -4390,7 +4390,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               agentSessionId,
               requestId,
               workerFinalStatus,
-              environmentPackage?.snapshotId ?? null
+              environmentPackage?.snapshotId ?? null,
+              executionAttempt.attemptId
             );
           } else {
             await this.completeTurn(
@@ -4689,7 +4690,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         environmentPackage.scope.agentSessionId,
         environmentPackage.scope.requestId ?? null,
         accepted,
-        environmentPackage.snapshotId
+        environmentPackage.snapshotId,
+        session.attemptId
       );
       await this.releaseTerminalAttempt(store, session.attemptId, environmentPackage);
       return recoveredStatus;
@@ -6123,6 +6125,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Worker command request id.
    * @param accepted Durable worker-control final status.
    * @param packageSnapshotId Exact package whose last inference call may explain failure.
+   * @param attemptId Exact live or restored attempt whose outcome was accepted.
    * @throws Error when the accepted status has no supported canonical StopReason.
    */
   private async recordAcceptedWorkerOutcome(
@@ -6131,21 +6134,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     agentSessionId: string,
     requestId: string | null,
     accepted: AcceptedWorkerFinalStatus,
-    packageSnapshotId: string | null
+    packageSnapshotId: string | null,
+    attemptId: string
   ): Promise<void> {
-    const attempt = this.coreDb
-      ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
-          workspaceId: workspaceIdForOwner(turnScope.owner),
-          threadId: turnScope.threadId,
-          turnId: turnScope.id,
-        }).find(
-          (attempt) =>
-            attempt.agentSessionId === agentSessionId && attempt.inputRef === packageSnapshotId
-        )
-      : null;
-    if (attempt?.terminalCause === 'sandbox-release-refusal')
+    if (!this.coreDb) throw new Error('Worker outcome requires its Core attempt.');
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+    if (
+      attempt.workspaceId !== workspaceIdForOwner(turnScope.owner) ||
+      attempt.threadId !== turnScope.threadId ||
+      attempt.turnId !== turnScope.id ||
+      attempt.agentSessionId !== agentSessionId ||
+      attempt.inputRef !== packageSnapshotId
+    )
+      throw new Error('Worker outcome conflicts with its Core attempt.');
+    if (attempt.terminalCause === 'sandbox-release-refusal')
       throw new Error('The retired attempt cannot publish the Turn outcome.');
-    const terminalCause = attempt?.terminalCause;
+    const terminalCause = attempt.terminalCause;
     const cancellationWon = terminalCause === 'turn-cancelled';
     // Native final evidence proves stop; the exact attempt's durable cause owns product meaning.
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted, terminalCause);
@@ -6161,14 +6165,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       stopReason === 'length' ||
       stopReason === 'budget_exhausted'
     ) {
-      await this.completeTurn(
-        store,
-        turnScope,
-        agentSessionId,
-        requestId,
-        stopReason,
-        attempt?.attemptId
-      );
+      await this.completeTurn(store, turnScope, agentSessionId, requestId, stopReason, attemptId);
       return;
     }
     if (stopReason === 'aborted') {
@@ -6190,7 +6187,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         requestId,
         store,
         turnId: turnScope.id,
-        ...(attempt ? { attemptId: attempt.attemptId } : {}),
+        attemptId,
       });
       return;
     }
@@ -6270,7 +6267,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       failure,
       failure,
       agentSessionRetained,
-      attempt?.attemptId
+      attemptId
     );
   }
 

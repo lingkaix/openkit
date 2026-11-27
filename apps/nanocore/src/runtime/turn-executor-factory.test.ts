@@ -15902,7 +15902,13 @@ describe('createConfiguredTurnExecutor', () => {
                 recorder.mockRestore();
               }
               expect(acknowledged).toEqual([
-                [store, first.agentSessionId, 'a'.repeat(64), beforeSession.retainedStorage],
+                [
+                  store,
+                  first.agentSessionId,
+                  'a'.repeat(64),
+                  beforeSession.retainedStorage,
+                  anchor.packageSnapshotId,
+                ],
               ]);
               // Continuity: accepted ready proof must be durable even when its Turn failed.
               // Control Store: a newly changed Product record follows its covering FULL ACK.
