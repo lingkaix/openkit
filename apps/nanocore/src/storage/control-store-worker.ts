@@ -330,10 +330,7 @@ import {
 } from './execution-attempt-native.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
-import {
-  applyControlHarnessLifecycle,
-  applySandboxReleaseRefusalDrain,
-} from './harness-lifecycle-native.js';
+import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   applyAppMigrations,
@@ -356,6 +353,7 @@ import {
 import type { NanoHostEpochKernelReply } from './nanohost-epoch-kernel-codecs.js';
 import {
   applyNanoHostRecoveryMutation,
+  applySandboxReleaseRefusalDrain,
   readNanoHostRecoveryLease,
   verifyNanoHostTerminalDrainAndRevocation,
 } from './nanohost-recovery-native.js';
