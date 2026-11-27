@@ -1043,38 +1043,13 @@ it.each([
       const unit = 16 * 1024 * 1024;
       const lastBytes = unit - retainedBytes + 1;
       expect(lastBytes).toBeGreaterThan(0);
-      const append = (index: number, bytes = unit) => {
-        const id = `legacy-${index}`;
-        const ts = '2026-07-13T00:00:00.000Z';
-        return appendWorkObservation(db, {
-          ...target,
-          observation: {
-            id,
-            ts,
-            obs: 'worker-shim',
-            type: 'runtime.observed',
-            payload: {
-              observationId: id,
-              sourceRef: 'legacy-budget',
-              sourceSequence: index,
-              observedAt: ts,
-              fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
-              content: {
-                state: 'expected',
-                boundary: 'tool-args',
-                mediaType: 'application/json',
-                bytes,
-                chunkCount: Math.ceil(bytes / (48 * 1024)),
-                sha256: `sha256:${'a'.repeat(64)}`,
-              },
-            },
-          },
-          bodies: [],
-        });
-      };
       for (let index = 0; index < 3; index++)
-        expect(await append(index)).toMatchObject({ disposition: 'committed' });
-      await expect(append(3, lastBytes)).rejects.toMatchObject({
+        expect(await appendProvenanceBudgetDeclaration(db, target, index, unit)).toMatchObject({
+          disposition: 'committed',
+        });
+      await expect(
+        appendProvenanceBudgetDeclaration(db, target, 3, lastBytes)
+      ).rejects.toMatchObject({
         disposition: 'truncated',
         truncation: { reason: 'body-bytes', firstOmittedSequence: 4 },
       });
@@ -1090,6 +1065,42 @@ it.each([
     }
   }
 );
+
+/** Declares an ordinary Worker body without publishing its bytes. */
+function appendProvenanceBudgetDeclaration(
+  db: WorkspaceDb,
+  target: { threadId: string; turnId: string },
+  index: number,
+  bytes: number
+) {
+  const id = `provenance-budget-${index}`;
+  const ts = '2026-07-13T00:00:00.000Z';
+  return appendWorkObservation(db, {
+    ...target,
+    observation: {
+      id,
+      ts,
+      obs: 'worker-shim',
+      type: 'runtime.observed',
+      payload: {
+        observationId: id,
+        sourceRef: 'provenance-budget',
+        sourceSequence: index,
+        observedAt: ts,
+        fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
+        content: {
+          state: 'expected',
+          boundary: 'tool-args',
+          mediaType: 'application/json',
+          bytes,
+          chunkCount: Math.ceil(bytes / (48 * 1024)),
+          sha256: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+    },
+    bodies: [],
+  });
+}
 
 /** Creates one migrated workspace and a provenance-required AEP. */
 async function createImportFixture(
@@ -1993,12 +2004,18 @@ describe('runtime provenance publication durability', () => {
     }
   );
 
-  it.skipIf(process.platform === 'win32')(
-    'recovers exact provenance after SIGKILL between canonical directory sync and native SQL',
-    async () => {
-      const fixture = await createImportFixture('openkit-provenance-native-crash-');
+  it.skipIf(process.platform === 'win32').each([
+    ['node B', 'before-normalized-rename'],
+    ['node C', 'before-normalized-rename'],
+    ['node B', 'after-directory-sync-before-sql'],
+    ['node C', 'after-directory-sync-before-sql'],
+  ] as const)(
+    'charges canonical provenance on reopen of %s at %s before any bundle receipt',
+    async (writer, cut) => {
+      const fixture = await createImportFixture('openkit-provenance-native-crash-', 'on');
       const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-native-crash-capture-'));
       const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+      const target = { threadId: fixture.lineage.threadId, turnId: fixture.lineage.turnId };
       const rawBundleId = createWorkerRuntimeProvenanceBundleId(
         'worker-runtime-provenance-raw',
         fixture.environmentPackage.snapshotId
@@ -2007,69 +2024,96 @@ describe('runtime provenance publication durability', () => {
         'worker-runtime-provenance-index',
         fixture.environmentPackage.snapshotId
       );
+      const readTurn = (db: WorkspaceDb) =>
+        db.sqlite
+          .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+          .get(target.turnId) as { record_json: string; revision: number };
+      const beforeImport = readTurn(fixture.workspaceDb);
+      const beforeNormalizedRename = cut === 'before-normalized-rename';
       await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
       try {
-        const exited = runNativeProvenanceCrashChild({ capture, fixture });
+        const exited = runNativeProvenanceCrashChild({ capture, fixture, beforeNormalizedRename });
         expect(exited.error).toBeUndefined();
         expect(exited.stderr).toBe('');
         expect(exited.signal).toBe('SIGKILL');
-        expect(exited.stdout).toBe('after-directory-sync-before-sql');
+        expect(exited.stdout).toBe(cut);
 
-        const reopened = openWorkspaceDb(
+        const db = openWorkspaceDb(
           dirname(dirname(fixture.workspaceRoot)),
           fixture.lineage.workspaceId
         );
         try {
           const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', rawBundleId);
-          const normalizedPath = join(
-            fixture.workspaceRoot,
-            'evidence',
-            'bundles',
-            indexBundleId,
-            'runtime-origin-index.jsonl'
+          const indexRoot = join(fixture.workspaceRoot, 'evidence', 'bundles', indexBundleId);
+          let stagedRoot = `${indexRoot}.tmp-reserved`;
+          if (writer === 'node B') {
+            // B wrote the same canonical files with no Turn reservation and a UUID stage.
+            db.sqlite
+              .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+              .run(beforeImport.record_json, beforeImport.revision, target.turnId);
+            if (beforeNormalizedRename) {
+              const priorStage = `${indexRoot}.tmp-${randomUUID()}`;
+              renameSync(stagedRoot, priorStage);
+              stagedRoot = priorStage;
+            }
+          }
+          const rawFiles = new Map([
+            ['raw-streams.json', capture.manifestBytes],
+            ['native-origin-index.jsonl', capture.nativeOriginIndexBytes],
+            ...[...capture.streams].map(([ref, bytes]) => [`raw/${ref}`, bytes] as const),
+          ]);
+          for (const [relativePath, bytes] of rawFiles)
+            expect(readFileSync(join(rawRoot, relativePath))).toEqual(bytes);
+          expect(existsSync(indexRoot)).toBe(!beforeNormalizedRename);
+          const normalized = readFileSync(
+            join(beforeNormalizedRename ? stagedRoot : indexRoot, 'runtime-origin-index.jsonl')
           );
-          expect(readFileSync(join(rawRoot, 'raw-streams.json'))).toEqual(capture.manifestBytes);
-          expect(readFileSync(join(rawRoot, 'native-origin-index.jsonl'))).toEqual(
-            capture.nativeOriginIndexBytes
-          );
-          for (const [streamRef, bytes] of capture.streams)
-            expect(readFileSync(join(rawRoot, 'raw', streamRef))).toEqual(bytes);
-          const normalizedBytes = readFileSync(normalizedPath);
-          expect(normalizedBytes.byteLength).toBeGreaterThan(0);
-          expect(listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId)).toEqual([]);
-          expect(listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId)).toEqual([]);
+          expect(normalized.byteLength).toBeGreaterThan(0);
+          expect(listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)).toEqual([]);
+          expect(listWorkspaceRuntimeEvidence(db, fixture.lineage.workspaceId)).toEqual([]);
 
-          const replay = await importWorkerRuntimeProvenance({
-            backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
-            capture: {
-              nativeOriginIndexPath: capture.nativeOriginIndexPath,
-              rawStreamsRoot: capture.rawStreamsRoot,
-              streamManifestPath: capture.streamManifestPath,
-            },
-            collectedAt: '2026-07-13T00:00:01.000Z',
-            environmentPackage: fixture.environmentPackage,
-            workspaceDb: reopened,
-            workspaceRoot: fixture.workspaceRoot,
+          const unit = 16 * 1024 * 1024;
+          const retainedBytes = [...rawFiles.values()].reduce(
+            (sum, bytes) => sum + bytes.byteLength,
+            normalized.byteLength
+          );
+          const lastBytes = unit - retainedBytes + 1;
+          expect(lastBytes).toBeGreaterThan(0);
+          for (let index = 0; index < 3; index++)
+            expect(await appendProvenanceBudgetDeclaration(db, target, index, unit)).toMatchObject({
+              disposition: 'committed',
+            });
+          await expect(
+            appendProvenanceBudgetDeclaration(db, target, 3, lastBytes)
+          ).rejects.toMatchObject({
+            disposition: 'truncated',
+            truncation: { reason: 'body-bytes', firstOmittedSequence: 4, omittedCount: 1 },
           });
+          const sealed = readTurn(db);
+          const reopened = { ...fixture, workspaceDb: db };
+          const replay = await importCapture(reopened, capture);
           expect(replay).toMatchObject({ complete: true, rawBundleId, indexBundleId });
-          expect(readFileSync(normalizedPath)).toEqual(normalizedBytes);
+          expect(await importCapture(reopened, capture)).toEqual(replay);
+          expect(readTurn(db)).toEqual(sealed);
+          for (const [relativePath, bytes] of rawFiles)
+            expect(readFileSync(join(rawRoot, relativePath))).toEqual(bytes);
+          expect(readFileSync(join(indexRoot, 'runtime-origin-index.jsonl'))).toEqual(normalized);
+          expect(readdirSync(dirname(indexRoot))).toEqual([indexBundleId]);
           expect(
-            new Set(
-              listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId).map(
-                (bundle) => bundle.id
-              )
-            )
-          ).toEqual(new Set([rawBundleId, indexBundleId]));
-          const evidence = listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId);
-          expect(evidence).toHaveLength(1);
-          expect(evidence[0]).toMatchObject({
-            id: replay.runtimeEvidenceId,
-            evidenceBundleIds: [rawBundleId, indexBundleId],
-          });
+            listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)
+              .map((bundle) => bundle.id)
+              .sort()
+          ).toEqual([rawBundleId, indexBundleId].sort());
+          expect(listWorkspaceRuntimeEvidence(db, fixture.lineage.workspaceId)).toEqual([
+            expect.objectContaining({
+              id: replay.runtimeEvidenceId,
+              evidenceBundleIds: [rawBundleId, indexBundleId],
+            }),
+          ]);
         } finally {
           await shutdownControlStoreWorkerClient();
-          reopened.sqlite.close();
+          db.sqlite.close();
         }
       } finally {
         rmSync(captureRoot, { recursive: true, force: true });
@@ -2231,6 +2275,7 @@ describe('uncommitted ancestor evidence recovery', () => {
 
 /** Runs the real native owner until both published directories are durable and SQL has not begun. */
 function runNativeProvenanceCrashChild(input: {
+  beforeNormalizedRename?: boolean;
   beforeRawRename?: boolean;
   capture: RuntimeCaptureFixture;
   fixture: ImportFixture;
@@ -2271,7 +2316,10 @@ threads.Worker = class extends RealWorker {
       };
       const rename = promises.rename.bind(promises);
       promises.rename = async (from, to) => {
-        if (workerData.beforeRawRename && String(to).includes('/evidence/backend/')) {
+        if (
+          (workerData.beforeRawRename && String(to).includes('/evidence/backend/')) ||
+          (workerData.beforeNormalizedRename && String(to).includes('/evidence/bundles/'))
+        ) {
           workerData.provenanceBoundaryPort.postMessage({ provenanceSqlBoundary: true });
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
         }
@@ -2307,12 +2355,13 @@ threads.Worker = class extends RealWorker {
         ...options?.workerData,
         provenanceDatabaseModule: require.resolve('better-sqlite3'),
         provenanceBoundaryPort: boundary.port2,
+        beforeNormalizedRename: input.beforeNormalizedRename,
         beforeRawRename: input.beforeRawRename,
       },
     });
     boundary.port1.on('message', (message) => {
       if (message?.provenanceSqlBoundary) {
-        fs.writeSync(1, input.beforeRawRename ? 'before-raw-rename' : 'after-directory-sync-before-sql');
+        fs.writeSync(1, input.beforeRawRename ? 'before-raw-rename' : input.beforeNormalizedRename ? 'before-normalized-rename' : 'after-directory-sync-before-sql');
         process.kill(process.pid, 'SIGKILL');
       }
     });
@@ -2338,6 +2387,7 @@ await importWorkerRuntimeProvenance({
       'tsx',
       childPath,
       JSON.stringify({
+        beforeNormalizedRename: input.beforeNormalizedRename,
         beforeRawRename: input.beforeRawRename,
         backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
         capture: {

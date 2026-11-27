@@ -122,8 +122,8 @@ import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlemen
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   prepareWorkerRuntimeProvenance,
+  readRetainedRuntimeProvenance,
   recordWorkerRuntimeProvenanceMetadata,
-  retainedRuntimeProvenanceBytes,
 } from '../runtime/worker-runtime-provenance.js';
 import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
@@ -5323,10 +5323,9 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             if (value.operation === 'observation') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               if (!('chunk' in value.input) && !value.input.publishBodies)
-                retainedProvenanceBytes = await retainedRuntimeProvenanceBytes(
-                  owner.scopeDb,
-                  value.input
-                );
+                retainedProvenanceBytes = (
+                  await readRetainedRuntimeProvenance(owner.scopeDb, value.input)
+                ).bytes;
               preparedObservation = await prepareControlWorkObservationCommand(
                 owner.scopeDb,
                 value.input,

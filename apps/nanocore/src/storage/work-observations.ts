@@ -1442,8 +1442,8 @@ export function reserveWorkObservationProvenance(
           throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
         return;
       }
-      // A node B receipt and verified originals already own these bytes. They remain
-      // covered by the retained census and replay even after an unrelated cutoff.
+      // The retained census already counts the verified B originals before or after
+      // their SQL receipt. Exact replay keeps that charge after an unrelated cutoff.
       if (verifiedRetainedFamily) return;
       const cutoff = binding.turn.observationCutoff;
       if (cutoff) {

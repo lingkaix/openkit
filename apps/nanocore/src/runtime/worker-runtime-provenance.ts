@@ -269,21 +269,35 @@ function normalizedProvenanceBytes(verified: VerifiedRuntimeProvenance): Buffer 
   );
 }
 
-/** Measures B-era retained originals that predate the Turn's raw-body reservation. */
-export async function retainedRuntimeProvenanceBytes(
+interface UnreceiptedRuntimeProvenance {
+  rawBundleId: string;
+  indexRoot: string;
+  bytes: number;
+}
+
+/** Measures the original B-era family until a Turn reservation or its bundle receipts own it. */
+export async function readRetainedRuntimeProvenance(
   db: WorkspaceDb,
   input: { threadId: string; turnId: string }
-): Promise<number> {
+): Promise<{ bytes: number; pending?: UnreceiptedRuntimeProvenance }> {
+  const turn = db.sqlite
+    .prepare(`SELECT 1 FROM control_turns
+      WHERE id=? AND thread_id=?
+        AND json_type(record_json, '$.observationCounter.rawProvenance') IS NULL`)
+    .get(input.turnId, input.threadId);
+  if (!turn) return { bytes: 0 };
+
   const rows = db.sqlite
-    .prepare(`
-    SELECT b.* FROM control_turns t
-    JOIN evidence_bundles b ON b.turn_id = t.id
-    WHERE t.id = ? AND b.thread_id = ? AND b.workspace_id = ?
-      AND json_type(t.record_json, '$.observationCounter.rawProvenance') IS NULL
-      AND b.source_kind IN ('worker-runtime-provenance-raw', 'worker-runtime-provenance-index')
-      AND b.import_status <> 'expired'
-  `)
+    .prepare(`SELECT * FROM evidence_bundles
+      WHERE turn_id=? AND thread_id=? AND workspace_id=?
+        AND source_kind IN ('worker-runtime-provenance-raw', 'worker-runtime-provenance-index')
+        AND import_status <> 'expired'`)
     .all(input.turnId, input.threadId, db.workspaceId) as EvidenceBundleRow[];
+  if (rows.length === 0) {
+    const pending = await readUnreceiptedRuntimeProvenance(db, input);
+    return pending ? { bytes: pending.bytes, pending } : { bytes: 0 };
+  }
+
   let bytes = 0;
   for (const row of rows) {
     const bundle = evidenceBundleFromRow(row);
@@ -322,7 +336,83 @@ export async function retainedRuntimeProvenanceBytes(
       bytes += file.size;
     }
   }
-  return bytes;
+  return { bytes };
+}
+
+/** Finds the installed B family by its own raw manifest and deterministic bundle names. */
+async function readUnreceiptedRuntimeProvenance(
+  db: WorkspaceDb,
+  input: { threadId: string; turnId: string }
+): Promise<UnreceiptedRuntimeProvenance | undefined> {
+  const evidence = join(db.dataRoot, 'workspaces', db.workspaceId, 'evidence');
+  const backend = join(evidence, 'backend');
+  if (!(await pathExists(backend))) return;
+  if (!(await lstat(backend)).isDirectory())
+    throw new Error('Runtime provenance owner is unavailable.');
+
+  const hasReceipt = db.sqlite.prepare('SELECT 1 FROM evidence_bundles WHERE evidence_bundle_id=?');
+  let pending: UnreceiptedRuntimeProvenance | undefined;
+  for (const entry of await readdir(backend, { withFileTypes: true })) {
+    if (
+      !entry.isDirectory() ||
+      !/^evb_[a-f0-9]{24}$/.test(entry.name) ||
+      hasReceipt.get(entry.name)
+    )
+      continue;
+    const rawRoot = join(backend, entry.name);
+    const manifestPath = join(rawRoot, 'raw-streams.json');
+    if (!(await pathExists(manifestPath))) continue;
+    const manifestBytes = await readBoundedFile(
+      manifestPath,
+      MAX_MANIFEST_BYTES,
+      'Runtime provenance manifest'
+    );
+    let value: unknown;
+    try {
+      value = JSON.parse(manifestBytes.toString('utf8'));
+    } catch {
+      continue;
+    }
+    const manifest = WorkerRuntimeRawStreamManifestReaderSchema.safeParse(value);
+    if (!manifest.success) continue;
+    const { lineage } = manifest.data;
+    if (
+      lineage.workspaceId !== db.workspaceId ||
+      lineage.threadId !== input.threadId ||
+      lineage.turnId !== input.turnId ||
+      createWorkerRuntimeProvenanceBundleId(
+        'worker-runtime-provenance-raw',
+        lineage.packageSnapshotId
+      ) !== entry.name
+    )
+      continue;
+    const indexBundleId = createWorkerRuntimeProvenanceBundleId(
+      'worker-runtime-provenance-index',
+      lineage.packageSnapshotId
+    );
+    const canonicalIndex = join(evidence, 'bundles', indexBundleId);
+    const indexes = (await pathExists(canonicalIndex))
+      ? [canonicalIndex]
+      : await listProvenanceStages(canonicalIndex);
+    if (indexes.length === 0) continue;
+    if (pending || indexes.length !== 1)
+      throw new Error('Runtime provenance retained inventory is contradictory.');
+    const indexRoot = indexes[0]!;
+    if (!isDeepStrictEqual(await listEvidenceFiles(indexRoot), ['runtime-origin-index.jsonl']))
+      throw new Error('Runtime provenance normalized index is unavailable.');
+    let bytes = (await lstat(join(indexRoot, 'runtime-origin-index.jsonl'))).size;
+    for (const path of await listEvidenceFiles(rawRoot)) {
+      if (
+        path !== 'raw-streams.json' &&
+        path !== 'native-origin-index.jsonl' &&
+        !(path.startsWith('raw/') && WorkerRuntimeStreamRefSchema.safeParse(path.slice(4)).success)
+      )
+        throw new Error('Runtime provenance retained inventory is contradictory.');
+      bytes += (await lstat(safeEvidencePath(rawRoot, path))).size;
+    }
+    pending = { rawBundleId: entry.name, indexRoot, bytes };
+  }
+  return pending;
 }
 
 /** Prepares the complete provenance family on its native owner before the one metadata transaction. */
@@ -448,12 +538,26 @@ export async function prepareWorkerRuntimeProvenance(
     )
       throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
   }
+  const bytes = admitted.files.reduce(
+    (sum, file) => sum + file.byteLength,
+    admitted.normalizedBytes
+  );
+  const { pending } =
+    !existingRawBundle && retained ? await readRetainedRuntimeProvenance(workspaceDb, lineage) : {};
+  if (
+    pending &&
+    (pending.rawBundleId !== rawBundleId ||
+      pending.bytes !== bytes ||
+      (await sha256File(join(pending.indexRoot, 'runtime-origin-index.jsonl'))) !==
+        admitted.normalizedDigest)
+  )
+    throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
   const cutoff = reserveWorkObservationProvenance(
     workspaceDb,
     lineage,
     {
       id: rawBundleId,
-      bytes: admitted.files.reduce((sum, file) => sum + file.byteLength, admitted.normalizedBytes),
+      bytes,
       digest: createHash('sha256')
         .update(
           canonicalJsonText({
@@ -470,12 +574,12 @@ export async function prepareWorkerRuntimeProvenance(
         )
         .digest('hex'),
     },
-    existingRawBundle !== undefined
+    existingRawBundle !== undefined || pending !== undefined
   );
   if (cutoff) return cutoff;
   await ensureCanonicalDirectoryAsync(dirname(rawRoot));
   await reclaimProvenanceStages(rawRoot);
-  await reclaimProvenanceStages(normalizedRoot);
+  await reclaimProvenanceStages(normalizedRoot, pending?.indexRoot);
   const stagingRoot = `${rawRoot}.tmp-reserved`;
   const sourceRoot = retained ? rawRoot : stagingRoot;
   try {
@@ -581,7 +685,8 @@ export async function prepareWorkerRuntimeProvenance(
     if (normalizedBytes) {
       await adoptEvidenceDirectory(
         normalizedRoot,
-        new Map([['runtime-origin-index.jsonl', normalizedBytes]])
+        new Map([['runtime-origin-index.jsonl', normalizedBytes]]),
+        pending?.indexRoot === normalizedRoot ? undefined : pending?.indexRoot
       );
     }
     const normalizedDigest = normalizedBytes ? sha256(normalizedBytes) : null;
@@ -1103,13 +1208,14 @@ function projectNativeFrame(
   return { primaryThreadId, sessionId, spawnedChildren, valid };
 }
 
-/** Reclaims only stages of this owner's admitted bundle, including node B's UUID suffix. */
-async function reclaimProvenanceStages(root: string): Promise<void> {
+/** Lists the exact bundle's private stage names, including node B's UUID suffix. */
+async function listProvenanceStages(root: string): Promise<string[]> {
   const parent = dirname(root);
-  if (!(await pathExists(parent))) return;
+  if (!(await pathExists(parent))) return [];
   if (!(await lstat(parent)).isDirectory())
     throw new Error('Runtime provenance staging parent is unavailable.');
   const prefix = `${basename(root)}.tmp-`;
+  const stages: string[] = [];
   for (const entry of await readdir(parent, { withFileTypes: true })) {
     if (!entry.name.startsWith(prefix)) continue;
     const suffix = entry.name.slice(prefix.length);
@@ -1119,7 +1225,15 @@ async function reclaimProvenanceStages(root: string): Promise<void> {
     )
       continue;
     if (!entry.isDirectory()) throw new Error('Runtime provenance staging path is invalid.');
-    await removePrivateTree(join(parent, entry.name));
+    stages.push(join(parent, entry.name));
+  }
+  return stages;
+}
+
+/** Removes stale copies, keeping the verified index until its canonical rename. */
+async function reclaimProvenanceStages(root: string, keep?: string): Promise<void> {
+  for (const path of await listProvenanceStages(root)) {
+    if (path !== keep) await removePrivateTree(path);
   }
 }
 
