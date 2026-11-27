@@ -611,6 +611,7 @@ const bootResult = await runBootPhases({
           admittedNanoHostRecovery,
           reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+          awaitPreparedBackendCleanup: recoveryRuntime.awaitPreparedBackendCleanup,
           prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
           restoreBackendSession: recoveryRuntime.restoreBackendSession,
           isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,

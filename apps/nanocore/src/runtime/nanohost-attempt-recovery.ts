@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
+import type { z } from 'zod';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -14,6 +15,7 @@ import {
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
 import { hashNanoHostFinalDecision } from '../storage/control-store-worker-protocol.js';
+import type { UndeliveredRefusalSuccessorSchema } from '../storage/core-journal-codecs.js';
 import {
   hasCoreWorkerFinalIntake,
   hasSurvivingNanoHostFinalEvidence,
@@ -38,6 +40,7 @@ import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
+import { readReleasedSandboxRefusalPredecessor } from './execution-attempt-records.js';
 import {
   closeSchedulerExecutionAttemptWithFence,
   isSchedulerExecutionBusyRefusal,
@@ -86,6 +89,10 @@ import { publishWorkspaceTakeoverEvaluation } from './workspace-takeover-publica
 /** A2 binds the selected read handle and the original Core decision plus Native FULL writer. */
 export interface AdmittedNanoHostAttemptRecovery {
   readonly owner: Pick<AdmittedNanoHostTransportStorage['owner'], 'read'>;
+  recoverUndeliveredSuccessor?(
+    attempt: Pick<SchedulerExecutionAttemptRecord, 'attemptId' | 'workspaceId'>,
+    stage: z.output<typeof UndeliveredRefusalSuccessorSchema>['stage']
+  ): Promise<void>;
   /** The Core writer compares the current original lease and the exact Native liveness observation. */
   close(input: {
     readonly lease: NanoHostRecoveryLease;
@@ -137,6 +144,9 @@ export interface RunNanoHostAttemptRecoveryInput extends RunSchedulerRestartReco
   readonly reconcileExecutions: () => Promise<void>;
   readonly cleanupBackendSession: (
     session: WorkerGovernanceBackendSessionIdentity
+  ) => Promise<void>;
+  readonly awaitPreparedBackendCleanup?: (
+    identity: WorkerGovernanceBackendSessionIdentity
   ) => Promise<void>;
   /** Prepares original cleanup; true excludes an exact Core idle owner from orphan cleanup. */
   readonly prepareBackendCleanup: (session: WorkerGovernanceBackendSessionIdentity) => boolean;
@@ -235,6 +245,49 @@ async function closeAdmittedAttempt(
   return result.value;
 }
 
+/** Restarts the sole linked pre-submit successor under its original preparation and reservation. */
+async function recoverUndeliveredRefusalSuccessor(
+  input: RunNanoHostAttemptRecoveryInput,
+  recovery: AdmittedNanoHostAttemptRecovery,
+  attempt: SchedulerExecutionAttemptRecord,
+  boot: boolean
+): Promise<void> {
+  const decide = recovery.recoverUndeliveredSuccessor;
+  if (!decide) throw new Error('Undelivered successor recovery owner is unavailable.');
+  if (!boot && input.isTurnExecutionActive?.(attempt.turnId)) return;
+  await decide(attempt, 'close');
+  await decide(attempt, 'hold');
+  const session = readRecovery(recovery, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, attempt.attemptId)
+  );
+  if (!session) throw new Error('Undelivered successor recovery anchor is unavailable.');
+  if (boot) {
+    if (session.state === 'cleanup-pending')
+      input.prepareBackendCleanup(toRestartBackendIdentity(session));
+    return;
+  }
+  if (session.state !== 'cleaned') {
+    const target = requireRecoveryTarget(recovery, session);
+    if (target.physicalEpoch === session.originPhysicalEpoch) return;
+    if (session.state === 'cleanup-pending') {
+      try {
+        await input.awaitPreparedBackendCleanup?.(toRestartBackendIdentity(session));
+      } catch (error) {
+        await decide(attempt, 'origin-ended');
+        throw error;
+      }
+    }
+    await decide(attempt, 'teardown');
+  }
+  const outcome = await input.projectRecoveredTurn({
+    ...session,
+    terminalCause: 'restart-native-recovery',
+  });
+  if (outcome.status !== 'interrupted')
+    throw new Error('Undelivered successor has no exact interrupted Turn.');
+  await decide(attempt, 'release');
+}
+
 /** Classifies native survivors independently before listen, retaining faults for maintenance. */
 export async function classifyNanoHostAttemptsAfterRestart(
   coreDb: CoreDb,
@@ -253,6 +306,13 @@ export async function classifyNanoHostAttemptsAfterRestart(
         continue;
       }
       const admitted = recovery.value;
+      if (
+        attempt.deadline === null &&
+        readReleasedSandboxRefusalPredecessor(coreDb, attempt, attempt.attemptId)
+      ) {
+        await recoverUndeliveredRefusalSuccessor(input, admitted, attempt, true);
+        continue;
+      }
       const observation = observeAdmittedAttempt(coreDb, admitted, attempt.attemptId);
       const { session, proof, attempt: native } = observation;
       assertSessionMatchesAttempt(session, native);
@@ -333,6 +393,13 @@ export async function runNanoHostAttemptRecoveryMaintenance(
     if (attempt.terminalCause === 'sandbox-release-refusal') continue;
     try {
       if (!attempt.operationId) continue;
+      if (
+        attempt.deadline === null &&
+        readReleasedSandboxRefusalPredecessor(coreDb, attempt, attempt.attemptId)
+      ) {
+        await recoverUndeliveredRefusalSuccessor(input, recovery, attempt, false);
+        continue;
+      }
       const observation = observeAdmittedAttempt(coreDb, recovery, attempt.attemptId);
       let { session } = observation;
       const native = observation.attempt;

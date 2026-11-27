@@ -505,6 +505,9 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly cleanupBackendSession: (
     identity: WorkerGovernanceBackendSessionIdentity
   ) => Promise<void>;
+  readonly awaitPreparedBackendCleanup: (
+    identity: WorkerGovernanceBackendSessionIdentity
+  ) => Promise<void>;
   /** Reports live lifecycle ownership before scheduler recovery can take over a Turn. */
   readonly isTurnExecutionActive: (turnId: string) => boolean;
   /** Prepares original results and reports exact Core idle ownership without physical contact. */
@@ -760,6 +763,7 @@ function createNanoHostWorkerLifecycleRuntime(
     registerCredentialHelperComparisonValues: (lineage, receiptId, values, signal) =>
       backend.registerCredentialHelperComparisonValues(lineage, receiptId, values, signal),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
+    awaitPreparedBackendCleanup: (identity) => backend.awaitCleanupRecoveryResult(identity),
     isTurnExecutionActive: (turnId) => turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
     acceptNanoHostHarnessCommand: (command, signal) =>
@@ -3298,6 +3302,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     this.cleanupRecoveryResults.set(identity.packageSnapshotId, result);
     return false;
+  }
+
+  /** Joins a registered predecessor-Epoch result without authorizing a new cleanup. */
+  public async awaitCleanupRecoveryResult(
+    identity: WorkerGovernanceBackendSessionIdentity
+  ): Promise<void> {
+    await this.cleanupRecoveryResults
+      .get(identity.packageSnapshotId)
+      ?.finally(() => this.cleanupRecoveryResults.delete(identity.packageSnapshotId));
   }
 
   /** Projects a correlated physical deletion to every live owner of that exact instance. */

@@ -231,6 +231,7 @@ import {
   ControlNanoHostTerminalReleaseInputSchema,
   ControlSandboxReleaseRefusalHandoffSchema,
   SandboxReleaseRefusalAttachmentSchema,
+  UndeliveredRefusalSuccessorSchema,
 } from './core-journal-codecs.js';
 import {
   type ControlEvaluationCandidate,
@@ -972,6 +973,12 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     workspaceIdentity: z.string().regex(/^\d+:\d+$/),
   }),
   z.strictObject({
+    kind: z.literal('undelivered-refusal-successor'),
+    input: UndeliveredRefusalSuccessorSchema,
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    workspaceIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+  z.strictObject({
     kind: z.literal('harness-idle-sandbox'),
     input: nanoHostIdleSandboxInput,
     coreIdentity: z.string().regex(/^\d+:\d+$/),
@@ -1047,6 +1054,12 @@ export type NanoHostOwnerMutation =
       readonly workspaceIdentity: string;
     }
   | {
+      readonly kind: 'undelivered-refusal-successor';
+      readonly input: z.output<typeof UndeliveredRefusalSuccessorSchema>;
+      readonly coreIdentity: string;
+      readonly workspaceIdentity: string;
+    }
+  | {
       readonly kind: 'harness-idle-sandbox';
       readonly input: z.output<typeof nanoHostIdleSandboxInput>;
       readonly coreIdentity: string;
@@ -1107,6 +1120,7 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
     value: ControlHarnessLifecycleResultSchema,
   }),
   z.strictObject({ kind: z.literal('sandbox-release-refusal-drain'), value: z.null() }),
+  z.strictObject({ kind: z.literal('undelivered-refusal-successor'), value: z.null() }),
   z.strictObject({ kind: z.literal('sandbox-release-refusal-detach'), value: z.null() }),
   z.strictObject({ kind: z.literal('harness-idle-sandbox'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),

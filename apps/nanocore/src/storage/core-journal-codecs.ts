@@ -259,6 +259,12 @@ export const ControlSandboxReleaseRefusalHandoffSchema = z.strictObject({
   }),
 });
 
+export const UndeliveredRefusalSuccessorSchema = z.strictObject({
+  attemptId: text,
+  workspaceId: WorkspaceIdSchema,
+  stage: z.enum(['close', 'hold', 'origin-ended', 'teardown', 'release']),
+});
+
 export const SandboxReleaseRefusalAttachmentSchema = z.strictObject({
   storageRef: text,
   workSlotRef: text,
@@ -344,6 +350,7 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   ControlSandboxReleaseRefusalHandoffSchema,
+  UndeliveredRefusalSuccessorSchema.extend({ kind: z.literal('undelivered-refusal-successor') }),
   z
     .object({
       kind: z.literal('idle-intent'),

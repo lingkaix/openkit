@@ -55,6 +55,7 @@ import {
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_LIFECYCLE_DEFINITION,
   commitKernelExecutionEvidenceInDb,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
@@ -103,6 +104,7 @@ import {
   matchesAcceptedWorkerControlSequence,
 } from '../runtime/worker-control-sequences.js';
 import {
+  getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
   releaseWorkerStorageAttachment,
 } from '../runtime/worker-storage-binding-records.js';
@@ -138,6 +140,7 @@ import {
   readCoreJournalLineage,
   type SandboxReleaseRefusalAttachmentSchema,
   SECURITY_CONTAINMENT_LIMITS,
+  type UndeliveredRefusalSuccessorSchema,
 } from './core-journal-codecs.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
@@ -2757,9 +2760,324 @@ export function handoffSandboxReleaseRefusalInDb(
     throw new CoreJournalRefusal('Sandbox handoff lost its Core admission ownership.');
 }
 
+type UndeliveredSuccessor = z.output<typeof UndeliveredRefusalSuccessorSchema>;
+
+function requireUndeliveredRefusalSuccessor(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  { attemptId, workspaceId }: UndeliveredSuccessor
+) {
+  const held = (label: string) =>
+    new CoreJournalRefusal(`Undelivered successor proof is unresolved (${label}).`);
+  const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attemptId);
+  const predecessor = readReleasedSandboxRefusalPredecessor(db, attempt, attemptId);
+  const order = predecessor?.fenceRef && readSandboxReleaseRefusalOrder(db, predecessor.fenceRef);
+  const prior = predecessor && getWorkerBackendSession({ sqlite: native }, predecessor.attemptId);
+  const session = getWorkerBackendSession({ sqlite: native }, attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    !attempt.operationId ||
+    !attempt.inputRef ||
+    !attempt.agentSessionId ||
+    attempt.disposition !== 'unknown' ||
+    attempt.deadline !== null ||
+    (attempt.phase === 'open'
+      ? attempt.terminalCause !== null
+      : attempt.terminalCause !== 'restart-native-recovery') ||
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(attemptId) ||
+    !predecessor ||
+    !order ||
+    order.attemptId !== predecessor.attemptId ||
+    !prior ||
+    prior.state !== 'cleaned' ||
+    !prior.physicalCleanedAt ||
+    order.bindingRef !== prior.sandboxBindingRef ||
+    order.targetId !== prior.runtimeTargetId ||
+    order.physicalEpoch !== prior.originPhysicalEpoch ||
+    predecessor.bindingRef !== prior.sandboxBindingRef ||
+    predecessor.inputRef !== prior.packageSnapshotId ||
+    predecessor.agentSessionId !== attempt.agentSessionId ||
+    prior.workspaceId !== attempt.workspaceId ||
+    prior.threadId !== attempt.threadId ||
+    prior.turnId !== attempt.turnId ||
+    prior.agentSessionId !== attempt.agentSessionId ||
+    !session ||
+    session.backendKind !== 'openshell' ||
+    session.workspaceId !== attempt.workspaceId ||
+    session.threadId !== attempt.threadId ||
+    session.turnId !== attempt.turnId ||
+    session.agentSessionId !== attempt.agentSessionId ||
+    session.packageSnapshotId !== attempt.inputRef ||
+    session.sandboxBindingRef !== attempt.bindingRef ||
+    session.sandboxBindingRef === prior.sandboxBindingRef ||
+    session.runtimeTargetId !== prior.runtimeTargetId ||
+    session.deploymentId !== prior.deploymentId ||
+    !['materializing', 'cleanup-pending', 'cleanup-failed', 'cleaned'].includes(session.state) ||
+    (attempt.phase === 'open' && session.state !== 'materializing') ||
+    (session.state === 'cleaned'
+      ? session.workspaceHandoffState !== 'complete' || !session.physicalCleanedAt
+      : session.workspaceHandoffState !== 'pending' || session.physicalCleanedAt !== null) ||
+    workspace.dataRoot !== db.dataRoot ||
+    workspace.workspaceId !== workspaceId ||
+    attempt.workspaceId !== workspaceId ||
+    admission.status !== 'admitted'
+  )
+    throw held('lineage');
+
+  const lifecycle = {
+    owner: { kind: 'server' as const },
+    executionId: `scheduler-lifecycle:${attemptId}`,
+  };
+  const root = readExecutionJournalRoot(db, lifecycle);
+  const claim = readExecutionJournalInvocation(db, { execution: lifecycle, stepId: 'claim' });
+  const latestPost = db.sqlite
+    .prepare(`SELECT step_id AS id FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(control_json,'$.kind')='deliver-start'
+    ORDER BY ordinal DESC LIMIT 1`)
+    .get(lifecycle.executionId) as { id: string } | undefined;
+  const post =
+    latestPost &&
+    readExecutionJournalInvocation(db, { execution: lifecycle, stepId: latestPost.id });
+  const creates = workspace.sqlite
+    .prepare(`SELECT e.id AS executionId, s.step_id AS stepId
+    FROM control_executions e JOIN control_execution_steps s ON e.id=s.execution_id
+    WHERE e.work_id=? AND e.definition_version=?
+      AND json_extract(s.control_json,'$.attemptId')=?
+      AND json_extract(s.invocation_json,'$.carriage.operation')='sandbox.create'
+      AND json_extract(s.invocation_json,'$.carriage.requestId')=? LIMIT 2`)
+    .all(
+      attempt.turnId,
+      WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+      attemptId,
+      attempt.operationId
+    ) as { executionId: string; stepId: string }[];
+  const create =
+    creates.length === 1 &&
+    readExecutionJournalInvocation(workspace, {
+      execution: {
+        owner: { kind: 'workspace', workspaceId },
+        executionId: creates[0]!.executionId,
+      },
+      stepId: creates[0]!.stepId,
+    });
+  if (
+    root.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+    root.workId !== attempt.turnId ||
+    root.fingerprint !== admission.inputHash ||
+    (attempt.phase !== 'closed' && root.phase !== 'open') ||
+    claim.state !== 'completed' ||
+    claim.control.attemptId !== attemptId ||
+    !claim.carriage.schedulerPreparation ||
+    !post ||
+    post.state !== 'completed' ||
+    post.control.attemptId !== attemptId ||
+    post.control.operationId !== attempt.operationId ||
+    post.control.fingerprint !== admission.inputHash ||
+    !isDeepStrictEqual(post.control.actor, admission.triggerActor) ||
+    !create ||
+    create.state !== 'intent' ||
+    create.control.operationId !== attempt.operationId ||
+    create.carriage.bindingRef !== attempt.bindingRef ||
+    native
+      .prepare(`SELECT 1 FROM worker_backend_sessions WHERE attempt_id=?
+      AND (worker_route_binding_json IS NOT NULL OR worker_recovery_json IS NOT NULL)`)
+      .get(attemptId) ||
+    native
+      .prepare(`SELECT 1 FROM worker_control_records WHERE package_snapshot_id=? UNION ALL
+      SELECT 1 FROM worker_control_sequence_fingerprints WHERE package_snapshot_id=?`)
+      .get(attempt.inputRef, attempt.inputRef) ||
+    native
+      .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+      WHERE current_attempt_id=? OR current_turn_id=? OR agent_session_id=?`)
+      .get(attemptId, attempt.turnId, attempt.agentSessionId) ||
+    native
+      .prepare('SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=?')
+      .get(attempt.bindingRef) ||
+    workspace.sqlite
+      .prepare(`SELECT 1 FROM workspace_materialization_records WHERE workspace_id=? AND package_snapshot_id=?
+      UNION ALL SELECT 1 FROM backend_workspace_handles WHERE workspace_id=? AND package_snapshot_id=?`)
+      .get(workspaceId, attempt.inputRef, workspaceId, attempt.inputRef)
+  )
+    throw held('operation');
+
+  const workspaceOwner = { kind: 'workspace' as const, workspaceId };
+  const agentSession = AgentSessionRecordSchema.parse(
+    readProduct(workspace.sqlite, workspaceOwner, 'agent-session', attempt.agentSessionId)?.record
+  );
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspace,
+    workspaceId,
+    attempt.agentSessionId,
+    attempt.inputRef
+  )?.snapshot;
+  const workSlotRef = (
+    snapshot?.extensions.openkit as { workerStorage?: { workSlotRef?: string } } | undefined
+  )?.workerStorage?.workSlotRef;
+  const retained = agentSession.retainedStorage;
+  const storage = retained && getWorkerStorageBinding({ sqlite: native }, retained);
+  if (
+    !snapshot ||
+    snapshot.scope.turnId !== attempt.turnId ||
+    snapshot.scope.threadId !== attempt.threadId ||
+    snapshot.agent.agentId !== admission.requestedAgentId ||
+    !isDeepStrictEqual(snapshot.scope.triggerActor, admission.triggerActor) ||
+    agentSession.workspaceId !== workspaceId ||
+    agentSession.threadId !== attempt.threadId ||
+    agentSession.agentId !== admission.requestedAgentId ||
+    agentSession.environmentPackageSnapshotId !== session.packageSnapshotId ||
+    !retained ||
+    retained.attachmentGeneration === undefined ||
+    !workSlotRef ||
+    retained.workSlotRef !== workSlotRef ||
+    !storage ||
+    storage.workspaceId !== workspaceId ||
+    storage.deploymentId !== session.deploymentId ||
+    storage.runtimeTargetId !== session.runtimeTargetId ||
+    storage.attachmentGeneration !== retained.attachmentGeneration + 1 ||
+    !storage.contributors.some(
+      (item) =>
+        item.threadId === attempt.threadId &&
+        item.workSlotRef === workSlotRef &&
+        item.attachmentGeneration === storage.attachmentGeneration
+    ) ||
+    (session.state === 'cleaned'
+      ? storage.state !== 'idle'
+      : storage.state !== 'reserved' ||
+        storage.currentAgentSessionId !== attempt.agentSessionId ||
+        storage.currentThreadId !== attempt.threadId ||
+        storage.currentWorkSlotRef !== workSlotRef ||
+        storage.currentSandboxBindingRef !== null)
+  )
+    throw held('reservation');
+
+  const turn = workspace.sqlite
+    .prepare(`SELECT status, json_extract(record_json,'$.error.code') AS errorCode,
+    json_extract(record_json,'$.completedAt') AS completedAt FROM control_turns
+    WHERE id=? AND thread_id=? AND agent_session_id=?`)
+    .get(attempt.turnId, attempt.threadId, attempt.agentSessionId) as
+    | { status: string; errorCode: string | null; completedAt: string | null }
+    | undefined;
+  const interrupted =
+    turn?.status === 'interrupted' &&
+    turn.errorCode === 'worker_governance_restart_recovery' &&
+    !!turn.completedAt;
+  if ((!interrupted && turn?.status !== 'running') || (interrupted && session.state !== 'cleaned'))
+    throw held('turn');
+  return { attempt, session, storage, interrupted };
+}
+
+/** Preserves Core authority until its own interruption is backed by the coupled Native release. */
+export function decideUndeliveredRefusalSuccessorInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: UndeliveredSuccessor
+): void {
+  assertControlProductWriter(db.sqlite);
+  const { attempt, session, interrupted } = requireUndeliveredRefusalSuccessor(
+    db,
+    native,
+    workspace,
+    input
+  );
+  if (input.stage === 'close') {
+    if (attempt.phase === 'open')
+      markSchedulerExecutionAttemptClosing(db, {
+        attemptId: attempt.attemptId,
+        cause: 'restart-native-recovery',
+        requireUnsubmitted: true,
+      });
+    return;
+  }
+  if (input.stage !== 'release' || !interrupted || !session.physicalCleanedAt)
+    throw new CoreJournalRefusal('Undelivered successor has no exact terminal release.');
+  markSchedulerExecutionAttemptClosing(db, {
+    attemptId: attempt.attemptId,
+    cause: 'restart-native-recovery',
+    outcomeRef: `turn:${attempt.turnId}:interrupted`,
+  });
+  closeSchedulerExecutionAttemptWithFence(db, {
+    correlation: schedulerExecutionCorrelation(attempt),
+    fenceRef: `worker-backend:${attempt.attemptId}:${session.physicalCleanedAt}`,
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+}
+
+/** Native keeps the original reservation until later teardown proves the old writer absent. */
+export function applyUndeliveredRefusalSuccessorInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: UndeliveredSuccessor
+): void {
+  assertControlProductWriter(native);
+  const { attempt, session, storage } = requireUndeliveredRefusalSuccessor(
+    db,
+    native,
+    workspace,
+    input
+  );
+  if (attempt.phase !== 'closing')
+    throw new CoreJournalRefusal('Undelivered successor is missing its Core close.');
+  const owner = { sqlite: native };
+  const transition = (fromState: typeof session.state, toState: typeof session.state) =>
+    transitionWorkerBackendSessionState(owner, {
+      attemptId: session.attemptId,
+      fromState,
+      toState,
+    });
+  if (input.stage === 'hold') {
+    if (session.state === 'materializing') transition('materializing', 'cleanup-pending');
+    return;
+  }
+  if (session.state === 'cleaned' && input.stage === 'teardown') return;
+  const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
+  if (
+    !target?.ready ||
+    !target.freshEmpty ||
+    !target.predecessorFenced ||
+    target.deploymentId !== session.deploymentId ||
+    !target.physicalEpoch ||
+    !/^[a-f0-9]{64}$/.test(target.physicalEpoch) ||
+    target.physicalEpoch === session.originPhysicalEpoch
+  )
+    throw new ControlProductPreconditionError();
+  if (input.stage === 'origin-ended' && session.state === 'cleanup-pending') {
+    transition('cleanup-pending', 'cleanup-failed');
+    return;
+  }
+  if (input.stage !== 'teardown' || !['cleanup-failed', 'cleanup-pending'].includes(session.state))
+    throw new CoreJournalRefusal('Undelivered successor is missing its cleanup hold.');
+  releaseWorkerStorageAttachment(owner, {
+    storageRef: storage.storageRef,
+    expectedRevision: storage.revision,
+    attachmentGeneration: storage.attachmentGeneration,
+    cleanupProved: true,
+  });
+  if (session.state === 'cleanup-failed') transition('cleanup-failed', 'cleanup-pending');
+  transition('cleanup-pending', 'physical-cleaned');
+  markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId: session.attemptId });
+  transition('physical-cleaned', 'cleaned');
+}
+
 /** Ordinary finish callbacks cannot supply the cleaned edge used by the Core handoff. */
 export function refuseOrdinaryLinkedBackendFinish(db: CoreDb, attemptId: string): void {
-  if (requireSchedulerExecutionAttempt(db, attemptId).terminalCause === 'sandbox-release-refusal')
+  const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+  if (
+    attempt.terminalCause === 'sandbox-release-refusal' ||
+    (attempt.terminalCause === 'restart-native-recovery' &&
+      attempt.deadline === null &&
+      readReleasedSandboxRefusalPredecessor(db, attempt, attemptId))
+  )
     throw new BackendSessionRefusal('Sandbox release refusal owns the linked backend finish.');
 }
 
@@ -2775,7 +3093,10 @@ export function applyControlCoreJournal(
   if (input.kind === 'image-result') return applyControlCoreImageResult(db, input, nanoHost);
   if (input.kind === 'sandbox-release-refusal')
     return recordSandboxReleaseRefusal(db, input, idleCleanupNative);
-  if (input.kind === 'sandbox-release-refusal-handoff')
+  if (
+    input.kind === 'sandbox-release-refusal-handoff' ||
+    input.kind === 'undelivered-refusal-successor'
+  )
     throw new CoreJournalRefusal('Exact Native refusal detach proof is unavailable.');
   if (
     input.kind === 'containment-inspect' ||

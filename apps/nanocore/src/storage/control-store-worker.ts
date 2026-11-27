@@ -315,6 +315,8 @@ import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreJournal,
+  applyUndeliveredRefusalSuccessorInDb,
+  decideUndeliveredRefusalSuccessorInDb,
   detachSandboxReleaseRefusalInDb,
   handoffSandboxReleaseRefusalInDb,
   inspectAcceptedNanoHostFinalInDb,
@@ -2230,6 +2232,23 @@ function applyNanoHostOwnerMutation(
           }
         );
       });
+    case 'undelivered-refusal-successor':
+      return withNanoHostCore(owner, mutation.coreIdentity, (core) => {
+        const { workspaceId } = mutation.input;
+        return withCurrentPeerRead(
+          workspaceDbPath(core.dataRoot, workspaceId),
+          mutation.workspaceIdentity,
+          (workspace) => {
+            applyUndeliveredRefusalSuccessorInDb(
+              core,
+              sqlite,
+              bindWorkspaceSqlite(workspace, core.dataRoot, workspaceId),
+              mutation.input
+            );
+            return { kind: mutation.kind, value: null };
+          }
+        );
+      });
     case 'harness-idle-sandbox':
       return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => {
         const value = applyControlHarnessLifecycle({ sqlite }, mutation.input, {
@@ -2452,6 +2471,9 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else if (request.input.kind === 'sandbox-release-refusal') {
         lanes.add(`runtime-target:${request.input.target.targetId}`);
+      } else if (request.input.kind === 'undelivered-refusal-successor') {
+        if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+        lanes.add(requireSchedulerExecutionAttempt(owner.scopeDb, request.input.attemptId).turnId);
       } else if (request.input.kind === 'sandbox-release-refusal-handoff') {
         lanes.add(request.input.ref.execution.executionId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
@@ -3884,6 +3906,23 @@ function flush(owner: OwnedDatabase): void {
                       },
                     });
                     const input = request.input;
+                    if (input.kind === 'undelivered-refusal-successor') {
+                      if (!request.workspaceOwnerIdentity)
+                        throw new ControlProductPreconditionError();
+                      return withCurrentPeerRead(
+                        workspaceDbPath(db.dataRoot, input.workspaceId),
+                        request.workspaceOwnerIdentity,
+                        (workspace) => {
+                          decideUndeliveredRefusalSuccessorInDb(
+                            db,
+                            sqlite,
+                            bindWorkspaceSqlite(workspace, db.dataRoot, input.workspaceId),
+                            input
+                          );
+                          return null;
+                        }
+                      );
+                    }
                     if (input.kind === 'sandbox-release-refusal-handoff') {
                       const workspaceId = input.workspaceFence.workspaceId;
                       if (!request.workspaceOwnerIdentity)

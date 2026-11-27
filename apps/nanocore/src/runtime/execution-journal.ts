@@ -91,7 +91,7 @@ export const CORE_REPAIR_EXECUTION_DEFINITION = 'core-repair/v1';
 export const CORE_SCHEDULER_EXECUTION_DEFINITION = 'core-scheduler-attempt/v1';
 
 /** Local lifecycle receipts are independent of the backend grant's trace and writer scopes. */
-const CORE_SCHEDULER_LIFECYCLE_DEFINITION = 'core-scheduler-lifecycle/v1';
+export const CORE_SCHEDULER_LIFECYCLE_DEFINITION = 'core-scheduler-lifecycle/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {

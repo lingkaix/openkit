@@ -779,6 +779,9 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'prepared-image-result' }>['input']
   ): Promise<void>;
   backendSession(input: NanoHostLocalBackendSessionInput): Promise<ControlBackendSessionResult>;
+  recoverUndeliveredSuccessor: NonNullable<
+    AdmittedNanoHostAttemptRecovery['recoverUndeliveredSuccessor']
+  >;
   closeRecovery: AdmittedNanoHostAttemptRecovery['close'];
   classifyRecovery(
     input: NanoHostRecoveryMutation & {
@@ -3446,6 +3449,7 @@ class ControlStoreWorkerClient {
           mutation.kind === 'harness-turn-lifecycle' ||
           mutation.kind === 'sandbox-release-refusal-drain' ||
           mutation.kind === 'sandbox-release-refusal-detach' ||
+          mutation.kind === 'undelivered-refusal-successor' ||
           mutation.kind === 'harness-idle-sandbox' ||
           mutation.kind === 'recovery-classification' ||
           mutation.kind === 'worker-image' ||
@@ -4378,6 +4382,66 @@ class ControlStoreWorkerClient {
           firstSubmission,
           harnessTurnLifecycle,
           releaseRefusal,
+          recoverUndeliveredSuccessor: async (attempt, stage) => {
+            const input = { attemptId: attempt.attemptId, workspaceId: attempt.workspaceId, stage };
+            const scope = nativeProductScope(root, {
+              kind: 'workspace',
+              workspaceId: input.workspaceId,
+            });
+            const workspaceKey = `workspace:${scope.path}`;
+            if (!this.openings.has(workspaceKey)) {
+              // Cold recovery can reach the existing Workspace before its first mutation.
+              openAdmittedWorkspaceReadDb(root, input.workspaceId).sqlite.close();
+              await this.open({
+                database: workspaceKey,
+                path: scope.path,
+                dataRoot: root,
+                create: false,
+                initialize: 'workspace',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              });
+            }
+
+            if (stage === 'close' || stage === 'release') {
+              await withNativeReadForCore((core, _, nanoHostOwnerIdentity) =>
+                withWorkspaceForAttempt(input.attemptId, async (workspaceOwnerIdentity) => {
+                  try {
+                    const reply = await this.request({
+                      operation: 'core-journal',
+                      database: core.command.database,
+                      input: { kind: 'undelivered-refusal-successor', ...input },
+                      nanoHostOwnerIdentity,
+                      workspaceOwnerIdentity,
+                    });
+                    if (reply.operation !== 'core-journal' || reply.result !== null)
+                      throw new ControlStoreWorkerError('integrity', 'unknown');
+                  } catch (error) {
+                    if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+                      this.fail(core.host);
+                    throw error;
+                  } finally {
+                    if (core.host.failed) await core.host.exited.promise;
+                  }
+                })
+              );
+              return;
+            }
+            await withCoreHold((coreIdentity) =>
+              withWorkspaceForAttempt(input.attemptId, async (workspaceIdentity) => {
+                try {
+                  await write({
+                    kind: 'undelivered-refusal-successor',
+                    input,
+                    coreIdentity,
+                    workspaceIdentity,
+                  });
+                } finally {
+                  if (opening.host.failed) await opening.host.exited.promise;
+                }
+              })
+            );
+          },
           writeIdleHarnessDrain: async (input, authority) => {
             const original = structuredClone(input);
             const placement = structuredClone(authority);
@@ -8011,6 +8075,8 @@ class ControlStoreWorkerClient {
     let nativeRead: Opening | undefined;
     try {
       input = structuredClone(input);
+      if (input.kind === 'undelivered-refusal-successor')
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       const opening = this.openings.get(database);
       if (!opening?.command.dataRoot || opening.command.productOwner?.kind !== 'server')
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');

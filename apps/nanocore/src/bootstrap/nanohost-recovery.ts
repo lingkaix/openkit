@@ -25,6 +25,7 @@ export function bindBootNanoHostAttemptRecovery(
   const hold = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' } as const;
   return {
     owner,
+    recoverUndeliveredSuccessor: owner.recoverUndeliveredSuccessor,
     close: owner.closeRecovery,
     commit: async (input, cleanup) => {
       if (input.kind === 'retire-orphan') return hold;

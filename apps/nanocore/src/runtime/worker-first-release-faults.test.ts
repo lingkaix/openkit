@@ -41,7 +41,7 @@ import {
   openCoreReadDb,
   openWorkspaceDb,
 } from '../storage/db.js';
-import { workspaceDbPath } from '../storage/fs-layout.js';
+import { readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
@@ -281,12 +281,14 @@ async function faultFixture({
   heartbeatClock,
   schedulerFault,
   orderReleaseRefusalRecycle = false,
+  useLayoutDeploymentId = false,
   beforeEffect,
 }: {
   alignFixtureWall?: boolean;
   heartbeatClock?: () => string;
   schedulerFault?: Promise<never>;
   orderReleaseRefusalRecycle?: boolean;
+  useLayoutDeploymentId?: boolean;
   beforeEffect?: Parameters<typeof operationDouble>[3];
 } = {}) {
   if (orderReleaseRefusalRecycle) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -354,7 +356,12 @@ async function faultFixture({
     nanoHostSessionDispatch: operationDouble(effects, transcript, dataRoot, beforeEffect),
     nanoHostRecovery: testNanoHostRecoveryJoins(nanoHostStorage),
   });
-  const target = { deploymentId: 'fault-deployment', identityId: 'fault-host' };
+  const target = {
+    deploymentId: useLayoutDeploymentId
+      ? readDataRootLayoutMarker(dataRoot).deploymentId
+      : 'fault-deployment',
+    identityId: 'fault-host',
+  };
   await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
     ...target,
     targetId: target.identityId,
@@ -4050,6 +4057,7 @@ it('settles an undelivered successor after Core reopens with its Create reply wi
   let withholdCreate = false;
   const f = await faultFixture({
     orderReleaseRefusalRecycle: true,
+    useLayoutDeploymentId: true,
     beforeEffect: (kind, request) => {
       if (kind !== 'sandbox.create' || !withholdCreate) return;
       createAccepted.resolve(request);
@@ -4140,6 +4148,7 @@ it('settles an undelivered successor after Core reopens with its Create reply wi
       },
       executionBackend: runtime.turnExecutor.executionBackend!,
       cleanupBackendSession: runtime.cleanupBackendSession,
+      awaitPreparedBackendCleanup: runtime.awaitPreparedBackendCleanup,
       reconcileExecutions: () => runtime.executionReconciler.runOnce(),
       prepareBackendCleanup: runtime.prepareBackendCleanup,
       restoreBackendSession: runtime.restoreBackendSession,
@@ -4230,13 +4239,26 @@ it('settles an undelivered successor after Core reopens with its Create reply wi
       return { status: Number(headers[':status']), body: Buffer.concat(chunks).toString() };
     };
     const connectEpoch = async (physicalEpoch: string) => {
-      if (physical) await authority.closePhysicalConnection(physical);
-      coldClient?.destroy();
-      const allocated = await transitionTestNativeRuntimeTargetFields('allocate', db, {
-        ...target,
-        observedAt: new Date().toISOString(),
-      });
-      generation = allocated.connectionGeneration;
+      if (physical) {
+        await authority.closePhysicalConnection(physical);
+        coldClient?.destroy();
+        const allocated = await transitionTestNativeRuntimeTargetFields('allocate', db, {
+          ...target,
+          observedAt: new Date().toISOString(),
+        });
+        generation = allocated.connectionGeneration;
+      } else {
+        // An already admitted original reply can reach this new dispatcher. Do not allocate
+        // a second Vault generation for the same Epoch just to present those delayed bytes.
+        const current = nanoHostStorage.value.owner.readRuntimeTarget(target.targetId);
+        if (
+          current.state !== 'ready' ||
+          !current.value ||
+          current.value.physicalEpoch !== physicalEpoch
+        )
+          throw new Error('Missing original admitted RuntimeTarget.');
+        generation = current.value.connectionGeneration;
+      }
       coldClient = connect(`http://127.0.0.1:${address.port}`);
       expect(await post('/api/nanohost/transport/session/readiness', { physicalEpoch })).toEqual({
         status: 204,
@@ -4260,6 +4282,10 @@ it('settles an undelivered successor after Core reopens with its Create reply wi
     expect(refusal.body).toContain('NanoHost effect result does not match a pending request.');
     expect(onNative(db, (owner) => getWorkerStorageBinding(owner, writer))).toEqual(originalHold);
     expect(store.getAgentSession(agentSessionId).retainedStorage).toEqual(retainedStorage);
+    await expect(
+      nanoHostStorage.value.owner.recoverUndeliveredSuccessor(attempt, 'teardown')
+    ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    expect(onNative(db, (owner) => getWorkerStorageBinding(owner, writer))).toEqual(originalHold);
 
     // The 409 ends the original Host epoch. Model the supervised fresh-empty epoch
     // after the provider has removed the old Sandbox, without inventing a Delete receipt.
@@ -4297,7 +4323,15 @@ it('settles an undelivered successor after Core reopens with its Create reply wi
       error: { code: 'worker_governance_restart_recovery' },
     });
     expect(store.getAgentSession(agentSessionId).retainedStorage).toEqual(retainedStorage);
+    await runNanoHostAttemptRecoveryMaintenance(db, recovery);
+    expect(
+      store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed')
+    ).toHaveLength(1);
     expect(findNextDispatchableSchedulerAdmissionEntry(db)).toBeNull();
+    expect(await post('/api/nanohost/transport/effects/sandbox.create', {})).toEqual({
+      status: 204,
+      body: '',
+    });
     expect(f.dispatchedCommands).toEqual([]);
   } finally {
     stopOriginal.reject(
