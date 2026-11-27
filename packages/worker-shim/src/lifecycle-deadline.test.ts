@@ -57,6 +57,15 @@ it.each(['', '100000 0', '0 100000', 'invalid', '100000 100000 extra'])(
   }
 );
 
+it.each(['quota', 'period'] as const)(
+  'serializes native startup when the numeric %s overflows',
+  async (field) => {
+    const overflowing = '9'.repeat(310);
+    const quota = field === 'quota' ? `${overflowing} 100000` : `100000 ${overflowing}`;
+    expect(await startupDefault(8, quota)).toBe(1);
+  }
+);
+
 it('reserves the cleanup tail from workRemainingMs and clamps an oversized tail to the budget', () => {
   let now = 1_000;
   const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);

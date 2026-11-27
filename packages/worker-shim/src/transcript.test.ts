@@ -456,6 +456,47 @@ describe('WorkerTranscriptWriter', () => {
     }
   });
 
+  it('does not spool or send the body of omitted metadata', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-omitted-body-'));
+    mkdirSync(dirname(join(sessionDir, workerObservationSourceRelativePath(0))), {
+      recursive: true,
+    });
+    const appendEvent = vi.fn(async () => writer.stopObservationDelivery());
+    const writer = new WorkerTranscriptWriter({ lineage, sessionDir, appendEvent });
+    const bytes = Buffer.from('omitted body');
+    try {
+      await writer.writeObservation(
+        {
+          observationId: 'obs_omitted_body',
+          sourceRef: 'source_test',
+          sourceSequence: 0,
+          observedAt: '2026-10-21T00:00:00.000Z',
+          fact: { kind: 'tool', runtimeOriginRef: null, phase: 'completed', callRef: 'tool_call' },
+          content: {
+            state: 'expected',
+            boundary: 'tool-args',
+            mediaType: 'application/json',
+            bytes: bytes.length,
+            sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            chunkCount: 1,
+          },
+        },
+        bytes
+      );
+      await expect(
+        writer.writeTerminalOutcome({ status: 'interrupted', stopReason: 'aborted' })
+      ).resolves.toMatchObject({ sequence: 2 });
+      expect(appendEvent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'observation.recorded' }),
+        })
+      );
+      expect(existsSync(join(sessionDir, workerObservationSourceRelativePath(0)))).toBe(false);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   it('joins metadata admitted before cutoff while its local append is pending', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-metadata-stop-'));
     const appendEvent = vi.fn(async (_record: WorkerCanonicalEventRecord) => undefined);

@@ -1,8 +1,11 @@
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
@@ -17,9 +20,12 @@ import {
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import {
   appendWorkObservation,
+  appendWorkObservationChunk,
   applyControlWorkObservation,
   ObservationCollectionStoppedError,
+  parseWorkObservationRecord,
   prepareControlTurnReap,
+  publishControlWorkObservationBodies,
   readWorkObservations,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
@@ -35,8 +41,8 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Creates a real persisted Turn with capture off and a migrated Workspace database. */
-async function fixture() {
+/** Creates a real persisted Turn and a migrated Workspace database. */
+async function fixture(value: 'on' | 'off' = 'off') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-recovery-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
@@ -49,7 +55,7 @@ async function fixture() {
     { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     null,
     {
-      captureCoverage: { scope: 'server', value: 'off' },
+      captureCoverage: { scope: 'server', value },
     }
   );
   const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -183,6 +189,382 @@ async function expectNativeReapRefusal(f: Awaited<ReturnType<typeof fixture>>, m
     f.db.sqlite.exec('ROLLBACK');
   }
 }
+
+/** Uses the exact standalone owner's transaction while seeding large bounded inputs. */
+function appendInOwner(
+  f: Awaited<ReturnType<typeof fixture>>,
+  observation: WorkObservationDraft,
+  workerSequence: number
+) {
+  return applyControlWorkObservation(
+    f.db.sqlite,
+    { kind: 'workspace', workspaceId: f.db.workspaceId },
+    { ...f.owner, observation, bodies: [], workerSequence }
+  );
+}
+
+/** Declares the producer's original chunk inventory without allocating the body. */
+function runtimeBody(id: string, bytes: number, chunkCount: number, sha256 = 'a'.repeat(64)) {
+  const fact = tool(id, id, 'completed');
+  return {
+    ...fact,
+    payload: {
+      ...fact.payload,
+      content: {
+        state: 'expected',
+        mediaType: 'application/json',
+        boundary: 'tool-args',
+        bytes,
+        chunkCount,
+        sha256: `sha256:${sha256}`,
+      },
+    },
+  };
+}
+
+describe('ordinary observation collection budgets', () => {
+  it('settles the exact reserved model gap after cutoff and reopens it once', async () => {
+    const f = await fixture('on');
+    const base = model(randomUUID(), 'reserved-model');
+    const observation = { ...base, payload: { ...base.payload, content: { state: 'expected' } } };
+    const body = {
+      id: 'body',
+      bytes: Buffer.from('one'),
+      boundary: 'model.request',
+      mediaType: 'application/json',
+    };
+    const declared = { ...f.owner, observation, bodies: [body] };
+    const expectation = await appendWorkObservation(f.db, {
+      ...declared,
+      deferBodyPublication: true,
+    });
+    await observe(f, runtimeBody('fit', 4_092, 4_092));
+    await expect(observe(f, tool('cross', 'cross', 'completed'))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'row-count', firstOmittedSequence: 3 },
+    });
+    const cutoff = readWorkObservationTurnBinding(f.db, f.owner).turn.observationCutoff;
+    const bundleId = workObservationBodyBundleId(
+      f.db.workspaceId,
+      f.owner.threadId,
+      f.owner.turnId,
+      observation.id,
+      body.id
+    );
+    const staged = join(
+      f.dataRoot,
+      'workspaces',
+      f.db.workspaceId,
+      'evidence',
+      'backend',
+      bundleId,
+      'raw',
+      'content'
+    );
+    expect(existsSync(staged)).toBe(false);
+    f.db.sqlite.exec(
+      "CREATE TRIGGER unavailable_body BEFORE INSERT ON evidence_bundles BEGIN SELECT RAISE(ABORT, 'test unavailable body'); END"
+    );
+    try {
+      await expect(appendWorkObservation(f.db, declared)).rejects.toThrow();
+      expect(readFileSync(staged)).toEqual(body.bytes);
+      expect(
+        f.db.sqlite
+          .prepare('SELECT 1 FROM evidence_bundles WHERE evidence_bundle_id=?')
+          .get(bundleId)
+      ).toBeUndefined();
+    } finally {
+      f.db.sqlite.exec('DROP TRIGGER unavailable_body');
+    }
+    const reason = 'capture-failed';
+    const gap = {
+      ...base,
+      id: `${base.id}:gap:${reason}`,
+      parent: base.id,
+      type: 'model.capture-gap',
+      payload: {
+        direction: 'request',
+        event: 'request',
+        attempt: 0,
+        content: { state: 'unavailable', reason },
+      },
+    };
+    const unrelated = { ...gap, id: 'unrelated-gap', corr: 'wrong-correlation' };
+    await expect(observe(f, unrelated)).rejects.toMatchObject({ disposition: 'closed' });
+    const first = await appendWorkObservation(f.db, { ...f.owner, observation: gap, bodies: [] });
+    expect(first).toMatchObject({
+      disposition: 'committed',
+      observation: {
+        type: 'model.capture-gap',
+        parent: base.id,
+        payload: { content: { state: 'unavailable', reason } },
+      },
+    });
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(db);
+    const cold = { ...f, db };
+    expect(await appendWorkObservation(db, { ...f.owner, observation: gap, bodies: [] })).toEqual({
+      disposition: 'duplicate',
+      observation: first.observation,
+    });
+    expect(await appendWorkObservation(db, { ...declared, deferBodyPublication: true })).toEqual({
+      ...expectation,
+      disposition: 'duplicate',
+    });
+    await expect(appendWorkObservation(db, declared)).rejects.toThrow();
+    expect(readWorkObservationTurnBinding(db, f.owner).turn.observationCutoff).toEqual(cutoff);
+    await recover(cold);
+    const rows = readWorkObservations(db, f.owner);
+    expect(rows.filter((row) => row.type === 'model.capture-gap')).toEqual([first.observation]);
+    expect(rows.filter((row) => row.type === 'content.published')).toEqual([]);
+    expect(rows.at(-1)?.payload.truncation).toEqual(cutoff?.summary);
+    expect(
+      parsePortableWorkObservations(
+        `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+        f.owner.turnId,
+        { summary: cutoff!.summary, live: false }
+      )
+    ).toEqual(rows);
+  });
+
+  it('refuses a competing CapabilityCall gap before it consumes the admitted body slot', async () => {
+    const f = await fixture('on');
+    const authorityActor = f.store.getTurnById(f.owner.turnId).triggerActor;
+    const startCall = () =>
+      startCapabilityCall({
+        ...f.owner,
+        workspaceDb: f.db,
+        workspaceId: f.db.workspaceId,
+        callId: allocateEntityId('cap'),
+        authorityActor,
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses',
+        redactionClass: 'restricted',
+        serviceRef: 'worker-inference-gateway',
+      });
+    const original = await startCall();
+    const competing = await startCall();
+    expect(original.inserted && competing.inserted).toBe(true);
+    const refsFor = (id: string) => [
+      {
+        kind: 'capability-call',
+        scope: { workspaceId: f.db.workspaceId },
+        edge: 'association' as const,
+        locator: id,
+      },
+    ];
+    const base = model(randomUUID(), 'reserved-association');
+    const observation = {
+      ...base,
+      refs: refsFor(original.id),
+      payload: { ...base.payload, content: { state: 'expected' } },
+    };
+    const body = {
+      id: 'body',
+      bytes: Buffer.from('original'),
+      mediaType: 'application/json',
+      boundary: 'model.request',
+    };
+    const declared = { ...f.owner, observation, bodies: [body] };
+    await appendWorkObservation(f.db, { ...declared, deferBodyPublication: true });
+    await observe(f, runtimeBody('fit', 4_092, 4_092));
+    await expect(observe(f, tool('cross', 'cross', 'completed'))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'row-count', firstOmittedSequence: 3 },
+    });
+    const before = observationBytes(f);
+    const gap: WorkObservationDraft = {
+      ...base,
+      id: `${base.id}:gap:capture-failed`,
+      parent: base.id,
+      type: 'model.capture-gap',
+      refs: refsFor(competing.id),
+      payload: {
+        direction: 'request',
+        event: 'request',
+        attempt: 0,
+        content: { state: 'unavailable', reason: 'capture-failed' },
+      },
+    };
+    await expect(observe(f, gap)).rejects.toThrow();
+    expect(observationBytes(f)).toEqual(before);
+    await expect(appendWorkObservation(f.db, declared)).resolves.toMatchObject({
+      disposition: 'duplicate',
+    });
+    expect(readWorkObservations(f.db, f.owner).at(-1)).toMatchObject({
+      type: 'content.published',
+      parent: base.id,
+    });
+  });
+
+  it('reserves 4096 units including one companion and the unique chunk inventory', async () => {
+    const f = await fixture('on');
+    await observe(f, runtimeBody('tiny-chunks', 4094, 4094));
+    const backend = join(f.dataRoot, 'workspaces', f.db.workspaceId, 'evidence', 'backend');
+    const files = existsSync(backend) ? readdirSync(backend).sort() : [];
+    const before = observationBytes(f);
+    expect(before).toHaveLength(1);
+    await observe(f, runtimeBody('tiny-chunks', 4094, 4094));
+    const results = await Promise.allSettled([
+      observe(f, tool('one-more', 'one-more', 'completed')),
+      observe(f, tool('also-more', 'also-more', 'completed')),
+    ]);
+    const refusals = results.map((result) => {
+      if (result.status !== 'rejected') throw new Error('Owner accepted a 4097th work unit.');
+      expect(result.reason).toMatchObject({
+        truncation: { reason: 'row-count', firstOmittedSequence: 2, omittedCount: 1 },
+      });
+      return (result.reason as ObservationCollectionStoppedError).disposition;
+    });
+    expect(refusals.sort()).toEqual(['closed', 'truncated']);
+    expect(observationBytes(f)).toEqual(before);
+    expect(existsSync(backend) ? readdirSync(backend).sort() : []).toEqual(files);
+  });
+
+  it('charges exactly 8 MiB of serialized metadata across pages including UTF-8 and escaping', async () => {
+    const f = await fixture();
+    await shutdownControlStoreWorkerClient();
+    const row = (seq: number, bytes: number) => {
+      const draft = {
+        ...tool(`metadata-${seq}`, `call-${seq}`, 'completed'),
+        ext: { text: 'é"\\' },
+      };
+      const base = parseWorkObservationRecord({ ...draft, seq, v: 1, turnId: f.owner.turnId });
+      return {
+        ...draft,
+        ext: {
+          text:
+            draft.ext.text +
+            'a'.repeat(bytes - Buffer.byteLength(JSON.stringify({ ...base, workerSequence: seq }))),
+        },
+      };
+    };
+    f.db.sqlite.transaction(() => {
+      for (let seq = 1; seq <= 127; seq++)
+        expect(appendInOwner(f, row(seq, 65_536), seq).disposition).toBe('committed');
+      expect(appendInOwner(f, row(128, 32_768), 128).disposition).toBe('committed');
+      f.db.sqlite.exec('SAVEPOINT overflow');
+      expect(appendInOwner(f, row(129, 32_769), 129)).toMatchObject({
+        disposition: 'truncated',
+        truncation: { reason: 'metadata-bytes', firstOmittedSequence: 129 },
+      });
+      f.db.sqlite.exec('ROLLBACK TO overflow; RELEASE overflow');
+      expect(appendInOwner(f, row(129, 32_768), 129).disposition).toBe('committed');
+    })();
+    const committedBytes = (observationBytes(f) as { record_json: string }[]).reduce(
+      (total, entry) => total + Buffer.byteLength(entry.record_json),
+      0
+    );
+    expect(committedBytes).toBe(8 * 1024 * 1024);
+    // A historical counter written before Node C must rebuild the same budget from both pages.
+    const counter = () =>
+      f.db.sqlite
+        .prepare(
+          "SELECT json_extract(record_json,'$.observationCounter.budget.metadataBytes') FROM control_turns WHERE id=?"
+        )
+        .pluck()
+        .get(f.owner.turnId);
+    expect(counter()).toBe(committedBytes);
+    f.db.sqlite
+      .prepare(
+        "UPDATE control_turns SET record_json=json_remove(record_json,'$.observationCounter.budget') WHERE id=?"
+      )
+      .run(f.owner.turnId);
+    await expect(observe(f, tool('more-metadata', 'final', 'completed'))).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'metadata-bytes', firstOmittedSequence: 130 },
+    });
+    expect(observationBytes(f)).toHaveLength(129);
+  });
+
+  it('reserves 64 MiB before bytes, survives reopen, and finishes an admitted body after cutoff', async () => {
+    const f = await fixture('on');
+    const maximum = 16 * 1024 * 1024;
+    const digest = createHash('sha256').update('abcd').digest('hex');
+    await observe(f, runtimeBody('admitted', 4, 2, digest));
+    for (let index = 0; index < 4; index++) {
+      const bytes = maximum - (index === 3 ? 4 : 0);
+      await observe(f, runtimeBody(`body-${index}`, bytes, Math.ceil(bytes / 49_152)));
+    }
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(db);
+    const cold = { ...f, db };
+    const omitted = runtimeBody('omitted', 1, 1, createHash('sha256').update('x').digest('hex'));
+    await expect(observe(cold, omitted)).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'body-bytes', firstOmittedSequence: 6 },
+    });
+    const chunk = (observationId: string, chunkIndex: number, byteOffset: number, data: string) =>
+      appendWorkObservationChunk(
+        db,
+        {
+          ...f.owner,
+          chunk: {
+            observationId,
+            chunkIndex,
+            byteOffset,
+            byteLength: data.length,
+            totalBytes: observationId === 'omitted' ? 1 : 4,
+            replay: true,
+          },
+        },
+        Buffer.from(data)
+      );
+    const backend = join(f.dataRoot, 'workspaces', db.workspaceId, 'evidence', 'backend');
+    const files = existsSync(backend) ? readdirSync(backend).sort() : [];
+    expect(() =>
+      publishControlWorkObservationBodies(db, {
+        ...f.owner,
+        observation: omitted,
+        bodies: [
+          {
+            id: 'content',
+            bytes: Buffer.from('x'),
+            mediaType: 'application/json',
+            boundary: 'tool-args',
+          },
+        ],
+      })
+    ).toThrow('requires a committed declaration');
+    await expect(chunk('omitted', 0, 0, 'x')).rejects.toThrow();
+    expect(existsSync(backend) ? readdirSync(backend).sort() : []).toEqual(files);
+
+    await chunk('admitted', 0, 0, 'ab');
+    const bundleId = workObservationBodyBundleId(
+      db.workspaceId,
+      f.owner.threadId,
+      f.owner.turnId,
+      'admitted',
+      'content'
+    );
+    const source = join(backend, bundleId, 'raw');
+    const inventory = readdirSync(source).sort();
+    await chunk('admitted', 0, 0, 'ab');
+    await expect(chunk('admitted', 0, 0, 'xy')).rejects.toThrow();
+    await expect(chunk('admitted', 1, 0, 'abc')).rejects.toThrow();
+    expect(readdirSync(source).sort()).toEqual(inventory);
+    await chunk('admitted', 1, 2, 'cd');
+    expect(
+      readWorkObservations(db, f.owner).filter((row) => row.type === 'content.published')
+    ).toMatchObject([{ parent: 'admitted' }]);
+    expect(readdirSync(backend).sort()).toEqual([...files, bundleId].sort());
+    await expect(observe(cold, omitted)).rejects.toMatchObject({
+      disposition: 'truncated',
+      truncation: { reason: 'body-bytes', omittedCount: 1, firstOmittedSequence: 6 },
+    });
+    await recover(cold);
+    expect(readWorkObservations(db, f.owner).at(-1)?.payload.truncation).toMatchObject({
+      reason: 'body-bytes',
+      firstOmittedSequence: 6,
+      omittedCount: 1,
+    });
+  });
+});
 
 describe('native terminal recovery observations', () => {
   it.each([false, true])(

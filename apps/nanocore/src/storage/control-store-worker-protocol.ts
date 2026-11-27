@@ -724,14 +724,15 @@ export const ControlProvenanceInputSchema = z
 /** Closed private preparation input for the existing native FIFO. */
 export type ControlProvenanceInput = z.infer<typeof ControlProvenanceInputSchema>;
 /** Metadata acknowledgement is emitted only after its covering FULL commit. */
-export const ControlProvenanceResultSchema = z
-  .object({
+export const ControlProvenanceResultSchema = z.union([
+  z.strictObject({
     complete: z.boolean(),
     indexBundleId: z.string().nullable(),
     rawBundleId: z.string(),
     runtimeEvidenceId: z.string(),
-  })
-  .strict();
+  }),
+  ObservationOmissionResultSchema,
+]);
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
