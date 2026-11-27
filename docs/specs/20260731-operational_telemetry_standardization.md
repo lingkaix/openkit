@@ -128,7 +128,7 @@ Application and test logs follow the OpenTelemetry Log Data Model (via stock Log
 
 ### Control Store Pressure Sample
 
-Sample the Core database and WAL bytes, age since complete checkpoint, queued and open live-set counts, and commit p99. Use the control-store qualification thresholds for checkpoint at 8 MiB or 1 s and WAL pressure at 32 MiB or 5 s (current defaults). Evaluate commit p99 against the [accepted writer load profile](20261019-durable_execution_and_control_store.md#acceptance). Use bounded diagnostic log samples. Attribute database, WAL and body growth and cutoff rates through the existing scope correlation attributes for logs. Keep samples in the existing telemetry retention. An alarm supplies diagnostic evidence only. Physical admission and terminal headroom remain with the existing [control-store and filesystem owners](20261019-durable_execution_and_control_store.md#write-and-space-budget).
+Sample the Core database and WAL bytes, age since complete checkpoint, queued and open live-set counts, and commit p99. Use the control-store qualification thresholds for checkpoint at 8 MiB or 1 s and WAL pressure at 32 MiB or 5 s (current defaults). Evaluate commit p99 against the [accepted writer load profile](20261019-durable_execution_and_control_store.md#acceptance). Use bounded diagnostic log samples. Attribute database, WAL and body growth and cutoff rates through the existing scope correlation attributes for logs. Keep samples in the existing telemetry retention. The native writer emits at most one sample per active owner every 5 seconds and keeps at most 128 successful COMMIT timings per owner between samples. The cutoff sample counts typed truncation responses in its window, including exact replays. These counts and the window duration support rate calculation. An alarm supplies diagnostic evidence only. Physical admission and terminal headroom remain with the existing [control-store and filesystem owners](20261019-durable_execution_and_control_store.md#write-and-space-budget).
 
 ### Failed Internal Gateway Logical Calls
 
@@ -177,6 +177,7 @@ The deployment-admin App Diagnostics response (`DiagnosticsProcessSampleSchema` 
 
 - `apps/nanocore/src/telemetry.ts`
 - `apps/nanocore/src/telemetry-local-exporter.ts`
+- `apps/nanocore/src/storage/control-store-pressure-telemetry.ts`
 - `apps/nanocore/src/runtime/`
 - `apps/nanocore/src/internal-agents/gateway-provider.ts`
 - `packages/app-api-schemas/src/diagnostics.ts`
@@ -184,7 +185,6 @@ The deployment-admin App Diagnostics response (`DiagnosticsProcessSampleSchema` 
 
 ## Implementation Gaps
 
-- Control-store pressure sample - Core file and WAL pressure, live-set and commit latency sampling, and scope-attributed growth and cutoff rates await implementation - #989
 - Stage-duration histogram journal-step sampling - `openkit.turn.stage.duration` samples process-local `withLifecycleStageTelemetry` wrappers rather than ended execution-journal stage-step rows - #742
 - Worker-kind metric dimension vocabulary - `openkit.worker.kind` in `apps/nanocore/src/telemetry.ts` omits the `deepseek` adapter and retains `claude-code`, which has no adapter - #727
 - Worker shim phase-marker transport, journal projection, and NanoHost resource-summary projection - Bounded shim phase markers (`openkit.worker.phase` with `verified: false`) and NanoHost container-lifetime resource summaries are not projected into execution-journal events - #221, #818
