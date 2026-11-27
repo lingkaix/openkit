@@ -90,7 +90,10 @@ import {
 import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
-import { recordCoreIdleHarnessConsumptionInDb } from '../runtime/core-journal-records.js';
+import {
+  readSandboxReleaseRefusalOrder,
+  recordCoreIdleHarnessConsumptionInDb,
+} from '../runtime/core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import {
   applyControlExecutionJournal,
@@ -110,8 +113,10 @@ import { StoredGoalCompletionCandidateV1Schema } from '../runtime/goal-retained-
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import {
   acknowledgeNanoHostHarnessResult,
+  drainNanoHostSandboxAdmission,
   inspectNanoHostIdleCloseConsumption,
 } from '../runtime/nanohost-harness-records.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type {
   ControlPendingCommandInput,
@@ -214,6 +219,7 @@ import {
 } from './control-store-pending.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
+  assertControlProductWriter,
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductOwner,
@@ -353,7 +359,6 @@ import {
 import type { NanoHostEpochKernelReply } from './nanohost-epoch-kernel-codecs.js';
 import {
   applyNanoHostRecoveryMutation,
-  applySandboxReleaseRefusalDrain,
   readNanoHostRecoveryLease,
   verifyNanoHostTerminalDrainAndRevocation,
 } from './nanohost-recovery-native.js';
@@ -2006,6 +2011,59 @@ function applyCommunicationKernel(
   } finally {
     communication.close();
   }
+}
+
+/** Finishes the exact Core order inside the Native writer. The parent alone is not proof. */
+function applySandboxReleaseRefusalDrain(
+  owner: { readonly sqlite: Database.Database },
+  core: CoreDb,
+  executionId: string
+): void {
+  assertControlProductWriter(owner.sqlite);
+  owner.sqlite
+    .transaction(() => {
+      const refuse = (): never => {
+        throw new ControlProductPreconditionError();
+      };
+      const order = readSandboxReleaseRefusalOrder(core, executionId) ?? refuse();
+      const target = getNanoHostRuntimeTarget(owner, order.targetId);
+      if (
+        !target?.ready ||
+        !target.predecessorFenced ||
+        !target.freshEmpty ||
+        target.physicalEpoch !== order.physicalEpoch
+      )
+        refuse();
+      const parent = owner.sqlite.prepare(`SELECT lifecycle_state AS lifecycle,
+      health_state AS health, drain_state AS drain, cleanup_state AS cleanup
+      FROM sandbox_runtime_records WHERE sandbox_runtime_id=? AND sandbox_binding_ref=?
+        AND runtime_target_id=? AND origin_physical_epoch=?`);
+      const read = () =>
+        parent.get(order.runtimeId, order.bindingRef, order.targetId, order.physicalEpoch) as
+          | { lifecycle: string; health: string; drain: string; cleanup: string }
+          | undefined;
+      const resident = read();
+      if (
+        !resident ||
+        resident.lifecycle !== 'open' ||
+        resident.health !== 'ready' ||
+        resident.cleanup !== 'clean'
+      )
+        refuse();
+      const incomplete = () =>
+        owner.sqlite
+          .prepare(`SELECT 1 FROM harness_instance_records
+      WHERE sandbox_runtime_id=? AND (lifecycle_state <> 'failed' OR drain_state <> 'draining')
+      LIMIT 1`)
+          .get(order.runtimeId) !== undefined;
+      if (resident?.drain === 'draining' && !incomplete()) return;
+      drainNanoHostSandboxAdmission(owner, {
+        sandboxBindingRef: order.bindingRef,
+        originPhysicalEpoch: order.physicalEpoch,
+      });
+      if (read()?.drain !== 'draining' || incomplete()) refuse();
+    })
+    .immediate();
 }
 
 /** Applies one local tuple inside the existing owner transaction and savepoint. */
