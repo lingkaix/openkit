@@ -1018,7 +1018,12 @@ export function parsePortableWorkObservations(
     rows.push(row);
   }
   const prefix = !turn?.summary || !reap ? rows : rows.slice(0, reap.seq - 1);
-  assertReapObservationPrefix(prefix, turn?.summary, reap, turn?.live);
+  assertReapObservationPrefix(
+    prefix.map((record) => ({ record })),
+    turn?.summary,
+    reap,
+    turn?.live
+  );
   return rows;
 }
 

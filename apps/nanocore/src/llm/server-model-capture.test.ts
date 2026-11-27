@@ -1,9 +1,9 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
-import { readWorkObservationBody } from '../evidence-bundles.js';
+import { readWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import {
   getControlStoreWorkerClient,
@@ -13,7 +13,12 @@ import { openCoreDb, serverStoragePath } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { openServerWorkProductReadHandle } from '../storage/server-work-product-reads.js';
 import { serverWorkStorageDescriptor } from '../storage/server-work-schema.js';
-import { readControlWorkObservations } from '../storage/work-observations.js';
+import {
+  applyControlWorkObservation,
+  publishControlWorkObservationBodies,
+  readControlWorkObservations,
+  type WorkObservationDraft,
+} from '../storage/work-observations.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestServerWork } from '../test-support/server-work-store.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
@@ -206,3 +211,138 @@ it.each(['on', 'off'] as const)(
     }
   }
 );
+
+it('keeps an over-budget Server body out of preparation and completes an earlier reservation', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-observation-budget-'));
+  const coreDb = createTestCoreDb(dataRoot);
+  let reader: Awaited<ReturnType<typeof openTestServerWork>>['reader'] | undefined;
+  try {
+    const userId = ensureLocalUser(coreDb);
+    const { store, binding, reader: opened } = await openTestServerWork(coreDb);
+    reader = opened;
+    const actor = { kind: 'user' as const, id: userId };
+    const thread = await store.createServerThread('Maintenance', undefined, undefined, {
+      actor,
+      credentialRef: null,
+    });
+    const turn = await store.createServerTurn(thread.id, 'Maintain', actor, null, {
+      captureCoverage: { scope: 'server', value: 'on' },
+    });
+    const input = { threadId: thread.id, turnId: turn.id };
+    const admission = store.getServerTurnAdmission(turn.id);
+    const draft = (id: string): WorkObservationDraft => ({
+      id,
+      ts: '2026-09-29T00:00:00.000Z',
+      type: 'model.observed',
+      obs: 'llm-gateway',
+      payload: {
+        attempt: 0,
+        direction: 'response',
+        event: 'text_end',
+        runtimeOriginRef: null,
+        content: { state: 'expected' },
+      },
+    });
+    const body = {
+      id: 'body',
+      boundary: 'assistant.text',
+      mediaType: 'text/plain',
+      bytes: Buffer.from('kept'),
+    };
+    const append = (id: string, deferBodyPublication?: true) =>
+      binding.owner.appendObservation!(admission, {
+        ...input,
+        observation: draft(id),
+        bodies: [body],
+        ...(deferBodyPublication ? { deferBodyPublication } : {}),
+      });
+    expect(await append('reserved', true)).toMatchObject({
+      state: 'ready',
+      value: { disposition: 'committed', observation: { id: 'reserved' } },
+    });
+    const sqlite = new Database(serverStoragePath(dataRoot, 'server-work'), {
+      fileMustExist: true,
+    });
+    try {
+      sqlite.pragma('synchronous=FULL');
+      // Commit exact declarations on the Server owner without allocating the unuploaded bodies.
+      sqlite.transaction(() => {
+        const owner = { kind: 'server' as const };
+        for (let index = 0; index < 4; index++) {
+          const observation = draft(`admitted-${index}`);
+          expect(
+            applyControlWorkObservation(sqlite, owner, {
+              ...input,
+              observation,
+              publishBodies: false,
+              bodies: [
+                {
+                  ...body,
+                  bytes: 16 * 1024 * 1024 - (index === 3 ? body.bytes.length : 0),
+                  sha256: 'a'.repeat(64),
+                  bundleId: workObservationBodyBundleId(
+                    owner,
+                    thread.id,
+                    turn.id,
+                    observation.id,
+                    body.id
+                  ),
+                },
+              ],
+            })
+          ).toMatchObject({ disposition: 'committed', publication: null });
+        }
+      })();
+      const backend = join(dataRoot, 'server', 'evidence', 'backend');
+      const inventory = () => (existsSync(backend) ? readdirSync(backend).sort() : []);
+      const before = inventory();
+      expect(() =>
+        publishControlWorkObservationBodies(
+          { scope: 'server-work', sqlite, dataRoot },
+          {
+            ...input,
+            observation: draft('omitted'),
+            bodies: [body],
+          }
+        )
+      ).toThrow('requires a committed declaration');
+      expect(inventory()).toEqual(before);
+
+      expect(await append('omitted')).toMatchObject({
+        state: 'ready',
+        value: {
+          disposition: 'truncated',
+          truncation: { reason: 'body-bytes', firstOmittedSequence: 6 },
+        },
+      });
+      expect(inventory()).toEqual(before);
+      expect(await append('reserved')).toMatchObject({
+        state: 'ready',
+        value: { disposition: 'duplicate', observation: { id: 'reserved' } },
+      });
+      expect(inventory()).toEqual(
+        [
+          ...before,
+          workObservationBodyBundleId({ kind: 'server' }, thread.id, turn.id, 'reserved', body.id),
+        ].sort()
+      );
+      expect(
+        readControlWorkObservations(sqlite, { kind: 'server' }, input).map((row) => row.id)
+      ).toEqual([
+        'reserved',
+        'admitted-0',
+        'admitted-1',
+        'admitted-2',
+        'admitted-3',
+        'reserved:publication',
+      ]);
+    } finally {
+      sqlite.close();
+    }
+  } finally {
+    reader?.close();
+    await shutdownControlStoreWorkerClient();
+    closeTestCoreDb(coreDb);
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});

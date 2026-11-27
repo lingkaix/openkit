@@ -122,8 +122,8 @@ import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlemen
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   prepareWorkerRuntimeProvenance,
+  readRetainedRuntimeProvenance,
   recordWorkerRuntimeProvenanceMetadata,
-  type WorkerRuntimeProvenanceMetadataInput,
 } from '../runtime/worker-runtime-provenance.js';
 import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
@@ -558,8 +558,9 @@ type WriteRequest = WriteCommand & {
   readonly preparedRecoveryHistory?: PreparedControlRecoveryHistory | undefined;
   readonly preparedRecoverySafety?: PreparedControlRecoverySafety | undefined;
   readonly preparedTargetProof?: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
-  readonly preparedProvenance?: WorkerRuntimeProvenanceMetadataInput | undefined;
+  readonly preparedProvenance?: Awaited<ReturnType<typeof prepareWorkerRuntimeProvenance>>;
   readonly preparedObservation?: ControlWorkObservationInput | undefined;
+  readonly retainedProvenanceBytes?: number | undefined;
   readonly preparedResolvedSetup?: PreparedResolvedAgentSetup;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
@@ -3773,10 +3774,10 @@ function flush(owner: OwnedDatabase): void {
           } else if (request.operation === 'provenance') {
             if (owner.scopeDb?.scope !== 'workspace' || !request.preparedProvenance)
               throw new ControlProductPreconditionError();
-            const result = recordWorkerRuntimeProvenanceMetadata(
-              owner.scopeDb,
-              request.preparedProvenance
-            );
+            const result =
+              'disposition' in request.preparedProvenance
+                ? request.preparedProvenance
+                : recordWorkerRuntimeProvenanceMetadata(owner.scopeDb, request.preparedProvenance);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -3790,7 +3791,9 @@ function flush(owner: OwnedDatabase): void {
             const result = applyControlWorkObservation(
               sqlite,
               owner.productOwner,
-              request.preparedObservation
+              request.preparedObservation,
+              false,
+              request.retainedProvenanceBytes
             );
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -5140,8 +5143,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedRecoveryHistory: PreparedControlRecoveryHistory | undefined;
           let preparedRecoverySafety: PreparedControlRecoverySafety | undefined;
           let preparedTargetProof: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
-          let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
+          let preparedProvenance:
+            | Awaited<ReturnType<typeof prepareWorkerRuntimeProvenance>>
+            | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
+          let retainedProvenanceBytes: number | undefined;
           let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
             if (value.operation === 'server-work-owner') {
@@ -5315,8 +5321,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedProvenance = await prepareWorkerRuntimeProvenance(owner.scopeDb, value.input);
             }
             if (value.operation === 'observation') {
-              if (!owner.scopeDb) throw new ControlProductPreconditionError();
-              preparedObservation = prepareControlWorkObservationCommand(
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              if (!('chunk' in value.input) && !value.input.publishBodies)
+                retainedProvenanceBytes = (
+                  await readRetainedRuntimeProvenance(owner.scopeDb, value.input)
+                ).bytes;
+              preparedObservation = await prepareControlWorkObservationCommand(
                 owner.scopeDb,
                 value.input,
                 value.content
@@ -5618,6 +5628,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedTargetProof,
               preparedRecoveryHistory,
               preparedObservation,
+              retainedProvenanceBytes,
               preparedResolvedSetup,
               preparedProvenance,
               preparedMaterial,
