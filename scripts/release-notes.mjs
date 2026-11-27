@@ -138,11 +138,13 @@ function checkForwardMigrationNotes(notes) {
     'After migration, the previous image cannot run on the migrated Data Root.',
     'To roll back, restore the pre-update backup on the previous build.',
   ];
+  const plainVisibleText = /^[A-Za-z0-9 ,.#:-]+$/u;
   if (
     parts.length !== 2 ||
     parts[0].includes('<') ||
     paragraphs?.length !== 2 ||
     paragraphs.some((paragraph) => /[<\r\n]/u.test(paragraph)) ||
+    !plainVisibleText.test(paragraphs[1]) ||
     !paragraphs[0].startsWith('Make a cold Data Root backup before updating.') ||
     !paragraphs[1].startsWith(required[0]) ||
     !paragraphs[1].endsWith(required.at(-1))

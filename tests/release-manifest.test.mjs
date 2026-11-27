@@ -19,11 +19,11 @@ test('the invoked release-notes file matches the reviewed forward-migration admi
   // Retain an exact-byte assertion for shallow CI. Publication proofs still compare Git objects.
   assert.equal(
     createHash('sha256').update(readFileSync('scripts/release-notes.mjs')).digest('hex'),
-    '8c2806c933e8e0235805cfcfa0ec97e764c4ea5064d201a3c011ac2e0682d3fc'
+    '938191aaaa4b2e093d9945608bc0b864f660a708b6f948d0cab981ddb6228142'
   );
 });
 
-test('release notes CLI refuses a forward migration without the cold backup instruction', (t) => {
+test('release notes CLI refuses a forward migration without visible recovery instructions', (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-forward-notes-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(path.join(dir, 'release-notes'));
@@ -42,6 +42,10 @@ test('release notes CLI refuses a forward migration without the cold backup inst
     );
   };
   assert.equal(check(notes).status, 0);
+  const withColon = check(
+    notes.replace('operational backup, restore', 'operational backup: restore')
+  );
+  assert.equal(withColon.status, 0, withColon.stderr);
   const withoutBackup = check(notes.replace('Make a cold Data Root backup before updating. ', ''));
   assert.equal(withoutBackup.status, 1);
   assert.match(withoutBackup.stderr, /pre-update cold Data Root backup and recovery limits/);
@@ -50,6 +54,31 @@ test('release notes CLI refuses a forward migration without the cold backup inst
   );
   assert.equal(withoutRollback.status, 1);
   assert.match(withoutRollback.stderr, /pre-update cold Data Root backup and recovery limits/);
+
+  const required = [
+    'A Workspace operational backup restores only on the exact build that made it.',
+    'Cold Data Root backups can be restored across releases.',
+    'After a stopped-server restore, startup runs the required migrations.',
+    'After migration, the previous image cannot run on the migrated Data Root.',
+    'To roll back, restore the pre-update backup on the previous build.',
+  ];
+  const visibleRecovery = [
+    required[0],
+    'To recover an rc.10 Workspace operational backup, restore it on that rc.10 build, then update in place to rc.11.',
+    required[1],
+    required[2],
+    'Cross-release Workspace bundle restore is tracked in #764.',
+    required[3],
+    required[4],
+  ].join(' ');
+  const hiddenRecovery = [
+    `${required[0]} [details](https://example.invalid "x. ${required.join(' ')}").`,
+    'Cross-release Workspace bundle restore is tracked in #764.',
+    required[4],
+  ].join(' ');
+  const hiddenInLinkTitle = check(notes.replace(visibleRecovery, hiddenRecovery));
+  assert.equal(hiddenInLinkTitle.status, 1);
+  assert.match(hiddenInLinkTitle.stderr, /pre-update cold Data Root backup and recovery limits/);
 });
 
 /** Exact synthetic image/checksum/assessment inputs from the existing producers. */
