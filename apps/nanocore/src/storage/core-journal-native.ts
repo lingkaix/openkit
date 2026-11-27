@@ -2917,6 +2917,8 @@ function requireUndeliveredRefusalSuccessor(
   )?.workerStorage?.workSlotRef;
   const retained = agentSession.retainedStorage;
   const storage = retained && getWorkerStorageBinding({ sqlite: native }, retained);
+  const reservedGeneration =
+    retained?.attachmentGeneration === undefined ? null : retained.attachmentGeneration + 1;
   if (
     !snapshot ||
     snapshot.scope.turnId !== attempt.turnId ||
@@ -2928,27 +2930,31 @@ function requireUndeliveredRefusalSuccessor(
     agentSession.agentId !== admission.requestedAgentId ||
     agentSession.environmentPackageSnapshotId !== session.packageSnapshotId ||
     !retained ||
-    retained.attachmentGeneration === undefined ||
+    reservedGeneration === null ||
     !workSlotRef ||
     retained.workSlotRef !== workSlotRef ||
     !storage ||
     storage.workspaceId !== workspaceId ||
     storage.deploymentId !== session.deploymentId ||
     storage.runtimeTargetId !== session.runtimeTargetId ||
-    storage.attachmentGeneration !== retained.attachmentGeneration + 1 ||
     !storage.contributors.some(
       (item) =>
         item.threadId === attempt.threadId &&
         item.workSlotRef === workSlotRef &&
-        item.attachmentGeneration === storage.attachmentGeneration
-    ) ||
-    (session.state === 'cleaned'
-      ? storage.state !== 'idle'
-      : storage.state !== 'reserved' ||
-        storage.currentAgentSessionId !== attempt.agentSessionId ||
-        storage.currentThreadId !== attempt.threadId ||
-        storage.currentWorkSlotRef !== workSlotRef ||
-        storage.currentSandboxBindingRef !== null)
+        item.attachmentGeneration === reservedGeneration
+    )
+  )
+    throw held('contributor');
+  // A cleaned anchor can only come from the coupled detach. A later reservation
+  // changes the current writer, while the contributor still identifies our original one.
+  if (
+    session.state !== 'cleaned' &&
+    (storage.attachmentGeneration !== reservedGeneration ||
+      storage.state !== 'reserved' ||
+      storage.currentAgentSessionId !== attempt.agentSessionId ||
+      storage.currentThreadId !== attempt.threadId ||
+      storage.currentWorkSlotRef !== workSlotRef ||
+      storage.currentSandboxBindingRef !== null)
   )
     throw held('reservation');
 
@@ -2965,7 +2971,7 @@ function requireUndeliveredRefusalSuccessor(
     !!turn.completedAt;
   if ((!interrupted && turn?.status !== 'running') || (interrupted && session.state !== 'cleaned'))
     throw held('turn');
-  return { attempt, session, storage, interrupted };
+  return { attempt, session, storage, reservedGeneration, interrupted };
 }
 
 /** Preserves Core authority until its own interruption is backed by the coupled Native release. */
@@ -3020,7 +3026,7 @@ export function applyUndeliveredRefusalSuccessorInDb(
   input: UndeliveredSuccessor
 ): void {
   assertControlProductWriter(native);
-  const { attempt, session, storage } = requireUndeliveredRefusalSuccessor(
+  const { attempt, session, storage, reservedGeneration } = requireUndeliveredRefusalSuccessor(
     db,
     native,
     workspace,
@@ -3060,7 +3066,7 @@ export function applyUndeliveredRefusalSuccessorInDb(
   releaseWorkerStorageAttachment(owner, {
     storageRef: storage.storageRef,
     expectedRevision: storage.revision,
-    attachmentGeneration: storage.attachmentGeneration,
+    attachmentGeneration: reservedGeneration,
     cleanupProved: true,
   });
   if (session.state === 'cleanup-failed') transition('cleanup-failed', 'cleanup-pending');
