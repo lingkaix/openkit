@@ -13822,9 +13822,9 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it.each(['image.acquire', 'image.build', 'image.inspect', 'image.acquire.pending'] as const)(
+  it.for(['image.acquire', 'image.build', 'image.inspect', 'image.acquire.pending'] as const)(
     'keeps the ready connection usable after rejected %s and live cleanup',
-    async (operation) => {
+    async (operation, { signal }) => {
       const coreDb = createFactoryCoreDb();
       const authority = createNanoHostTransportSessionAuthority();
       const dispatch = createNanoHostSessionDispatch({
@@ -13852,6 +13852,17 @@ describe('createConfiguredTurnExecutor', () => {
         response.writeHead(204).end();
       });
       let client: ReturnType<typeof connectHttp2> | undefined;
+      let finishImageInspectWork:
+        | (() => Promise<PromiseSettledResult<unknown>[]>)
+        | undefined;
+      let imageInspectAcquireCommand: Record<string, unknown> | null = null;
+      let imageInspectAcquireResultSubmitted = false;
+      let imageInspectCommand: Record<string, unknown> | null = null;
+      let imageInspectResultSubmitted = false;
+      let bodyError: unknown;
+      let hasBodyError = false;
+      let imageInspectObservationFailure: unknown;
+      let hasImageInspectObservationFailure = false;
       try {
         server.listen(0, '127.0.0.1');
         await once(server, 'listening');
@@ -13931,6 +13942,60 @@ describe('createConfiguredTurnExecutor', () => {
         const rejected = expect(materialization).rejects.toThrow(
           operation === 'image.acquire.pending' ? 'already has a pending command' : 'effect_failed'
         );
+        if (operation === 'image.inspect') {
+          let materializationSettled = false;
+          const originalWork = Promise.allSettled<unknown>([materialization, rejected]);
+          void materialization.then(
+            () => {
+              materializationSettled = true;
+            },
+            () => {
+              materializationSettled = true;
+            }
+          );
+          finishImageInspectWork = async () => {
+            let completionError: unknown;
+            let hasCompletionError = false;
+            if (!materializationSettled) {
+              if (!imageInspectAcquireCommand) {
+                await vi.waitFor(async () => {
+                  imageInspectAcquireCommand = await dispatch.poll(physical, 'image.acquire');
+                  expect(imageInspectAcquireCommand).not.toBeNull();
+                });
+              }
+              try {
+                if (!imageInspectAcquireResultSubmitted) {
+                  await dispatch.result(physical, 'image.acquire', {
+                    requestId: imageInspectAcquireCommand!.requestId,
+                    digest: `sha256:${'c'.repeat(64)}`,
+                  });
+                  imageInspectAcquireResultSubmitted = true;
+                }
+                // Keep polling while the original materialization can still issue its command.
+                while (!imageInspectCommand && !materializationSettled) {
+                  signal.throwIfAborted();
+                  imageInspectCommand = await dispatch.poll(physical, 'image.inspect');
+                  if (!imageInspectCommand && !materializationSettled) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+                  }
+                }
+                if (imageInspectCommand && !imageInspectResultSubmitted) {
+                  await dispatch.result(physical, 'image.inspect', {
+                    requestId: imageInspectCommand.requestId,
+                    failureCode: 'effect_failed',
+                  });
+                  imageInspectResultSubmitted = true;
+                }
+              } catch (error) {
+                completionError = error;
+                hasCompletionError = true;
+              }
+            }
+            const settled = await originalWork;
+            if (hasCompletionError) throw completionError;
+            return settled;
+          };
+        }
         let command: Record<string, unknown> | null = null;
         await vi.waitFor(async () => {
           command = await dispatch.poll(
@@ -13939,6 +14004,7 @@ describe('createConfiguredTurnExecutor', () => {
           );
           expect(command).not.toBeNull();
         });
+        if (operation === 'image.inspect') imageInspectAcquireCommand = command;
         if (operation !== 'image.build' && operation !== 'image.acquire.pending') {
           expect(command).toMatchObject({ imageReference: 'openkit/worker-codex:dev' });
         }
@@ -13947,10 +14013,12 @@ describe('createConfiguredTurnExecutor', () => {
             requestId: command!.requestId,
             digest: `sha256:${'c'.repeat(64)}`,
           });
+          imageInspectAcquireResultSubmitted = true;
           await vi.waitFor(async () => {
             command = await dispatch.poll(physical, 'image.inspect');
             expect(command).not.toBeNull();
           });
+          imageInspectCommand = command;
         }
         if (operation === 'image.acquire.pending') {
           await rejected;
@@ -13974,6 +14042,7 @@ describe('createConfiguredTurnExecutor', () => {
             failureCode: 'effect_failed',
           }
         );
+        if (operation === 'image.inspect') imageInspectResultSubmitted = true;
         await rejected;
         if (predecessor) await predecessor.catch(() => undefined);
         const cleanup = runtime.cleanupBackendSession(backend.planSession(environmentPackage));
@@ -14002,11 +14071,39 @@ describe('createConfiguredTurnExecutor', () => {
           digest: `sha256:${'c'.repeat(64)}`,
         });
         await expect(next).resolves.toEqual({ digest: `sha256:${'c'.repeat(64)}` });
+      } catch (error) {
+        bodyError = error;
+        hasBodyError = true;
       } finally {
+        if (finishImageInspectWork) {
+          try {
+            const rejection = (await finishImageInspectWork())[1];
+            if (rejection?.status === 'rejected') {
+              imageInspectObservationFailure = rejection.reason;
+              hasImageInspectObservationFailure = true;
+            }
+          } catch (error) {
+            imageInspectObservationFailure = error;
+            hasImageInspectObservationFailure = true;
+          }
+        }
         client?.destroy();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         coreDb.sqlite.close();
       }
+      if (hasBodyError) {
+        if (
+          hasImageInspectObservationFailure &&
+          bodyError !== imageInspectObservationFailure
+        ) {
+          throw new AggregateError(
+            [bodyError, imageInspectObservationFailure],
+            'Factory setup and image.inspect rejection observation failed.'
+          );
+        }
+        throw bodyError;
+      }
+      if (hasImageInspectObservationFailure) throw imageInspectObservationFailure;
     }
   );
 
