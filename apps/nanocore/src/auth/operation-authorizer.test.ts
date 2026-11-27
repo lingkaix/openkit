@@ -45,6 +45,7 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -341,7 +342,7 @@ async function createFixture(prepared?: PreparedAuthBase) {
   };
 }
 
-let fixture: ReturnType<typeof createFixture>;
+let fixture: Awaited<ReturnType<typeof createFixture>>;
 
 // Real database and Workspace initialization can exceed the default hook bound on shared CI hosts.
 beforeAll(async () => {
@@ -2106,6 +2107,7 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('intersects current usable deployment administration with current Workspace access', async () => {
+    await openAdmittedTestNanoHost(fixture.coreDb);
     const send = () =>
       fixture.app.request(
         ...operationRequest('worker-environment.list', { workspaceId: fixture.workspace.id })
@@ -2137,6 +2139,7 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('requires a presented admin Token to remain usable and grants administrator eligibility without membership', async () => {
+    await openAdmittedTestNanoHost(fixture.coreDb);
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

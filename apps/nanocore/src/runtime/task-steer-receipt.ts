@@ -4,6 +4,7 @@ import { boundedJsonText } from '../bounded-read-text.js';
 import type { FsStore } from '../lib/store.js';
 import { projectOperationError } from '../operation-error.js';
 import { commandInputHash } from '../storage/control-store-input.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   StoredTaskSteerDispositionV1ReaderSchema,
@@ -62,26 +63,37 @@ export function readTaskSteerState(
     // A retained queued/dispatched row alone cannot advertise Sending after Core restart.
     if (live.coreDb && live.inputHash === hash) {
       try {
-        const row = live.coreDb.sqlite
-          .prepare(`SELECT h.schema_version AS version,h.operation,h.operation_state AS state,
+        const observed = getControlStoreWorkerClient().readAdmittedNanoHost(
+          live.coreDb.dataRoot,
+          (sqlite) =>
+            sqlite
+              .prepare(`SELECT h.schema_version AS version,h.operation,h.operation_state AS state,
           h.command_body_json AS command,h.result_json AS result,
           b.current_attempt_id AS attempt,b.agent_session_runtime_binding_id AS binding,b.agent_session_id AS session,
           b.next_turn_sequence AS sequence
-          FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
-          WHERE b.workspace_id=? AND b.thread_id=? AND b.current_turn_id=? AND b.lifecycle_state='active'`)
-          .get(workspaceId, threadId, item.turnId) as
-          | {
-              version: number;
-              operation: string;
-              state: string;
-              command: string;
-              result: string | null;
-              attempt: string;
-              binding: string;
-              session: string;
-              sequence: number;
-            }
-          | undefined;
+          FROM agent_session_runtime_bindings b
+          JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+          JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+          JOIN nanohost_runtime_targets t ON t.target_id=s.runtime_target_id
+          WHERE b.workspace_id=? AND b.thread_id=? AND b.current_turn_id=? AND b.lifecycle_state='active'
+            AND t.ready=1 AND t.fresh_empty=1 AND t.predecessor_fenced=1
+            AND t.physical_epoch=s.origin_physical_epoch AND h.lifecycle_state='open'`)
+              .get(workspaceId, threadId, item.turnId) as
+              | {
+                  version: number;
+                  operation: string;
+                  state: string;
+                  command: string;
+                  result: string | null;
+                  attempt: string;
+                  binding: string;
+                  session: string;
+                  sequence: number;
+                }
+              | undefined
+        );
+        if (observed.state !== 'ready') return unknown;
+        const row = observed.value;
         if (
           row?.version === 1 &&
           row.operation === 'turn.steer' &&

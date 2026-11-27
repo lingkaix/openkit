@@ -6,22 +6,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
@@ -30,7 +37,6 @@ import {
 import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
 
 const sandboxId = 'nh-1111111111111111';
@@ -57,7 +63,13 @@ const retainedResult = { requestId, sandboxId, state: 'deleted' };
 async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-delete-discard-'));
   const coreDb = openCoreDb(dataRoot);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
   applyMigrations(coreDb);
+  const nativeStorage = await openAdmittedTestNanoHost(coreDb);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -65,12 +77,16 @@ async function createFixture() {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const target = {
-    deploymentId: 'deployment-test',
+    deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
     identityId: 'nanohost-test',
     targetId: 'nanohost-test',
   };
   let authority = createNanoHostTransportSessionAuthority();
-  let dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+  let dispatch = createNanoHostSessionDispatch({
+    coreDb,
+    nativeStorage,
+    sessionAuthority: authority,
+  });
   let listener: ReturnType<typeof getRequestListener>;
   let physical: object | undefined;
   let generation = 0;
@@ -87,6 +103,11 @@ async function createFixture() {
       });
     }
     void listener(request, response);
+  });
+  onTestFinished(() => {
+    client?.destroy();
+    releaseAcknowledgement?.();
+    if (server.listening) server.close();
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -107,20 +128,29 @@ async function createFixture() {
     for await (const chunk of stream) chunks.push(Buffer.from(chunk));
     return { status: headers[':status'], body: Buffer.concat(chunks).toString() };
   };
+  async function allocateGeneration() {
+    const allocated = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+      kind: 'allocate',
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    if (allocated.state !== 'ready' || !allocated.value)
+      throw new Error('Fixture RuntimeTarget generation was not allocated.');
+    return allocated.value.connectionGeneration;
+  }
   /** A fresh dispatcher and session authority model a new Core boot with empty process-local maps. */
   const boot = async () => {
     client?.destroy();
     releaseAcknowledgement?.();
     heldAcknowledgement = undefined;
     authority = createNanoHostTransportSessionAuthority();
-    dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      nativeStorage,
+      sessionAuthority: authority,
+    });
     physical = undefined;
-    generation = (
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        ...target,
-        observedAt: new Date().toISOString(),
-      })
-    ).connectionGeneration;
+    generation = await allocateGeneration();
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use(`${deletePath}/result`, async (_context, next) => {
       await next();
@@ -133,6 +163,7 @@ async function createFixture() {
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage,
     });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     listener = getRequestListener(app.fetch);
@@ -192,8 +223,17 @@ async function createFixture() {
   const transition = async (
     toState: 'cleanup-pending' | 'cleanup-failed' | 'physical-cleaned' | 'cleaned'
   ) => {
-    const fromState = getWorkerBackendSession(coreDb, leaseId)!.state;
-    await transitionWorkerBackendSessionState(coreDb, { fromState, attemptId: leaseId, toState });
+    const current = nativeStorage.value.owner.read((sqlite) =>
+      getWorkerBackendSession({ sqlite }, leaseId)
+    );
+    if (current.state !== 'ready' || !current.value)
+      throw new Error('Fixture backend session is absent.');
+    await nativeStorage.value.owner.backendSession({
+      kind: 'transition',
+      fromState: current.value.state,
+      attemptId: leaseId,
+      toState,
+    });
   };
   await transition('cleanup-pending');
   return {
@@ -212,12 +252,7 @@ async function createFixture() {
       await authority.closePhysicalConnection(physical!);
       client.destroy();
       physical = undefined;
-      generation = (
-        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-          ...target,
-          observedAt: new Date().toISOString(),
-        })
-      ).connectionGeneration;
+      generation = await allocateGeneration();
       client = connectHttp2(origin);
       expect(await post('/api/nanohost/transport/session/readiness', { physicalEpoch })).toEqual({
         status: 204,
@@ -243,8 +278,13 @@ async function createFixture() {
       return { closed, headers };
     },
     coreDb,
+    target,
     post,
     transition,
+    snapshot: () => [
+      coreDb.sqlite.serialize(),
+      readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.serialize()),
+    ],
     get dispatch() {
       return dispatch;
     },
@@ -265,6 +305,7 @@ async function createFixture() {
       releaseAcknowledgement?.();
       server.close();
       await once(server, 'close');
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
@@ -288,14 +329,14 @@ describe('cleaned backend delete delivery discard', () => {
       await fixture.boot();
       await lostAcknowledgement.closed;
       expect(lostAcknowledgement.headers).toEqual([]);
-      const storedBefore = fixture.coreDb.sqlite.serialize();
+      const storedBefore = fixture.snapshot();
       expect(
         await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: true })
       ).toEqual({
         status: 204,
         body: '',
       });
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(storedBefore);
+      expect(fixture.snapshot()).toEqual(storedBefore);
       expect(await fixture.post(deletePath, {})).toEqual({ status: 204, body: '' });
       // A new real command still owns the operation; discard introduced no pending expectation.
       const next = fixture.queueDelete('d'.repeat(64));
@@ -331,18 +372,18 @@ describe('cleaned backend delete delivery discard', () => {
         await fixture.transition('cleanup-pending');
         await fixture.transition('physical-cleaned');
         await fixture.transition('cleaned');
-        const before = fixture.coreDb.sqlite.serialize();
+        const before = fixture.snapshot();
         expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(
           successStatus
         );
-        expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+        expect(fixture.snapshot()).toEqual(before);
         // The original failure remains the completed outcome and keeps its existing successor duplicate rules.
         expect(await fixture.post(`${deletePath}/result`, failure)).toEqual({
           status: 204,
           body: '',
         });
         expect((await fixture.post(`${deletePath}/result`, failure)).status).toBe(409);
-        expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+        expect(fixture.snapshot()).toEqual(before);
       } finally {
         await fixture.close();
       }
@@ -358,12 +399,14 @@ describe('cleaned backend delete delivery discard', () => {
         status: 204,
         body: '',
       });
-      fixture.coreDb.sqlite
-        .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE attempt_id = ?')
-        .run('unavailable-correlation', leaseId);
-      const before = fixture.coreDb.sqlite.serialize();
+      mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        sqlite
+          .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE attempt_id = ?')
+          .run('unavailable-correlation', leaseId)
+      );
+      const before = fixture.snapshot();
       expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+      expect(fixture.snapshot()).toEqual(before);
     } finally {
       await fixture.close();
     }
@@ -374,12 +417,12 @@ describe('cleaned backend delete delivery discard', () => {
     try {
       await fixture.transition('physical-cleaned');
       await fixture.boot();
-      const before = fixture.coreDb.sqlite.serialize();
+      const before = fixture.snapshot();
       expect(await fixture.post(`${deletePath}/result`, retainedResult)).toEqual({
         status: 204,
         body: '',
       });
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+      expect(fixture.snapshot()).toEqual(before);
       expect(await fixture.post(deletePath, {})).toEqual({ status: 204, body: '' });
     } finally {
       await fixture.close();
@@ -393,9 +436,9 @@ describe('cleaned backend delete delivery discard', () => {
       try {
         if (state === 'cleanup-failed') await fixture.transition(state);
         await fixture.boot();
-        const before = fixture.coreDb.sqlite.serialize();
+        const before = fixture.snapshot();
         expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
-        expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+        expect(fixture.snapshot()).toEqual(before);
       } finally {
         await fixture.close();
       }
@@ -416,11 +459,11 @@ describe('cleaned backend delete delivery discard', () => {
       await fixture.transition('physical-cleaned');
       await fixture.transition('cleaned');
       await fixture.boot();
-      const before = fixture.coreDb.sqlite.serialize();
+      const before = fixture.snapshot();
       expect(
         (await fixture.post(`${deletePath}/result`, { ...retainedResult, ...change })).status
       ).toBe(409);
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+      expect(fixture.snapshot()).toEqual(before);
     } finally {
       await fixture.close();
     }
@@ -437,13 +480,22 @@ describe('cleaned backend delete delivery discard', () => {
           .status
       ).toBe(409);
       for (const column of ['runtime_target_id', 'deployment_id']) {
-        fixture.coreDb.sqlite
-          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
-          .run('foreign', leaseId);
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
+            .run('foreign', leaseId)
+        );
         expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
-        fixture.coreDb.sqlite
-          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
-          .run(column === 'runtime_target_id' ? 'nanohost-test' : 'deployment-test', leaseId);
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
+            .run(
+              column === 'runtime_target_id'
+                ? fixture.target.targetId
+                : fixture.target.deploymentId,
+              leaseId
+            )
+        );
       }
     } finally {
       await fixture.close();
@@ -458,10 +510,12 @@ describe('cleaned backend delete delivery discard', () => {
     const fixture = await createFixture();
     try {
       await fixture.transition('physical-cleaned');
-      fixture.coreDb.sqlite
-        .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
-        .run(value, leaseId);
-      const before = fixture.coreDb.sqlite.serialize();
+      mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        sqlite
+          .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
+          .run(value, leaseId)
+      );
+      const before = fixture.snapshot();
       const body =
         column === 'package_snapshot_id'
           ? {
@@ -480,7 +534,7 @@ describe('cleaned backend delete delivery discard', () => {
             }
           : retainedResult;
       expect((await fixture.post(`${deletePath}/result`, body)).status).toBe(409);
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+      expect(fixture.snapshot()).toEqual(before);
     } finally {
       await fixture.close();
     }
@@ -533,7 +587,7 @@ describe('cleaned backend delete delivery discard', () => {
         await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: 'first' })
       ).toEqual({ status: 204, body: '' });
       await expect(pending).resolves.toEqual({ sandboxId, state: 'deleted' });
-      const before = fixture.coreDb.sqlite.serialize();
+      const before = fixture.snapshot();
       expect(
         await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: 'replay' })
       ).toEqual({ status: 204, body: '' });
@@ -541,7 +595,7 @@ describe('cleaned backend delete delivery discard', () => {
         (await fixture.post(`${deletePath}/result`, { ...retainedResult, sandboxId: 'wrong' }))
           .status
       ).toBe(409);
-      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+      expect(fixture.snapshot()).toEqual(before);
     } finally {
       await fixture.close();
     }

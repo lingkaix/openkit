@@ -21,19 +21,11 @@ export * from './goals.js';
 export { knowledgeNotebookHeads, knowledgeNotebookProposals } from './knowledge.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
-export {
-  agentSessionRuntimeBindingImageDigests,
-  agentSessionRuntimeBindings,
-  harnessInstanceRecords,
-  sandboxRuntimeRecords,
-} from './nanohost-harness-runtime.js';
-export { nanohostRuntimeTargets } from './nanohost-runtime-targets.js';
 export type {
   NanoHostTransportTokenScope,
   NanoHostTransportTokenStatus,
   NanoHostTransportTokenType,
 } from './nanohost-transport-tokens.js';
-export { nanohostTransportTokens } from './nanohost-transport-tokens.js';
 export type { PermissionDecisionResult } from './permission-decisions.js';
 export { permissionDecisions } from './permission-decisions.js';
 export type {
@@ -88,13 +80,7 @@ export type {
   WorkerBackendSessionState,
   WorkerBackendWorkspaceHandoffState,
 } from './worker-backend-sessions.js';
-export { workerBackendSessions } from './worker-backend-sessions.js';
-export { workerImageSettlements } from './worker-image-settlements.js';
 export type { WorkerStorageBindingState } from './worker-storage-bindings.js';
-export {
-  workerStorageBindings,
-  workerStorageContributors,
-} from './worker-storage-bindings.js';
 export { workerTurnCheckpoints } from './worker-turn-checkpoints.js';
 export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';

@@ -32,6 +32,7 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempts.js';
+import { requireNanoHostExecutionAttempt } from './runtime/nanohost-attempt-records.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import * as productTurnOwners from './runtime/product-turn-start.js';
 import { startSchedulerDispatchRetryService } from './runtime/scheduler-dispatch-service.js';
@@ -58,7 +59,7 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { disposeTestStore } from './test-support/store.js';
@@ -363,7 +364,7 @@ async function createSchedulerFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   // Prepare fixture-owned image evidence before any asynchronous native Core writer can start.
-  admitTestNativeEnvironment(coreDb, manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   const store = await createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
@@ -375,6 +376,7 @@ async function createSchedulerFixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const app = createApp({
+    nanoHostStorage,
     ...config,
     agentManifests: [manifest],
     coreDb,
@@ -432,6 +434,7 @@ async function createNativeTurnFixture(slug: string) {
       providerRegistry: testProviderRegistry(),
     }),
   });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   const native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => config.current(),
   });
@@ -442,6 +445,7 @@ async function createNativeTurnFixture(slug: string) {
     dataRoot,
     store,
     turnExecutor: native.executor,
+    nanoHostStorage,
     runtimeConfigManager: config,
     fileAdmission: native.fileAdmission,
     workerControlGateway: native.workerControlGateway,
@@ -1274,7 +1278,17 @@ describe('generic turn routes', () => {
   it('acknowledges and launches a product Turn in a remote deployment', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-07-06T00:00:00.000Z'));
+    const liveness = Promise.withResolvers<ReturnType<typeof requireNanoHostExecutionAttempt>>();
     const executor = new RecordingTurnExecutor();
+    const startTurn = executor.startTurn.bind(executor);
+    executor.startTurn = async (...args) => {
+      try {
+        liveness.resolve(requireNanoHostExecutionAttempt(executor.coreDb!, args[3]!.attemptId!));
+      } catch (error) {
+        liveness.reject(error);
+      }
+      await startTurn(...args);
+    };
     const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
     let fixture: Awaited<ReturnType<typeof createSchedulerFixture>> | undefined;
     let primaryError: unknown;
@@ -1303,26 +1317,16 @@ describe('generic turn routes', () => {
       expect(response.status).toBe(202);
       const turn = TurnSchema.parse(await response.json());
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
-      // This adapter observation is transitional storage, not a generic Core grant or schema requirement.
-      // Observe the acquired NanoHost liveness profile, separately from the absolute Core deadline.
-      const nativeLiveness = fixture.coreDb.sqlite
-        .prepare(`SELECT created_at, startup_deadline,
-        heartbeat_deadline, heartbeat_timeout_ms FROM scheduler_execution_attempts WHERE turn_id = ?`)
-        .get(turn.id) as
-        | {
-            created_at: string;
-            startup_deadline: string;
-            heartbeat_deadline: string | null;
-            heartbeat_timeout_ms: number;
-          }
-        | undefined;
-      expect(nativeLiveness).toBeDefined();
+      // Observe the exact prepared attempt before the modeled submit, through the Native projection.
+      const nativeLiveness = await liveness.promise;
+      expect(nativeLiveness).toMatchObject({ turnId: turn.id, backendId: 'nanohost' });
       expect(
-        Date.parse(nativeLiveness!.startup_deadline) - Date.parse(nativeLiveness!.created_at)
+        Date.parse(nativeLiveness.startupDeadline) - Date.parse(nativeLiveness.createdAt)
       ).toBe(1_500_000);
-      // The Native heartbeat budget begins at an accepted heartbeat; startup owns the pre-heartbeat gate.
-      expect(nativeLiveness!.heartbeat_deadline).toBeNull();
-      expect(nativeLiveness!.heartbeat_timeout_ms).toBe(30_000);
+      // Before the first heartbeat, startup remains the effective liveness gate.
+      expect(nativeLiveness.lastAcceptedHeartbeatAt).toBeNull();
+      expect(nativeLiveness.heartbeatDeadline).toBe(nativeLiveness.startupDeadline);
+      expect(nativeLiveness.heartbeatTimeoutMs).toBe(30_000);
     } catch (error) {
       hasPrimaryError = true;
       primaryError = error;

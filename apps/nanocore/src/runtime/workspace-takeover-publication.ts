@@ -4,12 +4,15 @@ import type { WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { requireCompleteBackendWorkspaceHandleHandoff } from '../storage/workspace-handoff-read.js';
 import { ControlWorkspaceTakeoverSchema } from '../storage/workspace-takeover-codecs.js';
-import type { NanoHostExecutionAttemptRecord } from './nanohost-attempt-records.js';
+import type { SchedulerExecutionAttemptRecord } from './execution-attempts.js';
 
 /** Preserves per-handle ACKs and rechecks current disposition before any external cleanup. */
 export async function publishWorkspaceTakeoverEvaluation(
   db: WorkspaceDb,
-  attempt: NanoHostExecutionAttemptRecord,
+  attempt: Pick<
+    SchedulerExecutionAttemptRecord,
+    'attemptId' | 'workspaceId' | 'phase' | 'terminalCause'
+  >,
   environmentPackage: AgentEnvironmentPackage,
   timestamp: string,
   physicallyCleaned: boolean

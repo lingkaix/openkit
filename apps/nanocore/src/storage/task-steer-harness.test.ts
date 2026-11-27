@@ -27,6 +27,7 @@ import {
   QUALIFIED_STEER_PINS,
 } from '../runtime/turn-executor-factory.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import { readAdmittedTestNanoHostSettled } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -34,7 +35,7 @@ import {
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import {
   createNativeCommandTurn,
   createNativeTaskAdmissionFixture,
@@ -71,7 +72,7 @@ async function fixture(
     requiredCapabilities: ['trusted-worker-inference-relay'],
   }).manifest;
   manifest.runtime.version = runtime.version;
-  admitTestNativeEnvironment(coreDb, manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   const store = await createDemoStore({ dataRoot: root, knowledge: [] });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: userId });
   const configuration = createInMemoryRuntimeConfigSnapshot({
@@ -329,14 +330,16 @@ describe('Task steer through the existing native Harness slot', () => {
       void completion.catch(() => undefined);
       // Worker Control Final Status: durable native terminal evidence is not Core closeout.
       const terminalAccepted = vi.waitFor(
-        () => {
+        async () => {
           expect(f.native.executor.nativeLineage).toMatchObject({
             workspaceId: f.input.workspaceId,
             threadId: f.input.threadId,
             turnId: f.input.turnId,
           });
           expect(
-            getWorkerControlAcceptedFinalStatus(f.coreDb, f.native.executor.nativeLineage!)
+            await readAdmittedTestNanoHostSettled(f.coreDb, (sqlite) =>
+              getWorkerControlAcceptedFinalStatus({ sqlite }, f.native.executor.nativeLineage!)
+            )
           ).toMatchObject({ status: 'completed', stopReason: 'completed' });
         },
         { timeout: 30_000 }
@@ -768,37 +771,51 @@ describe('Task steer through the existing native Harness slot', () => {
     const before = f.store.getTurnById(f.input.turnId);
     const acknowledgement = harnessOwner.acknowledgeNanoHostHarnessResult;
     const passThrough = vi.mocked(acknowledgement).getMockImplementation()!;
-    let checked = false;
-    vi.mocked(acknowledgement).mockImplementation(async (db, input) => {
-      const row = db.sqlite
-        .prepare('SELECT operation FROM harness_instance_records WHERE harness_instance_id=?')
-        .get(input.result.harnessInstanceId) as { operation: string };
-      if (row.operation === 'turn.steer') {
-        const receipt = f.store.getCommandRequest('task.steer', f.input.requestId, f.scope);
-        expect(receipt?.response).toEqual({ kind: 'turn', id: f.input.turnId });
-        const instruction = f.store.readThreadTimelineSnapshot(
-          f.input.workspaceId,
-          f.input.threadId,
-          (snapshot) => snapshot.item(taskSteerInputItemId(f.input, f.userId))
+    const checked = Promise.withResolvers<void>();
+    vi.mocked(acknowledgement).mockImplementation(async (...args) => {
+      const [db, input] = args;
+      try {
+        const row = await readAdmittedTestNanoHostSettled(
+          db,
+          (sqlite) =>
+            sqlite
+              .prepare(`SELECT operation, command_body_json FROM harness_instance_records
+              WHERE harness_instance_id=? AND operation_id=? AND operation_sequence=?`)
+              .get(
+                input.result.harnessInstanceId,
+                input.result.operationId,
+                input.result.sequence
+              ) as { operation: string; command_body_json: string } | undefined
         );
-        expect(instruction).toMatchObject({ steerDisposition: { disposition: 'accepted' } });
-        const command = db.sqlite
-          .prepare(
-            'SELECT command_body_json FROM harness_instance_records WHERE harness_instance_id=?'
-          )
-          .get(input.result.harnessInstanceId) as { command_body_json: string };
-        const refs = JSON.parse(command.command_body_json);
-        expect(refs).not.toHaveProperty('input');
-        expect(refs.inputItemId).toBe(instruction!.id);
-        expect(f.store.getTurnById(f.input.turnId).items.at(-1)?.text).toBe(f.input.input);
-        checked = true;
+        if (row?.operation === 'turn.steer') {
+          const receipt = f.store.getCommandRequest('task.steer', f.input.requestId, f.scope);
+          expect(receipt?.response).toEqual({ kind: 'turn', id: f.input.turnId });
+          const instruction = f.store.readThreadTimelineSnapshot(
+            f.input.workspaceId,
+            f.input.threadId,
+            (snapshot) => snapshot.item(taskSteerInputItemId(f.input, f.userId))
+          );
+          expect(instruction).toMatchObject({ steerDisposition: { disposition: 'accepted' } });
+          const refs = JSON.parse(row.command_body_json);
+          expect(refs).not.toHaveProperty('input');
+          expect(refs.inputItemId).toBe(instruction!.id);
+          expect(f.store.getTurnById(f.input.turnId).items.at(-1)?.text).toBe(f.input.input);
+          await passThrough(...args);
+          checked.resolve();
+          return;
+        }
+        await passThrough(...args);
+      } catch (error) {
+        checked.reject(error);
+        throw error;
       }
-      return await passThrough(db, input);
     });
-    const result = await f.invoke('task.steer', f.input, f.context).catch((cause) => {
-      throw new Error('Exact public steer failed.', { cause });
-    });
-    expect(checked).toBe(true);
+    const [result] = await Promise.all([
+      f.invoke('task.steer', f.input, f.context).catch((cause) => {
+        throw new Error('Exact public steer failed.', { cause });
+      }),
+      checked.promise,
+    ]);
     expect(f.native.steerCalls).toHaveLength(1);
     expect(f.native.steerCalls[0]!.body.input).toBe(f.input.input);
     const current = f.store.getTurnById(f.input.turnId);

@@ -17,10 +17,6 @@ import { createExecutionStepJournalReader } from '../runtime/execution-journal.j
 import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import * as harnessOwner from '../runtime/nanohost-harness.js';
-import {
-  dispatchNanoHostHarnessOperation,
-  settleNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -29,12 +25,13 @@ import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js'
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
-import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
+import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { WorkerGovernanceCapacityUnavailableError } from '../runtime/worker-governance-backend.js';
 import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { configuredFileStorageAdmission } from '../storage/configured-file-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { readAdmittedTestNanoHost, reopenAdmittedTestNanoHost } from './admitted-nanohost.js';
 import { recordTestNativeRuntimeTarget } from './native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './release-identity.js';
 
@@ -63,6 +60,13 @@ export async function createNativeTaskAdmissionFixture(
     workspaceGitBaseline?: { commit: string; tree: string };
     /** Models a stale Harness interrupt after observing the exact cancellation before polling. */
     beforeStaleInterruptPoll?: () => Promise<void>;
+    /**
+     * Models the Worker control client, which retries an ambiguous final status failure once with the
+     * exact same envelope. The default fixture Worker posts its final once.
+     */
+    retryAmbiguousFinal?: boolean;
+    /** Reports a settled, non-reusable terminal inspection on the original binding. */
+    requireTerminalSessionClose?: () => boolean;
     /** Delegates only interrupt refusal to the receiving Harness under test. */
     interruptRefusal?: (
       command: harnessOwner.NanoHostHarnessCommand
@@ -88,7 +92,11 @@ export async function createNativeTaskAdmissionFixture(
     integrationBindingRef: undefined as string | undefined,
     transcripts: new Map<
       string,
-      { input: string; events: unknown[]; lineage: Parameters<typeof readFinal>[1] }
+      {
+        input: string;
+        events: unknown[];
+        lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1];
+      }
     >(),
     effects: [] as NanoHostSessionEffectRequest[],
     peerFaults: {
@@ -105,8 +113,15 @@ export async function createNativeTaskAdmissionFixture(
     getControlStoreWorkerClient().getFileStorageAdmission(coreDb.dataRoot) ??
     configuredFileStorageAdmission(coreDb.dataRoot);
   const startup = observeNativeTaskStartup(store);
+  const admitted = await reopenAdmittedTestNanoHost(coreDb);
+  const { owner } = admitted.value;
+  const harnessWriter = owner.harnessTurnLifecycle;
   const workerControlGateway =
-    options.workerControlGateway ?? createDefaultWorkerControlGateway(coreDb);
+    options.workerControlGateway ?? createDefaultWorkerControlGateway(coreDb, undefined, admitted);
+  const readFinal = (lineage: Parameters<typeof getWorkerControlAcceptedFinalStatus>[1]) =>
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+    );
   const steerCalls: import('../runtime/nanohost-harness.js').NanoHostHarnessCommand[] = [];
   const completion = Promise.withResolvers<void>();
   const launched = Promise.withResolvers<void>();
@@ -177,6 +192,14 @@ export async function createNativeTaskAdmissionFixture(
     async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
       if (stopped) throw new Error('Native peer is stopped.');
       const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      if (
+        !options.actualWorker &&
+        request.cleanupCarriage &&
+        (request.kind === 'bridge.close' || request.kind === 'sandbox.delete')
+      ) {
+        if (!request.requestId) throw new Error('Claimed cleanup has no original command ID.');
+        request.cleanupCarriage.admit({ kind: request.kind, requestId: request.requestId });
+      }
       effects.push(request);
       if (options.actualWorker) {
         const result = await options.actualWorker.effect(request);
@@ -262,7 +285,7 @@ export async function createNativeTaskAdmissionFixture(
         );
         if (!transcript) throw new Error('Native trial has no submitted Turn.');
         const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = transcript;
-        if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
+        if (peerFaults.failFileExport && readFinal(nativeLineage)?.status === 'failed') {
           peerFaults.failedExportPaths.push(String(request.input.relativePath));
           throw new Error('Controlled required native export loss.');
         }
@@ -297,7 +320,9 @@ export async function createNativeTaskAdmissionFixture(
           for (const harness of bindings.values())
             for (const binding of harness.values()) binding.state = 'closed';
         outside.integrationBindingRef = undefined;
-        return { state: 'deleted' };
+        return request.kind === 'sandbox.delete'
+          ? { state: 'deleted', sandboxId: request.input.sandboxId }
+          : { state: 'deleted' };
       }
       throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
     },
@@ -328,6 +353,21 @@ export async function createNativeTaskAdmissionFixture(
           workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
         })),
     nanoHostSessionDispatch: sessionDispatch,
+    nanoHostRecovery: {
+      owner: { state: 'ready', value: owner },
+      admitSubmission: owner.firstSubmission,
+      readWorkerCompletion: owner.readWorkerCompletion,
+      harnessTurnLifecycle: harnessWriter,
+      // Same idle Sandbox join as the App (`app.ts`); without it the runtime posts the idle drain
+      // to the retired Core writer.
+      idleSandbox: {
+        writeIdleHarnessDrain: owner.writeIdleHarnessDrain,
+        releaseStorage: owner.releaseIdleSandboxStorage,
+      },
+      releaseTerminalScopes: owner.releaseTerminalScopes,
+      writeStorageAttachment: owner.writeStorageAttachment,
+      commitCloseout: owner.classifyRecovery,
+    },
   });
   const executionBackend = runtime.turnExecutor.executionBackend;
   if (!executionBackend) throw new Error('Native admission fixture requires its actual backend.');
@@ -394,13 +434,7 @@ export async function createNativeTaskAdmissionFixture(
   const failTurn = (turn: ReturnType<typeof executionFor>, error: unknown) => {
     turn.failure ??= error;
     turn.launched.reject(turn.failure);
-    if (
-      !stopped &&
-      !turn.settled &&
-      turn.acceptedStart &&
-      turn.lineage &&
-      !readFinal(coreDb, turn.lineage)
-    )
+    if (!stopped && !turn.settled && turn.acceptedStart && turn.lineage && !readFinal(turn.lineage))
       turn.interrupt ??= executor
         .interruptTurn(turn.ownerStore!, turn.lineage.turnId)
         .catch(() => undefined);
@@ -460,7 +494,7 @@ export async function createNativeTaskAdmissionFixture(
         ? [outside.integrationBindingRef]
         : []) {
         while (!stopped) {
-          const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          const command = await harnessWriter.dispatch({
             sandboxIntegrationBindingRef: integrationRef,
           });
           if (!command) break;
@@ -479,7 +513,7 @@ export async function createNativeTaskAdmissionFixture(
               turn = executions.get(String(command.body.turnId));
               const result = await options.actualWorker.handle(wire, integrationRef);
               const completedAt = new Date().toISOString();
-              const settlement = await settleNanoHostHarnessOperation(coreDb, {
+              const settlement = await harnessWriter.settle({
                 result,
                 sandboxIntegrationBindingRef: integrationRef,
                 timestamp: completedAt,
@@ -555,7 +589,12 @@ export async function createNativeTaskAdmissionFixture(
               'session.inspect': [
                 ['open', 'completed'],
                 binding.state,
-                { state: 'open', childState: 'absent', cleanupState: 'clean', ...ready },
+                {
+                  state: options.requireTerminalSessionClose?.() ? 'failed' : 'open',
+                  childState: 'absent',
+                  cleanupState: 'clean',
+                  ...ready,
+                },
               ],
               'session.close': [
                 ['open', 'completed'],
@@ -641,17 +680,18 @@ export async function createNativeTaskAdmissionFixture(
                 const data = { status, stopReason, evidenceManifestDigests: {} } as const;
                 const sequence = original.events.length + 1;
                 original.events.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
-                expect(
-                  (
-                    await workerControlGateway.recordFinalStatus({
-                      authorization: `Bearer ${wire.body.workerControlToken}`,
-                      tokenFamily: 'worker-control',
-                      lineage: nativeLineage,
-                      sequence,
-                      ...data,
-                    })
-                  ).accepted
-                ).toBe(true);
+                const post = () =>
+                  workerControlGateway.recordFinalStatus({
+                    authorization: `Bearer ${wire.body.workerControlToken}`,
+                    tokenFamily: 'worker-control',
+                    lineage: nativeLineage,
+                    sequence,
+                    ...data,
+                  });
+                const reply = options.retryAmbiguousFinal
+                  ? await post().catch(() => post())
+                  : await post();
+                expect(reply.accepted).toBe(true);
                 originalBinding.state = 'completed';
               };
               original.delivery = original.completion.promise
@@ -676,7 +716,7 @@ export async function createNativeTaskAdmissionFixture(
               body: refusal ? { reasonCode: refusal } : body,
             };
             const completedAt = new Date().toISOString();
-            const settlement = await settleNanoHostHarnessOperation(coreDb, {
+            const settlement = await harnessWriter.settle({
               result,
               sandboxIntegrationBindingRef: integrationRef,
               timestamp: completedAt,
@@ -712,7 +752,7 @@ export async function createNativeTaskAdmissionFixture(
             if (stopped) return;
             if (turn) failTurn(turn, error);
             if (!commandSettled) {
-              await settleNanoHostHarnessOperation(coreDb, {
+              await harnessWriter.settle({
                 sandboxIntegrationBindingRef: integrationRef,
                 result: {
                   schemaVersion: 2,

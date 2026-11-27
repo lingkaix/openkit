@@ -7,13 +7,100 @@ import {
 } from '@openkit/protocol';
 
 import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
-import { openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
+import {
+  hasCoreWorkerFinalIntake,
+  readCoreWorkerFailureClose,
+} from '../storage/core-journal-native.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  markSchedulerExecutionAttemptClosing,
+  requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
+} from './execution-attempts.js';
 import {
   createExecutionStepJournalReader,
   decodeExecutionJournalSpan,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from './execution-journal.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+
+/** Failure publication waits for the owner of the original attempt. */
+class WorkerFailurePublicationHeld extends Error {
+  public constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Worker failure publication is held.', {
+      cause,
+    });
+  }
+}
+
+/** Preserves accepted-final authority through the live, restart and scheduler failure boundaries. */
+export function acceptedWorkerFinalCloseoutHold(
+  error: unknown,
+  evidence?: true | { readonly coreDb: CoreDb; readonly attemptId: string }
+): Error | null {
+  let cause = error;
+  for (let depth = 0; cause instanceof Error && depth < 8; depth += 1) {
+    if (cause instanceof WorkerFailurePublicationHeld) return error as Error;
+    cause = cause.cause;
+  }
+  return evidence === true ||
+    (evidence && hasCoreWorkerFinalIntake(evidence.coreDb, evidence.attemptId))
+    ? new WorkerFailurePublicationHeld(error)
+    : null;
+}
+
+/** Generic failure needs an acknowledged exclusion of first-final admission, or its exact Core readback. */
+export async function requireWorkerFailureClose(
+  db: CoreDb,
+  attemptId: string,
+  cause: 'execution-failed' | 'preparation-or-execution-failed',
+  error: unknown,
+  now?: () => string
+): Promise<SchedulerExecutionAttemptRecord> {
+  try {
+    const original = requireSchedulerExecutionAttempt(db, attemptId);
+    if (original.operationId === null) {
+      await closeSchedulerExecutionAttemptWithoutEffects(db, {
+        attemptId,
+        noOutstandingEffects: true,
+        cause: 'turn-start-failed',
+        ...(now ? { now } : {}),
+      });
+    } else {
+      await markSchedulerExecutionAttemptClosing(db, { attemptId, cause, ...(now ? { now } : {}) });
+    }
+  } catch (closeError) {
+    if (closeError instanceof ControlStoreWorkerError && closeError.commit === 'unknown') {
+      const proved = readCoreWorkerFailureClose(db, attemptId);
+      if (proved) return proved;
+    }
+    throw new WorkerFailurePublicationHeld(
+      new AggregateError([error, closeError], 'Core Worker failure close is held.', {
+        cause: error,
+      })
+    );
+  }
+  const proved = readCoreWorkerFailureClose(db, attemptId);
+  if (!proved) throw new WorkerFailurePublicationHeld(error);
+  return proved;
+}
+
+/** Keeps an operation's original cause when the disposition write is itself uncertain. */
+export async function rejectAfterWorkerJournal(
+  error: unknown,
+  settle: () => Promise<void>
+): Promise<never> {
+  try {
+    await settle();
+  } catch (settlementError) {
+    throw new AggregateError([error, settlementError], 'Worker journal settlement is held.', {
+      cause: error,
+    });
+  }
+  throw error;
+}
 
 /** Input for idempotently projecting one governed-worker terminal outcome. */
 export interface TerminalizeGovernedWorkerTurnInput {

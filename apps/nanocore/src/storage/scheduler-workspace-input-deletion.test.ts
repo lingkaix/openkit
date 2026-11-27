@@ -13,6 +13,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -27,6 +28,7 @@ it('deletes the original Workspace bytes while retaining a text-free cancelled s
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const userId = ensureLocalUser(coreDb);
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Queue input deletion');

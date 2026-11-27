@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -17,6 +17,7 @@ import {
   createSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
+  requireSchedulerAdmissionEntry,
 } from '../scheduler-records';
 import * as schedulerRecords from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -27,12 +28,17 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { insertExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import {
   isCurrentAgentSessionStatus,
   nativeProductScope,
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
 import { readWorkspaceQueueInput } from '../storage/workspace-queue-inputs.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -43,9 +49,15 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+  seedTestNanoHostWorkerLaunch,
+} from '../test-support/nanohost-worker-lease.js';
+import {
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -55,10 +67,7 @@ import { DeterministicAgentPreparationError } from './agent-preparation-error.js
 import * as attemptRecords from './execution-attempt-records.js';
 import * as attemptCommands from './execution-attempts.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
-import {
-  bindNanoHostAttemptPreparation,
-  resolveNanoHostAttemptTokenBinding,
-} from './nanohost-attempt-records.js';
+import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { TurnStartValidationError } from './orchestrator';
 import { startProductTurn as executeProductTurn } from './product-turn-start.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -100,14 +109,14 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
     super({ coreDb: fixtureCore });
     this.fixtureCore = fixtureCore;
     if (separateHandle) extraCoreHandles.push(fixtureCore);
-    admitTestNativeEnvironment(fixtureCore, agentManifest());
   }
   /** Completes the existing target owner before returning a scheduler-ready modeled executor. */
   public static async create(
     coreDb: ReturnType<typeof createMigratedCoreDb>,
     separateHandle = false
   ) {
-    const executor = new RecordingTurnExecutor(coreDb, separateHandle);
+    const executor = new this(coreDb, separateHandle);
+    await admitTestNativeEnvironmentForRoot(executor.fixtureCore, agentManifest());
     await recordTestNativeRuntimeTarget(executor.fixtureCore);
     return executor;
   }
@@ -226,12 +235,10 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
         updatedAt: '2026-07-05T00:00:01.500Z',
       });
     }
-    bindNanoHostAttemptPreparation(this.fixtureCore, {
+    attemptRecords.finalizeSchedulerExecutionAttemptInput(this.fixtureCore, {
       attemptId: input.attemptId,
-      agentSessionId: input.prepared.agentSessionId,
       inputRef: `aepsnap_${input.preparation.turn.id}_${input.prepared.agentSessionId}`,
       bindingRef: `attempt-binding:${input.attemptId}`,
-      sessionCompatibilityKey: input.prepared.sessionCompatibilityKey,
     });
     return undefined;
   }
@@ -1562,9 +1569,14 @@ describe('scheduler dispatch loop', () => {
           const attempt = executionAttempts(coreDb)[0]!;
           expect(attempt).toMatchObject(
             outcome === 'post-lease'
-              ? { phase: 'closing', disposition: 'unknown', fence_ref: null }
+              ? { phase: 'closing', disposition: 'unknown' }
               : { phase: 'closed', disposition: 'not_accepted', operation_id: null }
           );
+          // The fence is projected from the Core lifecycle steps, not an attempt column.
+          if (outcome === 'post-lease')
+            expect(
+              attemptRecords.requireSchedulerExecutionAttempt(coreDb, String(attempt.attempt_id))
+            ).toMatchObject({ phase: 'closing', disposition: 'unknown', fenceRef: null });
           expect(backgroundResult).toBeNull();
           expect(errors).toHaveLength(1);
           expect(errors[0]).toBe(failure);
@@ -1729,111 +1741,143 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('excludes a second FIFO preparation after image operation intent until submission', async () => {
+  it('excludes a second FIFO preparation while the original image acquisition is held', async () => {
     const coreDb = createMigratedCoreDb(false);
-    await seedLocalSchedulerTarget(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
     });
-    const executor = new NativeCompletingTurnExecutor(coreDb);
-    const manifest = agentManifest();
-    const gate = Promise.withResolvers<void>();
-    const entered = Promise.withResolvers<void>();
-    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
-    executor.prepareAgentSessionForTurn = async (owner, input) => {
-      if (
-        coreDb.sqlite
-          .prepare(
-            "SELECT 1 FROM scheduler_execution_attempts WHERE phase = 'open' AND deadline IS NOT NULL"
-          )
-          .get()
-      )
-        throw new WorkerGovernanceCapacityUnavailableError();
-      return prepare(owner, input);
-    };
-    const start = executor.startTurn.bind(executor);
-    executor.startTurn = async (owner, turnId, input, context) => {
-      if (turnId === testEntityId('tu', 'turn_image_first')) {
-        const intent = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
-          attemptId: context!.attemptId!,
-          operationId: 'image:first',
-        });
-        entered.resolve();
-        await gate.promise;
-        attemptRecords.acceptSchedulerExecutionObservation(coreDb, {
-          ...attemptRecords.schedulerExecutionCorrelation(intent),
-          disposition: 'accepted',
-          execution: 'pending',
-          fenceRef: null,
-          outcomeRef: null,
-        });
-      }
-      await start(owner, turnId, input, context);
-    };
-    const dispatch = {
-      coreDb,
-      store,
-      turnExecutor: executor,
-      executionBackend: executor.executionBackend,
+    const manifest = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    }).manifest;
+    await admitTestNativeEnvironmentForRoot(coreDb, manifest);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: coreDb.dataRoot,
       agentManifests: [manifest],
       providerRegistry: localProviderRegistry(),
       gatewayConfig: createTestGatewayConfig(),
-      maxDispatches: 1,
-    };
+      workspaceConfigs: [
+        {
+          workspaceId: DEMO_WORKSPACE_ID,
+          path: join(coreDb.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'config/workspace.jsonc'),
+          config: {
+            schemaVersion: 1,
+            workspace: { name: 'Demo Workspace', defaultAgentId: manifest.id },
+          },
+        },
+      ],
+    });
+    const entries = [];
     for (const suffix of ['first', 'second']) {
-      const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
-      await publishTestAdmission(
-        store,
-        await createTestQueueEntry(coreDb, {
-          backendId: 'nanohost',
-          queueEntryId: `queue_image_${suffix}`,
-          requestId: fixtureRequestId(`request_image_${suffix}`),
-          turnId: testEntityId('tu', `turn_image_${suffix}`),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: thread.id,
-          text: suffix,
-          requestedAgentId: manifest.id,
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        })
-      );
-    }
-    const first = runSchedulerDispatchLoop(dispatch);
-    try {
-      await entered.promise;
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { operation_id: 'image:first', deadline: null },
-      ]);
-      const overlap = await runSchedulerDispatchLoop(dispatch);
-      expect(overlap.startedTurns).toEqual([]);
-      expect(executor.prepareCalls).toHaveLength(1);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
-      expect(
-        store.getTurnById(testEntityId('tu', 'turn_image_second')).agentSessionId
-      ).toBeUndefined();
-      expect(executionAttempts(coreDb)).toHaveLength(1);
-      gate.resolve();
-      const admitted = await first;
-      expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_image_second')).status).toBe('pending');
-      expect(executor.prepareCalls).toHaveLength(1);
-      await closeOwnedExecutionAttempt(coreDb, {
-        attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
+      const thread = await store.createThread(DEMO_WORKSPACE_ID, suffix);
+      const entry = await createTestQueueEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_image_${suffix}`,
+        requestId: fixtureRequestId(`request_image_${suffix}`),
+        turnId: testEntityId('tu', `turn_image_${suffix}`),
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        text: suffix,
+        requestedAgentId: manifest.id,
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
       });
-      expect(
-        (await runSchedulerDispatchLoop(dispatch)).startedTurns[0]?.dispatch.entry.queueEntryId
-      ).toBe('queue_image_second');
-      expect(executor.calls.map((call) => call.turnId)).toEqual([
-        testEntityId('tu', 'turn_image_first'),
-        testEntityId('tu', 'turn_image_second'),
+      await publishTestAdmission(store, entry);
+      entries.push(entry);
+    }
+    const [firstEntry, secondEntry] = entries as [
+      (typeof entries)[number],
+      (typeof entries)[number],
+    ];
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    const releaseImage = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<string>();
+    let held = false;
+    const effect = native.sessionDispatch.effect.bind(native.sessionDispatch);
+    const image = vi
+      .spyOn(native.sessionDispatch, 'effect')
+      .mockImplementation(
+        async (requestOrConnection: object, carried?: NanoHostSessionEffectRequest) => {
+          const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          if (!held && request.kind === 'image.acquire') {
+            held = true;
+            if (!request.requestId) throw new Error('Image acquisition has no original intent.');
+            entered.resolve(request.requestId);
+            await releaseImage.promise;
+          }
+          return carried ? effect(requestOrConnection, carried) : effect(request);
+        }
+      );
+    const prepare = vi.spyOn(native.executor, 'prepareAgentSessionForTurn');
+    const admit = (entry: typeof firstEntry, label: string) => {
+      const agentSessionId = testEntityId('as', `image_fifo_${label}`);
+      return native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', `image_fifo_${label}`),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+    };
+    const first = admit(firstEntry, 'first');
+    void first.catch(() => undefined);
+    let second: Awaited<typeof first> | undefined;
+    try {
+      const operationId = await Promise.race([
+        entered.promise,
+        first.then(() => {
+          throw new Error('Submission occurred before the image acquisition gate.');
+        }),
       ]);
+      expect(executionAttempts(coreDb)).toMatchObject([
+        { turn_id: firstEntry.turnId, phase: 'open', operation_id: operationId, deadline: null },
+      ]);
+      const overlap = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: native.executor,
+        executionBackend: native.executor.executionBackend,
+        agentManifests: configuration.agentManifests,
+        providerRegistry: configuration.providerRegistry,
+        gatewayConfig: configuration.gatewayConfig,
+        maxDispatches: 1,
+      });
+      expect(overlap.startedTurns).toEqual([]);
+      expect(overlap.terminalResult).toMatchObject({ status: 'queued', reason: 'thread-busy' });
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(store.getTurnById(secondEntry.turnId).status).toBe('pending');
+      expect(store.getTurnById(secondEntry.turnId).agentSessionId).toBeUndefined();
+      expect(executionAttempts(coreDb)).toHaveLength(1);
+      releaseImage.resolve();
+      const admitted = await first;
+      expect(admitted.attempt).toMatchObject({
+        turnId: firstEntry.turnId,
+        disposition: 'accepted',
+      });
+      expect(admitted.attempt.deadline).not.toBeNull();
+      await admitted.complete();
+      expect(
+        attemptRecords.requireSchedulerExecutionAttempt(coreDb, admitted.attempt.attemptId).phase
+      ).toBe('closed');
+      second = await admit(secondEntry, 'second');
+      expect(second.attempt).toMatchObject({ turnId: secondEntry.turnId, disposition: 'accepted' });
+      expect(prepare.mock.calls.map(([, input]) => input.turn.id)).toEqual([
+        firstEntry.turnId,
+        secondEntry.turnId,
+      ]);
+      await second.complete();
     } finally {
-      gate.resolve();
-      await first;
-      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
-      await drainNativeCompletions(coreDb);
+      releaseImage.resolve();
+      image.mockRestore();
+      prepare.mockRestore();
+      await first.then(
+        (admission) => admission.cleanup(),
+        () => undefined
+      );
+      await second?.cleanup();
+      await native.restore();
       coreDb.sqlite.close();
     }
   });
@@ -1841,6 +1885,9 @@ describe('scheduler dispatch loop', () => {
   it.each(['acknowledged', 'ack lost'] as const)(
     'fences expired preparation and dispatches another Thread before its late result: %s',
     async (closeReply) => {
+      // The modeled completion records its final through the packaged self-check owner.
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      onTestFinished(() => vi.unstubAllEnvs());
       const coreDb = createMigratedCoreDb(false);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
@@ -1849,7 +1896,7 @@ describe('scheduler dispatch loop', () => {
         workspaceId: DEMO_WORKSPACE_ID,
       });
       await seedLocalSchedulerTarget(coreDb);
-      const executor = new NativeCompletingTurnExecutor(coreDb);
+      const executor = await NativeCompletingTurnExecutor.create(coreDb);
       const manifest = agentManifest();
       const gate = Promise.withResolvers<void>();
       const entered = Promise.withResolvers<void>();
@@ -1968,6 +2015,9 @@ describe('scheduler dispatch loop', () => {
   );
 
   it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
+    // The modeled completion records its final through the packaged self-check owner.
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -1975,7 +2025,7 @@ describe('scheduler dispatch loop', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const executor = new NativeCompletingTurnExecutor(coreDb);
+    const executor = await NativeCompletingTurnExecutor.create(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
@@ -3978,6 +4028,9 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('reuses the current compatible AgentSession across sequential product admissions', async () => {
+    // This fixture explicitly supplies the internal simulator as its backend.
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -4250,7 +4303,7 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it('closes or revokes the acquired attempt when turn startup fails', async () => {
+  it('R23 closes or revokes the acquired attempt when turn startup fails', async () => {
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -4261,7 +4314,61 @@ describe('scheduler dispatch loop', () => {
     const turnExecutor = new FailingTurnExecutor(coreDb);
 
     try {
-      await seedLocalSchedulerTarget(coreDb);
+      const target = await recordTestNativeRuntimeTarget(coreDb);
+      const { value } = await openAdmittedTestNanoHost(coreDb);
+      turnExecutor.startTurn = async (_store, _turnId, _input, context) => {
+        if (!context?.attemptId)
+          throw new Error('The lost-submit fixture needs its original attempt.');
+        const attempt = attemptRecords.requireSchedulerExecutionAttempt(coreDb, context.attemptId);
+        const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
+        const observedAt = '2026-07-05T00:00:03.000Z';
+        const lineage = {
+          workspaceId: attempt.workspaceId,
+          threadId: attempt.threadId,
+          turnId: attempt.turnId,
+        };
+        const registration = {
+          agentSessionId: attempt.agentSessionId!,
+          packageSnapshotId: attempt.inputRef!,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        };
+        await recordWorkerBackendSessionMaterializing(coreDb, {
+          backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+          backendVersion: null,
+          identity: {
+            agentSessionId: registration.agentSessionId,
+            packageSnapshotId: registration.packageSnapshotId,
+            backendKind: 'openshell',
+            backendSessionId: 'fixture-lost-worker-submit',
+            stagingDirectoryRef: 'server/runtime/worker-backend-sessions/lost-submit',
+            runtimeTargetId: target.targetId,
+            deploymentId: target.deploymentId,
+            transientProviderInstanceId: null,
+          },
+          lineage,
+          sandboxBindingRef: attempt.bindingRef!,
+          now: () => observedAt,
+        });
+        await value.owner.backendSession({
+          kind: 'transition',
+          attemptId: attempt.attemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
+          observedAt,
+        });
+        seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attempt.attemptId);
+        retainPreparedTestNanoHostSubmission(coreDb, {
+          admission: entry,
+          attemptId: attempt.attemptId,
+          targetId: target.targetId,
+          generation: String(target.connectionGeneration),
+          observedAt,
+        });
+        seedTestNanoHostWorkerLaunch(coreDb, attempt.attemptId, registration, observedAt);
+        await turnExecutor.submit();
+      };
       await publishTestAdmission(
         store,
         await createTestQueueEntry(coreDb, {
@@ -4304,16 +4411,24 @@ describe('scheduler dispatch loop', () => {
       expect(closedAttempt.bindingRef).not.toBeNull();
       expect(closedAttempt.inputRef).not.toBeNull();
       expect(
-        resolveNanoHostAttemptTokenBinding(coreDb, {
-          sandboxBindingRef: closedAttempt.bindingRef!,
-          lineage: {
-            agentSessionId: testEntityId('as', 'as_loop_failed'),
-            packageSnapshotId: closedAttempt.inputRef!,
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: testEntityId('tu', 'turn_loop_failed'),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        })
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          resolveAdmittedNanoHostWorkerBinding(
+            coreDb,
+            sqlite,
+            {
+              sandboxBindingRef: closedAttempt.bindingRef!,
+              lineage: {
+                agentSessionId: testEntityId('as', 'as_loop_failed'),
+                packageSnapshotId: closedAttempt.inputRef!,
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: testEntityId('tu', 'turn_loop_failed'),
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                requestId: fixtureRequestId('queue_loop_failed'),
+              },
+            },
+            '2026-07-05T00:00:04.000Z'
+          )
+        )
       ).toEqual({ status: 'rejected', reason: 'attempt-not-live' });
     } finally {
       coreDb.sqlite.close();
@@ -4330,11 +4445,10 @@ describe('scheduler dispatch loop', () => {
     });
     const turnExecutor = await RecordingTurnExecutor.create(coreDb);
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
-      const lease = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
-        attemptId: 'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69',
-        operationId: 'cleanup-pending:original',
-        submission: true,
-      });
+      const lease = attemptRecords.requireSchedulerExecutionAttempt(
+        coreDb,
+        'attempt_00000000-0000-7b13-9b8b-0f01dab3ae69'
+      );
       if (!context?.agentSessionId) {
         throw new Error('Expected scheduler-owned AgentSession lineage.');
       }
@@ -4347,7 +4461,7 @@ describe('scheduler dispatch loop', () => {
           backendKind: 'openshell',
           backendSessionId: `openkit-${testEntityId('as', 'as_cleanup_pending')}`,
           deploymentId: target.deploymentId,
-          packageSnapshotId: lease.inputRef,
+          packageSnapshotId: lease.inputRef!,
           runtimeTargetId: target.targetId,
           stagingDirectoryRef: 'server/runtime/worker-backend-sessions/cleanup-pending',
           transientProviderInstanceId: null,
@@ -4357,19 +4471,44 @@ describe('scheduler dispatch loop', () => {
           turnId,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-        sandboxBindingRef: lease.bindingRef,
+        sandboxBindingRef: lease.bindingRef!,
       });
-      for (const [fromState, toState] of [
-        ['materializing', 'materialized'],
-        ['materialized', 'launching'],
-        ['launching', 'cleanup-pending'],
-      ] as const) {
-        await transitionWorkerBackendSessionState(coreDb, {
-          fromState,
-          attemptId: lease.attemptId,
-          toState,
-        });
-      }
+      const { value } = await openAdmittedTestNanoHost(coreDb);
+      const observedAt = new Date().toISOString();
+      await value.owner.backendSession({
+        kind: 'transition',
+        fromState: 'materializing',
+        attemptId: lease.attemptId,
+        toState: 'materialized',
+        observedAt,
+      });
+      seedTestNanoHostCompletedWorkspaceHandoff(coreDb, lease.attemptId);
+      retainPreparedTestNanoHostSubmission(coreDb, {
+        admission: requireSchedulerAdmissionEntry(coreDb, lease.queueEntryId),
+        attemptId: lease.attemptId,
+        targetId: target.targetId,
+        generation: String(target.connectionGeneration),
+        observedAt,
+      });
+      seedTestNanoHostWorkerLaunch(
+        coreDb,
+        lease.attemptId,
+        {
+          agentSessionId: context.agentSessionId,
+          packageSnapshotId: lease.inputRef!,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        observedAt
+      );
+      await value.owner.backendSession({
+        kind: 'transition',
+        fromState: 'launching',
+        attemptId: lease.attemptId,
+        toState: 'cleanup-pending',
+        observedAt,
+      });
       await ownerStore.updateTurn(turnId, {
         completedAt: '2026-07-05T00:00:03.000Z',
         error: { code: 'worker_governance_turn_failed', message: 'accepted effect is unknown' },
@@ -4420,9 +4559,11 @@ describe('scheduler dispatch loop', () => {
       );
       expect(
         (
-          coreDb.sqlite
-            .prepare('SELECT state FROM worker_backend_sessions WHERE attempt_id = ?')
-            .get('attempt_00000000-0000-7b13-9b8b-0f01dab3ae69') as { state: string }
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare('SELECT state FROM worker_backend_sessions WHERE attempt_id = ?')
+              .get('attempt_00000000-0000-7b13-9b8b-0f01dab3ae69')
+          ) as { state: string }
         ).state
       ).toBe('cleanup-pending');
     } finally {

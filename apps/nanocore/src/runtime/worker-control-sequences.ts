@@ -1,4 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJsonText } from '@openkit/protocol';
+import {
+  buildWorkerCanonicalTerminalEventRecord,
+  type WorkerCanonicalTerminalEventDataInput,
+} from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import type {
   WorkerControlSequenceRecorder,
@@ -35,6 +40,96 @@ export function createWorkerControlSequenceRecorder(
  * @returns Durable accept or reject outcome.
  */
 export function acceptWorkerControlSequence(
+  owner: WorkerControlSequenceDb,
+  input: WorkerControlSequenceRecorderInput
+): WorkerControlSequenceRecorderResult {
+  const observed = inspectWorkerControlSequence(owner, input);
+  if (observed.status !== 'accepted' || observed.duplicate) return observed;
+
+  owner.sqlite
+    .prepare(
+      `
+      INSERT INTO worker_control_sequence_fingerprints (
+        workspace_id,
+        thread_id,
+        turn_id,
+        agent_session_id,
+        package_snapshot_id,
+        request_id,
+        operation,
+        sequence,
+        fingerprint,
+        accepted_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(
+      input.lineage.workspaceId,
+      input.lineage.threadId,
+      input.lineage.turnId,
+      input.lineage.agentSessionId,
+      input.lineage.packageSnapshotId,
+      input.lineage.requestId ?? null,
+      input.operation,
+      input.sequence,
+      input.fingerprint,
+      new Date().toISOString()
+    );
+
+  return { ...observed, nextExpectedSequence: nextExpectedSequence(owner, input) };
+}
+
+/** Builds the exact two fingerprints used by both the admitted inspector and the final writer. */
+export function workerFinalSequenceInputs(
+  lineage: WorkerControlSequenceRecorderInput['lineage'],
+  payload: {
+    readonly sequence: number;
+    readonly terminalData: WorkerCanonicalTerminalEventDataInput;
+    readonly requireContinuous?: true | undefined;
+  }
+) {
+  const { sequence, terminalData } = payload;
+  const event = buildWorkerCanonicalTerminalEventRecord({ data: terminalData, lineage, sequence });
+  return {
+    event,
+    final: {
+      lineage,
+      operation: 'final_status' as const,
+      sequence,
+      fingerprint: canonicalJsonText({ ...terminalData, lineage, sequence }),
+    },
+    append: {
+      lineage,
+      operation: 'event_append' as const,
+      sequence,
+      fingerprint: canonicalJsonText(event),
+      ...(payload.requireContinuous ? { requireContinuous: true as const } : {}),
+    },
+  };
+}
+
+/** Checks the original two Native streams under the pinned reader before Core consumes intake. */
+export function inspectNanoHostWorkerFinalSequences(
+  owner: WorkerControlSequenceDb,
+  lineage: WorkerControlSequenceRecorderInput['lineage'],
+  payload: Parameters<typeof workerFinalSequenceInputs>[1]
+) {
+  if (!owner.sqlite.readonly || !owner.sqlite.inTransaction)
+    throw new Error('Worker final preflight requires the pinned NanoHost read transaction.');
+  const { final, append } = workerFinalSequenceInputs(lineage, payload);
+  const finalSequence = inspectWorkerControlSequence(owner, final);
+  if (finalSequence.status !== 'accepted') return finalSequence;
+  const eventSequence = inspectWorkerControlSequence(owner, append);
+  if (eventSequence.status !== 'accepted') return eventSequence;
+  return {
+    status: 'accepted' as const,
+    finalStatusDuplicate: finalSequence.duplicate,
+    eventDuplicate: eventSequence.duplicate,
+  };
+}
+
+function inspectWorkerControlSequence(
   owner: WorkerControlSequenceDb,
   input: WorkerControlSequenceRecorderInput
 ): WorkerControlSequenceRecorderResult {
@@ -104,41 +199,9 @@ export function acceptWorkerControlSequence(
       status: 'stale',
     };
   }
-
-  owner.sqlite
-    .prepare(
-      `
-      INSERT INTO worker_control_sequence_fingerprints (
-        workspace_id,
-        thread_id,
-        turn_id,
-        agent_session_id,
-        package_snapshot_id,
-        request_id,
-        operation,
-        sequence,
-        fingerprint,
-        accepted_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-    .run(
-      input.lineage.workspaceId,
-      input.lineage.threadId,
-      input.lineage.turnId,
-      input.lineage.agentSessionId,
-      input.lineage.packageSnapshotId,
-      input.lineage.requestId ?? null,
-      input.operation,
-      input.sequence,
-      input.fingerprint,
-      new Date().toISOString()
-    );
-
   return {
     duplicate: false,
-    nextExpectedSequence: nextExpectedSequence(owner, input),
+    nextExpectedSequence: input.sequence + 1,
     status: 'accepted',
   };
 }

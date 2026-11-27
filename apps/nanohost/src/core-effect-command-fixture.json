@@ -144,9 +144,11 @@
     "kind": "bridge.open",
     "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "input": {
+      "sandboxBindingRef": "sandbox-binding-pin",
       "sandboxIntegrationBindingRef": "integration-pin"
     },
     "command": {
+      "sandboxBindingRef": "sandbox-binding-pin",
       "sandboxIntegrationBindingRef": "integration-pin",
       "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }

@@ -17,6 +17,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
+  type SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
 import { writeRetainedV1 } from '@openkit/protocol';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -32,6 +33,22 @@ import {
   snapshotDigest,
   validateSnapshotRecord,
 } from '../storage/workspace-file-records.js';
+
+/**
+ * Reads the canonical SessionCompatibilityKey projected by the AEP resolver.
+ *
+ * @param environmentPackage Admitted package or non-dispatchable planning metadata.
+ * @returns The existing session-static key, before backend path materialization.
+ */
+export function agentSessionCompatibilityKeyFromPackage(
+  environmentPackage: Pick<AgentEnvironmentPackage, 'extensions'>
+): string {
+  return (
+    environmentPackage.extensions.openkit as {
+      sessionWorkspace: SessionWorkspaceMaterializationPlan;
+    }
+  ).sessionWorkspace.compatibilityKey.digest;
+}
 
 /** Local write-intent failure whose decoder cause stays private at publication. */
 export class AgentEnvironmentSnapshotPreparationError extends Error {

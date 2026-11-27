@@ -14,7 +14,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -249,7 +249,7 @@ async function createFixture() {
     workspaceId: DEMO_WORKSPACE_ID,
   });
   const agentSetup = createTestAgentSetup({ requiredCapabilities: ['worker-control'] });
-  admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
   const runtime = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,

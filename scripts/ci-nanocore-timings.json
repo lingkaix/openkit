@@ -602,7 +602,6 @@
     "src/storage/nanohost-transport-native.test.ts": 20359,
     "src/storage/native-agent-session-lineage.test.ts": 17340,
     "src/storage/native-receipt-read-isolation.test.ts": 4740,
-    "src/storage/physical-epoch-cutover.test.ts": 548,
     "src/storage/recurring-deletion.test.ts": 5712,
     "src/storage/recurring-portable-history.test.ts": 11711,
     "src/storage/recurring-records.test.ts": 150,

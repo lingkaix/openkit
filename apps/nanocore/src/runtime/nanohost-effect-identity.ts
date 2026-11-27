@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { compareCodeUnits } from '@openkit/protocol';
 import type {
   NanoHostEffectOperation,
@@ -55,6 +56,39 @@ export function createNanoHostEffectRequest(
     )
     .digest('hex');
   return { input: commandInput, kind: operation, requestId };
+}
+
+/** Identifies the first image operation from the immutable Worker package and anchor. */
+export function createNanoHostInitialImageRequest(
+  identity: Pick<WorkerBackendSessionRecord, 'backendSessionId' | 'packageSnapshotId'>,
+  attemptId: string,
+  pkg: AgentEnvironmentPackage
+): { readonly kind: 'image.acquire' | 'image.build'; readonly requestId: string } {
+  const image = pkg.runtime.environment
+    ? { kind: 'reference' as const, ref: pkg.runtime.environment.imageDigest }
+    : pkg.runtime.image;
+  if (image.kind === 'reference')
+    return {
+      kind: 'image.acquire',
+      requestId: createNanoHostEffectRequest(identity, attemptId, 'image.acquire', {
+        imageReference: image.ref,
+      }).requestId!,
+    };
+  return {
+    kind: 'image.build',
+    requestId: createNanoHostEffectRequest(identity, attemptId, 'image.build', {
+      arguments: image.arguments,
+      argumentsDigest: image.argumentsDigest,
+      contextDigest: image.contextDigest,
+      contextRef: image.contextRef,
+      dockerfile: image.input.content,
+      dockerfileDigest: image.input.digest,
+      egress: image.egress,
+      layerLimit: image.layerLimit,
+      outputLimitBytes: image.outputLimitBytes,
+      timeLimitSeconds: image.timeLimitSeconds,
+    }).requestId!,
+  };
 }
 
 /** Serializes deterministic request identity input with recursive key ordering. */

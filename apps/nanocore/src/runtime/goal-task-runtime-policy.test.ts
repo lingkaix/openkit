@@ -68,7 +68,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestMcpToolCondition } from '../test-support/mcp-tool-policy.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import {
@@ -978,6 +978,7 @@ async function fixture(
       goalTaskPolicy,
       goalWake,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: () => environmentPackage,
       } as unknown as WorkerControlGateway,
       workerMcpGateway: gateway,
@@ -2069,6 +2070,14 @@ it.each([
   'provider-deadline',
 ] as const)('retains native Coordinator outcomes across %s', async (mode) => {
   const activates = mode === 'activation' || mode === 'publication-retry';
+  if (mode === 'activation') {
+    // The simulated executor is the packaged self-check path: the env selects, before the Control
+    // worker starts, the Native writer that publishes its final through the admitted owner.
+    process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+    cleanup.push(() => {
+      delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    });
+  }
   const f = await fixture(activates ? { activation: 'granted' } : {});
   const { store, coreDb, db, scope } = f;
   const gatewayConfig = createTestGatewayConfig();
@@ -2292,7 +2301,7 @@ it.each([
           'Inspect the existing admission before retry.',
           409
         );
-      admitTestNativeEnvironment(coreDb, manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       await recordTestNativeRuntimeTarget(coreDb);
       const executor = new SimulatedTurnExecutor({
         coreDb,

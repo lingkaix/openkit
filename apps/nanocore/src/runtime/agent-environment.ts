@@ -81,7 +81,10 @@ import {
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
 import { readNativeGoalView } from './goal-owner.js';
-import { resolvePublicNativeEnvironment } from './native-environment.js';
+import {
+  type NanoHostEnvironmentRead,
+  resolvePublicNativeEnvironment,
+} from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-supply.js';
 import { createOpenkitWorkMcpSupply } from './openkit-work-supply.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -190,6 +193,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   supportedRequiredFeatures?: readonly string[] | undefined;
   /** Optional Core database used to derive durable vault grants into package metadata. */
   coreDb?: CoreDb;
+  /** Admitted image-default reads used by both compatibility and launch. */
+  readNanoHostEnvironment?: NanoHostEnvironmentRead;
   /** ISO timestamp used for deterministic package tests. */
   createdAt?: string;
   /** Current clock used to recheck a materialization lease. */
@@ -757,7 +762,11 @@ function resolveOpenShellAgentEnvironmentPackage(
         capabilityRequests: [],
       },
       runtime: {
-        environment: resolvePublicNativeEnvironment(input.coreDb, manifest),
+        environment: resolvePublicNativeEnvironment(
+          input.coreDb,
+          manifest,
+          input.readNanoHostEnvironment
+        ),
         image: resolveRuntimeImage(manifest.runtime.image),
         binaries: manifest.runtime.binaries,
         command: {

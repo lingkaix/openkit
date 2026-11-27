@@ -847,6 +847,7 @@ export async function preserveRawWorkspaceCapture(input: {
     publicationBytes: 65_536n,
   });
   let acknowledged = false;
+  const finishCapture = beginWorkspaceCaptureWrite(input.dataRoot, input.identity);
   try {
     if (existing) {
       if (
@@ -885,8 +886,51 @@ export async function preserveRawWorkspaceCapture(input: {
     acknowledged = true;
     return { ...source, candidate: staged.bytes };
   } finally {
+    finishCapture();
     if (acknowledged) {
       reservation.release();
     }
   }
+}
+
+type CaptureAnchor = Pick<WorkspaceCollectionIdentity, 'workspaceId' | 'packageSnapshotId'>;
+
+/** Tracks only live observers and writers of the exact package in the admitted Data Root. */
+const captureActivity = new Map<string, { revision: number; writers: number; users: number }>();
+
+function retainCaptureActivity(dataRoot: string, anchor: CaptureAnchor) {
+  const key = JSON.stringify([dataRoot, anchor.workspaceId, anchor.packageSnapshotId]);
+  const activity = captureActivity.get(key) ?? { revision: 0, writers: 0, users: 0 };
+  activity.users += 1;
+  captureActivity.set(key, activity);
+  return {
+    activity,
+    release: () => {
+      activity.users -= 1;
+      if (activity.users === 0) captureActivity.delete(key);
+    },
+  };
+}
+
+/** Orders physical cleanup delivery against capture work from admission through publication. */
+export function beginWorkspaceCaptureWrite(dataRoot: string, anchor: CaptureAnchor): () => void {
+  const { activity, release } = retainCaptureActivity(dataRoot, anchor);
+  activity.revision += 1;
+  activity.writers += 1;
+  return () => {
+    activity.writers -= 1;
+    release();
+  };
+}
+
+/** Retains process-local ordering until the physical owner finishes the cleanup claim. */
+export function observeWorkspaceCaptureWrites(dataRoot: string, anchor: CaptureAnchor) {
+  const { activity, release } = retainCaptureActivity(dataRoot, anchor);
+  return {
+    checkpoint: () => {
+      const revision = activity.revision;
+      return () => activity.writers === 0 && activity.revision === revision;
+    },
+    release,
+  };
 }

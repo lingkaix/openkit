@@ -1,26 +1,34 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOperationInvocation } from '../operation-composition.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 
 const identityId = 'integration_nanohost_primary';
 const deploymentId = testEntityId('dep', 'deploy_primary');
 const physicalEpoch = 'a'.repeat(64);
 
-function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
+function toolFor(
+  coreDb: ReturnType<typeof openCoreDb> | undefined,
+  readNanoHostTarget?: NanoHostCoreReads['readTarget']
+) {
   return createAdministrationNanoHostRuntimeTargetTool({
     coreDb,
-    createOperationInvocation,
+    createOperationInvocation: (dependencies) =>
+      createOperationInvocation({
+        ...dependencies,
+        ...(readNanoHostTarget ? { readNanoHostTarget } : {}),
+      }),
     actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
     lineage: {
       workspaceId: 'ws_00000000-0000-7385-aa6f-e0db858f78e5',
@@ -33,6 +41,25 @@ function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
 }
 
 describe('administration nanohost.runtime-target Tool', () => {
+  it('reports a held NanoHost owner with current Core administrator authority', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admin-nanohost-tool-held-')));
+    onTestFinished(() => disposeTestStore(coreDb.dataRoot, coreDb));
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const held = await toolFor(coreDb, () => ({
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'disabled',
+    })).execute(
+      {},
+      { callId: 'call_storage', toolOccurrence: 1, signal: new AbortController().signal }
+    );
+    expect(held.isError).toBe(true);
+    expect(JSON.parse((held.content[0] as { text: string }).text)).toMatchObject({
+      code: 'nanohost_transport_storage_unavailable',
+    });
+  });
+
   it('returns ready, unready, and missing observations with stored physicalEpoch and no host selection', async () => {
     const missing = await toolFor(undefined).execute(
       {},
@@ -49,9 +76,11 @@ describe('administration nanohost.runtime-target Tool', () => {
     });
 
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admin-nanohost-tool-')));
+    onTestFinished(() => disposeTestStore(coreDb.dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const tool = toolFor(coreDb);
+    const storage = await openAdmittedTestNanoHost(coreDb);
+    const tool = toolFor(coreDb, createNanoHostCoreReads(storage.value.owner).readTarget);
     const context = {
       callId: 'call_target',
       toolOccurrence: 1,
@@ -64,15 +93,17 @@ describe('administration nanohost.runtime-target Tool', () => {
     });
     expect(absent.isError).toBe(true);
 
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const allocated = await transitionAdmittedNanoHostRuntimeTarget(storage.value, {
+      kind: 'allocate',
       deploymentId,
       identityId,
       observedAt: '2026-08-15T01:02:02.000Z',
       targetId: identityId,
     });
+    expect(allocated).toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
     const unready = await tool.execute({}, context);
     expect(JSON.parse((unready.content[0] as { text: string }).text)).toEqual({
-      connectionGeneration: allocated.connectionGeneration,
+      connectionGeneration: 1,
       deploymentId,
       freshEmpty: false,
       identityId,
@@ -85,20 +116,23 @@ describe('administration nanohost.runtime-target Tool', () => {
     expect(JSON.stringify(unready)).toContain('physicalEpoch');
     expect(JSON.stringify(unready)).not.toContain(physicalEpoch);
 
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      connectionGeneration: allocated.connectionGeneration,
-      deploymentId,
-      freshEmpty: true,
-      identityId,
-      observedAt: '2026-08-15T01:02:03.000Z',
-      physicalEpoch,
-      predecessorFenced: true,
-      ready: true,
-      targetId: identityId,
-    });
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(storage.value, {
+        kind: 'ready',
+        connectionGeneration: 1,
+        deploymentId,
+        freshEmpty: true,
+        identityId,
+        observedAt: '2026-08-15T01:02:03.000Z',
+        physicalEpoch,
+        predecessorFenced: true,
+        ready: true,
+        targetId: identityId,
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { physicalEpoch } });
     const ready = await tool.execute({}, context);
     expect(JSON.parse((ready.content[0] as { text: string }).text)).toEqual({
-      connectionGeneration: allocated.connectionGeneration,
+      connectionGeneration: 1,
       deploymentId,
       freshEmpty: true,
       identityId,
@@ -115,6 +149,5 @@ describe('administration nanohost.runtime-target Tool', () => {
       code: 'nanohost_runtime_target_scope_rejected',
     });
     expect(scoped.isError).toBe(true);
-    coreDb.sqlite.close();
   });
 });

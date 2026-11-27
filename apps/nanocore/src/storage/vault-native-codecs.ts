@@ -1544,6 +1544,31 @@ export const HarnessLoginObservationsSchema = z
   })
   .strict();
 
+/** Native placement retained from reservation before a physical writer can receive material. */
+export const VaultEpochPlacementSchema = z.strictObject({
+  deploymentId: z.string().min(1).max(128),
+  runtimeTargetId: z.string().min(1).max(512),
+  physicalEpoch: z.string().min(1).max(512),
+  generation: z.string().min(1).max(512),
+});
+
+export type VaultEpochPlacement = z.infer<typeof VaultEpochPlacementSchema>;
+
+export const NanoHostEpochInvalidationSchema = z.strictObject({
+  deploymentId: VaultEpochPlacementSchema.shape.deploymentId,
+  sourceOwner: z.literal('nanohost'),
+  verb: z.literal('fence-vault-epoch'),
+  occurrenceKey: z.string().min(1).max(4096),
+  requestId: z.uuid(),
+  expectedGeneration: VaultEpochPlacementSchema.shape.generation,
+  inputDigest: z.string().regex(/^(?:sha256:)?[a-f0-9]{64}$/),
+  target: z.strictObject({
+    runtimeTargetId: VaultEpochPlacementSchema.shape.runtimeTargetId,
+    physicalEpoch: VaultEpochPlacementSchema.shape.physicalEpoch,
+    holderReceiptIds: z.array(z.string().min(1).max(4096)).max(4096),
+  }),
+});
+
 const writerGeneration = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 
 /**
@@ -1564,6 +1589,7 @@ export const VaultCredentialWriterSchema = z.union([
       generation: writerGeneration,
       mode: z.literal('gateway'),
       holder: boundedLoginIdentity(4096),
+      placement: VaultEpochPlacementSchema.optional(),
       state: z.enum(['active', 'pending', 'fenced']),
     })
     .strict(),
@@ -2217,6 +2243,7 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
           receiptId: z.string().min(1),
           expectedVersion: z.number().int().positive().safe(),
           expectedGeneration: z.number().int().nonnegative().safe(),
+          placement: VaultEpochPlacementSchema.optional(),
           // Core supplies this only for the same delivery refused before dispatch.
           neverSent: z
             .object({ receiptId: z.string().min(1) })

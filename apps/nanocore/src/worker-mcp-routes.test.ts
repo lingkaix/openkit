@@ -88,6 +88,7 @@ import {
 } from './auth/nanohost-transport-session.js';
 import { evaluateProductAuthorization } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import * as capabilityLedger from './capability/usage-ledger.js';
 import {
   finishCapabilityCall,
@@ -144,7 +145,6 @@ import {
   openNanoHostAgentSessionBinding,
   readNanoHostThreadAgentSessionBinding,
 } from './runtime/nanohost-harness.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
@@ -180,10 +180,16 @@ import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import * as canonicalWrites from './storage/canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './storage/nanohost-transport-owner.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './storage/recurring-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import {
@@ -196,7 +202,7 @@ import { recordTestExecutionAttempt } from './test-support/execution-attempt.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
 import {
@@ -269,6 +275,16 @@ function recordMcpWorkerLineage(
       outcomeRef: null,
     })?.disposition
   ).toBe('accepted');
+}
+
+/** Observes the admitted physical binding for a suite-owned Thread fixture. */
+function readFixtureThreadBinding(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof readNanoHostThreadAgentSessionBinding>[1]
+) {
+  return readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    readNanoHostThreadAgentSessionBinding({ sqlite }, input)
+  );
 }
 
 /** One closed Demo data root. MCP route fixtures copy it instead of migrating and seeding again. */
@@ -399,6 +415,7 @@ describe('worker MCP routes', () => {
             ],
           }),
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
       });
@@ -807,6 +824,7 @@ describe('worker MCP routes', () => {
         interception,
         vaultUnlockState,
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
         workerMcpGateway: gateway,
@@ -1270,10 +1288,14 @@ describe('worker MCP routes', () => {
         identityId: 'capture-wait',
         targetId: 'capture-wait',
       };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const nativeStorage = await openAdmittedTestNanoHost(coreDb);
+      const allocated = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'allocate',
         ...target,
         observedAt: '2026-10-05T00:00:00.000Z',
       });
+      if (allocated.state !== 'ready' || !allocated.value)
+        throw new Error('Capture fixture RuntimeTarget was not allocated.');
       let admit!: (physical: object) => void;
       const physicalReady = new Promise<object>((resolve) => {
         admit = resolve;
@@ -1285,6 +1307,7 @@ describe('worker MCP routes', () => {
       const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
       const dispatch = createNanoHostSessionDispatch({
         coreDb,
+        nativeStorage,
         sessionAuthority: authority,
         fileAdmission,
       });
@@ -1328,6 +1351,7 @@ describe('worker MCP routes', () => {
             workspaceMcpServerCatalogs: [],
           }),
         workerControlGateway: {
+          afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
           authenticatePackageToken: vi.fn(() => pkg),
         } as unknown as WorkerControlGateway,
         workerMcpGateway: gateway,
@@ -1363,7 +1387,7 @@ describe('worker MCP routes', () => {
         await dispatch.readiness!(
           physical,
           Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-          { ...target, coreDb }
+          { ...target, coreDb, nativeStorage: nativeStorage.value }
         );
         await client.connect(
           new StreamableHTTPClientTransport(
@@ -1643,6 +1667,7 @@ describe('worker MCP routes', () => {
         }),
       store,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
@@ -2191,7 +2216,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => snapshot,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const nativeStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
       const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -2324,7 +2349,7 @@ describe('worker MCP routes', () => {
           timestamp,
         }));
         for (const binding of bindingInputs.slice(0, 3))
-          await openNanoHostAgentSessionBinding(coreDb, binding);
+          await openNanoHostAgentSessionBinding(nativeStorage.value.owner, binding);
         const [peerSession, , withdrawnSession, foreignSession] = sessions as [
           (typeof sessions)[number],
           (typeof sessions)[number],
@@ -2499,7 +2524,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2667,7 +2692,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2687,7 +2712,7 @@ describe('worker MCP routes', () => {
         await second.launched.promise;
         await native.waitForStartup(native.executor.nativeLineage!.turnId);
         const target = await recordTestNativeRuntimeTarget(coreDb);
-        await createNanoHostHarnessRuntime(coreDb, {
+        await createNanoHostHarnessRuntime(nativeStorage.value.owner, {
           adapterId: 'codex',
           adapterVersion: 'test',
           harnessBindingRef: 'harness_binding_foreign',
@@ -2702,9 +2727,9 @@ describe('worker MCP routes', () => {
           runtimeTargetId: target.targetId,
           timestamp,
         });
-        await openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
+        await openNanoHostAgentSessionBinding(nativeStorage.value.owner, bindingInputs[3]!);
         expect(
-          readNanoHostThreadAgentSessionBinding(coreDb, {
+          readFixtureThreadBinding(coreDb, {
             workspaceId,
             threadId: threads[3]!.id,
           })
@@ -2712,7 +2737,7 @@ describe('worker MCP routes', () => {
         const beforeAudience = {
           ...before,
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2854,7 +2879,7 @@ describe('worker MCP routes', () => {
           requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
           sessions: sessions.map((session) => store.getAgentSession(session.id)),
           bindings: threads.map((thread) =>
-            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+            readFixtureThreadBinding(coreDb, { workspaceId, threadId: thread.id })
           ),
           commands: commands.mock.calls.length,
           effects: native.effects.length,
@@ -2868,9 +2893,9 @@ describe('worker MCP routes', () => {
             })
           ).structuredContent!.turns
         ).toEqual([expect.objectContaining({ id: queued.id, status: 'pending' })]);
-        // Deliberately lose only this valid, unstarted Core binding; no physical close is claimed.
-        coreDb.sqlite.transaction(() => {
-          const { changes } = coreDb.sqlite
+        // Lose only the valid, unstarted binding; the fixture claims no physical close.
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+          const { changes } = sqlite
             .prepare(`DELETE FROM agent_session_runtime_bindings
             WHERE agent_session_runtime_binding_id = ? AND agent_session_id = ?
               AND workspace_id = ? AND thread_id = ?
@@ -2878,9 +2903,9 @@ describe('worker MCP routes', () => {
               AND current_turn_id IS NULL AND current_attempt_id IS NULL`)
             .run('binding_withdrawn', withdrawnSession.id, workspaceId, threads[2]!.id);
           expect(changes).toBe(1);
-        })();
+        });
         expect(
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
+          readFixtureThreadBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
         ).toBeNull();
         await expect(
           laterClient.callTool({ name: 'work_peer_read', arguments: { handle: withdrawnHandle } })
@@ -2965,7 +2990,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const app = createApp({
         coreDb,
         store,
@@ -3129,7 +3154,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const app = createApp({
         coreDb,
         store,
@@ -3320,6 +3345,7 @@ describe('worker MCP routes', () => {
   );
 
   it.each([
+    'authenticated-capability-hash',
     'trip',
     'policy-hidden-foreign',
     'near-name',
@@ -3386,7 +3412,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: readConfiguration,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       if (scenario === 'containment-check' || consumer) {
         fs.mkdirSync(join(dataRoot, 'config'), { recursive: true });
         writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
@@ -3532,6 +3558,38 @@ describe('worker MCP routes', () => {
               runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
           return { response, body };
         };
+        if (scenario === 'authenticated-capability-hash') {
+          const postAudit = vi
+            .spyOn(getControlStoreWorkerClient(), 'standaloneAudit')
+            .mockResolvedValueOnce(undefined);
+          try {
+            const reply = await rpc(
+              'openkit-security',
+              'tools/call',
+              { name: 'security_admin_export', arguments: {} },
+              199
+            );
+            expect(reply.response.status).toBe(200);
+            expect(reply.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            expect(postAudit).toHaveBeenCalledTimes(1);
+            const [, audit, presentedHash] = postAudit.mock.calls[0]!;
+            const expectedHash = createHash('sha256')
+              .update(Buffer.from(capabilityToken, 'base64url'))
+              .digest('hex');
+            expect(
+              presentedHash === expectedHash,
+              'the Audit post has the authenticated hash'
+            ).toBe(true);
+            expect(audit.stage).toBe('security.canary');
+            const auditBytes = JSON.stringify(audit);
+            expect(auditBytes.includes(capabilityToken) || auditBytes.includes(expectedHash)).toBe(
+              false
+            );
+          } finally {
+            postAudit.mockRestore();
+          }
+          return;
+        }
         // Dormant baseline MUST pass this real source/list/ordinary precondition before any OLD credit.
         const workList = await rpc('openkit-work', 'tools/list', {}, 100);
         expect(workList.response.status).toBe(200);
@@ -4112,7 +4170,7 @@ describe('worker MCP routes', () => {
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => runtimeConfig,
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const taskApp = createApp({
       coreDb,
       store,
@@ -4757,7 +4815,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => runtimeConfig,
       });
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
       const callTool = vi.spyOn(workerMcpGateway, 'callTool');
       const app = createApp({
@@ -5007,9 +5065,10 @@ describe('worker MCP routes', () => {
           await expect(
             lineageClient.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
           ).rejects.toSatisfy((error: unknown) => {
-            expect(error).toMatchObject({ data: { status: 403 } });
+            // The changed Core tuple no longer resolves a bearer against its original grant.
+            expect(error).toMatchObject({ data: { status: 401 } });
             expect(JSON.parse((error as { data: { text: string } }).data.text)).toMatchObject({
-              error: { data: { code: 'worker_control_lineage_mismatch' } },
+              error: { data: { code: 'worker_control_unauthorized' } },
             });
             return true;
           });
@@ -5110,7 +5169,7 @@ describe('worker MCP routes', () => {
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => snapshot,
       });
-      admitTestNativeEnvironment(coreDb, manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
       const app = createApp({
         coreDb,
@@ -5406,7 +5465,7 @@ describe('worker MCP routes', () => {
       });
       let nativeRestore: Promise<void> | undefined;
       const restoreNative = () => (nativeRestore ??= native.restore());
-      admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
+      await admitTestNativeEnvironmentForRoot(coreDb, snapshot.agentManifests[0]!);
       const captureApp = createApp({
         coreDb,
         store,
@@ -6168,6 +6227,7 @@ describe('worker MCP routes', () => {
         }),
       store,
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
@@ -6720,6 +6780,8 @@ describe('worker MCP routes', () => {
         }))
       );
       const coreDb = openCoreDb(dataRoot);
+      // Boot walks only registered Workspaces; the registry is the common owner it revalidates.
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: ensureLocalUser(coreDb), workspaceId });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       const packages: AgentEnvironmentPackage[] = [];
       const calls: Awaited<ReturnType<typeof startCapabilityCall>>[] = [];
@@ -6946,11 +7008,18 @@ describe('worker MCP routes', () => {
             status: 'completed',
           });
         } else {
-          await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toBeInstanceOf(Error);
+          // A corrupt named snapshot is this Workspace's own record: Boot holds it before any write.
+          const retained = retainedWorkspaceRows(workspaceDb);
           expect(store.listAllItems()).toEqual(beforeItems);
           packages.forEach((pkg, index) => {
             expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
           });
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+          expect(scopeAdmissionFailures(dataRoot)).toEqual([
+            { scope: 'workspace', id: workspaceId, check: 'records', stage: 'mcp-item-backfill' },
+          ]);
+          // The held Workspace refuses Store reads; its retained rows, Items and events included, are unchanged.
+          expect(retainedWorkspaceRows(workspaceDb)).toEqual(retained);
         }
         expect(inspections).toBeGreaterThan(0);
         if (
@@ -6963,12 +7032,13 @@ describe('worker MCP routes', () => {
         restoreRead?.();
         restoreRead = undefined;
         await shutdownControlStoreWorkerClient();
-        const reopened = openWorkspaceDb(dataRoot, workspaceId);
+        // A held Workspace refuses a new handle; its already-open handle reads the same committed rows.
+        const reopened = unavailable ? openWorkspaceDb(dataRoot, workspaceId) : workspaceDb;
         try {
           expect(listWorkspaceCapabilityCalls(reopened, workspaceId)).toEqual(beforeCalls);
           expect(listWorkspaceUsageRecords(reopened, workspaceId)).toEqual(beforeUsage);
         } finally {
-          reopened.sqlite.close();
+          if (reopened !== workspaceDb) reopened.sqlite.close();
         }
       } finally {
         if (unavailableDirectory) chmodSync(unavailableDirectory, 0o700);
@@ -7208,6 +7278,7 @@ describe('worker MCP routes', () => {
       });
       recordMcpWorkerLineage(coreDb, environmentPackage);
       const workerControlGateway = {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway;
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -8495,7 +8566,7 @@ async function createMcpCommitFixture(
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => configuration,
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const entry = findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: turn.id });
     if (!entry) throw new Error('Native recurring Turn has no scheduler owner.');
     const candidate = allocateEntityId('as');
@@ -8546,6 +8617,7 @@ async function createMcpCommitFixture(
   let onDiscovery: (() => Promise<void> | void) | undefined;
   let onTool: (() => Promise<void> | void) | undefined;
   let onKnowledge: (() => Promise<void> | void) | undefined;
+  let beforeRequest: (() => void) | undefined;
   let toolContacts = 0;
   const observe = (stage: string) => {
     const reader = openWorkspaceDb(dataRoot, workspaceId);
@@ -8608,6 +8680,7 @@ async function createMcpCommitFixture(
         maintain: vi.fn(),
       },
       workerControlGateway: {
+        afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
     });
@@ -8647,6 +8720,9 @@ async function createMcpCommitFixture(
     version(value: string) {
       serverVersion = value;
     },
+    beforeRequest(callback: () => void) {
+      beforeRequest = callback;
+    },
     tools(value: typeof tools) {
       tools = value;
     },
@@ -8656,6 +8732,8 @@ async function createMcpCommitFixture(
       toolArguments?: Record<string, unknown>
     ) {
       await openTestNativeWorkspace(db);
+      // Closing the gate after the open keeps the test's own setup outside the closure.
+      beforeRequest?.();
       const response = await app.request(
         `/api/worker-capabilities/mcp/${kind === 'echo' ? 'echo' : 'openkit-work'}`,
         {
@@ -9570,6 +9648,37 @@ describe('MCP proved failure and admitted schema observation', () => {
         )
       ).toEqual(new Set([first.schemaSnapshotId]));
     } finally {
+      await f.close();
+    }
+  });
+});
+
+describe('MCP Workspace mutation gate outcome', () => {
+  it.each([
+    {
+      closure: 'live capture',
+      close: (dataRoot: string, workspaceId: string) =>
+        getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, workspaceId, () => []),
+      expected: { code: 'worker_observation_storage_unavailable', status: 503 },
+    },
+    {
+      closure: 'deleted Workspace',
+      close: (dataRoot: string, workspaceId: string) =>
+        getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(dataRoot, workspaceId),
+      expected: { code: 'mcp-denied' },
+    },
+  ] as const)('answers a $closure closure without a Tool contact', async ({ close, expected }) => {
+    const f = await createMcpCommitFixture();
+    try {
+      f.beforeRequest(() => close(f.dataRoot, f.workspaceId));
+      const response = await f.call();
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([]);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+      expect(response).toMatchObject({ error: { data: expected } });
+    } finally {
+      getControlStoreWorkerClient().reopenWorkspaceMutations(f.dataRoot, f.workspaceId);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(f.dataRoot, f.workspaceId, 'capture');
       await f.close();
     }
   });
@@ -11153,3 +11262,17 @@ it('withholds a completed Tool result after authority loss without reopening its
     await f.close();
   }
 });
+
+/** Reads every retained Workspace table row through SQLite, independent of Store admission. */
+function retainedWorkspaceRows(workspaceDb: WorkspaceDb): Record<string, unknown[]> {
+  const tables = workspaceDb.sqlite
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+    .pluck()
+    .all() as string[];
+  return Object.fromEntries(
+    tables.map((table) => [
+      table,
+      workspaceDb.sqlite.prepare(`SELECT * FROM "${table}"`).raw().all(),
+    ])
+  );
+}

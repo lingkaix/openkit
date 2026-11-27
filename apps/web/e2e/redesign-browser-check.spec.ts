@@ -62,8 +62,9 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
-    await page.goto(stack.webUrl);
-    await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+    // The root may redirect after Assistant discovery; use a settled shell route for layout checks.
+    await page.goto(`${stack.webUrl}/needs-you`);
+    await expect(page.getByRole('heading', { name: 'Needs you', exact: true })).toBeVisible();
     const phone = viewport.name === 'phone';
 
     await check(`${viewport.name} section bar`, async () => {
@@ -93,16 +94,18 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
         await shot(`${viewport.name}-more-drawer`);
         return;
       }
-      await expect(page.getByText('Loading Assistant…')).toBeHidden({ timeout: 20_000 });
       await page
         .getByRole('navigation', { name: 'Sections' })
         .getByRole('button', { name: 'More', exact: true })
         .click();
-      const drawer = page.getByRole('dialog', { name: 'More' });
+      const drawer = page.getByRole('dialog', { name: 'More', exact: true });
+      await expect(drawer).toBeVisible();
       await shot(`${viewport.name}-more-drawer`);
       await expect(drawer.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
       await expect(drawer.getByRole('button', { name: /^Needs you/ })).toBeVisible();
-      await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click();
+      const close = () => drawer.getByRole('button', { name: 'Close navigation', exact: true });
+      await close().click({ trial: true });
+      await close().click();
       await expect(drawer).toBeHidden();
     });
 
@@ -443,26 +446,54 @@ async function seedNotifications(client: CoreClient, workspaceId: string) {
       client.operations['thread.create']({ workspaceId, name, visibility: 'workspace' })
     )
   );
-  await Promise.all(
-    threads.map((thread) =>
-      client.operations['turn.start']({
-        workspaceId,
-        threadId: thread.id,
-        agentId: 'agent_codex_host',
-        modelId: 'reasoning',
-        input: 'Raise the deterministic simulator question for the notification page.',
-      })
-    )
+  // These Turns share a Workspace submit scope. Join each original Turn and its
+  // exact delivery before starting the next, under a single fixture deadline.
+  const deadline = performance.now() + 60_000;
+  for (const thread of threads) {
+    const turn = await client.operations['turn.start']({
+      workspaceId,
+      threadId: thread.id,
+      agentId: 'agent_codex_host',
+      modelId: 'reasoning',
+      input: 'Raise the deterministic simulator question for the notification page.',
+    });
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error('Notification fixture exceeded its seed deadline.');
+    await expect
+      .poll(
+        async () => {
+          const current = await client.operations['turn.read']({
+            workspaceId,
+            threadId: thread.id,
+            turnId: turn.id,
+          });
+          if (current.status !== 'completed') return current.status;
+          const listed = await client.operations['notification.list']({ limit: 50 });
+          return listed.items.some(
+            ({ source }) =>
+              source.workspaceId === workspaceId &&
+              source.threadId === thread.id &&
+              source.kind === 'user-input-request'
+          )
+            ? 'delivered'
+            : 'completed without a notification';
+        },
+        { timeout: remaining, message: `Notification fixture did not settle ${thread.name}.` }
+      )
+      .toBe('delivered');
+  }
+  const first = await client.operations['notification.list']({ limit: 2 });
+  expect(first.items).toHaveLength(2);
+  expect(first.nextCursor, 'Notification fixture has no second page.').toBeTruthy();
+  const second = await client.operations['notification.list']({
+    limit: 2,
+    cursor: first.nextCursor!,
+  });
+  expect(second.items).toHaveLength(1);
+  expect(second.nextCursor ?? null).toBeNull();
+  expect([...first.items, ...second.items].map(({ source }) => source.threadId).sort()).toEqual(
+    threads.map(({ id }) => id).sort()
   );
-  await expect
-    .poll(
-      async () => {
-        const listed = await client.operations['notification.list']({ limit: 2 });
-        return typeof listed.nextCursor === 'string' && listed.nextCursor.length > 0;
-      },
-      { timeout: 60_000, message: 'Notification fixture has no second page.' }
-    )
-    .toBe(true);
 }
 
 function knowledgePage(workspaceId: string, title: string): string {

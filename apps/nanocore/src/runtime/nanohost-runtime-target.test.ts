@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import Database from 'better-sqlite3';
 import {
   type ArrowFunction,
   createSourceFile,
@@ -16,37 +17,86 @@ import {
   transpileModule,
 } from 'typescript6';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { prepareNanoHostOwner } from '../app.js';
 
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { nanoHostStoreDescriptor } from '../storage/nanohost-store-descriptor.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  fenceNanoHostRuntimeTargetAfterRestart,
+  type AllocateNanoHostRuntimeTargetConnectionGenerationInput,
   getNanoHostRuntimeTarget,
+  type RecordNanoHostRuntimeTargetConnectionCloseInput,
   readConfiguredNanoHostRuntimeTargetStatus,
-  recordNanoHostRuntimeTargetConnectionClose,
-  upsertNanoHostRuntimeTarget,
+  type UpsertNanoHostRuntimeTargetInput,
 } from './nanohost-runtime-target.js';
-
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-});
 
 const targetId = 'runtime-target-test';
 const physicalEpochA = 'a'.repeat(64);
 const physicalEpochB = 'b'.repeat(64);
 
+type TargetOwner = ReturnType<typeof openNanoHostTestOwner>;
+
+async function allocateTarget(
+  owner: TargetOwner,
+  input: AllocateNanoHostRuntimeTargetConnectionGenerationInput
+) {
+  const target = await owner.transition({ kind: 'allocate', ...input });
+  if (!target) throw new Error('Original RuntimeTarget allocation has no result.');
+  return target;
+}
+
+async function markTargetReady(owner: TargetOwner, input: UpsertNanoHostRuntimeTargetInput) {
+  const {
+    targetId,
+    identityId,
+    deploymentId,
+    connectionGeneration,
+    observedAt,
+    physicalEpoch,
+    predecessorFenced,
+    ready,
+    freshEmpty,
+  } = input;
+  const target = await owner.transition({
+    kind: 'ready',
+    targetId,
+    identityId,
+    deploymentId,
+    connectionGeneration,
+    observedAt,
+    physicalEpoch,
+    predecessorFenced,
+    ready,
+    freshEmpty,
+  });
+  if (!target) throw new Error('Original RuntimeTarget readiness has no result.');
+  return target;
+}
+
+function closeTarget(owner: TargetOwner, input: RecordNanoHostRuntimeTargetConnectionCloseInput) {
+  return owner.transition({ kind: 'close', ...input });
+}
+
+function restartTarget(owner: TargetOwner, observedAt: string) {
+  return owner.transition({ kind: 'restart', observedAt });
+}
+
 describe('durable NanoHost RuntimeTarget authority', () => {
   it('accepts readiness only for an existing exact allocated generation and identity', async () => {
-    const missingDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-ready-missing-')));
-    applyMigrations(missingDb);
+    const missing = openNanoHostTestOwner();
     await expect(
-      upsertNanoHostRuntimeTarget(missingDb, {
+      markTargetReady(missing, {
         connectionGeneration: 1,
         deploymentId: 'deployment-test',
         freshEmpty: true,
@@ -58,18 +108,16 @@ describe('durable NanoHost RuntimeTarget authority', () => {
         targetId,
       })
     ).rejects.toThrow(/configured|allocated|target/i);
-    expect(getNanoHostRuntimeTarget(missingDb, targetId)).toBeNull();
-    missingDb.sqlite.close();
+    expect(getNanoHostRuntimeTarget(missing, targetId)).toBeNull();
 
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-ready-exact-')));
-    applyMigrations(coreDb);
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const owner = openNanoHostTestOwner();
+    await allocateTarget(owner, {
       deploymentId: 'deployment-test',
       identityId: 'nanohost-test',
       observedAt: '2026-08-10T00:00:00.000Z',
       targetId,
     });
-    const before = getNanoHostRuntimeTarget(coreDb, targetId);
+    const before = getNanoHostRuntimeTarget(owner, targetId);
     for (const conflicting of [
       { connectionGeneration: 2 },
       { connectionGeneration: 0 },
@@ -77,7 +125,7 @@ describe('durable NanoHost RuntimeTarget authority', () => {
       { deploymentId: 'deployment-other' },
     ]) {
       await expect(
-        upsertNanoHostRuntimeTarget(coreDb, {
+        markTargetReady(owner, {
           connectionGeneration: 1,
           deploymentId: 'deployment-test',
           freshEmpty: true,
@@ -90,17 +138,14 @@ describe('durable NanoHost RuntimeTarget authority', () => {
           ...conflicting,
         })
       ).rejects.toThrow(/generation|identity|deployment/i);
-      expect(getNanoHostRuntimeTarget(coreDb, targetId)).toEqual(before);
+      expect(getNanoHostRuntimeTarget(owner, targetId)).toEqual(before);
     }
-    coreDb.sqlite.close();
   });
 
   it('allocates generation one then durable successors without reuse or overflow', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-generation-'));
-    let coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const owner = openNanoHostTestOwner();
 
-    const first = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const first = await allocateTarget(owner, {
       deploymentId: 'deployment-test',
       identityId: 'nanohost-test',
       observedAt: '2026-08-10T00:00:00.000Z',
@@ -111,10 +156,8 @@ describe('durable NanoHost RuntimeTarget authority', () => {
       predecessorFenced: false,
       ready: false,
     });
-    coreDb.sqlite.close();
-
-    coreDb = openCoreDb(dataRoot);
-    const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await owner.reopen();
+    const successor = await allocateTarget(owner, {
       deploymentId: 'deployment-test',
       identityId: 'nanohost-test',
       observedAt: '2026-08-10T00:01:00.000Z',
@@ -122,143 +165,131 @@ describe('durable NanoHost RuntimeTarget authority', () => {
     });
     expect(successor.connectionGeneration).toBe(2);
 
-    coreDb.sqlite
-      .prepare('UPDATE nanohost_runtime_targets SET connection_generation = ? WHERE target_id = ?')
-      .run(Number.MAX_SAFE_INTEGER, targetId);
+    owner.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE nanohost_runtime_targets SET connection_generation = ? WHERE target_id = ?'
+        )
+        .run(Number.MAX_SAFE_INTEGER, targetId)
+    );
     await expect(
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      allocateTarget(owner, {
         deploymentId: 'deployment-test',
         identityId: 'nanohost-test',
         observedAt: '2026-08-10T00:02:00.000Z',
         targetId,
       })
     ).rejects.toThrow(/generation|overflow/i);
-    expect(getNanoHostRuntimeTarget(coreDb, targetId)?.connectionGeneration).toBe(
+    expect(getNanoHostRuntimeTarget(owner, targetId)?.connectionGeneration).toBe(
       Number.MAX_SAFE_INTEGER
     );
-    coreDb.sqlite.close();
   });
 
   it('fences only the exact current connection generation without changing its high-water mark', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-target-')));
-    applyMigrations(coreDb);
+    const owner = openNanoHostTestOwner();
 
-    try {
-      const initial = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
-        identityId: 'nanohost-test',
-        observedAt: '2026-08-10T00:00:00.000Z',
+    const initial = await allocateTarget(owner, {
+      deploymentId: 'deployment-test',
+      identityId: 'nanohost-test',
+      observedAt: '2026-08-10T00:00:00.000Z',
+      targetId,
+    });
+    await markTargetReady(owner, {
+      connectionGeneration: initial.connectionGeneration,
+      deploymentId: 'deployment-test',
+      freshEmpty: true,
+      identityId: 'nanohost-test',
+      observedAt: '2026-08-10T00:00:02.000Z',
+      physicalEpoch: physicalEpochA,
+      predecessorFenced: true,
+      ready: true,
+      targetId,
+    });
+    await expect(
+      closeTarget(owner, {
+        authoritativeGeneration: initial.connectionGeneration,
+        closedGeneration: initial.connectionGeneration + 1,
+        observedAt: '2026-08-10T00:00:03.000Z',
         targetId,
-      });
-      await upsertNanoHostRuntimeTarget(coreDb, {
-        connectionGeneration: initial.connectionGeneration,
-        deploymentId: 'deployment-test',
-        freshEmpty: true,
-        identityId: 'nanohost-test',
-        observedAt: '2026-08-10T00:00:02.000Z',
-        physicalEpoch: physicalEpochA,
-        predecessorFenced: true,
-        ready: true,
-        targetId,
-      });
-      await expect(
-        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-          authoritativeGeneration: initial.connectionGeneration,
-          closedGeneration: initial.connectionGeneration + 1,
-          observedAt: '2026-08-10T00:00:03.000Z',
-          targetId,
-        })
-      ).rejects.toThrow(/generation|current/i);
-      await fenceNanoHostRuntimeTargetAfterRestart(coreDb, '2026-08-10T00:00:03.000Z');
-      expect(getNanoHostRuntimeTarget(coreDb, targetId)).toMatchObject({
-        connectionGeneration: initial.connectionGeneration,
-        freshEmpty: false,
-        predecessorFenced: true,
-        ready: false,
-        physicalEpoch: null,
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
+      })
+    ).rejects.toThrow(/generation|current/i);
+    await restartTarget(owner, '2026-08-10T00:00:03.000Z');
+    expect(getNanoHostRuntimeTarget(owner, targetId)).toMatchObject({
+      connectionGeneration: initial.connectionGeneration,
+      freshEmpty: false,
+      predecessorFenced: true,
+      ready: false,
+      physicalEpoch: null,
+    });
   });
 
   it('preserves one physical Epoch across reconnect readiness and rejects a changed witness in one ready generation', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-epoch-')));
-    applyMigrations(coreDb);
-    try {
-      const first = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
-        identityId: 'nanohost-test',
-        observedAt: '2026-08-10T00:00:00.000Z',
-        targetId,
-      });
-      const ready = await upsertNanoHostRuntimeTarget(coreDb, {
-        ...first,
-        freshEmpty: true,
-        observedAt: '2026-08-10T00:00:01.000Z',
-        physicalEpoch: physicalEpochA,
-        predecessorFenced: true,
-        ready: true,
-      });
-      expect(ready.physicalEpoch).toBe(physicalEpochA);
-      expect(
-        (
-          await upsertNanoHostRuntimeTarget(coreDb, {
-            ...ready,
-            observedAt: '2026-08-10T00:00:02.000Z',
-            physicalEpoch: physicalEpochA,
-          })
-        ).physicalEpoch
-      ).toBe(physicalEpochA);
-      await expect(
-        upsertNanoHostRuntimeTarget(coreDb, {
+    const owner = openNanoHostTestOwner();
+    const first = await allocateTarget(owner, {
+      deploymentId: 'deployment-test',
+      identityId: 'nanohost-test',
+      observedAt: '2026-08-10T00:00:00.000Z',
+      targetId,
+    });
+    const ready = await markTargetReady(owner, {
+      ...first,
+      freshEmpty: true,
+      observedAt: '2026-08-10T00:00:01.000Z',
+      physicalEpoch: physicalEpochA,
+      predecessorFenced: true,
+      ready: true,
+    });
+    expect(ready.physicalEpoch).toBe(physicalEpochA);
+    expect(
+      (
+        await markTargetReady(owner, {
           ...ready,
-          observedAt: '2026-08-10T00:00:03.000Z',
-          physicalEpoch: physicalEpochB,
+          observedAt: '2026-08-10T00:00:02.000Z',
+          physicalEpoch: physicalEpochA,
         })
-      ).rejects.toThrow(/physical Epoch changed/i);
-      expect(getNanoHostRuntimeTarget(coreDb, targetId)?.physicalEpoch).toBe(physicalEpochA);
-    } finally {
-      coreDb.sqlite.close();
-    }
+      ).physicalEpoch
+    ).toBe(physicalEpochA);
+    await expect(
+      markTargetReady(owner, {
+        ...ready,
+        observedAt: '2026-08-10T00:00:03.000Z',
+        physicalEpoch: physicalEpochB,
+      })
+    ).rejects.toThrow(/physical Epoch changed/i);
+    expect(getNanoHostRuntimeTarget(owner, targetId)?.physicalEpoch).toBe(physicalEpochA);
   });
 
   it('preserves successor readiness when a fenced predecessor closes late', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-stale-close-')));
-    applyMigrations(coreDb);
-    try {
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
-        identityId: 'nanohost-test',
-        observedAt: '2026-08-10T00:00:00.000Z',
-        targetId,
-      });
-      const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
-        identityId: 'nanohost-test',
-        observedAt: '2026-08-10T00:00:01.000Z',
-        targetId,
-      });
-      const readySuccessor = await upsertNanoHostRuntimeTarget(coreDb, {
-        ...successor,
-        freshEmpty: true,
-        observedAt: '2026-08-10T00:00:02.000Z',
-        physicalEpoch: physicalEpochB,
-        predecessorFenced: true,
-        ready: true,
-      });
+    const owner = openNanoHostTestOwner();
+    await allocateTarget(owner, {
+      deploymentId: 'deployment-test',
+      identityId: 'nanohost-test',
+      observedAt: '2026-08-10T00:00:00.000Z',
+      targetId,
+    });
+    const successor = await allocateTarget(owner, {
+      deploymentId: 'deployment-test',
+      identityId: 'nanohost-test',
+      observedAt: '2026-08-10T00:00:01.000Z',
+      targetId,
+    });
+    const readySuccessor = await markTargetReady(owner, {
+      ...successor,
+      freshEmpty: true,
+      observedAt: '2026-08-10T00:00:02.000Z',
+      physicalEpoch: physicalEpochB,
+      predecessorFenced: true,
+      ready: true,
+    });
 
-      expect(
-        await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-          authoritativeGeneration: successor.connectionGeneration,
-          closedGeneration: 1,
-          observedAt: '2026-08-10T00:00:03.000Z',
-          targetId,
-        })
-      ).toEqual(readySuccessor);
-    } finally {
-      coreDb.sqlite.close();
-    }
+    expect(
+      await closeTarget(owner, {
+        authoritativeGeneration: successor.connectionGeneration,
+        closedGeneration: 1,
+        observedAt: '2026-08-10T00:00:03.000Z',
+        targetId,
+      })
+    ).toEqual(readySuccessor);
   });
 });
 
@@ -271,27 +302,48 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
       readConfiguredNanoHostRuntimeTargetStatus({ coreDb: undefined, mode: 'server' })
     ).toMatchObject({ code: 'nanohost_transport_storage_unavailable', ok: false });
 
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-nanohost-status-')));
-    applyMigrations(coreDb);
+    const owner = openNanoHostTestOwner();
+    const readNanoHostTarget = createNanoHostCoreReads(owner.storage.owner).readTarget;
     const config = {
       deploymentId: testEntityId('dep', 'deployment-test'),
       identityId: 'nanohost-test',
     };
-    expect(readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server' })).toMatchObject({
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({
+        coreDb: undefined,
+        readNanoHostTarget,
+        mode: 'server',
+      })
+    ).toMatchObject({
       code: 'nanohost_transport_config_unavailable',
       ok: false,
     });
     expect(
-      readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server', nanoHostConfig: config })
+      readConfiguredNanoHostRuntimeTargetStatus({
+        coreDb: undefined,
+        readNanoHostTarget,
+        mode: 'server',
+        nanoHostConfig: config,
+      })
     ).toMatchObject({ code: 'nanohost_runtime_target_not_found', ok: false });
 
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    expect(
+      readConfiguredNanoHostRuntimeTargetStatus({
+        coreDb: owner,
+        mode: 'server',
+        nanoHostConfig: config,
+        readNanoHostTarget: () => ({ state: 'unavailable', owner: 'nanohost', reason: 'missing' }),
+      })
+    ).toMatchObject({ code: 'nanohost_transport_storage_unavailable', ok: false });
+
+    const allocated = await allocateTarget(owner, {
       ...config,
       observedAt: '2026-08-10T00:00:00.000Z',
       targetId: config.identityId,
     });
     const unready = readConfiguredNanoHostRuntimeTargetStatus({
-      coreDb,
+      coreDb: undefined,
+      readNanoHostTarget,
       mode: 'server',
       nanoHostConfig: config,
     });
@@ -309,7 +361,7 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
       },
     });
 
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await markTargetReady(owner, {
       ...allocated,
       freshEmpty: true,
       observedAt: '2026-08-10T00:00:01.000Z',
@@ -318,7 +370,8 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
       ready: true,
     });
     const ready = readConfiguredNanoHostRuntimeTargetStatus({
-      coreDb,
+      coreDb: undefined,
+      readNanoHostTarget,
       mode: 'server',
       nanoHostConfig: config,
     });
@@ -338,188 +391,169 @@ describe('configured NanoHost RuntimeTarget redacted status', () => {
     expect(JSON.stringify(ready)).toContain('physicalEpoch');
     expect(JSON.stringify(ready)).toContain(physicalEpochA);
 
-    coreDb.sqlite
-      .prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?')
-      .run('deployment-other');
+    owner.setup((sqlite) =>
+      sqlite
+        .prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?')
+        .run('deployment-other')
+    );
     expect(
-      readConfiguredNanoHostRuntimeTargetStatus({ coreDb, mode: 'server', nanoHostConfig: config })
+      readConfiguredNanoHostRuntimeTargetStatus({
+        coreDb: undefined,
+        readNanoHostTarget,
+        mode: 'server',
+        nanoHostConfig: config,
+      })
     ).toMatchObject({ code: 'nanohost_runtime_target_not_found', ok: false });
-    coreDb.sqlite.close();
   });
 });
 
 it('acknowledges RuntimeTarget allocation, readiness, close and restart with read-only Main and durable reopen', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-target-native-reopen-'));
-  let coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  coreDb.sqlite.pragma('query_only = ON');
-  try {
-    const first = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'nanohost-test',
-      observedAt: '2026-08-10T00:00:00.000Z',
-      targetId,
-    });
-    expect(first).toMatchObject({
-      connectionGeneration: 1,
-      ready: false,
-      freshEmpty: false,
-      predecessorFenced: false,
-      physicalEpoch: null,
-    });
-    const ready = await upsertNanoHostRuntimeTarget(coreDb, {
-      connectionGeneration: first.connectionGeneration,
-      deploymentId: first.deploymentId,
-      identityId: first.identityId,
-      targetId: first.targetId,
-      freshEmpty: true,
-      observedAt: '2026-08-10T00:00:01.000Z',
-      physicalEpoch: physicalEpochA,
-      predecessorFenced: true,
-      ready: true,
-    });
-    expect(getNanoHostRuntimeTarget(coreDb, targetId)).toEqual(ready);
-    // Storage requires acknowledgement after the covering FULL commit, before reopen.
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    coreDb = openCoreDb(dataRoot);
-    coreDb.sqlite.pragma('query_only = ON');
-    expect(getNanoHostRuntimeTarget(coreDb, targetId)).toEqual(ready);
-    const closed = await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-      authoritativeGeneration: null,
-      closedGeneration: first.connectionGeneration,
-      observedAt: '2026-08-10T00:00:02.000Z',
-      targetId,
-    });
-    // NanoHost Runtime And Transport: readiness loss clears the Epoch in the same tuple.
-    expect(closed).toEqual({
-      ...ready,
-      ready: false,
-      freshEmpty: false,
-      physicalEpoch: null,
-      observedAt: '2026-08-10T00:00:02.000Z',
-    });
-    const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'nanohost-test',
-      observedAt: '2026-08-10T00:00:03.000Z',
-      targetId,
-    });
-    expect(successor.connectionGeneration).toBe(2);
-    const readySuccessor = await upsertNanoHostRuntimeTarget(coreDb, {
-      connectionGeneration: successor.connectionGeneration,
-      deploymentId: successor.deploymentId,
-      identityId: successor.identityId,
-      targetId: successor.targetId,
-      freshEmpty: true,
-      observedAt: '2026-08-10T00:00:04.000Z',
-      physicalEpoch: physicalEpochB,
-      predecessorFenced: true,
-      ready: true,
-    });
-    const fenced = await fenceNanoHostRuntimeTargetAfterRestart(coreDb, '2026-08-10T00:00:05.000Z');
-    expect(fenced).toEqual({
-      ...readySuccessor,
-      ready: false,
-      freshEmpty: false,
-      physicalEpoch: null,
-      observedAt: '2026-08-10T00:00:05.000Z',
-    });
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    coreDb = openCoreDb(dataRoot);
-    coreDb.sqlite.pragma('query_only = ON');
-    expect(getNanoHostRuntimeTarget(coreDb, targetId)).toEqual(fenced);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  }
+  const owner = openNanoHostTestOwner();
+  expect(owner.sqlite.readonly).toBe(true);
+  const first = await allocateTarget(owner, {
+    deploymentId: 'deployment-test',
+    identityId: 'nanohost-test',
+    observedAt: '2026-08-10T00:00:00.000Z',
+    targetId,
+  });
+  expect(first).toMatchObject({
+    connectionGeneration: 1,
+    ready: false,
+    freshEmpty: false,
+    predecessorFenced: false,
+    physicalEpoch: null,
+  });
+  const ready = await markTargetReady(owner, {
+    connectionGeneration: first.connectionGeneration,
+    deploymentId: first.deploymentId,
+    identityId: first.identityId,
+    targetId: first.targetId,
+    freshEmpty: true,
+    observedAt: '2026-08-10T00:00:01.000Z',
+    physicalEpoch: physicalEpochA,
+    predecessorFenced: true,
+    ready: true,
+  });
+  expect(getNanoHostRuntimeTarget(owner, targetId)).toEqual(ready);
+  // Storage requires acknowledgement after the covering FULL commit, before reopen.
+  await owner.reopen();
+  expect(getNanoHostRuntimeTarget(owner, targetId)).toEqual(ready);
+  const closed = await closeTarget(owner, {
+    authoritativeGeneration: null,
+    closedGeneration: first.connectionGeneration,
+    observedAt: '2026-08-10T00:00:02.000Z',
+    targetId,
+  });
+  // NanoHost Runtime And Transport: readiness loss clears the Epoch in the same tuple.
+  expect(closed).toEqual({
+    ...ready,
+    ready: false,
+    freshEmpty: false,
+    physicalEpoch: null,
+    observedAt: '2026-08-10T00:00:02.000Z',
+  });
+  const successor = await allocateTarget(owner, {
+    deploymentId: 'deployment-test',
+    identityId: 'nanohost-test',
+    observedAt: '2026-08-10T00:00:03.000Z',
+    targetId,
+  });
+  expect(successor.connectionGeneration).toBe(2);
+  const readySuccessor = await markTargetReady(owner, {
+    connectionGeneration: successor.connectionGeneration,
+    deploymentId: successor.deploymentId,
+    identityId: successor.identityId,
+    targetId: successor.targetId,
+    freshEmpty: true,
+    observedAt: '2026-08-10T00:00:04.000Z',
+    physicalEpoch: physicalEpochB,
+    predecessorFenced: true,
+    ready: true,
+  });
+  const fenced = await restartTarget(owner, '2026-08-10T00:00:05.000Z');
+  expect(fenced).toEqual({
+    ...readySuccessor,
+    ready: false,
+    freshEmpty: false,
+    physicalEpoch: null,
+    observedAt: '2026-08-10T00:00:05.000Z',
+  });
+  await owner.reopen();
+  expect(getNanoHostRuntimeTarget(owner, targetId)).toEqual(fenced);
 });
 
 it('rolls back each complete RuntimeTarget tuple when the native SQL transition fails', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-target-native-rollback-'));
-  const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  try {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'nanohost-test',
-      observedAt: '2026-08-10T00:00:00.000Z',
-      targetId,
-    });
-    const ready = await upsertNanoHostRuntimeTarget(coreDb, {
-      connectionGeneration: allocated.connectionGeneration,
-      deploymentId: allocated.deploymentId,
-      identityId: allocated.identityId,
-      targetId: allocated.targetId,
-      freshEmpty: true,
-      predecessorFenced: true,
-      ready: true,
-      observedAt: '2026-08-10T00:00:01.000Z',
-      physicalEpoch: physicalEpochA,
-    });
-    // Deliberate failure after valid owner setup; no successful durable state is fabricated.
-    coreDb.sqlite.exec(`CREATE TRIGGER reject_target_transition
+  const owner = openNanoHostTestOwner();
+  const allocated = await allocateTarget(owner, {
+    deploymentId: 'deployment-test',
+    identityId: 'nanohost-test',
+    observedAt: '2026-08-10T00:00:00.000Z',
+    targetId,
+  });
+  const ready = await markTargetReady(owner, {
+    connectionGeneration: allocated.connectionGeneration,
+    deploymentId: allocated.deploymentId,
+    identityId: allocated.identityId,
+    targetId: allocated.targetId,
+    freshEmpty: true,
+    predecessorFenced: true,
+    ready: true,
+    observedAt: '2026-08-10T00:00:01.000Z',
+    physicalEpoch: physicalEpochA,
+  });
+  // Deliberate failure after valid owner setup; no successful durable state is fabricated.
+  owner.setup((sqlite) =>
+    sqlite.exec(`CREATE TRIGGER reject_target_transition
       AFTER UPDATE ON nanohost_runtime_targets
-      BEGIN SELECT RAISE(ABORT, 'injected RuntimeTarget transition failure'); END`);
-    coreDb.sqlite.pragma('query_only = ON');
-    const before = coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all();
-    const transitions = [
-      () =>
-        allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-          deploymentId: 'deployment-test',
-          identityId: 'nanohost-test',
-          observedAt: '2026-08-10T00:00:02.000Z',
-          targetId,
-        }),
-      () =>
-        upsertNanoHostRuntimeTarget(coreDb, {
-          connectionGeneration: ready.connectionGeneration,
-          deploymentId: ready.deploymentId,
-          identityId: ready.identityId,
-          targetId: ready.targetId,
-          freshEmpty: true,
-          predecessorFenced: true,
-          ready: true,
-          physicalEpoch: physicalEpochA,
-          observedAt: '2026-08-10T00:00:02.000Z',
-        }),
-      () =>
-        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-          authoritativeGeneration: null,
-          closedGeneration: allocated.connectionGeneration,
-          observedAt: '2026-08-10T00:00:02.000Z',
-          targetId,
-        }),
-      () => fenceNanoHostRuntimeTargetAfterRestart(coreDb, '2026-08-10T00:00:02.000Z'),
-    ];
-    for (const transition of transitions) {
-      await expect(Promise.resolve().then(transition)).rejects.toMatchObject({
-        code: 'constraint',
-        commit: 'not-committed',
-      });
-      expect(getNanoHostRuntimeTarget(coreDb, targetId)).toEqual(ready);
-      // The public projection omits last_fresh_ready_at; inspect it to prove whole-tuple rollback.
-      expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(before);
-    }
-    coreDb.sqlite.pragma('query_only = OFF');
-    coreDb.sqlite.exec('DROP TRIGGER reject_target_transition');
-    coreDb.sqlite.pragma('query_only = ON');
-    expect(
-      await fenceNanoHostRuntimeTargetAfterRestart(coreDb, '2026-08-10T00:00:03.000Z')
-    ).toMatchObject({
-      connectionGeneration: 1,
-      predecessorFenced: true,
-      ready: false,
-      freshEmpty: false,
-      physicalEpoch: null,
+      BEGIN SELECT RAISE(ABORT, 'injected RuntimeTarget transition failure'); END`)
+  );
+  expect(owner.sqlite.readonly).toBe(true);
+  const before = owner.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all();
+  const transitions = [
+    () =>
+      allocateTarget(owner, {
+        deploymentId: 'deployment-test',
+        identityId: 'nanohost-test',
+        observedAt: '2026-08-10T00:00:02.000Z',
+        targetId,
+      }),
+    () =>
+      markTargetReady(owner, {
+        connectionGeneration: ready.connectionGeneration,
+        deploymentId: ready.deploymentId,
+        identityId: ready.identityId,
+        targetId: ready.targetId,
+        freshEmpty: true,
+        predecessorFenced: true,
+        ready: true,
+        physicalEpoch: physicalEpochA,
+        observedAt: '2026-08-10T00:00:02.000Z',
+      }),
+    () =>
+      closeTarget(owner, {
+        authoritativeGeneration: null,
+        closedGeneration: allocated.connectionGeneration,
+        observedAt: '2026-08-10T00:00:02.000Z',
+        targetId,
+      }),
+    () => restartTarget(owner, '2026-08-10T00:00:02.000Z'),
+  ];
+  for (const transition of transitions) {
+    await expect(Promise.resolve().then(transition)).rejects.toMatchObject({
+      code: 'SQLITE_CONSTRAINT_TRIGGER',
     });
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    expect(getNanoHostRuntimeTarget(owner, targetId)).toEqual(ready);
+    // The public projection omits last_fresh_ready_at; inspect it to prove whole-tuple rollback.
+    expect(owner.sqlite.prepare('SELECT * FROM nanohost_runtime_targets').all()).toEqual(before);
   }
+  owner.setup((sqlite) => sqlite.exec('DROP TRIGGER reject_target_transition'));
+  expect(await restartTarget(owner, '2026-08-10T00:00:03.000Z')).toMatchObject({
+    connectionGeneration: 1,
+    predecessorFenced: true,
+    ready: false,
+    freshEmpty: false,
+    physicalEpoch: null,
+  });
 });
 
 /** Reads the process entrypoint without starting its unrelated process owners. */
@@ -533,7 +567,7 @@ function readEntrypointSource(): string {
  * Extraction observes its hidden pre-listen responsibility without starting unrelated process owners.
  * Native target discovery, deciding SQL and acknowledgement remain real.
  */
-function evaluateRuntimeTargetBootFence(coreDb: CoreDb) {
+function evaluateRuntimeTargetBootFence(coreDb: CoreDb, beforeFence?: Promise<void>) {
   const sourceFile = createSourceFile(
     'index.ts',
     readEntrypointSource(),
@@ -568,26 +602,54 @@ function evaluateRuntimeTargetBootFence(coreDb: CoreDb) {
   const continuation = vi.fn(() => {
     throw boundary;
   });
-  const nativeFence = vi.fn(fenceNanoHostRuntimeTargetAfterRestart);
+  const fenceEntered = Promise.withResolvers<void>();
+  const nativeFence = vi.fn(
+    async (...args: Parameters<typeof transitionAdmittedNanoHostRuntimeTarget>) => {
+      fenceEntered.resolve();
+      await beforeFence;
+      return transitionAdmittedNanoHostRuntimeTarget(...args);
+    }
+  );
   const bindings = {
     coreDb,
     dataRoot: coreDb.dataRoot,
     requireBootValue: (value: unknown) => value,
     restoreWorkspaceDeletionMutationAdmission: () => undefined,
-    fenceNanoHostRuntimeTargetAfterRestart: nativeFence,
+    getControlStoreWorkerClient,
+    prepareNanoHostOwner,
+    nanoHostStoreDescriptor,
+    freshCoreInitialization: false,
+    nanoHostStorage: { state: 'unavailable', owner: 'nanohost', reason: 'missing' },
+    transitionAdmittedNanoHostRuntimeTarget: nativeFence,
     discardAbandonedWorkspaceStaging: continuation,
   };
   const javascript = transpileModule(`const bootRecovery = ${run.getText(sourceFile)};`, {
     compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
   }).outputText;
-  const bootRecovery = new Function(
+  const [bootRecovery, selectedStorage] = new Function(
     ...Object.keys(bindings),
-    `${javascript}\nreturn bootRecovery;`
-  )(...Object.values(bindings)) as () => Promise<unknown>;
+    `${javascript}\nreturn [bootRecovery, () => nanoHostStorage];`
+  )(...Object.values(bindings)) as [
+    () => Promise<unknown>,
+    () => Awaited<ReturnType<typeof prepareNanoHostOwner>>,
+  ];
   return {
     continuation,
+    fenceEntered: fenceEntered.promise,
     nativeFence,
+    selectedStorage,
     run: async () => {
+      if (!coreDb.sqlite.open) throw new Error('Core database was not initialized.');
+      const { path, contentMount } = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+      await getControlStoreWorkerClient().open({
+        database: `core:${path}`,
+        path,
+        dataRoot: coreDb.dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: { kind: 'server' },
+        contentMount,
+      });
       try {
         await bootRecovery();
       } catch (error) {
@@ -616,28 +678,42 @@ function createTargetBootFixture() {
   return fixture;
 }
 
-/** Retains a valid target through its public owner and an actual close/reopen. */
+/** Retains a valid target through its acknowledged owner and an actual close/reopen. */
 async function retainBootTarget(fixture: ReturnType<typeof createTargetBootFixture>, ready = true) {
-  const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(fixture.coreDb, {
+  const { value: owner } = await openAdmittedTestNanoHost(fixture.coreDb);
+  const configured = {
     targetId: 'boot-target',
     identityId: 'boot-host',
-    deploymentId: 'boot-deployment',
+    deploymentId: readDataRootLayoutMarker(fixture.dataRoot).deploymentId,
     observedAt: '2026-08-10T00:00:00.000Z',
-  });
-  await upsertNanoHostRuntimeTarget(fixture.coreDb, {
-    ...allocated,
-    ready: true,
-    freshEmpty: true,
-    predecessorFenced: true,
-    physicalEpoch: 'a'.repeat(64),
-    observedAt: '2026-08-10T00:00:01.000Z',
-  });
-  if (!ready) {
-    await fenceNanoHostRuntimeTargetAfterRestart(fixture.coreDb, '2026-08-10T00:00:02.000Z');
-  }
+  };
+  await expect(
+    transitionAdmittedNanoHostRuntimeTarget(owner, { kind: 'allocate', ...configured })
+  ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
+  if (ready)
+    await expect(
+      transitionAdmittedNanoHostRuntimeTarget(owner, {
+        kind: 'ready',
+        ...configured,
+        connectionGeneration: 1,
+        ready: true,
+        freshEmpty: true,
+        predecessorFenced: true,
+        physicalEpoch: 'a'.repeat(64),
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { ready: true } });
   await shutdownControlStoreWorkerClient();
-  fixture.coreDb.sqlite.close();
-  fixture.coreDb = openCoreDb(fixture.dataRoot);
+}
+
+function readBootTarget(dataRoot: string) {
+  const path = serverStoragePath(dataRoot, 'nanohost');
+  if (!existsSync(path)) return null;
+  const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    return getNanoHostRuntimeTarget({ sqlite }, 'boot-target');
+  } finally {
+    sqlite.close();
+  }
 }
 
 describe('NanoCore boot RuntimeTarget fencing', () => {
@@ -649,7 +725,7 @@ describe('NanoCore boot RuntimeTarget fencing', () => {
 
     expect(boot.continuation).toHaveBeenCalledTimes(1);
     expect(boot.nativeFence).not.toHaveBeenCalled();
-    expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toBeNull();
+    expect(readBootTarget(fixture.dataRoot)).toBeNull();
   });
 
   it.each([true, false])(
@@ -657,23 +733,27 @@ describe('NanoCore boot RuntimeTarget fencing', () => {
     async (ready) => {
       const fixture = createTargetBootFixture();
       await retainBootTarget(fixture, ready);
-      const before = getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target');
-      const boot = evaluateRuntimeTargetBootFence(fixture.coreDb);
-      // The existing native posting hold delays the real acknowledgement, not a fabricated success.
-      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
+      const before = readBootTarget(fixture.dataRoot);
+      const gate = Promise.withResolvers<void>();
+      const boot = evaluateRuntimeTargetBootFence(fixture.coreDb, gate.promise);
       const running = boot.run();
       try {
-        await vi.waitFor(() => expect(boot.nativeFence).toHaveBeenCalledTimes(1));
+        await Promise.race([
+          boot.fenceEntered,
+          running.then(() => {
+            throw new Error('The boot phase continued without fencing its retained target.');
+          }),
+        ]);
         await setImmediate();
         // Bootstrap Readiness: phase 8 finishes before product/listener admission.
         expect(boot.continuation).not.toHaveBeenCalled();
-        expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toEqual(before);
+        expect(readBootTarget(fixture.dataRoot)).toEqual(before);
       } finally {
-        resume();
+        gate.resolve();
         await running;
       }
       expect(boot.continuation).toHaveBeenCalledTimes(1);
-      expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toMatchObject({
+      expect(readBootTarget(fixture.dataRoot)).toMatchObject({
         connectionGeneration: before?.connectionGeneration,
         ready: false,
         freshEmpty: false,
@@ -693,20 +773,39 @@ describe('NanoCore boot RuntimeTarget fencing', () => {
     expect(boot.nativeFence).not.toHaveBeenCalled();
   });
 
-  it('refuses continuation and preserves the target when native fencing fails', async () => {
+  it('holds NanoHost and preserves the target when native fencing fails', async () => {
     const fixture = createTargetBootFixture();
     await retainBootTarget(fixture);
-    const before = getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target');
-    // Fault injection follows valid owner setup; no successful durable state is fabricated.
-    fixture.coreDb.sqlite.exec(`CREATE TRIGGER reject_boot_fence
-      AFTER UPDATE ON nanohost_runtime_targets
-      BEGIN SELECT RAISE(ABORT, 'injected boot fence refusal'); END`);
-    const boot = evaluateRuntimeTargetBootFence(fixture.coreDb);
-
-    await expect(boot.run()).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+    const before = readBootTarget(fixture.dataRoot);
+    const gate = Promise.withResolvers<void>();
+    const boot = evaluateRuntimeTargetBootFence(fixture.coreDb, gate.promise);
+    const running = boot.run();
+    try {
+      await Promise.race([
+        boot.fenceEntered,
+        running.then(() => {
+          throw new Error('The boot phase continued without fencing its retained target.');
+        }),
+      ]);
+      // Inject only after storage admission, so the real original UPDATE reaches the fault.
+      const sqlite = new Database(serverStoragePath(fixture.dataRoot, 'nanohost'), {
+        fileMustExist: true,
+      });
+      try {
+        sqlite.exec(`CREATE TRIGGER reject_boot_fence
+          AFTER UPDATE ON nanohost_runtime_targets
+          BEGIN SELECT RAISE(ABORT, 'injected boot fence refusal'); END`);
+      } finally {
+        sqlite.close();
+      }
+    } finally {
+      gate.resolve();
+      await running;
+    }
 
     expect(boot.nativeFence).toHaveBeenCalledTimes(1);
-    expect(boot.continuation).not.toHaveBeenCalled();
-    expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toEqual(before);
+    expect(boot.continuation).toHaveBeenCalledTimes(1);
+    expect(boot.selectedStorage()).toMatchObject({ state: 'unavailable', owner: 'nanohost' });
+    expect(readBootTarget(fixture.dataRoot)).toEqual(before);
   });
 });

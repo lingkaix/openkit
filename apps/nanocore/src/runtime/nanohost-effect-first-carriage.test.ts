@@ -18,13 +18,17 @@ import {
 } from '@openkit/config-schema';
 import { Hono } from 'hono';
 import { expect, it, onTestFinished, vi } from 'vitest';
-import { createApp } from '../app.js';
+import { createApp, settlePreparedNanoHostImage } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { createListenerFetches } from '../nanohost-listener.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -35,7 +39,6 @@ import {
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import * as workerCredentialAuthority from './agent-environment.js';
 import * as executionJournal from './execution-journal.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   createProductionNanoHostSessionDispatch,
@@ -87,18 +90,28 @@ async function nativeEffects(
   const root = mkdtempSync(join(tmpdir(), 'openkit-effect-carriage-'));
   const coreDb = createTestCoreDb(root);
   if (input.held) ensureLocalUser(coreDb);
-  const target = { coreDb, deploymentId: 'fixture', identityId: 'fixture', targetId: 'fixture' };
+  const storage = await openAdmittedTestNanoHost(coreDb);
+  const target = {
+    coreDb,
+    deploymentId: readDataRootLayoutMarker(root).deploymentId,
+    identityId: 'fixture',
+    targetId: 'fixture',
+    nativeStorage: storage.value,
+  };
   const authority = createNanoHostTransportSessionAuthority();
   const dispatch = (
     input.held ? createProductionNanoHostSessionDispatch : createNanoHostSessionDispatch
   )({
     coreDb,
+    fileAdmission: new FileStorageAdmission(root, () => 0n),
     sessionAuthority: authority,
+    settlePreparedImage: (request) => settlePreparedNanoHostImage(coreDb, storage, request),
   });
   const app = input.held
     ? createApp({
         coreDb,
         mode: 'local',
+        nanoHostStorage: storage,
         nanoHostSessionDispatch: dispatch,
         nanohostTransportSessionAuthority: authority,
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -114,6 +127,7 @@ async function nativeEffects(
       coreDb,
       dispatch,
       nanoHostConfig: target,
+      nativeStorage: storage,
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     });
     registerNanoHostSessionEffectRoutes({
@@ -219,10 +233,16 @@ async function nativeEffects(
   }
   async function openConnection() {
     physicalReady = Promise.withResolvers<object>();
-    const { connectionGeneration } = await allocateNanoHostRuntimeTargetConnectionGeneration(
-      coreDb,
-      { ...target, observedAt: new Date().toISOString() }
-    );
+    const allocated = await transitionAdmittedNanoHostRuntimeTarget(storage.value, {
+      kind: 'allocate',
+      targetId: target.targetId,
+      deploymentId: target.deploymentId,
+      identityId: target.identityId,
+      observedAt: new Date().toISOString(),
+    });
+    if (allocated.state !== 'ready' || !allocated.value)
+      throw new Error('Fixture RuntimeTarget allocation unavailable.');
+    const { connectionGeneration } = allocated.value;
     client = connect(`http://127.0.0.1:${address!.port}`);
     clients.add(client);
     request(PROBE_PATH).end('{}');

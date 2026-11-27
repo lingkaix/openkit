@@ -22,6 +22,7 @@ import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js'
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import {
   getWorkspaceMaterial,
   getWorkspaceMaterialRevision,
@@ -93,11 +94,16 @@ export async function resolveCurrentWorkerSource(
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== input.environmentPackage.agent.agentId ||
       !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, admission, 'thread.read', true) ||
-      getWorkerControlAcceptedFinalStatus(input.coreDb, {
-        ...scope,
-        packageSnapshotId: input.environmentPackage.snapshotId,
-        requestId: scope.requestId ?? null,
-      })
+      requireNanoHostObservation(input.coreDb, (sqlite) =>
+        getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            ...scope,
+            packageSnapshotId: input.environmentPackage.snapshotId,
+            requestId: scope.requestId ?? null,
+          }
+        )
+      )
     )
       throw new Error('Current source read admission is unavailable.');
     const userId = responsibleUserIdForActor(admission.triggerActor) ?? undefined;

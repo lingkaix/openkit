@@ -10,31 +10,48 @@ import {
   type WorkerEnvironmentResolvedCandidateArtifact,
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
+import { NativeEnvironmentRecordSchema } from '@openkit/worker-protocol';
 import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { closeSchedulerExecutionAttemptWithoutEffects } from '../runtime/execution-attempts.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  readAdmittedWorkerImageEnvironment,
-  writeWorkerImageSettlement,
-} from '../runtime/worker-image-settlements.js';
+import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
   createAndReserveWorkerStorageAttachment,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  recordTestNativeRuntimeTarget,
+  seedTestNativeImageSettlement,
+} from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
+import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  type CreateWorkerEnvironmentActivationInput,
   createWorkerEnvironmentActivation,
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environment-activation.js';
@@ -102,6 +119,30 @@ interface BaseFixture {
   readonly administrationWorkspaceId: string;
   readonly coreDb: CoreDb;
   readonly store: FsStore;
+}
+
+/**
+ * The App's admitted NanoHost joins of activation (`app.ts`): the exact read and the confirmed-defaults
+ * admission go through the latest admitted owner of the fixture root, as production passes its owner.
+ */
+function admittedActivationStorage(coreDb: CoreDb) {
+  const owner = () => {
+    const current = currentAdmittedTestNanoHostOwner(coreDb);
+    if (!current) throw new Error('The activation fixture has no admitted NanoHost owner.');
+    return current;
+  };
+  return {
+    readNanoHost: (query) => owner().read(query),
+    admitImageEnvironment: (candidate, measurement) =>
+      owner().workerImage({
+        kind: 'environment',
+        candidate,
+        environment: NativeEnvironmentRecordSchema.parse(measurement),
+      }),
+  } satisfies Pick<
+    CreateWorkerEnvironmentActivationInput,
+    'readNanoHost' | 'admitImageEnvironment'
+  >;
 }
 
 /** Creates Core storage plus one private administration Thread. */
@@ -213,7 +254,7 @@ async function candidatePair(
     schemaVersion: 1,
     target: TARGET,
   };
-  await writeWorkerImageSettlement(fixture.coreDb, {
+  await seedTestNativeImageSettlement(fixture.coreDb, {
     authoredArtifactId: authoredCandidate.artifactId,
     authoredArtifactVersion: 1,
     authoredContentDigest: authoredCandidate.contentDigest,
@@ -298,6 +339,66 @@ function reloadResult(status: 'applied' | 'failed') {
 }
 
 describe('Worker environment activation', () => {
+  it('keeps capture out between confirmed image publication and private Turn creation', async () => {
+    const fixture = await createBaseFixture();
+    const pair = await candidatePair(fixture, [], null);
+    const config = configurationService();
+    const storage = admittedActivationStorage(fixture.coreDb);
+    const freeze = () =>
+      getControlStoreWorkerClient().tryFreezeWorkspace(
+        fixture.coreDb.dataRoot,
+        fixture.administrationWorkspaceId,
+        () => []
+      );
+    let competingCapture: ReturnType<typeof freeze> | undefined;
+    const activation = createWorkerEnvironmentActivation({
+      ...storage,
+      admitImageEnvironment: async (candidate, measurement) => {
+        await storage.admitImageEnvironment(candidate, measurement);
+        competingCapture = freeze();
+      },
+      runtimeEffects: {
+        inspectImage: async () => ({
+          imageDigest: IMAGE_DIGEST,
+          layout: LAYOUT,
+          layoutDigest: `sha256:${'f'.repeat(64)}`,
+          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+        }),
+      },
+      configFilesForActor: () => config.files,
+      coreDb: fixture.coreDb,
+      now: () => NOW,
+      preparation: { readResolved: () => pair },
+      reloadRuntimeConfig: () => reloadResult('applied'),
+      replaceResidentWork: vi.fn(),
+      requireCurrentAdministrator: vi.fn(),
+      store: fixture.store,
+    });
+
+    try {
+      await expect(
+        activation.activate({ actor: ACTOR }, activationRequest(pair))
+      ).resolves.toMatchObject({
+        configuration: { fileId: CONFIGURATION.fileId, revision: WRITTEN_REVISION },
+      });
+      expect(competingCapture?.status).toBe('busy');
+      expect(
+        fixture.store.listThreadTurns(
+          fixture.administrationWorkspaceId,
+          fixture.administrationThreadId
+        )
+      ).toMatchObject([{ status: 'completed' }]);
+      const afterActivation = freeze();
+      try {
+        expect(afterActivation.status).toBe('frozen');
+      } finally {
+        if (afterActivation.status === 'frozen') afterActivation.release();
+      }
+    } finally {
+      if (competingCapture?.status === 'frozen') competingCapture.release();
+    }
+  });
+
   it.each(['before-inspection', 'during-inspection'] as const)(
     'refuses a Thread that becomes busy %s without admitting defaults or changing configuration',
     async (phase) => {
@@ -329,6 +430,7 @@ describe('Worker environment activation', () => {
         runtimeEffects: { inspectImage },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig,
@@ -344,9 +446,11 @@ describe('Worker environment activation', () => {
       });
       expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(reloadRuntimeConfig).not.toHaveBeenCalled();
@@ -382,6 +486,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -448,6 +553,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -461,9 +567,11 @@ describe('Worker environment activation', () => {
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(replaceResidentWork).not.toHaveBeenCalled();
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
     }
   );
@@ -478,6 +586,7 @@ describe('Worker environment activation', () => {
       runtimeEffects: { inspectImage },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig: () => reloadResult('applied'),
@@ -528,6 +637,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -542,9 +652,11 @@ describe('Worker environment activation', () => {
       ).rejects.toThrow();
       expect(config.updateFile).not.toHaveBeenCalled();
       expect(
-        fixture.coreDb.sqlite
-          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-          .get()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+            .get()
+        )
       ).toEqual({ environment: null });
     }
   );
@@ -570,6 +682,7 @@ describe('Worker environment activation', () => {
       runtimeEffects: { inspectImage },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig,
@@ -583,7 +696,11 @@ describe('Worker environment activation', () => {
     expect(config.updateFile).toHaveBeenCalledTimes(1);
     expect(config.readContent()).toBe(initialContent);
     expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
-    expect(readAdmittedWorkerImageEnvironment(fixture.coreDb, IMAGE_DIGEST)).toEqual({
+    expect(
+      readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        readAdmittedWorkerImageEnvironment({ sqlite }, IMAGE_DIGEST)
+      )
+    ).toEqual({
       imageDigest: IMAGE_DIGEST,
       defaultsDigest: DEFAULTS_DIGEST,
       values: {},
@@ -616,6 +733,7 @@ describe('Worker environment activation', () => {
       },
       configFilesForActor: () => config.files,
       coreDb: fixture.coreDb,
+      ...admittedActivationStorage(fixture.coreDb),
       now: () => NOW,
       preparation: { readResolved: () => pair },
       reloadRuntimeConfig: () => reloadResult('applied'),
@@ -665,6 +783,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: fixture.coreDb,
+        ...admittedActivationStorage(fixture.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult('applied'),
@@ -702,13 +821,15 @@ describe('Worker environment activation', () => {
     expect(deriveAffectedStorage(input)).toEqual([
       { expectedRevision: fixture.bindingRevision, storageRef: fixture.storageRef },
     ]);
-    fixture.coreDb.sqlite
-      .prepare(
-        `UPDATE worker_storage_contributors
+    mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          `UPDATE worker_storage_contributors
          SET responsible_user_id = 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
          WHERE storage_ref = ?`
-      )
-      .run(fixture.storageRef);
+        )
+        .run(fixture.storageRef)
+    );
     expect(() => deriveAffectedStorage(input)).toThrow(
       'resident Worker environment source audience is unavailable'
     );
@@ -743,6 +864,7 @@ describe('Worker environment activation', () => {
         },
         configFilesForActor: () => config.files,
         coreDb: resident.coreDb,
+        ...admittedActivationStorage(resident.coreDb),
         now: () => NOW,
         preparation: { readResolved: () => pair },
         reloadRuntimeConfig: () => reloadResult(reloadStatus),
@@ -800,77 +922,135 @@ async function createResidentFixture(): Promise<ResidentFixture> {
     ownerUserId: ACTOR.userId,
     workspaceId: workspace.id,
   });
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_runtime_targets (
-         target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-       ) VALUES ('target_activation', 'identity_activation', 'deployment_activation',
-         1, 1, 1, 1, ?, ?, 1)`
-    )
-    .run('a'.repeat(64), NOW);
-  const reserved = await createAndReserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: testEntityId('as', 'agent_session_activation'),
-    authorizeContributor: () => true,
-    deploymentId: 'deployment_activation',
-    layout: LAYOUT,
-    now: NOW,
-    purpose: 'work',
-    responsibleUserId: ACTOR.userId,
-    runtimeTargetId: 'target_activation',
+  const { coreDb } = fixture;
+  const target = await recordTestNativeRuntimeTarget(coreDb, 'target_activation', {
+    identityId: 'identity_activation',
+    allocationAt: NOW,
+    readyAt: NOW,
+  });
+  const owner = currentAdmittedTestNanoHostOwner(coreDb)!;
+  const workspaceId = workspace.id;
+  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId });
+  await getControlStoreWorkerClient().open({
+    database: `workspace:${scope.path}`,
+    path: scope.path,
+    dataRoot: coreDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  const agentSessionId = testEntityId('as', 'agent_session_activation');
+  const turnId = testEntityId('tu', 'resident-activation-setup');
+  const attemptId = testEntityId('attempt', 'resident-activation-setup');
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'resident-activation-setup',
+    requestedAgentId: TARGET.agentId,
+    workspaceId,
     threadId: thread.id,
-    workspaceId: workspace.id,
+    turnId,
+    inputRef: schedulerFixtureInput(workspaceId, turnId, 'Prepare a retained Worker environment.'),
+    triggerActor: { kind: 'user', id: ACTOR.userId },
+    now: () => NOW,
   });
-  const attached = await activateWorkerStorageAttachment(fixture.coreDb, {
-    attachmentGeneration: reserved.attachmentGeneration,
-    expectedRevision: reserved.revision,
-    sandboxBindingRef: 'sandbox_binding_activation',
-    storageRef: reserved.storageRef,
-    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId,
+    agentSessionId,
+    inputRef: 'resident-activation-package',
+    bindingRef: 'sandbox_binding_activation',
+    now: () => NOW,
   });
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO sandbox_runtime_records (
-         sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
-         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
-         environment_class, max_open_sessions, max_harnesses, max_active_turns,
-         lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
-       ) VALUES (
-         'sandbox_runtime_activation', 'target_activation', 'sandbox_binding_activation',
-         'sandbox_integration_activation', 'compatibility_activation', ?, ?,
-         'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
-       )`
-    )
-    .run(`sha256:${'f'.repeat(64)}`, 'a'.repeat(64), NOW, NOW);
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO harness_instance_records (
-         harness_instance_id, sandbox_runtime_id, harness_binding_ref,
-         harness_compatibility_key, runtime_family, adapter_id, adapter_version,
-         protocol_version, capabilities_json, max_open_sessions, max_active_turns,
-         open_session_count, active_turn_count, lifecycle_state, drain_state,
-         next_sequence, operation_state, created_at, updated_at
-       ) VALUES (
-         'harness_activation', 'sandbox_runtime_activation', 'harness_binding_activation',
-         'harness_compatibility_activation', 'future-runtime', 'future-adapter', '1',
-         1, '[]', 8, 1, 1, 0, 'open', 'accepting', 0, 'idle', ?, ?
-       )`
-    )
-    .run(NOW, NOW);
-  fixture.coreDb.sqlite
-    .prepare(
-      `INSERT INTO agent_session_runtime_bindings (
-         agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
-         workspace_id, thread_id, agent_session_compatibility_key,
-         effective_setup_generation, native_handle_state, lifecycle_state,
-         next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
-       ) VALUES (
-         'binding_activation', 'harness_activation', ?,
-         ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
-         'sha256:${'a'.repeat(64)}'
-       )`
-    )
-    .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
+  const authorizeContributor = () => true;
+  const attachmentOwner = {
+    attemptId,
+    target,
+    read: owner.read,
+    write: owner.writeStorageAttachment,
+    authorizeContributor,
+    isCurrentAttempt: () => requireSchedulerExecutionAttempt(coreDb, attemptId).phase === 'open',
+  };
+  const reserved = await createAndReserveWorkerStorageAttachment(
+    coreDb,
+    {
+      agentSessionId,
+      authorizeContributor,
+      deploymentId: target.deploymentId,
+      layout: LAYOUT,
+      now: NOW,
+      purpose: 'work',
+      responsibleUserId: ACTOR.userId,
+      runtimeTargetId: target.targetId,
+      threadId: thread.id,
+      workspaceId,
+    },
+    attachmentOwner
+  );
+  const attached = await activateWorkerStorageAttachment(
+    coreDb,
+    {
+      attachmentGeneration: reserved.attachmentGeneration,
+      expectedRevision: reserved.revision,
+      sandboxBindingRef: 'sandbox_binding_activation',
+      storageRef: reserved.storageRef,
+      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+    },
+    attachmentOwner
+  );
+  await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+    attemptId,
+    cause: 'fixture-no-worker-submitted',
+    noOutstandingEffects: true,
+    now: () => NOW,
+  });
+
+  // Model a persisted resident from an unrecognized adapter; no live writer owns these rows.
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    sqlite
+      .prepare(
+        `INSERT INTO sandbox_runtime_records (
+           sandbox_runtime_id, runtime_target_id, sandbox_binding_ref,
+           sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, origin_physical_epoch,
+           environment_class, max_open_sessions, max_harnesses, max_active_turns,
+           lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
+         ) VALUES (
+           'sandbox_runtime_activation', 'target_activation', 'sandbox_binding_activation',
+           'sandbox_integration_activation', 'compatibility_activation', ?, ?,
+           'worker', 8, 8, 1, 'open', 'ready', 'accepting', 'clean', ?, ?
+         )`
+      )
+      .run(`sha256:${'f'.repeat(64)}`, 'a'.repeat(64), NOW, NOW);
+    sqlite
+      .prepare(
+        `INSERT INTO harness_instance_records (
+           harness_instance_id, sandbox_runtime_id, harness_binding_ref,
+           harness_compatibility_key, runtime_family, adapter_id, adapter_version,
+           protocol_version, capabilities_json, max_open_sessions, max_active_turns,
+           open_session_count, active_turn_count, lifecycle_state, drain_state,
+           next_sequence, operation_state, created_at, updated_at
+         ) VALUES (
+           'harness_activation', 'sandbox_runtime_activation', 'harness_binding_activation',
+           'harness_compatibility_activation', 'future-runtime', 'future-adapter', '1',
+           1, '[]', 8, 1, 1, 0, 'open', 'accepting', 0, 'idle', ?, ?
+         )`
+      )
+      .run(NOW, NOW);
+    sqlite
+      .prepare(
+        `INSERT INTO agent_session_runtime_bindings (
+           agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
+           workspace_id, thread_id, agent_session_compatibility_key,
+           effective_setup_generation, native_handle_state, lifecycle_state,
+           next_turn_sequence, cleanup_state, created_at, updated_at, image_digest
+         ) VALUES (
+           'binding_activation', 'harness_activation', ?,
+           ?, ?, 'session_compatibility_activation', 1, 'ready', 'open', 0, 'clean', ?, ?,
+           'sha256:${'a'.repeat(64)}'
+         )`
+      )
+      .run(testEntityId('as', 'agent_session_activation'), workspace.id, thread.id, NOW, NOW);
+  });
   return {
     ...fixture,
     bindingRevision: attached.revision,

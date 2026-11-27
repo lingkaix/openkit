@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { AutomationStore } from '../lib/automation-store.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -23,6 +24,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const localUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspace = await store.createWorkspace('Recurring deletion');

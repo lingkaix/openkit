@@ -38,19 +38,23 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { admittedWorkerControlRecorders } from '../test-support/tail-port-a.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   hashWorkerRouteToken,
   WorkerControlGateway,
-  type WorkerControlGatewayError,
+  WorkerControlGatewayError,
   type WorkerControlLineage,
 } from './worker-control-gateway.js';
-import { createWorkerControlAcceptedRecordRecorder } from './worker-control-records.js';
-import { createWorkerControlSequenceRecorder } from './worker-control-sequences.js';
 
 /**
  * Creates an OpenShell-targeted package fixture for worker control tests.
@@ -304,6 +308,74 @@ describe('descriptive admission normalization', () => {
 });
 
 describe('WorkerControlGateway', () => {
+  it.each(['accept', 'deny', 'timeout'] as const)(
+    'routes event authority across a delayed Worker ACK (%s)',
+    async (outcome) => {
+      const { environmentPackage, lineage } = await createWorkerControlFixture();
+      const acknowledgement = Promise.withResolvers<void>();
+      const signal = new AbortController().signal;
+      let held = true;
+      const unavailable = () =>
+        new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'Worker observation storage is unavailable.',
+          503
+        );
+      const resolveTokenBinding = vi.fn(() => {
+        if (held) throw unavailable();
+        return outcome === 'deny'
+          ? ({ status: 'rejected', reason: 'attempt-not-live' } as const)
+          : ({ status: 'accepted' } as const);
+      });
+      const publishControlOperation = vi.fn(async () => ({
+        duplicate: false,
+        nextExpectedSequence: 4,
+      }));
+      const gateway = new WorkerControlGateway({
+        resolveTokenBinding,
+        publishControlOperation,
+        async afterWorkerControlAcknowledgement(read, requestSignal) {
+          expect(requestSignal).toBe(signal);
+          await acknowledgement.promise;
+          if (outcome === 'timeout') throw unavailable();
+          return read();
+        },
+      });
+      const registration = registerAcceptedWorkerSession(
+        gateway,
+        environmentPackage,
+        'binding:ack'
+      );
+      const result = Promise.resolve().then(() =>
+        gateway.appendEvent({
+          authorization: `Bearer ${registration.token}`,
+          lineage,
+          record: createEventRecord(lineage, 3),
+          signal,
+        })
+      );
+      void result.catch(() => undefined);
+      await Promise.resolve();
+      expect(resolveTokenBinding).not.toHaveBeenCalled();
+      expect(publishControlOperation).not.toHaveBeenCalled();
+      held = false;
+      acknowledgement.resolve();
+
+      if (outcome === 'accept') {
+        await expect(result).resolves.toMatchObject({ accepted: true, nextExpectedSequence: 4 });
+        expect(publishControlOperation).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(result).rejects.toMatchObject(
+          outcome === 'deny'
+            ? { code: 'worker_control_lease_not_live', status: 403 }
+            : { code: 'worker_observation_storage_unavailable', status: 503 }
+        );
+        expect(publishControlOperation).not.toHaveBeenCalled();
+      }
+      expect(resolveTokenBinding).toHaveBeenCalledTimes(outcome === 'timeout' ? 0 : 1);
+    }
+  );
+
   it.each(
     (['codex', 'opencode', 'pi', 'deepseek'] as const).flatMap((adapter) =>
       (['off', 'on'] as const).map((value) => ({ adapter, value }))
@@ -320,11 +392,11 @@ describe('WorkerControlGateway', () => {
       );
       let coreDb = openCoreDb(root);
       applyMigrations(coreDb);
+      await openAdmittedTestNanoHost(coreDb);
       let workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
       const gateway = new WorkerControlGateway({
         resolveTokenBinding: () => ({ status: 'accepted' }),
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        ...admittedWorkerControlRecorders(coreDb),
       });
       registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:retention');
       const nativeRoot = join(root, 'native');
@@ -747,11 +819,11 @@ describe('WorkerControlGateway', () => {
     const fixture = await createWorkerControlFixture('rejected-observation', root);
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
-      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+      ...admittedWorkerControlRecorders(coreDb),
     });
     registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:rejected');
     const writer = new WorkerTranscriptWriter({
@@ -829,11 +901,11 @@ describe('WorkerControlGateway', () => {
     const fixture = await createWorkerControlFixture('rejected-anchor', root);
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
     const gateway = new WorkerControlGateway({
       resolveTokenBinding: () => ({ status: 'accepted' }),
-      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+      ...admittedWorkerControlRecorders(coreDb),
     });
     registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:rejected-anchor');
     const send = (sequence: number, data: ReturnType<typeof WorkerObservationDataSchema.parse>) =>
@@ -898,13 +970,13 @@ describe('WorkerControlGateway', () => {
       const fixture = await createWorkerControlFixture('ancestry-outcome', root);
       const coreDb = openCoreDb(root);
       applyMigrations(coreDb);
+      await openAdmittedTestNanoHost(coreDb);
       const workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
       const committed: unknown[] = [];
       const gateway = new WorkerControlGateway({
         resolveTokenBinding: () => ({ status: 'accepted' }),
         onFinalStatusCommitted: (input) => committed.push(input),
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        ...admittedWorkerControlRecorders(coreDb),
       });
       registerAcceptedWorkerSession(
         gateway,
@@ -1026,11 +1098,11 @@ describe('WorkerControlGateway', () => {
     const fixture = await createWorkerControlFixture('capture', root);
     let coreDb = openCoreDb(root);
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const makeGateway = () => {
       const gateway = new WorkerControlGateway({
         resolveTokenBinding: () => ({ status: 'accepted' }),
-        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
-        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        ...admittedWorkerControlRecorders(coreDb),
       });
       registerAcceptedWorkerSession(gateway, fixture.environmentPackage, 'binding:capture');
       return gateway;
@@ -1058,11 +1130,16 @@ describe('WorkerControlGateway', () => {
         if (record.event.type === 'observation.content.chunk') {
           replayFrames.push(record);
           if (record.event.data.chunkIndex === 1 && !retriedPublication) {
-            coreDb.sqlite.exec(
-              "CREATE TRIGGER fail_receipt BEFORE INSERT ON worker_control_records BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"
+            // The accepted-record table lives in the admitted NanoHost file after K8.
+            mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+              sqlite.exec(
+                "CREATE TRIGGER fail_receipt BEFORE INSERT ON worker_control_records BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"
+              )
             );
             await expect(send(record)).rejects.toThrow('injected receipt failure');
-            coreDb.sqlite.exec('DROP TRIGGER fail_receipt');
+            mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+              sqlite.exec('DROP TRIGGER fail_receipt')
+            );
             coreDb.sqlite.close();
             coreDb = openCoreDb(root);
             gateway = makeGateway();
@@ -1187,11 +1264,13 @@ describe('WorkerControlGateway', () => {
       await capture.invalidate();
       expect(writer.eventTranscriptSealed).toBe(false);
       expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'final_status'"
-          )
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              "SELECT COUNT(*) AS count FROM worker_control_records WHERE operation = 'final_status'"
+            )
+            .get()
+        )
       ).toEqual({ count: 0 });
       expect(restartedAfterStaging && retriedPublication).toBe(true);
       workspaceDb.sqlite.close();
@@ -1238,10 +1317,14 @@ describe('WorkerControlGateway', () => {
       ).toBe(false);
       expect(activity.entries.filter((entry) => entry.kind === 'child-started')).toHaveLength(2);
       const receipts = JSON.stringify(
-        coreDb.sqlite.prepare('SELECT record_json FROM worker_control_records').all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT record_json FROM worker_control_records').all()
+        )
       );
       const fingerprints = JSON.stringify(
-        coreDb.sqlite.prepare('SELECT fingerprint FROM worker_control_sequence_fingerprints').all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT fingerprint FROM worker_control_sequence_fingerprints').all()
+        )
       );
       for (const persisted of [
         receipts,
@@ -1257,10 +1340,12 @@ describe('WorkerControlGateway', () => {
       const replayState = () =>
         JSON.stringify({
           rows: readWorkObservations(workspaceDb, fixture.lineage),
-          receipts: coreDb.sqlite.prepare('SELECT * FROM worker_control_records').all(),
-          fingerprints: coreDb.sqlite
-            .prepare('SELECT * FROM worker_control_sequence_fingerprints')
-            .all(),
+          receipts: readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM worker_control_records').all()
+          ),
+          fingerprints: readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM worker_control_sequence_fingerprints').all()
+          ),
           session: gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId),
           bodies: rows
             .filter((row) => row.type === 'content.published')

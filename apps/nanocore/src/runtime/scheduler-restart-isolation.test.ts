@@ -3,45 +3,45 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { runBootPhases } from '../bootstrap/phases.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import {
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import {
+  readTestNanoHostWorkerLease,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
   disposeTestStore,
   setTestBackendSessionTurn,
-  setTestExecutionAttemptBackend,
 } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attempts from './execution-attempt-records.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempts.js';
 import { ExecutionReconciler } from './execution-reconciler.js';
-import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
 } from './nanohost-attempt-recovery.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
-import {
   type PreAnchorRecoveryContext,
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
 } from './scheduler-restart-recovery.js';
-import {
-  getWorkerBackendSession,
-  recordWorkerBackendSessionMaterializing,
-} from './worker-backend-sessions.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -74,9 +74,14 @@ async function fixture() {
 }
 
 /** Uses the admission and attempt owners; native preparation adds no accepted effect. */
-function attempt(db: CoreDb, suffix: string, submitted = false) {
-  const entry = createSchedulerAdmissionEntry(db, {
-    backendId: 'nanohost',
+function isolationAdmission(
+  db: CoreDb,
+  suffix: string,
+  backendId = 'nanohost',
+  workspace = workspaceId
+) {
+  return createSchedulerAdmissionEntry(db, {
+    backendId,
     triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
     queueEntryId: `queue_${suffix}`,
     requestId: `request_${suffix}`,
@@ -84,13 +89,17 @@ function attempt(db: CoreDb, suffix: string, submitted = false) {
     threadId: testEntityId('th', suffix),
     turnId: testEntityId('tu', suffix),
     inputRef: schedulerFixtureInput(
-      workspaceId,
+      workspace,
       testEntityId('tu', suffix),
       'Recover original attempt'
     ),
-    workspaceId,
+    workspaceId: workspace,
     now: () => '2026-07-05T00:00:01.000Z',
   });
+}
+
+function attempt(db: CoreDb, suffix: string, submitted = false, backendId = 'nanohost') {
+  const entry = isolationAdmission(db, suffix, backendId);
   return recordTestExecutionAttempt(db, {
     entry,
     attemptId: testEntityId('attempt', suffix),
@@ -103,43 +112,29 @@ function attempt(db: CoreDb, suffix: string, submitted = false) {
   });
 }
 
-/** Records the physical identity through its owner before introducing a retained-state fault. */
-async function anchored(db: CoreDb, suffix: string) {
-  const row = attempt(db, suffix, true);
-  if (!getNanoHostRuntimeTarget(db, 'runtime-target-isolation')) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
-      deploymentId: 'deployment-isolation',
-      identityId: 'identity-isolation',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'runtime-target-isolation',
-    });
-    await upsertNanoHostRuntimeTarget(db, {
-      ...allocated,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
-  await recordWorkerBackendSessionMaterializing(db, {
-    identity: {
-      agentSessionId: row.agentSessionId!,
-      backendKind: 'openshell',
-      backendSessionId: `nh-${suffix}`,
-      deploymentId: 'deployment-isolation',
-      packageSnapshotId: row.inputRef!,
-      runtimeTargetId: 'runtime-target-isolation',
-      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${suffix}`,
-      transientProviderInstanceId: null,
+/** Retains the original submitted Native lease used by isolation's recovery censuses. */
+function retainedLease(
+  db: CoreDb,
+  suffix: string,
+  workspace: string,
+  backendId = 'nanohost',
+  workerControlTokenHash = 'a'.repeat(64)
+) {
+  const admission = isolationAdmission(db, suffix, backendId, workspace);
+  const agentSessionId = testEntityId('as', suffix);
+  return submitTestNanoHostWorkerLease(
+    db,
+    admission,
+    `binding_${suffix}`,
+    {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${admission.turnId}_${agentSessionId}`,
+      workerControlTokenHash,
+      workerInferenceTokenHash: 'b'.repeat(64),
+      workerCapabilityTokenHash: 'c'.repeat(64),
     },
-    backendVersion: '0.0.99',
-    backendLineage: { kind: 'reference', imageRef: 'openkit/worker-codex:dev' },
-    lineage: row,
-    sandboxBindingRef: row.bindingRef!,
-    now: () => '2026-07-05T00:00:03.000Z',
-  });
-  return row;
+    { attemptId: testEntityId('attempt', suffix), observedAt: '2026-07-05T00:00:02.000Z' }
+  );
 }
 
 describe('restart classification fault isolation (T4)', () => {
@@ -223,9 +218,9 @@ describe('restart classification fault isolation (T4)', () => {
 
   it('skips a changed backend without changing its attempt and still classifies its sibling', async () => {
     const { db, input } = await fixture();
-    const foreign = attempt(db, 'foreign-backend');
+    // Boot has only the new backend; the foreign attempt keeps its original admitted backend.
+    const foreign = attempt(db, 'foreign-backend', false, 'unavailable-backend');
     const healthy = attempt(db, 'backend-healthy');
-    await setTestExecutionAttemptBackend(db, foreign.attemptId, 'unavailable-backend');
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
     const recovery = await runSchedulerRestartRecovery(db, input);
     expect(recovery).toMatchObject({ failedAttemptIds: [foreign.attemptId] });
@@ -248,18 +243,15 @@ describe('restart classification fault isolation (T4)', () => {
 
   it('boots past an open lease in a quarantined Workspace through a Worker Control hold (#987)', async () => {
     const { db, input } = await fixture();
-    const lease = attempt(db, 'held-open', true);
-    const token = 'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG';
-    bindNanoHostAttemptRouteTokenHashes(db, {
-      attemptId: lease.attemptId,
-      now,
-      sandboxBindingRef: lease.bindingRef!,
-      workerCapabilityTokenHash: hashWorkerRouteToken(
-        'HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH'
-      ),
-      workerControlTokenHash: hashWorkerRouteToken(token),
-      workerInferenceTokenHash: hashWorkerRouteToken('IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII'),
-    });
+    const storage = await openAdmittedTestNanoHost(db);
+    const token = 'G'.repeat(43);
+    const lease = retainedLease(
+      db,
+      'held-open',
+      workspaceId,
+      'nanohost',
+      hashWorkerRouteToken(token)
+    );
     refuseScope(db.dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
     let gateway: WorkerControlGateway | undefined;
     const listenAdmission = vi.fn();
@@ -271,11 +263,12 @@ describe('restart classification fault isolation (T4)', () => {
           subsystem: 'scheduler',
           critical: true,
           run: async () => {
-            gateway = createDefaultWorkerControlGateway(db);
+            gateway = createDefaultWorkerControlGateway(db, undefined, storage);
             await runSchedulerRestartRecovery(db, input);
             // The reconciler pass of the same boot reads idle-cleanup residents, not Worker Control sessions.
             await new ExecutionReconciler({
               coreDb: db,
+              nanoHost: createNanoHostCoreReads(storage.value.owner),
               advanceIdleCleanup: vi.fn(async () => {}),
             }).runOnce();
             return { status: 'ok' };
@@ -297,6 +290,7 @@ describe('restart classification fault isolation (T4)', () => {
       ['listen-admission', 'ok'],
     ]);
     expect(listenAdmission).toHaveBeenCalledOnce();
+    expect(gateway!.restoreHeld()).toBe(true);
     expect(() => gateway!.registerSession({} as never)).toThrow(
       expect.objectContaining({ code: 'worker_observation_storage_unavailable', status: 503 })
     );
@@ -306,18 +300,21 @@ describe('restart classification fault isolation (T4)', () => {
     expect(attempts.requireSchedulerExecutionAttempt(db, lease.attemptId)).toMatchObject({
       phase: 'open',
     });
+    expect(readTestNanoHostWorkerLease(db, lease.attemptId)).toMatchObject({
+      phase: 'open',
+      fenceRef: null,
+    });
   });
 
   it('skips product publication for a closed no-effect attempt belonging to a different backend', async () => {
     const { db, input } = await fixture();
-    const foreign = attempt(db, 'closed-foreign-backend');
+    const foreign = attempt(db, 'closed-foreign-backend', false, 'unavailable-backend');
     await closeSchedulerExecutionAttemptWithoutEffects(db, {
       attemptId: foreign.attemptId,
       noOutstandingEffects: true,
       cause: 'restart-before-effects',
       now,
     });
-    await setTestExecutionAttemptBackend(db, foreign.attemptId, 'unavailable-backend');
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
     await runSchedulerRecoveryMaintenance(db, input);
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
@@ -325,20 +322,43 @@ describe('restart classification fault isolation (T4)', () => {
   });
 
   it('holds corrupt native lineage and continues preparing exact cleanup for a healthy sibling', async () => {
-    const { db, input } = await fixture();
-    const bad = await anchored(db, 'native-fault');
-    const healthy = await anchored(db, 'native-healthy');
+    const { db, store, input } = await fixture();
+    const storage = await openAdmittedTestNanoHost(db);
+    const goodWorkspace = await store.createWorkspace('Independent healthy recovery');
+    recordWorkspaceOwnerMembership({
+      coreDb: db,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: goodWorkspace.id,
+    });
+    const bad = retainedLease(db, 'native-fault', workspaceId);
+    const healthy = retainedLease(db, 'native-healthy', goodWorkspace.id);
     await setTestBackendSessionTurn(db, bad.attemptId, testEntityId('tu', 'wrong-lineage'));
-    const before = getWorkerBackendSession(db, bad.attemptId);
+    const session = (attemptId: string) =>
+      readAdmittedTestNanoHost(db, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId));
+    const before = session(bad.attemptId);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await expect(classifyNanoHostAttemptsAfterRestart(db, input)).resolves.toMatchObject({
+    await expect(
+      classifyNanoHostAttemptsAfterRestart(db, {
+        ...input,
+        admittedNanoHostRecovery: {
+          state: 'ready',
+          value: bindBootNanoHostAttemptRecovery(storage.value.owner),
+        },
+      })
+    ).resolves.toMatchObject({
       failedAttemptIds: [bad.attemptId],
     });
     expect(attempts.requireSchedulerExecutionAttempt(db, bad.attemptId)).toEqual(bad);
-    expect(getWorkerBackendSession(db, bad.attemptId)).toEqual(before);
+    expect(session(bad.attemptId)).toEqual(before);
     expect(attempts.requireSchedulerExecutionAttempt(db, healthy.attemptId).phase).toBe('closing');
-    expect(getWorkerBackendSession(db, healthy.attemptId)?.state).toBe('cleanup-pending');
-    expect(input.prepareBackendCleanup).toHaveBeenCalledTimes(1);
+    // Boot now records the exact Native recovery requirement, leaving physical cleanup to maintenance.
+    expect(readTestNanoHostWorkerLease(db, healthy.attemptId)).toMatchObject({
+      attemptId: healthy.attemptId,
+      phase: 'closing',
+      recoveryState: 'needs-evidence',
+      fenceRef: null,
+    });
+    expect(input.prepareBackendCleanup).not.toHaveBeenCalled();
     expect(input.cleanupBackendSession).not.toHaveBeenCalled();
     expect(input.projectRecoveredTurn).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalled();
@@ -346,15 +366,37 @@ describe('restart classification fault isolation (T4)', () => {
 
   it('skips a native backend mismatch without arming reconnect or cleanup', async () => {
     const { db, input } = await fixture();
-    const foreign = await anchored(db, 'native-foreign');
-    await setTestExecutionAttemptBackend(db, foreign.attemptId, 'unavailable-backend');
+    const storage = await openAdmittedTestNanoHost(db);
+    // Seed the foreign admission before its preparation claim is hashed, not by corrupting either row.
+    const foreign = retainedLease(db, 'native-foreign', workspaceId, 'unavailable-backend');
+    const session = () =>
+      readAdmittedTestNanoHost(db, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, foreign.attemptId)
+      );
+    const originalSession = session();
+    expect(originalSession).toMatchObject({ state: 'launching', attemptId: foreign.attemptId });
     const before = attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId);
-    const session = getWorkerBackendSession(db, foreign.attemptId);
-    const recovery = await classifyNanoHostAttemptsAfterRestart(db, input);
+    expect(before).toMatchObject({
+      phase: 'open',
+      operationId: expect.any(String),
+      backendId: 'unavailable-backend',
+    });
+    const binding = bindBootNanoHostAttemptRecovery(storage.value.owner);
+    const read = vi.spyOn(storage.value.owner, 'read');
+    const arm = vi.spyOn(binding, 'commit');
+    const close = vi.spyOn(binding, 'close');
+    const recovery = await classifyNanoHostAttemptsAfterRestart(db, {
+      ...input,
+      admittedNanoHostRecovery: { state: 'ready', value: binding },
+    });
+    expect(read).not.toHaveBeenCalled();
+    expect(arm).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
     expect(attempts.requireSchedulerExecutionAttempt(db, foreign.attemptId)).toEqual(before);
-    expect(getWorkerBackendSession(db, foreign.attemptId)).toEqual(session);
+    expect(session()).toEqual(originalSession);
     expect(input.restoreBackendSession).not.toHaveBeenCalled();
     expect(input.prepareBackendCleanup).not.toHaveBeenCalled();
-    expect(recovery).toMatchObject({ failedAttemptIds: [foreign.attemptId] });
+    expect(input.cleanupBackendSession).not.toHaveBeenCalled();
+    expect(recovery).toMatchObject({ failedAttemptIds: [] });
   });
 });

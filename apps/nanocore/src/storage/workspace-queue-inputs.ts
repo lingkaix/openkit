@@ -1,5 +1,6 @@
 import { isMainThread } from 'node:worker_threads';
 import { sha256Hex } from '@openkit/protocol/digest';
+import type Database from 'better-sqlite3';
 import type { WorkInputRef } from './control-kernel-port.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -148,11 +149,30 @@ export function commitWorkspaceQueueInputBatch(
 
 type InputAddress = Omit<WorkspaceQueueInputScope, 'originalInvocationId'>;
 
-function readInputRow(dataRoot: string, scope: InputAddress, inputId: string): InputRow | null {
-  let db: WorkspaceDb | undefined;
+const inputReadStatements = new WeakMap<Database.Database, Database.Statement>();
+
+function readInputRow(
+  dataRoot: string,
+  scope: InputAddress,
+  inputId: string,
+  borrowed?: WorkspaceDb
+): InputRow | null {
+  let db = borrowed;
   try {
-    db = openAdmittedWorkspaceReadDb(dataRoot, scope.workspaceId);
-    const stored = db.sqlite.prepare(inputRow).get(inputId) as InputRow | undefined;
+    db ??= openAdmittedWorkspaceReadDb(dataRoot, scope.workspaceId);
+    if (
+      db.workspaceId !== scope.workspaceId ||
+      db.dataRoot !== dataRoot ||
+      !db.sqlite.open ||
+      !db.sqlite.readonly
+    )
+      return null;
+    let statement = inputReadStatements.get(db.sqlite);
+    if (!statement) {
+      statement = db.sqlite.prepare(inputRow);
+      inputReadStatements.set(db.sqlite, statement);
+    }
+    const stored = statement.get(inputId) as InputRow | undefined;
     if (
       !stored ||
       stored.schemaVersion !== 1 ||
@@ -168,7 +188,7 @@ function readInputRow(dataRoot: string, scope: InputAddress, inputId: string): I
   } catch {
     return null;
   } finally {
-    db?.sqlite.close();
+    if (!borrowed) db?.sqlite.close();
   }
 }
 
@@ -176,9 +196,10 @@ function readInputRow(dataRoot: string, scope: InputAddress, inputId: string): I
 export function findWorkspaceQueueInputRef(
   dataRoot: string,
   scope: InputAddress,
-  address: { readonly inputId: string; readonly originalInvocationId: string }
+  address: { readonly inputId: string; readonly originalInvocationId: string },
+  borrowed?: WorkspaceDb
 ): WorkInputRef | null {
-  const stored = readInputRow(dataRoot, scope, address.inputId);
+  const stored = readInputRow(dataRoot, scope, address.inputId, borrowed);
   if (!stored || stored.originalInvocationId !== address.originalInvocationId) return null;
   return {
     owner: { kind: 'workspace', workspaceId: scope.workspaceId },
@@ -191,11 +212,12 @@ export function findWorkspaceQueueInputRef(
 export function readWorkspaceQueueInput(
   dataRoot: string,
   scope: InputAddress,
-  input: WorkInputRef
+  input: WorkInputRef,
+  borrowed?: WorkspaceDb
 ): { readonly text: string; readonly originalInvocationId: string } | null {
   if (input.owner.kind !== 'workspace' || input.owner.workspaceId !== scope.workspaceId)
     return null;
-  const stored = readInputRow(dataRoot, scope, input.inputId);
+  const stored = readInputRow(dataRoot, scope, input.inputId, borrowed);
   if (!stored || stored.digest !== input.digest) return null;
   const text = stored.bytes.toString();
   if (!Buffer.from(text, 'utf8').equals(stored.bytes)) return null;

@@ -3,56 +3,146 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allocateEntityId } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  canonicalJsonText,
+  RequestIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { policyDigest, sha256CanonicalJson } from '@openkit/protocol/digest';
+import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FakeWorkerShim } from '../../../../packages/worker-shim/src/test-support/worker-shim-fake.js';
-import { listServerAuditEvents } from '../audit-events.js';
+import { listServerAuditEvents, prepareServerAuditEvent } from '../audit-events.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { FsStore } from '../lib/store.js';
 import { runKernelRepair } from '../llm/kernel-repair-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { validatePolicyDocument } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerExecutionAttemptAdmissionContext,
+} from '../scheduler-records.js';
 import type {
   ExecutionGrant,
+  ExecutionHandoff,
   ExecutionInputProof,
   ExecutionProofIntent,
   SelectedExecutionInput,
 } from '../storage/control-kernel-port.js';
 import type { KernelExecutionEvidence } from '../storage/control-kernel-proof-codecs.js';
 import { controlStoreFor } from '../storage/control-store.js';
+import { commandInputHash } from '../storage/control-store-input.js';
+import {
+  ControlProductPreconditionError,
+  readProduct,
+} from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, serverStoragePath } from '../storage/db.js';
+import {
+  ControlCoreIdleHarnessConsumptionInputSchema,
+  ControlCoreImageResultSchema,
+  ControlCoreNanoHostFinalDecisionSchema,
+  ControlCoreNanoHostFinalInputSchema,
+  ControlNanoHostFirstSubmissionInputSchema,
+  ControlNanoHostMaterializationPreparationInputSchema,
+  ControlNanoHostOrphanRetirementInputSchema,
+  ControlNanoHostTerminalReleaseInputSchema,
+} from '../storage/core-journal-codecs.js';
+import {
+  admitNanoHostFirstSubmissionInDb,
+  admitNanoHostWorkerFinalInDb,
+  applyControlCoreImageResult,
+  captureSecurityCanaryAuditObservation,
+  closeNanoHostFailedStartInDb,
+  commitCoreNanoHostOrphanAuditInDb,
+  hasCoreWorkerFinalIntake,
+  inspectAcceptedNanoHostFinalInDb,
+  inspectCoreNanoHostOrphanAudit,
+  inspectCoreNanoHostTerminalRelease,
+  type NanoHostRecoveryReleaseInput,
+  nanoHostTerminalReleaseWorkspaceStep,
+  observeAcceptedNanoHostFinalInDb,
+  readCoreImageAcquisitionRef,
+  releaseCoreNanoHostRecoveryInDb,
+  releaseCoreNanoHostTerminalInDb,
+  requireCoreNanoHostMaterializationPreparation,
+  reserveCoreIdleCleanupInDb,
+  verifyNanoHostCleanupSubmitPlacement,
+} from '../storage/core-journal-native.js';
+import {
+  openAdmittedWorkspaceReadDb,
+  openCoreDb,
+  openWorkspaceDb,
+  serverStoragePath,
+} from '../storage/db.js';
 import { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import {
+  readNanoHostPhysicalCleanupReceipt,
+  readNanoHostRecoveryLease,
+} from '../storage/nanohost-recovery-native.js';
+import {
+  nanoHostWorkerFinalDecisionFingerprint,
+  readRetainedNanoHostSubmission,
+} from '../storage/nanohost-submitted-lease.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { prepareSecurityCanaryAuditInDb } from '../storage/security-canary-audit-native.js';
+import {
+  ControlStandaloneAuditInputSchema,
+  SECURITY_CANARY_AUDIT_FACT,
+} from '../storage/standalone-audit-codecs.js';
 import { storageRequestId } from '../storage/storage-owner.js';
+import type { ControlWorkerFinalStatusCommand } from '../storage/worker-control-final-status-codecs.js';
+import { applyWorkspaceBackendHandoffInDb } from '../storage/workspace-backend-handoff-native.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultReference, revokeVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { publishCoreJournal } from './core-journal-owner.js';
 import {
+  inspectCoreHarnessConsumption,
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
+  recordCoreIdleHarnessConsumptionInDb,
+  settleCoreIdleJournal,
 } from './core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
   bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithFence,
   createSchedulerExecutionAttempt,
   EXECUTION_ATTEMPT_BUDGET_MS,
   finalizeSchedulerExecutionAttemptInput,
+  markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionGrantInDb,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
   admitKernelInputInDb,
   admitKernelSchedulerGrantInDb,
   admitRepairCallEntryInDb,
+  CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
@@ -61,23 +151,47 @@ import {
   commitRepairReservationStep,
   commitRepairTerminalAuditInDb,
   createExecutionStepJournalReader,
+  encodeExecutionJournalValue,
+  executionJournalProcessWitness,
   inspectKernelInputDisposition,
   inspectKernelInputProofInDb,
   inspectKernelProofReceipt,
   inspectRepairReservationStep,
   kernelSchedulerScopeIsHeld,
+  readExecutionJournalEndedStep,
+  readExecutionJournalInvocation,
   readExecutionJournalRoot,
   readKernelSchedulerGrantInDb,
   releaseKernelExecutionScopesInDb,
   settleExecutionJournalStep,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
+import { ExecutionReconciler } from './execution-reconciler.js';
 import type {
   ExecutionJournalAdmission,
   ExecutionJournalIntent,
   ExecutionJournalSettlement,
   ExecutionJournalSpan,
 } from './execution-step-journal.js';
+import { hasNanoHostAttemptPreEffectProof } from './nanohost-attempt-recovery.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  recordWorkerBackendSessionMaterializing,
+  transitionWorkerBackendSessionState,
+} from './worker-backend-session-records.js';
+import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { acceptWorkerControlSequence } from './worker-control-sequences.js';
+import {
+  prepareWorkerTurnJournalIntents,
+  withPreparedWorkerSubmission,
+} from './worker-governance-turn-executor.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './workspace-materializer.js';
 
 // These contracts require the real migration and implementation tracked in docs/changes/202610201240000000-core_execution_journal/plan.md.
 // Until then, typecheck only: unavailable methods or tables are blockers, not behavioral RED.
@@ -261,7 +375,1824 @@ async function ending(
   };
 }
 
+function toReleaseSpanId(label: string): string {
+  return sha256CanonicalJson(label).slice(0, 16);
+}
+
+function addTerminalReleaseTestScope(f: ReturnType<typeof journalFixture>, grant: ExecutionGrant) {
+  f.db.sqlite.transaction(() => {
+    const root = readExecutionJournalRoot(f.db, grant.execution);
+    const base = f.intent(55);
+    const span = { ...root.span, spanId: base.span.spanId, endTimeUnixNano: null };
+    const intent = writeExecutionJournalIntent(f.db, {
+      ...base,
+      execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+      control: {
+        ...base.control,
+        kind: 'observe',
+        workId: root.workId,
+        definitionVersion: root.definitionVersion,
+      },
+      span,
+    });
+    const current = readExecutionJournalRoot(f.db, grant.execution);
+    settleExecutionJournalStep(f.db, {
+      ref: intent.ref,
+      expectedExecutionRevision: current.revision,
+      state: 'completed',
+      outputRefs: [],
+      span: { ...span, endTimeUnixNano: span.startTimeUnixNano, status: { code: 'OK' } },
+      nextPhase: 'closing',
+      terminalCause: current.terminalCause,
+      exclusionRefs: [...current.exclusionRefs, 'volume:outside-release'],
+    });
+  })();
+}
+
 describe('persisted execution journal contracts', () => {
+  it.each(['ordinary', 'cancellation'] as const)(
+    'retains %s NanoHost final intake and observes only the independently accepted final',
+    async (mode) => {
+      const f = journalFixture();
+      const native = openNanoHostTestOwner();
+      const workspaceId = testEntityId('ws', 'final-intake');
+      const threadId = testEntityId('th', 'final-intake');
+      const turnId = testEntityId('tu', 'final-intake');
+      const agentSessionId = testEntityId('as', 'final-intake');
+      const tokenHash = 'c'.repeat(64);
+      const sandboxBindingRef = 'sandbox-final-intake';
+      const packageSnapshotId = 'package-final-intake';
+      const userId = ensureLocalUser(f.db);
+      const triggerActor = { kind: 'user' as const, id: userId };
+      recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+      const entry = createSchedulerAdmissionEntry(f.db, {
+        queueEntryId: 'final-intake-queue',
+        backendId: 'nanohost',
+        workspaceId,
+        threadId,
+        turnId,
+        triggerActor,
+        inputRef: schedulerFixtureInput(workspaceId, turnId, 'Complete the original final.'),
+        requestedAgentId: 'agent_worker',
+      });
+      const attempt = submitTestNanoHostWorkerLease(
+        f.db,
+        entry,
+        sandboxBindingRef,
+        {
+          agentSessionId,
+          packageSnapshotId,
+          workerControlTokenHash: tokenHash,
+          workerCapabilityTokenHash: 'd'.repeat(64),
+          workerInferenceTokenHash: 'e'.repeat(64),
+        },
+        { nativePath: native.sqlite.name }
+      );
+      const {
+        lease: { grant },
+      } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+      const clock = (ms: number) => new Date(Date.parse(attempt.createdAt) + ms).toISOString();
+      const lineage = {
+        workspaceId,
+        threadId,
+        turnId,
+        agentSessionId,
+        packageSnapshotId,
+        requestId: null,
+      };
+      const input: ControlWorkerFinalStatusCommand = {
+        lineage,
+        sandboxBindingRef,
+        tokenHash,
+        payload: {
+          terminalData:
+            mode === 'ordinary'
+              ? { status: 'completed', stopReason: 'end_turn', evidenceManifestDigests: {} }
+              : { status: 'cancelled', stopReason: 'aborted', evidenceManifestDigests: {} },
+          sequence: 3,
+          acceptedAt: clock(1000),
+          eventAcceptedAt: clock(1001),
+        },
+      };
+      const decide = async (command = input) =>
+        ControlCoreNanoHostFinalDecisionSchema.parse(
+          f.db.sqlite
+            .transaction(() =>
+              native.sqlite
+                .transaction(() =>
+                  admitNanoHostWorkerFinalInDb(
+                    f.db,
+                    ControlCoreNanoHostFinalInputSchema.parse(command),
+                    native.sqlite
+                  )
+                )
+                .deferred()
+            )
+            .immediate()
+        );
+      const observe = (command = input) =>
+        f.db.sqlite
+          .transaction(() =>
+            observeAcceptedNanoHostFinalInDb(
+              f.db,
+              ControlCoreNanoHostFinalInputSchema.parse(command),
+              native.sqlite
+            )
+          )
+          .immediate();
+      const history = () => ({
+        attempt: requireSchedulerExecutionAttempt(f.db, attempt.attemptId),
+        roots: f.db.sqlite.prepare('SELECT * FROM control_executions ORDER BY id').all(),
+        steps: f.db.sqlite
+          .prepare('SELECT * FROM control_execution_steps ORDER BY execution_id, ordinal')
+          .all(),
+      });
+      const cause = mode === 'ordinary' ? 'worker-final-status' : 'turn-cancelled';
+      if (mode === 'cancellation') {
+        markSchedulerExecutionAttemptClosing(f.db, {
+          attemptId: attempt.attemptId,
+          cause,
+          now: () => clock(500),
+        });
+        const before = history();
+        await expect(
+          decide({
+            ...input,
+            payload: {
+              ...input.payload,
+              terminalData: {
+                status: 'completed',
+                stopReason: 'end_turn',
+                evidenceManifestDigests: {},
+              },
+            },
+          })
+        ).rejects.toMatchObject({ code: 'worker_control_lease_not_live' });
+        expect(history()).toEqual(before);
+      }
+      await expect(decide()).resolves.toEqual({
+        kind: mode === 'ordinary' ? 'decided' : 'cancellation-decided',
+        grant,
+        fingerprint: nanoHostWorkerFinalDecisionFingerprint(input),
+        acceptedAt: clock(1000),
+        eventAcceptedAt: clock(1001),
+      });
+      const accepted = history();
+      expect(accepted.attempt).toMatchObject({
+        phase: 'closing',
+        terminalCause: cause,
+        disposition: 'unknown',
+      });
+      expect(observe()).toEqual({ state: 'unknown' });
+      expect(history()).toEqual(accepted);
+
+      const root = await f.reader.readExecution(grant.execution);
+      const releaseDraft = f.intent();
+      const releaseIntent: ExecutionJournalIntent = {
+        ...releaseDraft,
+        execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+        stepId: 'release-with-intake-only',
+        control: {
+          ...releaseDraft.control,
+          definitionVersion: root.definitionVersion,
+          kind: 'release',
+          operationId: grant.operationId,
+          attemptId: attempt.attemptId,
+          workId: turnId,
+        },
+        span: { ...releaseDraft.span, traceId: root.span.traceId, parentSpanId: root.span.spanId },
+      };
+      const release = f.db.sqlite.transaction(() =>
+        releaseKernelExecutionScopesInDb(f.db, releaseIntent, grant, root.revision, () => true)
+      )();
+      expect(release).toEqual({ state: 'unknown' });
+      expect(kernelSchedulerScopeIsHeld(f.db, [`turn:${turnId}`])).toBe(true);
+      expect(history()).toEqual(accepted);
+
+      f.reopen();
+      await native.reopen();
+      const retry = {
+        ...input,
+        payload: { ...input.payload, acceptedAt: clock(3000), eventAcceptedAt: clock(3001) },
+      };
+      await expect(decide(retry)).resolves.toEqual({
+        kind: mode === 'ordinary' ? 'decided' : 'cancellation-decided',
+        grant,
+        fingerprint: nanoHostWorkerFinalDecisionFingerprint(input),
+        acceptedAt: clock(1000),
+        eventAcceptedAt: clock(1001),
+      });
+      await expect(
+        decide({ ...retry, payload: { ...retry.payload, sequence: 4 } })
+      ).rejects.toMatchObject({ code: 'worker_control_sequence_conflict' });
+      await expect(
+        decide({
+          ...retry,
+          payload: {
+            ...retry.payload,
+            terminalData:
+              mode === 'ordinary'
+                ? { status: 'cancelled', stopReason: 'aborted', evidenceManifestDigests: {} }
+                : { status: 'completed', stopReason: 'end_turn', evidenceManifestDigests: {} },
+          },
+        })
+      ).rejects.toMatchObject({ code: 'worker_control_sequence_conflict' });
+      await expect(
+        decide({ ...retry, sandboxBindingRef: 'different-binding' })
+      ).rejects.toMatchObject({ code: 'worker_control_unauthorized' });
+      await expect(decide({ ...retry, tokenHash: '9'.repeat(64) })).rejects.toMatchObject({
+        code: 'worker_control_unauthorized',
+      });
+      const nativeGrant = native.sqlite
+        .prepare('SELECT worker_route_binding_json FROM worker_backend_sessions WHERE attempt_id=?')
+        .pluck()
+        .get(attempt.attemptId) as string;
+      const setNativeGrant = (json: string) =>
+        native.setup((sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET worker_route_binding_json=? WHERE attempt_id=?'
+            )
+            .run(json, attempt.attemptId)
+        );
+      setNativeGrant(canonicalJsonText({ ...JSON.parse(nativeGrant), generation: '2' }));
+      await expect(decide(retry)).rejects.toThrow(
+        'NanoHost recovery has no original native lease.'
+      );
+      setNativeGrant(nativeGrant);
+      expect(history()).toEqual(accepted);
+
+      const { sequence, terminalData, acceptedAt, eventAcceptedAt } = input.payload;
+      const event = buildWorkerCanonicalTerminalEventRecord({
+        data: terminalData,
+        lineage,
+        sequence,
+      });
+      native.setup((sqlite) =>
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            operation: 'final_status',
+            lineage,
+            sequence,
+            recordKey: String(sequence),
+            record: { ...terminalData, acceptedAt, sequence },
+            acceptedAt,
+          }
+        )
+      );
+      expect(observe()).toEqual({ state: 'unknown' });
+      expect(history()).toEqual(accepted);
+      native.setup((sqlite) => {
+        const owner = { sqlite };
+        acceptWorkerControlSequence(owner, {
+          lineage,
+          operation: 'final_status',
+          sequence,
+          fingerprint: canonicalJsonText({ ...terminalData, lineage, sequence }),
+        });
+        acceptWorkerControlSequence(owner, {
+          lineage,
+          operation: 'event_append',
+          sequence,
+          fingerprint: canonicalJsonText(event),
+        });
+        writeWorkerControlAcceptedRecord(owner, {
+          lineage,
+          operation: 'event_append',
+          sequence,
+          recordKey: String(sequence),
+          record: event,
+          acceptedAt: eventAcceptedAt,
+        });
+      });
+      const applied = observe();
+      expect(applied).toMatchObject({ state: 'applied', receipt: { disposition: 'applied' } });
+      if (applied.state !== 'applied') throw new Error('Expected Core acceptance.');
+      const settled = history();
+      f.reopen();
+      await native.reopen();
+      expect(inspectKernelProofReceipt(f.db, applied.receipt.intent, true)).toEqual({
+        state: 'settled',
+        receipt: applied.receipt,
+      });
+      expect(observe(retry)).toEqual({ state: 'inspect-original', receipt: applied.receipt });
+      await expect(decide(retry)).resolves.toMatchObject({
+        kind: 'replay',
+        acceptedAt: clock(1000),
+        eventAcceptedAt: clock(1001),
+      });
+      expect(history()).toEqual(settled);
+      expect(settled.attempt).toMatchObject({
+        phase: 'closing',
+        terminalCause: cause,
+        disposition: mode === 'ordinary' ? 'accepted' : 'unknown',
+      });
+      if (mode === 'cancellation') expect(settled.attempt).toEqual(accepted.attempt);
+      expect(kernelSchedulerScopeIsHeld(f.db, [`turn:${turnId}`])).toBe(true);
+      native.setup((sqlite) =>
+        sqlite.prepare("DELETE FROM worker_control_records WHERE operation='event_append'").run()
+      );
+      expect(observe(retry)).toEqual({ state: 'unknown' });
+      expect(history()).toEqual(settled);
+    }
+  );
+
+  it('checks the original canary actor and subject against the exact live Native route', async () => {
+    const f = journalFixture();
+    const native = openNanoHostTestOwner();
+    const workspaceId = testEntityId('ws', 'canary-audit');
+    const workspace = openWorkspaceDb(f.root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    applyScopedMigrations(workspace);
+    const userId = ensureLocalUser(f.db);
+    const triggerActor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'canary_audit',
+      triggerActor,
+      workspaceInputIds: [],
+    });
+    const { threadId, turnId, agentSessionId } = pkg.scope;
+    const requestId = pkg.scope.requestId ?? null;
+    const admission = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'canary-audit-queue',
+      workspaceId,
+      threadId,
+      turnId,
+      ...(requestId === null ? {} : { requestId }),
+      triggerActor,
+      requestedAgentId: pkg.agent.agentId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original canary input.'),
+    });
+    const attempt = submitTestNanoHostWorkerLease(
+      f.db,
+      admission,
+      'canary-original-sandbox',
+      {
+        agentSessionId,
+        packageSnapshotId: pkg.snapshotId,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      { nativePath: native.sqlite.name }
+    );
+    const lineage = {
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      requestId,
+      packageSnapshotId: pkg.snapshotId,
+    };
+    const actor = { kind: 'agent' as const, id: pkg.agent.agentId, responsibleUserId: userId };
+    const event = prepareServerAuditEvent({
+      ...SECURITY_CANARY_AUDIT_FACT,
+      coreDb: f.db,
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      itemId: pkg.scope.itemId ?? null,
+      requestId: RequestIdSchema.safeParse(requestId).data ?? null,
+      agentId: pkg.agent.agentId,
+      actor,
+      subject: actor,
+      category: 'capability',
+      outcome: 'denied',
+      severity: 'warning',
+    });
+    const underNative = <Value>(run: () => Value) =>
+      f.db.sqlite.transaction(() => native.sqlite.transaction(run).deferred()).immediate();
+    const capture = (authenticatedCapabilityHash?: string) =>
+      underNative(() =>
+        captureSecurityCanaryAuditObservation(
+          f.db,
+          native.sqlite,
+          lineage,
+          authenticatedCapabilityHash
+        )
+      );
+    expect(capture('c'.repeat(64))).toEqual(capture());
+    expect(capture('a'.repeat(64))).toBeNull();
+    const observation = capture();
+    expect(observation).toMatchObject({
+      attemptId: attempt.attemptId,
+      sandboxBindingRef: attempt.bindingRef,
+    });
+    if (!observation) throw new Error('Expected the original live canary route.');
+    const input = ControlStandaloneAuditInputSchema.parse({
+      stage: 'security.canary',
+      canaryLineage: lineage,
+      canaryObservation: observation,
+      event,
+    });
+    const decide = (candidate = input, available = true) =>
+      underNative(() =>
+        prepareSecurityCanaryAuditInDb(
+          f.db,
+          candidate,
+          available
+            ? (currentLineage) =>
+                captureSecurityCanaryAuditObservation(f.db, native.sqlite, currentLineage)
+            : undefined
+        )
+      );
+    expect(decide()).toBe('inactive');
+    expect(decide()).toBe('inactive');
+    expect(() => decide(input, false)).toThrow(ControlProductPreconditionError);
+    expect(() => decide({ ...input, canaryObservation: undefined })).toThrow(
+      ControlProductPreconditionError
+    );
+    expect(() =>
+      decide({ ...input, canaryLineage: { ...lineage, requestId: 'foreign-request' } })
+    ).toThrow(ControlProductPreconditionError);
+    for (const field of ['actor', 'subject'] as const) {
+      for (const responsibleUserId of [null, testEntityId('usr', 'canary-other-user')]) {
+        const changed = {
+          ...input,
+          event: { ...event, [field]: { ...actor, responsibleUserId } },
+        };
+        expect(() => decide(changed)).toThrow(ControlProductPreconditionError);
+      }
+    }
+
+    const originalBindingJson = native.sqlite
+      .prepare('SELECT worker_route_binding_json FROM worker_backend_sessions WHERE attempt_id = ?')
+      .pluck()
+      .get(attempt.attemptId) as string;
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE worker_backend_sessions SET worker_route_binding_json = ? WHERE attempt_id = ?'
+        )
+        .run(
+          canonicalJsonText({ ...JSON.parse(originalBindingJson), capability: 'd'.repeat(64) }),
+          attempt.attemptId
+        )
+    );
+    expect(capture('c'.repeat(64))).toBeNull();
+    const refreshed = capture('d'.repeat(64));
+    expect(refreshed).toMatchObject({
+      attemptId: observation.attemptId,
+      sandboxBindingRef: observation.sandboxBindingRef,
+    });
+    expect(refreshed?.observationHash).not.toBe(observation.observationHash);
+    expect(() => decide()).toThrow(ControlProductPreconditionError);
+    expect(decide({ ...input, canaryObservation: refreshed! })).toBe('inactive');
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE nanohost_runtime_targets SET connection_generation = connection_generation + 1'
+        )
+        .run()
+    );
+    const targetChanged = capture();
+    expect(targetChanged?.observationHash).not.toBe(refreshed?.observationHash);
+    expect(() => decide({ ...input, canaryObservation: refreshed! })).toThrow(
+      ControlProductPreconditionError
+    );
+    markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-cancelled',
+    });
+    expect(capture()).toBeNull();
+    expect(() => decide({ ...input, canaryObservation: targetChanged! })).toThrow(
+      ControlProductPreconditionError
+    );
+    expect(listServerAuditEvents(f.db).filter((row) => row.action === 'security.canary')).toEqual(
+      []
+    );
+  });
+
+  it.each([
+    ['releases exact NanoHost terminal evidence for the next Workspace Turn', false, false, null],
+    ['releases exact NanoHost terminal evidence for the next Workspace Turn', true, false, null],
+    ['audits fenced transcript abandonment and keeps writable volume exclusion', true, true, null],
+    [
+      'keeps scoped abandonment held when accepted Worker final contradicts the Turn',
+      true,
+      true,
+      { status: 'failed', stopReason: 'error', decision: 'hold' },
+    ],
+    [
+      'keeps scoped abandonment held when accepted Worker final agrees on status only',
+      true,
+      true,
+      { status: 'completed', stopReason: 'length', decision: 'hold' },
+    ],
+    [
+      'audits scoped abandonment once when the accepted Worker final matches the Turn',
+      true,
+      true,
+      { status: 'completed', stopReason: 'completed', decision: 'release' },
+    ],
+    [
+      'keeps scoped abandonment held when the accepted Worker final has no Workspace terminal event',
+      true,
+      true,
+      { status: 'completed', stopReason: 'completed', decision: 'hold', evidence: 'missing' },
+    ],
+    [
+      'keeps scoped abandonment held when the accepted Worker final has conflicting Workspace terminal events',
+      true,
+      true,
+      { status: 'completed', stopReason: 'completed', decision: 'hold', evidence: 'conflicting' },
+    ],
+  ] as const)('%s (outside scope=%s)', async (...testCase) => {
+    const [, outsideScope, abandonTranscript, terminalCase] = testCase;
+    const acceptedTurnStatus = terminalCase?.status;
+    const f = journalFixture();
+    const admitted = acceptedTurnStatus ? await openAdmittedTestNanoHost(f.db) : null;
+    const native = admitted
+      ? {
+          sqlite: new Database(serverStoragePath(f.root, 'nanohost'), {
+            readonly: true,
+            fileMustExist: true,
+          }),
+          setup: (write: (sqlite: Database.Database) => void) =>
+            mutateAdmittedTestNanoHost(f.db, write),
+        }
+      : openNanoHostTestOwner();
+    if (admitted) onTestFinished(() => native.sqlite.close());
+    const store = acceptedTurnStatus ? new FsStore({ dataRoot: f.root }) : null;
+    const workspaceId =
+      (await store?.createWorkspace('Accepted final scoped release'))?.id ??
+      testEntityId('ws', 'terminal-release');
+    const workspace = openWorkspaceDb(f.root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    applyScopedMigrations(workspace);
+    const userId = ensureLocalUser(f.db);
+    const actor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'terminal_release',
+      triggerActor: actor,
+      workspaceInputIds: [],
+    });
+    const { turnId, threadId, agentSessionId } = pkg.scope;
+    if (store) {
+      onTestFinished(shutdownControlStoreWorkerClient);
+      await store.createThread(workspaceId, 'Original Worker final', threadId);
+      await store.createTurn(workspaceId, threadId, 'Original terminal input.', actor, null, {
+        turnId,
+      });
+    }
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'terminal-release-queue',
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original terminal input.'),
+      triggerActor: actor,
+      requestedAgentId: pkg.agent.agentId,
+    });
+    const bindingRef = 'terminal-release-binding';
+    const attempt = submitTestNanoHostWorkerLease(
+      f.db,
+      entry,
+      bindingRef,
+      {
+        agentSessionId,
+        packageSnapshotId: pkg.snapshotId,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      { nativePath: native.sqlite.name }
+    );
+    const {
+      lease: { grant },
+    } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+    const physicalAt = new Date(Date.parse(attempt.createdAt) + 3_000).toISOString();
+    const fenceRef = `worker-backend:${attempt.attemptId}:${physicalAt}`;
+    const target = getNanoHostRuntimeTarget(native, `test-target-${turnId}`)!;
+    if (!abandonTranscript || acceptedTurnStatus) {
+      const finalInput: ControlWorkerFinalStatusCommand = {
+        lineage: {
+          workspaceId,
+          threadId,
+          turnId,
+          agentSessionId,
+          packageSnapshotId: pkg.snapshotId,
+          requestId: null,
+        },
+        sandboxBindingRef: bindingRef,
+        tokenHash: 'a'.repeat(64),
+        payload: {
+          sequence: 2,
+          acceptedAt: new Date(Date.parse(attempt.createdAt) + 1_000).toISOString(),
+          eventAcceptedAt: new Date(Date.parse(attempt.createdAt) + 1_001).toISOString(),
+          terminalData: {
+            status: 'completed',
+            stopReason: 'end_turn',
+            evidenceManifestDigests: {},
+          },
+        },
+      };
+      if (admitted) {
+        await admitted.value.owner.workerControlFinalStatus(finalInput);
+        expect(
+          inspectAcceptedNanoHostFinalInDb(f.db, native.sqlite, attempt.attemptId)
+        ).toMatchObject({
+          state: 'settled',
+          grant,
+        });
+      } else {
+        f.db.sqlite.transaction(() =>
+          native.sqlite
+            .transaction(() => admitNanoHostWorkerFinalInDb(f.db, finalInput, native.sqlite))
+            .deferred()
+        )();
+      }
+    }
+    if (store && terminalCase) {
+      await store.completeTurn(
+        turnId,
+        { status: terminalCase.status, completedAt: new Date().toISOString() },
+        { stopReason: terminalCase.stopReason }
+      );
+      expect(store.getTurnById(turnId).status).toBe(terminalCase.status);
+    }
+    const [materialize, terminal, release] = prepareWorkerTurnJournalIntents(
+      workspace,
+      pkg,
+      attempt,
+      {
+        backendKind: 'nanohost',
+        targetId: target.targetId,
+        allocationRef: bindingRef,
+      }
+    );
+    if (!materialize || !terminal || !release)
+      throw new Error('Fixture has no original Workspace intents.');
+    const consumeKey = {
+      harnessBindingRef: 'release-harness-binding',
+      operationId: 'd'.repeat(64),
+      sequence: 1,
+      resultFingerprint: 'e'.repeat(64),
+    };
+    const workspaceIntent = (
+      id: string,
+      kind: ExecutionJournalIntent['control']['kind'],
+      operation: string
+    ) => ({
+      ...materialize,
+      stepId: id,
+      control: { ...materialize.control, kind, invocationId: id },
+      carriage: { ...materialize.carriage, operation },
+      span: { ...materialize.span, spanId: toReleaseSpanId(id) },
+    });
+    const output = workspaceIntent('release-output', 'collect', 'worker.collect.publication');
+    const evidence = workspaceIntent('release-evidence', 'collect', 'worker.collect.transcript');
+    const loss = {
+      ...workspaceIntent(
+        'release-transcript-loss',
+        'inspect-cleanup',
+        'worker.collect.transcript.loss'
+      ),
+      inspectedStep: { execution: evidence.execution.ref, stepId: evidence.stepId },
+      span: {
+        ...materialize.span,
+        spanId: toReleaseSpanId('release-transcript-loss'),
+        links: [
+          {
+            traceId: evidence.span.traceId,
+            spanId: evidence.span.spanId,
+            flags: evidence.span.flags,
+            attributes: [],
+            droppedAttributesCount: 0,
+          },
+        ],
+      },
+    };
+    const collection = workspaceIntent('release-capture', 'collect', 'worker.collect.capture');
+    const draftConsume = workspaceIntent('release-consume', 'consume-receipt', 'turn.start');
+    const consume = {
+      ...draftConsume,
+      control: { ...draftConsume.control, inputRefs: [consumeKey.resultFingerprint] },
+      carriage: {
+        operation: 'turn.start',
+        bindingRef: consumeKey.harnessBindingRef,
+        requestId: consumeKey.operationId,
+        sequence: consumeKey.sequence,
+      },
+    };
+    workspace.sqlite.transaction(() => {
+      for (const intent of [
+        materialize,
+        terminal,
+        release,
+        output,
+        evidence,
+        collection,
+        consume,
+        ...(abandonTranscript ? [loss] : []),
+      ])
+        writeExecutionJournalIntent(workspace, intent);
+      for (const intent of [
+        materialize,
+        output,
+        evidence,
+        ...(abandonTranscript ? [loss] : []),
+        collection,
+        consume,
+        terminal,
+        release,
+      ]) {
+        const root = readExecutionJournalRoot(workspace, intent.execution.ref);
+        settleExecutionJournalStep(workspace, {
+          ref: { execution: root.ref, stepId: intent.stepId },
+          expectedExecutionRevision: root.revision,
+          state: abandonTranscript && intent === evidence ? 'unknown' : 'completed',
+          outputRefs:
+            intent === release || intent === loss
+              ? [fenceRef]
+              : intent === consume
+                ? [consumeKey.resultFingerprint]
+                : [],
+          span: {
+            ...intent.span,
+            endTimeUnixNano: intent.span.startTimeUnixNano,
+            status: { code: abandonTranscript && intent === evidence ? 'ERROR' : 'OK' },
+          },
+          nextPhase: intent === release ? 'closed' : intent === terminal ? 'closing' : 'open',
+          terminalCause: 'completed',
+          exclusionRefs: intent === release ? [] : root.exclusionRefs,
+        });
+      }
+    })();
+    acceptSchedulerExecutionObservation(f.db, {
+      ...grant,
+      disposition: 'accepted',
+      execution: 'terminal',
+      outcomeRef: abandonTranscript ? `turn:${turnId}:${acceptedTurnStatus ?? 'failed'}` : null,
+      fenceRef: abandonTranscript ? fenceRef : null,
+    });
+    if (abandonTranscript)
+      markSchedulerExecutionAttemptClosing(f.db, {
+        attemptId: attempt.attemptId,
+        cause: 'restart-native-recovery',
+        now: () => physicalAt,
+      });
+    const { lease } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+    native.setup((sqlite) => {
+      const owner = { sqlite };
+      const key = { attemptId: attempt.attemptId, now: () => physicalAt };
+      const { proof } = readNanoHostRecoveryLease(sqlite, lease);
+      transitionWorkerBackendSessionState(owner, {
+        ...key,
+        fromState: 'launching',
+        toState: 'cleanup-pending',
+      });
+      transitionWorkerBackendSessionState(owner, {
+        ...key,
+        fromState: 'cleanup-pending',
+        toState: 'physical-cleaned',
+      });
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET worker_recovery_json = ? WHERE attempt_id = ?')
+        .run(
+          canonicalJsonText({
+            ...proof,
+            physicalCleanup: {
+              observedAt: physicalAt,
+              connectionGeneration: target.connectionGeneration,
+              physicalEpoch: target.physicalEpoch,
+            },
+          }),
+          attempt.attemptId
+        );
+      transitionWorkerBackendSessionState(owner, {
+        ...key,
+        fromState: 'physical-cleaned',
+        toState: 'cleaned',
+      });
+    });
+    if (!abandonTranscript)
+      closeSchedulerExecutionAttemptWithFence(f.db, {
+        correlation: schedulerExecutionCorrelation(lease.attempt),
+        fenceRef,
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+    if (outsideScope) addTerminalReleaseTestScope(f, grant);
+    const root = readExecutionJournalRoot(f.db, grant.execution);
+    const descriptor = (intent: ExecutionJournalIntent) => {
+      const ref = { execution: intent.execution.ref, stepId: intent.stepId };
+      return nanoHostTerminalReleaseWorkspaceStep(
+        readExecutionJournalEndedStep(workspace, ref),
+        readExecutionJournalInvocation(workspace, ref).carriage
+      );
+    };
+    const input = ControlNanoHostTerminalReleaseInputSchema.parse({
+      attemptId: attempt.attemptId,
+      target: {
+        targetId: target.targetId,
+        identityId: target.identityId,
+        deploymentId: target.deploymentId,
+        connectionGeneration: target.connectionGeneration,
+        physicalEpoch: target.physicalEpoch,
+      },
+      fenceRef,
+      coveredScopeRefs: root.exclusionRefs.filter((ref) => !ref.startsWith('volume:')),
+      workspaceExecutionId: release.execution.ref.executionId,
+      workspaceSteps: {
+        terminal: descriptor(terminal),
+        output: descriptor(output),
+        evidence: descriptor(evidence),
+        collection: descriptor(collection),
+        consume: descriptor(consume),
+        release: descriptor(release),
+      },
+    });
+    const decide = (command = input) =>
+      f.db.sqlite
+        .transaction(() =>
+          releaseCoreNanoHostTerminalInDb(f.db, command, {
+            workspace,
+            native: native.sqlite,
+            verifyDrainAndRevocation: () => true,
+          })
+        )
+        .immediate();
+    const successorTurn = testEntityId('tu', 'release-successor');
+    const successor = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'terminal-release-next',
+      workspaceId,
+      threadId,
+      turnId: successorTurn,
+      inputRef: schedulerFixtureInput(workspaceId, successorTurn, 'Next Turn.'),
+      triggerActor: actor,
+      requestedAgentId: pkg.agent.agentId,
+    });
+    const place = () =>
+      createSchedulerExecutionAttempt(f.db, { entry: successor, preparationInput: {} });
+    expect(() => place()).toThrow('Execution placement has an unresolved writer.');
+    if (!abandonTranscript)
+      expect(() => decide()).toThrow('Original Core consume acknowledgement is unavailable.');
+    f.db.sqlite.transaction(() =>
+      recordCoreHarnessConsumption(
+        f.db,
+        consumeKey,
+        canonicalJsonText({
+          workspaceId,
+          turnId,
+          executionId: release.execution.ref.executionId,
+          stepId: consume.stepId,
+        }),
+        physicalAt
+      )
+    )();
+    if (abandonTranscript) {
+      const owner = { kind: 'workspace' as const, workspaceId };
+      if (terminalCase?.decision === 'hold') {
+        const terminalEvent = store
+          ?.getTurnEvents(turnId)
+          .find((event) => event.event === 'turn.completed');
+        expect(terminalEvent?.data).toMatchObject({
+          type: 'turn-completed',
+          stopReason: terminalCase.stopReason,
+          turn: { status: terminalCase.status },
+        });
+        if ('evidence' in terminalCase) {
+          if (!terminalEvent || terminalEvent.data.type !== 'turn-completed')
+            throw new Error('Fixture has no original terminal event.');
+          await shutdownControlStoreWorkerClient();
+          if (terminalCase.evidence === 'missing') {
+            expect(
+              workspace.sqlite
+                .prepare(
+                  "DELETE FROM control_product_entries WHERE kind='event' AND turn_id=? AND sequence=?"
+                )
+                .run(turnId, terminalEvent.sequence).changes
+            ).toBe(1);
+          } else {
+            // Add a second, independently readable terminal event with a contradictory reason.
+            const scope = nativeProductScope(f.root, owner);
+            const sequence = terminalEvent.sequence + 1;
+            const content = await publishImmutableProductJson(
+              scope.contentMount,
+              owner,
+              join(f.root, 'workspaces', workspaceId, 'runtime', 'staging'),
+              writeRetainedV1({
+                ...terminalEvent,
+                sequence,
+                data: { ...terminalEvent.data, stopReason: 'length' },
+              })
+            );
+            workspace.sqlite
+              .prepare(`INSERT INTO control_product_entries
+                (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json)
+                VALUES ('event',?,?,?,1,1,?,?)`)
+              .run(
+                turnId,
+                sequence,
+                `${turnId}:${sequence}`,
+                JSON.stringify(content),
+                JSON.stringify({ threadId, turnId })
+              );
+            expect(
+              store
+                ?.getTurnEvents(turnId)
+                .flatMap(({ data }) => (data.type === 'turn-completed' ? [data.stopReason] : []))
+            ).toEqual(['completed', 'length']);
+          }
+        }
+      }
+      const workspaceReader = openAdmittedWorkspaceReadDb(f.root, workspaceId);
+      onTestFinished(() => workspaceReader.sqlite.close());
+      const coverage = input.coveredScopeRefs;
+      const firstCause = acceptedTurnStatus ? 'worker-final-status' : 'restart-native-recovery';
+      expect(lease.attempt.terminalCause).toBe(firstCause);
+      const command: NanoHostRecoveryReleaseInput = {
+        ...input,
+        grant,
+        expectedRevision: root.revision,
+        firstCause,
+        acceptedWorkspace: input,
+        abandonment: {
+          actor: { kind: 'local', userId },
+          missing: coverage.map((scopeRef) => ({ kind: 'evidence', scopeRef })),
+          transcriptLoss: descriptor(loss),
+          residual: { remoteCleanup: 'pending', cost: 'unknown' },
+        },
+        proof: {
+          outcomeRef: `turn:${turnId}:${acceptedTurnStatus ?? 'failed'}`,
+          inputDisposition: { kind: 'consumed', digest: consumeKey.resultFingerprint },
+          cleanupDigest: sha256CanonicalJson([input.target, input.fenceRef]),
+          drainAndRevocationDigest: sha256CanonicalJson([grant.operationId, 'drained']),
+          handoffs: [
+            ['terminal-publication', terminal],
+            ['output', output],
+            ['outside-workspace-collection', collection],
+          ].map(([kind, step]) => {
+            const occurrence = descriptor(step as ExecutionJournalIntent);
+            return {
+              kind: kind as ExecutionHandoff['kind'],
+              owner: { kind: 'workspace', workspaceId },
+              ref: `workspace-step/v1:${workspaceId}:${input.workspaceExecutionId}:${occurrence.stepId}`,
+              digest: occurrence.digest,
+            };
+          }),
+        },
+      };
+      const applyAbandonment = (request: NanoHostRecoveryReleaseInput) =>
+        releaseCoreNanoHostRecoveryInDb(f.db, request, () => request.proof, {
+          workspace: workspaceReader,
+          native: native.sqlite,
+        });
+      const abandon = (request = command) =>
+        f.db.sqlite.transaction(() => applyAbandonment(request)).immediate();
+      const audit = () =>
+        listServerAuditEvents(f.db).filter(
+          ({ action }) => action === 'scheduler.scoped-abandonment'
+        );
+      const releaseCount = () =>
+        f.db.sqlite
+          .prepare(`SELECT count(*) FROM control_execution_steps WHERE execution_id=?
+             AND (step_id='worker-terminal-release' OR step_id LIKE 'worker-terminal-release:%')`)
+          .pluck()
+          .get(grant.execution.executionId);
+      if (acceptedTurnStatus) {
+        const { abandonment: _abandonment, ...ordinaryRecovery } = command;
+        expect(abandon(ordinaryRecovery)).toEqual({ state: 'unknown' });
+        expect(inspectCoreNanoHostTerminalRelease(f.db, command)).toEqual({ state: 'absent' });
+        expect(audit()).toEqual([]);
+      }
+      if (terminalCase?.decision === 'hold') {
+        expect(abandon()).toEqual({ state: 'unknown' });
+        expect(audit()).toEqual([]);
+        expect(releaseCount()).toBe(0);
+        expect(inspectCoreNanoHostTerminalRelease(f.db, command)).toEqual({ state: 'absent' });
+        expect(readExecutionJournalRoot(f.db, grant.execution).exclusionRefs).toHaveLength(4);
+        expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+        expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(lease.attempt);
+        expect(readProduct(workspaceReader.sqlite, owner, 'turn', turnId)?.record.status).toBe(
+          terminalCase.status
+        );
+        expect(place).toThrow('Execution placement has an unresolved writer.');
+        return;
+      }
+      const originalAbandonment = command.abandonment!;
+      expect(
+        abandon({
+          ...command,
+          abandonment: {
+            ...originalAbandonment,
+            missing: [...originalAbandonment.missing.slice(1), originalAbandonment.missing[1]!],
+          },
+        })
+      ).toEqual({ state: 'unknown' });
+      expect(
+        abandon({
+          ...command,
+          coveredScopeRefs: [...coverage, 'volume:outside-release'],
+          abandonment: {
+            ...originalAbandonment,
+            missing: [
+              ...originalAbandonment.missing,
+              { kind: 'evidence', scopeRef: 'volume:outside-release' },
+            ],
+          },
+        })
+      ).toEqual({ state: 'conflict' });
+      expect(
+        abandon({
+          ...command,
+          proof: { ...command.proof, handoffs: command.proof.handoffs.slice(0, -1) },
+        })
+      ).toEqual({ state: 'unknown' });
+      f.db.sqlite.prepare("UPDATE users SET status='disabled' WHERE id=?").run(userId);
+      try {
+        expect(() => abandon()).toThrow();
+      } finally {
+        f.db.sqlite.prepare("UPDATE users SET status='active' WHERE id=?").run(userId);
+      }
+      expect(() =>
+        abandon({
+          ...command,
+          abandonment: { ...originalAbandonment, actor: { kind: 'session', userId } },
+        })
+      ).toThrow();
+      f.db.sqlite.exec(`CREATE TEMP TRIGGER fail_abandon_close BEFORE UPDATE OF phase
+        ON scheduler_execution_attempts WHEN NEW.phase = 'closed'
+        BEGIN SELECT RAISE(ABORT, 'injected abandonment refusal'); END`);
+      try {
+        f.db.sqlite
+          .transaction(() => {
+            expect(() => applyAbandonment(command)).toThrow('injected abandonment refusal');
+            expect(audit()).toEqual([]);
+            expect(inspectCoreNanoHostTerminalRelease(f.db, command)).toEqual({
+              state: 'absent',
+            });
+            expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+            expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(
+              lease.attempt
+            );
+          })
+          .immediate();
+      } finally {
+        f.db.sqlite.exec('DROP TRIGGER fail_abandon_close');
+      }
+      const settled = abandon();
+      expect(settled.state).toBe('settled');
+      if (settled.state !== 'settled') throw new Error('Core abandonment did not commit.');
+      expect(audit()).toHaveLength(1);
+      expect(readExecutionJournalInvocation(f.db, settled.receipt).control.outputRefs).toContain(
+        audit()[0]!.id
+      );
+      expect(readExecutionJournalRoot(f.db, grant.execution).exclusionRefs).toEqual([
+        'volume:outside-release',
+      ]);
+      expect(
+        readExecutionJournalEndedStep(workspace, {
+          execution: evidence.execution.ref,
+          stepId: evidence.stepId,
+        }).state
+      ).toBe('unknown');
+      expect(place().turnId).toBe(successorTurn);
+      f.reopen();
+      expect(abandon()).toEqual(settled);
+      expect(
+        abandon({
+          ...command,
+          abandonment: {
+            ...originalAbandonment,
+            residual: { remoteCleanup: 'unknown', cost: 'unknown' },
+          },
+        })
+      ).toEqual({ state: 'conflict' });
+      expect(audit()).toHaveLength(1);
+      if (acceptedTurnStatus) {
+        expect(releaseCount()).toBe(1);
+        expect(store?.getTurnById(turnId).status).toBe('completed');
+        expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId).terminalCause).toBe(
+          lease.attempt.terminalCause
+        );
+      }
+      return;
+    }
+    expect(() =>
+      decide({
+        ...input,
+        workspaceSteps: {
+          ...input.workspaceSteps,
+          evidence: { ...input.workspaceSteps.evidence, stepId: 'missing-evidence' },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      decide({
+        ...input,
+        workspaceSteps: {
+          ...input.workspaceSteps,
+          output: {
+            ...input.workspaceSteps.output,
+            digest: `sha256:${'f'.repeat(64)}`,
+          },
+        },
+      })
+    ).toThrow('Original Workspace release step conflicts.');
+    expect(
+      decide({ ...input, target: { ...input.target, physicalEpoch: 'f'.repeat(64) } })
+    ).toEqual({ state: 'unknown' });
+    expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+    expect(() => place()).toThrow('Execution placement has an unresolved writer.');
+    const released = decide();
+    expect(released.state).toBe('settled');
+    expect(readExecutionJournalRoot(f.db, grant.execution).exclusionRefs).toEqual(
+      outsideScope ? ['volume:outside-release'] : []
+    );
+    expect(place().turnId).toBe(successorTurn);
+    f.reopen();
+    expect(inspectCoreNanoHostTerminalRelease(f.db, input)).toEqual(released);
+    expect(decide()).toEqual(released);
+    expect(
+      inspectCoreNanoHostTerminalRelease(f.db, { ...input, fenceRef: 'changed-fence' })
+    ).toEqual({ state: 'conflict' });
+  });
+
+  it.each([
+    ['releases only proved recovery scopes', false, false],
+    ['releases only proved recovery scopes', true, false],
+    ['holds an accepted recovery with only the four Workspace handoffs', false, true],
+  ] as const)(
+    '%s at the original Core revision (outside scope=%s)',
+    async (_title, outsideScope, accepted) => {
+      const f = journalFixture();
+      onTestFinished(shutdownControlStoreWorkerClient);
+      const { value: native } = await openAdmittedTestNanoHost(f.db);
+      const workspaceId = testEntityId('ws', 'recovery-release');
+      const threadId = testEntityId('th', 'recovery-release');
+      const turnId = testEntityId('tu', 'recovery-release');
+      const agentSessionId = testEntityId('as', 'recovery-release');
+      const userId = ensureLocalUser(f.db);
+      const triggerActor = { kind: 'user' as const, id: userId };
+      recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+      const entry = createSchedulerAdmissionEntry(f.db, {
+        queueEntryId: 'recovery-release-queue',
+        backendId: 'nanohost',
+        workspaceId,
+        threadId,
+        turnId,
+        inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original recovery input.'),
+        triggerActor,
+        requestedAgentId: 'agent_worker',
+      });
+      const attempt = submitTestNanoHostWorkerLease(
+        f.db,
+        entry,
+        'recovery-original-binding',
+        {
+          agentSessionId,
+          packageSnapshotId: 'recovery-original-input',
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        { placementDeploymentId: readDataRootLayoutMarker(f.root).deploymentId }
+      );
+      if (accepted) {
+        expect(
+          acceptSchedulerExecutionObservation(f.db, {
+            ...schedulerExecutionCorrelation(attempt),
+            disposition: 'accepted',
+            execution: 'running',
+            fenceRef: null,
+            outcomeRef: null,
+          })
+        ).toMatchObject({ disposition: 'accepted' });
+        expect(hasCoreWorkerFinalIntake(f.db, attempt.attemptId)).toBe(false);
+      }
+      const firstCause = 'restart-native-recovery';
+      const outcomeRef = `turn:${turnId}:interrupted`;
+      const observedAt = new Date(Date.parse(attempt.deadline!) + 1_000).toISOString();
+      markSchedulerExecutionAttemptClosing(f.db, {
+        attemptId: attempt.attemptId,
+        cause: firstCause,
+        outcomeRef,
+        now: () => observedAt,
+      });
+      const { lease } = readRetainedNanoHostSubmission(f.db, attempt.attemptId)!;
+      const { grant } = lease;
+      // The original lease precedes this authenticated fresh Epoch. Its absence is a real
+      // receipt input to the current Native writer, independently of the Core release fixture.
+      mutateAdmittedTestNanoHost(f.db, (sqlite) =>
+        sqlite
+          .prepare(`UPDATE nanohost_runtime_targets
+          SET connection_generation=connection_generation+1, physical_epoch=?
+          WHERE target_id=?`)
+          .run('f'.repeat(64), `test-target-${turnId}`)
+      );
+      const target = readAdmittedTestNanoHost(f.db, (sqlite) =>
+        getNanoHostRuntimeTarget({ sqlite }, `test-target-${turnId}`)
+      )!;
+      const cleanup = async () => {
+        for (const stage of [
+          { kind: 'transition', toState: 'cleanup-pending', target },
+          { kind: 'transition', toState: 'physical-cleaned', target },
+          { kind: 'finish-cleanup' },
+        ] as const) {
+          const { session, proof } = readAdmittedTestNanoHost(f.db, (sqlite) =>
+            readNanoHostRecoveryLease(sqlite, lease)
+          );
+          const ack = await native.owner.classifyRecovery({
+            ...stage,
+            ...(stage.kind === 'transition' && stage.toState === 'physical-cleaned'
+              ? {
+                  cleanupResult: {
+                    kind: 'fenced-absence' as const,
+                    originPhysicalEpoch: session.originPhysicalEpoch,
+                  },
+                }
+              : {}),
+            lease,
+            expectedSession: session,
+            expectedRecovery: proof,
+            observedAt,
+          });
+          expect(ack.state).toBe('ready');
+        }
+      };
+      if (outsideScope) addTerminalReleaseTestScope(f, grant);
+      const root = readExecutionJournalRoot(f.db, grant.execution);
+      // This writer test supplies the Workspace owner's commitments at the admitted peer boundary.
+      const kinds = [
+        'terminal-publication',
+        'output',
+        'evidence',
+        'outside-workspace-collection',
+      ] as const;
+      const handoffs: ExecutionHandoff[] = kinds.map((kind) => ({
+        kind,
+        owner: { kind: 'workspace', workspaceId },
+        ref: `workspace:${turnId}:${kind}`,
+        digest: sha256CanonicalJson([turnId, kind]),
+      }));
+      const input: NanoHostRecoveryReleaseInput = {
+        attemptId: attempt.attemptId,
+        grant,
+        expectedRevision: root.revision,
+        firstCause,
+        target: {
+          targetId: target.targetId,
+          identityId: target.identityId,
+          deploymentId: target.deploymentId,
+          connectionGeneration: target.connectionGeneration,
+          physicalEpoch: target.physicalEpoch,
+        },
+        fenceRef: `worker-backend:${attempt.attemptId}:${observedAt}`,
+        coveredScopeRefs: root.exclusionRefs.filter((scope) => !scope.startsWith('volume:')),
+        proof: {
+          outcomeRef,
+          inputDisposition: {
+            kind: 'consumed',
+            digest: sha256CanonicalJson([grant.operationId, 'consumed']),
+          },
+          cleanupDigest: sha256CanonicalJson({ grant, target, observedAt }),
+          drainAndRevocationDigest: sha256CanonicalJson([grant.operationId, 'drained-revoked']),
+          handoffs,
+        },
+      };
+      const readProof = vi.fn<Parameters<typeof releaseCoreNanoHostRecoveryInDb>[2]>((current) => {
+        const receipt = readAdmittedTestNanoHost(f.db, (sqlite) =>
+          readNanoHostPhysicalCleanupReceipt(sqlite, current, target, (session) =>
+            verifyNanoHostCleanupSubmitPlacement(f.db, sqlite, current, session)
+          )
+        );
+        if (!receipt || receipt.session.state !== 'cleaned') return null;
+        return {
+          ...input.proof,
+          cleanupDigest: sha256CanonicalJson({
+            grant: receipt.grant,
+            target: receipt.target,
+            observedAt: receipt.observedAt,
+          }),
+        };
+      });
+      const decide = (command = input) =>
+        f.db.sqlite
+          .transaction(() => releaseCoreNanoHostRecoveryInDb(f.db, command, readProof))
+          .immediate();
+      const successorTurn = testEntityId('tu', 'recovery-release-next');
+      const successor = createSchedulerAdmissionEntry(f.db, {
+        ...entry,
+        queueEntryId: 'recovery-release-next',
+        threadId: testEntityId('th', 'recovery-release-next'),
+        turnId: successorTurn,
+        inputRef: schedulerFixtureInput(workspaceId, successorTurn, 'Next Workspace Turn.'),
+      });
+      const claim = () =>
+        createSchedulerExecutionAttempt(f.db, { entry: successor, preparationInput: {} });
+      expect(() => claim()).toThrow('Execution placement has an unresolved writer.');
+      expect(decide()).toEqual({ state: 'unknown' });
+      await cleanup();
+      if (accepted) {
+        expect(decide()).toEqual({ state: 'unknown' });
+        expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+        expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(lease.attempt);
+        expect(inspectCoreNanoHostTerminalRelease(f.db, input)).toEqual({ state: 'absent' });
+        expect(() => claim()).toThrow('Execution placement has an unresolved writer.');
+        return;
+      }
+      expect(decide({ ...input, expectedRevision: root.revision + 1 })).toEqual({
+        state: 'conflict',
+      });
+      expect(
+        decide({ ...input, proof: { ...input.proof, cleanupDigest: 'f'.repeat(64) } })
+      ).toEqual({
+        state: 'unknown',
+      });
+      expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+      expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(lease.attempt);
+      expect(() => claim()).toThrow('Execution placement has an unresolved writer.');
+      f.db.sqlite.exec(`CREATE TEMP TRIGGER fail_recovery_close BEFORE UPDATE OF phase
+        ON scheduler_execution_attempts WHEN NEW.phase = 'closed'
+        BEGIN SELECT RAISE(ABORT, 'injected attempt-close refusal'); END`);
+      try {
+        f.db.sqlite
+          .transaction(() => {
+            expect(() => releaseCoreNanoHostRecoveryInDb(f.db, input, readProof)).toThrow(
+              'injected attempt-close refusal'
+            );
+            expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(root);
+            expect(inspectCoreNanoHostTerminalRelease(f.db, input)).toEqual({ state: 'absent' });
+            expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(
+              lease.attempt
+            );
+          })
+          .immediate();
+      } finally {
+        f.db.sqlite.exec('DROP TRIGGER fail_recovery_close');
+      }
+      const released = decide();
+      expect(released.state).toBe('settled');
+      const after = readExecutionJournalRoot(f.db, grant.execution);
+      expect(after.exclusionRefs).toEqual(outsideScope ? ['volume:outside-release'] : []);
+      expect(after.terminalCause).toBe(firstCause);
+      expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toMatchObject({
+        phase: 'closed',
+        terminalCause: firstCause,
+        deadline: attempt.deadline,
+        fenceRef: input.fenceRef,
+        outcomeRef,
+      });
+      expect(claim().turnId).toBe(successorTurn);
+      await shutdownControlStoreWorkerClient();
+      f.reopen();
+      await openAdmittedTestNanoHost(f.db);
+      readProof.mockClear();
+      expect(inspectCoreNanoHostTerminalRelease(f.db, input)).toEqual(released);
+      expect(decide()).toEqual(released);
+      expect(decide({ ...input, fenceRef: 'changed-fence' })).toEqual({ state: 'conflict' });
+      expect(readProof).not.toHaveBeenCalled();
+      expect(readExecutionJournalRoot(f.db, grant.execution)).toEqual(after);
+    }
+  );
+
+  it('decides the first NanoHost submission after acknowledged session.open and inspects a lost ACK without redispatch', async () => {
+    const f = journalFixture();
+    const workspaceId = testEntityId('ws', 'first-submission');
+    const workspace = openWorkspaceDb(f.root, workspaceId);
+    onTestFinished(() => workspace.sqlite.close());
+    applyScopedMigrations(workspace);
+    f.db.sqlite.pragma('synchronous = FULL');
+    const userId = ensureLocalUser(f.db);
+    const triggerActor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const pkg = await recordTestAgentEnvironmentPackage(workspace, {
+      suffix: 'first_submit',
+      triggerActor,
+      workspaceInputIds: ['repo'],
+    });
+    const { agentSessionId, threadId, turnId } = pkg.scope;
+    const createdAt = '2026-11-20T08:00:00.000Z';
+    const observedAt = '2026-11-20T08:00:05.000Z';
+    const firstDeadline = '2026-11-20T10:00:05.000Z';
+    const now = () => createdAt;
+    const inputRef = pkg.snapshotId;
+    const bindingRef = 'sandbox-binding-first-submit';
+    const attemptId = testEntityId('attempt', 'first-submit');
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => vi.useRealTimers());
+    vi.setSystemTime(new Date(createdAt));
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'first-submit-queue',
+      requestedAgentId: pkg.agent.agentId,
+      triggerActor,
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Submit the original Work input.'),
+      now,
+    });
+    createSchedulerExecutionAttempt(f.db, { entry, attemptId, preparationInput: {}, now });
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId, agentSessionId, now });
+    const attempt = finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId,
+      inputRef,
+      bindingRef,
+      now,
+    });
+    const native = openNanoHostTestOwner();
+    const placement = {
+      runtimeTargetId: 'first-submit-target',
+      identityId: 'first-submit-identity',
+      deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      physicalEpoch: 'a'.repeat(64),
+      connectionGeneration: 1,
+    };
+    const target = {
+      targetId: placement.runtimeTargetId,
+      identityId: placement.identityId,
+      deploymentId: placement.deploymentId,
+    };
+    await native.transition({ kind: 'allocate', ...target, observedAt: createdAt });
+    await native.transition({
+      kind: 'ready',
+      ...target,
+      connectionGeneration: placement.connectionGeneration,
+      physicalEpoch: placement.physicalEpoch,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      observedAt: createdAt,
+    });
+    const physical = {
+      backendKind: 'openshell',
+      backendVersion: '0.0.80',
+      workerSessionId: 'sandbox-first-submit',
+    };
+    const input = { attemptId, observedAt, placement };
+    const submit = (command = input) =>
+      f.db.sqlite
+        .transaction(() =>
+          admitNanoHostFirstSubmissionInDb(
+            f.db,
+            ControlNanoHostFirstSubmissionInputSchema.parse(command),
+            { nanoHost: native, workspace }
+          )
+        )
+        .immediate();
+    const history = () => ({
+      attempts: f.db.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY attempt_id')
+        .all(),
+      roots: f.db.sqlite.prepare('SELECT * FROM control_executions ORDER BY id').all(),
+      steps: f.db.sqlite
+        .prepare('SELECT * FROM control_execution_steps ORDER BY execution_id, ordinal')
+        .all(),
+    });
+    const before = history();
+    const refused = (command = input) => {
+      expect(() => submit(command)).toThrow('The original execution grant is unavailable.');
+      expect(history()).toEqual(before);
+    };
+    refused(); // No physical backend record.
+    native.setup((sqlite) => {
+      const owner = { sqlite };
+      recordWorkerBackendSessionMaterializing(
+        f.db,
+        {
+          identity: {
+            agentSessionId,
+            backendKind: physical.backendKind,
+            backendSessionId: physical.workerSessionId,
+            deploymentId: placement.deploymentId,
+            packageSnapshotId: inputRef,
+            runtimeTargetId: placement.runtimeTargetId,
+            stagingDirectoryRef: 'first-submit/staging',
+            transientProviderInstanceId: null,
+          },
+          backendVersion: physical.backendVersion,
+          backendLineage: { kind: 'reference', imageRef: 'test-image' },
+          lineage: { workspaceId, threadId, turnId },
+          sandboxBindingRef: bindingRef,
+          now,
+        },
+        { owner, attempt }
+      );
+      transitionWorkerBackendSessionState(owner, {
+        attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+        now,
+      });
+      markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId, now });
+    });
+    refused(); // Native's completed handoff alone cannot prove Workspace rows.
+    const inputSnapshots = buildWorkspaceInputSnapshots({
+      backendCapabilities: ['trusted-worker-inference-relay'],
+      backendKind: physical.backendKind,
+      createdAt,
+      environmentPackage: pkg,
+    });
+    workspace.sqlite
+      .transaction(() =>
+        applyWorkspaceBackendHandoffInDb(workspace, {
+          workspaceId,
+          inputSnapshots,
+          materializationRecords: buildWorkspaceMaterializationRecords({
+            createdAt,
+            inputSnapshots,
+            materialization: {
+              backendKind: physical.backendKind,
+              backendStatus: { health: 'ready', version: physical.backendVersion },
+              packageSnapshotId: inputRef,
+              requiredCapabilities: pkg.backend.requiredCapabilities,
+              sandbox: { name: physical.workerSessionId, state: 'created' },
+              workspaceInputs: pkg.workspace.inputs.map(({ id, target }) => ({ id, target })),
+            },
+          }),
+        })
+      )
+      .immediate();
+    refused({ ...input, placement: { ...placement, connectionGeneration: 2 } });
+    vi.setSystemTime(new Date('2026-11-20T08:00:01.000Z'));
+    const sessionOpenOperation = commandInputHash({
+      attemptId,
+      operation: 'session.open',
+      body: { agentSessionId, threadId, workspaceId },
+    });
+    const pending = recordSchedulerExecutionOperation(f.db, {
+      attemptId,
+      operationId: sessionOpenOperation,
+    });
+    expect(pending).toMatchObject({ operationId: sessionOpenOperation, disposition: 'unknown' });
+    vi.setSystemTime(new Date('2026-11-20T08:00:02.000Z'));
+    const unsettled = history();
+    expect(() => submit({ ...input, observedAt: new Date().toISOString() })).toThrow(
+      'Original execution clock is unavailable or expired.'
+    );
+    expect(history()).toEqual(unsettled);
+    const accepted = acceptSchedulerExecutionObservation(f.db, {
+      ...schedulerExecutionCorrelation(pending),
+      disposition: 'accepted',
+      execution: 'pending',
+      fenceRef: null,
+      outcomeRef: null,
+    });
+    expect(accepted).toMatchObject({ operationId: sessionOpenOperation, disposition: 'accepted' });
+    vi.setSystemTime(new Date(observedAt));
+    const prepared = history();
+    expect(() => submit({ ...input, observedAt: '2026-11-20T08:25:00.000Z' })).toThrow(
+      'Original execution clock or admission is unavailable.'
+    );
+    expect(history()).toEqual(prepared);
+    const first = submit();
+    expect(first).toMatchObject({
+      state: 'admitted-now',
+      attempt: {
+        attemptId,
+        agentSessionId,
+        inputRef,
+        bindingRef,
+        operationId,
+        deadline: firstDeadline,
+      },
+    });
+    expect(readRetainedNanoHostSubmission(f.db, attemptId)?.lease.grant).toMatchObject({
+      operationId,
+      generation: '1',
+      deadline: firstDeadline,
+    });
+    const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+    expect(await f.reader.readExecution(execution)).toMatchObject({
+      fingerprint: entry.inputHash,
+      workId: turnId,
+      exclusionRefs: [
+        `workspace:${workspaceId}`,
+        `thread:${threadId}`,
+        `turn:${turnId}`,
+        `session:${agentSessionId}`,
+      ],
+    });
+    expect(await f.reader.readEndedSteps(execution)).toMatchObject([
+      {
+        ref: { execution, stepId: 'submit' },
+        control: {
+          kind: 'admit',
+          actor: triggerActor,
+          inputRefs: [inputRef],
+          invocationId: operationId,
+        },
+        span: { startTimeUnixNano: BigInt(Date.parse(observedAt)) * 1_000_000n },
+      },
+    ]);
+    const retained = history();
+    f.reopen();
+    await native.reopen();
+    native.setup((sqlite) =>
+      transitionWorkerBackendSessionState(
+        { sqlite },
+        { attemptId, fromState: 'materialized', toState: 'launching', now: () => observedAt }
+      )
+    );
+    expect(submit({ ...input, observedAt: '2026-11-20T10:01:00.000Z' })).toEqual({
+      state: 'inspect-original',
+      attempt: first.attempt,
+    });
+    const dispatch = vi.fn(async () => undefined);
+    await expect(
+      withPreparedWorkerSubmission(
+        {
+          coreDb: f.db,
+          attemptId,
+          inputRef,
+          bindingRef,
+          now: () => '2026-11-20T10:01:00.000Z',
+          native: {
+            admit: async ({ observedAt }) =>
+              submit({ ...input, observedAt: observedAt ?? input.observedAt }),
+          },
+        },
+        dispatch
+      )
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(() =>
+      submit({ ...input, placement: { ...placement, physicalEpoch: 'b'.repeat(64) } })
+    ).toThrow('Execution grant conflicts with its original operation.');
+    expect(history()).toEqual(retained);
+  });
+
+  it.each(['intent', 'unknown'] as const)(
+    'acknowledges an exact image outcome on the original %s acquisition and inspects it after reopen',
+    async (initialState) => {
+      const f = journalFixture();
+      onTestFinished(shutdownControlStoreWorkerClient);
+      let { value: native } = await openAdmittedTestNanoHost(f.db);
+      const identity = {
+        targetId: 'fixture-selected-target',
+        identityId: 'fixture-selected-target',
+        deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      };
+      const target = { ...identity, connectionGeneration: 1, physicalEpoch: 'c'.repeat(64) };
+      const admit = async (selectedTarget: typeof target) => {
+        const observedAt = new Date().toISOString();
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native, {
+            ...identity,
+            kind: 'allocate',
+            observedAt,
+          })
+        ).resolves.toMatchObject({
+          state: 'ready',
+          value: { connectionGeneration: selectedTarget.connectionGeneration },
+        });
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native, {
+            ...selectedTarget,
+            kind: 'ready',
+            observedAt,
+            ready: true,
+            freshEmpty: true,
+            predecessorFenced: true,
+          })
+        ).resolves.toMatchObject({ state: 'ready', value: { ready: true } });
+      };
+      await admit(target);
+      const candidate = {
+        authoredArtifactId: testEntityId('ar', 'original-image'),
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'d'.repeat(64)}`,
+        inputDigest: `sha256:${'e'.repeat(64)}`,
+      } as const;
+      const draft = f.intent();
+      const bindingRef = `nanohost-target/v1:${target.deploymentId}:${target.targetId}:1:${target.physicalEpoch}`;
+      const intent: ExecutionJournalIntent = {
+        ...draft,
+        execution: {
+          ...draft.execution,
+          exclusionRefs: [
+            `native-image-invocation/v1:${draft.execution.ref.executionId}:${draft.stepId}`,
+          ],
+        },
+        carriage: { ...draft.carriage, bindingRef },
+        control: {
+          ...draft.control,
+          authorityRefs: [`turn/v1:${draft.execution.workId}`, bindingRef],
+          inputRefs: [
+            `artifact/v1:${candidate.authoredArtifactId}:1:${candidate.authoredContentDigest}`,
+            `image-input/v1:${candidate.inputDigest}`,
+          ],
+        },
+      };
+      const ref = { execution: intent.execution.ref, stepId: intent.stepId };
+      const admission = {
+        kind: 'image-intent' as const,
+        intentJson: encodeExecutionJournalValue(intent),
+        processWitness: executionJournalProcessWitness(),
+        target,
+      };
+      await expect(publishCoreJournal(f.db, admission)).resolves.toContain(
+        intent.control.invocationId
+      );
+      if (initialState === 'unknown')
+        await publishCoreJournal(f.db, { kind: 'image-abandon', ref, accepted: true });
+
+      const settlement = {
+        ...candidate,
+        requestId: intent.carriage.requestId,
+        operation: 'image.acquire',
+        outcome:
+          initialState === 'intent'
+            ? { kind: 'success', imageDigest: `sha256:${'f'.repeat(64)}` }
+            : { kind: 'failure', failureCode: 'effect_failed' },
+      } as const;
+      const submit = (value = settlement, selectedTarget = target, original = ref) =>
+        f.db.sqlite
+          .transaction(() =>
+            applyControlCoreImageResult(
+              f.db,
+              ControlCoreImageResultSchema.parse({
+                kind: 'image-result',
+                ref: original,
+                settlement: value,
+                target: selectedTarget,
+              }),
+              createNanoHostCoreReads(native.owner)
+            )
+          )
+          .immediate();
+
+      const digest = commandInputHash(settlement);
+      expect(submit()).toBe(digest);
+      const root = await f.reader.readExecution(ref.execution);
+      const steps = await f.reader.readEndedSteps(ref.execution);
+      expect(root).toMatchObject(
+        initialState === 'intent'
+          ? { phase: 'closed', exclusionRefs: [] }
+          : {
+              phase: 'closing',
+              exclusionRefs: [
+                `native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`,
+              ],
+            }
+      );
+      expect(steps).toHaveLength(initialState === 'intent' ? 1 : 2);
+      expect(steps[0]).toMatchObject({
+        state: initialState === 'intent' ? 'completed' : 'unknown',
+        control: { outputRefs: initialState === 'intent' ? [digest] : [] },
+      });
+      if (initialState === 'unknown')
+        expect(await f.reader.readLinkedInspections(ref)).toMatchObject([
+          {
+            inspectedStep: ref,
+            inspection: {
+              state: 'failed',
+              control: { outputRefs: [digest], kind: 'consume-receipt' },
+            },
+          },
+        ]);
+
+      await shutdownControlStoreWorkerClient();
+      f.reopen();
+      ({ value: native } = await openAdmittedTestNanoHost(f.db));
+      const inspected = readCoreImageAcquisitionRef(f.db, settlement.requestId);
+      expect(inspected).toEqual(ref);
+      expect(readCoreImageAcquisitionRef(f.db, '0'.repeat(64))).toBeNull();
+      expect(submit(settlement, target, inspected!)).toBe(digest);
+      expect(() =>
+        submit({
+          ...settlement,
+          outcome: { kind: 'success', imageDigest: `sha256:${'9'.repeat(64)}` },
+        })
+      ).toThrow(expect.objectContaining({ reasonCode: 'image_result_conflict' }));
+      expect(() => submit({ ...settlement, inputDigest: `sha256:${'8'.repeat(64)}` })).toThrow(
+        expect.objectContaining({ reasonCode: 'image_result_conflict' })
+      );
+      expect(() => submit(settlement, { ...target, identityId: 'different-identity' })).toThrow(
+        'Image execution provenance is unavailable.'
+      );
+      expect(() => submit(settlement, target, { ...ref, stepId: 'wrong-step' })).toThrow(
+        expect.objectContaining({ reasonCode: 'image_result_conflict' })
+      );
+      await expect(publishCoreJournal(f.db, admission)).rejects.toThrow(
+        'only result reconciliation'
+      );
+      const reconnected = { ...target, connectionGeneration: 2 };
+      await admit(reconnected);
+      expect(submit(settlement, reconnected, inspected!)).toBe(digest);
+      expect(() => submit()).toThrow('Image execution provenance is unavailable.');
+      expect(await f.reader.readExecution(ref.execution)).toEqual(root);
+      expect(await f.reader.readEndedSteps(ref.execution)).toEqual(steps);
+    }
+  );
+
   it('round-trips exact typed root, invocation and ended span without a Workspace', async () => {
     expect(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION).toBe('core-image-acquire/v1');
     const f = journalFixture();
@@ -371,6 +2302,695 @@ describe('persisted execution journal contracts', () => {
     expect(await f.reader.readEndedSteps(first.execution.ref)).toHaveLength(2);
   });
 
+  it('settles delayed Harness and Artifact siblings and the acknowledged Harness wait parent', async () => {
+    const f = journalFixture();
+    onTestFinished(shutdownControlStoreWorkerClient);
+    const actor = { kind: 'user' as const, id: ensureLocalUser(f.db) };
+    const store = new FsStore({ dataRoot: f.root });
+    const workspace = await store.createWorkspace('Original child results');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: workspace.id,
+      ownerUserId: actor.id,
+    });
+    const thread = await store.createThread(workspace.id, 'Sibling observations');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Test both child results', actor);
+    const agentSessionId = allocateEntityId('as');
+    const attemptId = allocateEntityId('attempt');
+    const now = new Date().toISOString();
+    await store.createAgentSession({
+      id: agentSessionId,
+      agentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await store.updateTurn(turn.id, { agentSessionId });
+    const db = openWorkspaceDb(f.root, workspace.id);
+    onTestFinished(() => db.sqlite.close());
+
+    const execution: ExecutionJournalAdmission = {
+      ...f.execution,
+      ref: {
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        executionId: 'workspace-execution',
+      },
+      definitionVersion: WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+      workId: turn.id,
+      exclusionRefs: [attemptId, 'original-binding'],
+    };
+    const child = (
+      id: number,
+      kind: ExecutionJournalIntent['control']['kind'],
+      operation: string
+    ): ExecutionJournalIntent => {
+      const draft = f.intent(id);
+      return {
+        ...draft,
+        execution,
+        control: {
+          ...draft.control,
+          definitionVersion: execution.definitionVersion,
+          kind,
+          workId: turn.id,
+          operationId: draft.carriage.requestId,
+          attemptId,
+          actor,
+          authorityRefs: [turn.id, agentSessionId, attemptId],
+        },
+        carriage: { ...draft.carriage, operation, bindingRef: 'original-binding' },
+      };
+    };
+    const harness = child(1, 'deliver-start', 'turn.start');
+    const artifact = child(2, 'collect', 'file.export');
+    const inspected = (intent: ExecutionJournalIntent) => ({
+      execution: intent.execution.ref,
+      stepId: intent.stepId,
+    });
+    const consume = (
+      intent: ExecutionJournalIntent,
+      result: string,
+      id: number
+    ): ExecutionJournalIntent => {
+      const draft = child(id, 'consume-receipt', intent.carriage.operation);
+      return {
+        ...draft,
+        carriage: intent.carriage,
+        inspectedStep: inspected(intent),
+        control: {
+          ...intent.control,
+          kind: 'consume-receipt',
+          target: null,
+          invocationId: draft.control.invocationId,
+          inputRefs: [result],
+          fingerprint: commandInputHash({ child: intent.control.fingerprint, result }),
+          deadlineUnixNano: null,
+        },
+        span: {
+          ...draft.span,
+          links: [
+            {
+              traceId: intent.span.traceId,
+              spanId: intent.span.spanId,
+              flags: intent.span.flags,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ],
+        },
+      };
+    };
+    const harnessResult = commandInputHash({ disposition: 'succeeded' });
+    const artifactResult = commandInputHash({ export: 'completed' });
+    const harnessConsume = consume(harness, harnessResult, 3);
+    const artifactConsume = consume(artifact, artifactResult, 4);
+    const root = () => readExecutionJournalRoot(db, execution.ref);
+    const end = (
+      intent: ExecutionJournalIntent,
+      outcome: string[],
+      snapshot: ReturnType<typeof root>
+    ): ExecutionJournalSettlement => ({
+      ref: inspected(intent),
+      expectedExecutionRevision: snapshot.revision,
+      observedChild: {
+        control: intent.control,
+        parent: intent.parent,
+        carriage: intent.carriage,
+        inspectedStep: intent.inspectedStep,
+      },
+      state: 'completed',
+      outputRefs: outcome,
+      span: {
+        ...intent.span,
+        endTimeUnixNano: intent.span.startTimeUnixNano + 1_000_000n,
+        status: { code: 'OK' },
+      },
+      nextPhase: snapshot.phase,
+      terminalCause: snapshot.terminalCause,
+      exclusionRefs: snapshot.exclusionRefs,
+    });
+    const settle = (input: ExecutionJournalSettlement, companion?: ExecutionJournalIntent) =>
+      store.settleWorkspaceExecutionJournalStep(workspace.id, input, companion);
+
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, harness);
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, artifact);
+    const prepared = root();
+    const harnessEnd = end(harness, [harnessResult], prepared);
+    const artifactEnd = end(artifact, [artifactResult], prepared);
+    await expect(settle(harnessEnd, harnessConsume)).resolves.toMatchObject({
+      control: { outputRefs: [harnessResult] },
+      span: harnessEnd.span,
+    });
+    const afterHarness = root();
+
+    const { observedChild, ...strictArtifact } = artifactEnd;
+    await expect(settle(strictArtifact, artifactConsume)).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    await expect(
+      settle(
+        {
+          ...artifactEnd,
+          observedChild: {
+            ...observedChild!,
+            control: { ...artifact.control, fingerprint: commandInputHash('changed') },
+          },
+        },
+        artifactConsume
+      )
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle(artifactEnd, {
+        ...artifactConsume,
+        control: { ...artifactConsume.control, inputRefs: [harnessResult] },
+      })
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle({ ...artifactEnd, exclusionRefs: [] }, artifactConsume)
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(afterHarness);
+    expect(readExecutionJournalInvocation(db, artifactEnd.ref).state).toBe('intent');
+    expect(() => readExecutionJournalInvocation(db, inspected(artifactConsume))).toThrow();
+
+    await expect(settle(artifactEnd, artifactConsume)).resolves.toMatchObject({
+      control: { outputRefs: [artifactResult] },
+      span: artifactEnd.span,
+    });
+    const acknowledgements = root();
+    expect(acknowledgements.revision).toBe(prepared.revision + 4);
+    const harnessAck = end(harnessConsume, [harnessResult], acknowledgements);
+    const artifactAck = end(artifactConsume, [artifactResult], acknowledgements);
+    await settle(artifactAck);
+    // The Harness caller had already prepared this ACK before the Artifact ACK committed.
+    await expect(settle(harnessAck)).resolves.toMatchObject({
+      control: { outputRefs: [harnessResult] },
+      span: harnessAck.span,
+    });
+    const settled = root();
+    expect(settled).toMatchObject({
+      revision: prepared.revision + 6,
+      phase: 'open',
+      openSteps: [],
+    });
+    await expect(settle(harnessAck)).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(settle({ ...harnessAck, outputRefs: [artifactResult] })).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(settled);
+
+    const prepareWait = async (id: number) => {
+      const draft = child(id, 'deliver-start', 'worker.turn.start.wait');
+      const wait: ExecutionJournalIntent = {
+        ...draft,
+        control: { ...draft.control, operationId: null },
+        carriage: { ...draft.carriage, requestId: turn.id },
+      };
+      const nativeCommand = child(id + 1, 'deliver-start', 'turn.start');
+      const delivery: ExecutionJournalIntent = {
+        ...nativeCommand,
+        parentStepId: wait.stepId,
+        parent: { ref: inspected(wait), deadlineUnixNano: wait.control.deadlineUnixNano },
+        carriage: { ...nativeCommand.carriage, sequence: 1 },
+        span: { ...nativeCommand.span, parentSpanId: wait.span.spanId },
+      };
+      const receiptFingerprint = harnessResult.slice('sha256:'.length);
+      const ack = consume(delivery, receiptFingerprint, id + 2);
+      await store.writeWorkspaceExecutionJournalIntent(workspace.id, wait);
+      await store.writeWorkspaceExecutionJournalIntent(workspace.id, delivery);
+      await settle(end(delivery, [receiptFingerprint], root()), ack);
+      return { wait, operationId: delivery.carriage.requestId, ack, receiptFingerprint };
+    };
+
+    const originalWait = await prepareWait(7);
+    const waitSnapshot = () => end(originalWait.wait, [originalWait.operationId], root());
+    const missingAck = root();
+    await expect(settle(waitSnapshot())).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(missingAck);
+    await settle(end(originalWait.ack, [originalWait.receiptFingerprint], root()));
+
+    const sibling = child(10, 'collect', 'file.export');
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, sibling);
+    const waitEnd = waitSnapshot();
+    await settle(end(sibling, [artifactResult], root()));
+    const afterSibling = root();
+    await shutdownControlStoreWorkerClient();
+    const { observedChild: _strict, ...strictWait } = waitEnd;
+    await expect(settle(strictWait)).rejects.toMatchObject({ commit: 'not-committed' });
+    await expect(
+      settle({ ...waitEnd, outputRefs: [artifact.carriage.requestId] })
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    await expect(
+      settle({
+        ...waitEnd,
+        state: 'unknown',
+        span: { ...waitEnd.span, status: { code: 'ERROR' } },
+      })
+    ).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(afterSibling);
+    expect(readExecutionJournalInvocation(db, waitEnd.ref).state).toBe('intent');
+    await expect(settle(waitEnd)).resolves.toMatchObject({
+      control: { outputRefs: [originalWait.operationId] },
+      span: waitEnd.span,
+    });
+    const afterWait = root();
+    expect(afterWait).toMatchObject({ revision: afterSibling.revision + 1, openSteps: [] });
+    await expect(settle(waitEnd)).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(afterWait);
+
+    const mismatched = await prepareWait(11);
+    const { observedChild: _bad, ...strictAck } = end(mismatched.ack, [artifactResult], root());
+    await settle(strictAck);
+    const beforeMismatch = root();
+    await expect(
+      settle(end(mismatched.wait, [mismatched.operationId], beforeMismatch))
+    ).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(root()).toEqual(beforeMismatch);
+    expect(readExecutionJournalInvocation(db, inspected(mismatched.wait)).state).toBe('intent');
+    expect(readExecutionJournalEndedStep(db, inspected(mismatched.ack)).control.outputRefs).toEqual(
+      [artifactResult]
+    );
+
+    const pending = child(5, 'collect', 'file.export');
+    const terminal = child(6, 'terminal-publication', 'worker.terminal-publication');
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, pending);
+    await store.writeWorkspaceExecutionJournalIntent(workspace.id, terminal);
+    const beforeClose = root();
+    const delayed = end(pending, [artifactResult], beforeClose);
+    const terminalEnd = end(terminal, [], beforeClose);
+    await expect(settle(terminalEnd)).rejects.toMatchObject({ commit: 'not-committed' });
+    const { observedChild: _, ...strictTerminal } = terminalEnd;
+    await settle({ ...strictTerminal, nextPhase: 'closing', terminalCause: 'authority-revoked' });
+    const closing = root();
+    await expect(settle(delayed)).rejects.toMatchObject({ commit: 'not-committed' });
+    expect(root()).toEqual(closing);
+    expect(readExecutionJournalInvocation(db, delayed.ref).state).toBe('intent');
+  });
+
+  function idleCleanupFixture() {
+    const f = journalFixture();
+    const native = openNanoHostTestOwner();
+    const workspaceId = testEntityId('ws', 'idle-reservation');
+    const threadId = testEntityId('th', 'idle-reservation');
+    const turnId = f.execution.workId;
+    const agentSessionId = testEntityId('as', 'idle-reservation');
+    const userId = ensureLocalUser(f.db);
+    const actor = { kind: 'user' as const, id: userId };
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+    const entry = createSchedulerAdmissionEntry(f.db, {
+      queueEntryId: 'idle-reservation-queue',
+      backendId: 'nanohost',
+      triggerActor: actor,
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'Original idle resident'),
+      requestedAgentId: 'agent_worker',
+    });
+    const sandboxBindingRef = 'idle-sandbox-binding';
+    const packageSnapshotId = 'idle-original-package';
+    const attempt = submitTestNanoHostWorkerLease(
+      f.db,
+      entry,
+      sandboxBindingRef,
+      {
+        agentSessionId,
+        packageSnapshotId,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      { nativePath: native.sqlite.name }
+    );
+    const { attemptId, createdAt } = attempt;
+    const sandboxKey = '8'.repeat(64);
+    const sandboxId = `nh-${sandboxKey.slice(0, 16)}`;
+    const target = getNanoHostRuntimeTarget(native, `test-target-${turnId}`)!;
+    const originPhysicalEpoch = target.physicalEpoch!;
+    const identity = {
+      agentSessionId,
+      backendKind: 'openshell' as const,
+      backendSessionId: `${sandboxId}-${'9'.repeat(16)}`,
+      deploymentId: target.deploymentId,
+      packageSnapshotId,
+      runtimeTargetId: target.targetId,
+      stagingDirectoryRef: `fixture-staging-${attemptId}`,
+      transientProviderInstanceId: null,
+    };
+    native.setup((sqlite) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_session_id = ? WHERE attempt_id = ?')
+        .run(identity.backendSessionId, attemptId);
+      sqlite
+        .prepare(`INSERT INTO sandbox_runtime_records (
+        sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
+        sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
+        max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state,
+        drain_state, cleanup_state, created_at, updated_at
+      ) VALUES ('idle-sandbox', ?, ?, ?, 'idle-integration', ?, 'image', 'local',
+        2, 2, 1, 'open', 'ready', 'draining', 'clean', ?, ?)`)
+        .run(
+          target.targetId,
+          originPhysicalEpoch,
+          sandboxBindingRef,
+          sandboxKey,
+          createdAt,
+          createdAt
+        );
+      sqlite
+        .prepare(`INSERT INTO harness_instance_records (
+        harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
+        runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json,
+        max_open_sessions, max_active_turns, open_session_count, active_turn_count, lifecycle_state,
+        drain_state, next_sequence, operation_state, created_at, updated_at
+      ) VALUES ('idle-harness', 'idle-sandbox', 'idle-harness-binding', 'compat', 'local',
+        'adapter', 'version', 1, '[]', 2, 1, 0, 0, 'open', 'draining', 1, 'idle', ?, ?)`)
+        .run(createdAt, createdAt);
+    });
+    const closing = markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId,
+      cause: 'turn-completed',
+    });
+    closeSchedulerExecutionAttemptWithFence(f.db, {
+      correlation: schedulerExecutionCorrelation(closing),
+      fenceRef: 'original-idle-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
+    const effect = (operation: 'bridge.close' | 'sandbox.delete') => {
+      const effectInput = { attemptId, sandboxId };
+      const requestId = createNanoHostEffectRequest(identity, attemptId, operation, effectInput)
+        .requestId!;
+      const draft = f.intent(operation === 'bridge.close' ? 72 : 74);
+      const fingerprint = commandInputHash({
+        definition: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+        requestId,
+        operation,
+        identity,
+        attemptId,
+        originPhysicalEpoch,
+        sandboxBindingRef,
+      });
+      const intent: ExecutionJournalIntent = {
+        ...draft,
+        execution: {
+          ...draft.execution,
+          ref: { owner: { kind: 'server' }, executionId: `idle-cleanup:${requestId}` },
+          definitionVersion: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+          workId: requestId,
+          fingerprint,
+          exclusionRefs: [sandboxBindingRef, originPhysicalEpoch],
+        },
+        stepId: `effect:${requestId}`,
+        carriage: { operation, requestId, sequence: null, bindingRef: sandboxBindingRef },
+        control: {
+          ...draft.control,
+          definitionVersion: CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+          workId: requestId,
+          fingerprint,
+          kind: operation === 'bridge.close' ? 'inspect-cleanup' : 'release',
+          target: {
+            backendKind: 'openshell',
+            targetId: target.targetId,
+            allocationRef: sandboxBindingRef,
+          },
+          attemptId,
+          operationId: requestId,
+          actor,
+          authorityRefs: [
+            packageSnapshotId,
+            sandboxBindingRef,
+            sandboxBindingRef,
+            originPhysicalEpoch,
+          ],
+          inputRefs: [
+            packageSnapshotId,
+            agentSessionId,
+            sandboxBindingRef,
+            sandboxBindingRef,
+            originPhysicalEpoch,
+            commandInputHash(effectInput),
+          ],
+          physicalFenceRefs: [originPhysicalEpoch],
+        },
+      };
+      const input = {
+        kind: 'idle-intent' as const,
+        intentJson: encodeExecutionJournalValue(intent),
+        processWitness: executionJournalProcessWitness(),
+        backendId: 'nanohost',
+        attemptId,
+        identity,
+        package: {
+          workspaceId,
+          threadId,
+          turnId,
+          agentSessionId,
+          snapshotId: packageSnapshotId,
+          triggerActor: actor,
+        },
+        originPhysicalEpoch,
+        sandboxBindingRef,
+        sandboxId,
+      };
+      return { intent, input, ref: { execution: intent.execution.ref, stepId: intent.stepId } };
+    };
+    const reserve = (
+      input: ReturnType<typeof effect>['input'] & {
+        predecessor?: { ref: ReturnType<typeof effect>['ref']; revision: number };
+      },
+      available = true
+    ) =>
+      f.db.sqlite
+        .transaction(() =>
+          native.sqlite
+            .transaction(() =>
+              reserveCoreIdleCleanupInDb(f.db, input, available ? native.sqlite : undefined)
+            )
+            .deferred()
+        )
+        .immediate();
+    const settle = (intent: ExecutionJournalIntent, digest: string) =>
+      f.db.sqlite
+        .transaction(() =>
+          settleCoreIdleJournal(f.db, intent, 'completed', digest, executionJournalProcessWitness())
+        )
+        .immediate();
+    return { f, native, effect, reserve, settle, target, sandboxBindingRef, originPhysicalEpoch };
+  }
+
+  it('reserves the exact draining Core idle scope only with admitted vacant Native placement', () => {
+    const { f, native, effect, reserve, sandboxBindingRef, originPhysicalEpoch } =
+      idleCleanupFixture();
+    const bridge = effect('bridge.close');
+    expect(() => reserve(bridge.input, false)).toThrow(
+      'Idle cleanup requires an original Core scope reservation.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare("UPDATE sandbox_runtime_records SET sandbox_binding_ref = 'different-resident'")
+        .run()
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare(
+          'UPDATE sandbox_runtime_records SET sandbox_binding_ref = ?, origin_physical_epoch = ?'
+        )
+        .run(sandboxBindingRef, 'b'.repeat(64))
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) => {
+      sqlite
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
+        .run(originPhysicalEpoch);
+      sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 1').run();
+    });
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    expect(
+      f.db.sqlite
+        .prepare('SELECT 1 FROM control_executions WHERE id=?')
+        .get(bridge.ref.execution.executionId)
+    ).toBeUndefined();
+    native.setup((sqlite) =>
+      sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run()
+    );
+
+    const siblingWorkspace = testEntityId('ws', 'idle-live-sibling');
+    const siblingThread = testEntityId('th', 'idle-live-sibling');
+    const siblingTurn = testEntityId('tu', 'idle-live-sibling');
+    const siblingSession = testEntityId('as', 'idle-live-sibling');
+    const actor = bridge.input.package.triggerActor;
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: siblingWorkspace,
+      ownerUserId: actor.id,
+    });
+    const admission = createSchedulerAdmissionEntry(f.db, {
+      queueEntryId: 'idle-live-sibling-queue',
+      backendId: bridge.input.backendId,
+      triggerActor: actor,
+      workspaceId: siblingWorkspace,
+      threadId: siblingThread,
+      turnId: siblingTurn,
+      inputRef: schedulerFixtureInput(siblingWorkspace, siblingTurn, 'Live sibling'),
+      requestedAgentId: 'agent_worker',
+    });
+    const sibling = createSchedulerExecutionAttempt(f.db, {
+      entry: admission,
+      preparationInput: {},
+    });
+    bindSchedulerExecutionAttemptSession(f.db, {
+      attemptId: sibling.attemptId,
+      agentSessionId: siblingSession,
+    });
+    const prepared = finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: sibling.attemptId,
+      inputRef: 'sibling-package',
+      bindingRef: 'sibling-attempt-binding',
+    });
+    native.setup((sqlite) =>
+      recordWorkerBackendSessionMaterializing(
+        f.db,
+        {
+          backendLineage: { kind: 'reference', imageRef: 'registry.example/worker' },
+          backendVersion: '1.0.0',
+          sandboxBindingRef: 'sibling-attempt-binding',
+          lineage: { workspaceId: siblingWorkspace, threadId: siblingThread, turnId: siblingTurn },
+          identity: {
+            ...bridge.input.identity,
+            agentSessionId: siblingSession,
+            packageSnapshotId: 'sibling-package',
+            backendSessionId: `${bridge.input.sandboxId}-${'1'.repeat(16)}`,
+            stagingDirectoryRef: 'sibling-staging',
+          },
+        },
+        { attempt: prepared, owner: { sqlite } }
+      )
+    );
+    expect(() => reserve(bridge.input)).toThrow(
+      'Core idle cleanup resident is stale or has live work.'
+    );
+    native.setup((sqlite) =>
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_session_id=? WHERE attempt_id=?')
+        .run(`nh-${'2'.repeat(16)}-${'1'.repeat(16)}`, sibling.attemptId)
+    );
+
+    reserve(bridge.input);
+    const root = readExecutionJournalRoot(f.db, bridge.ref.execution);
+    expect(root).toMatchObject({
+      phase: 'open',
+      exclusionRefs: [sandboxBindingRef, originPhysicalEpoch],
+      openSteps: [bridge.ref],
+    });
+    expect(readExecutionJournalInvocation(f.db, bridge.ref)).toMatchObject({
+      state: 'intent',
+      carriage: bridge.intent.carriage,
+    });
+  });
+
+  it('recovers an idle ACK result-only and admits delete only after the exact consumed bridge result', async () => {
+    const { f, native, effect, reserve, settle } = idleCleanupFixture();
+    const bridge = effect('bridge.close');
+    const deletion = effect('sandbox.delete');
+    reserve(bridge.input);
+    expect(() => reserve(bridge.input)).toThrow(
+      expect.objectContaining({ reasonCode: 'idle_cleanup_result_only' })
+    );
+    const advance = vi.fn<
+      ConstructorParameters<typeof ExecutionReconciler>[0]['advanceIdleCleanup']
+    >(async () => {});
+    const reconciler = new ExecutionReconciler({
+      coreDb: f.db,
+      nanoHost: createNanoHostCoreReads(native.storage.owner),
+      advanceIdleCleanup: advance,
+    });
+    await reconciler.runOnce();
+    expect(advance).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        action: 'result-only',
+        candidate: expect.objectContaining({ ref: bridge.ref }),
+      })
+    );
+    const revision = () => readExecutionJournalRoot(f.db, bridge.ref.execution).revision;
+    const pending = { ref: bridge.ref, revision: revision() };
+    expect(() => reserve({ ...deletion.input, predecessor: pending })).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    const result = commandInputHash({
+      requestId: bridge.intent.carriage.requestId,
+      disposition: 'accepted',
+    });
+    settle(bridge.intent, result);
+    const consumed = { ref: bridge.ref, revision: revision() };
+    advance.mockClear();
+    await reconciler.runOnce();
+    expect(advance).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ action: 'delete', candidate: consumed })
+    );
+    const restoreConsumption = new Error('Restore the original consumption fixture.');
+    expect(() =>
+      f.db.sqlite.transaction(() => {
+        f.db.sqlite
+          .prepare('DELETE FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+          .run(bridge.ref.execution.executionId, `${bridge.ref.stepId}:consume`);
+        expect(() => reserve({ ...deletion.input, predecessor: consumed })).toThrow(
+          'Idle cleanup predecessor changed before delete admission.'
+        );
+        throw restoreConsumption;
+      })()
+    ).toThrow(restoreConsumption);
+    expect(() => reserve(deletion.input)).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    expect(() => reserve({ ...deletion.input, predecessor: pending })).toThrow(
+      'Idle cleanup predecessor changed before delete admission.'
+    );
+    expect(() =>
+      reserve({
+        ...deletion.input,
+        predecessor: {
+          ...consumed,
+          ref: { ...bridge.ref, stepId: `${bridge.ref.stepId}:consume` },
+        },
+      })
+    ).toThrow('Idle cleanup predecessor changed before delete admission.');
+    f.reopen();
+    await native.reopen();
+    settle(bridge.intent, result);
+    expect(revision()).toBe(consumed.revision);
+    reserve({ ...deletion.input, predecessor: consumed });
+    expect(readExecutionJournalInvocation(f.db, deletion.ref)).toMatchObject({
+      state: 'intent',
+      carriage: deletion.intent.carriage,
+    });
+    expect(() => reserve({ ...deletion.input, predecessor: consumed })).toThrow(
+      expect.objectContaining({ reasonCode: 'idle_cleanup_result_only' })
+    );
+    expect(revision()).toBe(consumed.revision);
+  });
+
   function schedulerGrantFixture(
     createdAt?: string,
     { f = journalFixture(), key = 'original-grant', exclusionRefs = f.execution.exclusionRefs } = {}
@@ -446,6 +3066,274 @@ describe('persisted execution journal contracts', () => {
     });
     return { f, attempt, execution, operationId, proposal, reserve, next };
   }
+
+  it('projects only the exact live NanoHost materialization preparation', async () => {
+    const startedAt = '2026-11-20T08:00:00.000Z';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => vi.useRealTimers());
+    vi.setSystemTime(new Date(startedAt));
+    const { f, attempt } = schedulerGrantFixture(startedAt);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(f.db, attempt.attemptId);
+    const agentSessionId = testEntityId('as', 'materialization-claim');
+    const inputRef = 'original-materialization-package';
+    const bindingRef = 'original-materialization-binding';
+    const native = openNanoHostTestOwner();
+    const target = {
+      targetId: 'materialization-target',
+      identityId: 'materialization-identity',
+      deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+      connectionGeneration: 1,
+      physicalEpoch: 'a'.repeat(64),
+    };
+    const { connectionGeneration: _generation, physicalEpoch: _epoch, ...targetIdentity } = target;
+    await native.transition({ ...targetIdentity, kind: 'allocate', observedAt: startedAt });
+    await native.transition({
+      ...target,
+      kind: 'ready',
+      observedAt: startedAt,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+    });
+    const readSelectedInput = vi.fn(() => true);
+    const input = ControlNanoHostMaterializationPreparationInputSchema.parse({
+      attemptId: attempt.attemptId,
+      queueEntryId: attempt.queueEntryId,
+      admissionHash: admission.inputHash,
+      selectedInput: admission.inputRef,
+      workspaceId: attempt.workspaceId,
+      threadId: attempt.threadId,
+      turnId: attempt.turnId,
+      agentSessionId,
+      inputRef,
+      bindingRef,
+      target,
+    });
+    const read = (command = input) =>
+      f.db.sqlite.transaction(() =>
+        requireCoreNanoHostMaterializationPreparation(f.db, command, {
+          nanoHost: createNanoHostCoreReads(native.storage.owner),
+          readSelectedInput,
+        })
+      )();
+    expect(() => read()).toThrow('Native materialization has no exact original Core claim.');
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+    });
+    expect(read()).toMatchObject({
+      attempt: { attemptId: attempt.attemptId, phase: 'open', deadline: null },
+      preparationOperation: null,
+      startupDeadline: '2026-11-20T08:25:00.000Z',
+      target,
+    });
+    expect(readSelectedInput).toHaveBeenCalledWith(admission);
+    readSelectedInput.mockReturnValue(false);
+    expect(() => read()).toThrow('Native materialization has no exact selected Workspace input.');
+    readSelectedInput.mockReturnValue(true);
+    expect(() => read({ ...input, admissionHash: `sha256:${'e'.repeat(64)}` })).toThrow(
+      'Native materialization has no exact original Core claim.'
+    );
+    expect(() =>
+      read({ ...input, selectedInput: { ...input.selectedInput, digest: 'f'.repeat(64) } })
+    ).toThrow('Native materialization has no exact original Core claim.');
+    expect(() => read({ ...input, target: { ...target, connectionGeneration: 2 } })).toThrow(
+      'Native materialization has no exact Native placement.'
+    );
+
+    vi.setSystemTime(new Date('2026-11-20T08:00:01.000Z'));
+    const operationId = 'image:first';
+    const pending = recordSchedulerExecutionOperation(f.db, {
+      attemptId: attempt.attemptId,
+      operationId,
+    });
+    expect(() => read()).toThrow(
+      'Native materialization has no acknowledged preparation operation.'
+    );
+    vi.setSystemTime(new Date('2026-11-20T08:00:02.000Z'));
+    const accepted = acceptSchedulerExecutionObservation(f.db, {
+      ...schedulerExecutionCorrelation(pending),
+      disposition: 'accepted',
+      execution: 'pending',
+      outcomeRef: null,
+      fenceRef: null,
+    });
+    f.reopen();
+    expect(read()).toMatchObject({ attempt: accepted, preparationOperation: operationId, target });
+    expect(() => read({ ...input, observedAt: '2026-11-20T08:25:00.000Z' })).toThrow(
+      'Native materialization has no original startup allowance.'
+    );
+    expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toEqual(accepted);
+    vi.setSystemTime(new Date('2026-11-20T08:00:03.000Z'));
+    recordSchedulerExecutionOperation(f.db, {
+      attemptId: attempt.attemptId,
+      operationId: 'later-submission',
+      submission: true,
+    });
+    expect(() => read()).toThrow('Native materialization has no exact original Core claim.');
+  });
+
+  it('closes only the original failed start with positive retained no-effect proof', () => {
+    const { f, attempt } = schedulerGrantFixture();
+    const native = openNanoHostTestOwner();
+    const agentSessionId = testEntityId('as', 'failed-start-claim');
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    const original = requireSchedulerExecutionAttempt(f.db, attempt.attemptId);
+    const input = {
+      attemptId: original.attemptId,
+      queueEntryId: original.queueEntryId,
+      inputRef: original.inputRef,
+      bindingRef: original.bindingRef,
+      agentSessionId,
+    };
+    const close = (readNative: boolean) =>
+      f.db.sqlite
+        .transaction(() =>
+          closeNanoHostFailedStartInDb(f.db, input, (closed) =>
+            hasNanoHostAttemptPreEffectProof(
+              f.db,
+              closed.attemptId,
+              readNative ? native : undefined
+            )
+          )
+        )
+        .immediate();
+    expect(() => close(false)).toThrow('Failed-start closure has no positive peer proof.');
+    expect(requireSchedulerExecutionAttempt(f.db, original.attemptId)).toEqual(original);
+    const closed = close(true);
+    expect(closed).toMatchObject({
+      phase: 'closed',
+      disposition: 'not_accepted',
+      terminalCause: 'turn-start-failed',
+      operationId: null,
+      deadline: null,
+    });
+    f.reopen();
+    expect(close(true)).toEqual(closed);
+    const turnId = testEntityId('tu', 'failed-start-successor');
+    const next = createSchedulerAdmissionEntry(f.db, {
+      backendId: 'nanohost',
+      queueEntryId: 'failed-start-successor-queue',
+      workspaceId: original.workspaceId,
+      threadId: original.threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(original.workspaceId, turnId, 'Successor request'),
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      requestedAgentId: 'agent_worker',
+    });
+    const successor = createSchedulerExecutionAttempt(f.db, { entry: next, preparationInput: {} });
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: successor.attemptId, agentSessionId });
+    expect(() => close(true)).toThrow('Failed-start closure has competing execution authority.');
+    expect(requireSchedulerExecutionAttempt(f.db, successor.attemptId).phase).toBe('open');
+  });
+
+  it('holds orphan retirement on a failed Audit and inspects the exact first receipt and clock', () => {
+    const { f, attempt, proposal: draft, reserve } = schedulerGrantFixture();
+    const agentSessionId = testEntityId('as', 'orphan-audit');
+    const inputRef = 'original-orphan-package';
+    const bindingRef = 'original-orphan-binding';
+    bindSchedulerExecutionAttemptSession(f.db, { attemptId: attempt.attemptId, agentSessionId });
+    finalizeSchedulerExecutionAttemptInput(f.db, {
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+    });
+    const operationId = commandInputHash({
+      attemptId: attempt.attemptId,
+      inputRef,
+      operation: 'submit',
+    });
+    const scope = `workspace:${attempt.workspaceId}`;
+    const proposal = {
+      ...draft,
+      execution: { ...draft.execution, exclusionRefs: [scope] },
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: { ...draft.control, operationId, invocationId: operationId, inputRefs: [inputRef] },
+    };
+    reserve(true, '1', proposal, { submission: true });
+    const closing = markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-failed',
+    });
+    closeSchedulerExecutionAttemptWithFence(f.db, {
+      correlation: schedulerExecutionCorrelation(closing),
+      fenceRef: 'original-orphan-fence',
+      proof: {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      },
+    });
+    const input = ControlNanoHostOrphanRetirementInputSchema.parse({
+      attemptId: attempt.attemptId,
+      inputRef,
+      bindingRef,
+      backendSessionId: 'original-orphan-backend',
+      target: {
+        targetId: 'original-orphan-target',
+        identityId: 'original-orphan-identity',
+        deploymentId: 'fixture-deployment',
+        physicalEpoch: 'b'.repeat(64),
+        connectionGeneration: 1,
+      },
+      observationHash: `sha256:${'d'.repeat(64)}`,
+      physicalCleanedAt: '2026-11-20T08:00:01.000Z',
+      observedAt: '2026-11-20T08:00:02.000Z',
+    });
+    const verify = vi.fn(() => false);
+    const decide = (command = input) =>
+      f.db.sqlite
+        .transaction(() => commitCoreNanoHostOrphanAuditInDb(f.db, command, verify))
+        .immediate();
+    const readAudit = () =>
+      listServerAuditEvents(f.db).filter(
+        (event) => event.action === 'scheduler.orphan-backend-retired'
+      );
+    expect(() => decide()).toThrow('Orphan Audit has no exact physical and Workspace proof.');
+    expect(readAudit()).toEqual([]);
+    verify.mockReturnValue(true);
+    f.db.sqlite.exec(`CREATE TRIGGER reject_orphan_audit BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'scheduler.orphan-backend-retired'
+      BEGIN SELECT RAISE(ABORT, 'orphan retirement Audit fault'); END`);
+    expect(() => decide()).toThrow('orphan retirement Audit fault');
+    expect(readAudit()).toEqual([]);
+    const { observedAt: _observedAt, ...cleanup } = input;
+    expect(inspectCoreNanoHostOrphanAudit(f.db, cleanup)).toBeNull();
+    expect(kernelSchedulerScopeIsHeld(f.db, [scope])).toBe(true);
+    f.db.sqlite.exec('DROP TRIGGER reject_orphan_audit');
+    const applied = decide();
+    expect(applied).toMatchObject({ state: 'applied', receipt: { acceptedAt: input.observedAt } });
+    expect(readAudit()).toEqual([
+      expect.objectContaining({
+        id: applied.receipt.auditEventId,
+        requestId: applied.receipt.requestId,
+        workspaceId: attempt.workspaceId,
+        agentSessionId,
+      }),
+    ]);
+    f.reopen();
+    expect(inspectCoreNanoHostOrphanAudit(f.db, cleanup)).toEqual(applied.receipt);
+    verify.mockClear();
+    verify.mockReturnValue(false);
+    expect(decide({ ...input, observedAt: '2026-11-20T08:00:03.000Z' })).toEqual({
+      state: 'inspect-original',
+      receipt: applied.receipt,
+    });
+    expect(verify).not.toHaveBeenCalled();
+    expect(() => decide({ ...input, observationHash: `sha256:${'e'.repeat(64)}` })).toThrow(
+      'Orphan Audit conflicts with the original cleanup.'
+    );
+    expect(() =>
+      decide({ ...input, target: { ...input.target, connectionGeneration: 2 } })
+    ).toThrow('Orphan Audit conflicts with the original cleanup.');
+    expect(kernelSchedulerScopeIsHeld(f.db, [scope])).toBe(true);
+    expect(readAudit()).toHaveLength(1);
+  });
 
   it('decides the original operation and retained grant atomically and inspects lost acknowledgement', () => {
     const { f, attempt, execution, operationId, proposal, reserve } = schedulerGrantFixture();
@@ -604,16 +3492,28 @@ describe('persisted execution journal contracts', () => {
   });
 
   it('does not renew the original submission clock and still inspects its expired grant', () => {
-    const { f, attempt, proposal, reserve, next } = schedulerGrantFixture();
+    const { f, attempt, proposal: draft, reserve, next } = schedulerGrantFixture();
+    const inputRef = 'immutable-package';
+    const bindingRef = 'original-binding';
+    const operationId = commandInputHash({
+      attemptId: attempt.attemptId,
+      inputRef,
+      operation: 'submit',
+    });
     bindSchedulerExecutionAttemptSession(f.db, {
       attemptId: attempt.attemptId,
       agentSessionId: testEntityId('as', 'original-submission'),
     });
     finalizeSchedulerExecutionAttemptInput(f.db, {
       attemptId: attempt.attemptId,
-      inputRef: 'immutable-package',
-      bindingRef: 'original-binding',
+      inputRef,
+      bindingRef,
     });
+    const proposal: ExecutionJournalIntent = {
+      ...draft,
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: { ...draft.control, operationId, invocationId: operationId, inputRefs: [inputRef] },
+    };
     const first = reserve(true, 'original-generation', proposal, { submission: true });
     expect(first.state).toBe('admitted-now');
     expect(
@@ -641,6 +3541,12 @@ describe('persisted execution journal contracts', () => {
     expect(
       reserve(false, 'original-generation', proposal, { submission: true, now: later })
     ).toEqual({ state: 'inspect-original', grant: first.grant });
+    expect(readRetainedNanoHostSubmission(f.db, attempt.attemptId)?.lease.grant).toEqual(
+      first.grant
+    );
+    expect(() =>
+      reserve(true, 'successor-generation', proposal, { submission: true, now: later })
+    ).toThrow('Execution grant conflicts with its original operation.');
     expect(() =>
       reserve(true, 'original-generation', next('late-operation'), { now: later })
     ).toThrow('Original execution clock is unavailable or expired.');
@@ -1424,6 +4330,81 @@ describe('persisted execution journal contracts', () => {
     expect(() => commit(tuple, 'workspace:changed-consumer')).toThrow(
       'consumer acknowledgement replay conflicts'
     );
+  });
+
+  it('binds idle Harness consumption to its exact predecessor, Core occupancy and first clock', () => {
+    const { f, attempt } = schedulerGrantFixture();
+    const original = ControlCoreIdleHarnessConsumptionInputSchema.parse({
+      key: {
+        harnessBindingRef: 'idle-harness-binding',
+        operationId: 'b'.repeat(64),
+        sequence: 2,
+        resultFingerprint: 'a'.repeat(64),
+      },
+      consumer: {
+        workspaceId: attempt.workspaceId,
+        threadId: attempt.threadId,
+        agentSessionId: testEntityId('as', 'idle-consumption'),
+        agentSessionRuntimeBindingId: 'idle-agent-session-binding',
+      },
+      observedAt: '2026-11-20T08:00:01.000Z',
+    });
+    const { observedAt, ...verified } = original;
+    const readOriginal = vi.fn<() => typeof verified | null>(() => null);
+    const acknowledge = (input = original) =>
+      f.db.sqlite
+        .transaction(() => recordCoreIdleHarnessConsumptionInDb(f.db, input, readOriginal))
+        .immediate();
+    expect(() => acknowledge()).toThrow(
+      'Idle Harness consumption has no exact Native predecessor.'
+    );
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toBeNull();
+    readOriginal.mockReturnValue({
+      ...verified,
+      consumer: {
+        ...verified.consumer,
+        agentSessionRuntimeBindingId: 'replaced-binding',
+      },
+    });
+    expect(() => acknowledge()).toThrow(
+      'Idle Harness consumption has no exact Native predecessor.'
+    );
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toBeNull();
+    readOriginal.mockReturnValue(verified);
+    const accepted = acknowledge();
+    expect(accepted).toEqual({
+      state: 'applied',
+      receipt: {
+        key: verified.key,
+        consumer: canonicalJsonText(verified.consumer),
+        acknowledgedAt: observedAt,
+      },
+    });
+    f.reopen();
+    expect(acknowledge({ ...original, observedAt: '2026-11-20T08:00:02.000Z' })).toEqual({
+      state: 'inspect-original',
+      receipt: accepted.receipt,
+    });
+    const key = { ...verified.key, resultFingerprint: 'c'.repeat(64) };
+    readOriginal.mockReturnValue({ ...verified, key });
+    expect(() => acknowledge({ ...original, key })).toThrow(
+      'retained consumer acknowledgement conflicts'
+    );
+    readOriginal.mockReturnValue(verified);
+    bindSchedulerExecutionAttemptSession(f.db, {
+      attemptId: attempt.attemptId,
+      agentSessionId: verified.consumer.agentSessionId,
+    });
+    expect(() => acknowledge()).toThrow('Idle Harness consumption has a live Core attempt.');
+    markSchedulerExecutionAttemptClosing(f.db, {
+      attemptId: attempt.attemptId,
+      cause: 'turn-failed',
+    });
+    expect(() => acknowledge()).toThrow('Idle Harness consumption has a live Core attempt.');
+    expect(inspectCoreHarnessConsumption(f.db, verified.key)).toEqual({
+      consumer: accepted.receipt.consumer,
+      acknowledgedAt: observedAt,
+    });
   });
 
   it('keeps a nested unknown child immutable when the parent completes and late inspection is linked', async () => {

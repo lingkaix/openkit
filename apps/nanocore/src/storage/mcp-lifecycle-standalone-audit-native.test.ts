@@ -1180,13 +1180,16 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
   const { createNativeTaskAdmissionFixture } = await import(
     '../test-support/native-task-admission.js'
   );
-  const { admitTestNativeEnvironment } = await import('../test-support/native-environment.js');
+  const { admitTestNativeEnvironmentForRoot } = await import(
+    '../test-support/native-environment.js'
+  );
   const { isCanonicalUserActive } = await import('../auth/user-lifecycle.js');
   const { TurnStartValidationError } = await import('../operation-error.js');
   const { listArtifactReviews } = await import('../artifact-reviews.js');
   const { getWorkerControlAcceptedFinalStatus } = await import(
     '../runtime/worker-control-records.js'
   );
+  const { readAdmittedTestNanoHostSettled } = await import('../test-support/admitted-nanohost.js');
   const { listWorkspaceCapabilityCalls, listWorkspaceUsageRecords } = await import(
     '../capability/usage-ledger.js'
   );
@@ -1232,9 +1235,9 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
             });
             expect(isCanonicalUserActive(coreDb, userId)).toBe(false);
             expect(revokedPublication.inventory()).toBe(beforeImport);
-            const final = getWorkerControlAcceptedFinalStatus(
-              coreDb,
-              native.executor.nativeLineage!
+            const lineage = native.executor.nativeLineage!;
+            const final = await readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+              getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
             );
             expect(final).toMatchObject({ status: 'completed', stopReason: 'completed' });
             expect(store.getTurnById(revokedPublication.turnId).status).not.toBe('completed');
@@ -1333,8 +1336,9 @@ it('refuses a real cached healthy Worker Tool call after current authority chang
   native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => snapshot,
   });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const app = createAppWithLocalIdentity({
+    nanoHostStorage,
     coreDb,
     dataRoot: root,
     store,

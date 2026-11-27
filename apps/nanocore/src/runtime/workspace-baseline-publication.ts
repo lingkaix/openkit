@@ -9,7 +9,11 @@ import type { WorkspaceSnapshotPair } from './workspace-collect-wire.js';
 import type { WorkspaceCollectionIdentity } from './workspace-snapshot-chain.js';
 
 /** Opens the actual Workspace owner and awaits the covering FULL acknowledgement for one stage. */
-async function publishBaseline(db: WorkspaceDb, input: ControlWorkspaceBaseline): Promise<void> {
+async function publishBaseline(
+  db: WorkspaceDb,
+  input: ControlWorkspaceBaseline,
+  continueReleasedPredecessor?: true
+): Promise<void> {
   const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
   const client = getControlStoreWorkerClient();
   const database = `workspace:${scope.path}`;
@@ -22,15 +26,20 @@ async function publishBaseline(db: WorkspaceDb, input: ControlWorkspaceBaseline)
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  await client.workspaceBaseline(database, ControlWorkspaceBaselineSchema.parse(input));
+  await client.workspaceBaseline(
+    database,
+    ControlWorkspaceBaselineSchema.parse(input),
+    continueReleasedPredecessor ? db.dataRoot : undefined
+  );
 }
 
 /** Publishes only the original initialization identity, before the separate Host source verification. */
 export async function authorizeWorkspaceBaselineInitialization(
   db: WorkspaceDb,
-  identity: WorkspaceCollectionIdentity
+  identity: WorkspaceCollectionIdentity,
+  continueReleasedPredecessor?: true
 ): Promise<void> {
-  await publishBaseline(db, { action: 'initialize', identity });
+  await publishBaseline(db, { action: 'initialize', identity }, continueReleasedPredecessor);
 }
 
 /** Publishes the accepted pair only after independent Host source verification, preserving pair-based replay. */

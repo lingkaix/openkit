@@ -20,7 +20,10 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -35,6 +38,12 @@ afterEach(async () => {
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */
 async function fixture(explicitSetupVersion = true) {
+  // The simulated executor is the packaged self-check path: the env selects, before the Control
+  // worker starts, the Native writer that publishes its final through the admitted owner.
+  process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+  cleanup.push(async () => {
+    delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+  });
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-run-'));
   const databases: (ReturnType<typeof openCoreDb> | ReturnType<typeof openWorkspaceDb>)[] = [];
   cleanup.push(() => disposeTestStore(dataRoot, ...databases.reverse()));
@@ -101,6 +110,8 @@ async function fixture(explicitSetupVersion = true) {
       models: ['openai/gpt-5.2'],
     })
   );
+  // K8: verified image defaults live in the admitted NanoHost file, not in Core.
+  await admitTestNativeEnvironmentForRoot(coreDb, manifest);
   await recordTestNativeRuntimeTarget(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
   const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');

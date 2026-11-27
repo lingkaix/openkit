@@ -17,7 +17,7 @@ export type SchedulerExecutionAttemptPhase = 'open' | 'closing' | 'closed';
 /** The exact outstanding operation's acceptance; unknown holds exclusion. */
 export type SchedulerExecutionDisposition = 'not_accepted' | 'accepted' | 'unknown';
 
-/** One attempt owns generic execution authority; NanoHost proof columns are read only by its adapter. */
+/** One attempt owns the original execution authority and its live scopes. */
 export const schedulerExecutionAttempts = sqliteTable(
   'scheduler_execution_attempts',
   {
@@ -27,16 +27,12 @@ export const schedulerExecutionAttempts = sqliteTable(
     attemptId: text('attempt_id').primaryKey().notNull(),
     /** Exact accepted queue entry and immutable preparation owner. */
     queueEntryId: text('queue_entry_id').notNull(),
-    /** Configured backend identity captured by admission. */
-    backendId: text('backend_id').notNull(),
     /** Exact product boundaries excluded by this attempt. */
     workspaceId: text('workspace_id').notNull(),
     threadId: text('thread_id').notNull(),
     turnId: text('turn_id').notNull(),
     /** Bound conditionally before AgentSession effects; queued work may be sessionless. */
     agentSessionId: text('agent_session_id'),
-    /** Immutable inputs persisted before any preparation effect. */
-    preparationInputJson: text('preparation_input_json').notNull(),
     /** Finalized immutable launch package and exact backend binding, once prepared. */
     inputRef: text('input_ref'),
     bindingRef: text('binding_ref'),
@@ -46,25 +42,9 @@ export const schedulerExecutionAttempts = sqliteTable(
     operationId: text('operation_id'),
     /** Fixed at submission; preparation and heartbeat never extend it. */
     deadline: text('deadline'),
-    /** First terminal cause and truthful actual result are never overwritten. */
+    /** Keep the first terminal cause. */
     terminalCause: text('terminal_cause'),
-    outcomeRef: text('outcome_ref'),
-    fenceRef: text('fence_ref'),
     createdAt: text('created_at').notNull(),
-    updatedAt: text('updated_at').notNull(),
-    /** Adapter-private compatibility and native liveness facts, not generic lifecycle phases. */
-    sessionCompatibilityKey: text('session_compatibility_key'),
-    heartbeatTimeoutMs: integer('heartbeat_timeout_ms').notNull().default(30_000),
-    heartbeatDeadline: text('heartbeat_deadline'),
-    startupDeadline: text('startup_deadline'),
-    lastAcceptedHeartbeatAt: text('last_accepted_heartbeat_at'),
-    lastWorkerSequence: integer('last_worker_sequence'),
-    recoveryState: text('recovery_state'),
-    recoveryDeadline: text('recovery_deadline'),
-    workerProcessKeyHash: text('worker_process_key_hash'),
-    workerControlTokenHash: text('worker_control_token_hash'),
-    workerInferenceTokenHash: text('worker_inference_token_hash'),
-    workerCapabilityTokenHash: text('worker_capability_token_hash'),
   },
   (table) => [
     foreignKey({

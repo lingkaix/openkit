@@ -29,8 +29,16 @@ import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './bootstra
 import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
+import {
+  bindSchedulerExecutionAttemptSession,
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
+  requireSchedulerExecutionAttempt,
+} from './runtime/execution-attempts.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
+  type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
   createAndReserveWorkerStorageAttachment,
   markWorkerStorageAttachmentUnknown,
@@ -45,11 +53,17 @@ import * as databases from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
+import { createTestQueueEntry } from './test-support/scheduler-admissions.js';
 import { createTestStore } from './test-support/store.js';
 import { createWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -90,7 +104,10 @@ function retainedTree(root: string): unknown[] {
 }
 
 /** Composes native HTTP, current credentials, real Core, file Store and the existing mutation gate. */
-async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' = 'corrupt') {
+async function fixture(
+  fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' = 'corrupt',
+  options: { readonly runtimeFences?: boolean } = {}
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'retained-retirement-'));
   const coreDb = databases.openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -185,6 +202,10 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   const opaque = join(workspaceRoot, 'evidence', 'retained-opaque');
   mkdirSync(opaque, { recursive: true });
   writeFileSync(join(opaque, 'original.bin'), Buffer.from([0, 255, 1, 128]));
+  // Earlier healthy Turns produced the runtime facts; the Workspace authority fails afterwards.
+  const runtimeFences = options.runtimeFences
+    ? await retainRuntimeFences({ coreDb, workspaceId })
+    : undefined;
   await shutdownControlStoreWorkerClient();
   if (fault === 'missing') rmSync(workspaceDbPath(dataRoot, workspaceId));
   if (fault === 'corrupt')
@@ -207,6 +228,8 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     fault === 'healthy' || fault === 'index' || fault === 'records'
   );
   expect(isScopeAdmitted(dataRoot, 'workspace', siblingId)).toBe(true);
+  // The retained Native facts stay readable through the owner that Boot admits again.
+  if (runtimeFences) await reopenAdmittedTestNanoHost(coreDb);
   // Add opaque links after the real admission check; the command must not traverse or change them.
   linkSync(join(opaque, 'original.bin'), join(opaque, 'hardlink.bin'));
   symlinkSync('original.bin', join(opaque, 'relative-link'));
@@ -240,6 +263,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     app,
     request,
     call,
+    runtimeFences,
   };
 }
 
@@ -258,7 +282,122 @@ function rows(f: Fixture, table: string) {
 }
 
 /** Creates existing runtime facts without launching a Worker or claiming an external effect. */
-async function retainRuntimeFences(f: Fixture) {
+async function retainRuntimeFences(f: {
+  readonly coreDb: databases.CoreDb;
+  readonly workspaceId: string;
+}) {
+  const target = await recordTestNativeRuntimeTarget(f.coreDb, 'retirement-target');
+  const nanoHost = currentAdmittedTestNanoHostOwner(f.coreDb);
+  if (!nanoHost) throw new Error('Retirement fixture has no admitted NanoHost owner.');
+  const layout = {
+    family: 'openkit-worker',
+    version: '1',
+    uid: 1000,
+    gid: 1000,
+    workingDirectory: '/tmp/openkit-bootstrap',
+    platform: { architecture: 'amd64', os: 'linux' },
+    targets: [{ target: '/workspace' }],
+  };
+  for (const state of ['reserved', 'attached', 'unknown']) {
+    // Each storage association comes from an earlier Turn's own attempt, as production writes it:
+    // reservation and activation bound to that attempt, the uncertain-contact fence on the admitted owner.
+    const entry = await createTestQueueEntry(f.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `retirement-history-${state}`,
+      requestedAgentId: 'agent_retirement',
+      text: 'Earlier Turn that prepared the retained storage.',
+      threadId: testEntityId('th', `retirement-${state}`),
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      turnId: testEntityId('tu', `retirement-history-${state}`),
+      workspaceId: f.workspaceId,
+    });
+    const { attemptId } = await createSchedulerExecutionAttempt(f.coreDb, {
+      entry,
+      preparationInput: { admission: entry },
+    });
+    // The original preparation tuple, committed through the same owner commands production uses
+    // before any storage post (commitPreparedAgentSessionForTurn on an admitted NanoHost owner).
+    const agentSessionId = testEntityId('as', `retirement-${state}`);
+    const preparation = {
+      attemptId,
+      agentSessionId,
+      inputRef: `aepsnap_${entry.turnId}_${agentSessionId}`,
+      bindingRef: `attempt-binding:${attemptId}`,
+    };
+    try {
+      await bindSchedulerExecutionAttemptSession(f.coreDb, preparation);
+      await finalizeSchedulerExecutionAttemptInput(f.coreDb, preparation);
+      const original = requireSchedulerExecutionAttempt(f.coreDb, attemptId);
+      const owner: AdmittedWorkerStorageAttachment = {
+        attemptId,
+        target,
+        read: nanoHost.read,
+        write: nanoHost.writeStorageAttachment,
+        authorizeContributor: () => true,
+        // The production storageAttachmentAdmission predicate: the open, pre-submission attempt
+        // still carries its original non-null binding, exact package input and exact AgentSession.
+        isCurrentAttempt: () => {
+          const current = requireSchedulerExecutionAttempt(f.coreDb, attemptId);
+          return (
+            current.phase === 'open' &&
+            current.backendId === 'nanohost' &&
+            current.deadline === null &&
+            current.bindingRef !== null &&
+            current.bindingRef === original.bindingRef &&
+            current.inputRef === preparation.inputRef &&
+            current.agentSessionId === preparation.agentSessionId
+          );
+        },
+      };
+      const reserved = await createAndReserveWorkerStorageAttachment(
+        f.coreDb,
+        {
+          agentSessionId,
+          authorizeContributor: () => true,
+          deploymentId: target.deploymentId,
+          layout,
+          now: NOW,
+          purpose: 'work',
+          responsibleUserId: FIXTURE_LOCAL_USER_ID,
+          runtimeTargetId: target.targetId,
+          threadId: testEntityId('th', `retirement-${state}`),
+          workspaceId: f.workspaceId,
+        },
+        owner
+      );
+      if (state === 'attached')
+        await activateWorkerStorageAttachment(
+          f.coreDb,
+          {
+            attachmentGeneration: reserved.attachmentGeneration,
+            expectedRevision: reserved.revision,
+            sandboxBindingRef: 'retained-sandbox',
+            storageRef: reserved.storageRef,
+            targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+            now: NOW,
+          },
+          owner
+        );
+      if (state === 'unknown')
+        await markWorkerStorageAttachmentUnknown(
+          f.coreDb,
+          {
+            attachmentGeneration: reserved.attachmentGeneration,
+            expectedRevision: reserved.revision,
+            storageRef: reserved.storageRef,
+            now: NOW,
+          },
+          nanoHost.workerStorageBinding
+        );
+    } finally {
+      await closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+        attemptId,
+        cause: 'worker-final-phase',
+        noOutstandingEffects: true,
+      });
+    }
+  }
+  // A later Turn's submission is still unresolved; it holds the Workspace placement.
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'retirement-queue',
@@ -284,54 +423,29 @@ async function retainRuntimeFences(f: Fixture) {
     operationId: 'retained-uncertain-submission',
     now: () => NOW,
   });
-  const target = await recordTestNativeRuntimeTarget(f.coreDb, 'retirement-target');
-  const layout = {
-    family: 'openkit-worker',
-    version: '1',
-    uid: 1000,
-    gid: 1000,
-    workingDirectory: '/tmp/openkit-bootstrap',
-    platform: { architecture: 'amd64', os: 'linux' },
-    targets: [{ target: '/workspace' }],
-  };
-  for (const state of ['reserved', 'attached', 'unknown']) {
-    const reserved = await createAndReserveWorkerStorageAttachment(f.coreDb, {
-      agentSessionId: testEntityId('as', `retirement-${state}`),
-      authorizeContributor: () => true,
-      deploymentId: target.deploymentId,
-      layout,
-      now: NOW,
-      purpose: 'work',
-      responsibleUserId: FIXTURE_LOCAL_USER_ID,
-      runtimeTargetId: target.targetId,
-      threadId: testEntityId('th', `retirement-${state}`),
-      workspaceId: f.workspaceId,
-    });
-    if (state === 'attached')
-      await activateWorkerStorageAttachment(f.coreDb, {
-        attachmentGeneration: reserved.attachmentGeneration,
-        expectedRevision: reserved.revision,
-        sandboxBindingRef: 'retained-sandbox',
-        storageRef: reserved.storageRef,
-        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-        now: NOW,
-      });
-    if (state === 'unknown')
-      await markWorkerStorageAttachmentUnknown(f.coreDb, {
-        attachmentGeneration: reserved.attachmentGeneration,
-        expectedRevision: reserved.revision,
-        storageRef: reserved.storageRef,
-        now: NOW,
-      });
-  }
-  const tables = [
-    'scheduler_execution_attempts',
-    'scheduler_admission_entries',
+  const coreTables = ['scheduler_execution_attempts', 'scheduler_admission_entries'];
+  // Storage associations and RuntimeTargets live in the NanoHost file since K8.
+  const nanoHostTables = [
     'worker_storage_bindings',
     'worker_storage_contributors',
     'nanohost_runtime_targets',
   ];
-  return () => Object.fromEntries(tables.map((table) => [table, rows(f, table)]));
+  const all = (sqlite: { prepare(sql: string): { all(): unknown[] } }, table: string) =>
+    sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+  const states = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+    sqlite.prepare('SELECT state FROM worker_storage_bindings ORDER BY rowid').pluck().all()
+  );
+  expect(states, 'precondition: the actual reserved, attached and unknown associations').toEqual([
+    'reserved',
+    'attached',
+    'unknown',
+  ]);
+  return () => ({
+    ...Object.fromEntries(coreTables.map((table) => [table, all(f.coreDb.sqlite, table)])),
+    ...readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      Object.fromEntries(nanoHostTables.map((table) => [table, all(sqlite, table)]))
+    ),
+  });
 }
 
 /** Refusal must come from a registered operation, never from its absent route. */
@@ -656,8 +770,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
   it.each(['corrupt', 'missing'] as const)(
     'retires %s authority without opening content, altering any retained entry or releasing runtime fences',
     async (fault) => {
-      const f = await fixture(fault);
-      const runtime = await retainRuntimeFences(f);
+      const f = await fixture(fault, { runtimeFences: true });
+      const runtime = f.runtimeFences;
+      if (!runtime) throw new Error('Retirement fixture has no runtime fences.');
       const beforeRuntime = runtime();
       const tree = retainedTree(f.workspaceRoot);
       const exports = retainedTree(join(f.dataRoot, 'server', 'exports'));

@@ -18,6 +18,7 @@ import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp, prepareTestAppOptions } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -102,6 +103,7 @@ it.each(['token'] as const)(
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       }),
     });
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => manager.current(),
     });
@@ -117,6 +119,7 @@ it.each(['token'] as const)(
       turnExecutor: native.executor,
       fileAdmission: native.fileAdmission,
       workerControlGateway: native.workerControlGateway,
+      nanoHostStorage,
       runtimeConfigManager: manager,
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },

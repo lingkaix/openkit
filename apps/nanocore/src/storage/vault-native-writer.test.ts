@@ -7,20 +7,23 @@ import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
 } from '../runtime/nanohost-harness.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './nanohost-transport-owner.js';
+import type { ControlRuntimeTargetInput } from './runtime-target-codecs.js';
 import {
   ControlVaultInputSchema,
   getVaultInjectionReceipt,
   requireVaultReference,
+  type VaultEpochPlacement,
   vaultCredentialWriterOf,
 } from './vault-native-codecs.js';
-import { nativeProductScope } from './workspace-file-records.js';
 
 let root: string;
 let db: CoreDb;
@@ -32,13 +35,19 @@ const agentSessionId = 'as_00000000-0000-7000-8000-000000000001';
 const clock = '2026-11-15T00:00:00.000Z';
 const client = () => getControlStoreWorkerClient();
 const writer = () => vaultCredentialWriterOf(requireVaultReference(db, referenceId));
-const delegate = (receiptId = holder, expectedGeneration = 0, expectedVersion = 1) =>
+const delegate = (
+  receiptId = holder,
+  expectedGeneration = 0,
+  expectedVersion = 1,
+  placement?: VaultEpochPlacement
+) =>
   client().vault(db, 'reference-writer', {
     action: 'delegate',
     referenceId,
     receiptId,
     expectedVersion,
     expectedGeneration,
+    ...(placement ? { placement } : {}),
   });
 const activate = (overrides: Record<string, unknown> = {}) =>
   client().vault(db, 'receipt-create', {
@@ -197,8 +206,32 @@ describe('Vault credential writer native transitions', () => {
   it.each(['close', 'restart', 'allocate'] as const)(
     'fences the holder in the exact physical Epoch on RuntimeTarget %s',
     async (kind) => {
-      const target = await recordTestNativeRuntimeTarget(db);
-      await createNanoHostHarnessRuntime(db, {
+      const { value: admitted } = await openAdmittedTestNanoHost(db);
+      const transition = async (input: ControlRuntimeTargetInput) => {
+        const result = await transitionAdmittedNanoHostRuntimeTarget(admitted, input);
+        if (result.state !== 'ready') throw new Error(`RuntimeTarget held: ${result.reason}`);
+        return result.value;
+      };
+      const configured = {
+        targetId: 'target_local',
+        identityId: 'identity_local',
+        deploymentId: readDataRootLayoutMarker(root).deploymentId,
+        observedAt: clock,
+      };
+      const allocated = await transition({ kind: 'allocate', ...configured });
+      expect(allocated).toMatchObject({ connectionGeneration: 1, ready: false });
+      const physicalEpoch = 'a'.repeat(64);
+      const target = await transition({
+        kind: 'ready',
+        ...configured,
+        connectionGeneration: 1,
+        physicalEpoch,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+      });
+      if (!target?.ready) throw new Error('Expected the admitted RuntimeTarget.');
+      await createNanoHostHarnessRuntime(admitted.owner, {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         maxActiveTurns: 1,
@@ -206,7 +239,7 @@ describe('Vault credential writer native transitions', () => {
         harnessCompatibilityKey: 'd'.repeat(64),
         harnessInstanceId: 'writer-harness',
         imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: target.physicalEpoch!,
+        originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'writer-sandbox-binding',
         sandboxCompatibilityKey: 'a'.repeat(64),
         sandboxIntegrationBindingRef: 'writer-integration',
@@ -214,7 +247,7 @@ describe('Vault credential writer native transitions', () => {
         runtimeTargetId: target.targetId,
         timestamp: clock,
       });
-      await openNanoHostAgentSessionBinding(db, {
+      await openNanoHostAgentSessionBinding(admitted.owner, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId,
         agentSessionRuntimeBindingId: 'writer-session-binding',
@@ -233,11 +266,17 @@ describe('Vault credential writer native transitions', () => {
         injectedAt: clock,
         revocationStatus: 'active',
       });
-      await delegate();
+      const placement = {
+        deploymentId: target.deploymentId,
+        runtimeTargetId: target.targetId,
+        physicalEpoch,
+        generation: String(target.connectionGeneration),
+      };
+      await delegate(holder, 0, 1, placement);
       await activate();
       const observedAt = new Date().toISOString();
       // A late predecessor close cannot fence a still-current holder.
-      await client().runtimeTarget(`core:${nativeProductScope(root, { kind: 'server' }).path}`, {
+      await transition({
         kind: 'close',
         targetId: target.targetId,
         closedGeneration: 0,
@@ -246,7 +285,7 @@ describe('Vault credential writer native transitions', () => {
       });
       expect(writer()).toMatchObject({ generation: 1, state: 'active' });
       if (kind === 'close')
-        await client().runtimeTarget(`core:${nativeProductScope(root, { kind: 'server' }).path}`, {
+        await transition({
           kind,
           targetId: target.targetId,
           closedGeneration: target.connectionGeneration,
@@ -254,24 +293,30 @@ describe('Vault credential writer native transitions', () => {
           observedAt,
         });
       else if (kind === 'restart')
-        await client().runtimeTarget(`core:${nativeProductScope(root, { kind: 'server' }).path}`, {
+        await transition({
           kind,
           observedAt,
         });
       else
-        await client().runtimeTarget(`core:${nativeProductScope(root, { kind: 'server' }).path}`, {
+        await transition({
           kind,
           targetId: target.targetId,
           identityId: target.identityId,
           deploymentId: target.deploymentId,
           observedAt,
         });
-      expect(writer()).toEqual({ generation: 2, mode: 'gateway', holder, state: 'fenced' });
+      expect(writer()).toEqual({
+        generation: 2,
+        mode: 'gateway',
+        holder,
+        state: 'fenced',
+        placement,
+      });
       expect(getVaultInjectionReceipt(db, holder)?.revocationStatus).toBe('stale-session');
       expect(getVaultInjectionReceipt(db, 'receipt_static_history')?.revocationStatus).toBe(
         'active'
       );
-      await client().runtimeTarget(`core:${nativeProductScope(root, { kind: 'server' }).path}`, {
+      await transition({
         kind: 'restart',
         observedAt,
       });

@@ -6,6 +6,8 @@ import type { ControlExecutionAttemptCommand } from '../storage/execution-attemp
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import * as records from './execution-attempt-records.js';
 
+export { ExecutionAttemptRefusal } from '../storage/execution-attempt-codecs.js';
+
 export {
   EXECUTION_ATTEMPT_BUDGET_MS,
   isSchedulerExecutionBusyRefusal,
@@ -75,6 +77,9 @@ export async function createSchedulerExecutionAttempt(
       backendId: input.entry.backendId,
       preparationJson: JSON.stringify(input.preparationInput),
       ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
+      ...(input.deferredQueueEntryIds?.length
+        ? { deferredQueueEntryIds: [...input.deferredQueueEntryIds] }
+        : {}),
     },
     input.now
   ))!;
@@ -175,7 +180,10 @@ export async function closeSchedulerExecutionAttemptWithoutEffects(
 /** Commits the original close-with-fence tuple before its dependent effect or handoff. */
 export async function closeSchedulerExecutionAttemptWithFence(
   db: CoreDb,
-  input: Parameters<typeof records.closeSchedulerExecutionAttemptWithFence>[1]
+  input: Extract<
+    Parameters<typeof records.closeSchedulerExecutionAttemptWithFence>[1],
+    { readonly proof: import('./execution-backend.js').ExecutionReleaseProof }
+  >
 ) {
   return (await publishAttempt(
     db,

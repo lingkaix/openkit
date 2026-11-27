@@ -876,6 +876,41 @@ export async function publishDurableFile(input: {
   }
 }
 
+/** Removes the exact private staged file after its caller has verified and consumed its bytes. */
+export async function removeConsumedStagedFile(path: string): Promise<void> {
+  await unlink(path);
+}
+
+/** Removes the caller's private staged files after a refused decision. */
+export function discardStagedFiles(files: readonly { readonly temporary: string }[]): void {
+  for (const { temporary } of files) {
+    try {
+      removeFileSync(temporary);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+}
+
+/** Links verified staged bytes create-only and synchronizes every directory changed by preparation or publication. */
+export function linkStagedFiles(
+  files: readonly { readonly temporary: string; readonly path: string }[],
+  preparedDirectories: ReadonlySet<string>
+): void {
+  const directories = new Set(preparedDirectories);
+  for (const { temporary, path } of files) {
+    linkStagedFileCreateOnly(temporary, path);
+    directories.add(dirname(path));
+  }
+  for (const directory of directories) syncCanonicalDirectory(directory);
+}
+
+/** Links an already-synced private file before removing its temporary name. */
+function linkStagedFileCreateOnly(temporaryPath: string, path: string): void {
+  linkSync(temporaryPath, path);
+  rmSync(temporaryPath);
+}
+
 /** Retires one caller-owned regular-file entry and synchronizes its pinned parent before acknowledging absence. */
 export async function removeDurableFile(input: {
   readonly destinationPath: string;
@@ -1361,16 +1396,13 @@ export function populatePrivateOverlayContentsSync(
   }
 }
 
-/**
- * Removes one caller-admitted authored file with the original native error semantics.
- * The caller retains containment, revision checks and credential-effect ordering.
- *
- * @param path Exact authored file selected by its domain owner.
- * @throws The native removal error; absence and directories are not forced.
- */
-export function removeAuthoredFileSync(path: string): void {
+/** Removes one admitted file without forcing absence or removing a directory. */
+function removeFileSync(path: string): void {
   rmSync(path);
 }
+
+// Configuration uses the same native removal for its admitted authored file.
+export { removeFileSync as removeAuthoredFileSync };
 
 /** Synchronizes complete staged bytes and child entries before their containing tree is published. */
 export function syncCanonicalTree(path: string): void {
@@ -2605,8 +2637,7 @@ export function writeCanonicalFileAtomic(
       }
     );
     if (publication === 'create') {
-      linkSync(temporaryPath, path);
-      rmSync(temporaryPath);
+      linkStagedFileCreateOnly(temporaryPath, path);
     } else {
       renameSync(temporaryPath, path);
     }

@@ -1,25 +1,42 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalJsonText } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { expect, it } from 'vitest';
 import {
+  readCoreHarnessConsumption,
+  recordCoreHarnessConsumption,
+} from '../runtime/core-journal-records.js';
+import {
+  acknowledgeNanoHostHarnessResult,
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
+  dispatchNanoHostHarnessOperation,
+  hasQueuedNanoHostHarnessOperation,
+  inspectNanoHostIdleCloseConsumption,
   listNanoHostMeasuredHarnessIdentities,
   openNanoHostAgentSessionBinding,
+  prepareNanoHostHarnessOperation,
+  queueNanoHostHarnessOperation,
   readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeForHarness,
+  settleNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target-records.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 
 const timestamp = '2026-11-20T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
@@ -238,3 +255,332 @@ it('refuses a contradicting live digest copy and leaves an exact copy idempotent
     );
   });
 });
+
+it('settles the original session-open result on Native and consumes it only on Core', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-k8-harness-core-'));
+  const core = openCoreDb(root);
+  try {
+    applyMigrations(core);
+    withHarnessOwner((owner, reopenReadOnly) => {
+      const runtime = runtimeFacts('open');
+      const session = {
+        ...sessionFacts('open'),
+        agentSessionId: testEntityId('as', 'live-harness-open'),
+        threadId: testEntityId('th', 'live-harness-open'),
+        workspaceId: testEntityId('ws', 'live-harness-open'),
+      };
+      const command = owner.sqlite
+        .transaction(() => {
+          createNanoHostHarnessRuntime(owner, { ...runtime, maxActiveTurns: 1 });
+          openNanoHostAgentSessionBinding(owner, session);
+          const prepared = prepareNanoHostHarnessOperation(
+            core,
+            {
+              harnessInstanceId: runtime.harnessInstanceId,
+              operation: 'session.open',
+              timestamp,
+              body: {
+                adapterId: runtime.adapterId,
+                agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
+                agentSessionId: session.agentSessionId,
+                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+                effectiveSetupGeneration: session.effectiveSetupGeneration,
+                threadId: session.threadId,
+                workspaceId: session.workspaceId,
+                resume: null,
+              },
+            },
+            owner
+          ).command;
+          // This fixture starts at the existing Worker dispatch ACK boundary.
+          const bytes = JSON.stringify(prepared.body);
+          owner.sqlite
+            .prepare(`UPDATE harness_instance_records
+            SET operation = 'session.open', operation_state = 'dispatched',
+                operation_id = ?, operation_sequence = ?, command_body_json = ?, command_fingerprint = ?
+            WHERE harness_instance_id = ?`)
+            .run(
+              prepared.operationId,
+              prepared.sequence,
+              bytes,
+              createHash('sha256').update(bytes).digest('hex'),
+              runtime.harnessInstanceId
+            );
+          return prepared;
+        })
+        .immediate();
+      const input = {
+        sandboxIntegrationBindingRef: runtime.sandboxIntegrationBindingRef,
+        timestamp,
+        result: {
+          schemaVersion: 2 as const,
+          harnessInstanceId: runtime.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition: 'succeeded' as const,
+          body: {
+            state: 'open',
+            nativeHandleState: 'pending',
+            nativeHandleDigest: null,
+            maxActiveTurns: 1,
+          },
+        },
+      };
+      const settle = () =>
+        owner.sqlite
+          .transaction(() => settleNanoHostHarnessOperation(core, input, owner))
+          .immediate();
+      expect(settle()).toBe('settled');
+      expect(settle()).toBe('replayed');
+      const fingerprint = owner.sqlite
+        .prepare('SELECT result_fingerprint FROM harness_instance_records')
+        .pluck()
+        .get() as string;
+      const key = {
+        harnessBindingRef: runtime.harnessBindingRef,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        resultFingerprint: fingerprint,
+      };
+      expect(readCoreHarnessConsumption(core, key)).toBeNull();
+      expect(
+        owner.sqlite
+          .prepare('SELECT lifecycle_state FROM agent_session_runtime_bindings')
+          .pluck()
+          .get()
+      ).toBe('open');
+
+      reopenReadOnly();
+      const consumerReceipt = JSON.stringify({
+        workspaceId: session.workspaceId,
+        turnId: 'turn-open',
+        executionId: 'execution-open',
+        stepId: 'consume-open',
+      });
+      const acknowledge = (receipt: string) =>
+        core.sqlite
+          .transaction(() =>
+            acknowledgeNanoHostHarnessResult(
+              core,
+              { ...input, harnessBindingRef: key.harnessBindingRef, consumerReceipt: receipt },
+              owner
+            )
+          )
+          .immediate();
+      acknowledge(consumerReceipt);
+      acknowledge(consumerReceipt);
+      expect(JSON.parse(readCoreHarnessConsumption(core, key)!)).toEqual(
+        JSON.parse(consumerReceipt)
+      );
+      expect(() => acknowledge(consumerReceipt.replace('turn-open', 'other-turn'))).toThrow(
+        /conflicts/
+      );
+      expect(
+        core.sqlite
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'harness_instance_records'")
+          .get()
+      ).toBeUndefined();
+    });
+  } finally {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function withQueuedHarness(
+  exercise: (
+    core: ReturnType<typeof openCoreDb>,
+    owner: { readonly sqlite: Database.Database },
+    reopenReadOnly: () => void
+  ) => void
+) {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-harness-queue-probe-'));
+  const core = openCoreDb(root);
+  try {
+    applyMigrations(core);
+    withHarnessOwner((owner, reopenReadOnly) => {
+      const queued = runtimeFacts('queued');
+      owner.sqlite
+        .transaction(() => {
+          createNanoHostHarnessRuntime(owner, queued);
+          const request = {
+            harnessInstanceId: queued.harnessInstanceId,
+            operation: 'harness.drain' as const,
+            timestamp,
+            body: {},
+          };
+          const prepared = prepareNanoHostHarnessOperation(core, request, owner);
+          queueNanoHostHarnessOperation(core, { ...request, prepared }, owner);
+        })
+        .immediate();
+      exercise(core, owner, reopenReadOnly);
+    });
+  } finally {
+    core.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it('observes an exact empty Harness queue even when a sibling Integration has a command', () => {
+  withQueuedHarness((_core, owner, reopenReadOnly) => {
+    const idle = runtimeFacts('idle');
+    owner.sqlite.transaction(() => createNanoHostHarnessRuntime(owner, idle)).immediate();
+    reopenReadOnly();
+
+    expect(hasQueuedNanoHostHarnessOperation(owner, idle.sandboxIntegrationBindingRef)).toBe(false);
+  });
+});
+
+it('observes a queued Harness command read-only and leaves it for deciding dispatch', () => {
+  withQueuedHarness((core, owner, reopenReadOnly) => {
+    const queued = runtimeFacts('queued');
+    const sandboxIntegrationBindingRef = queued.sandboxIntegrationBindingRef;
+    const before = owner.sqlite.serialize();
+
+    expect(hasQueuedNanoHostHarnessOperation(owner, sandboxIntegrationBindingRef)).toBe(true);
+    expect(owner.sqlite.serialize()).toEqual(before);
+    expect(
+      owner.sqlite
+        .transaction(() =>
+          dispatchNanoHostHarnessOperation(
+            core,
+            { sandboxIntegrationBindingRef, now: () => timestamp },
+            { owner }
+          )
+        )
+        .immediate()
+    ).toMatchObject({ harnessInstanceId: queued.harnessInstanceId, operation: 'harness.drain' });
+    reopenReadOnly();
+    expect(hasQueuedNanoHostHarnessOperation(owner, sandboxIntegrationBindingRef)).toBe(false);
+  });
+});
+
+it('refuses foreign and retired Integration bindings when observing the Harness queue', () => {
+  withQueuedHarness((_core, owner, reopenReadOnly) => {
+    const retired = runtimeFacts('retired');
+    owner.sqlite
+      .transaction(() => {
+        createNanoHostHarnessRuntime(owner, retired);
+        removeNanoHostSandboxRuntimeForHarness(owner, retired.harnessInstanceId);
+      })
+      .immediate();
+    reopenReadOnly();
+
+    for (const binding of ['integration-binding-foreign', retired.sandboxIntegrationBindingRef]) {
+      expect(() => hasQueuedNanoHostHarnessOperation(owner, binding)).toThrow(
+        'NanoHost Sandbox Integration binding is missing or stale.'
+      );
+    }
+  });
+});
+
+it.each(['succeeded', 'unknown'] as const)(
+  'requires the acknowledged Core idle close before changing only the original binding (%s)',
+  (disposition) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-idle-nanohost-close-'));
+    const core = openCoreDb(root);
+    try {
+      applyMigrations(core);
+      withHarnessOwner((owner, reopenReadOnly) => {
+        const runtime = runtimeFacts('closing-idle');
+        const session = {
+          ...sessionFacts('closing-idle'),
+          agentSessionId: testEntityId('as', 'closing-idle'),
+        };
+        const sibling = {
+          ...sessionFacts('occupied-sibling'),
+          harnessInstanceId: runtime.harnessInstanceId,
+        };
+        const sandboxIntegrationBindingRef = runtime.sandboxIntegrationBindingRef;
+        const command = owner.sqlite
+          .transaction(() => {
+            createNanoHostHarnessRuntime(owner, runtime);
+            openNanoHostAgentSessionBinding(owner, session);
+            openNanoHostAgentSessionBinding(owner, sibling);
+            const request = {
+              harnessInstanceId: runtime.harnessInstanceId,
+              operation: 'session.close' as const,
+              timestamp,
+              body: {
+                agentSessionId: session.agentSessionId,
+                agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+              },
+            };
+            const prepared = prepareNanoHostHarnessOperation(core, request, owner);
+            queueNanoHostHarnessOperation(core, { ...request, prepared }, owner);
+            return dispatchNanoHostHarnessOperation(
+              core,
+              { sandboxIntegrationBindingRef, now: () => timestamp },
+              { owner }
+            )!;
+          })
+          .immediate();
+        const result = {
+          schemaVersion: 2 as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition,
+          body:
+            disposition === 'succeeded'
+              ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+              : { reasonCode: 'outcome_unknown' },
+        };
+        const input = { sandboxIntegrationBindingRef, timestamp, result };
+        const settle = () =>
+          owner.sqlite
+            .transaction(() => settleNanoHostHarnessOperation(core, input, owner))
+            .immediate();
+        const before = owner.sqlite.serialize();
+        expect(() => settle()).toThrow('idle close requires its original Core');
+        expect(owner.sqlite.serialize()).toEqual(before);
+        const { agentSessionId, agentSessionRuntimeBindingId, threadId, workspaceId } = session;
+        const consumer = canonicalJsonText({
+          workspaceId,
+          threadId,
+          agentSessionId,
+          agentSessionRuntimeBindingId,
+        });
+        const key = {
+          harnessBindingRef: runtime.harnessBindingRef,
+          operationId: result.operationId,
+          sequence: result.sequence,
+          resultFingerprint: sha256CanonicalJson(result),
+        };
+        expect(inspectNanoHostIdleCloseConsumption(core, input, owner)).toEqual({ key, consumer });
+        expect(
+          inspectNanoHostIdleCloseConsumption(
+            core,
+            { ...input, result: { ...result, sequence: result.sequence + 1 } },
+            owner
+          )
+        ).toBeNull();
+        core.sqlite
+          .transaction(() => recordCoreHarnessConsumption(core, key, consumer, timestamp))
+          .immediate();
+        expect(settle()).toBe('settled');
+        reopenReadOnly();
+        expect(
+          owner.sqlite.transaction(() => settleNanoHostHarnessOperation(core, input, owner))()
+        ).toBe('replayed');
+        expect(readCoreHarnessConsumption(core, key)).toBe(consumer);
+        expect(readNanoHostThreadAgentSessionBinding(owner, sibling)).toEqual({
+          agentSessionId: sibling.agentSessionId,
+        });
+        const occupancy = owner.sqlite
+          .prepare(
+            'SELECT open_session_count AS occupied, operation_state AS operationState, drain_state AS drain FROM harness_instance_records'
+          )
+          .get();
+        expect(occupancy).toEqual(
+          disposition === 'succeeded'
+            ? { occupied: 1, operationState: 'settled', drain: 'accepting' }
+            : { occupied: 2, operationState: 'unknown', drain: 'draining' }
+        );
+      });
+    } finally {
+      core.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+);

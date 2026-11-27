@@ -1330,7 +1330,10 @@ function fsyncDirectory(path: string): void {
 /** Reads only the existing complete ledger; unreadable proof never authorizes deletion. */
 function workerStorageAbsenceProved(coreDb: CoreDb, workspaceId: string): boolean {
   try {
-    return isWorkspaceWorkerStorageProvedAbsent(coreDb, workspaceId);
+    const observed = getControlStoreWorkerClient().readAdmittedNanoHost(coreDb.dataRoot, (sqlite) =>
+      isWorkspaceWorkerStorageProvedAbsent({ sqlite }, workspaceId)
+    );
+    return observed.state === 'ready' && observed.value;
   } catch {
     return false;
   }
@@ -1368,7 +1371,7 @@ function refuseWorkerStorageDeletion(
     'Worker storage absence cannot be proved. Inspect with administration.cleanup-read; inspection does not clean storage and may withhold private storage. Repair a ledger-read fault before retrying. ' +
       (!request || newRequest
         ? 'worker-environment.purge is available only while the Workspace is active and its existing administrator, contributor and idle-storage checks pass. Other retained-target cleanup is unavailable until the after-v0.1.0 #817 lifecycle. '
-        : 'worker-environment.purge cannot clean a deleting or deleted Workspace. Retained-target cleanup has no supported exit in this phase until the after-v0.1.0 #817 lifecycle. Retry only when the existing Core ledger can prove absence. ') +
+        : 'worker-environment.purge cannot clean a deleting or deleted Workspace. Retained-target cleanup has no supported exit in this phase until the after-v0.1.0 #817 lifecycle. Retry only when the admitted NanoHost ledger can prove absence. ') +
       (newRequest
         ? 'submit a new deletion request. The Workspace remains active.'
         : 'retry this exact deletion request.'),

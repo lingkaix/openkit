@@ -28,7 +28,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openWorkspaceDb } from './db.js';
@@ -50,7 +50,7 @@ it('keeps a genuine granted MCP execution without an Item out of timeline approv
   cleanups.push(() => disposeTestStore(root, db, coreDb));
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: userId });
   const setup = createTestAgentSetup({ agentId: 'agent_demo', mcpIds: ['echo-server'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Genuine captured approval');
   const turn = await store.createTurn(
     DEMO_WORKSPACE_ID,

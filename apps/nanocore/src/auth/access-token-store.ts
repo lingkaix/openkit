@@ -280,7 +280,8 @@ export function insertOpenKitAccessTokenRecord(
 /** Revalidates the current hash proof and authority, then records use in the native deciding section. */
 export function recordVerifiedOpenKitAccessTokenUse(
   coreDb: CoreDb,
-  input: import('../storage/access-token-verification-codecs.js').ControlAccessTokenVerification
+  input: import('../storage/access-token-verification-codecs.js').ControlAccessTokenVerification,
+  native?: Parameters<typeof observeRunBoundAccessTokenInDb>[2]
 ): VerifiedOpenKitAccessTokenRecord | null {
   const row = coreDb.sqlite
     .prepare(
@@ -321,7 +322,7 @@ export function recordVerifiedOpenKitAccessTokenUse(
     if (!isCanonicalUserActive(coreDb, row.owner_user_id)) return null;
     const record = readOpenKitAccessTokenRecord(row);
     if (record.runSubject) {
-      observeRunBoundAccessTokenInDb(coreDb, record);
+      observeRunBoundAccessTokenInDb(coreDb, record, native);
       return null;
     }
     if (!readCurrentOpenKitAccessTokenLineage(coreDb, record, now)) return null;

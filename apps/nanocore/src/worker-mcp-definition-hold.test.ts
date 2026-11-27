@@ -22,6 +22,7 @@ import {
   listExportableMcpToolSchemaSnapshots,
   readRetainedMcpToolSchemaSnapshot,
 } from './runtime/mcp-tool-schema-snapshots.js';
+import type { WorkerGovernanceTurnExecutorOptions } from './runtime/worker-governance-turn-executor.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import {
@@ -30,12 +31,13 @@ import {
 } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
-import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from './test-support/store.js';
@@ -148,9 +150,10 @@ describe('MCP changed-definition exposure through real Core and native capture',
         readRuntimeConfig: () => snapshot,
       });
       // Existing metadata-only image fixture; this is not image publication or execution evidence.
-      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const taskApp = createApp({
+        nanoHostStorage,
         coreDb,
         store,
         fileAdmission: native.fileAdmission,
@@ -163,6 +166,28 @@ describe('MCP changed-definition exposure through real Core and native capture',
           initialSnapshot: snapshot,
         }),
       });
+      // Park the retiring controller before it polls Worker completion, after its real
+      // delivery ACK and Workspace reader release. The outside worker and retained grant
+      // remain current; this gate delays the real reader and supplies no completion.
+      type WaitForCompletion = NonNullable<
+        WorkerGovernanceTurnExecutorOptions['awaitWorkerCompletion']
+      >;
+      const completionBoundary = native.executor as unknown as {
+        awaitWorkerCompletion: WaitForCompletion;
+      };
+      const waitForCompletion = completionBoundary.awaitWorkerCompletion.bind(native.executor);
+      const parkedController = Promise.withResolvers<string>();
+      const resumeController = Promise.withResolvers<void>();
+      let parkController = false;
+      const completion = vi
+        .spyOn(completionBoundary, 'awaitWorkerCompletion')
+        .mockImplementation(async (...args) => {
+          if (parkController) {
+            parkedController.resolve(args[0].scope.turnId);
+            await resumeController.promise;
+          }
+          return waitForCompletion(...args);
+        });
       let suppliedTools: Tools = structuredClone([originalTool, siblingTool]);
       const observed: Tools[] = [];
       // Only the upstream SDK list effect is replaced; Core's SDK server/handler is not.
@@ -262,6 +287,7 @@ describe('MCP changed-definition exposure through real Core and native capture',
         expect(store.getTurnById(turnA.id).status).toBe('completed');
 
         suppliedTools = structuredClone([changedTool, siblingTool]);
+        parkController = true;
         const startB = await taskApp.request(
           ...operationRequest(
             'task.start',
@@ -282,6 +308,7 @@ describe('MCP changed-definition exposure through real Core and native capture',
         second = native.executionFor(turnB.id);
         await second.launched.promise;
         await native.waitForStartup(turnB.id);
+        expect(await parkedController.promise).toBe(turnB.id);
         const tokenB = native.executor.capabilityToken;
         const packageB = native.workerControlGateway.authenticatePackageToken(`Bearer ${tokenB}`, {
           tokenFamily: 'capability',
@@ -353,7 +380,12 @@ describe('MCP changed-definition exposure through real Core and native capture',
         // The outside runtime peer remains separate and is not claimed to have restarted.
         reopenedCore = createTestCoreDb(dataRoot);
         const reopenedStore = new FsStore({ dataRoot });
-        const restoredControl = createDefaultWorkerControlGateway(reopenedCore);
+        const restoredStorage = await openAdmittedTestNanoHost(reopenedCore);
+        const restoredControl = createDefaultWorkerControlGateway(
+          reopenedCore,
+          undefined,
+          restoredStorage
+        );
         reopenedGateway = createDefaultWorkerMcpGateway(reopenedCore);
         expect(
           restoredControl.authenticatePackageToken(`Bearer ${tokenB}`, {
@@ -431,10 +463,12 @@ describe('MCP changed-definition exposure through real Core and native capture',
           closeTestCoreDb(retainedDb);
         }
       } finally {
+        resumeController.resolve();
         second?.completion.resolve();
         first?.completion.resolve();
         await second?.execution.catch(() => undefined);
         await first?.execution.catch(() => undefined);
+        completion.mockRestore();
         await native.restore();
         await reopenedGateway?.close();
         await gateway.close();

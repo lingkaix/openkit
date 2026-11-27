@@ -62,6 +62,16 @@ it('recovers a permanent envelope after losing the reserve and settle replies', 
       state: 'unknown',
     });
     expect(pick()).toEqual({ state: 'reserved-now' });
+    expect(() =>
+      db.sqlite
+        .prepare(`INSERT INTO idempotency_requests
+          (request_key, command_name, request_id, scope_json, input_hash, response_kind,
+           response_id, response_json, created_at, expires_at, schema_version)
+          SELECT ?, command_name, request_id, scope_json, input_hash, response_kind,
+           response_id, response_json, created_at, expires_at, schema_version
+          FROM idempotency_requests WHERE request_key = ?`)
+        .run('different-key-for-original-request', envelope.requestId)
+    ).toThrow('UNIQUE constraint failed: idempotency_requests.request_id');
     expect(pick()).toEqual({ state: 'inspect-original' });
     expect(
       db.sqlite.transaction(() =>

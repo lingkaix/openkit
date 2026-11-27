@@ -28,7 +28,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { disposeTestStore } from '../test-support/store.js';
 import {
@@ -528,7 +528,7 @@ describe('exact retained Worker Skill delivery', () => {
   });
 
   it('refuses corrupt launch before any Sandbox backend call', async () => {
-    admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
     const snapshot = skillSnapshotPath(
       coreDb.dataRoot,
       workspaceIdForOwner(turn.owner),

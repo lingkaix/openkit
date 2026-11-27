@@ -36,6 +36,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -43,7 +44,7 @@ import {
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
@@ -76,6 +77,7 @@ it.each([
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    if (outcome === 'cancelled') await openAdmittedTestNanoHost(coreDb);
     const store = new FsStore({ dataRoot: root });
     const ws = await store.createWorkspace('Task citations');
     recordWorkspaceOwnerMembership({
@@ -166,17 +168,17 @@ it.each([
             409
           );
         }
-        const manifest = createTestAgentSetup(
-          outcome === 'interrupted'
-            ? { requiredCapabilities: ['trusted-worker-inference-relay'] }
-            : {}
-        ).manifest;
+        const manifest = createTestAgentSetup({
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        }).manifest;
         if (outcome === 'interrupted') manifest.runtime.version = QUALIFIED_STEER_PINS.codex;
-        admitTestNativeEnvironment(coreDb, manifest);
+        await admitTestNativeEnvironmentForRoot(coreDb, manifest);
         await recordTestNativeRuntimeTarget(coreDb);
         const snapshot = createInMemoryRuntimeConfigSnapshot({
           workspaceConfigs:
-            outcome === 'interrupted' ? loadRuntimeConfig(root).workspaceConfigs : [],
+            outcome === 'interrupted' || outcome === 'admitted'
+              ? loadRuntimeConfig(root).workspaceConfigs
+              : [],
           agentManifests: [manifest],
           dataRoot: null,
           gatewayConfig: createTestGatewayConfig(),
@@ -191,8 +193,8 @@ it.each([
             },
           ]),
         });
-        // The shared peer holds the admitted Turn until the actual interrupt owner stops it.
-        if (outcome === 'interrupted') {
+        // The same admitted peer publishes the real final on completion, or waits for interrupt.
+        if (outcome === 'interrupted' || outcome === 'admitted') {
           const native = await createNativeTaskAdmissionFixture(coreDb, store, {
             readRuntimeConfig: () => snapshot,
           });
@@ -202,8 +204,13 @@ it.each([
             const execution = start(...args);
             enteredWorkerStarts.push(execution);
             // A late start during failure cleanup must release only its entered peer hold.
-            if (drainingInterruptedPeer && native.executor.launches > 0)
-              native.executor.completion.resolve();
+            if (outcome === 'admitted' || drainingInterruptedPeer) {
+              const gate = native.executionFor(args[1]);
+              void gate.launched.promise.then(
+                () => gate.completion.resolve(),
+                () => undefined
+              );
+            }
             return execution;
           };
         }
@@ -704,7 +711,7 @@ it.each([
       );
       expect(linked.goal!.disposition).toBeNull();
     } finally {
-      if (outcome === 'interrupted') {
+      if (outcome === 'interrupted' || outcome === 'admitted') {
         drainingInterruptedPeer = true;
         if (interruptedNative && interruptedNative.executor.launches > 0)
           interruptedNative.executor.completion.resolve();

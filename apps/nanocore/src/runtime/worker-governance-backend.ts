@@ -1268,7 +1268,12 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
    */
   cleanupSession(
     identity: WorkerGovernanceBackendSessionIdentity,
-    options?: { readonly failedCloseout: boolean; readonly wholeSandbox?: boolean }
+    options?: {
+      readonly failedCloseout: boolean;
+      readonly wholeSandbox?: boolean;
+      /** Carries the guarded first cleanup of the original disposed capture. */
+      readonly resumeAbandonedCapture?: true;
+    }
   ): Promise<void>;
 
   /**

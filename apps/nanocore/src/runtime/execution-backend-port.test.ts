@@ -1,11 +1,14 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
+  type CoreSchedulerQueueEntry,
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
@@ -13,8 +16,13 @@ import {
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import * as dbOwner from '../storage/db.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  testNanoHostRecoveryJoins,
+  testWorkerExecutorNanoHostJoins,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -26,16 +34,29 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+  transitionTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
+import {
+  EXECUTION_ATTEMPT_BUDGET_MS,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
+import { createExecutionStepJournalReader } from './execution-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+  type RunNanoHostAttemptRecoveryInput,
+  runNanoHostAttemptRecoveryMaintenance,
+} from './nanohost-attempt-recovery.js';
+import {
+  NanoHostEffectNotEnqueuedError,
+  type NanoHostSessionEffectRequest,
+} from './nanohost-session-dispatch.js';
 import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-maintenance-service.js';
 import {
   type RunSchedulerDispatchLoopInput,
@@ -48,9 +69,11 @@ import {
   runSchedulerRestartRecovery,
 } from './scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
+import * as workerTurnFailure from './worker-turn-failure.js';
 
 /** Semantic correlation at the four-operation port; physical proof is deliberately opaque. */
 interface Correlation {
@@ -76,12 +99,25 @@ function attempts(db: ReturnType<typeof openCoreDb>): Record<string, unknown>[] 
       "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
     )
     .get();
-  return exists
-    ? (db.sqlite
-        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
-        .all() as Record<string, unknown>[])
-    : [];
+  if (!exists) return [];
+  const rows = db.sqlite
+    .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+    .all() as Record<string, unknown>[];
+  // The backend, outcome and fence are no longer attempt columns; read them from their owners
+  // through the production attempt projection.
+  return rows.map((row) => {
+    const projected = requireSchedulerExecutionAttempt(db, String(row.attempt_id));
+    return {
+      ...row,
+      backend_id: projected.backendId,
+      outcome_ref: projected.outcomeRef,
+      fence_ref: projected.fenceRef,
+    };
+  });
 }
+
+/** The production Native backend id; admitted Native materialization requires it on the attempt. */
+const FIXTURE_BACKEND_ID = 'nanohost';
 
 /** Composes the real queue, dispatch, Store and maintenance with an external-effect double. */
 async function fixture(
@@ -91,6 +127,7 @@ async function fixture(
   options: {
     readonly cancelWithoutFence?: boolean;
     readonly lateCreate?: boolean;
+    readonly useRootDeploymentForTarget?: boolean;
   } = {}
 ) {
   const db = openCoreDb(mkdtempSync(join(tmpdir(), 'route-b-port-')));
@@ -104,7 +141,7 @@ async function fixture(
   });
 
   const setup = createTestAgentSetup();
-  admitTestNativeEnvironment(db, setup.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(db, setup.manifest);
   const snapshots: Record<string, unknown>[][] = [];
   const effectCalls: Correlation[] = [];
   const nativeStarts: Correlation[] = [];
@@ -113,9 +150,17 @@ async function fixture(
   let lostSubmitHeld = false;
   const submitResponse = Promise.withResolvers<void>();
   const dispatchErrors: unknown[] = [];
+  // Admitted Native submission checks the attempt's real journal clock, so the fixture clock is real
+  // and records its readings for the exact-budget assertion.
+  const clockReadings: number[] = [];
+  const clock = () => {
+    const reading = Date.now();
+    clockReadings.push(reading);
+    return new Date(reading).toISOString();
+  };
   const observations = new Map<string, Observation | null>();
   const port = {
-    id: 'fixture-backend',
+    id: FIXTURE_BACKEND_ID,
     submit: vi.fn(async (input: Correlation & { readonly deadline: string }) => {
       snapshots.push(attempts(db));
       effectCalls.push(input);
@@ -158,21 +203,16 @@ async function fixture(
   };
   // Production owns the preparation, effect-capable operation record, and submission crossing.
   // The double owns only external backend behavior; it never grants Core authority.
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
-    deploymentId: 'fixture-deployment',
+  // The RuntimeTarget is retained by the admitted NanoHost owner; the same allocate and ready tuple.
+  await recordTestNativeRuntimeTarget(db, 'fixture-target', {
+    ...(options.useRootDeploymentForTarget ? {} : { deploymentId: 'fixture-deployment' }),
     identityId: 'fixture-identity',
-    targetId: 'fixture-target',
-    observedAt: '2026-10-06T00:00:00.000Z',
-  });
-  await upsertNanoHostRuntimeTarget(db, {
-    ...target,
-    freshEmpty: true,
-    ready: true,
-    predecessorFenced: true,
+    allocationAt: '2026-10-06T00:00:00.000Z',
+    readyAt: '2026-10-06T00:00:00.000Z',
     physicalEpoch: 'a'.repeat(64),
-    observedAt: '2026-10-06T00:00:00.000Z',
   });
-  const controlGateway = createDefaultWorkerControlGateway(db);
+  const controlGateway = createDefaultWorkerControlGateway(db, undefined, nanoHostStorage);
+  const cleanupSession = vi.fn(async () => undefined);
   const backend: WorkerGovernanceBackend = {
     ...port,
     describeCapabilities: async () => ({
@@ -210,7 +250,7 @@ async function fixture(
       };
     },
     prepareLaunch: async () => undefined,
-    cleanupSession: async () => undefined,
+    cleanupSession,
     interruptTurn: async () => undefined,
     update: async () => [],
     collectEvidence: async () => [],
@@ -218,11 +258,12 @@ async function fixture(
     collectTranscript: async () => ({}),
   };
   const executor = new WorkerGovernanceTurnExecutor({
+    ...testWorkerExecutorNanoHostJoins(nanoHostStorage),
     fileAdmission: new FileStorageAdmission(db.dataRoot, () => 0n),
     coreDb: db,
     backend,
     workerControlGateway: controlGateway,
-    now: () => '2026-10-06T00:00:00.000Z',
+    now: clock,
     awaitWorkerCompletion: () => new Promise(() => {}),
   });
   const providerRegistry = new ProviderRegistry([
@@ -242,7 +283,7 @@ async function fixture(
     gatewayConfig: createTestGatewayConfig(),
     executionBackend: port,
     maxDispatches: 1,
-    now: () => '2026-10-06T00:00:00.000Z',
+    now: clock,
   };
   const recoveryInput: RunSchedulerRestartRecoveryInput = {
     store,
@@ -252,11 +293,15 @@ async function fixture(
       status: store.getTurnById(subject.turnId).status as 'failed',
     }),
   };
-  const queue = async (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
+  const queue = async (
+    suffix: string,
+    threadId = 'th_00000000-0000-7000-8000-000000000001',
+    workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
+  ) => {
     const turnId = testEntityId('tu', `turn_port_${suffix}`);
     const input = {
       requestId: testEntityId('tu', `request_port_${suffix}`).slice(3),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
       threadId,
       input: 'Execute exactly once.',
       agentId: setup.manifest.id,
@@ -268,7 +313,7 @@ async function fixture(
     };
     const createdAt = new Date().toISOString();
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
-      await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
+      await store.createThread(workspaceId, suffix, threadId);
     await store.createTurn(
       input.workspaceId,
       threadId,
@@ -318,10 +363,12 @@ async function fixture(
     store,
     executor,
     port,
+    cleanupSession,
     queue,
     snapshots,
     effectCalls,
     nativeStarts,
+    clockReadings,
     setPhysicalCapacityAvailable(available: boolean) {
       physicalCapacityAvailable = available;
     },
@@ -345,48 +392,223 @@ async function fixture(
   };
 }
 
-describe('execution backend port through real Core coordination', () => {
-  it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
-    const f = await fixture();
-    f.port.id = 'nanohost';
-    const setup = createTestAgentSetup({
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
-    admitTestNativeEnvironment(f.db, setup.manifest);
-    const held = Promise.withResolvers<void>();
-    const effects = vi.fn(async (request: { kind: string }) => {
-      expect(request.kind).toBe('image.acquire');
-      if (effects.mock.calls.length === 1) {
-        await held.promise;
-      }
-      throw new Error('Controlled image refusal after acquisition entry.');
-    });
-    const runtime = createConfiguredWorkerLifecycleRuntime({
-      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
-      coreDb: f.db,
-      store: f.store,
-      env: {},
-      workerControlGateway: new WorkerControlGateway(),
-      nanoHostSessionDispatch: {
-        effect: effects,
-        async poll() {
-          return null;
-        },
-        async result() {},
-        async route() {
-          throw new Error('No native route.');
-        },
+// Only the image peer is faulted. The scheduler and admitted owners are the production path.
+async function imagePreparationFixture(
+  prepareImage: (request: NanoHostSessionEffectRequest) => Promise<unknown>,
+  options: {
+    readonly useRootDeploymentForTarget?: boolean;
+    readonly refuseImageInspection?: true;
+  } = {}
+) {
+  const f = await fixture('accepted', 'local', false, options);
+  const setup = createTestAgentSetup({
+    requiredCapabilities: ['trusted-worker-inference-relay'],
+  });
+  const nativeStorage = await admitTestNativeEnvironmentForRoot(f.db, setup.manifest);
+  const effects = vi.fn(async (request: NanoHostSessionEffectRequest) => {
+    if (request.kind === 'image.inspect' && options.refuseImageInspection)
+      throw new Error('The original acquired image could not pass validation.');
+    expect(request.kind).toBe('image.acquire');
+    return await prepareImage(request);
+  });
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    coreDb: f.db,
+    store: f.store,
+    env: {},
+    workerControlGateway: new WorkerControlGateway(),
+    // Production joins the admitted NanoHost owner; the fixture runs that configuration.
+    nanoHostRecovery: testNanoHostRecoveryJoins(nativeStorage),
+    nanoHostSessionDispatch: {
+      effect: effects,
+      async poll() {
+        return null;
       },
+      async result() {},
+      async fileExportResult() {
+        throw new Error('Image preparation admits no file export.');
+      },
+      async workspaceCollectResult() {
+        throw new Error('Image preparation admits no collection.');
+      },
+      async imageBuildInput() {
+        throw new Error('The original operation is image acquisition.');
+      },
+      async route() {
+        throw new Error('No native route.');
+      },
+    },
+  });
+  const input = {
+    ...f.dispatchInput,
+    now: () => new Date().toISOString(),
+    agentManifests: [setup.manifest],
+    turnExecutor: runtime.turnExecutor,
+    executionBackend: runtime.turnExecutor.executionBackend!,
+  };
+  return { f, effects, input, runtime, nativeStorage };
+}
+
+// Read the original Workspace root and its immutable image/release steps under scope admission.
+async function readImagePreparationJournal(
+  db: ReturnType<typeof openCoreDb>,
+  entry: CoreSchedulerQueueEntry
+) {
+  const workspace = dbOwner.openAdmittedWorkspaceReadDb(db.dataRoot, entry.workspaceId);
+  try {
+    const rows = workspace.sqlite
+      .prepare('SELECT id FROM control_executions WHERE work_id = ?')
+      .all(entry.turnId) as { id: string }[];
+    expect(rows).toHaveLength(1);
+    const ref = {
+      owner: { kind: 'workspace' as const, workspaceId: entry.workspaceId },
+      executionId: rows[0]!.id,
+    };
+    const reader = createExecutionStepJournalReader(workspace, ref.owner);
+    return { root: await reader.readExecution(ref), steps: await reader.readEndedSteps(ref) };
+  } finally {
+    workspace.sqlite.close();
+  }
+}
+
+describe('execution backend port through real Core coordination', () => {
+  it('keeps a lost-authority claim refusal while an unresolved writer holds the Workspace', async () => {
+    const f = await fixture('unknown', 'local', true);
+    f.port.cancel.mockImplementation(async (correlation) => ({
+      ...correlation,
+      disposition: 'unknown',
+      execution: 'unknown',
+      fenceRef: null,
+      outcomeRef: null,
+    }));
+    const post = Worker.prototype.postMessage;
+    let revoked = false;
+    let revocationFault: unknown;
+    const requests = vi.spyOn(Worker.prototype, 'postMessage');
+    try {
+      // A's submitted attempt holds the Workspace. Its unknown submit response keeps that hold.
+      await f.queue('authority-holder');
+      await f.dispatch();
+      const holder = f.effectCalls[0]!;
+      f.settleSubmitResponse();
+      await vi.waitFor(() =>
+        expect(attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase).toBe(
+          'closing'
+        )
+      );
+      const b = await f.queue('authority-lost', 'th_00000000-0000-7a11-83a9-10eb8b40019b');
+      const admission = requireSchedulerAdmissionEntry(f.db, b.queueEntryId);
+      // Main selected B under its current authority. The responsible User is disabled before Core
+      // decides B's claim, so Core refuses B for lost authority while A still holds the Workspace.
+      // The claim request is posted after that commit. The Worker can hold the Core write lock, so
+      // the revocation retries a busy lock without blocking Main.
+      const revoke = async () => {
+        for (;;) {
+          try {
+            f.db.sqlite
+              .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+              .run(new Date().toISOString(), 'usr_00000000-0000-7000-8000-000000000001');
+            return;
+          } catch (error) {
+            if (!(error instanceof Error && 'code' in error && error.code === 'SQLITE_BUSY')) {
+              revocationFault = error;
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        }
+      };
+      requests.mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
+        const message: unknown = args[0];
+        if (
+          revoked === false &&
+          typeof message === 'object' &&
+          message !== null &&
+          'operation' in message &&
+          message.operation === 'execution-attempt' &&
+          'input' in message &&
+          typeof message.input === 'object' &&
+          message.input !== null &&
+          'kind' in message.input &&
+          message.input.kind === 'create'
+        ) {
+          revoked = true;
+          void revoke().then(() => post.apply(this, args));
+          return;
+        }
+        return post.apply(this, args);
+      });
+      const dispatched = f.dispatch().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      const outcome = await dispatched;
+      expect(revoked).toBe(true);
+      expect(revocationFault).toBeUndefined();
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(
+        'The exact queued admission is no longer dispatchable.'
+      );
+      expect(
+        attempts(f.db).find((row) => row.attempt_id === holder.attemptId)?.phase,
+        'A still holds the Workspace when Main handles the refusal.'
+      ).toBe('closing');
+      expect(attempts(f.db).filter((row) => row.turn_id === b.turnId)).toEqual([]);
+      expect(requireSchedulerAdmissionEntry(f.db, b.queueEntryId)).toEqual(admission);
+      expect(f.port.submit).toHaveBeenCalledOnce();
+    } finally {
+      requests.mockRestore();
+      f.db.sqlite.close();
+    }
+  });
+
+  it('releases a consumed original image result after read-only image validation fails', async () => {
+    const { f, effects, input } = await imagePreparationFixture(
+      async () => ({ digest: `sha256:${'a'.repeat(64)}` }),
+      { refuseImageInspection: true }
+    );
+    try {
+      const first = await f.queue('native-first');
+      await expect(runSchedulerDispatchLoop(input)).rejects.toThrow(
+        'The original acquired image could not pass validation.'
+      );
+      expect(effects.mock.calls.map(([request]) => request.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
+      const attempt = requireSchedulerExecutionAttempt(f.db, String(attempts(f.db)[0]!.attempt_id));
+      expect(attempt).toMatchObject({
+        phase: 'closed',
+        operationId: effects.mock.calls[0]![0].requestId,
+        fenceRef: expect.any(String),
+      });
+      const { root, steps } = await readImagePreparationJournal(f.db, first);
+      expect(root).toMatchObject({ phase: 'closed', exclusionRefs: [] });
+      expect(steps).toContainEqual(
+        expect.objectContaining({
+          state: 'completed',
+          control: expect.objectContaining({
+            kind: 'consume-receipt',
+            operationId: attempt.operationId,
+          }),
+        })
+      );
+    } finally {
+      f.db.sqlite.close();
+    }
+  });
+
+  it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
+    const held = Promise.withResolvers<void>();
+    const { f, effects, input } = await imagePreparationFixture(async () => {
+      await held.promise;
+      throw new Error('Controlled image refusal after acquisition entry.');
     });
     const first = await f.queue('native-first');
     const second = await f.queue('native-second', testEntityId('th', 'thread_native_second'));
-    const input = {
-      ...f.dispatchInput,
-      now: () => new Date().toISOString(),
-      agentManifests: [setup.manifest],
-      turnExecutor: runtime.turnExecutor,
-      executionBackend: runtime.turnExecutor.executionBackend!,
-    };
     const preparing = runSchedulerDispatchLoop(input).catch((error: unknown) => error);
     try {
       await vi.waitFor(
@@ -402,19 +624,266 @@ describe('execution backend port through real Core coordination', () => {
       expect(
         f.store.listThreadAgentSessions('ws_00000000-0000-7000-8000-000000000001', second.threadId)
       ).toEqual([]);
-      held.resolve();
-      expect(await preparing).toBeInstanceOf(Error);
-      expect(requireSchedulerAdmissionEntry(f.db, first.queueEntryId).status).toBe('admitted');
-      expect(attempts(f.db)[0]).toMatchObject({
-        phase: 'closed',
-        outcome_ref: `turn:${first.turnId}:failed`,
-      });
-      await runSchedulerDispatchLoop(input).catch(() => undefined);
-      expect(effects).toHaveBeenCalledTimes(2);
-      expect(attempts(f.db)).toHaveLength(2);
     } finally {
       held.resolve();
       await preparing;
+      f.db.sqlite.close();
+    }
+  });
+
+  it('keeps an unknown image result on its original scope while the next FIFO Task prepares', async () => {
+    const { f, effects, input } = await imagePreparationFixture(async () => {
+      throw new Error('Controlled image refusal after acquisition entry.');
+    });
+    try {
+      const first = await f.queue('native-first');
+      const second = await f.queue('native-second', testEntityId('th', 'thread_native_second'));
+      const preparation = await runSchedulerDispatchLoop(input).catch((error: unknown) => error);
+      expect(preparation).toBeInstanceOf(Error);
+      expect(effects).toHaveBeenCalledOnce();
+      expect(requireSchedulerAdmissionEntry(f.db, first.queueEntryId).status).toBe('admitted');
+      const [original] = attempts(f.db);
+      const attempt = requireSchedulerExecutionAttempt(f.db, String(original?.attempt_id));
+      expect(attempt).toMatchObject({
+        turnId: first.turnId,
+        phase: 'closing',
+        disposition: 'unknown',
+        outcomeRef: null,
+        operationId: effects.mock.calls[0]![0].requestId,
+      });
+      expect(attempt.bindingRef).toEqual(expect.any(String));
+      const journal = await readImagePreparationJournal(f.db, first);
+      expect(journal.steps).toContainEqual(
+        expect.objectContaining({
+          state: 'unknown',
+          control: expect.objectContaining({
+            kind: 'resolve-setup',
+            attemptId: attempt.attemptId,
+            operationId: attempt.operationId,
+          }),
+        })
+      );
+      expect(journal.root.exclusionRefs).toEqual([attempt.attemptId, attempt.bindingRef]);
+      expect(requireSchedulerAdmissionEntry(f.db, second.queueEntryId).status).toBe('queued');
+
+      await runSchedulerDispatchLoop(input).catch(() => undefined);
+      expect(effects).toHaveBeenCalledTimes(2);
+      expect(attempts(f.db)).toHaveLength(2);
+      expect(requireSchedulerAdmissionEntry(f.db, second.queueEntryId).status).toBe('admitted');
+      expect(attempts(f.db)[1]).toMatchObject({ turn_id: second.turnId });
+      expect(requireSchedulerExecutionAttempt(f.db, attempt.attemptId)).toMatchObject({
+        phase: 'closing',
+        outcomeRef: null,
+      });
+      expect((await readImagePreparationJournal(f.db, first)).root).toMatchObject({
+        ref: journal.root.ref,
+        exclusionRefs: journal.root.exclusionRefs,
+      });
+    } finally {
+      f.db.sqlite.close();
+    }
+  });
+
+  // K8b unit 2 (U2-PRE) owns the proved pre-submit close and exact release.
+  it('closes and releases the original preparation after an exact image pre-enqueue refusal', async () => {
+    const { f, effects, input } = await imagePreparationFixture(async (request) => {
+      expect(request.requestId).toEqual(expect.any(String));
+      throw new NanoHostEffectNotEnqueuedError('image.acquire', request.requestId!);
+    });
+    try {
+      const first = await f.queue('native-first');
+      const failure = await runSchedulerDispatchLoop(input).catch((error: unknown) => error);
+      expect(effects).toHaveBeenCalledOnce();
+      expect(attempts(f.db)).toHaveLength(1);
+      const attempt = requireSchedulerExecutionAttempt(f.db, String(attempts(f.db)[0]!.attempt_id));
+      const { root, steps } = await readImagePreparationJournal(f.db, first);
+      expect(failure).toBeInstanceOf(NanoHostEffectNotEnqueuedError);
+      expect(steps).toContainEqual(
+        expect.objectContaining({
+          state: 'failed',
+          control: expect.objectContaining({
+            kind: 'resolve-setup',
+            attemptId: attempt.attemptId,
+            operationId: effects.mock.calls[0]![0].requestId,
+            outputRefs: [],
+          }),
+        })
+      );
+      expect(attempt).toMatchObject({
+        turnId: first.turnId,
+        phase: 'closed',
+        disposition: 'not_accepted',
+      });
+      expect(root).toMatchObject({ phase: 'closed', exclusionRefs: [] });
+      expect(steps).toContainEqual(
+        expect.objectContaining({
+          state: 'completed',
+          control: expect.objectContaining({ kind: 'release', attemptId: attempt.attemptId }),
+        })
+      );
+    } finally {
+      f.db.sqlite.close();
+    }
+  });
+
+  // U2-PRE-UNKNOWN takes the fenced exit through U2-P11 when the original Epoch has ended.
+  it('releases an expired unknown image preparation only after its original Epoch is fenced', async () => {
+    const { f, effects, input, runtime, nativeStorage } = await imagePreparationFixture(
+      async () => {
+        throw new Error('Controlled image refusal after acquisition entry.');
+      },
+      { useRootDeploymentForTarget: true }
+    );
+    try {
+      const first = await f.queue('native-first');
+      await runSchedulerDispatchLoop(input).catch(() => undefined);
+      expect(effects).toHaveBeenCalledOnce();
+      expect(attempts(f.db)).toHaveLength(1);
+      const original = requireSchedulerExecutionAttempt(
+        f.db,
+        String(attempts(f.db)[0]!.attempt_id)
+      );
+      const operationId = effects.mock.calls[0]![0].requestId;
+      expect(operationId).toEqual(expect.any(String));
+      expect(original).toMatchObject({
+        turnId: first.turnId,
+        operationId,
+        deadline: null,
+        phase: 'closing',
+        disposition: 'unknown',
+        outcomeRef: null,
+      });
+      const before = await readImagePreparationJournal(f.db, first);
+      const unknownImage = before.steps.find(
+        (step) =>
+          step.control.kind === 'resolve-setup' &&
+          step.control.attemptId === original.attemptId &&
+          step.control.operationId === operationId
+      );
+      expect(unknownImage?.state).toBe('unknown');
+      expect(before.root.exclusionRefs).toEqual([original.attemptId, original.bindingRef]);
+
+      const owner = nativeStorage.value.owner;
+      const anchor = owner.read((sqlite) =>
+        getWorkerBackendSession({ sqlite }, original.attemptId)
+      );
+      if (anchor.state !== 'ready' || !anchor.value)
+        throw new Error('Original anchor is required.');
+      const target = owner.readRuntimeTarget(anchor.value.runtimeTargetId);
+      if (target.state !== 'ready' || !target.value)
+        throw new Error('Original target is required.');
+      expect(target.value).toMatchObject({
+        ready: true,
+        deploymentId: anchor.value.deploymentId,
+        physicalEpoch: anchor.value.originPhysicalEpoch,
+      });
+
+      if (!unknownImage?.control.deadlineUnixNano)
+        throw new Error('The original image allowance is missing.');
+      const deadline = Number(unknownImage.control.deadlineUnixNano / 1_000_000n);
+      const expired = new Date(deadline + 1).toISOString();
+      let recoveryTime = new Date(deadline - 1).toISOString();
+      const recoveryInput: RunNanoHostAttemptRecoveryInput = {
+        store: f.store,
+        executionBackend: input.executionBackend,
+        admittedNanoHostRecovery: {
+          state: 'ready' as const,
+          value: bindBootNanoHostAttemptRecovery(owner, {
+            coreDb: f.db,
+            reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus,
+          }),
+        },
+        now: () => recoveryTime,
+        reconcileExecutions: () => runtime.executionReconciler.runOnce(),
+        cleanupBackendSession: runtime.cleanupBackendSession,
+        awaitPreparedBackendCleanup: runtime.awaitPreparedBackendCleanup,
+        prepareBackendCleanup: runtime.prepareBackendCleanup,
+        ...(runtime.cleanupPreparation ? { cleanupPreparation: runtime.cleanupPreparation } : {}),
+        ...(runtime.releaseRecoveryScopes
+          ? { releaseRecoveryScopes: runtime.releaseRecoveryScopes }
+          : {}),
+        restoreBackendSession: runtime.restoreBackendSession,
+        isTurnExecutionActive: runtime.isTurnExecutionActive,
+        projectRecoveredTurn: async ({ turnId }) => {
+          expect(turnId).toBe(first.turnId);
+          expect(f.store.getTurnById(turnId).status).toBe('failed');
+          return { status: 'failed' };
+        },
+      };
+
+      // Recovery at expiry alone has no evidence to clear this scope.
+      await runSchedulerRecoveryMaintenance(f.db, recoveryInput);
+      await runNanoHostAttemptRecoveryMaintenance(f.db, recoveryInput).catch(() => undefined);
+      expect(requireSchedulerExecutionAttempt(f.db, original.attemptId).phase).toBe('closing');
+      expect((await readImagePreparationJournal(f.db, first)).root.exclusionRefs).toEqual(
+        before.root.exclusionRefs
+      );
+
+      // Record a fresh, predecessor-fenced Epoch through the admitted target writer.
+      const { targetId, identityId, deploymentId, connectionGeneration } = target.value;
+      const placement = {
+        targetId,
+        identityId,
+        deploymentId,
+        observedAt: new Date(deadline - 2).toISOString(),
+      };
+      const allocated = await transitionTestNativeRuntimeTarget(f.db, {
+        kind: 'allocate',
+        ...placement,
+      });
+      expect(allocated.connectionGeneration).toBeGreaterThan(connectionGeneration);
+      const newEpoch = 'b'.repeat(64);
+      expect(newEpoch).not.toBe(anchor.value.originPhysicalEpoch);
+      const ready = await transitionTestNativeRuntimeTarget(f.db, {
+        kind: 'ready',
+        ...placement,
+        connectionGeneration: allocated.connectionGeneration,
+        predecessorFenced: true,
+        freshEmpty: true,
+        ready: true,
+        physicalEpoch: newEpoch,
+      });
+      expect(ready).toMatchObject({
+        ...placement,
+        connectionGeneration: allocated.connectionGeneration,
+        predecessorFenced: true,
+        freshEmpty: true,
+        ready: true,
+        physicalEpoch: newEpoch,
+      });
+
+      await expect(runNanoHostAttemptRecoveryMaintenance(f.db, recoveryInput)).rejects.toThrow(
+        'Native attempt recovery failed.'
+      );
+      expect(requireSchedulerExecutionAttempt(f.db, original.attemptId).phase).toBe('closing');
+      expect((await readImagePreparationJournal(f.db, first)).root.exclusionRefs).toEqual(
+        before.root.exclusionRefs
+      );
+      recoveryTime = expired;
+      const recovery = await runNanoHostAttemptRecoveryMaintenance(f.db, recoveryInput).catch(
+        (error: unknown) => error
+      );
+      expect(
+        owner.read((sqlite) => getWorkerBackendSession({ sqlite }, original.attemptId))
+      ).toMatchObject({ state: 'ready', value: { state: 'cleaned' } });
+      const after = await readImagePreparationJournal(f.db, first);
+      expect(
+        after.steps.filter(({ control }) => control.kind === 'release').map(({ state }) => state)
+      ).toEqual(['completed']);
+      expect(recovery).toBeUndefined();
+      expect(effects).toHaveBeenCalledOnce();
+      expect(attempts(f.db)).toHaveLength(1);
+      expect(requireSchedulerExecutionAttempt(f.db, original.attemptId)).toMatchObject({
+        phase: 'closed',
+        fenceRef: expect.any(String),
+      });
+      expect(after.steps).toContainEqual(unknownImage);
+      expect(after.root).toMatchObject({
+        ref: before.root.ref,
+        phase: 'closed',
+        exclusionRefs: [],
+      });
+    } finally {
       f.db.sqlite.close();
     }
   });
@@ -427,12 +896,12 @@ describe('execution backend port through real Core coordination', () => {
         await f.queue('configured');
         await f.dispatch();
         expect(f.port.submit).toHaveBeenCalledOnce();
-        expect(f.effectCalls[0]).toMatchObject({ backendId: 'fixture-backend' });
+        expect(f.effectCalls[0]).toMatchObject({ backendId: FIXTURE_BACKEND_ID });
         const atCall = f.snapshots[0]![0]!;
         expect(atCall).toMatchObject({
           phase: 'open',
           disposition: 'unknown',
-          backend_id: 'fixture-backend',
+          backend_id: FIXTURE_BACKEND_ID,
         });
         expect(atCall.operation_id).toBe(f.effectCalls[0]!.operationId);
         expect(atCall.attempt_id).toBe(f.effectCalls[0]!.attemptId);
@@ -445,7 +914,7 @@ describe('execution backend port through real Core coordination', () => {
   );
 
   it('closes definite busy only after no reservation, keeping the same queued admission and Turn for a new attempt', async () => {
-    const f = await fixture('accepted');
+    const f = await fixture('accepted', 'local', true);
     try {
       f.setPhysicalCapacityAvailable(false);
       const entry = await f.queue('busy');
@@ -466,23 +935,85 @@ describe('execution backend port through real Core coordination', () => {
       expect(f.port.submit).not.toHaveBeenCalled();
       expect(attempts(f.db)).toHaveLength(2);
       expect(attempts(f.db)[1]!.attempt_id).not.toBe(first.attempt_id);
-      f.setPhysicalCapacityAvailable(true);
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      expect(f.effectCalls[0]!.attemptId).not.toBe(first.attempt_id);
-      expect(
-        f.store
-          .listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .map((turn) => turn.id)
-      ).toContain(entry.turnId);
-      expect(
-        f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
-      ).toEqual({ count: 1 });
+
+      const start = vi.spyOn(f.executor, 'startTurn');
+      const completeTurn = vi.spyOn(f.store, 'completeTurn');
+      const openWorkspace = dbOwner.openAdmittedWorkspaceReadDb;
+      const trackReader = (db: dbOwner.WorkspaceDb) => ({
+        db,
+        close: vi.spyOn(db.sqlite, 'close'),
+      });
+      const reopened: ReturnType<typeof trackReader>[] = [];
+      const open = vi
+        .spyOn(dbOwner, 'openAdmittedWorkspaceReadDb')
+        .mockImplementation((...args) => {
+          const reader = openWorkspace(...args);
+          if (!f.db.sqlite.open && args[0] === f.db.dataRoot && args[1] === entry.workspaceId)
+            reopened.push(trackReader(reader));
+          return reader;
+        });
+      const classify = workerTurnFailure.acceptedWorkerFinalCloseoutHold;
+      const observed: { exception?: unknown; openAtThrow?: boolean } = {};
+      const classification = vi
+        .spyOn(workerTurnFailure, 'acceptedWorkerFinalCloseoutHold')
+        .mockImplementation((error, evidence) => {
+          try {
+            return classify(error, evidence);
+          } catch (exception) {
+            if (evidence !== true && evidence?.coreDb === f.db && !('exception' in observed)) {
+              observed.exception = exception;
+              observed.openAtThrow = reopened[0]?.db.sqlite.open;
+            }
+            throw exception;
+          }
+        });
+      try {
+        f.setPhysicalCapacityAvailable(true);
+        await f.dispatch();
+        expect(f.port.submit).toHaveBeenCalledOnce();
+        expect(f.effectCalls[0]!.attemptId).not.toBe(first.attempt_id);
+        expect(
+          f.store
+            .listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+            .map((turn) => turn.id)
+        ).toContain(entry.turnId);
+        expect(
+          f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+        ).toEqual({ count: 1 });
+
+        // The fixture returns on submit observation, before the executor has consumed the reply.
+        const execution = start.mock.results[0]?.value;
+        expect(start).toHaveBeenCalledOnce();
+        expect(f.executor.isTurnExecutionActive(entry.turnId)).toBe(true);
+        f.db.sqlite.close();
+        f.settleSubmitResponse();
+        await expect(execution).rejects.toThrow('The database connection is not open');
+        await expect(execution).rejects.toBe(observed.exception);
+        expect(reopened).toHaveLength(1);
+        expect(observed.openAtThrow).toBe(true);
+        expect(completeTurn).not.toHaveBeenCalled();
+        expect(f.cleanupSession).not.toHaveBeenCalled();
+        expect(f.port.cancel).not.toHaveBeenCalled();
+        expect(f.port.release).not.toHaveBeenCalled();
+        expect(reopened[0]!.close).toHaveBeenCalledOnce();
+        expect(reopened[0]!.db.sqlite.open).toBe(false);
+      } finally {
+        f.settleSubmitResponse();
+        // Preserve the failing owner assertion and let the regular shutdown hook drain on take-out.
+        for (const { db, close } of reopened) {
+          if (db.sqlite.open) db.sqlite.close();
+          close.mockRestore();
+        }
+        classification.mockRestore();
+        open.mockRestore();
+        completeTurn.mockRestore();
+        start.mockRestore();
+      }
     } finally {
-      f.db.sqlite.close();
+      if (f.db.sqlite.open) f.db.sqlite.close();
     }
   });
 
@@ -571,13 +1102,52 @@ describe('execution backend port through real Core coordination', () => {
         expect(acquire, 'The record owner must expose conditional attempt acquisition.').toBeTypeOf(
           'function'
         );
-        // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
-        const control = await f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
-        const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
+        const candidateFor = (
+          entry: ReturnType<typeof createSchedulerAdmissionEntry>,
+          attemptId: string,
+          sessionId: string
+        ) => ({
           entry,
           attemptId,
           agentSessionId: sessionId,
         });
+        // Direct acquisition under A's genuine Workspace hold stays refused for an independent Thread.
+        const sameWorkspace = await f.queue(
+          'same-workspace',
+          'th_00000000-0000-7a11-83a9-10eb8b400194'
+        );
+        const beforeHeld = attempts(f.db);
+        expect(() =>
+          acquire(
+            f.db,
+            candidateFor(
+              sameWorkspace,
+              testEntityId('attempt', 'same-workspace-attempt'),
+              testEntityId('as', 'same-workspace-session')
+            )
+          )
+        ).toThrow(/Execution placement has an unresolved writer/);
+        expect(attempts(f.db)).toEqual(beforeHeld);
+        expect(requireSchedulerAdmissionEntry(f.db, sameWorkspace.queueEntryId).status).toBe(
+          'queued'
+        );
+        cancelSchedulerAdmissionEntry(f.db, {
+          queueEntryId: sameWorkspace.queueEntryId,
+          workspaceId: sameWorkspace.workspaceId,
+        });
+        // Positive control in another Workspace prevents a missing prerequisite or unconditional
+        // refusal from proving exclusion.
+        const other = await f.store.createWorkspace('Independent placement');
+        recordWorkspaceOwnerMembership({
+          coreDb: f.db,
+          workspaceId: other.id,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        });
+        const control = await f.queue(
+          'control',
+          'th_00000000-0000-7a11-83a9-10eb8b400195',
+          other.id
+        );
         await acquire(
           f.db,
           candidateFor(
@@ -608,7 +1178,8 @@ describe('execution backend port through real Core coordination', () => {
                   })
                 : await f.queue(
                     `collision-${collision}`,
-                    'th_00000000-0000-751d-bedc-6ab13a59afef'
+                    'th_00000000-0000-751d-bedc-6ab13a59afef',
+                    other.id
                   );
           const candidate = candidateFor(
             entry,
@@ -619,7 +1190,11 @@ describe('execution backend port through real Core coordination', () => {
           );
           const before = attempts(f.db);
           expect(() => acquire(f.db, candidate)).toThrow(
-            collision === 'turn' ? /queued admission/ : /UNIQUE constraint/
+            collision === 'turn'
+              ? /queued admission/
+              : collision === 'thread'
+                ? /Execution placement has an unresolved writer/
+                : /Selected AgentSession has an unresolved writer/
           );
           expect(
             attempts(f.db),
@@ -714,34 +1289,32 @@ describe('execution backend port through real Core coordination', () => {
               'closing'
             )
           );
+          // FIFO under the hold: capacity is available, but A's unresolved writer still holds the
+          // Workspace. B stays queued in its FIFO position with no attempt and no backend call.
+          f.setPhysicalCapacityAvailable(true);
           await f.dispatch();
-          await vi.waitFor(() =>
-            expect(attempts(f.db)).toContainEqual(
-              expect.objectContaining({
-                turn_id: b.id,
-                phase: 'closed',
-                terminal_cause: 'backend-busy',
-                disposition: 'not_accepted',
-                operation_id: null,
-              })
-            )
-          );
           expect(f.port.submit).toHaveBeenCalledOnce();
-          expect(f.nativeStarts).toHaveLength(1);
+          expect(attempts(f.db).filter((row) => row.turn_id === b.id)).toEqual([]);
           expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
             expect.objectContaining({ turnId: b.id })
           );
-          const busy = attempts(f.db).find(
-            (row) => row.turn_id === b.id && row.terminal_cause === 'backend-busy'
-          )!;
-          expect(busy.phase).toBe('closed');
-          // Only this backend's capacity proof changes; A's original unresolved execution stays fenced.
-          f.setPhysicalCapacityAvailable(true);
+          // Cross-Workspace: the dispatch pass skips held B and selects the next eligible FIFO
+          // entry, a later admission in another Workspace. A's exclusion stays local.
+          const c = await f.queue(
+            'cross-workspace',
+            'th_00000000-0000-7a11-83a9-10eb8b400196',
+            other.id
+          );
           await f.dispatch();
           await vi.waitFor(() => expect(f.nativeStarts).toHaveLength(2));
           expect(f.port.submit).toHaveBeenCalledTimes(2);
-          expect(f.effectCalls[1]!.attemptId).not.toBe(original.attemptId);
-          expect(f.effectCalls[1]!.attemptId).not.toBe(busy.attempt_id);
+          expect(f.effectCalls[1]!.attemptId).toBe(
+            attempts(f.db).find((row) => row.turn_id === c.turnId)?.attempt_id
+          );
+          expect(attempts(f.db).filter((row) => row.turn_id === b.id)).toEqual([]);
+          expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
+            expect.objectContaining({ turnId: b.id })
+          );
           expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
             'closing'
           );
@@ -758,9 +1331,14 @@ describe('execution backend port through real Core coordination', () => {
               coreDb: reloaded,
               store: recovery.store,
             });
+            // The hold and B's FIFO position survive restart; no backend call repeats.
             expect(
               attempts(reloaded).find((row) => row.attempt_id === original.attemptId)?.phase
             ).toBe('closing');
+            expect(attempts(reloaded).filter((row) => row.turn_id === b.id)).toEqual([]);
+            expect(listQueuedSchedulerAdmissionEntries(reloaded)).toContainEqual(
+              expect.objectContaining({ turnId: b.id })
+            );
             expect(f.port.submit).toHaveBeenCalledTimes(2);
             expect(f.nativeStarts).toHaveLength(2);
           } finally {
@@ -1000,17 +1578,15 @@ describe('execution backend port through real Core coordination', () => {
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const submitted = f.port.submit.mock.calls[0]![0];
-      expect(Date.parse(submitted.deadline) - Date.parse('2026-10-06T00:00:00.000Z')).toBe(
-        7_200_000
-      );
+      // The deadline is exactly one fixture clock reading plus the 7200 second budget.
+      const startedAt = Date.parse(submitted.deadline) - 7_200_000;
+      expect(f.clockReadings).toContain(startedAt);
       const original = attempts(f.db)[0]!;
       expect(Number.isFinite(Date.parse(String(original.deadline)))).toBe(true);
       expect(original.deadline).toBe(submitted.deadline);
-      for (const now of [
-        '2026-10-06T00:00:10.000Z',
-        '2026-10-06T01:59:59.999Z',
-        '2026-10-06T02:00:00.000Z',
-      ]) {
+      for (const now of [10_000, 7_199_999, 7_200_000].map((offset) =>
+        new Date(startedAt + offset).toISOString()
+      )) {
         await runSchedulerRecoveryMaintenance(f.db, {
           ...f.recoveryInput,
           now: () => now,
@@ -1149,8 +1725,15 @@ describe('execution backend port through real Core coordination', () => {
       });
       expect(afterKill.disposition).not.toBe('not_accepted');
       expect(afterKill.phase).not.toBe('closed');
+      // The lost original still holds its Workspace, so the late create runs in another Workspace.
+      const siblingWorkspace = await f.store.createWorkspace('Late create placement');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.db,
+        workspaceId: siblingWorkspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      });
       const siblingThread = 'th_00000000-0000-7c17-8000-000000000171';
-      const sibling = await f.queue('late-create', siblingThread);
+      const sibling = await f.queue('late-create', siblingThread, siblingWorkspace.id);
       await f.dispatch();
       await vi.waitFor(() =>
         expect(f.effectCalls.some((call) => call.attemptId !== original.attemptId)).toBe(true)

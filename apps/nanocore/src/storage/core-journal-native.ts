@@ -7,72 +7,2995 @@ import {
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import {
   type ActorRef,
+  canonicalJsonText,
   compareCodeUnits,
   deriveEntityId,
   type KernelAuditEvent,
+  readRetainedV1,
 } from '@openkit/protocol';
-import { policyDigest } from '@openkit/protocol/digest';
-import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
+import { policyDigest, sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
+import {
+  buildWorkerCanonicalTerminalEventRecord,
+  WorkerCanonicalTerminalEventDataSchema,
+} from '@openkit/worker-protocol';
+import type { z } from 'zod';
+import {
+  auditEventFromRow,
+  prepareServerAuditEvent,
+  recordServerAuditEvent,
+} from '../audit-events.js';
+import { requireCurrentDeploymentAdmin } from '../auth/access-token-store.js';
+import type { Actor } from '../auth/identity.js';
 import { validatePolicyDocument } from '../policy/statements.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   abandonCoreImageJournal,
+  hasCoreIdleCleanupConsumption,
+  isSandboxReleaseRefusalFenced,
   localCoreJournalIntent,
+  readCoreHarnessConsumption,
+  readSandboxReleaseRefusalFence,
+  readSandboxReleaseRefusalOrder,
+  sandboxReleaseRefusalExecutionId,
   settleCoreIdleJournal,
 } from '../runtime/core-journal-records.js';
 import {
+  acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  closeSchedulerExecutionAttemptWithoutEffects,
+  EXECUTION_ATTEMPT_BUDGET_MS,
   markSchedulerExecutionAttemptClosing,
+  readReleasedSandboxRefusalPredecessor,
+  recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
+  type SchedulerExecutionAttemptRecord,
+  schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_LIFECYCLE_DEFINITION,
+  commitKernelExecutionEvidenceInDb,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
   executionJournalProcessWitness,
+  inspectKernelExecutionEvidence,
+  inspectKernelExecutionReleaseInDb,
+  inspectKernelProofReceipt,
+  readExecutionJournalEndedStep,
   readExecutionJournalInvocation,
+  readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
-  readSandboxReleaseRefusalFence,
+  readKernelSchedulerGrantInDb,
+  releaseKernelExecutionScopesInDb,
+  schedulerPreparationClockAllowsOperation,
   settleExecutionJournalStep,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
+import type {
+  EndedExecutionStep,
+  ExecutionInvocationCarriage,
+  ExecutionJournalExecution,
+  ExecutionJournalIntent,
+  ExecutionStepRef,
+} from '../runtime/execution-step-journal.js';
 import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
+import { nanoHostStartupDeadline } from '../runtime/nanohost-attempt-clocks.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from '../runtime/nanohost-effect-identity.js';
-import {
-  drainNanoHostSandboxAdmission,
-  removeNanoHostSandboxRuntimeByBinding,
-} from '../runtime/nanohost-harness-records.js';
+import { readNanoHostReadyBindingCleanup } from '../runtime/nanohost-harness-records.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import {
+  listWorkspaceRuntimeEvidence,
+  workerBackendTeardownEvidenceId,
+} from '../runtime/runtime-evidence.js';
+import {
   getWorkerBackendSession,
+  getWorkerBackendSessionByPackage,
   markWorkerBackendWorkspaceHandoffComplete,
+  readNanoHostSubmissionPlacement,
+  readNanoHostWorkerLease,
+  readNanoHostWorkerRouteBinding,
   transitionWorkerBackendSessionState,
 } from '../runtime/worker-backend-session-records.js';
-import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
+import { isWorkerCancellationFinalCause } from '../runtime/worker-control-final-receipt.js';
 import {
+  canonicalStopReasonForAcceptedWorkerFinalStatus,
+  getWorkerControlAcceptedFinalStatus,
+  turnStatusForCanonicalWorkerStopReason,
+} from '../runtime/worker-control-records.js';
+import {
+  inspectNanoHostWorkerFinalSequences,
+  matchesAcceptedWorkerControlSequence,
+} from '../runtime/worker-control-sequences.js';
+import {
+  getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
   releaseWorkerStorageAttachment,
 } from '../runtime/worker-storage-binding-records.js';
 import {
+  type CoreSchedulerQueueEntry,
   requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
+import type {
+  ExecutionGrant,
+  ExecutionHandoff,
+  ExecutionProofIntent,
+  ExecutionProofReceipt,
+  NanoHostCoreReads,
+} from './control-kernel-port.js';
+import type { KernelExecutionEvidence } from './control-kernel-proof-codecs.js';
 import { commandInputHash } from './control-store-input.js';
-import { assertControlProductWriter } from './control-store-products.js';
+import { ControlProductPreconditionError, readProduct } from './control-store-product-records.js';
 import {
+  assertControlProductWriter,
+  terminalEventMatchesTerminal,
+} from './control-store-products.js';
+import {
+  type ControlCoreImageResult,
   type ControlCoreJournalInput,
+  type ControlCoreNanoHostAcceptedFinalResult,
+  ControlCoreNanoHostAcceptedFinalResultSchema,
+  type ControlNanoHostFirstSubmissionInput,
+  type ControlNanoHostFirstSubmissionResult,
+  ControlNanoHostFirstSubmissionResultSchema,
+  type ControlNanoHostMaterializationPreparationInput,
+  type ControlNanoHostOrphanRetirementInput,
+  type ControlNanoHostPreparationReleaseInput,
+  type ControlNanoHostReadyBindingPreparationReleaseInput,
+  type ControlNanoHostTerminalReleaseInput,
+  type ControlNanoHostUnusedPreparationReleaseInput,
   CoreJournalRefusal,
+  CoreNanoHostFinalIntakeSchema,
   readCoreJournalLineage,
+  type SandboxReleaseRefusalAttachmentSchema,
   SECURITY_CONTAINMENT_LIMITS,
+  type UndeliveredRefusalSuccessorSchema,
 } from './core-journal-codecs.js';
-import { type CoreDb, openAdmittedWorkspaceReadDb } from './db.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
+import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
+import {
+  type NanoHostRecoveryLease,
+  readNanoHostCleanupOnly,
+  readNanoHostInitialImageDecision,
+  readNanoHostPhysicalCleanupReceipt,
+  readNanoHostPreparationOccurrence,
+  verifyNanoHostPreparationCleanupPlacement,
+  verifyNanoHostTerminalDrainAndRevocation,
+} from './nanohost-recovery-native.js';
+import {
+  type NanoHostWorkerFinalDecision,
+  nanoHostWorkerFinalDecisionFingerprint,
+  readRetainedNanoHostSubmission,
+} from './nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  matchesNanoHostWorkerLineage,
+  nanoHostWorkerBindingLiveness,
+  nanoHostWorkerCancellationFinalEligible,
+  nanoHostWorkerLineage,
+} from './nanohost-worker-binding.js';
+import { StoredEventV1Schema } from './retained-work-events-v1.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { recordContainmentGapInDb } from './security-canary-audit-native.js';
+import type {
+  ControlStandaloneAuditInput,
+  SecurityCanaryAuditObservation,
+} from './standalone-audit-codecs.js';
+import {
+  type StorageDecision,
+  type StorageReceiptLookup,
+  type StorageResult,
+  storageRequestId,
+} from './storage-owner.js';
+import { BackendSessionRefusal } from './worker-backend-session-codecs.js';
+import {
+  type ControlWorkerFinalStatusCommand,
+  WorkerFinalStatusRefusal,
+} from './worker-control-final-status-codecs.js';
+import {
+  AgentSessionRecordSchema,
+  nativeProductScope,
+  readNativeProductEntries,
+} from './workspace-file-records.js';
+import { requireCompleteBackendWorkspaceHandleHandoff } from './workspace-handoff-read.js';
+
+function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undefined): T {
+  if (result?.state !== 'ready')
+    throw new CoreJournalRefusal('Admitted NanoHost evidence is unavailable.');
+  return result.value;
+}
+
+function requireCoreImageTarget(
+  target: ControlCoreImageResult['target'],
+  nanoHost?: NanoHostCoreReads
+) {
+  const admitted = requireNanoHostEvidence(nanoHost?.readTarget(target.targetId));
+  if (
+    !admitted?.predecessorFenced ||
+    !admitted.ready ||
+    !admitted.freshEmpty ||
+    admitted.targetId !== target.targetId ||
+    admitted.identityId !== target.identityId ||
+    admitted.deploymentId !== target.deploymentId ||
+    admitted.connectionGeneration !== target.connectionGeneration ||
+    admitted.physicalEpoch !== target.physicalEpoch
+  )
+    throw new CoreJournalRefusal('Image execution provenance is unavailable.');
+}
+
+function imageTargetBinding(target: ControlCoreImageResult['target']): string {
+  return `nanohost-target/v1:${target.deploymentId}:${target.targetId}:${target.connectionGeneration}:${target.physicalEpoch}`;
+}
+
+const imageTargetAuthorityPrefix = 'image-acquire-target/v1:';
+
+function imageTargetAuthority({
+  targetId,
+  identityId,
+  deploymentId,
+  physicalEpoch,
+}: ControlCoreImageResult['target']): string {
+  // A re-admitted connection can return the original result from the same live Runtime Epoch.
+  return (
+    imageTargetAuthorityPrefix +
+    commandInputHash({ targetId, identityId, deploymentId, physicalEpoch })
+  );
+}
+
+/** Resolves the original acquisition by request ID, without granting permission to send it. */
+export function readCoreImageAcquisitionRef(
+  db: CoreDb,
+  requestId: string
+): ControlCoreImageResult['ref'] | null {
+  const rows = db.sqlite
+    .prepare(`SELECT s.execution_id, s.step_id FROM control_execution_steps s
+      JOIN control_executions r ON r.id = s.execution_id
+      WHERE r.definition_version = ?
+        AND json_extract(s.invocation_json, '$.carriage.operation') = 'image.acquire'
+        AND json_extract(s.invocation_json, '$.carriage.requestId') = ?
+        AND json_extract(s.control_json, '$.kind') = 'resolve-setup'
+      LIMIT 2`)
+    .all(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION, requestId) as {
+    execution_id: string;
+    step_id: string;
+  }[];
+  if (rows.length > 1) throw new CoreJournalRefusal('Original image invocation is ambiguous.');
+  const row = rows[0];
+  return row
+    ? {
+        execution: { owner: { kind: 'server' }, executionId: row.execution_id },
+        stepId: row.step_id,
+      }
+    : null;
+}
+
+/** Settles an admitted result or inspects its original decision within the Core writer frame. */
+export function applyControlCoreImageResult(
+  db: CoreDb,
+  { ref, settlement, target }: ControlCoreImageResult,
+  nanoHost: NanoHostCoreReads | undefined
+): string {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new CoreJournalRefusal('Image result requires the Core writer transaction.');
+  requireCoreImageTarget(target, nanoHost);
+  const occurrence = readCoreImageAcquisitionRef(db, settlement.requestId);
+  if (!occurrence) throw new CoreJournalRefusal('Original image invocation is unavailable.');
+  if (!isDeepStrictEqual(occurrence, ref))
+    throw new CoreJournalRefusal('Original image invocation conflicts.', 'image_result_conflict');
+  const original = readExecutionJournalInvocation(db, ref);
+  const candidate = [
+    `artifact/v1:${settlement.authoredArtifactId}:${settlement.authoredArtifactVersion}:${settlement.authoredContentDigest}`,
+    `image-input/v1:${settlement.inputDigest}`,
+  ];
+  if (
+    !isDeepStrictEqual(
+      original.control.authorityRefs.filter((value) =>
+        value.startsWith(imageTargetAuthorityPrefix)
+      ),
+      [imageTargetAuthority(target)]
+    ) ||
+    !isDeepStrictEqual(original.control.inputRefs, candidate) ||
+    !isDeepStrictEqual(original.control.target, {
+      backendKind: 'nanohost',
+      targetId: target.targetId,
+      allocationRef: null,
+    })
+  )
+    throw new CoreJournalRefusal(
+      'Image result conflicts with its admitted candidate or target.',
+      'image_result_conflict'
+    );
+
+  const digest = commandInputHash(settlement);
+  const success = settlement.outcome.kind === 'success';
+  const state = success ? 'completed' : 'failed';
+  const late = original.state === 'unknown' && original.control.outputRefs.length === 0;
+  const consumeId = `${ref.stepId}:consume`;
+  if (late) {
+    const receipts = readExecutionJournalLinkedInspections(db, ref)
+      .map(({ inspection }) => inspection)
+      .filter((inspection) => inspection.control.kind === 'consume-receipt');
+    if (receipts.length > 0) {
+      const receipt = receipts[0]!;
+      if (
+        receipts.length !== 1 ||
+        receipt.ref.execution.executionId !== ref.execution.executionId ||
+        receipt.ref.stepId !== consumeId ||
+        receipt.state !== state ||
+        receipt.control.fingerprint !== digest ||
+        !isDeepStrictEqual(receipt.control.outputRefs, [digest])
+      )
+        throw new CoreJournalRefusal('Image result replay conflicts.', 'image_result_conflict');
+      return digest;
+    }
+  } else if (original.state !== 'intent') {
+    if (original.state !== state || !isDeepStrictEqual(original.control.outputRefs, [digest]))
+      throw new CoreJournalRefusal('Image result replay conflicts.', 'image_result_conflict');
+    return digest;
+  }
+
+  let root = readExecutionJournalRoot(db, ref.execution);
+  const row = db.sqlite
+    .prepare('SELECT span_json FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+    .get(ref.execution.executionId, ref.stepId) as { span_json: string };
+  let span = decodeExecutionJournalSpan(JSON.parse(row.span_json));
+  const now = BigInt(Date.now()) * 1_000_000n;
+  const earliestEnd = span.endTimeUnixNano ?? span.startTimeUnixNano;
+  // biome-ignore lint/complexity/useMathMinMax: nanosecond clocks use bigint.
+  const endedAt = now < earliestEnd ? earliestEnd : now;
+  let decidingRef: ExecutionStepRef = ref;
+  if (late) {
+    // A result after abandonment acknowledges the receiver receipt and leaves the original hold.
+    const consumeSpan = {
+      ...span,
+      spanId: randomBytes(8).toString('hex'),
+      parentSpanId: root.span.spanId,
+      name: 'image.acquire result reconciliation',
+      startTimeUnixNano: endedAt,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      attributes: [],
+      events: [],
+      links: [
+        {
+          traceId: span.traceId,
+          spanId: span.spanId,
+          flags: span.flags,
+          attributes: [],
+          droppedAttributesCount: 0,
+        },
+      ],
+    } as const;
+    decidingRef = writeExecutionJournalIntent(db, {
+      execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+      stepId: consumeId,
+      parentStepId: null,
+      parent: null,
+      inspectedStep: ref,
+      carriage: original.carriage,
+      control: {
+        ...original.control,
+        kind: 'consume-receipt',
+        target: null,
+        invocationId: `${original.control.invocationId}:consume`,
+        outputRefs: [],
+        fingerprint: digest,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+      },
+      span: consumeSpan,
+    }).ref;
+    span = consumeSpan;
+    root = readExecutionJournalRoot(db, ref.execution);
+  }
+  const closes = success && !late;
+  settleExecutionJournalStep(db, {
+    ref: decidingRef,
+    expectedExecutionRevision: root.revision,
+    state,
+    outputRefs: [digest],
+    span: { ...span, endTimeUnixNano: endedAt, status: { code: success ? 'OK' : 'ERROR' } },
+    nextPhase: closes ? 'closed' : 'closing',
+    terminalCause: root.terminalCause ?? (success ? null : 'Image acquisition failed.'),
+    exclusionRefs: closes ? [] : root.exclusionRefs,
+  });
+  return digest;
+}
+
+/** Qualifies one Native anchor against the original Core preparation under pinned owner reads. */
+export function requireCoreNanoHostMaterializationPreparation(
+  db: CoreDb,
+  input: ControlNanoHostMaterializationPreparationInput,
+  readers: {
+    readonly nanoHost: Pick<NanoHostCoreReads, 'readTarget'>;
+    readonly readSelectedInput: (admission: CoreSchedulerQueueEntry) => boolean;
+  }
+) {
+  if (!db.sqlite.inTransaction)
+    throw new ExecutionAttemptRefusal('Native materialization requires its Core snapshot.');
+  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    attempt.phase !== 'open' ||
+    attempt.deadline !== null ||
+    attempt.terminalCause !== null ||
+    attempt.outcomeRef !== null ||
+    attempt.fenceRef !== null ||
+    admission.status !== 'admitted' ||
+    attempt.queueEntryId !== input.queueEntryId ||
+    admission.inputHash !== input.admissionHash ||
+    !isDeepStrictEqual(admission.inputRef, input.selectedInput) ||
+    attempt.workspaceId !== input.workspaceId ||
+    attempt.threadId !== input.threadId ||
+    attempt.turnId !== input.turnId ||
+    attempt.agentSessionId !== input.agentSessionId ||
+    attempt.inputRef !== input.inputRef ||
+    attempt.bindingRef !== input.bindingRef
+  )
+    throw new ExecutionAttemptRefusal('Native materialization has no exact original Core claim.');
+
+  const startupDeadline = nanoHostStartupDeadline(attempt);
+  const observed = Date.parse(input.observedAt ?? new Date().toISOString());
+  if (!(observed >= Date.parse(attempt.updatedAt) && observed < Date.parse(startupDeadline)))
+    throw new ExecutionAttemptRefusal('Native materialization has no original startup allowance.');
+  const operationId = attempt.operationId;
+  const grant = db.sqlite
+    .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+    .get(attempt.attemptId);
+  if (
+    grant ||
+    attempt.disposition !== (operationId === null ? 'not_accepted' : 'accepted') ||
+    !schedulerPreparationClockAllowsOperation(
+      db,
+      attempt.attemptId,
+      {
+        operationId,
+        turnId: attempt.turnId,
+        admissionHash: admission.inputHash,
+        actor: admission.triggerActor,
+        started: BigInt(Date.parse(attempt.createdAt)) * 1_000_000n,
+        startupDeadline: BigInt(Date.parse(startupDeadline)) * 1_000_000n,
+      },
+      BigInt(observed) * 1_000_000n
+    )
+  )
+    throw new ExecutionAttemptRefusal(
+      'Native materialization has no acknowledged preparation operation.'
+    );
+
+  if (!readers.readSelectedInput(admission))
+    throw new ExecutionAttemptRefusal(
+      'Native materialization has no exact selected Workspace input.'
+    );
+  const result = readers.nanoHost.readTarget(input.target.targetId);
+  const target = result.state === 'ready' ? result.value : null;
+  if (
+    !target?.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.targetId !== input.target.targetId ||
+    target.identityId !== input.target.identityId ||
+    target.deploymentId !== input.target.deploymentId ||
+    target.connectionGeneration !== input.target.connectionGeneration ||
+    target.physicalEpoch !== input.target.physicalEpoch
+  )
+    throw new ExecutionAttemptRefusal('Native materialization has no exact Native placement.');
+  return { attempt, preparationOperation: operationId, startupDeadline, target: input.target };
+}
+
+/** Decides the ordinary NanoHost submit under the pinned Core, Native and Workspace owners. */
+export function admitNanoHostFirstSubmissionInDb(
+  coreDb: CoreDb,
+  input: ControlNanoHostFirstSubmissionInput,
+  readers: {
+    readonly nanoHost: Parameters<typeof readNanoHostSubmissionPlacement>[0] | null;
+    readonly workspace: WorkspaceDb | null;
+  }
+): ControlNanoHostFirstSubmissionResult {
+  if (!coreDb.sqlite.inTransaction || coreDb.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Execution grant requires the Core writer transaction.');
+  return coreDb.sqlite.transaction(() => {
+    const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, input.attemptId);
+    const { attemptId, agentSessionId, inputRef, bindingRef, workspaceId, threadId, turnId } =
+      attempt;
+    if (attempt.backendId !== 'nanohost' || !agentSessionId || !inputRef || !bindingRef)
+      throw new ExecutionAttemptRefusal('Submission has no finalized package or assigned binding.');
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    const execution = { owner: { kind: 'server' as const }, executionId: attemptId };
+    const original = readKernelSchedulerGrantInDb(coreDb, execution, operationId);
+    if (
+      original &&
+      (original.deadline === null ||
+        attempt.operationId !== operationId ||
+        attempt.deadline !== original.deadline)
+    )
+      throw new ExecutionAttemptRefusal('Execution grant conflicts with its original operation.');
+
+    const observedAt = input.observedAt ?? new Date().toISOString();
+    const observed = Date.parse(observedAt);
+    if (
+      !original &&
+      (admission.status !== 'admitted' ||
+        !(
+          observed >= Date.parse(attempt.updatedAt) &&
+          observed < Date.parse(nanoHostStartupDeadline(attempt))
+        ))
+    )
+      throw new ExecutionAttemptRefusal('Original execution clock or admission is unavailable.');
+    // The original deadline recovers the first decision clock even when a replay arrives much later.
+    const submittedAt =
+      original && original.deadline
+        ? Date.parse(original.deadline) - EXECUTION_ATTEMPT_BUDGET_MS
+        : observed;
+    const traceId = sha256Hex(attemptId).slice(0, 32);
+    const rootSpan: ExecutionJournalIntent['span'] = {
+      traceId,
+      spanId: sha256Hex(`${attemptId}:submission`).slice(0, 16),
+      flags: 0,
+      name: 'NanoHost Worker submission',
+      kind: 'INTERNAL',
+      startTimeUnixNano: BigInt(Date.parse(attempt.createdAt)) * 1_000_000n,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      attributes: [],
+      droppedAttributesCount: 0,
+      events: [],
+      droppedEventsCount: 0,
+      links: [],
+      droppedLinksCount: 0,
+      instrumentationScope: {
+        name: 'openkit.nanocore.runtime',
+        attributes: [],
+        droppedAttributesCount: 0,
+      },
+      resource: { attributes: [], droppedAttributesCount: 0 },
+    };
+    const storage = admission.workerStorageChoice;
+    const placement = { ...input.placement, workspaceId, threadId, agentSessionId };
+    const proposal: ExecutionJournalIntent = {
+      execution: {
+        ref: execution,
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        workId: turnId,
+        fingerprint: admission.inputHash,
+        exclusionRefs: [
+          `workspace:${workspaceId}`,
+          `thread:${threadId}`,
+          `turn:${turnId}`,
+          `session:${agentSessionId}`,
+          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+        ],
+        span: rootSpan,
+      },
+      stepId: 'submit',
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: { operation: 'submit', requestId: operationId, sequence: null, bindingRef },
+      control: {
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        kind: 'admit',
+        target: {
+          backendKind: 'nanohost',
+          targetId: placement.runtimeTargetId,
+          allocationRef: bindingRef,
+        },
+        workId: turnId,
+        operationId,
+        invocationId: operationId,
+        attemptId,
+        actor: admission.triggerActor,
+        inputRefs: [inputRef],
+        outputRefs: [],
+        fingerprint: admission.inputHash,
+        permittingDecisionRef: null,
+        authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+        physicalFenceRefs: [],
+      },
+      span: {
+        ...rootSpan,
+        spanId: sha256Hex(operationId).slice(0, 16),
+        parentSpanId: rootSpan.spanId,
+        startTimeUnixNano: BigInt(submittedAt) * 1_000_000n,
+      },
+    };
+    const { state } = recordSchedulerExecutionGrantInDb(
+      coreDb,
+      {
+        attemptId,
+        operationId,
+        generation: String(placement.connectionGeneration),
+        proposal,
+        submission: true,
+        now: () => observedAt,
+      },
+      (grant) => {
+        const { nanoHost, workspace } = readers;
+        if (
+          !nanoHost ||
+          workspace?.workspaceId !== workspaceId ||
+          workspace.dataRoot !== coreDb.dataRoot
+        )
+          return false;
+        try {
+          const session = readNanoHostSubmissionPlacement(nanoHost, grant, placement);
+          if (
+            !session ||
+            (!original &&
+              isSandboxReleaseRefusalFenced(
+                coreDb,
+                sandboxReleaseRefusalExecutionId(
+                  session.runtimeTargetId,
+                  session.originPhysicalEpoch,
+                  session.sandboxBindingRef
+                )
+              ))
+          )
+            return false;
+          const pkg = findNamedAgentEnvironmentPackageSnapshot(
+            workspace,
+            workspaceId,
+            agentSessionId,
+            inputRef
+          )?.snapshot;
+          if (pkg?.scope.turnId !== turnId || pkg.scope.threadId !== threadId) return false;
+          requireCompleteBackendWorkspaceHandleHandoff(workspace, pkg, {
+            backendKind: session.backendKind,
+            backendVersion: session.backendVersion,
+            workerSessionId: session.backendSessionId,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    );
+    return ControlNanoHostFirstSubmissionResultSchema.parse({
+      state,
+      attempt: requireSchedulerExecutionAttempt(coreDb, attemptId),
+    });
+  })();
+}
+
+type FailedStartCoordinates = Pick<
+  SchedulerExecutionAttemptRecord,
+  'attemptId' | 'queueEntryId' | 'agentSessionId' | 'inputRef' | 'bindingRef'
+>;
+
+/** Closes the exact never-submitted attempt only after its pinned peer evidence agrees. */
+export function closeNanoHostFailedStartInDb(
+  db: CoreDb,
+  input: FailedStartCoordinates & { readonly observedAt?: string },
+  verifyNoEffects: (original: SchedulerExecutionAttemptRecord) => boolean
+): SchedulerExecutionAttemptRecord {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Failed-start closure requires the Core writer transaction.');
+  return db.sqlite.transaction(() => {
+    const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+    if (
+      attempt.backendId !== 'nanohost' ||
+      admission.status !== 'admitted' ||
+      attempt.queueEntryId !== input.queueEntryId ||
+      attempt.agentSessionId !== input.agentSessionId ||
+      attempt.inputRef !== input.inputRef ||
+      attempt.bindingRef !== input.bindingRef ||
+      attempt.disposition !== 'not_accepted' ||
+      attempt.operationId !== null ||
+      attempt.deadline !== null ||
+      attempt.outcomeRef !== null ||
+      attempt.fenceRef !== null ||
+      (attempt.terminalCause !== null && attempt.terminalCause !== 'turn-start-failed') ||
+      (attempt.phase === 'closed' && attempt.terminalCause !== 'turn-start-failed')
+    )
+      throw new ExecutionAttemptRefusal(
+        'Failed-start closure conflicts with the original attempt.'
+      );
+    const successor = db.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts AS other
+        JOIN scheduler_execution_attempts AS original ON original.attempt_id = ?
+        WHERE other.attempt_id <> original.attempt_id AND (
+          (other.turn_id = original.turn_id AND other.rowid > original.rowid) OR
+          (other.agent_session_id = original.agent_session_id AND other.phase <> 'closed')
+        ) LIMIT 1`)
+      .get(attempt.attemptId);
+    const grantRoot = db.sqlite
+      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+      .get(attempt.attemptId);
+    if (successor || grantRoot)
+      throw new ExecutionAttemptRefusal('Failed-start closure has competing execution authority.');
+
+    // Unused-anchor inspection reads the closed phase. Refusal rolls back this uncommitted CAS.
+    const closed = closeSchedulerExecutionAttemptWithoutEffects(db, {
+      attemptId: attempt.attemptId,
+      noOutstandingEffects: true,
+      cause: 'turn-start-failed',
+      ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
+    });
+    if (!verifyNoEffects(closed))
+      throw new ExecutionAttemptRefusal('Failed-start closure has no positive peer proof.');
+    return closed;
+  })();
+}
+
+const orphanRetirementAction = 'scheduler.orphan-backend-retired';
+
+type OrphanCleanup = Omit<ControlNanoHostOrphanRetirementInput, 'observedAt'>;
+
+function originalOrphanAudit(db: CoreDb, cleanup: OrphanCleanup) {
+  const attempt = requireSchedulerExecutionAttempt(db, cleanup.attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    attempt.phase !== 'closed' ||
+    !attempt.agentSessionId ||
+    attempt.inputRef !== cleanup.inputRef ||
+    attempt.bindingRef !== cleanup.bindingRef
+  )
+    throw new ExecutionAttemptRefusal('Orphan Audit has no exact closed attempt.');
+  const { workspaceId, threadId, turnId, agentSessionId } = attempt;
+  const auditEventId = deriveEntityId('aud', [orphanRetirementAction, attempt.attemptId]);
+  const requestId = storageRequestId({
+    deploymentId: cleanup.target.deploymentId,
+    sourceOwner: 'nanohost',
+    verb: orphanRetirementAction,
+    occurrenceKey: commandInputHash({
+      cleanup,
+      workspaceId,
+      threadId,
+      turnId,
+      agentSessionId,
+      operationId: attempt.operationId,
+    }),
+  });
+  const fields = {
+    auditEventId,
+    requestId,
+    action: orphanRetirementAction,
+    category: 'system',
+    outcome: 'succeeded',
+    resource: `server:worker-backend-session:${attempt.attemptId}`,
+    severity: 'warning',
+    summary: 'Unowned worker backend session physically cleaned and retired.',
+    workspaceId,
+    threadId,
+    turnId,
+    agentSessionId,
+  } as const;
+  return { attempt, fields };
+}
+
+function inspectOrphanAudit(db: CoreDb, fields: ReturnType<typeof originalOrphanAudit>['fields']) {
+  const row = db.sqlite
+    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
+    .get(fields.auditEventId);
+  if (!row) return null;
+  const prior = auditEventFromRow(row);
+  if (!prior.createdAt)
+    throw new ExecutionAttemptRefusal('Orphan Audit has no original acknowledgement clock.');
+  const expected = prepareServerAuditEvent({
+    ...fields,
+    coreDb: db,
+    now: new Date(prior.createdAt),
+  });
+  if (canonicalJsonText(prior) !== canonicalJsonText(expected))
+    throw new ExecutionAttemptRefusal('Orphan Audit conflicts with the original cleanup.');
+  return {
+    auditEventId: fields.auditEventId,
+    requestId: fields.requestId,
+    acceptedAt: prior.createdAt,
+  };
+}
+
+/** Reads the original acknowledgement on a pinned Core reader for the dependent Native CAS. */
+export function inspectCoreNanoHostOrphanAudit(db: CoreDb, cleanup: OrphanCleanup) {
+  return inspectOrphanAudit(db, originalOrphanAudit(db, cleanup).fields);
+}
+
+/** Retains the original redacted Audit before the Native owner may retire the physical anchor. */
+export function commitCoreNanoHostOrphanAuditInDb(
+  db: CoreDb,
+  input: ControlNanoHostOrphanRetirementInput,
+  verifyCleanup: (original: SchedulerExecutionAttemptRecord, cleanup: OrphanCleanup) => boolean
+): {
+  readonly state: 'applied' | 'inspect-original';
+  readonly receipt: NonNullable<ReturnType<typeof inspectCoreNanoHostOrphanAudit>>;
+} {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Orphan Audit requires the Core writer transaction.');
+  const { observedAt, ...cleanup } = input;
+  const { attempt, fields } = originalOrphanAudit(db, cleanup);
+  const prior = inspectOrphanAudit(db, fields);
+  if (prior) return { state: 'inspect-original', receipt: prior };
+  const now = observedAt === undefined ? new Date() : new Date(observedAt);
+  if (!(now.getTime() >= Date.parse(cleanup.physicalCleanedAt)) || !verifyCleanup(attempt, cleanup))
+    throw new ExecutionAttemptRefusal('Orphan Audit has no exact physical and Workspace proof.');
+  recordServerAuditEvent({ ...fields, coreDb: db, now });
+  return {
+    state: 'applied',
+    receipt: {
+      auditEventId: fields.auditEventId,
+      requestId: fields.requestId,
+      acceptedAt: now.toISOString(),
+    },
+  };
+}
+
+type FinalCommand = ControlWorkerFinalStatusCommand;
+type FinalNativeReader = Parameters<typeof inspectNanoHostWorkerBinding>[0];
+/** Reads both immutable facts left by the Core failure close on one snapshot. */
+export function readCoreWorkerFailureClose(db: CoreDb, attemptId: string) {
+  return db.sqlite
+    .transaction(() => {
+      const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+      if (
+        attempt.phase === 'open' ||
+        (attempt.phase === 'closing' && isWorkerCancellationFinalCause(attempt.terminalCause)) ||
+        hasCoreWorkerFinalIntake(db, attemptId)
+      )
+        return null;
+      return attempt;
+    })
+    .deferred();
+}
+
+const finalIntakeStepId = 'worker-final-intake';
+
+/** A retained final intake keeps generic failure writers off this exact attempt. It supplies no outcome. */
+export function hasCoreWorkerFinalIntake(db: CoreDb, attemptId: string): boolean {
+  return Boolean(
+    db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+      .get(attemptId, finalIntakeStepId)
+  );
+}
+
+function workerFinalBindingRefusal(
+  reason: 'binding-not-found' | 'lineage-mismatch' | 'reconnect-required' | 'attempt-not-live'
+): never {
+  if (reason === 'binding-not-found')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_unauthorized',
+      'Worker control request is missing a valid sandbox token.',
+      401
+    );
+  if (reason === 'lineage-mismatch')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_lineage_mismatch',
+      'Worker control request lineage does not match the durable lease binding.',
+      403
+    );
+  if (reason === 'reconnect-required')
+    throw new WorkerFinalStatusRefusal(
+      'worker_control_reconnect_required',
+      'Worker control session must reconnect after NanoCore restart.',
+      503
+    );
+  throw new WorkerFinalStatusRefusal(
+    'worker_control_lease_not_live',
+    'Worker control request lease is not live.',
+    403
+  );
+}
+
+function workerFinalConflict(): never {
+  throw new WorkerFinalStatusRefusal(
+    'worker_control_sequence_conflict',
+    'Worker final conflicts with its retained original.',
+    409
+  );
+}
+
+function readOriginalWorkerFinalBinding(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  input: FinalCommand
+) {
+  if (!sqlite.readonly)
+    throw new CoreJournalRefusal('Worker final requires the admitted NanoHost reader.');
+  const owner = { sqlite };
+  const session = getWorkerBackendSessionByPackage(owner, input.lineage.packageSnapshotId);
+  const original = session && readRetainedNanoHostSubmission(db, session.attemptId);
+  if (!original) workerFinalBindingRefusal('binding-not-found');
+  const native = inspectNanoHostWorkerBinding(sqlite, original, {
+    lineage: input.lineage,
+    sandboxBindingRef: input.sandboxBindingRef,
+    tokenHash: input.tokenHash,
+    tokenFamily: 'worker-control',
+  });
+  if (native.status === 'rejected') workerFinalBindingRefusal(native.reason);
+  return { native, grant: original.lease.grant };
+}
+
+/** Reads both independently accepted Native records and their exact stored sequence receipts. */
+function hasExactNativeWorkerFinal(
+  sqlite: FinalNativeReader,
+  input: FinalCommand,
+  decision: NanoHostWorkerFinalDecision
+): boolean {
+  const {
+    lineage,
+    payload: { sequence, terminalData },
+  } = input;
+  const event = buildWorkerCanonicalTerminalEventRecord({ data: terminalData, lineage, sequence });
+  const rows = sqlite
+    .prepare(`SELECT operation, schema_version AS schemaVersion,
+    record_json AS recordJson, accepted_at AS acceptedAt
+    FROM worker_control_records
+    WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+      AND package_snapshot_id=? AND request_id IS ? AND record_key=? AND sequence=?
+      AND operation IN ('final_status', 'event_append') LIMIT 3`)
+    .all(
+      lineage.workspaceId,
+      lineage.threadId,
+      lineage.turnId,
+      lineage.agentSessionId,
+      lineage.packageSnapshotId,
+      lineage.requestId ?? null,
+      String(sequence),
+      sequence
+    ) as {
+    operation: string;
+    schemaVersion: unknown;
+    recordJson: string;
+    acceptedAt: string;
+  }[];
+  const final = rows.find((row) => row.operation === 'final_status');
+  const terminal = rows.find((row) => row.operation === 'event_append');
+  return (
+    rows.length === 2 &&
+    final?.acceptedAt === decision.acceptedAt &&
+    terminal?.acceptedAt === decision.eventAcceptedAt &&
+    readRetainedV1(final, () =>
+      isDeepStrictEqual(JSON.parse(final.recordJson), {
+        ...terminalData,
+        acceptedAt: decision.acceptedAt,
+        sequence,
+      })
+    ) &&
+    readRetainedV1(terminal, () => isDeepStrictEqual(JSON.parse(terminal.recordJson), event)) &&
+    matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage,
+        operation: 'final_status',
+        sequence,
+        fingerprint: canonicalJsonText({ ...terminalData, lineage, sequence }),
+      }
+    ) === true &&
+    matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage,
+        operation: 'event_append',
+        sequence,
+        fingerprint: canonicalJsonText(event),
+      }
+    ) === true
+  );
+}
+
+function readCoreWorkerFinalIntake(
+  db: CoreDb,
+  grant: NanoHostWorkerFinalDecision['grant'],
+  input: FinalCommand
+): NanoHostWorkerFinalDecision | null {
+  const ref = { execution: grant.execution, stepId: finalIntakeStepId };
+  if (!hasCoreWorkerFinalIntake(db, grant.execution.executionId)) return null;
+  const step = readExecutionJournalInvocation(db, ref);
+  const [kind, acceptedAt, eventAcceptedAt] = step.control.outputRefs;
+  if (
+    step.state !== 'completed' ||
+    step.control.kind !== 'observe' ||
+    step.control.attemptId !== grant.attemptId ||
+    step.control.operationId !== grant.operationId ||
+    step.control.fingerprint !== nanoHostWorkerFinalDecisionFingerprint(input) ||
+    !isDeepStrictEqual(step.control.authorityRefs, [commandInputHash(grant)]) ||
+    !isDeepStrictEqual(step.carriage, {
+      operation: finalIntakeStepId,
+      requestId: grant.operationId,
+      sequence: input.payload.sequence,
+      bindingRef: grant.bindingRef,
+    }) ||
+    step.control.outputRefs.length !== 3
+  )
+    workerFinalConflict();
+  const original = CoreNanoHostFinalIntakeSchema.parse({
+    kind,
+    acceptedAt,
+    eventAcceptedAt,
+    fingerprint: step.control.fingerprint,
+  });
+  return { ...original, grant };
+}
+
+function coreWorkerFinalProposal(
+  db: CoreDb,
+  decision: NanoHostWorkerFinalDecision,
+  stepId: string,
+  sequence: number
+): ExecutionJournalIntent {
+  const { grant, fingerprint, acceptedAt } = decision;
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, grant.attemptId);
+  const invocationId = `${grant.attemptId}:${stepId}`;
+  const clock = BigInt(Date.parse(acceptedAt)) * 1_000_000n;
+  return {
+    execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+    stepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    carriage: {
+      operation: stepId,
+      requestId: grant.operationId,
+      sequence,
+      bindingRef: grant.bindingRef,
+    },
+    control: {
+      definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+      kind: 'observe',
+      target: null,
+      workId: grant.turnId,
+      operationId: grant.operationId,
+      attemptId: grant.attemptId,
+      invocationId,
+      actor: admission.triggerActor,
+      inputRefs: [],
+      outputRefs: [],
+      fingerprint,
+      permittingDecisionRef: grant.operationId,
+      authorityRefs: [commandInputHash(grant)],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    span: {
+      ...root.span,
+      name: stepId,
+      spanId: sha256Hex(invocationId).slice(0, 16),
+      parentSpanId: root.span.spanId,
+      // biome-ignore lint/complexity/useMathMinMax: nanosecond clocks use bigint.
+      startTimeUnixNano: clock >= root.span.startTimeUnixNano ? clock : root.span.startTimeUnixNano,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' },
+      events: [],
+      links: [],
+    },
+  };
+}
+
+/** Retains the first authenticated final intake and its clocks without accepting a Native result. */
+export function admitNanoHostWorkerFinalInDb(
+  db: CoreDb,
+  input: FinalCommand,
+  sqlite: FinalNativeReader
+): NanoHostWorkerFinalDecision {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Worker final requires the Core writer transaction.');
+  return db.sqlite.transaction((): NanoHostWorkerFinalDecision => {
+    const { native, grant } = readOriginalWorkerFinalBinding(db, sqlite, input);
+    const { acceptedAt: now, eventAcceptedAt, terminalData, sequence } = input.payload;
+    const observedAt = new Date(now).toISOString();
+    if (grant.deadline <= observedAt) workerFinalBindingRefusal('attempt-not-live');
+    const prior = readCoreWorkerFinalIntake(db, grant, input);
+    if (getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage)) {
+      if (!prior || !hasExactNativeWorkerFinal(sqlite, input, prior)) workerFinalConflict();
+      return { ...prior, kind: 'replay' };
+    }
+    const live = nanoHostWorkerBindingLiveness(native, observedAt);
+    const cancellation = nanoHostWorkerCancellationFinalEligible(sqlite, native, observedAt);
+    if (prior) {
+      const pendingOrdinary =
+        prior.kind === 'decided' &&
+        native.currentPlacement &&
+        native.attempt.phase === 'closing' &&
+        native.attempt.terminalCause === 'worker-final-status' &&
+        native.attempt.fenceRef === null &&
+        native.proof.recoveryState === null &&
+        native.proof.heartbeatDeadline > observedAt;
+      if (
+        Date.parse(now) < Date.parse(prior.acceptedAt) ||
+        !(pendingOrdinary || (prior.kind === 'cancellation-decided' && cancellation))
+      )
+        workerFinalBindingRefusal(live.status === 'rejected' ? live.reason : 'attempt-not-live');
+      return prior;
+    }
+    if (live.status === 'rejected' && !cancellation) workerFinalBindingRefusal(live.reason);
+    if (
+      cancellation &&
+      !(
+        (terminalData.status === 'cancelled' || terminalData.status === 'interrupted') &&
+        terminalData.stopReason === 'aborted'
+      )
+    )
+      throw new WorkerFinalStatusRefusal(
+        'worker_control_lease_not_live',
+        'A closing cancelled Turn accepts only a cancellation or interruption final with aborted StopReason.',
+        403
+      );
+    let sequences: ReturnType<typeof inspectNanoHostWorkerFinalSequences>;
+    try {
+      sequences = inspectNanoHostWorkerFinalSequences(
+        { sqlite },
+        input.lineage,
+        native.attempt.terminalCause === 'observation_limit_reached'
+          ? { ...input.payload, requireContinuous: true }
+          : input.payload
+      );
+    } catch {
+      throw new ControlProductPreconditionError();
+    }
+    if (sequences.status !== 'accepted')
+      throw new WorkerFinalStatusRefusal(sequences.code, sequences.message, 409);
+    // A retained final fingerprint requires the accepted final record checked above.
+    if (sequences.finalStatusDuplicate) throw new ControlProductPreconditionError();
+
+    const decision: NanoHostWorkerFinalDecision = {
+      kind: cancellation ? 'cancellation-decided' : 'decided',
+      grant,
+      fingerprint: nanoHostWorkerFinalDecisionFingerprint(input),
+      acceptedAt: now,
+      eventAcceptedAt,
+    };
+    const proposal = coreWorkerFinalProposal(db, decision, finalIntakeStepId, sequence);
+    const entry = writeExecutionJournalIntent(db, proposal);
+    const attempt = markSchedulerExecutionAttemptClosing(db, {
+      attemptId: grant.attemptId,
+      cause: 'worker-final-status',
+      now: () => now,
+    });
+    const root = readExecutionJournalRoot(db, grant.execution);
+    settleExecutionJournalStep(db, {
+      ref: entry.ref,
+      expectedExecutionRevision: root.revision,
+      state: 'completed',
+      outputRefs: [decision.kind, decision.acceptedAt, decision.eventAcceptedAt],
+      span: {
+        ...proposal.span,
+        endTimeUnixNano: proposal.span.startTimeUnixNano,
+        status: { code: 'OK' },
+      },
+      nextPhase: 'closing',
+      terminalCause: attempt.terminalCause,
+      exclusionRefs: root.exclusionRefs,
+    });
+    return decision;
+  })();
+}
+
+/** The receipt occurrence depends only on the session deployment and the original submit operation. */
+function acceptedNanoHostFinalReceiptOccurrence(deploymentId: string, operationId: string) {
+  return {
+    deploymentId,
+    sourceOwner: 'nanohost',
+    verb: 'apply-execution-proof',
+    occurrenceKey: `worker-final-accepted:${operationId}`,
+  } as const;
+}
+
+/** The deterministic `worker-final-accepted` receipt identity for one original Core intake. */
+function acceptedNanoHostFinalReceiptIntent(
+  deploymentId: string,
+  intake: NanoHostWorkerFinalDecision,
+  sequence: number
+) {
+  const { grant } = intake;
+  const proof = {
+    kind: 'submission',
+    disposition: 'accepted',
+    evidence: {
+      backendId: 'nanohost',
+      ref: `native-final/v1:${grant.attemptId}:${sequence}`,
+      digest: commandInputHash({
+        fingerprint: intake.fingerprint,
+        acceptedAt: intake.acceptedAt,
+        eventAcceptedAt: intake.eventAcceptedAt,
+      }),
+    },
+  } as const;
+  const occurrence = acceptedNanoHostFinalReceiptOccurrence(deploymentId, grant.operationId);
+  const intent: ExecutionProofIntent = {
+    ...occurrence,
+    requestId: storageRequestId(occurrence),
+    target: grant,
+    expectedGeneration: grant.generation,
+    inputDigest: sha256CanonicalJson(proof),
+  };
+  return { proof, intent };
+}
+
+/** Observes the exact accepted Native final after FULL independently of intake, handoff and release. */
+export function observeAcceptedNanoHostFinalInDb(
+  db: CoreDb,
+  input: FinalCommand,
+  sqlite: FinalNativeReader
+): ControlCoreNanoHostAcceptedFinalResult {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Worker final requires the Core writer transaction.');
+  return db.sqlite.transaction((): ControlCoreNanoHostAcceptedFinalResult => {
+    const { native, grant } = readOriginalWorkerFinalBinding(db, sqlite, input);
+    const intake = readCoreWorkerFinalIntake(db, grant, input);
+    if (!intake) return { state: 'unknown' };
+    const verifyNative = () => hasExactNativeWorkerFinal(sqlite, input, intake);
+    const { proof, intent } = acceptedNanoHostFinalReceiptIntent(
+      native.session.deploymentId,
+      intake,
+      input.payload.sequence
+    );
+    const original = inspectKernelProofReceipt(db, intent, true);
+    if (original.state === 'settled')
+      return verifyNative()
+        ? ControlCoreNanoHostAcceptedFinalResultSchema.parse({
+            state: 'inspect-original',
+            receipt: original.receipt,
+          })
+        : { state: 'unknown' };
+    if (original.state !== 'absent') return { state: original.state };
+    const result = commitKernelExecutionEvidenceInDb(
+      db,
+      coreWorkerFinalProposal(db, intake, 'worker-final-accepted', input.payload.sequence),
+      { version: 1, kind: 'submission', intent, proof },
+      true,
+      verifyNative,
+      // The cancellation receipt observes the final envelope while the closing attempt
+      // retains its original submission disposition and recovery clock.
+      () =>
+        intake.kind === 'cancellation-decided' ||
+        acceptSchedulerExecutionObservation(db, {
+          ...grant,
+          disposition: 'accepted',
+          execution: 'terminal',
+          outcomeRef: null,
+          fenceRef: null,
+        }) !== null
+    );
+    return result.state === 'settled'
+      ? ControlCoreNanoHostAcceptedFinalResultSchema.parse({
+          state: 'applied',
+          receipt: result.receipt,
+        })
+      : { state: result.state };
+  })();
+}
+
+/** Why K8b recovery holds an accepted Native final instead of handing it to closeout. */
+export type NanoHostAcceptedFinalHold = 'missing' | 'duplicate' | 'conflict' | 'unknown';
+
+/** The original proof that one accepted Native final carries across restart. */
+interface NanoHostAcceptedFinalProof {
+  readonly grant: NanoHostWorkerFinalDecision['grant'];
+  /** Lineage as carried by the accepted canonical terminal event. */
+  readonly lineage: ControlWorkerFinalStatusCommand['lineage'];
+  readonly sandboxBindingRef: string;
+  readonly sequence: number;
+  /** Terminal facts verified against both Native records and the original Core intake. */
+  readonly terminalData: FinalCommand['payload']['terminalData'];
+  /** Original Core intake fingerprint, which binds the historical route hash and terminal data. */
+  readonly fingerprint: string;
+  /** Fingerprints held by the two Native sequence receipts. */
+  readonly finalFingerprint: string;
+  readonly eventFingerprint: string;
+  readonly acceptedAt: string;
+  readonly eventAcceptedAt: string;
+  /** Original physical session placement. The guarded re-read compares it in its own snapshot. */
+  readonly session: {
+    readonly runtimeTargetId: string;
+    readonly deploymentId: string;
+    readonly originPhysicalEpoch: string;
+    readonly backendSessionId: string;
+  };
+}
+
+/** Lineage columns of one Native record or sequence receipt. */
+interface NativeLineageColumns {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string | null;
+}
+
+function hasNativeLineageColumns(
+  row: NativeLineageColumns,
+  lineage: ControlWorkerFinalStatusCommand['lineage']
+): boolean {
+  return (
+    row.workspaceId === lineage.workspaceId &&
+    row.threadId === lineage.threadId &&
+    row.turnId === lineage.turnId &&
+    row.requestId === (lineage.requestId ?? null)
+  );
+}
+
+/** Opening sets revision 1, and each step insert and each settlement add one. A gap is unknown history. */
+function hasCompleteExecutionHistory(
+  db: CoreDb,
+  execution: NanoHostWorkerFinalDecision['grant']['execution']
+): boolean {
+  const { revision } = readExecutionJournalRoot(db, execution);
+  const { steps, ended } = db.sqlite
+    .prepare(`SELECT COUNT(*) AS steps, COALESCE(SUM(state <> 'intent'), 0) AS ended
+    FROM control_execution_steps WHERE execution_id=?`)
+    .get(execution.executionId) as { steps: number; ended: number };
+  return revision === 1 + steps + ended;
+}
+
+/**
+ * The Core submission retains its runtime target and the digest of its exact placement (`authorityRefs[1]`).
+ * The digest uses the original grant generation and origin Epoch, so a successor Epoch keeps the readback.
+ */
+function hasOriginalSubmissionPlacement(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  grant: NanoHostWorkerFinalDecision['grant'],
+  lineage: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+  },
+  session: NanoHostAcceptedFinalProof['session']
+): boolean {
+  const step = db.sqlite
+    .prepare(
+      'SELECT step_id AS stepId FROM control_execution_steps WHERE execution_id=? AND invocation_id=?'
+    )
+    .get(grant.execution.executionId, grant.operationId) as { stepId: string } | undefined;
+  if (!step) return false;
+  const submit = readExecutionJournalInvocation(db, {
+    execution: grant.execution,
+    stepId: step.stepId,
+  });
+  const target = getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+  if (
+    !target ||
+    submit.control.target?.targetId !== session.runtimeTargetId ||
+    target.deploymentId !== session.deploymentId
+  )
+    return false;
+  const placement = {
+    runtimeTargetId: session.runtimeTargetId,
+    identityId: target.identityId,
+    deploymentId: session.deploymentId,
+    physicalEpoch: session.originPhysicalEpoch,
+    connectionGeneration: Number(grant.generation),
+    workspaceId: lineage.workspaceId,
+    threadId: lineage.threadId,
+    agentSessionId: lineage.agentSessionId,
+  };
+  return (
+    submit.control.authorityRefs.length === 2 &&
+    submit.control.authorityRefs[1] === commandInputHash(placement)
+  );
+}
+
+/** Verifies that a retained physical result belongs to the original submitted operation. */
+export function verifyNanoHostCleanupSubmitPlacement(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  lease: NanoHostRecoveryLease,
+  session: NanoHostAcceptedFinalProof['session']
+): boolean {
+  const original = readRetainedNanoHostSubmission(db, lease.grant.attemptId);
+  return (
+    original !== null &&
+    isDeepStrictEqual(original.lease, lease) &&
+    hasCompleteExecutionHistory(db, lease.grant.execution) &&
+    hasOriginalSubmissionPlacement(
+      db,
+      sqlite,
+      lease.grant,
+      nanoHostWorkerLineage(original),
+      session
+    )
+  );
+}
+
+/** The verified commitment that K8b hands to the guarded closeout read. */
+export type NanoHostAcceptedFinalCommitment = NanoHostAcceptedFinalProof & {
+  readonly state: 'settled';
+  readonly receipt: Extract<
+    StorageReceiptLookup<ExecutionProofReceipt>,
+    { state: 'settled' }
+  >['receipt'];
+};
+
+/**
+ * One inspect-only K8b readback of an accepted Native final.
+ * `settled` is the only result that permits closeout. `native-only` means that the Native pair matches the
+ * original Core intake and that complete Core history proves the `worker-final-accepted` receipt absent.
+ */
+export type NanoHostAcceptedFinalReadback =
+  | NanoHostAcceptedFinalCommitment
+  | (NanoHostAcceptedFinalProof & { readonly state: 'native-only'; readonly receipt: null })
+  | { readonly state: 'held'; readonly reason: NanoHostAcceptedFinalHold };
+
+/**
+ * Joins the original accepted Native final to its original Core intake and receipt without writing.
+ * Recovery never calls the deciding observer, which commits a receipt on absence. Missing, duplicate,
+ * unreadable or contradictory proof holds.
+ *
+ * @param db Core snapshot that holds the original submitted grant, intake and receipt.
+ * @param sqlite Admitted read-only NanoHost snapshot.
+ * @param attemptId Original submitted attempt.
+ */
+export function inspectAcceptedNanoHostFinalInDb(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string
+): NanoHostAcceptedFinalReadback {
+  const held = (reason: NanoHostAcceptedFinalHold) => ({ state: 'held', reason }) as const;
+  if (!sqlite.readonly) return held('unknown');
+  try {
+    const inspect = () =>
+      db.sqlite
+        .transaction((): NanoHostAcceptedFinalReadback => {
+          const original = readRetainedNanoHostSubmission(db, attemptId);
+          const route =
+            original && readNanoHostWorkerRouteBinding({ sqlite }, original.lease.grant);
+          if (!original || !route) return held('missing');
+          const { grant } = original.lease;
+          const expected = nanoHostWorkerLineage(original);
+          const records = sqlite
+            .prepare(`SELECT record_key AS recordKey, sequence, schema_version AS schemaVersion,
+          record_json AS recordJson, accepted_at AS acceptedAt
+          FROM worker_control_records
+          WHERE workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=?
+            AND package_snapshot_id=? AND request_id IS ? AND operation='final_status'`)
+            .all(
+              expected.workspaceId,
+              expected.threadId,
+              expected.turnId,
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              expected.requestId ?? null
+            ) as {
+            recordKey: string;
+            sequence: number;
+            schemaVersion: unknown;
+            recordJson: string;
+            acceptedAt: string;
+          }[];
+          if (records.length === 0) return held('missing');
+          if (records.length !== 1) return held('duplicate');
+          const [final] = records as [(typeof records)[number]];
+          const { sequence } = final;
+          // Uniqueness is checked at the original terminal sequence, then its lineage and canonical key.
+          const events = sqlite
+            .prepare(`SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+          request_id AS requestId, record_key AS recordKey, schema_version AS schemaVersion,
+          record_json AS recordJson, accepted_at AS acceptedAt FROM worker_control_records
+          WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+            AND sequence=?`)
+            .all(
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              sequence
+            ) as (NativeLineageColumns & {
+            recordKey: string;
+            schemaVersion: unknown;
+            recordJson: string;
+            acceptedAt: string;
+          })[];
+          if (events.length === 0) return held('missing');
+          if (events.length !== 1) return held('duplicate');
+          const [terminal] = events as [(typeof events)[number]];
+          if (
+            !hasNativeLineageColumns(terminal, expected) ||
+            terminal.recordKey !== String(sequence)
+          )
+            return held('conflict');
+          // The Native pair verifier below rechecks both records, both receipts and both clocks.
+          const {
+            acceptedAt: _acceptedAt,
+            sequence: _sequence,
+            ...terminalData
+          } = readRetainedV1(final, () => JSON.parse(final.recordJson)) as Record<string, unknown>;
+          const event = readRetainedV1(terminal, () => JSON.parse(terminal.recordJson)) as {
+            readonly lineage?: ControlWorkerFinalStatusCommand['lineage'];
+          };
+          if (
+            final.recordKey !== String(sequence) ||
+            !event.lineage ||
+            !matchesNanoHostWorkerLineage(original, event.lineage)
+          )
+            return held('conflict');
+          // The carried lineage and the historical control route hash rebuild the original intake fingerprint.
+          const command: FinalCommand = {
+            lineage: event.lineage,
+            sandboxBindingRef: original.lease.attempt.bindingRef,
+            tokenHash: route.control,
+            payload: {
+              terminalData: WorkerCanonicalTerminalEventDataSchema.parse(terminalData),
+              sequence,
+              acceptedAt: final.acceptedAt,
+              eventAcceptedAt: terminal.acceptedAt,
+            },
+          };
+          const { native } = readOriginalWorkerFinalBinding(db, sqlite, command);
+          const session = {
+            runtimeTargetId: native.session.runtimeTargetId,
+            deploymentId: native.session.deploymentId,
+            originPhysicalEpoch: native.session.originPhysicalEpoch,
+            backendSessionId: native.session.backendSessionId,
+          };
+          // The receipt key uses the session deployment, so the original submission placement comes first.
+          if (!hasOriginalSubmissionPlacement(db, sqlite, grant, expected, session))
+            return held('conflict');
+          const intake = readCoreWorkerFinalIntake(db, grant, command);
+          if (!intake) return held('missing');
+          if (!hasExactNativeWorkerFinal(sqlite, command, intake)) return held('conflict');
+          // Both Native sequence receipts must carry the original lineage, not only its fingerprints.
+          const receipts = sqlite
+            .prepare(`SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+          request_id AS requestId FROM worker_control_sequence_fingerprints
+          WHERE agent_session_id=? AND package_snapshot_id=? AND sequence=?
+            AND operation IN ('final_status', 'event_append')`)
+            .all(
+              expected.agentSessionId,
+              expected.packageSnapshotId,
+              sequence
+            ) as NativeLineageColumns[];
+          if (
+            receipts.length !== 2 ||
+            !receipts.every((row) => hasNativeLineageColumns(row, expected))
+          )
+            return held('conflict');
+          const { intent } = acceptedNanoHostFinalReceiptIntent(
+            session.deploymentId,
+            intake,
+            sequence
+          );
+          // Absence counts only when the retained steps account for every revision of the execution.
+          const receipt = inspectKernelProofReceipt(
+            db,
+            intent,
+            hasCompleteExecutionHistory(db, grant.execution)
+          );
+          if (receipt.state !== 'settled' && receipt.state !== 'absent') return held(receipt.state);
+          const { terminalData: data } = command.payload;
+          const proof: NanoHostAcceptedFinalProof = {
+            grant,
+            lineage: command.lineage,
+            sandboxBindingRef: command.sandboxBindingRef,
+            sequence,
+            terminalData: data,
+            fingerprint: intake.fingerprint,
+            finalFingerprint: canonicalJsonText({ ...data, lineage: command.lineage, sequence }),
+            eventFingerprint: canonicalJsonText(
+              buildWorkerCanonicalTerminalEventRecord({ data, lineage: command.lineage, sequence })
+            ),
+            acceptedAt: intake.acceptedAt,
+            eventAcceptedAt: intake.eventAcceptedAt,
+            session,
+          };
+          return receipt.state === 'settled'
+            ? { ...proof, state: 'settled', receipt: receipt.receipt }
+            : { ...proof, state: 'native-only', receipt: null };
+        })
+        .deferred();
+    // One deferred Native read transaction pins every Native record and receipt of this readback.
+    return sqlite.inTransaction ? inspect() : sqlite.transaction(inspect).deferred();
+  } catch (error) {
+    if (error instanceof WorkerFinalStatusRefusal) return held('conflict');
+    return held('unknown');
+  }
+}
+
+/**
+ * K8b: a missing Native final counts as absent only when no other accepted-final evidence survives.
+ * That evidence is a canonical terminal event, its sequence receipt, or the original Core
+ * `worker-final-accepted` receipt. A Core intake alone is a genuine crash before Native FULL.
+ * The receipt key uses the session deployment, so the original submit placement and complete Core
+ * history come first. Without them the receipt absence is not proved, and this returns true.
+ *
+ * @param db Core snapshot that holds the original submitted grant and its receipt steps.
+ * @param sqlite Admitted NanoHost snapshot of the original session.
+ * @param attemptId Original submitted attempt.
+ * @param session Candidate Native coordinates of the original session.
+ * @returns Whether accepted-final evidence survives, or its absence is unproved, without its Native final.
+ */
+export function hasSurvivingNanoHostFinalEvidence(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string,
+  session: NanoHostAcceptedFinalProof['session']
+): boolean {
+  const original = readRetainedNanoHostSubmission(db, attemptId);
+  if (!original) return true;
+  const lineage = nanoHostWorkerLineage(original);
+  const { agentSessionId, packageSnapshotId } = lineage;
+  const terminal = (column: string) => `CASE WHEN json_valid(${column})
+    THEN json_extract(${column}, '$.event.type') END IN ('turn.completed', 'turn.failed')`;
+  if (
+    sqlite
+      .prepare(`SELECT 1 FROM worker_control_records
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND ${terminal('record_json')}
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND ${terminal('fingerprint')}`)
+      .get(agentSessionId, packageSnapshotId, agentSessionId, packageSnapshotId)
+  )
+    return true;
+  const { grant } = original.lease;
+  if (
+    !hasOriginalSubmissionPlacement(db, sqlite, grant, lineage, session) ||
+    !hasCompleteExecutionHistory(db, grant.execution)
+  )
+    return true;
+  return !!db.sqlite
+    .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(
+      grant.execution.executionId,
+      storageRequestId(
+        acceptedNanoHostFinalReceiptOccurrence(session.deploymentId, grant.operationId)
+      )
+    );
+}
+
+/**
+ * K8b: the final decision that one recovery close consumes. `native-only` is the proved Native-only final.
+ * `absent` is a proved absence: no final record or final receipt of the original session survives, and
+ * no other accepted-final evidence survives under the original placement and complete Core history.
+ */
+export type NanoHostFinalCloseDecision =
+  | Extract<NanoHostAcceptedFinalReadback, { readonly state: 'native-only' }>
+  | { readonly state: 'absent' };
+
+/**
+ * Recomputes the close decision from one Core snapshot and one admitted Native snapshot.
+ * Settled, contradictory or unreadable proof returns `held`.
+ *
+ * @param db Core snapshot that holds the original submitted grant, intake and receipt.
+ * @param sqlite Admitted read-only NanoHost snapshot.
+ * @param attemptId Original submitted attempt.
+ * @param session Native coordinates of the original session.
+ */
+export function readNanoHostFinalCloseDecision(
+  db: CoreDb,
+  sqlite: FinalNativeReader,
+  attemptId: string,
+  session: NanoHostAcceptedFinalProof['session']
+): NanoHostFinalCloseDecision | { readonly state: 'held' } {
+  const readback = inspectAcceptedNanoHostFinalInDb(db, sqlite, attemptId);
+  if (readback.state === 'native-only') return readback;
+  if (readback.state !== 'held' || readback.reason !== 'missing') return { state: 'held' };
+  const original = readRetainedNanoHostSubmission(db, attemptId);
+  if (!original) return { state: 'held' };
+  const { agentSessionId, packageSnapshotId } = nanoHostWorkerLineage(original);
+  const final = sqlite
+    .prepare(`SELECT 1 FROM worker_control_records
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='final_status'
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='final_status'`)
+    .get(agentSessionId, packageSnapshotId, agentSessionId, packageSnapshotId);
+  return final || hasSurvivingNanoHostFinalEvidence(db, sqlite, attemptId, session)
+    ? { state: 'held' }
+    : { state: 'absent' };
+}
+
+/** Reads the exact currently live route under the admitted Core and Native snapshots. */
+export function captureSecurityCanaryAuditObservation(
+  coreDb: CoreDb,
+  native: CoreDb['sqlite'],
+  lineage: NonNullable<ControlStandaloneAuditInput['canaryLineage']>,
+  authenticatedCapabilityHash?: string
+): SecurityCanaryAuditObservation | null {
+  if (!coreDb.sqlite.inTransaction || !native.readonly || !native.inTransaction) return null;
+  try {
+    const owner = { sqlite: native };
+    const session = getWorkerBackendSessionByPackage(owner, lineage.packageSnapshotId);
+    if (!session) return null;
+    const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+    if (!original) return null;
+    const binding = inspectNanoHostWorkerBinding(native, original, {
+      sandboxBindingRef: session.sandboxBindingRef,
+      lineage,
+      ...(authenticatedCapabilityHash === undefined
+        ? {}
+        : { tokenFamily: 'capability', tokenHash: authenticatedCapabilityHash }),
+    });
+    if (
+      binding.status !== 'accepted' ||
+      nanoHostWorkerBindingLiveness(binding, new Date().toISOString()).status !== 'accepted'
+    )
+      return null;
+
+    const { grant, attempt } = original.lease;
+    const route = readNanoHostWorkerRouteBinding(owner, grant);
+    const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
+    if (!route || !target) return null;
+    return {
+      attemptId: attempt.attemptId,
+      sandboxBindingRef: session.sandboxBindingRef,
+      observationHash: commandInputHash({
+        grant,
+        queueEntryId: attempt.queueEntryId,
+        lineage,
+        session,
+        route,
+        target,
+        recovery: binding.proof,
+      }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const terminalReleaseStepId = 'worker-terminal-release';
+const abandonmentAction = 'scheduler.scoped-abandonment';
+type TerminalReleaseInput = ControlNanoHostTerminalReleaseInput;
+
+/** The peer commitments expected when Core closes the original recovery attempt. */
+export type NanoHostRecoveryReleaseInput = Pick<
+  TerminalReleaseInput,
+  'attemptId' | 'target' | 'fenceRef' | 'coveredScopeRefs'
+> & {
+  readonly grant: ExecutionGrant;
+  readonly expectedRevision: number;
+  readonly firstCause: string;
+  readonly abandonment?: {
+    readonly actor: Actor;
+    readonly missing: readonly {
+      readonly kind: ExecutionHandoff['kind'];
+      readonly scopeRef: string;
+    }[];
+    readonly transcriptLoss?: { readonly stepId: string; readonly digest: string };
+    readonly residual: {
+      readonly remoteCleanup: 'pending' | 'complete' | 'unknown';
+      readonly cost: 'none' | 'pending' | 'unknown';
+    };
+  };
+  readonly acceptedWorkspace?: Pick<
+    TerminalReleaseInput,
+    'workspaceExecutionId' | 'workspaceSteps'
+  >;
+  readonly proof: {
+    readonly outcomeRef: string;
+    readonly inputDisposition: {
+      readonly kind: 'consumed' | 'non-submission';
+      readonly digest: string;
+    };
+    readonly cleanupDigest: string;
+    readonly drainAndRevocationDigest: string;
+    readonly handoffs: readonly ExecutionHandoff[];
+  };
+};
+
+const workerHandoffSteps = [
+  ['terminal', 'terminal-publication', 'terminal-publication', 'worker.terminal-publication'],
+  ['output', 'output', 'collect', 'worker.collect.publication'],
+  ['evidence', 'evidence', 'collect', 'worker.collect.transcript'],
+  ['collection', 'outside-workspace-collection', 'collect', 'worker.collect.capture'],
+] as const;
+
+/** Names and hashes an immutable Workspace occurrence without carrying transcript or artifact bytes. */
+export function nanoHostTerminalReleaseWorkspaceStep(
+  ended: EndedExecutionStep,
+  carriage: ExecutionInvocationCarriage
+): { readonly stepId: string; readonly digest: string } {
+  const digest = sha256CanonicalJson(
+    JSON.parse(
+      encodeExecutionJournalValue({
+        ref: ended.ref,
+        state: ended.state,
+        control: ended.control,
+        carriage,
+        endedAt: ended.span.endTimeUnixNano,
+      })
+    )
+  );
+  return { stepId: ended.ref.stepId, digest: `sha256:${digest}` };
+}
+
+function readTerminalReleaseWorkspace(
+  db: CoreDb,
+  workspace: WorkspaceDb,
+  input: Pick<TerminalReleaseInput, 'workspaceExecutionId' | 'workspaceSteps' | 'fenceRef'>,
+  lease: NanoHostRecoveryLease,
+  abandonment?: NonNullable<NanoHostRecoveryReleaseInput['abandonment']>
+) {
+  const { attempt, grant } = lease;
+  const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+  const execution = { owner, executionId: input.workspaceExecutionId };
+  const root = readExecutionJournalRoot(workspace, execution);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  const rootFingerprint = (
+    identity: Pick<SchedulerExecutionAttemptRecord, 'attemptId' | 'bindingRef' | 'inputRef'>
+  ) =>
+    commandInputHash({
+      turnId: grant.turnId,
+      attemptId: identity.attemptId,
+      bindingRef: identity.bindingRef,
+      packageSnapshotId: identity.inputRef,
+    });
+  // Same-Turn handoff keeps its original Workspace root. Only its exact released predecessor
+  // can provide the root fingerprint; all deciding steps below still belong to this attempt.
+  const predecessor =
+    root.fingerprint === rootFingerprint(attempt)
+      ? null
+      : readReleasedSandboxRefusalPredecessor(db, attempt, attempt.attemptId);
+  if (
+    workspace.dataRoot !== db.dataRoot ||
+    workspace.workspaceId !== attempt.workspaceId ||
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== grant.turnId ||
+    root.phase !== 'closed' ||
+    root.openSteps.length !== 0 ||
+    root.exclusionRefs.length !== 0 ||
+    root.fingerprint !== rootFingerprint(predecessor ?? attempt)
+  )
+    throw new CoreJournalRefusal('Original Workspace release is unresolved.');
+  const inspect = (
+    key: keyof TerminalReleaseInput['workspaceSteps'],
+    kind: EndedExecutionStep['control']['kind'],
+    operation: string
+  ) => {
+    const expected = input.workspaceSteps[key];
+    const ref = { execution, stepId: expected.stepId };
+    const ended = readExecutionJournalEndedStep(workspace, ref);
+    const invocation = readExecutionJournalInvocation(workspace, ref);
+    if (
+      ended.state !== 'completed' ||
+      ended.control.kind !== kind ||
+      ended.control.attemptId !== grant.attemptId ||
+      ended.control.workId !== grant.turnId ||
+      !isDeepStrictEqual(ended.control.actor, admission.triggerActor) ||
+      !isDeepStrictEqual(ended.control.authorityRefs, [
+        grant.turnId,
+        attempt.agentSessionId,
+        grant.attemptId,
+      ]) ||
+      invocation.carriage.operation !== operation ||
+      nanoHostTerminalReleaseWorkspaceStep(ended, invocation.carriage).digest !== expected.digest
+    )
+      throw new CoreJournalRefusal('Original Workspace release step conflicts.');
+    return { ended, carriage: invocation.carriage };
+  };
+  const handoffs: ExecutionHandoff[] = [];
+  for (const [key, kind, stepKind, operation] of workerHandoffSteps) {
+    if (abandonment?.missing.some((gap) => gap.kind === kind)) {
+      // Accepted work can waive only the original transcript after an explicit Workspace loss.
+      if (key !== 'evidence' || !abandonment.transcriptLoss)
+        throw new CoreJournalRefusal('Original Workspace handoff cannot be waived.');
+      const originalRef = { execution, stepId: input.workspaceSteps.evidence.stepId };
+      const original = readExecutionJournalEndedStep(workspace, originalRef);
+      const originalInvocation = readExecutionJournalInvocation(workspace, originalRef);
+      const lossRef = { execution, stepId: abandonment.transcriptLoss.stepId };
+      const loss = readExecutionJournalEndedStep(workspace, lossRef);
+      const lossInvocation = readExecutionJournalInvocation(workspace, lossRef);
+      if (
+        original.state !== 'unknown' ||
+        original.control.kind !== stepKind ||
+        original.control.attemptId !== grant.attemptId ||
+        original.control.workId !== grant.turnId ||
+        !isDeepStrictEqual(original.control.actor, admission.triggerActor) ||
+        !isDeepStrictEqual(original.control.inputRefs, [grant.turnId, grant.inputRef]) ||
+        originalInvocation.carriage.operation !== operation ||
+        originalInvocation.carriage.bindingRef !== grant.bindingRef ||
+        nanoHostTerminalReleaseWorkspaceStep(original, originalInvocation.carriage).digest !==
+          input.workspaceSteps.evidence.digest ||
+        loss.state !== 'completed' ||
+        loss.control.kind !== 'inspect-cleanup' ||
+        loss.control.attemptId !== grant.attemptId ||
+        loss.control.workId !== grant.turnId ||
+        !readExecutionJournalLinkedInspections(workspace, originalRef).some(({ inspection }) =>
+          isDeepStrictEqual(inspection.ref, lossRef)
+        ) ||
+        lossInvocation.carriage.operation !== 'worker.collect.transcript.loss' ||
+        lossInvocation.carriage.bindingRef !== grant.bindingRef ||
+        !isDeepStrictEqual(loss.control.outputRefs, [input.fenceRef]) ||
+        nanoHostTerminalReleaseWorkspaceStep(loss, lossInvocation.carriage).digest !==
+          abandonment.transcriptLoss.digest
+      )
+        throw new CoreJournalRefusal('Original Workspace transcript loss is unavailable.');
+      continue;
+    }
+    const { ended, carriage } = inspect(key, stepKind, operation);
+    if (
+      carriage.bindingRef !== grant.bindingRef ||
+      !isDeepStrictEqual(ended.control.inputRefs, [grant.turnId, grant.inputRef])
+    )
+      throw new CoreJournalRefusal('Original Workspace handoff binding conflicts.');
+    handoffs.push({
+      kind,
+      owner,
+      ref: `workspace-step/v1:${owner.workspaceId}:${execution.executionId}:${ended.ref.stepId}`,
+      digest: input.workspaceSteps[key].digest,
+    });
+  }
+  const release = inspect('release', 'release', 'worker.release');
+  if (
+    release.carriage.bindingRef !== grant.bindingRef ||
+    !isDeepStrictEqual(release.ended.control.outputRefs, [input.fenceRef])
+  )
+    throw new CoreJournalRefusal('Original Workspace release fence conflicts.');
+  const consume = inspect('consume', 'consume-receipt', 'turn.start');
+  const [fingerprint] = consume.ended.control.inputRefs;
+  if (
+    !fingerprint ||
+    !consume.carriage.bindingRef ||
+    consume.carriage.sequence === null ||
+    !isDeepStrictEqual(consume.ended.control.inputRefs, [fingerprint]) ||
+    !isDeepStrictEqual(consume.ended.control.outputRefs, [fingerprint])
+  )
+    throw new CoreJournalRefusal('Original Workspace consume acknowledgement conflicts.');
+  const consumer = readCoreHarnessConsumption(db, {
+    harnessBindingRef: consume.carriage.bindingRef,
+    operationId: consume.carriage.requestId,
+    sequence: consume.carriage.sequence,
+    resultFingerprint: fingerprint,
+  });
+  if (
+    !consumer ||
+    !isDeepStrictEqual(JSON.parse(consumer), {
+      workspaceId: attempt.workspaceId,
+      turnId: grant.turnId,
+      executionId: execution.executionId,
+      stepId: consume.ended.ref.stepId,
+    })
+  )
+    throw new CoreJournalRefusal('Original Core consume acknowledgement is unavailable.');
+  return { handoffs, consume: consume.carriage };
+}
+
+function terminalReleaseProposal(
+  db: CoreDb,
+  grant: ExecutionGrant,
+  root: ExecutionJournalExecution,
+  input: TerminalReleaseInput | NanoHostRecoveryReleaseInput,
+  revision: number
+): ExecutionJournalIntent {
+  const span = { ...root.span, endTimeUnixNano: null, status: { code: 'UNSET' as const } };
+  const auditId = recoveryAbandonmentAuditId(input);
+  const stepId = auditId ? `${terminalReleaseStepId}:${auditId}` : terminalReleaseStepId;
+  const invocationId = `${grant.attemptId}:${stepId}`;
+  const fingerprint = commandInputHash(input);
+  // The closed root's mutable revision, exclusions and diagnostic end clock do not enter replay.
+  return {
+    execution: {
+      ref: root.ref,
+      definitionVersion: root.definitionVersion,
+      workId: root.workId,
+      fingerprint: root.fingerprint,
+      exclusionRefs: [],
+      span,
+    },
+    stepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    carriage: {
+      operation: terminalReleaseStepId,
+      requestId: grant.operationId,
+      sequence: null,
+      bindingRef: grant.bindingRef,
+    },
+    control: {
+      definitionVersion: root.definitionVersion,
+      kind: 'release',
+      target: null,
+      workId: grant.turnId,
+      operationId: grant.operationId,
+      invocationId,
+      attemptId: grant.attemptId,
+      actor:
+        'abandonment' in input && input.abandonment
+          ? { kind: 'user', id: input.abandonment.actor.userId }
+          : requireSchedulerExecutionAttemptAdmissionContext(db, grant.attemptId).triggerActor,
+      inputRefs: [fingerprint],
+      outputRefs: [],
+      fingerprint,
+      permittingDecisionRef: auditId ?? grant.operationId,
+      authorityRefs: [String(revision)],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    span: {
+      ...span,
+      name: terminalReleaseStepId,
+      spanId: sha256Hex(invocationId).slice(0, 16),
+      parentSpanId: span.spanId,
+    },
+  };
+}
+
+/** Original revision addresses a distinct decision and makes changed same-revision replay conflict. */
+function recoveryAbandonmentAuditId(input: TerminalReleaseInput | NanoHostRecoveryReleaseInput) {
+  return 'abandonment' in input && input.abandonment
+    ? deriveEntityId('aud', [abandonmentAction, input.attemptId, String(input.expectedRevision)])
+    : undefined;
+}
+
+/** Inspects the stable release proposal against the original completed step without releasing again. */
+export function inspectCoreNanoHostTerminalRelease(
+  db: CoreDb,
+  input: TerminalReleaseInput | NanoHostRecoveryReleaseInput
+): StorageReceiptLookup<ExecutionStepRef> {
+  const original = readRetainedNanoHostSubmission(db, input.attemptId);
+  if (!original) return { state: 'unknown' };
+  const { grant } = original.lease;
+  const auditId = recoveryAbandonmentAuditId(input);
+  const stepId = auditId ? `${terminalReleaseStepId}:${auditId}` : terminalReleaseStepId;
+  const ref = { execution: grant.execution, stepId };
+  if (
+    !db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+      .get(ref.execution.executionId, ref.stepId)
+  )
+    return { state: 'absent' };
+  const step = readExecutionJournalInvocation(db, ref);
+  const [revision] = step.control.authorityRefs;
+  if (!revision || !/^[1-9][0-9]*$/.test(revision) || !Number.isSafeInteger(Number(revision)))
+    return { state: 'conflict' };
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const proposal = terminalReleaseProposal(db, grant, root, input, Number(revision));
+  const inspected = inspectKernelExecutionReleaseInDb(db, proposal, grant, Number(revision));
+  if (inspected.state !== 'settled' || !auditId) return inspected;
+  const row = db.sqlite.prepare('SELECT * FROM audit_events WHERE audit_event_id=?').get(auditId);
+  if (!row || !step.control.outputRefs.includes(auditId)) return { state: 'unknown' };
+  const audit = auditEventFromRow(row);
+  return audit.action === abandonmentAction &&
+    audit.requestId === abandonmentRequestId(input) &&
+    audit.resource === grant.execution.executionId &&
+    step.control.outputRefs.includes(commandInputHash(audit)) &&
+    isDeepStrictEqual(audit.actor, proposal.control.actor)
+    ? inspected
+    : { state: 'conflict' };
+}
+
+function abandonmentRequestId(input: TerminalReleaseInput | NanoHostRecoveryReleaseInput) {
+  return storageRequestId({
+    deploymentId: input.target.deploymentId,
+    sourceOwner: 'control-kernel',
+    verb: abandonmentAction,
+    occurrenceKey: commandInputHash(input),
+  });
+}
+
+function commitTerminalReleaseEvidence(
+  db: CoreDb,
+  input: TerminalReleaseInput | NanoHostRecoveryReleaseInput,
+  lease: NanoHostRecoveryLease,
+  handoffs: readonly ExecutionHandoff[],
+  physicalDigest: string,
+  recoveryCause?: string,
+  abandonment?: NonNullable<Parameters<typeof releaseKernelExecutionScopesInDb>[5]>['abandonment']
+): StorageDecision<ExecutionStepRef> {
+  const { grant } = lease;
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const proposal = terminalReleaseProposal(db, grant, root, input, root.revision);
+  const fence = {
+    kind: 'fence' as const,
+    fence: { backendId: 'nanohost', ref: input.fenceRef, digest: physicalDigest },
+    coveredScopeRefs: input.coveredScopeRefs,
+  };
+  const evidence = [
+    ...handoffs.map((handoff) => ({
+      kind: 'handoff' as const,
+      handoff,
+    })),
+    { kind: 'fence' as const, proof: fence },
+  ];
+  for (const fact of evidence) {
+    const occurrence = {
+      deploymentId: input.target.deploymentId,
+      sourceOwner: fact.kind === 'handoff' ? 'workspace' : 'nanohost',
+      verb: 'apply-execution-proof',
+      occurrenceKey: `worker-terminal-release:${grant.operationId}:${fact.kind === 'handoff' ? fact.handoff.kind : (abandonment?.auditId ?? 'fence')}`,
+    } as const;
+    const intent: ExecutionProofIntent = {
+      ...occurrence,
+      requestId: storageRequestId(occurrence),
+      target: grant,
+      expectedGeneration: grant.generation,
+      inputDigest: sha256CanonicalJson(fact.kind === 'handoff' ? fact.handoff : fact.proof),
+    };
+    const retained: KernelExecutionEvidence = { version: 1, intent, ...fact };
+    const kind =
+      fact.kind === 'fence'
+        ? 'fence'
+        : fact.handoff.kind === 'terminal-publication'
+          ? 'terminal-publication'
+          : 'collect';
+    // The admitted peer readers already verified each fact in this same deciding savepoint.
+    const result = commitKernelExecutionEvidenceInDb(
+      db,
+      {
+        ...proposal,
+        stepId: intent.requestId,
+        carriage: { ...proposal.carriage, operation: kind, requestId: intent.requestId },
+        control: { ...proposal.control, kind },
+        span: { ...proposal.span, spanId: sha256Hex(intent.requestId).slice(0, 16) },
+      },
+      retained,
+      true,
+      () => true
+    );
+    if (result.state !== 'settled') return { state: result.state };
+  }
+  const revision = readExecutionJournalRoot(db, grant.execution).revision;
+  return releaseKernelExecutionScopesInDb(
+    db,
+    terminalReleaseProposal(db, grant, root, input, revision),
+    grant,
+    revision,
+    () => true,
+    recoveryCause === undefined
+      ? undefined
+      : {
+          firstCause: recoveryCause,
+          coveredScopeRefs: input.coveredScopeRefs,
+          ...(abandonment ? { abandonment } : {}),
+        }
+  );
+}
+
+/** Commits the ordinary terminal Worker's exact scoped release from its pinned peer evidence. */
+export function releaseCoreNanoHostTerminalInDb(
+  db: CoreDb,
+  input: TerminalReleaseInput,
+  readers: {
+    readonly workspace: WorkspaceDb;
+    readonly native: Parameters<typeof readNanoHostPhysicalCleanupReceipt>[0];
+    readonly verifyDrainAndRevocation: (lease: NanoHostRecoveryLease) => boolean;
+  }
+): StorageDecision<ExecutionStepRef> {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal(
+      'Worker terminal release requires the Core writer transaction.'
+    );
+  const prior = inspectCoreNanoHostTerminalRelease(db, input);
+  if (prior.state !== 'absent') return prior;
+  const original = readRetainedNanoHostSubmission(db, input.attemptId);
+  if (!original || !readers.native.readonly) return { state: 'unknown' };
+  const { lease } = original;
+  const { grant, attempt } = lease;
+  const allowedScopes = [
+    `workspace:${attempt.workspaceId}`,
+    `thread:${attempt.threadId}`,
+    `turn:${attempt.turnId}`,
+    `session:${attempt.agentSessionId}`,
+  ];
+  if (
+    attempt.phase !== 'closed' ||
+    attempt.disposition !== 'accepted' ||
+    attempt.fenceRef !== input.fenceRef ||
+    new Set(input.coveredScopeRefs).size !== input.coveredScopeRefs.length ||
+    input.coveredScopeRefs.some((scope) => !allowedScopes.includes(scope))
+  )
+    return { state: 'conflict' };
+  return db.sqlite.transaction((): StorageDecision<ExecutionStepRef> => {
+    const target = getNanoHostRuntimeTarget({ sqlite: readers.native }, input.target.targetId);
+    const physical =
+      target &&
+      readNanoHostPhysicalCleanupReceipt(readers.native, lease, target, (session) =>
+        verifyNanoHostCleanupSubmitPlacement(db, readers.native, lease, session)
+      );
+    if (
+      !target ||
+      !physical ||
+      physical.session.state !== 'cleaned' ||
+      physical.session.workspaceHandoffState !== 'complete' ||
+      target.identityId !== input.target.identityId ||
+      target.deploymentId !== input.target.deploymentId ||
+      target.connectionGeneration !== input.target.connectionGeneration ||
+      target.physicalEpoch !== input.target.physicalEpoch ||
+      input.fenceRef !== `worker-backend:${grant.attemptId}:${physical.observedAt}`
+    )
+      return { state: 'unknown' };
+    const native = readNanoHostWorkerLease({ sqlite: readers.native }, grant, attempt);
+    const workspace = readTerminalReleaseWorkspace(db, readers.workspace, input, lease);
+    if (
+      !native ||
+      native.binding.harnessOperationId !== workspace.consume.requestId ||
+      native.binding.harnessSequence !== workspace.consume.sequence ||
+      !readers.verifyDrainAndRevocation(lease)
+    )
+      return { state: 'unknown' };
+    const digest = commandInputHash({
+      grant,
+      backendSessionId: physical.session.backendSessionId,
+      target: input.target,
+      cleanedAt: physical.observedAt,
+      coveredScopeRefs: input.coveredScopeRefs,
+    });
+    return commitTerminalReleaseEvidence(db, input, lease, workspace.handoffs, digest);
+  })();
+}
+
+/** Builds the recovery decision only from the pinned peers of the existing release command. */
+export function applyCoreNanoHostRecoveryReleaseInDb(
+  db: CoreDb,
+  input:
+    | TerminalReleaseInput
+    | ControlNanoHostPreparationReleaseInput
+    | ControlNanoHostUnusedPreparationReleaseInput
+    | ControlNanoHostReadyBindingPreparationReleaseInput,
+  readers: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): StorageDecision<ExecutionStepRef> {
+  if ('unusedPreparation' in input || 'readyBindingPreparation' in input)
+    return closeCoreNanoHostUnsubmittedPreparation(db, input, readers);
+  const original = readCoreNanoHostRecoveryRelease(db, input, readers);
+  if (!original) return { state: 'unknown' };
+  return releaseCoreNanoHostRecoveryInDb(db, original.input, original.readProof, readers);
+}
+
+/** Inspects a lost recovery release acknowledgement using the same original command and peer proof. */
+export function inspectCoreNanoHostRecoveryRelease(
+  db: CoreDb,
+  input:
+    | TerminalReleaseInput
+    | ControlNanoHostPreparationReleaseInput
+    | ControlNanoHostUnusedPreparationReleaseInput
+    | ControlNanoHostReadyBindingPreparationReleaseInput,
+  readers: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): StorageReceiptLookup<ExecutionStepRef> {
+  if ('unusedPreparation' in input || 'readyBindingPreparation' in input) {
+    const receipt = readCoreNanoHostUnsubmittedRelease(db, input, readers)?.committedRelease;
+    return receipt ? { state: 'settled', receipt } : { state: 'unknown' };
+  }
+  const original = readCoreNanoHostRecoveryRelease(db, input, readers);
+  return original ? inspectCoreNanoHostTerminalRelease(db, original.input) : { state: 'unknown' };
+}
+
+/** Revalidates an already committed pre-submit failed-start release against its original fence. */
+export function hasClosedNanoHostPreparationRelease(
+  db: CoreDb,
+  attempt: SchedulerExecutionAttemptRecord,
+  readers: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): boolean {
+  if (
+    attempt.phase !== 'closed' ||
+    attempt.terminalCause !== 'turn-start-failed' ||
+    !attempt.fenceRef
+  )
+    return false;
+  return db.sqlite
+    .transaction(() => {
+      const lease = readRetainedNanoHostSubmission(db, attempt.attemptId)?.lease;
+      const retained = readNanoHostCleanupOnly(readers.native, attempt);
+      const cleanup = retained?.proof?.physicalCleanup;
+      const target =
+        retained &&
+        getNanoHostRuntimeTarget({ sqlite: readers.native }, retained.session.runtimeTargetId);
+      if (!cleanup || !target) return false;
+      if (attempt.deadline === null && retained.proof?.readyBindingProof) {
+        return (
+          inspectCoreNanoHostRecoveryRelease(
+            db,
+            {
+              attemptId: attempt.attemptId,
+              fenceRef: attempt.fenceRef!,
+              readyBindingPreparation: true,
+              target: {
+                targetId: target.targetId,
+                identityId: target.identityId,
+                deploymentId: target.deploymentId,
+                connectionGeneration: cleanup.connectionGeneration,
+                physicalEpoch: cleanup.physicalEpoch,
+              },
+              coveredScopeRefs: [
+                `workspace:${attempt.workspaceId}`,
+                `thread:${attempt.threadId}`,
+                `turn:${attempt.turnId}`,
+                `session:${attempt.agentSessionId}`,
+              ],
+            },
+            readers
+          ).state === 'settled'
+        );
+      }
+      if (!lease || !isDeepStrictEqual(lease.attempt, attempt)) return false;
+      const stepId = storageRequestId({
+        deploymentId: target.deploymentId,
+        sourceOwner: 'nanohost',
+        verb: 'apply-execution-proof',
+        occurrenceKey: `worker-terminal-release:${lease.grant.operationId}:fence`,
+      });
+      if (
+        !db.sqlite
+          .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+          .get(lease.grant.execution.executionId, stepId)
+      )
+        return false;
+      const fence = readExecutionJournalInvocation(db, {
+        execution: lease.grant.execution,
+        stepId,
+      });
+      const evidence = fence.carriage.kernelEvidence;
+      const revision = Number(fence.control.authorityRefs[0]);
+      if (
+        fence.state !== 'completed' ||
+        evidence?.kind !== 'fence' ||
+        !isDeepStrictEqual(evidence.intent.target, lease.grant) ||
+        evidence.proof.fence.ref !== attempt.fenceRef ||
+        !Number.isSafeInteger(revision) ||
+        revision < 1 ||
+        inspectKernelExecutionEvidence(db, evidence.intent, false).state !== 'settled'
+      )
+        return false;
+      return (
+        inspectCoreNanoHostRecoveryRelease(
+          db,
+          {
+            attemptId: attempt.attemptId,
+            fenceRef: attempt.fenceRef!,
+            recoveryExpectedRevision: revision,
+            target: {
+              targetId: target.targetId,
+              identityId: target.identityId,
+              deploymentId: target.deploymentId,
+              connectionGeneration: cleanup.connectionGeneration,
+              physicalEpoch: cleanup.physicalEpoch,
+            },
+            coveredScopeRefs: evidence.proof.coveredScopeRefs,
+          },
+          readers
+        ).state === 'settled'
+      );
+    })
+    .deferred();
+}
+
+/** Joins the proved original preparation to its Workspace release obligation. */
+function readCoreNanoHostUnsubmittedRelease(
+  db: CoreDb,
+  input:
+    | ControlNanoHostUnusedPreparationReleaseInput
+    | ControlNanoHostReadyBindingPreparationReleaseInput,
+  { native, workspace }: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+) {
+  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+  const retained = readNanoHostCleanupOnly(native, attempt);
+  const session = retained?.session;
+  const receipt = retained?.proof?.physicalCleanup;
+  const readyBinding = 'readyBindingPreparation' in input;
+  const cleanup = retained?.proof?.occurrence;
+  const decision = retained?.proof?.readyBindingProof
+    ? 'binding-cleaned'
+    : (retained?.proof?.imageDecision ?? (cleanup ? 'sandbox-cleaned' : undefined));
+  if (
+    !session ||
+    !receipt ||
+    !decision ||
+    (decision === 'binding-cleaned') !== readyBinding ||
+    attempt.deadline !== null ||
+    !attempt.operationId ||
+    !native.readonly ||
+    !workspace.sqlite.readonly ||
+    workspace.dataRoot !== db.dataRoot ||
+    workspace.workspaceId !== attempt.workspaceId ||
+    session.state !== 'cleaned' ||
+    session.workspaceHandoffState !== 'complete' ||
+    session.physicalCleanedAt !== receipt.observedAt ||
+    receipt.connectionGeneration !== input.target.connectionGeneration ||
+    receipt.physicalEpoch !== input.target.physicalEpoch ||
+    session.runtimeTargetId !== input.target.targetId ||
+    session.deploymentId !== input.target.deploymentId ||
+    input.fenceRef !== `worker-backend:${attempt.attemptId}:${receipt.observedAt}` ||
+    !isDeepStrictEqual(input.coveredScopeRefs, [
+      `workspace:${attempt.workspaceId}`,
+      `thread:${attempt.threadId}`,
+      `turn:${attempt.turnId}`,
+      `session:${attempt.agentSessionId}`,
+    ]) ||
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(attempt.attemptId)
+  )
+    return null;
+  if (
+    attempt.phase === 'closed' &&
+    attempt.fenceRef !== (decision === 'not-enqueued' ? null : input.fenceRef)
+  )
+    return null;
+  const target = getNanoHostRuntimeTarget({ sqlite: native }, session.runtimeTargetId);
+  const pkg = findNamedAgentEnvironmentPackageSnapshot(
+    workspace,
+    attempt.workspaceId,
+    session.agentSessionId,
+    session.packageSnapshotId
+  );
+  if (
+    !target ||
+    target.identityId !== input.target.identityId ||
+    target.connectionGeneration < receipt.connectionGeneration ||
+    !pkg
+  )
+    return null;
+  const committedRelease =
+    attempt.phase === 'closed' ? readCoreUnsubmittedReleaseReceipt(db, attempt) : null;
+  if (attempt.phase === 'closed' && !committedRelease) return null;
+  if (readyBinding) {
+    if (
+      !readNanoHostReadyBindingCleanup(
+        db,
+        native,
+        workspace,
+        pkg.snapshot,
+        attempt,
+        retained,
+        target
+      )
+    )
+      return null;
+  } else if (decision === 'sandbox-cleaned') {
+    // The cleanup ACK is keyed to the original create and target, before the Workspace release.
+    if (
+      !cleanup ||
+      cleanup.targetId !== target.targetId ||
+      cleanup.identityId !== target.identityId ||
+      cleanup.deploymentId !== target.deploymentId ||
+      cleanup.physicalEpoch !== session.originPhysicalEpoch ||
+      (receipt.physicalEpoch === cleanup.physicalEpoch
+        ? receipt.connectionGeneration !== cleanup.connectionGeneration
+        : receipt.connectionGeneration <= cleanup.connectionGeneration) ||
+      (target.connectionGeneration === receipt.connectionGeneration &&
+        target.physicalEpoch !== receipt.physicalEpoch) ||
+      readNanoHostPreparationOccurrence(
+        workspace,
+        native,
+        pkg.snapshot,
+        attempt,
+        session,
+        target,
+        retained,
+        committedRelease ? 'committed-release' : 'current'
+      ) !== 'sandbox-create' ||
+      !listWorkspaceRuntimeEvidence(workspace, attempt.workspaceId).some(
+        (evidence) =>
+          evidence.id === workerBackendTeardownEvidenceId(session.packageSnapshotId) &&
+          evidence.phase === 'teardown' &&
+          evidence.turnId === attempt.turnId &&
+          evidence.agentSessionId === attempt.agentSessionId &&
+          evidence.outcome === 'succeeded' &&
+          evidence.completedAt === receipt.observedAt
+      )
+    )
+      return null;
+  } else if (
+    readNanoHostInitialImageDecision(
+      workspace,
+      pkg.snapshot,
+      attempt,
+      session,
+      { ...target, physicalEpoch: receipt.physicalEpoch },
+      receipt.observedAt
+    ) !== decision
+  )
+    return null;
+  const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+  const turn = readProduct(workspace.sqlite, owner, 'turn', attempt.turnId);
+  if (!turn || !['failed', 'interrupted'].includes(String(turn.record.status))) return null;
+  const rows = workspace.sqlite
+    .prepare(`SELECT c.id AS executionId,s.step_id AS stepId
+    FROM control_executions c JOIN control_execution_steps s ON s.execution_id=c.id
+    WHERE c.work_id=? AND json_extract(s.invocation_json,'$.carriage.operation')='worker.release'`)
+    .all(attempt.turnId) as { executionId: string; stepId: string }[];
+  if (rows.length !== 1) return null;
+  const { executionId, stepId } = rows[0]!;
+  const release = { execution: { owner, executionId }, stepId };
+  const root = readExecutionJournalRoot(workspace, release.execution);
+  const ended = readExecutionJournalInvocation(workspace, release);
+  if (
+    root.phase !== 'closed' ||
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    ended.state !== 'completed' ||
+    ended.control.kind !== 'release' ||
+    ended.control.attemptId !== attempt.attemptId ||
+    ended.carriage.bindingRef !== attempt.bindingRef ||
+    !isDeepStrictEqual(ended.control.inputRefs, [attempt.turnId, attempt.inputRef]) ||
+    !isDeepStrictEqual(ended.control.outputRefs, [input.fenceRef])
+  )
+    return null;
+  return {
+    attempt,
+    decision,
+    committedRelease,
+    outcomeRef: `turn:${attempt.turnId}:${turn.record.status}`,
+  };
+}
+
+/** Finds the closed Core lifecycle receipt for this unsubmitted attempt. */
+function readCoreUnsubmittedReleaseReceipt(db: CoreDb, attempt: SchedulerExecutionAttemptRecord) {
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `scheduler-lifecycle:${attempt.attemptId}`,
+  };
+  const rows = db.sqlite
+    .prepare(`SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(control_json,'$.kind')='release' AND state='completed'`)
+    .all(execution.executionId) as { stepId: string }[];
+  if (rows.length !== 1) return null;
+  const root = readExecutionJournalRoot(db, execution);
+  if (root.phase !== 'closed' || root.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION)
+    return null;
+  const receipt = { execution, stepId: rows[0]!.stepId };
+  const original = readExecutionJournalInvocation(db, receipt);
+  return original.control.attemptId === attempt.attemptId &&
+    original.control.operationId === attempt.operationId &&
+    isDeepStrictEqual(
+      original.control.outputRefs,
+      attempt.fenceRef ? [`fence:${attempt.fenceRef}`] : []
+    )
+    ? receipt
+    : null;
+}
+
+/** Applies the original unsubmitted preparation's Core close after its complete physical proof. */
+function closeCoreNanoHostUnsubmittedPreparation(
+  db: CoreDb,
+  input:
+    | ControlNanoHostUnusedPreparationReleaseInput
+    | ControlNanoHostReadyBindingPreparationReleaseInput,
+  readers: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): StorageDecision<ExecutionStepRef> {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Unsubmitted preparation release requires its Core writer.');
+  return db.sqlite.transaction((): StorageDecision<ExecutionStepRef> => {
+    const proved = readCoreNanoHostUnsubmittedRelease(db, input, readers);
+    if (!proved) return { state: 'unknown' };
+    if (proved.committedRelease) return { state: 'settled', receipt: proved.committedRelease };
+    const { attempt, decision, outcomeRef } = proved;
+    if (decision === 'not-enqueued') {
+      closeSchedulerExecutionAttemptWithoutEffects(db, {
+        attemptId: attempt.attemptId,
+        noOutstandingEffects: true,
+        cause: 'turn-start-failed',
+      });
+    } else {
+      const correlation = schedulerExecutionCorrelation(attempt);
+      if (
+        !acceptSchedulerExecutionObservation(db, {
+          ...correlation,
+          disposition: attempt.disposition,
+          execution: 'terminal',
+          fenceRef: input.fenceRef,
+          outcomeRef,
+        })
+      )
+        throw new ExecutionAttemptRefusal('Unsubmitted preparation fence changed.');
+      closeSchedulerExecutionAttemptWithFence(db, {
+        correlation,
+        fenceRef: input.fenceRef,
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+    }
+    const receipt = readCoreUnsubmittedReleaseReceipt(
+      db,
+      requireSchedulerExecutionAttempt(db, attempt.attemptId)
+    );
+    if (!receipt)
+      throw new ExecutionAttemptRefusal(
+        'Unsubmitted preparation has no exact Core release receipt.'
+      );
+    return { state: 'settled', receipt };
+  })();
+}
+
+/** Reconstructs the exact deciding proposal from the request and the admitted peer evidence. */
+function readCoreNanoHostRecoveryRelease(
+  db: CoreDb,
+  input: TerminalReleaseInput | ControlNanoHostPreparationReleaseInput,
+  readers: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): {
+  input: NanoHostRecoveryReleaseInput;
+  readProof: () => NanoHostRecoveryReleaseInput['proof'] | null;
+} | null {
+  const lease = readRetainedNanoHostSubmission(db, input.attemptId)?.lease;
+  if (!lease || input.recoveryExpectedRevision === undefined) return null;
+  const { attempt, grant } = lease;
+  if (!attempt.terminalCause || !attempt.outcomeRef) return null;
+  const readProof = () => {
+    if (!('workspaceSteps' in input))
+      return readCoreNanoHostPreparationReleaseProof(db, input, lease, readers);
+    if (attempt.disposition !== 'accepted') return null;
+    const target = getNanoHostRuntimeTarget({ sqlite: readers.native }, input.target.targetId);
+    const physical =
+      target &&
+      readNanoHostPhysicalCleanupReceipt(readers.native, lease, target, (session) =>
+        verifyNanoHostCleanupSubmitPlacement(db, readers.native, lease, session)
+      );
+    if (
+      !physical ||
+      physical.target.identityId !== input.target.identityId ||
+      physical.target.deploymentId !== input.target.deploymentId ||
+      physical.cleanup.connectionGeneration !== input.target.connectionGeneration ||
+      physical.cleanup.physicalEpoch !== input.target.physicalEpoch ||
+      !verifyNanoHostTerminalDrainAndRevocation(readers.native, lease, input.fenceRef)
+    )
+      return null;
+    const workspace = readTerminalReleaseWorkspace(db, readers.workspace, input, lease);
+    return {
+      outcomeRef: attempt.outcomeRef!,
+      inputDisposition: { kind: 'consumed' as const, digest: input.workspaceSteps.consume.digest },
+      cleanupDigest: commandInputHash({
+        grant,
+        backendSessionId: physical.session.backendSessionId,
+        cleanup: physical.cleanup,
+        occurrence: physical.occurrence,
+      }),
+      drainAndRevocationDigest: commandInputHash({
+        operation: grant.operationId,
+        fence: input.fenceRef,
+      }),
+      handoffs: workspace.handoffs,
+    };
+  };
+  const proof = readProof();
+  if (!proof) return null;
+  const acceptedWorkspace =
+    'workspaceSteps' in input
+      ? { workspaceExecutionId: input.workspaceExecutionId, workspaceSteps: input.workspaceSteps }
+      : undefined;
+  return {
+    input: {
+      attemptId: input.attemptId,
+      target: input.target,
+      fenceRef: input.fenceRef,
+      coveredScopeRefs: input.coveredScopeRefs,
+      grant,
+      expectedRevision: input.recoveryExpectedRevision,
+      firstCause: attempt.terminalCause,
+      ...(acceptedWorkspace ? { acceptedWorkspace } : {}),
+      proof,
+    },
+    readProof,
+  };
+}
+
+/** Resolves the applicable Workspace handoffs from the non-submitted anchor and the original product outcome. */
+function readCoreNanoHostPreparationReleaseProof(
+  db: CoreDb,
+  input: ControlNanoHostPreparationReleaseInput,
+  lease: NanoHostRecoveryLease,
+  { native, workspace }: { readonly native: FinalNativeReader; readonly workspace: WorkspaceDb }
+): NanoHostRecoveryReleaseInput['proof'] | null {
+  const { attempt, grant } = lease;
+  const retained = readNanoHostCleanupOnly(native, attempt);
+  const session = retained?.session;
+  const cleanup = retained?.proof?.physicalCleanup;
+  const target = session && getNanoHostRuntimeTarget({ sqlite: native }, session.runtimeTargetId);
+  const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+  const turn = readProduct(workspace.sqlite, owner, 'turn', attempt.turnId);
+  const teardown = listWorkspaceRuntimeEvidence(workspace, attempt.workspaceId).find(
+    (evidence) => evidence.id === workerBackendTeardownEvidenceId(attempt.inputRef)
+  );
+  if (
+    !session ||
+    !cleanup ||
+    !target ||
+    !verifyNanoHostPreparationCleanupPlacement(lease, session, cleanup, target) ||
+    target.targetId !== input.target.targetId ||
+    target.identityId !== input.target.identityId ||
+    target.deploymentId !== input.target.deploymentId ||
+    cleanup.connectionGeneration !== input.target.connectionGeneration ||
+    cleanup.physicalEpoch !== input.target.physicalEpoch ||
+    !verifyNanoHostCleanupSubmitPlacement(db, native, lease, session) ||
+    input.fenceRef !== `worker-backend:${attempt.attemptId}:${cleanup.observedAt}` ||
+    !turn ||
+    !['failed', 'interrupted'].includes(String(turn.record.status)) ||
+    attempt.outcomeRef !== `turn:${attempt.turnId}:${turn.record.status}` ||
+    !teardown ||
+    teardown.phase !== 'teardown' ||
+    teardown.turnId !== attempt.turnId ||
+    teardown.agentSessionId !== attempt.agentSessionId ||
+    teardown.outcome !== 'succeeded' ||
+    teardown.completedAt !== cleanup.observedAt
+  )
+    return null;
+  const placement = commandInputHash({ grant, session, cleanup });
+  return {
+    outcomeRef: attempt.outcomeRef!,
+    inputDisposition: { kind: 'non-submission', digest: placement },
+    cleanupDigest: commandInputHash({ grant, receipt: retained.proof, target: input.target }),
+    drainAndRevocationDigest: commandInputHash({
+      grant,
+      phase: 'revoked-before-native-submission',
+      placement,
+    }),
+    handoffs: workerHandoffSteps.map(([, kind]) => ({
+      kind,
+      owner,
+      ref: kind === 'terminal-publication' ? attempt.turnId : teardown.id,
+      digest: commandInputHash({ kind, outcome: attempt.outcomeRef, teardown, placement }),
+    })),
+  };
+}
+
+/** Releases a proved failed start or recovery close under the original Core grant. */
+export function releaseCoreNanoHostRecoveryInDb(
+  db: CoreDb,
+  input: NanoHostRecoveryReleaseInput,
+  // A2 holds both admitted peer openings through commit. A9 supplies the exact cleanup
+  // and drain/revocation proof, and Workspace supplies the original applicable handoffs.
+  readProof: (
+    lease: NanoHostRecoveryLease,
+    target: NanoHostRecoveryReleaseInput['target'],
+    fenceRef: string,
+    coveredScopeRefs: readonly string[]
+  ) => NanoHostRecoveryReleaseInput['proof'] | null,
+  readers?: { readonly workspace: WorkspaceDb; readonly native: FinalNativeReader }
+): StorageDecision<ExecutionStepRef> {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new ExecutionAttemptRefusal('Recovery release requires the Core writer transaction.');
+  const original = readRetainedNanoHostSubmission(db, input.attemptId);
+  if (!original) return { state: 'unknown' };
+  const { lease } = original;
+  const { attempt, grant } = lease;
+  if (!isDeepStrictEqual(grant, input.grant)) return { state: 'conflict' };
+  const abandonment = input.abandonment;
+  const administrator = abandonment && requireCurrentDeploymentAdmin(db, abandonment.actor);
+  const auditId = recoveryAbandonmentAuditId(input);
+  const prior = inspectCoreNanoHostTerminalRelease(db, input);
+  if (prior.state !== 'absent') return prior;
+  const root = readExecutionJournalRoot(db, grant.execution);
+  const allowedScopes = [
+    `workspace:${attempt.workspaceId}`,
+    `thread:${attempt.threadId}`,
+    `turn:${attempt.turnId}`,
+    `session:${attempt.agentSessionId}`,
+  ];
+  const firstCause = attempt.terminalCause;
+  if (
+    root.revision !== input.expectedRevision ||
+    root.phase === 'closed' ||
+    attempt.phase === 'open' ||
+    !firstCause ||
+    firstCause !== input.firstCause ||
+    (root.terminalCause !== null && root.terminalCause !== firstCause) ||
+    (attempt.fenceRef !== null && attempt.fenceRef !== input.fenceRef) ||
+    (attempt.phase === 'closed' && attempt.fenceRef !== input.fenceRef) ||
+    input.coveredScopeRefs.length === 0 ||
+    new Set(input.coveredScopeRefs).size !== input.coveredScopeRefs.length ||
+    input.coveredScopeRefs.some(
+      (scope) => !allowedScopes.includes(scope) || !root.exclusionRefs.includes(scope)
+    )
+  )
+    return { state: 'conflict' };
+  // A granted final has its own closeout, including the original turn.start receipt.
+  const hasFinal = hasCoreWorkerFinalIntake(db, attempt.attemptId);
+  const handoffKinds = new Set(input.proof.handoffs.map((handoff) => handoff.kind));
+  const missing = workerHandoffSteps.filter(([, kind]) => !handoffKinds.has(kind));
+  if (
+    (hasFinal && !abandonment) ||
+    !hasCompleteExecutionHistory(db, grant.execution) ||
+    attempt.outcomeRef !== input.proof.outcomeRef ||
+    (firstCause === 'turn-start-failed' &&
+      input.proof.inputDisposition.kind !== 'non-submission') ||
+    input.proof.handoffs.length !== handoffKinds.size ||
+    input.proof.handoffs.length + missing.length !== workerHandoffSteps.length ||
+    (abandonment
+      ? !readers?.workspace.sqlite.readonly ||
+        !readers.native.readonly ||
+        readers.workspace.dataRoot !== db.dataRoot ||
+        readers.workspace.workspaceId !== attempt.workspaceId ||
+        missing.length === 0 ||
+        abandonment.missing.length !== missing.length * input.coveredScopeRefs.length ||
+        input.coveredScopeRefs.some((scopeRef) =>
+          missing.some(
+            ([, kind]) =>
+              abandonment.missing.filter((gap) => gap.kind === kind && gap.scopeRef === scopeRef)
+                .length !== 1
+          )
+        )
+      : missing.length !== 0) ||
+    input.proof.handoffs.some(
+      (handoff) =>
+        handoff.owner.kind !== 'workspace' || handoff.owner.workspaceId !== attempt.workspaceId
+    ) ||
+    !isDeepStrictEqual(
+      readProof(lease, input.target, input.fenceRef, input.coveredScopeRefs),
+      input.proof
+    )
+  )
+    return { state: 'unknown' };
+  if (hasFinal && abandonment && readers) {
+    const final = inspectAcceptedNanoHostFinalInDb(db, readers.native, attempt.attemptId);
+    if (final.state !== 'settled' || !isDeepStrictEqual(final.grant, grant))
+      return { state: 'unknown' };
+    try {
+      const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(
+        {
+          status: final.terminalData.status,
+          acceptedAt: final.acceptedAt,
+          // Retained Worker completions can carry the original end_turn spelling.
+          stopReason:
+            final.terminalData.stopReason === 'end_turn'
+              ? 'completed'
+              : final.terminalData.stopReason,
+        },
+        firstCause
+      );
+      const status = turnStatusForCanonicalWorkerStopReason(stopReason);
+      const { sqlite } = readers.workspace;
+      const owner = { kind: 'workspace' as const, workspaceId: attempt.workspaceId };
+      const matchesTerminalDecision = sqlite
+        .transaction(() => {
+          const turn = readProduct(sqlite, owner, 'turn', attempt.turnId);
+          if (
+            !turn ||
+            turn.record.threadId !== attempt.threadId ||
+            turn.record.status !== status ||
+            attempt.outcomeRef !== `turn:${attempt.turnId}:${status}`
+          )
+            return false;
+          // The original Turn and its immutable terminal event share this admitted read snapshot.
+          const scope = { ...nativeProductScope(db.dataRoot, owner), sqlite };
+          const terminalEvents = readNativeProductEntries(scope, attempt.turnId, 'event')
+            .map(({ revision, value }) => ({ revision, event: StoredEventV1Schema.parse(value) }))
+            .filter(
+              ({ event }) =>
+                event.event === 'turn.completed' || event.data.type === 'turn-completed'
+            );
+          const original = terminalEvents[0];
+          if (!original || terminalEvents.length !== 1 || original.revision !== 1) return false;
+          const { event, data, timestamp } = original.event;
+          return (
+            event === 'turn.completed' &&
+            data.type === 'turn-completed' &&
+            timestamp === turn.record.completedAt &&
+            data.stopReason === stopReason &&
+            data.turn.id === attempt.turnId &&
+            data.turn.threadId === attempt.threadId &&
+            isDeepStrictEqual(data.turn.owner, owner) &&
+            terminalEventMatchesTerminal(data, attempt.turnId, turn.record, turn.record)
+          );
+        })
+        .deferred();
+      if (!matchesTerminalDecision) return { state: 'unknown' };
+    } catch {
+      return { state: 'unknown' };
+    }
+  }
+  if (abandonment && readers) {
+    const target = getNanoHostRuntimeTarget({ sqlite: readers.native }, input.target.targetId);
+    const physical =
+      target &&
+      readNanoHostPhysicalCleanupReceipt(readers.native, lease, target, (session) =>
+        verifyNanoHostCleanupSubmitPlacement(db, readers.native, lease, session)
+      );
+    if (
+      !physical ||
+      physical.session.state !== 'cleaned' ||
+      physical.session.workspaceHandoffState !== 'complete' ||
+      physical.target.identityId !== input.target.identityId ||
+      physical.target.deploymentId !== input.target.deploymentId ||
+      physical.cleanup.connectionGeneration !== input.target.connectionGeneration ||
+      physical.cleanup.physicalEpoch !== input.target.physicalEpoch ||
+      input.fenceRef !== `worker-backend:${attempt.attemptId}:${physical.observedAt}` ||
+      !verifyNanoHostTerminalDrainAndRevocation(readers.native, lease, input.fenceRef)
+    )
+      return { state: 'unknown' };
+  }
+  // Backend acceptance requires the full Workspace release even before a Worker final is recorded.
+  if (attempt.disposition === 'accepted') {
+    if (
+      !input.acceptedWorkspace ||
+      !readers?.workspace.sqlite.readonly ||
+      !readers.native.readonly ||
+      input.proof.inputDisposition.kind !== 'consumed'
+    )
+      return { state: 'unknown' };
+    try {
+      const workspace = readTerminalReleaseWorkspace(
+        db,
+        readers.workspace,
+        { ...input.acceptedWorkspace, fenceRef: input.fenceRef },
+        lease,
+        abandonment
+      );
+      const native = readNanoHostWorkerLease({ sqlite: readers.native }, grant, attempt);
+      if (
+        !native ||
+        native.binding.harnessOperationId !== workspace.consume.requestId ||
+        native.binding.harnessSequence !== workspace.consume.sequence ||
+        !isDeepStrictEqual(workspace.handoffs, input.proof.handoffs)
+      )
+        return { state: 'unknown' };
+    } catch {
+      // A missing or unreadable original step leaves the original release unacknowledged.
+      return { state: 'unknown' };
+    }
+  }
+  const unresolved = new CoreJournalRefusal(
+    'Recovery release has unresolved input or writer proof.'
+  );
+  try {
+    return db.sqlite.transaction(() => {
+      let auditDigest: string | undefined;
+      if (abandonment && administrator && auditId) {
+        const audit = recordServerAuditEvent({
+          coreDb: db,
+          auditEventId: auditId,
+          requestId: abandonmentRequestId(input),
+          action: abandonmentAction,
+          actor: { kind: 'user', id: administrator.userId },
+          workspaceId: attempt.workspaceId,
+          threadId: attempt.threadId,
+          turnId: attempt.turnId,
+          agentSessionId: attempt.agentSessionId,
+          resource: grant.execution.executionId,
+          resourceRevision: root.revision,
+          category: 'system',
+          outcome: 'succeeded',
+          severity: 'warning',
+          summary: canonicalJsonText({
+            attemptId: attempt.attemptId,
+            fenceRef: input.fenceRef,
+            cleanup: input.proof.cleanupDigest,
+            drainAndRevocation: input.proof.drainAndRevocationDigest,
+            missing: abandonment.missing,
+            transcriptLoss: abandonment.transcriptLoss ?? null,
+            released: input.coveredScopeRefs,
+            remaining: root.exclusionRefs.filter(
+              (scope) => !input.coveredScopeRefs.includes(scope)
+            ),
+            residual: abandonment.residual,
+          }),
+        });
+        auditDigest = commandInputHash(audit);
+      }
+      const released = commitTerminalReleaseEvidence(
+        db,
+        input,
+        lease,
+        input.proof.handoffs,
+        input.proof.cleanupDigest,
+        firstCause,
+        abandonment && auditId && auditDigest
+          ? { auditId, auditDigest, missing: abandonment.missing }
+          : undefined
+      );
+      if (released.state !== 'settled') throw unresolved;
+      closeSchedulerExecutionAttemptWithFence(db, {
+        correlation: schedulerExecutionCorrelation(attempt),
+        fenceRef: input.fenceRef,
+        ...(auditId
+          ? { abandonment: { receipt: released.receipt, auditId } }
+          : {
+              proof: {
+                terminalHandoff: true,
+                output: true,
+                evidence: true,
+                outsideWorkspaceCollection: true,
+                integrationDrain: true,
+                routesRevoked: true,
+              } as const,
+            }),
+      });
+      return released;
+    })();
+  } catch (error) {
+    // A refused barrier rolls back both the staged proof steps and the attempted release.
+    if (error !== unresolved) throw error;
+    return { state: 'unknown' };
+  }
+}
 
 const containmentEvidenceAction = 'security.containment-evidence';
 
@@ -165,29 +3088,238 @@ function appendContainmentEvidenceHandoff(
   });
 }
 
+type IdleCleanupIntent = Extract<ControlCoreJournalInput, { kind: 'idle-intent' }>;
+
+function requireIdleDeletePredecessor(
+  db: CoreDb,
+  input: IdleCleanupIntent,
+  sandboxId: string
+): void {
+  const request = createNanoHostEffectRequest(input.identity, input.attemptId, 'bridge.close', {
+    attemptId: input.attemptId,
+    sandboxId,
+  });
+  const ref: ExecutionStepRef = {
+    execution: { owner: { kind: 'server' }, executionId: `idle-cleanup:${request.requestId}` },
+    stepId: `effect:${request.requestId}`,
+  };
+  const present = db.sqlite
+    .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+    .get(ref.execution.executionId);
+  // The original direct delete is permitted when there is no bridge occurrence to continue.
+  if (!present && !input.predecessor) return;
+  const refusal = 'Idle cleanup predecessor changed before delete admission.';
+  if (!present || !input.predecessor || !isDeepStrictEqual(input.predecessor.ref, ref))
+    throw new CoreJournalRefusal(refusal);
+  const root = readExecutionJournalRoot(db, ref.execution);
+  const previous = readExecutionJournalInvocation(db, ref);
+  if (
+    root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+    root.workId !== request.requestId ||
+    root.revision !== input.predecessor.revision ||
+    root.phase !== 'closed' ||
+    previous.state !== 'completed' ||
+    previous.carriage.operation !== 'bridge.close' ||
+    previous.carriage.requestId !== request.requestId ||
+    previous.carriage.bindingRef !== input.sandboxBindingRef ||
+    previous.control.attemptId !== input.attemptId ||
+    previous.control.target?.targetId !== input.identity.runtimeTargetId ||
+    previous.control.target.allocationRef !== input.sandboxBindingRef ||
+    !previous.control.physicalFenceRefs.includes(input.originPhysicalEpoch) ||
+    !isDeepStrictEqual(previous.control.actor, input.package.triggerActor) ||
+    !hasCoreIdleCleanupConsumption(db, previous)
+  )
+    throw new CoreJournalRefusal(refusal);
+}
+
+/** Reserves the original closed resident's physical scope against one pinned Native snapshot. */
+export function reserveCoreIdleCleanupInDb(
+  db: CoreDb,
+  input: IdleCleanupIntent,
+  native: CoreDb['sqlite'] | undefined
+): string {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly || !native?.readonly || !native.inTransaction)
+    throw new CoreJournalRefusal('Idle cleanup requires an original Core scope reservation.');
+
+  const intent = decodeExecutionJournalIntent(input.intentJson);
+  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, input.attemptId);
+  const nanoHost = { sqlite: native };
+  const anchor = getWorkerBackendSession(nanoHost, input.attemptId);
+  const target = getNanoHostRuntimeTarget(nanoHost, input.identity.runtimeTargetId);
+  const identity = anchor && {
+    agentSessionId: anchor.agentSessionId,
+    backendKind: anchor.backendKind,
+    backendSessionId: anchor.backendSessionId,
+    deploymentId: anchor.deploymentId,
+    packageSnapshotId: anchor.packageSnapshotId,
+    runtimeTargetId: anchor.runtimeTargetId,
+    stagingDirectoryRef: anchor.stagingDirectoryRef,
+    transientProviderInstanceId: anchor.transientProviderInstanceId,
+  };
+  const { operation, requestId } = intent.carriage;
+  const cleanup = operation === 'bridge.close' || operation === 'sandbox.delete';
+  const refusal =
+    cleanup &&
+    readSandboxReleaseRefusalFence(
+      db,
+      input.sandboxBindingRef,
+      input.identity.runtimeTargetId,
+      input.originPhysicalEpoch,
+      attempt.attemptId
+    );
+  if (
+    (!refusal && (attempt.phase !== 'closed' || !attempt.fenceRef)) ||
+    attempt.backendId !== input.backendId ||
+    !anchor ||
+    !isDeepStrictEqual(identity, input.identity) ||
+    anchor.workspaceId !== attempt.workspaceId ||
+    anchor.threadId !== attempt.threadId ||
+    anchor.turnId !== attempt.turnId ||
+    anchor.agentSessionId !== attempt.agentSessionId ||
+    anchor.packageSnapshotId !== attempt.inputRef ||
+    anchor.sandboxBindingRef !== attempt.bindingRef ||
+    anchor.originPhysicalEpoch !== input.originPhysicalEpoch ||
+    !target?.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.deploymentId !== anchor.deploymentId ||
+    target.physicalEpoch !== input.originPhysicalEpoch ||
+    !/^[0-9a-f]{64}$/.test(input.originPhysicalEpoch)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup has no exact closed resident provenance or current Epoch.'
+    );
+  if (
+    input.package.workspaceId !== anchor.workspaceId ||
+    input.package.threadId !== anchor.threadId ||
+    input.package.turnId !== anchor.turnId ||
+    input.package.agentSessionId !== anchor.agentSessionId ||
+    input.package.snapshotId !== anchor.packageSnapshotId ||
+    !isDeepStrictEqual(input.package.triggerActor, admission.triggerActor) ||
+    !isDeepStrictEqual(intent.control.actor, admission.triggerActor)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup immutable package actor or physical lineage conflicts.'
+    );
+
+  const sandboxId = nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId);
+  const resident = native
+    .prepare(`SELECT sandbox_runtime_id AS id, drain_state AS drain FROM sandbox_runtime_records
+      WHERE sandbox_binding_ref = ? AND runtime_target_id = ? AND origin_physical_epoch = ?
+      AND ('nh-' || substr(sandbox_compatibility_key, 1, 16)) = ?`)
+    .get(input.sandboxBindingRef, target.targetId, input.originPhysicalEpoch, sandboxId) as
+    | { id: string; drain: string }
+    | undefined;
+  const nativeRead = createNanoHostCoreReads({
+    read: (query) => ({ state: 'ready', value: query(native) }),
+  });
+  const originalDrain = refusal ? nativeRead.readResident(input.sandboxBindingRef) : undefined;
+  if (
+    !resident ||
+    (cleanup && resident.drain !== 'draining') ||
+    (refusal && (originalDrain?.state !== 'ready' || !originalDrain.value?.refusalDrained)) ||
+    (input.sandboxId !== undefined && input.sandboxId !== sandboxId) ||
+    nonClosedSandboxAttempts(
+      db,
+      input.backendId,
+      { scope: input.package, snapshotId: input.package.snapshotId },
+      target.targetId,
+      input.originPhysicalEpoch,
+      sandboxId,
+      nanoHost
+    ).some((active) => !refusal || active.attemptId !== attempt.attemptId) ||
+    (!refusal &&
+      native
+        .prepare(`SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id = ?
+        AND (h.schema_version <> 1 OR h.active_turn_count <> 0
+          OR h.operation_state NOT IN ('idle', 'settled')
+          OR EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
+            WHERE b.harness_instance_id = h.harness_instance_id
+            AND (b.schema_version <> 1 OR b.current_turn_id IS NOT NULL
+              OR b.current_attempt_id IS NOT NULL))) LIMIT 1`)
+        .get(resident.id))
+  )
+    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
+
+  const expectedKind =
+    operation === 'bridge.close'
+      ? 'inspect-cleanup'
+      : operation === 'sandbox.delete'
+        ? 'release'
+        : 'collect';
+  if (
+    intent.execution.ref.owner.kind !== 'server' ||
+    intent.execution.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+    (!cleanup && operation !== 'workspace.collect' && operation !== 'file.export') ||
+    intent.control.kind !== expectedKind ||
+    intent.execution.ref.executionId !== `idle-cleanup:${requestId}` ||
+    intent.execution.workId !== requestId ||
+    intent.stepId !== `effect:${requestId}` ||
+    intent.control.operationId !== requestId ||
+    intent.carriage.bindingRef !== input.sandboxBindingRef ||
+    intent.control.attemptId !== input.attemptId ||
+    intent.control.target?.allocationRef !== input.sandboxBindingRef ||
+    intent.control.target.targetId !== target.targetId ||
+    !isDeepStrictEqual(intent.execution.exclusionRefs, [
+      input.sandboxBindingRef,
+      input.originPhysicalEpoch,
+    ]) ||
+    !intent.control.authorityRefs.includes(anchor.sandboxBindingRef) ||
+    !intent.control.physicalFenceRefs.includes(input.originPhysicalEpoch) ||
+    intent.control.deadlineUnixNano === null ||
+    intent.control.deadlineUnixNano <= BigInt(Date.now()) * 1_000_000n ||
+    (cleanup &&
+      requestId !==
+        createNanoHostEffectRequest(input.identity, input.attemptId, operation, {
+          attemptId: input.attemptId,
+          sandboxId,
+        }).requestId)
+  )
+    throw new CoreJournalRefusal('Core idle cleanup intent conflicts with its original scope.');
+  if (
+    db.sqlite
+      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
+      .get(intent.execution.ref.executionId)
+  )
+    throw new CoreJournalRefusal(
+      'Core idle cleanup key already exists; inspect retained result only.',
+      'idle_cleanup_result_only'
+    );
+  if (operation === 'sandbox.delete') requireIdleDeletePredecessor(db, input, sandboxId);
+  else if (
+    input.predecessor &&
+    !(operation === 'bridge.close' && refusal && isDeepStrictEqual(input.predecessor, refusal))
+  )
+    throw new CoreJournalRefusal('Idle cleanup predecessor changed before admission.');
+
+  return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent, input.processWitness));
+}
+
 /** Finds the sole possible pre-submission handoff owner of the exact physical Sandbox. */
 function readReleaseRefusalPredecessor(
   db: CoreDb,
-  sandboxRuntimeId: string,
+  native: CoreDb['sqlite'],
+  sandboxBindingRef: string,
   targetId: string,
   physicalEpoch: string
 ): string | null {
   const active = db.sqlite
     .prepare(`SELECT a.attempt_id AS attemptId FROM scheduler_execution_attempts a
-      JOIN agent_session_runtime_bindings b ON b.agent_session_id = a.agent_session_id
-        AND b.workspace_id = a.workspace_id AND b.thread_id = a.thread_id
-      JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
-      WHERE h.sandbox_runtime_id = ? AND a.phase <> 'closed'
+      WHERE a.binding_ref = ? AND a.phase <> 'closed'
       ORDER BY a.attempt_id LIMIT 2`)
-    .all(sandboxRuntimeId) as { attemptId: string }[];
+    .all(sandboxBindingRef) as { attemptId: string }[];
   if (active.length !== 1) return null;
   const attempt = requireSchedulerExecutionAttempt(db, active[0]!.attemptId);
-  const session = getWorkerBackendSession(db, attempt.attemptId);
+  const session = getWorkerBackendSession({ sqlite: native }, attempt.attemptId);
   if (
     attempt.phase !== 'open' ||
+    attempt.terminalCause !== null ||
     attempt.deadline !== null ||
+    readRetainedNanoHostSubmission(db, attempt.attemptId) !== null ||
     !attempt.operationId ||
     !session ||
+    session.state === 'cleaned' ||
     session.backendKind !== 'openshell' ||
     session.runtimeTargetId !== targetId ||
     session.originPhysicalEpoch !== physicalEpoch ||
@@ -200,24 +3332,31 @@ function readReleaseRefusalPredecessor(
   )
     return null;
   const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
-  const final = getWorkerControlAcceptedFinalStatus(db, {
-    workspaceId: session.workspaceId,
-    threadId: session.threadId,
-    turnId: session.turnId,
-    agentSessionId: session.agentSessionId,
-    packageSnapshotId: session.packageSnapshotId,
-    requestId: admission.requestId,
-  });
+  const final = getWorkerControlAcceptedFinalStatus(
+    { sqlite: native },
+    {
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      turnId: session.turnId,
+      agentSessionId: session.agentSessionId,
+      packageSnapshotId: session.packageSnapshotId,
+      requestId: admission.requestId,
+    }
+  );
   return final ? null : attempt.attemptId;
 }
 
 /** Orders retirement and fences ingress on the original live Sandbox in the same Core write. */
 function recordSandboxReleaseRefusal(
   db: CoreDb,
-  input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>
-): void {
-  const target = getNanoHostRuntimeTarget(db, input.target.targetId);
+  input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>,
+  native: CoreDb['sqlite'] | undefined
+): string {
+  if (!native?.readonly || !native.inTransaction)
+    throw new CoreJournalRefusal('Sandbox release refusal has no admitted Native peer.');
+  const target = getNanoHostRuntimeTarget({ sqlite: native }, input.target.targetId);
   const { targetId, physicalEpoch } = input.target;
+  const { sandboxBindingRef } = input;
   if (
     !target?.predecessorFenced ||
     !target.ready ||
@@ -228,16 +3367,18 @@ function recordSandboxReleaseRefusal(
     target.physicalEpoch !== physicalEpoch
   )
     throw new CoreJournalRefusal('Sandbox release refusal has no current Host authority.');
-  const sandbox = db.sqlite
-    .prepare(`SELECT sandbox_runtime_id AS id, sandbox_binding_ref AS binding,
+  const executionId = sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, sandboxBindingRef);
+  if (readSandboxReleaseRefusalOrder(db, executionId)) return executionId;
+
+  const sandbox = native
+    .prepare(`SELECT sandbox_runtime_id AS id,
         lifecycle_state AS lifecycle, health_state AS health, drain_state AS drain,
         cleanup_state AS cleanup
       FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?
-        AND runtime_target_id = ? AND origin_physical_epoch = ?`)
-    .get(input.integrationBindingRef, targetId, physicalEpoch) as
+        AND runtime_target_id = ? AND origin_physical_epoch = ? AND sandbox_binding_ref = ?`)
+    .get(input.integrationBindingRef, targetId, physicalEpoch, sandboxBindingRef) as
     | {
         id: string;
-        binding: string;
         lifecycle: string;
         health: string;
         drain: string;
@@ -248,29 +3389,8 @@ function recordSandboxReleaseRefusal(
     throw new CoreJournalRefusal('Sandbox release refusal has no exact current binding.');
 
   const definition = CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION;
-  const requestId = commandInputHash([definition, targetId, physicalEpoch, sandbox.binding]);
-  const execution = {
-    owner: { kind: 'server' as const },
-    executionId: `sandbox-release-refusal:${requestId}`,
-  };
+  const requestId = executionId.slice('sandbox-release-refusal:'.length);
   const stepId = 'fence';
-  if (
-    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(execution.executionId)
-  ) {
-    const root = readExecutionJournalRoot(db, execution);
-    const original = readExecutionJournalInvocation(db, { execution, stepId });
-    if (
-      root.definitionVersion !== definition ||
-      root.fingerprint !== requestId ||
-      root.workId !== sandbox.binding ||
-      original.control.operationId !== requestId ||
-      original.carriage.bindingRef !== sandbox.binding ||
-      !isDeepStrictEqual(original.control.physicalFenceRefs, [physicalEpoch]) ||
-      sandbox.drain !== 'draining'
-    )
-      throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
-    return;
-  }
   if (
     sandbox.lifecycle !== 'open' ||
     sandbox.health !== 'ready' ||
@@ -279,12 +3399,18 @@ function recordSandboxReleaseRefusal(
   )
     throw new CoreJournalRefusal('Sandbox release refusal cannot order a different retirement.');
 
-  const attemptId = readReleaseRefusalPredecessor(db, sandbox.id, targetId, physicalEpoch);
+  const attemptId = readReleaseRefusalPredecessor(
+    db,
+    native,
+    sandboxBindingRef,
+    targetId,
+    physicalEpoch
+  );
   const intent = localCoreJournalIntent({
     definitionVersion: definition,
-    executionId: execution.executionId,
+    executionId,
     stepId,
-    workId: sandbox.binding,
+    workId: sandboxBindingRef,
     fingerprint: requestId,
     kind: 'fence',
     actorId: 'nanohost-release-refusal',
@@ -294,13 +3420,9 @@ function recordSandboxReleaseRefusal(
       operation: 'sandbox.release-refusal',
       requestId,
       sequence: null,
-      bindingRef: sandbox.binding,
+      bindingRef: sandboxBindingRef,
     },
     timestamp: new Date().toISOString(),
-  });
-  drainNanoHostSandboxAdmission(db, {
-    sandboxBindingRef: sandbox.binding,
-    originPhysicalEpoch: physicalEpoch,
   });
   if (attemptId !== null)
     markSchedulerExecutionAttemptClosing(db, {
@@ -313,191 +3435,601 @@ function recordSandboxReleaseRefusal(
     control: {
       ...intent.control,
       attemptId,
-      target: { backendKind: 'openshell', targetId, allocationRef: sandbox.binding },
+      target: { backendKind: 'openshell', targetId, allocationRef: sandboxBindingRef },
       physicalFenceRefs: [physicalEpoch],
     },
   });
+  return executionId;
 }
 
-/** Releases the predecessor and requeues its original admission in the deciding Core write. */
-function handoffSandboxReleaseRefusal(
+type ReleaseRefusalHandoff = Extract<
+  ControlCoreJournalInput,
+  { kind: 'sandbox-release-refusal-handoff' }
+>;
+
+/** Both writers address the order's original attempt, including after a lost ACK. */
+function requireReleaseRefusalHandoff(
   db: CoreDb,
-  input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal-handoff' }>
-): void {
-  const order = readExecutionJournalInvocation(db, input.ref);
-  const binding = order.carriage.bindingRef;
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff
+) {
+  const executionId = input.ref.execution.executionId;
+  const order = readSandboxReleaseRefusalOrder(db, executionId);
   if (
-    !order.control.attemptId ||
-    !binding ||
-    order.control.definitionVersion !== CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION
+    !order?.attemptId ||
+    input.ref.execution.owner.kind !== 'server' ||
+    input.ref.stepId !== 'fence'
   )
     throw new CoreJournalRefusal('Sandbox handoff has no exact refusal order.');
-  const attempt = requireSchedulerExecutionAttempt(db, order.control.attemptId);
+  const attempt = requireSchedulerExecutionAttempt(db, order.attemptId);
+  const anchor = getWorkerBackendSession({ sqlite: native }, attempt.attemptId);
+  if (
+    !anchor ||
+    anchor.backendKind !== 'openshell' ||
+    order.bindingRef !== anchor.sandboxBindingRef ||
+    order.targetId !== anchor.runtimeTargetId ||
+    order.physicalEpoch !== anchor.originPhysicalEpoch ||
+    workspace.workspaceId !== input.workspaceFence.workspaceId ||
+    workspace.workspaceId !== attempt.workspaceId ||
+    anchor.workspaceId !== attempt.workspaceId ||
+    anchor.threadId !== attempt.threadId ||
+    anchor.turnId !== attempt.turnId ||
+    anchor.agentSessionId !== attempt.agentSessionId ||
+    anchor.packageSnapshotId !== attempt.inputRef ||
+    anchor.sandboxBindingRef !== attempt.bindingRef ||
+    workspace.dataRoot !== db.dataRoot
+  )
+    throw new CoreJournalRefusal('Sandbox handoff attempt lineage changed.');
+  const execution = {
+    owner: { kind: 'workspace' as const, workspaceId: workspace.workspaceId },
+    executionId: input.workspaceFence.executionId,
+  };
+  const root = readExecutionJournalRoot(workspace, execution);
+  const terminal = readExecutionJournalInvocation(workspace, {
+    execution,
+    stepId: input.workspaceFence.stepId,
+  });
+  if (
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== attempt.turnId ||
+    terminal.control.kind !== 'terminal-publication' ||
+    terminal.state !== 'cancelled' ||
+    terminal.control.attemptId !== attempt.attemptId ||
+    !isDeepStrictEqual(terminal.control.outputRefs, [executionId])
+  )
+    throw new CoreJournalRefusal('Sandbox handoff lacks its original Workspace terminal fence.');
   if (
     attempt.phase === 'closed' &&
     attempt.terminalCause === 'sandbox-release-refusal' &&
-    attempt.fenceRef === input.ref.execution.executionId
+    attempt.fenceRef === executionId &&
+    anchor.state === 'cleaned'
   )
-    return;
-  const anchor = getWorkerBackendSession(db, attempt.attemptId);
-  if (
-    !anchor ||
-    attempt.workspaceId !== input.workspaceFence.workspaceId ||
-    attempt.inputRef !== anchor.packageSnapshotId ||
-    attempt.bindingRef !== anchor.sandboxBindingRef ||
-    attempt.turnId !== anchor.turnId ||
-    attempt.agentSessionId !== anchor.agentSessionId
-  )
-    throw new CoreJournalRefusal('Sandbox handoff attempt lineage changed.');
+    return { state: 'replayed' } as const;
   const refusal = readSandboxReleaseRefusalFence(
     db,
-    binding,
-    anchor.runtimeTargetId,
-    anchor.originPhysicalEpoch,
+    order.bindingRef,
+    order.targetId,
+    order.physicalEpoch,
     attempt.attemptId
   );
-  const target = getNanoHostRuntimeTarget(db, anchor.runtimeTargetId);
-  const resident = db.sqlite
-    .prepare(`SELECT 1 FROM sandbox_runtime_records
-    WHERE sandbox_binding_ref = ? AND runtime_target_id = ?
-      AND origin_physical_epoch = ? AND drain_state = 'draining'`)
-    .get(binding, anchor.runtimeTargetId, anchor.originPhysicalEpoch);
+  const target = getNanoHostRuntimeTarget({ sqlite: native }, anchor.runtimeTargetId);
+  const resident = native
+    .prepare(`SELECT 1 FROM sandbox_runtime_records AS s
+      WHERE sandbox_runtime_id=? AND sandbox_binding_ref=? AND runtime_target_id=?
+        AND origin_physical_epoch=? AND drain_state='draining' AND NOT EXISTS (
+          SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id=s.sandbox_runtime_id
+            AND (h.drain_state <> 'draining' OR h.lifecycle_state <> 'failed')
+        )`)
+    .get(order.runtimeId, order.bindingRef, order.targetId, order.physicalEpoch);
   if (
     !refusal ||
     !isDeepStrictEqual(refusal.ref, input.ref) ||
     !resident ||
-    target?.deploymentId !== anchor.deploymentId ||
-    !target.ready ||
-    !target.predecessorFenced ||
+    !target?.ready ||
     !target.freshEmpty ||
+    !target.predecessorFenced ||
+    target.deploymentId !== anchor.deploymentId ||
     !target.physicalEpoch ||
-    !/^[a-f0-9]{64}$/.test(target.physicalEpoch)
+    !/^[0-9a-f]{64}$/.test(target.physicalEpoch)
   )
     throw new CoreJournalRefusal('Sandbox handoff has no exact retirement authority.');
   if (target.physicalEpoch === anchor.originPhysicalEpoch) {
-    const removal = createNanoHostEffectRequest(anchor, attempt.attemptId, 'sandbox.delete', {
+    const request = createNanoHostEffectRequest(anchor, attempt.attemptId, 'sandbox.delete', {
       attemptId: attempt.attemptId,
       sandboxId: nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId),
     });
-    const execution = {
-      owner: { kind: 'server' as const },
-      executionId: `idle-cleanup:${removal.requestId}`,
-    };
-    const stepId = `effect:${removal.requestId}`;
-    const original = readExecutionJournalInvocation(db, { execution, stepId });
-    const receipt = readExecutionJournalInvocation(db, { execution, stepId: `${stepId}:consume` });
+    const original = readExecutionJournalInvocation(db, {
+      execution: { owner: { kind: 'server' }, executionId: `idle-cleanup:${request.requestId}` },
+      stepId: `effect:${request.requestId}`,
+    });
     if (
       original.state !== 'completed' ||
       original.carriage.operation !== 'sandbox.delete' ||
-      original.carriage.bindingRef !== binding ||
+      original.carriage.bindingRef !== order.bindingRef ||
       original.control.attemptId !== attempt.attemptId ||
       !isDeepStrictEqual(original.control.physicalFenceRefs, [anchor.originPhysicalEpoch]) ||
-      receipt.state !== 'completed' ||
-      receipt.control.kind !== 'consume-receipt' ||
-      receipt.control.operationId !== removal.requestId ||
-      original.control.outputRefs.length !== 1 ||
-      !isDeepStrictEqual(receipt.control.inputRefs, original.control.outputRefs) ||
-      !isDeepStrictEqual(receipt.control.outputRefs, original.control.outputRefs)
+      !hasCoreIdleCleanupConsumption(db, original)
     )
       throw new CoreJournalRefusal('Sandbox handoff is missing the original Delete proof.');
   }
-  const workspace = openAdmittedWorkspaceReadDb(db.dataRoot, attempt.workspaceId);
-  try {
-    const execution = {
-      owner: { kind: 'workspace' as const, workspaceId: attempt.workspaceId },
-      executionId: input.workspaceFence.executionId,
-    };
-    const root = readExecutionJournalRoot(workspace, execution);
-    const terminal = readExecutionJournalInvocation(workspace, {
-      execution,
-      stepId: input.workspaceFence.stepId,
-    });
-    if (
-      root.phase !== 'open' ||
-      root.workId !== attempt.turnId ||
-      terminal.control.kind !== 'terminal-publication' ||
-      terminal.state !== 'cancelled' ||
-      terminal.control.attemptId !== attempt.attemptId ||
-      !isDeepStrictEqual(terminal.control.outputRefs, [input.ref.execution.executionId])
-    )
-      throw new CoreJournalRefusal('Sandbox handoff lacks its original Workspace terminal fence.');
-  } finally {
-    workspace.sqlite.close();
-  }
-  const storage = getWorkerStorageBindingForSandbox(db, { sandboxBindingRef: binding });
-  const entry = requireSchedulerAdmissionEntry(db, attempt.queueEntryId);
-  if (
-    !storage ||
-    storage.currentAgentSessionId !== attempt.agentSessionId ||
-    storage.currentThreadId !== attempt.threadId ||
-    storage.workspaceId !== attempt.workspaceId ||
-    entry.status !== 'admitted'
-  )
-    throw new CoreJournalRefusal('Sandbox handoff has no exact retained Volume and admission.');
-
-  const timestamp = new Date().toISOString();
-  const now = () => timestamp;
-  releaseWorkerStorageAttachment(db, {
-    attachmentGeneration: storage.attachmentGeneration,
-    cleanupProved: true,
-    expectedRevision: storage.revision,
-    sandboxBindingRef: binding,
-    storageRef: storage.storageRef,
-    now: timestamp,
+  const entry = requireSchedulerAdmissionEntry(db, attempt.queueEntryId, {
+    workspaceId: attempt.workspaceId,
   });
-  removeNanoHostSandboxRuntimeByBinding(db, binding);
-  let backend = anchor;
-  if (!['cleanup-pending', 'physical-cleaned', 'cleaned'].includes(backend.state))
-    backend = transitionWorkerBackendSessionState(db, {
-      attemptId: attempt.attemptId,
-      fromState: backend.state,
-      toState: 'cleanup-pending',
-      now,
-    });
-  if (backend.state === 'cleanup-pending')
-    backend = transitionWorkerBackendSessionState(db, {
-      attemptId: attempt.attemptId,
-      fromState: 'cleanup-pending',
-      toState: 'physical-cleaned',
-      now,
-    });
-  if (backend.workspaceHandoffState === 'pending')
-    markWorkerBackendWorkspaceHandoffComplete(db, { attemptId: attempt.attemptId, now });
-  if (backend.state === 'physical-cleaned')
-    transitionWorkerBackendSessionState(db, {
-      attemptId: attempt.attemptId,
-      fromState: 'physical-cleaned',
-      toState: 'cleaned',
-      now,
-    });
-  const closed = db.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts
-    SET phase = 'closed', fence_ref = ?, updated_at = ?
-    WHERE attempt_id = ? AND phase = 'closing' AND deadline IS NULL`)
-    .run(input.ref.execution.executionId, timestamp, attempt.attemptId);
-  const requeued = db.sqlite
-    .prepare(`UPDATE scheduler_admission_entries SET status = 'queued'
-    WHERE queue_entry_id = ? AND status = 'admitted'`)
-    .run(entry.queueEntryId);
-  if (closed.changes !== 1 || requeued.changes !== 1)
+  if (
+    root.phase !== 'open' ||
+    !workspace.sqlite
+      .prepare(`SELECT 1 FROM control_turns
+      WHERE id=? AND thread_id=? AND agent_session_id=? AND status='running'`)
+      .get(attempt.turnId, attempt.threadId, attempt.agentSessionId) ||
+    entry.status !== 'admitted' ||
+    entry.threadId !== attempt.threadId ||
+    entry.turnId !== attempt.turnId
+  )
+    throw new CoreJournalRefusal(
+      'Sandbox handoff lacks its original Workspace fence and admission.'
+    );
+  return { state: 'ready', attempt, anchor } as const;
+}
+
+/** The only writer of the linked backend's terminal edge also clears the exact attachment. */
+export function detachSandboxReleaseRefusalInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff,
+  expected: z.output<typeof SandboxReleaseRefusalAttachmentSchema> | null
+): void {
+  assertControlProductWriter(native);
+  const proof = requireReleaseRefusalHandoff(db, native, workspace, input);
+  if (proof.state === 'replayed' || proof.anchor.state === 'cleaned') return;
+  const { anchor } = proof;
+  const owner = { sqlite: native };
+  const storage = getWorkerStorageBindingForSandbox(owner, anchor);
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspace,
+    anchor.workspaceId,
+    anchor.agentSessionId,
+    anchor.packageSnapshotId
+  )?.snapshot;
+  const agentSession = AgentSessionRecordSchema.safeParse(
+    readProduct(
+      workspace.sqlite,
+      { kind: 'workspace', workspaceId: workspace.workspaceId },
+      'agent-session',
+      anchor.agentSessionId
+    )?.record
+  );
+  const workSlotRef = (
+    snapshot?.extensions.openkit as { workerStorage?: { workSlotRef?: string } } | undefined
+  )?.workerStorage?.workSlotRef;
+  if (
+    !expected ||
+    !storage ||
+    storage.state !== 'attached' ||
+    storage.storageRef !== expected.storageRef ||
+    agentSession.data?.retainedStorage?.storageRef !== expected.storageRef ||
+    agentSession.data.retainedStorage.workSlotRef !== expected.workSlotRef ||
+    storage.workspaceId !== anchor.workspaceId ||
+    storage.runtimeTargetId !== anchor.runtimeTargetId ||
+    storage.deploymentId !== anchor.deploymentId ||
+    storage.currentAgentSessionId !== anchor.agentSessionId ||
+    storage.currentThreadId !== anchor.threadId ||
+    snapshot?.scope.turnId !== anchor.turnId ||
+    snapshot.scope.threadId !== anchor.threadId ||
+    !workSlotRef ||
+    storage.currentWorkSlotRef !== workSlotRef ||
+    workSlotRef !== expected.workSlotRef ||
+    storage.attachmentGeneration !== expected.attachmentGeneration ||
+    storage.revision !== expected.revision ||
+    !storage.contributors.some(
+      (contributor) =>
+        contributor.threadId === anchor.threadId &&
+        contributor.workSlotRef === workSlotRef &&
+        contributor.attachmentGeneration === expected.attachmentGeneration
+    )
+  )
+    throw new CoreJournalRefusal('Sandbox handoff has no exact attached writer.');
+  releaseWorkerStorageAttachment(owner, {
+    cleanupProved: true,
+    storageRef: expected.storageRef,
+    sandboxBindingRef: anchor.sandboxBindingRef,
+    attachmentGeneration: expected.attachmentGeneration,
+    expectedRevision: expected.revision,
+  });
+  let { state } = anchor;
+  const transition = (toState: typeof state) =>
+    transitionWorkerBackendSessionState(owner, {
+      attemptId: anchor.attemptId,
+      fromState: state,
+      toState,
+    }).state;
+  if (state !== 'cleanup-pending' && state !== 'physical-cleaned')
+    state = transition('cleanup-pending');
+  if (state === 'cleanup-pending') state = transition('physical-cleaned');
+  if (anchor.workspaceHandoffState === 'pending')
+    markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId: anchor.attemptId });
+  transition('cleaned');
+}
+
+/** Replays the Native terminal edge by the original attempt, with both owner proofs pinned. */
+export function handoffSandboxReleaseRefusalInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff
+): void {
+  assertControlProductWriter(db.sqlite);
+  const proof = requireReleaseRefusalHandoff(db, native, workspace, input);
+  if (proof.state === 'replayed') return;
+  if (proof.anchor.state !== 'cleaned')
+    throw new CoreJournalRefusal('Exact Native refusal detach proof is unavailable.');
+  const { attempt } = proof;
+  closeSchedulerExecutionAttemptWithFence(db, {
+    correlation: schedulerExecutionCorrelation(attempt),
+    fenceRef: input.ref.execution.executionId,
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+  const queued = db.sqlite
+    .prepare(`UPDATE scheduler_admission_entries SET status='queued'
+      WHERE queue_entry_id=? AND status='admitted'`)
+    .run(attempt.queueEntryId);
+  if (queued.changes !== 1)
     throw new CoreJournalRefusal('Sandbox handoff lost its Core admission ownership.');
+}
+
+type UndeliveredSuccessor = z.output<typeof UndeliveredRefusalSuccessorSchema>;
+
+function requireUndeliveredRefusalSuccessor(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  { attemptId, workspaceId }: UndeliveredSuccessor
+) {
+  const held = (label: string) =>
+    new CoreJournalRefusal(`Undelivered successor proof is unresolved (${label}).`);
+  const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attemptId);
+  const predecessor = readReleasedSandboxRefusalPredecessor(db, attempt, attemptId);
+  const order = predecessor?.fenceRef && readSandboxReleaseRefusalOrder(db, predecessor.fenceRef);
+  const prior = predecessor && getWorkerBackendSession({ sqlite: native }, predecessor.attemptId);
+  const session = getWorkerBackendSession({ sqlite: native }, attemptId);
+  if (
+    attempt.backendId !== 'nanohost' ||
+    !attempt.operationId ||
+    !attempt.inputRef ||
+    !attempt.agentSessionId ||
+    attempt.disposition !== 'unknown' ||
+    attempt.deadline !== null ||
+    (attempt.phase === 'open'
+      ? attempt.terminalCause !== null
+      : attempt.terminalCause !== 'restart-native-recovery') ||
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(attemptId) ||
+    !predecessor ||
+    !order ||
+    order.attemptId !== predecessor.attemptId ||
+    !prior ||
+    prior.state !== 'cleaned' ||
+    !prior.physicalCleanedAt ||
+    order.bindingRef !== prior.sandboxBindingRef ||
+    order.targetId !== prior.runtimeTargetId ||
+    order.physicalEpoch !== prior.originPhysicalEpoch ||
+    predecessor.bindingRef !== prior.sandboxBindingRef ||
+    predecessor.inputRef !== prior.packageSnapshotId ||
+    predecessor.agentSessionId !== attempt.agentSessionId ||
+    prior.workspaceId !== attempt.workspaceId ||
+    prior.threadId !== attempt.threadId ||
+    prior.turnId !== attempt.turnId ||
+    prior.agentSessionId !== attempt.agentSessionId ||
+    !session ||
+    session.backendKind !== 'openshell' ||
+    session.workspaceId !== attempt.workspaceId ||
+    session.threadId !== attempt.threadId ||
+    session.turnId !== attempt.turnId ||
+    session.agentSessionId !== attempt.agentSessionId ||
+    session.packageSnapshotId !== attempt.inputRef ||
+    session.sandboxBindingRef !== attempt.bindingRef ||
+    session.sandboxBindingRef === prior.sandboxBindingRef ||
+    session.runtimeTargetId !== prior.runtimeTargetId ||
+    session.deploymentId !== prior.deploymentId ||
+    !['materializing', 'cleanup-pending', 'cleanup-failed', 'cleaned'].includes(session.state) ||
+    (attempt.phase === 'open' && session.state !== 'materializing') ||
+    (session.state === 'cleaned'
+      ? session.workspaceHandoffState !== 'complete' || !session.physicalCleanedAt
+      : session.workspaceHandoffState !== 'pending' || session.physicalCleanedAt !== null) ||
+    workspace.dataRoot !== db.dataRoot ||
+    workspace.workspaceId !== workspaceId ||
+    attempt.workspaceId !== workspaceId ||
+    admission.status !== 'admitted'
+  )
+    throw held('lineage');
+
+  const lifecycle = {
+    owner: { kind: 'server' as const },
+    executionId: `scheduler-lifecycle:${attemptId}`,
+  };
+  const root = readExecutionJournalRoot(db, lifecycle);
+  const claim = readExecutionJournalInvocation(db, { execution: lifecycle, stepId: 'claim' });
+  const latestPost = db.sqlite
+    .prepare(`SELECT step_id AS id FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(control_json,'$.kind')='deliver-start'
+    ORDER BY ordinal DESC LIMIT 1`)
+    .get(lifecycle.executionId) as { id: string } | undefined;
+  const post =
+    latestPost &&
+    readExecutionJournalInvocation(db, { execution: lifecycle, stepId: latestPost.id });
+  const creates = workspace.sqlite
+    .prepare(`SELECT e.id AS executionId, s.step_id AS stepId
+    FROM control_executions e JOIN control_execution_steps s ON e.id=s.execution_id
+    WHERE e.work_id=? AND e.definition_version=?
+      AND json_extract(s.control_json,'$.attemptId')=?
+      AND json_extract(s.invocation_json,'$.carriage.operation')='sandbox.create'
+      AND json_extract(s.invocation_json,'$.carriage.requestId')=? LIMIT 2`)
+    .all(
+      attempt.turnId,
+      WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+      attemptId,
+      attempt.operationId
+    ) as { executionId: string; stepId: string }[];
+  const create =
+    creates.length === 1 &&
+    readExecutionJournalInvocation(workspace, {
+      execution: {
+        owner: { kind: 'workspace', workspaceId },
+        executionId: creates[0]!.executionId,
+      },
+      stepId: creates[0]!.stepId,
+    });
+  if (
+    root.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+    root.workId !== attempt.turnId ||
+    root.fingerprint !== admission.inputHash ||
+    (attempt.phase !== 'closed' && root.phase !== 'open') ||
+    claim.state !== 'completed' ||
+    claim.control.attemptId !== attemptId ||
+    !claim.carriage.schedulerPreparation ||
+    !post ||
+    post.state !== 'completed' ||
+    post.control.attemptId !== attemptId ||
+    post.control.operationId !== attempt.operationId ||
+    post.control.fingerprint !== admission.inputHash ||
+    !isDeepStrictEqual(post.control.actor, admission.triggerActor) ||
+    !create ||
+    create.state !== 'intent' ||
+    create.control.operationId !== attempt.operationId ||
+    create.carriage.bindingRef !== attempt.bindingRef ||
+    native
+      .prepare(`SELECT 1 FROM worker_backend_sessions WHERE attempt_id=?
+      AND (worker_route_binding_json IS NOT NULL OR worker_recovery_json IS NOT NULL)`)
+      .get(attemptId) ||
+    native
+      .prepare(`SELECT 1 FROM worker_control_records WHERE package_snapshot_id=? UNION ALL
+      SELECT 1 FROM worker_control_sequence_fingerprints WHERE package_snapshot_id=?`)
+      .get(attempt.inputRef, attempt.inputRef) ||
+    native
+      .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+      WHERE current_attempt_id=? OR current_turn_id=? OR agent_session_id=?`)
+      .get(attemptId, attempt.turnId, attempt.agentSessionId) ||
+    native
+      .prepare('SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=?')
+      .get(attempt.bindingRef) ||
+    workspace.sqlite
+      .prepare(`SELECT 1 FROM workspace_materialization_records WHERE workspace_id=? AND package_snapshot_id=?
+      UNION ALL SELECT 1 FROM backend_workspace_handles WHERE workspace_id=? AND package_snapshot_id=?`)
+      .get(workspaceId, attempt.inputRef, workspaceId, attempt.inputRef)
+  )
+    throw held('operation');
+
+  const workspaceOwner = { kind: 'workspace' as const, workspaceId };
+  const agentSession = AgentSessionRecordSchema.parse(
+    readProduct(workspace.sqlite, workspaceOwner, 'agent-session', attempt.agentSessionId)?.record
+  );
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspace,
+    workspaceId,
+    attempt.agentSessionId,
+    attempt.inputRef
+  )?.snapshot;
+  const workSlotRef = (
+    snapshot?.extensions.openkit as { workerStorage?: { workSlotRef?: string } } | undefined
+  )?.workerStorage?.workSlotRef;
+  const retained = agentSession.retainedStorage;
+  const storage = retained && getWorkerStorageBinding({ sqlite: native }, retained);
+  const reservedGeneration =
+    retained?.attachmentGeneration === undefined ? null : retained.attachmentGeneration + 1;
+  if (
+    !snapshot ||
+    snapshot.scope.turnId !== attempt.turnId ||
+    snapshot.scope.threadId !== attempt.threadId ||
+    snapshot.agent.agentId !== admission.requestedAgentId ||
+    !isDeepStrictEqual(snapshot.scope.triggerActor, admission.triggerActor) ||
+    agentSession.workspaceId !== workspaceId ||
+    agentSession.threadId !== attempt.threadId ||
+    agentSession.agentId !== admission.requestedAgentId ||
+    agentSession.environmentPackageSnapshotId !== session.packageSnapshotId ||
+    !retained ||
+    reservedGeneration === null ||
+    !workSlotRef ||
+    retained.workSlotRef !== workSlotRef ||
+    !storage ||
+    storage.workspaceId !== workspaceId ||
+    storage.deploymentId !== session.deploymentId ||
+    storage.runtimeTargetId !== session.runtimeTargetId ||
+    !storage.contributors.some(
+      (item) =>
+        item.threadId === attempt.threadId &&
+        item.workSlotRef === workSlotRef &&
+        item.attachmentGeneration === reservedGeneration
+    )
+  )
+    throw held('contributor');
+  // A cleaned anchor can only come from the coupled detach. A later reservation
+  // changes the current writer, while the contributor still identifies our original one.
+  if (
+    session.state !== 'cleaned' &&
+    (storage.attachmentGeneration !== reservedGeneration ||
+      storage.state !== 'reserved' ||
+      storage.currentAgentSessionId !== attempt.agentSessionId ||
+      storage.currentThreadId !== attempt.threadId ||
+      storage.currentWorkSlotRef !== workSlotRef ||
+      storage.currentSandboxBindingRef !== null)
+  )
+    throw held('reservation');
+
+  const turn = workspace.sqlite
+    .prepare(`SELECT status, json_extract(record_json,'$.error.code') AS errorCode,
+    json_extract(record_json,'$.completedAt') AS completedAt FROM control_turns
+    WHERE id=? AND thread_id=? AND agent_session_id=?`)
+    .get(attempt.turnId, attempt.threadId, attempt.agentSessionId) as
+    | { status: string; errorCode: string | null; completedAt: string | null }
+    | undefined;
+  const interrupted =
+    turn?.status === 'interrupted' &&
+    turn.errorCode === 'worker_governance_restart_recovery' &&
+    !!turn.completedAt;
+  if ((!interrupted && turn?.status !== 'running') || (interrupted && session.state !== 'cleaned'))
+    throw held('turn');
+  return { attempt, session, storage, reservedGeneration, interrupted };
+}
+
+/** Preserves Core authority until its own interruption is backed by the coupled Native release. */
+export function decideUndeliveredRefusalSuccessorInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: UndeliveredSuccessor
+): void {
+  assertControlProductWriter(db.sqlite);
+  const { attempt, session, interrupted } = requireUndeliveredRefusalSuccessor(
+    db,
+    native,
+    workspace,
+    input
+  );
+  if (input.stage === 'close') {
+    if (attempt.phase === 'open')
+      markSchedulerExecutionAttemptClosing(db, {
+        attemptId: attempt.attemptId,
+        cause: 'restart-native-recovery',
+        requireUnsubmitted: true,
+      });
+    return;
+  }
+  if (input.stage !== 'release' || !interrupted || !session.physicalCleanedAt)
+    throw new CoreJournalRefusal('Undelivered successor has no exact terminal release.');
+  markSchedulerExecutionAttemptClosing(db, {
+    attemptId: attempt.attemptId,
+    cause: 'restart-native-recovery',
+    outcomeRef: `turn:${attempt.turnId}:interrupted`,
+  });
+  closeSchedulerExecutionAttemptWithFence(db, {
+    correlation: schedulerExecutionCorrelation(attempt),
+    fenceRef: `worker-backend:${attempt.attemptId}:${session.physicalCleanedAt}`,
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+}
+
+/** Native keeps the original reservation until later teardown proves the old writer absent. */
+export function applyUndeliveredRefusalSuccessorInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: UndeliveredSuccessor
+): void {
+  assertControlProductWriter(native);
+  const { attempt, session, storage, reservedGeneration } = requireUndeliveredRefusalSuccessor(
+    db,
+    native,
+    workspace,
+    input
+  );
+  if (attempt.phase !== 'closing')
+    throw new CoreJournalRefusal('Undelivered successor is missing its Core close.');
+  const owner = { sqlite: native };
+  const transition = (fromState: typeof session.state, toState: typeof session.state) =>
+    transitionWorkerBackendSessionState(owner, {
+      attemptId: session.attemptId,
+      fromState,
+      toState,
+    });
+  if (input.stage === 'hold') {
+    if (session.state === 'materializing') transition('materializing', 'cleanup-pending');
+    return;
+  }
+  if (session.state === 'cleaned' && input.stage === 'teardown') return;
+  const target = getNanoHostRuntimeTarget(owner, session.runtimeTargetId);
+  if (
+    !target?.ready ||
+    !target.freshEmpty ||
+    !target.predecessorFenced ||
+    target.deploymentId !== session.deploymentId ||
+    !target.physicalEpoch ||
+    !/^[a-f0-9]{64}$/.test(target.physicalEpoch) ||
+    target.physicalEpoch === session.originPhysicalEpoch
+  )
+    throw new ControlProductPreconditionError();
+  if (input.stage === 'origin-ended' && session.state === 'cleanup-pending') {
+    transition('cleanup-pending', 'cleanup-failed');
+    return;
+  }
+  if (input.stage !== 'teardown' || !['cleanup-failed', 'cleanup-pending'].includes(session.state))
+    throw new CoreJournalRefusal('Undelivered successor is missing its cleanup hold.');
+  releaseWorkerStorageAttachment(owner, {
+    storageRef: storage.storageRef,
+    expectedRevision: storage.revision,
+    attachmentGeneration: reservedGeneration,
+    cleanupProved: true,
+  });
+  if (session.state === 'cleanup-failed') transition('cleanup-failed', 'cleanup-pending');
+  transition('cleanup-pending', 'physical-cleaned');
+  markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId: session.attemptId });
+  transition('physical-cleaned', 'cleaned');
+}
+
+/** Ordinary finish callbacks cannot supply the cleaned edge used by the Core handoff. */
+export function refuseOrdinaryLinkedBackendFinish(db: CoreDb, attemptId: string): void {
+  const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+  if (
+    attempt.terminalCause === 'sandbox-release-refusal' ||
+    (attempt.terminalCause === 'restart-native-recovery' &&
+      attempt.deadline === null &&
+      readReleasedSandboxRefusalPredecessor(db, attempt, attemptId))
+  )
+    throw new BackendSessionRefusal('Sandbox release refusal owns the linked backend finish.');
 }
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
 export function applyControlCoreJournal(
   db: CoreDb,
-  input: ControlCoreJournalInput,
-  publication?: NativeRuntimePolicyPublication
+  input: ControlCoreJournalInput | ControlCoreImageResult,
+  publication?: NativeRuntimePolicyPublication,
+  nanoHost?: NanoHostCoreReads,
+  idleCleanupNative?: CoreDb['sqlite']
 ): string | null {
   assertControlProductWriter(db.sqlite);
-  if (input.kind === 'sandbox-release-refusal') {
-    recordSandboxReleaseRefusal(db, input);
-    return null;
-  }
-  if (input.kind === 'sandbox-release-refusal-handoff') {
-    handoffSandboxReleaseRefusal(db, input);
-    return null;
-  }
+  if (input.kind === 'image-result') return applyControlCoreImageResult(db, input, nanoHost);
+  if (input.kind === 'sandbox-release-refusal')
+    return recordSandboxReleaseRefusal(db, input, idleCleanupNative);
+  if (
+    input.kind === 'sandbox-release-refusal-handoff' ||
+    input.kind === 'undelivered-refusal-successor' ||
+    input.kind === 'orphan-retirement'
+  )
+    throw new CoreJournalRefusal('Exact Native peer proof is unavailable.');
   if (
     input.kind === 'containment-inspect' ||
     input.kind === 'containment-intent' ||
@@ -509,7 +4041,7 @@ export function applyControlCoreJournal(
     input.kind === 'containment-stop' ||
     input.kind === 'containment-stop-outcome'
   ) {
-    return applyContainmentJournal(db, input, publication);
+    return applyContainmentJournal(db, input, publication, nanoHost);
   }
   if (input.kind === 'image-abandon') {
     abandonCoreImageJournal(db, input.ref, input.accepted);
@@ -539,158 +4071,35 @@ export function applyControlCoreJournal(
     return null;
   }
   if (input.kind === 'image-intent') {
-    const target = getNanoHostRuntimeTarget(db, input.target.targetId);
-    const binding = `nanohost-target/v1:${input.target.deploymentId}:${input.target.targetId}:${input.target.connectionGeneration}:${input.target.physicalEpoch}`;
+    requireCoreImageTarget(input.target, nanoHost);
     if (
-      !target ||
-      !target.predecessorFenced ||
-      !target.ready ||
-      !target.freshEmpty ||
-      target.identityId !== input.target.identityId ||
-      target.deploymentId !== input.target.deploymentId ||
-      target.connectionGeneration !== input.target.connectionGeneration ||
-      target.physicalEpoch !== input.target.physicalEpoch ||
       intent.execution.definitionVersion !== CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
       intent.control.kind !== 'resolve-setup' ||
       intent.carriage.operation !== 'image.acquire' ||
-      intent.carriage.bindingRef !== binding ||
-      intent.control.target?.targetId !== target.targetId
+      intent.carriage.bindingRef !== imageTargetBinding(input.target) ||
+      intent.control.target?.targetId !== input.target.targetId ||
+      intent.control.authorityRefs.some((value) => value.startsWith(imageTargetAuthorityPrefix))
     )
       throw new CoreJournalRefusal('Image execution provenance is unavailable.');
-    if (
-      db.sqlite
-        .prepare(`SELECT 1 FROM control_execution_steps WHERE json_extract(invocation_json, '$.carriage.operation') = 'image.acquire'
-      AND json_extract(invocation_json, '$.carriage.requestId') = ? AND json_extract(control_json, '$.kind') = 'resolve-setup' LIMIT 1`)
-        .get(intent.carriage.requestId)
-    )
+    if (readCoreImageAcquisitionRef(db, intent.carriage.requestId))
       throw new CoreJournalRefusal(
         'Image intent already exists; only result reconciliation is permitted.'
       );
     return encodeExecutionJournalValue(
-      writeExecutionJournalIntent(db, intent, input.processWitness)
-    );
-  }
-  const attempt = requireSchedulerExecutionAttempt(db, input.attemptId);
-  const anchor = getWorkerBackendSession(db, input.attemptId);
-  const target = getNanoHostRuntimeTarget(db, input.identity.runtimeTargetId);
-  const identity = anchor && {
-    agentSessionId: anchor.agentSessionId,
-    backendKind: 'openshell',
-    backendSessionId: anchor.backendSessionId,
-    deploymentId: anchor.deploymentId,
-    packageSnapshotId: anchor.packageSnapshotId,
-    runtimeTargetId: anchor.runtimeTargetId,
-    stagingDirectoryRef: anchor.stagingDirectoryRef,
-    transientProviderInstanceId: anchor.transientProviderInstanceId,
-  };
-  const refusal = ['bridge.close', 'sandbox.delete'].includes(intent.carriage.operation)
-    ? readSandboxReleaseRefusalFence(
+      writeExecutionJournalIntent(
         db,
-        input.sandboxBindingRef,
-        input.identity.runtimeTargetId,
-        input.originPhysicalEpoch,
-        attempt.attemptId
+        {
+          ...intent,
+          control: {
+            ...intent.control,
+            authorityRefs: [...intent.control.authorityRefs, imageTargetAuthority(input.target)],
+          },
+        },
+        input.processWitness
       )
-    : null;
-  if (
-    (!refusal && (attempt.phase !== 'closed' || !attempt.fenceRef)) ||
-    !anchor ||
-    !isDeepStrictEqual(identity, input.identity) ||
-    anchor.workspaceId !== attempt.workspaceId ||
-    anchor.threadId !== attempt.threadId ||
-    anchor.turnId !== attempt.turnId ||
-    anchor.agentSessionId !== attempt.agentSessionId ||
-    anchor.packageSnapshotId !== attempt.inputRef ||
-    anchor.sandboxBindingRef !== attempt.bindingRef ||
-    anchor.originPhysicalEpoch !== input.originPhysicalEpoch ||
-    !target?.predecessorFenced ||
-    !target.ready ||
-    !target.freshEmpty ||
-    target.physicalEpoch !== input.originPhysicalEpoch ||
-    !/^[0-9a-f]{64}$/.test(input.originPhysicalEpoch)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup has no exact closed resident provenance or current Epoch.'
     );
-  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, input.attemptId);
-  if (
-    input.package.workspaceId !== anchor.workspaceId ||
-    input.package.threadId !== anchor.threadId ||
-    input.package.turnId !== anchor.turnId ||
-    input.package.agentSessionId !== anchor.agentSessionId ||
-    input.package.snapshotId !== anchor.packageSnapshotId ||
-    !isDeepStrictEqual(input.package.triggerActor, admission.triggerActor) ||
-    !isDeepStrictEqual(intent.control.actor, admission.triggerActor)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup immutable package actor or physical lineage conflicts.'
-    );
-  const sandbox = db.sqlite
-    .prepare(`SELECT sandbox_runtime_id AS id, origin_physical_epoch AS origin,
-    runtime_target_id AS targetId, drain_state AS drainState FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
-    .get(input.sandboxBindingRef) as
-    | { id: string; origin: string; targetId: string; drainState: string }
-    | undefined;
-  if (!sandbox)
-    throw new CoreJournalRefusal('Core idle cleanup requires a positive resident binding.');
-  if (
-    sandbox.origin !== input.originPhysicalEpoch ||
-    sandbox.targetId !== input.identity.runtimeTargetId ||
-    (input.sandboxId !== undefined &&
-      input.sandboxId !== nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId)) ||
-    (['bridge.close', 'sandbox.delete'].includes(intent.carriage.operation) &&
-      sandbox.drainState !== 'draining') ||
-    nonClosedSandboxAttempts(
-      db,
-      input.backendId,
-      { scope: input.package, snapshotId: input.package.snapshotId },
-      input.identity.runtimeTargetId,
-      input.originPhysicalEpoch,
-      nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId)
-    ).some((other) => !refusal || other.attemptId !== attempt.attemptId) ||
-    db.sqlite
-      .prepare(`SELECT 1 FROM harness_instance_records WHERE sandbox_runtime_id = ?
-      AND (active_turn_count <> 0 OR operation_state IN ('queued', 'dispatched')) LIMIT 1`)
-      .get(sandbox.id)
-  )
-    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
-  if (
-    intent.execution.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-    !['bridge.close', 'sandbox.delete', 'workspace.collect', 'file.export'].includes(
-      intent.carriage.operation
-    ) ||
-    intent.carriage.bindingRef !== input.sandboxBindingRef ||
-    intent.control.attemptId !== input.attemptId ||
-    intent.control.target?.allocationRef !== input.sandboxBindingRef ||
-    intent.control.target?.targetId !== input.identity.runtimeTargetId ||
-    intent.control.deadlineUnixNano === null ||
-    intent.control.deadlineUnixNano <= BigInt(Date.now()) * 1_000_000n
-  )
-    throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
-  if (
-    db.sqlite
-      .prepare('SELECT 1 FROM control_executions WHERE id = ?')
-      .get(intent.execution.ref.executionId)
-  )
-    throw new CoreJournalRefusal(
-      'Core idle cleanup key already exists; inspect retained result only.',
-      'idle_cleanup_result_only'
-    );
-  if (
-    refusal &&
-    (!input.predecessor ||
-      (intent.carriage.operation === 'bridge.close' &&
-        !isDeepStrictEqual(input.predecessor, refusal)))
-  )
-    throw new CoreJournalRefusal('Sandbox release refusal lacks its original cleanup predecessor.');
-  if (input.predecessor) {
-    const prior = db.sqlite
-      .prepare('SELECT revision FROM control_executions WHERE id = ?')
-      .get(input.predecessor.ref.execution.executionId) as { revision: number } | undefined;
-    if (prior?.revision !== input.predecessor.revision)
-      throw new CoreJournalRefusal('Idle cleanup predecessor changed before delete admission.');
   }
-  return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent, input.processWitness));
+  return reserveCoreIdleCleanupInDb(db, input, idleCleanupNative);
 }
 
 type ContainmentInput = Extract<
@@ -713,7 +4122,8 @@ type ContainmentInput = Extract<
 function applyContainmentJournal(
   db: CoreDb,
   input: ContainmentInput,
-  publication: NativeRuntimePolicyPublication | undefined
+  publication: NativeRuntimePolicyPublication | undefined,
+  nanoHost?: NanoHostCoreReads
 ): string | null {
   const document = validatePolicyDocument(input.policy);
   const revision = policyDigest(document);
@@ -728,7 +4138,9 @@ function applyContainmentJournal(
     )
       throw new CoreJournalRefusal('Containment cleanup lost its original intent.');
     const attempt = requireSchedulerExecutionAttempt(db, original.control.attemptId);
-    const anchor = getWorkerBackendSession(db, attempt.attemptId);
+    const anchor = requireNanoHostEvidence(
+      nanoHost?.readBackendSession({ attemptId: attempt.attemptId })
+    );
     if (
       !anchor ||
       attempt.operationId !== original.control.operationId ||
@@ -739,11 +4151,7 @@ function applyContainmentJournal(
       !original.control.physicalFenceRefs.includes(anchor.originPhysicalEpoch)
     )
       throw new CoreJournalRefusal('Containment cleanup lost its original physical owner.');
-    const resident = db.sqlite
-      .prepare(
-        'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_binding_ref=? AND origin_physical_epoch=?'
-      )
-      .get(anchor.sandboxBindingRef, anchor.originPhysicalEpoch);
+    const resident = requireNanoHostEvidence(nanoHost?.readResident(anchor.sandboxBindingRef));
     const proved = !resident && anchor.state === 'cleaned' && anchor.physicalCleanedAt !== null;
     const root = readExecutionJournalRoot(db, original.ref.execution);
     if (original.state !== 'intent') {

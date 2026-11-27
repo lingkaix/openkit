@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { hashNanoHostFinalDecision } from '../storage/control-store-worker-protocol.js';
+import type {
+  NanoHostAcceptedFinalCommitment,
+  NanoHostFinalCloseDecision,
+} from '../storage/core-journal-native.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   type ControlWorkspaceCapture,
@@ -17,8 +22,23 @@ import {
   type WorkspaceCollectionOutcome,
 } from './workspace-snapshot-chain.js';
 
+/**
+ * K8b: the expected final proof that one capture publication consumes. The deciding Workspace
+ * commit rechecks it in the admitted Core and Native files while their writers are held.
+ */
+export interface NanoHostFinalPublicationGuard {
+  readonly attemptId: string;
+  readonly commitment:
+    | NanoHostAcceptedFinalCommitment
+    | Extract<NanoHostFinalCloseDecision, { readonly state: 'absent' }>;
+}
+
 /** Opens the existing actual Workspace physical owner before submitting one exact stage. */
-async function publish(db: WorkspaceDb, value: ControlWorkspaceCapture) {
+async function publish(
+  db: WorkspaceDb,
+  value: ControlWorkspaceCapture,
+  guard?: NanoHostFinalPublicationGuard
+) {
   const input = ControlWorkspaceCaptureSchema.parse(value);
   const scope = nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId });
   const client = getControlStoreWorkerClient();
@@ -32,7 +52,15 @@ async function publish(db: WorkspaceDb, value: ControlWorkspaceCapture) {
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  return client.workspaceCapture(database, input);
+  return client.workspaceCapture(
+    database,
+    input,
+    guard && {
+      dataRoot: db.dataRoot,
+      attemptId: guard.attemptId,
+      commitmentHash: hashNanoHostFinalDecision(guard.commitment),
+    }
+  );
 }
 
 /** Acknowledges the original idle claim before the caller may begin its separate Core drain. */
@@ -92,14 +120,19 @@ export async function publishWorkspaceCaptureRecovery(
   db: WorkspaceDb,
   anchor: WorkspaceCaptureAnchor,
   identity: WorkspaceCollectionIdentity,
-  source: RawWorkspaceCapture | null
+  source: RawWorkspaceCapture | null,
+  guard?: NanoHostFinalPublicationGuard
 ): Promise<WorkspaceReconciliationRecord> {
-  const reply = await publish(db, {
-    action: 'recover',
-    anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
-    identity,
-    source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
-  });
+  const reply = await publish(
+    db,
+    {
+      action: 'recover',
+      anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
+      identity,
+      source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
+    },
+    guard
+  );
   if (reply.kind !== 'recovery') throw new Error('Workspace recovery reply kind conflicts.');
   return reply.record;
 }
@@ -109,14 +142,19 @@ export async function publishWorkspaceCaptureCompletion(
   db: WorkspaceDb,
   anchor: WorkspaceCaptureAnchor,
   identity: WorkspaceCollectionIdentity,
-  source: RawWorkspaceCapture | null
+  source: RawWorkspaceCapture | null,
+  guard?: NanoHostFinalPublicationGuard
 ): Promise<WorkspaceReconciliationRecord> {
-  const reply = await publish(db, {
-    action: 'complete',
-    anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
-    identity,
-    source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
-  });
+  const reply = await publish(
+    db,
+    {
+      action: 'complete',
+      anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
+      identity,
+      source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
+    },
+    guard
+  );
   if (reply.kind !== 'recovery') throw new Error('Workspace recovery reply kind conflicts.');
   return reply.record;
 }

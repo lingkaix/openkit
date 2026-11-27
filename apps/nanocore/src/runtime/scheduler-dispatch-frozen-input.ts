@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { WorkInputRef } from '../storage/control-kernel-port.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import {
   readWorkspaceQueueInput,
   type WorkspaceQueueInputScope,
@@ -15,11 +16,12 @@ const FrozenPendingInputManifestSchema = z
 export function readFrozenSchedulerInput(
   dataRoot: string,
   scope: Omit<WorkspaceQueueInputScope, 'originalInvocationId'>,
-  manifestRef: WorkInputRef
+  manifestRef: WorkInputRef,
+  workspaceDb?: WorkspaceDb
 ): readonly { input: WorkInputRef; text: string }[] | null {
   if (manifestRef.inputId !== scope.turnId) return null;
   try {
-    const manifest = readWorkspaceQueueInput(dataRoot, scope, manifestRef);
+    const manifest = readWorkspaceQueueInput(dataRoot, scope, manifestRef, workspaceDb);
     if (!manifest || manifest.originalInvocationId !== scope.turnId) return null;
     const members = FrozenPendingInputManifestSchema.parse(JSON.parse(manifest.text));
     const seen = new Set<string>();
@@ -28,7 +30,7 @@ export function readFrozenSchedulerInput(
       if (inputId === manifestRef.inputId || seen.has(inputId)) return null;
       seen.add(inputId);
       const input = { owner: manifestRef.owner, inputId, digest };
-      const member = readWorkspaceQueueInput(dataRoot, scope, input);
+      const member = readWorkspaceQueueInput(dataRoot, scope, input, workspaceDb);
       if (!member || member.originalInvocationId !== manifest.originalInvocationId) return null;
       selected.push({ input, text: member.text });
     }

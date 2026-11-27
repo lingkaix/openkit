@@ -290,10 +290,17 @@ export interface WorkerControlGatewayOptions {
   now?: () => string;
   /** Optional durable recorder for accepted worker-control records. */
   acceptedRecordRecorder?: WorkerControlAcceptedRecordRecorder;
+  /** Prepares Workspace evidence on the split path before publishing the original Native event. */
+  prepareObservation?: WorkerControlAcceptedRecordRecorder['prepareObservation'];
   onObservationStop?: (lineage: WorkerControlLineage) => Promise<void>;
   readObservationOmission?: (input: WorkerControlSequenceRecorderInput) => boolean;
   /** Optional durable sandbox binding resolver for live lease enforcement. */
   resolveTokenBinding?: WorkerControlTokenBindingResolver;
+  /** Waits within the request's existing budget before running its exact synchronous read. */
+  afterWorkerControlAcknowledgement?: <Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ) => Promise<Value>;
   /** Optional durable sequence fingerprint recorder. */
   sequenceRecorder?: WorkerControlSequenceRecorder;
   /** Optional transaction boundary for atomic heartbeat persistence. */
@@ -525,6 +532,8 @@ interface AuthenticatedWorkerControlInput {
   lineage: WorkerControlLineage;
   /** Reports gateway-owned lineage only after the existing authentication and binding checks. */
   onAuthenticated?: ((lineage: WorkerControlLineage) => void) | undefined;
+  /** Original request cancellation, carried into the bounded owner wait. */
+  signal?: AbortSignal | undefined;
   /** Current shared resource restriction, never an authentication verdict. */
   recheckAdmission?: (() => void) | undefined;
 }
@@ -567,6 +576,7 @@ export class WorkerControlGateway {
   private readonly createCapabilityToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
+  private readonly prepareObservation: WorkerControlGatewayOptions['prepareObservation'];
   private readonly onObservationStop: WorkerControlGatewayOptions['onObservationStop'];
   private readonly readObservationOmission: WorkerControlGatewayOptions['readObservationOmission'];
   private readonly publishControlOperation: WorkerControlGatewayOptions['publishControlOperation'];
@@ -578,6 +588,7 @@ export class WorkerControlGateway {
   private readonly onHeartbeatAccepted: WorkerControlHeartbeatAcceptedHook | null;
   private readonly resolveFinalStatusTokenBinding: WorkerControlFinalStatusTokenBindingResolver | null;
   private readonly resolveTokenBinding: WorkerControlTokenBindingResolver | null;
+  private readonly waitForWorkerAcknowledgement: WorkerControlGatewayOptions['afterWorkerControlAcknowledgement'];
   private readonly runFinalStatusTransaction: (<T>(operation: () => T) => T) | null;
   private readonly runHeartbeatTransaction: (<T>(operation: () => T) => T) | null;
   private readonly sequenceRecorder: WorkerControlSequenceRecorder | null;
@@ -595,6 +606,9 @@ export class WorkerControlGateway {
     this.createCapabilityToken = options.createCapabilityToken ?? createRandomToken;
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
+    this.prepareObservation =
+      options.prepareObservation ??
+      options.acceptedRecordRecorder?.prepareObservation?.bind(options.acceptedRecordRecorder);
     this.publishFinalStatus = options.publishFinalStatus;
     this.publishHeartbeat = options.publishHeartbeat;
     this.publishControlOperation = options.publishControlOperation;
@@ -606,6 +620,7 @@ export class WorkerControlGateway {
     this.onHeartbeatAccepted = options.onHeartbeatAccepted ?? null;
     this.resolveFinalStatusTokenBinding = options.resolveFinalStatusTokenBinding ?? null;
     this.resolveTokenBinding = options.resolveTokenBinding ?? null;
+    this.waitForWorkerAcknowledgement = options.afterWorkerControlAcknowledgement;
     this.runFinalStatusTransaction = options.runFinalStatusTransaction ?? null;
     this.runHeartbeatTransaction = options.runHeartbeatTransaction ?? null;
     this.sequenceRecorder = options.sequenceRecorder ?? null;
@@ -844,71 +859,80 @@ export class WorkerControlGateway {
       schemaVersion: request.schemaVersion,
       sequence: request.sequence,
     };
-    if (this.publishHeartbeat) {
-      const { state, token } = this.requireFinalStatusSession(input);
-      const sandboxBindingRef = this.requireSandboxBindingRef(state);
-      if (!request.reconnectKey) {
-        // Preserve the existing synchronous read refusal and diagnostic boundary; native repeats current authority after FIFO.
-        this.assertTokenBinding(state, token, 'worker-control', request.lineage);
-        input.onAuthenticated?.({ ...state.lineage });
-      } else {
-        // Reconnect-required is the one preflight state the native adoption may resolve.
-        const resolution = this.resolveTokenBinding?.({
+    const publishHeartbeat = this.publishHeartbeat;
+    if (publishHeartbeat) {
+      const authorize = () => {
+        const { state, token } = this.requireFinalStatusSession(input);
+        const sandboxBindingRef = this.requireSandboxBindingRef(state);
+        if (!request.reconnectKey) {
+          // Preserve the existing synchronous read refusal and diagnostic boundary; native repeats current authority after FIFO.
+          this.assertTokenBinding(state, token, 'worker-control', request.lineage);
+          input.onAuthenticated?.({ ...state.lineage });
+        } else {
+          // Reconnect-required is the one preflight state the native adoption may resolve.
+          const resolution = this.resolveTokenBinding?.({
+            lineage: request.lineage,
+            sandboxBindingRef,
+            token,
+            tokenFamily: 'worker-control',
+          });
+          if (resolution?.status === 'rejected' && resolution.reason !== 'reconnect-required')
+            this.throwTokenBindingRejection(resolution.reason);
+        }
+        return { state, token, sandboxBindingRef };
+      };
+      const publish = ({ state, token, sandboxBindingRef }: ReturnType<typeof authorize>) => {
+        // Reconnect authentication completes in the native owner; unavailable
+        // resources must still refuse before that heartbeat publication begins.
+        input.recheckAdmission?.();
+        return publishHeartbeat({
           lineage: request.lineage,
           sandboxBindingRef,
-          token,
-          tokenFamily: 'worker-control',
+          tokenHash: hashWorkerRouteToken(token),
+          payload: {
+            request: heartbeatEnvelope,
+            ...(this.heartbeatClock ? { acceptedAt: this.heartbeatClock() } : {}),
+            ...(request.reconnectKey
+              ? {
+                  reconnectProcessKeyHash: createHash('sha256')
+                    .update(Buffer.from(request.reconnectKey, 'base64url'))
+                    .digest('base64url'),
+                }
+              : {}),
+          },
+        }).then((result) => {
+          if (request.reconnectKey) input.onAuthenticated?.({ ...state.lineage });
+          let fingerprints = state.operationFingerprintsBySequence.get('heartbeat');
+          if (!fingerprints) {
+            fingerprints = new Map();
+            state.operationFingerprintsBySequence.set('heartbeat', fingerprints);
+          }
+          fingerprints.set(request.sequence, sequencedControlFingerprint(heartbeatEnvelope));
+          state.highestOperationSequenceByOperation.set(
+            'heartbeat',
+            Math.max(
+              state.highestOperationSequenceByOperation.get('heartbeat') ?? -1,
+              result.nextExpectedSequence - 1
+            )
+          );
+          if (!result.duplicate)
+            state.snapshot.heartbeat = {
+              lastHeartbeatAt: result.acceptedAt,
+              message: request.body.message ?? null,
+              sequence: request.sequence,
+              status: request.body.status,
+            };
+          return WorkerControlResponseEnvelopeSchema.parse({
+            schemaVersion: 2,
+            accepted: true,
+            nextExpectedSequence: result.nextExpectedSequence,
+            diagnostics: [],
+          });
         });
-        if (resolution?.status === 'rejected' && resolution.reason !== 'reconnect-required')
-          this.throwTokenBindingRejection(resolution.reason);
-      }
-      // Reconnect authentication completes in the native owner; unavailable
-      // resources must still refuse before that heartbeat publication begins.
-      input.recheckAdmission?.();
-      return this.publishHeartbeat({
-        lineage: request.lineage,
-        sandboxBindingRef,
-        tokenHash: hashWorkerRouteToken(token),
-        payload: {
-          request: heartbeatEnvelope,
-          ...(this.heartbeatClock ? { acceptedAt: this.heartbeatClock() } : {}),
-          ...(request.reconnectKey
-            ? {
-                reconnectProcessKeyHash: createHash('sha256')
-                  .update(Buffer.from(request.reconnectKey, 'base64url'))
-                  .digest('base64url'),
-              }
-            : {}),
-        },
-      }).then((result) => {
-        if (request.reconnectKey) input.onAuthenticated?.({ ...state.lineage });
-        let fingerprints = state.operationFingerprintsBySequence.get('heartbeat');
-        if (!fingerprints) {
-          fingerprints = new Map();
-          state.operationFingerprintsBySequence.set('heartbeat', fingerprints);
-        }
-        fingerprints.set(request.sequence, sequencedControlFingerprint(heartbeatEnvelope));
-        state.highestOperationSequenceByOperation.set(
-          'heartbeat',
-          Math.max(
-            state.highestOperationSequenceByOperation.get('heartbeat') ?? -1,
-            result.nextExpectedSequence - 1
-          )
-        );
-        if (!result.duplicate)
-          state.snapshot.heartbeat = {
-            lastHeartbeatAt: result.acceptedAt,
-            message: request.body.message ?? null,
-            sequence: request.sequence,
-            status: request.body.status,
-          };
-        return WorkerControlResponseEnvelopeSchema.parse({
-          schemaVersion: 2,
-          accepted: true,
-          nextExpectedSequence: result.nextExpectedSequence,
-          diagnostics: [],
-        });
-      });
+      };
+      return this.waitForWorkerAcknowledgement
+        ? this.afterWorkerControlAcknowledgement(authorize, input.signal).then(publish)
+        : publish(authorize());
     }
     let acceptedState: WorkerControlSessionState | undefined;
     let previousHeartbeat: WorkerControlHeartbeat | null = null;
@@ -1008,7 +1032,13 @@ export class WorkerControlGateway {
       };
     }
   ): WorkerControlArtifactNotice | Promise<WorkerControlArtifactNotice> {
-    const state = this.requireSession(input);
+    return this.withAuthenticatedSession(input, (state) => this.acceptArtifactNotice(input, state));
+  }
+
+  private acceptArtifactNotice(
+    input: Parameters<WorkerControlGateway['recordArtifactNotice']>[0],
+    state: WorkerControlSessionState
+  ): WorkerControlArtifactNotice | Promise<WorkerControlArtifactNotice> {
     if (this.publishControlOperation) {
       const artifact: WorkerControlArtifactNotice = {
         artifactId: `worker-artifact-${input.lineage.packageSnapshotId}-${input.sequence}`,
@@ -1121,7 +1151,16 @@ export class WorkerControlGateway {
     }
   ): WorkerControlSupplyRefreshAck | Promise<WorkerControlSupplyRefreshAck> {
     const body = WorkerControlSupplyRefreshAckBodyReaderSchema.parse(input);
-    const state = this.requireSession(input);
+    return this.withAuthenticatedSession(input, (state) =>
+      this.acceptSupplyRefreshAck(input, state, body)
+    );
+  }
+
+  private acceptSupplyRefreshAck(
+    input: Parameters<WorkerControlGateway['recordSupplyRefreshAck']>[0],
+    state: WorkerControlSessionState,
+    body: ReturnType<typeof WorkerControlSupplyRefreshAckBodyReaderSchema.parse>
+  ): WorkerControlSupplyRefreshAck | Promise<WorkerControlSupplyRefreshAck> {
     if (this.publishControlOperation) {
       const ack: WorkerControlSupplyRefreshAck = {
         acknowledgedAt: this.now(),
@@ -1217,7 +1256,15 @@ export class WorkerControlGateway {
       summary: unknown;
     }
   ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
-    const state = this.requireSession(input);
+    return this.withAuthenticatedSession(input, (state) =>
+      this.acceptCapabilitySummary(input, state)
+    );
+  }
+
+  private acceptCapabilitySummary(
+    input: Parameters<WorkerControlGateway['recordCapabilitySummary']>[0],
+    state: WorkerControlSessionState
+  ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
     const parsed = WorkerCapabilityCallSummaryReaderSchema.safeParse(input.summary);
 
     if (!parsed.success) {
@@ -1358,18 +1405,30 @@ export class WorkerControlGateway {
       record: unknown;
     }
   ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
-    let live: WorkerControlSessionState | WorkerControlGatewayError;
-    try {
-      live = this.requireSession(input);
-    } catch (error) {
-      if (
-        !(error instanceof WorkerControlGatewayError) ||
-        error.code !== 'worker_control_lease_not_live' ||
-        !this.readObservationOmission
-      )
-        throw error;
-      live = error;
-    }
+    const read = () => {
+      try {
+        return this.requireSession(input);
+      } catch (error) {
+        if (
+          !(error instanceof WorkerControlGatewayError) ||
+          error.code !== 'worker_control_lease_not_live' ||
+          !this.readObservationOmission
+        )
+          throw error;
+        return error;
+      }
+    };
+    const accept = (live: WorkerControlSessionState | WorkerControlGatewayError) =>
+      this.acceptEventAppend(input, live);
+    return this.waitForWorkerAcknowledgement
+      ? this.afterWorkerControlAcknowledgement(read, input.signal).then(accept)
+      : accept(read());
+  }
+
+  private acceptEventAppend(
+    input: Parameters<WorkerControlGateway['appendEvent']>[0],
+    live: WorkerControlSessionState | WorkerControlGatewayError
+  ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
     const parsed = WorkerCanonicalEventRecordReaderSchema.safeParse(input.record);
 
     if (!parsed.success) {
@@ -1398,6 +1457,14 @@ export class WorkerControlGateway {
       );
     }
 
+    const matchesOmission = () =>
+      record.event.type === 'observation.recorded' &&
+      this.readObservationOmission?.({
+        lineage: record.lineage,
+        operation: 'event_append',
+        sequence: record.sequence,
+        fingerprint: observationOmissionFingerprint(record),
+      }) === true;
     if (live instanceof WorkerControlGatewayError) {
       if (record.event.type !== 'observation.recorded') throw live;
       const { state: replayState, token } = this.requireFinalStatusSession(input);
@@ -1407,20 +1474,16 @@ export class WorkerControlGateway {
         tokenFamily: 'worker-control',
         sandboxBindingRef: this.requireSandboxBindingRef(replayState),
       });
-      if (
-        binding?.status !== 'accepted' ||
-        !this.readObservationOmission?.({
-          lineage: record.lineage,
-          operation: 'event_append',
-          sequence: record.sequence,
-          fingerprint: observationOmissionFingerprint(record),
-        })
-      )
-        throw live;
+      if (binding?.status !== 'accepted' || !matchesOmission()) throw live;
       input.onAuthenticated?.({ ...replayState.lineage });
       return observationOmissionAck(record.sequence);
     }
 
+    // The retained omission acknowledges the original position even before the stop wakes Core.
+    if (matchesOmission()) {
+      input.recheckAdmission?.();
+      return observationOmissionAck(record.sequence);
+    }
     const state = live;
 
     if (this.publishControlOperation) {
@@ -1464,29 +1527,35 @@ export class WorkerControlGateway {
             schemaVersion: 2,
           });
         });
-      return (record.event.type === 'observation.recorded' ||
-        record.event.type === 'observation.content.chunk') &&
-        this.acceptedRecordRecorder?.prepareObservation
-        ? this.acceptedRecordRecorder.prepareObservation(record).then(
-            () => publish(),
-            async (error: unknown) => {
-              if (!(error instanceof ObservationCollectionStoppedError)) throw error;
-              try {
-                if (
-                  error.disposition === 'truncated' &&
-                  record.event.type === 'observation.recorded'
-                )
-                  return await publish(true);
-                throw new WorkerControlGatewayError(error.code, error.message, 409);
-              } finally {
-                if (error.disposition === 'truncated')
-                  void Promise.resolve()
-                    .then(() => this.onObservationStop?.(record.lineage))
-                    .catch(() => undefined);
-              }
-            }
-          )
-        : publish();
+      if (
+        record.event.type !== 'observation.recorded' &&
+        record.event.type !== 'observation.content.chunk'
+      )
+        return publish();
+      this.requireSandboxBindingRef(state);
+      input.recheckAdmission?.();
+      if (!this.prepareObservation)
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'Observation receipt requires durable storage.',
+          503
+        );
+      return this.prepareObservation(record).then(
+        () => publish(),
+        async (error: unknown) => {
+          if (!(error instanceof ObservationCollectionStoppedError)) throw error;
+          try {
+            if (error.disposition === 'truncated' && record.event.type === 'observation.recorded')
+              return await publish(true);
+            throw new WorkerControlGatewayError(error.code, error.message, 409);
+          } finally {
+            if (error.disposition === 'truncated')
+              void Promise.resolve()
+                .then(() => this.onObservationStop?.(record.lineage))
+                .catch(() => undefined);
+          }
+        }
+      );
     }
     const accept = (): WorkerControlResponseEnvelope => {
       input.recheckAdmission?.();
@@ -1556,7 +1625,7 @@ export class WorkerControlGateway {
       status: terminalData.status,
       stopReason: terminalData.stopReason,
     };
-    const authorizeFinal = (): boolean => {
+    const authorizeFinal = (announce = true): boolean => {
       let replayOnly = false;
 
       if (this.resolveFinalStatusTokenBinding) {
@@ -1571,7 +1640,7 @@ export class WorkerControlGateway {
           this.throwTokenBindingRejection(resolution.reason);
         }
 
-        input.onAuthenticated?.({ ...state.lineage });
+        if (announce) input.onAuthenticated?.({ ...state.lineage });
 
         if (
           resolution.cancellationOnly &&
@@ -1590,7 +1659,7 @@ export class WorkerControlGateway {
         replayOnly = resolution.replayOnly;
       } else {
         this.assertTokenBinding(state, token, 'worker-control', input.lineage);
-        input.onAuthenticated?.({ ...state.lineage });
+        if (announce) input.onAuthenticated?.({ ...state.lineage });
       }
 
       return replayOnly;
@@ -1614,7 +1683,18 @@ export class WorkerControlGateway {
           `Worker event sequence already accepted with different content: ${input.sequence}`,
           409
         );
-      authorizeFinal();
+      const checkCurrent = (announce: boolean) => {
+        if (this.requireFinalStatusSession(input).state !== state)
+          throw new WorkerControlGatewayError(
+            'worker_control_unauthorized',
+            'Worker control request is missing a valid sandbox token.',
+            401
+          );
+        authorizeFinal(announce);
+      };
+      if (this.waitForWorkerAcknowledgement)
+        await this.afterWorkerControlAcknowledgement(() => checkCurrent(true), input.signal);
+      else authorizeFinal();
       const sandboxBindingRef = this.requireSandboxBindingRef(state);
       const result = await this.publishFinalStatus({
         lineage: input.lineage,
@@ -1627,6 +1707,8 @@ export class WorkerControlGateway {
           eventAcceptedAt: this.now(),
         },
       });
+      if (this.waitForWorkerAcknowledgement)
+        await this.afterWorkerControlAcknowledgement(() => checkCurrent(false), input.signal);
       // Native refusal or a lost ACK leaves the live projection untouched. Concurrent exact
       // replays can complete during the await, so install against the current projection.
       const currentEvent = state.eventFingerprintsBySequence.get(input.sequence);
@@ -1744,6 +1826,26 @@ export class WorkerControlGateway {
       nextExpectedSequence: nextExpectedEventSequence(state),
       schemaVersion: 2,
     });
+  }
+
+  /** Runs the original authority read after the admitted owner's bounded ACK wait. */
+  public async afterWorkerControlAcknowledgement<Value>(
+    read: () => Value,
+    signal?: AbortSignal
+  ): Promise<Value> {
+    if (this.waitForWorkerAcknowledgement) return this.waitForWorkerAcknowledgement(read, signal);
+    return read();
+  }
+
+  /** Preserves immediate synchronous fixture calls and keeps writes outside the wait callback. */
+  private withAuthenticatedSession<Result>(
+    input: AuthenticatedWorkerControlInput,
+    accept: (state: WorkerControlSessionState) => Result | Promise<Result>
+  ): Result | Promise<Result> {
+    const read = () => this.requireSession(input);
+    return this.waitForWorkerAcknowledgement
+      ? this.afterWorkerControlAcknowledgement(read, input.signal).then(accept)
+      : accept(read());
   }
 
   /** Lists only live credential coordinates; event bodies and hashes remain in this owner. */
@@ -2167,6 +2269,12 @@ export function hashWorkerRouteToken(token: string): string {
   return createHash('sha256').update(Buffer.from(token, 'base64url')).digest('hex');
 }
 
+/** Hashes a previously authenticated bearer in the exact durable Worker route-token format. */
+export function hashWorkerRouteBearer(authorization: string | null): string | null {
+  const token = bearerToken(authorization);
+  return token && isWorkerRouteToken(token) ? hashWorkerRouteToken(token) : null;
+}
+
 /**
  * Checks the fixed 32-byte unpadded base64url route-token shape.
  *
@@ -2356,6 +2464,7 @@ function sequencedControlFingerprint(payload: unknown): string {
   delete canonicalPayload.authorization;
   delete canonicalPayload.onAuthenticated;
   delete canonicalPayload.recheckAdmission;
+  delete canonicalPayload.signal;
   return canonicalJsonText(canonicalPayload);
 }
 

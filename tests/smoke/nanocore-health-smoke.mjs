@@ -8,9 +8,13 @@ import { fileURLToPath } from 'node:url';
 
 import { ensureLocalUser } from '../../apps/nanocore/dist/auth/identity.js';
 import { FsStore } from '../../apps/nanocore/dist/lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../../apps/nanocore/dist/storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../../apps/nanocore/dist/storage/control-store-worker-client.js';
 import { openCoreDb } from '../../apps/nanocore/dist/storage/db.js';
 import { applyMigrations } from '../../apps/nanocore/dist/storage/migrate.js';
+import { nanoHostStoreDescriptor } from '../../apps/nanocore/dist/storage/nanohost-store-descriptor.js';
 import { createWorkspaceDeletionRequest } from '../../apps/nanocore/dist/workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../../apps/nanocore/dist/workspace-membership.js';
 import { observeInitialMaintenance } from './nanocore-maintenance-observer.mjs';
@@ -162,6 +166,14 @@ async function seedWorkspaceDeletionRequest(dataRoot) {
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
+    // This configured fixture starts with an existing Core, so it seeds the Native file explicitly.
+    const owner = await getControlStoreWorkerClient().provisionServerOwner(
+      dataRoot,
+      nanoHostStoreDescriptor
+    );
+    if (owner.state !== 'ready') {
+      throw new Error(`Unable to provision the smoke fixture's NanoHost store: ${owner.reason}.`);
+    }
     const localUserId = await ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion recovery smoke');

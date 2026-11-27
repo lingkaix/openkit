@@ -13,7 +13,6 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -21,7 +20,11 @@ import {
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  openTestNativeImagePeer,
+  seedTestNativeImageSettlement,
+} from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -72,7 +75,7 @@ async function administrationFixture() {
       effects.push(request);
       if (request.kind === 'image.acquire') {
         if (request.imageSettlement)
-          await writeWorkerImageSettlement(coreDb, {
+          await seedTestNativeImageSettlement(coreDb, {
             ...request.imageSettlement,
             requestId: request.requestId,
             operation: request.kind,
@@ -112,11 +115,14 @@ async function administrationFixture() {
       throw new Error('Unexpected semantic route.');
     },
   };
+  // The injected peer is a connected ready target of the admitted NanoHost owner.
+  const nanoHostStorage = await openTestNativeImagePeer(coreDb);
   const app = createAppWithLocalIdentity({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     dataRoot: root,
     store,
+    nanoHostStorage,
     nanoHostSessionDispatch: dispatch,
     llmGatewayDispatcher: {
       async createResponses() {
@@ -222,7 +228,7 @@ it('publishes the specific incompatibility on the public failed Turn before nati
     imageRef: imageDigest,
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
-  admitTestNativeEnvironment(coreDb, agent.manifest);
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agent.manifest);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(root),
     agentManifests: [agent.manifest],
@@ -254,6 +260,7 @@ it('publishes the specific incompatibility on the public failed Turn before nati
     await native.restore();
   };
   const app = createAppWithLocalIdentity({
+    nanoHostStorage,
     releaseIdentity: mismatch,
     coreDb,
     dataRoot: root,

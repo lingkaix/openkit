@@ -125,6 +125,7 @@ import {
   canonicalMcpToolSchemas,
   mcpToolSchemaContentDigest,
 } from './runtime/mcp-tool-schema-snapshots.js';
+import { NANO_HOST_HEARTBEAT_BUDGET_MS } from './runtime/nanohost-attempt-clocks.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
@@ -142,7 +143,6 @@ import {
   getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
   workerBackendImageIdentity,
 } from './runtime/worker-backend-sessions.js';
 import {
@@ -202,10 +202,18 @@ import {
   recordDataRootDeploymentMove,
   type WorkspaceDb,
 } from './storage/db.js';
-import { coreDbPath } from './storage/fs-layout.js';
+import { coreDbPath, readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readNanoHostRecoveryLease } from './storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from './storage/nanohost-submitted-lease.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHostSettled,
+  seedAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import {
   createAppWithWorkspaceAuthority,
@@ -222,6 +230,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import {
+  seedTestNanoHostHeartbeat,
+  submitTestNanoHostWorkerLease,
+} from './test-support/nanohost-worker-lease.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -398,21 +410,70 @@ async function recordWorkerRetryLease(
       noOutstandingEffects: true,
     });
   } else {
-    recordTestExecutionAttempt(coreDb, {
-      entry,
-      attemptId,
-      agentSessionId: input.agentSessionId,
-      inputRef: `aepsnap_${input.turnId}`,
-      bindingRef: `lease-binding:${attemptId}`,
-      sessionCompatibilityKey: `compat:${input.turnId}`,
-      now: () => new Date().toISOString(),
-      operationId: `original:${input.turnId}`,
-    });
+    const bindingRef = `lease-binding:${attemptId}`;
+    const packageSnapshotId = `aepsnap_${input.turnId}`;
+    const storage = input.recoveryState ? await openAdmittedTestNanoHost(coreDb) : undefined;
+    const classify = async (kind: NonNullable<typeof input.recoveryState>) => {
+      const original = readRetainedNanoHostSubmission(coreDb, attemptId);
+      if (!storage || !original) throw new Error('Retry fixture lacks submitted Native authority.');
+      const { owner } = storage.value;
+      const { session, proof } = await readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+        readNanoHostRecoveryLease(sqlite, original.lease)
+      );
+      const observedAt = new Date().toISOString();
+      const result = await owner.classifyRecovery({
+        lease: original.lease,
+        expectedSession: session,
+        expectedRecovery: proof,
+        observedAt,
+        ...(kind === 'awaiting-reconnect'
+          ? { kind: 'arm-reconnect', classifiedAt: observedAt }
+          : { kind }),
+      });
+      if (result.state !== 'ready')
+        throw new Error(`Retry fixture classification: ${result.reason}`);
+    };
+    if (storage) {
+      submitTestNanoHostWorkerLease(
+        coreDb,
+        entry,
+        bindingRef,
+        {
+          agentSessionId: input.agentSessionId,
+          packageSnapshotId,
+          workerCapabilityTokenHash: 'a'.repeat(64),
+          workerControlTokenHash: 'b'.repeat(64),
+          workerInferenceTokenHash: 'c'.repeat(64),
+        },
+        { attemptId }
+      );
+      if (input.recoveryState === 'awaiting-reconnect') {
+        seedTestNanoHostHeartbeat(coreDb, {
+          attemptId,
+          heartbeatTimeoutMs: NANO_HOST_HEARTBEAT_BUDGET_MS,
+          workerSequence: 1,
+          workerProcessKeyHash: createHash('sha256').update(attemptId).digest('base64url'),
+        });
+        await classify(input.recoveryState);
+      }
+    } else {
+      recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId,
+        agentSessionId: input.agentSessionId,
+        inputRef: packageSnapshotId,
+        bindingRef,
+        sessionCompatibilityKey: `compat:${input.turnId}`,
+        now: () => new Date().toISOString(),
+        operationId: `original:${input.turnId}`,
+      });
+    }
     if (input.status !== 'active') {
       const attempt = markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId,
         cause: input.releaseReason ?? 'turn-failed',
       });
+      if (input.recoveryState === 'needs-evidence') await classify(input.recoveryState);
       // A modeled submission owns no physical process; retain unknown disposition while settling all model barriers.
       const proof = {
         terminalHandoff: true,
@@ -430,15 +491,6 @@ async function recordWorkerRetryLease(
         fenceRef: result.fenceRef!,
       });
     }
-    coreDb.sqlite
-      .prepare(
-        'UPDATE scheduler_execution_attempts SET recovery_state = ?, recovery_deadline = ? WHERE attempt_id = ?'
-      )
-      .run(
-        input.recoveryState,
-        input.recoveryState === 'awaiting-reconnect' ? '2099-01-01T00:05:00.000Z' : null,
-        attemptId
-      );
   }
 }
 
@@ -1361,24 +1413,30 @@ class FakeTurnExecutor implements TurnExecutor {
     const turn = store.getTurnById(turnId);
     const db = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      const session = getWorkerBackendSession(coreDb, context.attemptId!)!;
+      const owner = currentAdmittedTestNanoHostOwner(coreDb)!;
+      const session = (await readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, context.attemptId!)
+      ))!;
       const environmentPackage = requireAgentEnvironmentPackageSnapshot(
         db,
         db.workspaceId,
         session.packageSnapshotId
       ).snapshot;
       const cleanup = await beginWorkerTurnJournalStep(store, db, turnId, 'inspect-cleanup');
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         attemptId: context.attemptId!,
         fromState: 'materializing',
         toState: 'cleanup-pending',
       });
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         attemptId: context.attemptId!,
         fromState: 'cleanup-pending',
         toState: 'physical-cleaned',
       });
-      await transitionWorkerBackendSessionState(coreDb, {
+      await owner.backendSession({
+        kind: 'transition',
         attemptId: context.attemptId!,
         fromState: 'physical-cleaned',
         toState: 'cleaned',
@@ -11519,15 +11577,18 @@ describe('nanocore server', () => {
   it('binds authority generations only to native HTTP/2 accepted connections and server close', async () => {
     const coreDb = createCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO nanohost_integration_identities (
-          identity_id, deployment_id, status, created_at
-        ) VALUES ('integration_nanohost_main', 'deployment-main', 'active', ?)`
-      )
-      .run('2026-08-10T00:00:00.000Z');
-    const issued = await createNanoHostTransportTokenRecord(coreDb, {
-      deploymentId: 'deployment-main',
+    const deploymentId = readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
+    const nanoHostStorage = await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare(
+          `INSERT INTO nanohost_integration_identities (
+            identity_id, deployment_id, status, created_at
+          ) VALUES ('integration_nanohost_main', ?, 'active', ?)`
+        )
+        .run(deploymentId, '2026-08-10T00:00:00.000Z');
+    });
+    const issued = await createNanoHostTransportTokenRecord(nanoHostStorage.value, {
+      deploymentId,
       expiresAt: '2999-01-01T00:00:00.000Z',
       now: new Date('2026-08-10T00:00:00.000Z'),
       ownerNanoHostIdentityId: 'integration_nanohost_main',
@@ -11541,6 +11602,7 @@ describe('nanocore server', () => {
       fileAdmission,
       effectHandler,
       routeHandler,
+      nativeStorage: nanoHostStorage,
       sessionAuthority: authority,
     });
     const app = createNanoCoreApp({
@@ -11549,6 +11611,7 @@ describe('nanocore server', () => {
       mode: 'server',
       nanohostTransportSessionAuthority: authority,
       nanoHostSessionDispatch: dispatch,
+      nanoHostStorage,
       openKitConfig: {
         nanohost: {
           bind: { host: '127.0.0.1', port: 3001 },
@@ -11563,12 +11626,16 @@ describe('nanocore server', () => {
               secretPath: '/etc/openkit/nanohost-token-b',
             },
           },
-          deploymentId: 'deployment-main',
+          deploymentId,
           identityId: 'integration_nanohost_main',
           rendezvousUrl: 'http://127.0.0.1:3000',
         },
       },
     });
+    const readTarget = () =>
+      readAdmittedTestNanoHostSettled(coreDb, (sqlite) =>
+        getNanoHostRuntimeTarget({ sqlite }, 'integration_nanohost_main')
+      );
     const acceptedSessions: ServerHttp2Session[] = [];
     const server = createHttp2Server(getRequestListener(app.fetch));
     server.on('session', (session) => acceptedSessions.push(session));
@@ -11674,7 +11741,7 @@ describe('nanocore server', () => {
         }),
         status: 200,
       });
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 1,
         freshEmpty: false,
         predecessorFenced: false,
@@ -11704,7 +11771,7 @@ describe('nanocore server', () => {
           JSON.stringify({ physicalEpoch: 'a'.repeat(64) })
         )
       ).resolves.toMatchObject({ body: '', status: 204 });
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 1,
         freshEmpty: true,
         physicalEpoch: 'a'.repeat(64),
@@ -12008,7 +12075,7 @@ describe('nanocore server', () => {
       expect(authority.mayCarryWork(firstServerSession)).toBe(true);
       expect(authority.mayCarryWork(secondServerSession)).toBe(false);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(1);
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 2,
         freshEmpty: false,
         predecessorFenced: false,
@@ -12040,7 +12107,7 @@ describe('nanocore server', () => {
       expect(authority.mayCarryWork(firstServerSession)).toBe(false);
       expect(authority.mayCarryWork(thirdServerSession)).toBe(true);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(3);
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 3,
         predecessorFenced: true,
         ready: false,
@@ -12052,7 +12119,7 @@ describe('nanocore server', () => {
           JSON.stringify({ physicalEpoch: 'b'.repeat(64) })
         )
       ).resolves.toMatchObject({ body: '', status: 204 });
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 3,
         freshEmpty: true,
         physicalEpoch: 'b'.repeat(64),
@@ -12197,7 +12264,7 @@ describe('nanocore server', () => {
         Promise.resolve().then(() => authority.closePhysicalConnection(secondServerSession))
       ).resolves.not.toBeInstanceOf(Error);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(4);
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 4,
         physicalEpoch: 'c'.repeat(64),
         predecessorFenced: true,
@@ -12209,7 +12276,7 @@ describe('nanocore server', () => {
       await observedSoleClose;
       await authority.closePhysicalConnection(fourthServerSession);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBeNull();
-      expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
+      expect(await readTarget()).toMatchObject({
         connectionGeneration: 4,
         predecessorFenced: true,
         ready: false,

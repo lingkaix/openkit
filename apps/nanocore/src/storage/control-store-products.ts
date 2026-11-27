@@ -5,11 +5,9 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
-  AuditEventSchema,
   ItemDeltaEventSchema,
   ItemSchema,
   PROTOCOL_VERSION,
-  RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
@@ -21,17 +19,18 @@ import type { StorageContent } from '@openkit/storage';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { assertItemDeltaSequence, ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
-import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
+import type { CommandRequestResponse } from '../lib/store.js';
 import {
   createExecutionStepJournalReader,
   settleExecutionJournalStep,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
-import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
-import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
+import type {
+  ControlPendingCommandInput,
+  PreparedControlPendingCommand,
+} from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
-import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import {
   contextInfluenceWasCleared,
   contextIsExternallyInfluenced,
@@ -47,15 +46,21 @@ import {
   ControlProductEntrySchema,
   type ControlProductKind,
   type ControlProductMutation,
-  ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
   decode,
-  fileContentSchema,
   inlineControlContentBytes,
   readProduct,
   tables,
 } from './control-store-product-records.js';
+import {
+  type ControlItemAppend,
+  type ControlPublicationInput,
+  ControlPublicationInputSchema,
+  type ControlTerminalTransition,
+  ControlTerminalTransitionSchema,
+  controlProductMetadataJson,
+} from './control-store-publication-codecs.js';
 import { prepareControlReadMetadata } from './control-store-read-metadata.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { userDbPath } from './fs-layout.js';
@@ -71,7 +76,7 @@ import {
   StoredItemV1Schema,
   StoredTaskSteerDispositionV1Schema,
 } from './retained-work-items-v1.js';
-import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
 import { serverWorkUnavailable } from './server-work-command.js';
 import { threadSegmentUsage } from './thread-segmentation.js';
@@ -82,40 +87,12 @@ import {
 } from './workspace-file-records.js';
 
 export { assertControlProductWriter } from './control-store-product-records.js';
+export type {
+  ControlItemAppend,
+  ControlPublicationInput,
+  ControlTerminalTransition,
+} from './control-store-publication-codecs.js';
 
-/** Counts descriptor metadata separately from bounded inline entry bodies; actual queue bytes stay charged. */
-export function controlProductMetadataJson(value: {
-  entries?: readonly ControlProductEntry[];
-  terminal?: { entries?: readonly ControlProductEntry[] };
-  admission?: { entries?: readonly ControlProductEntry[] };
-  pendingItem?: { entry: ControlProductEntry } | null;
-  pendingAdmission?: { entries?: readonly ControlProductEntry[] };
-  transition?: { entries?: readonly ControlProductEntry[] };
-}): string {
-  const entryMetadata = (entry: ControlProductEntry) => {
-    const reference = entry.content.reference;
-    return 'representation' in reference
-      ? { ...entry, content: { ...entry.content, reference: { ...reference, body: '' } } }
-      : entry;
-  };
-  const entriesMetadata = (input: { entries?: readonly ControlProductEntry[] }) => ({
-    ...input,
-    ...(input.entries && {
-      entries: input.entries.map(entryMetadata),
-    }),
-  });
-  return JSON.stringify({
-    ...entriesMetadata(value),
-    // Existing compound owners carry bounded bodies at these fixed packet paths.
-    ...(value.terminal && { terminal: entriesMetadata(value.terminal) }),
-    ...(value.admission && { admission: entriesMetadata(value.admission) }),
-    ...(value.pendingItem && {
-      pendingItem: { ...value.pendingItem, entry: entryMetadata(value.pendingItem.entry) },
-    }),
-    ...(value.pendingAdmission && { pendingAdmission: entriesMetadata(value.pendingAdmission) }),
-    ...(value.transition && { transition: entriesMetadata(value.transition) }),
-  });
-}
 /** One shared publication stays live until every admitted preparation or queued reference releases it. */
 export interface ControlContentPublication {
   readonly result: Promise<{ bytes: Buffer; changedDirectory: boolean }>;
@@ -128,6 +105,17 @@ export interface ControlContentPreparation {
   readonly directories: Set<string>;
   readonly publications: Map<string, ControlContentPublication>;
   readonly published: Set<string>;
+  /**
+   * A grouped Pending decision's new canonical names, linked only after its last definite local
+   * refusal and before its COMMIT; absent for every ordinary batch.
+   */
+  readonly deferred?: { readonly temporary: string; readonly path: string }[];
+  /** Private body names of one grouped plan resolve only inside its own staging directory. */
+  readonly privateRoot?: string;
+  /** Item entries an earlier group of the same grouped decision writes before this one decides. */
+  readonly planned?: ReadonlyMap<string, PreparedControlEntry>;
+  /** Rows an earlier group of the same grouped decision freezes, by delivery Turn. */
+  readonly frozen?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 /** Native prepared bytes never cross an awaited callback or require file I/O inside SQL. */
 export interface PreparedControlEntry {
@@ -326,6 +314,34 @@ function withReceivedInfluence(
       restrict('agent-session', turn.agentSessionId);
   }
   return [...planned.values()];
+}
+
+/** Both archive forms may change only the original Thread's archive status and clock. */
+export function assertArchiveMutation(
+  db: WorkspaceDb,
+  archive: ControlProductMutation,
+  closeoutAt: string
+): void {
+  assertRetainedMutation(db, archive, { status: 'archived', updatedAt: closeoutAt });
+}
+
+/** Ensures an operation replaces only its owned product fields, preserving retained annotations. */
+export function assertRetainedMutation(
+  db: WorkspaceDb,
+  mutation: ControlProductMutation,
+  patch: Readonly<Record<string, unknown>>
+): void {
+  const row = db.sqlite
+    .prepare(`SELECT record_json FROM ${tables[mutation.kind]} WHERE id=?`)
+    .get(mutation.record.id as string) as { record_json: string } | undefined;
+  if (!row) throw new ControlProductPreconditionError();
+  const raw: unknown = JSON.parse(row.record_json);
+  const original = decode(mutation.kind, raw, { kind: 'workspace', workspaceId: db.workspaceId });
+  const expected = preserveDescriptiveRecord(raw, original, {
+    ...original,
+    ...patch,
+  });
+  if (!isDeepStrictEqual(mutation.record, expected)) throw new ControlProductPreconditionError();
 }
 
 /** Shared SQL mechanics; only the complete terminal owner supplies its exact terminal identity. */
@@ -600,12 +616,7 @@ function applyProducts(
           'agent-session',
           record.agentSessionId as string
         );
-        if (
-          !session ||
-          session.record.threadId !== record.threadId ||
-          (record.id !== terminalTurnId &&
-            (session.record.status === 'closed' || session.record.status === 'failed'))
-        )
+        if (!turnHeadSessionAdmits(session?.record, record, record.id === terminalTurnId))
           throw new ControlProductPreconditionError();
       }
     }
@@ -805,7 +816,10 @@ export async function prepareRetainedControlEntries(
 }
 
 /** Verifies one actual inode before either first publication or SQL-proved reuse. */
-async function readControlContentFile(file: FileHandle, content: StorageContent): Promise<Buffer> {
+export async function readControlContentFile(
+  file: FileHandle,
+  content: StorageContent
+): Promise<Buffer> {
   const metadata = await file.stat();
   if (!metadata.isFile() || metadata.size !== content.byteLength)
     throw new ControlProductPreconditionError();
@@ -927,7 +941,8 @@ async function preparePrivateControlContent(
         }
         // This owner alone publishes a new inode. Equal in-flight digests join this promise.
         await staged.sync();
-        await link(temporary, path);
+        if (preparation.deferred) preparation.deferred.push({ temporary, path });
+        else await link(temporary, path);
         return { bytes: await readControlContentFile(staged, content), changedDirectory: true };
       })();
       publication = { result, references: 0, directorySynchronized: false };
@@ -940,7 +955,9 @@ async function preparePrivateControlContent(
     const result = await publication.result;
     if (result.changedDirectory && !publication.directorySynchronized)
       preparation.directories.add(dirname(path));
-    await unlink(temporary);
+    // A deferred name keeps its private body until the grouped decision links it.
+    if (!preparation.deferred?.some((deferred) => deferred.temporary === temporary))
+      await unlink(temporary);
     return result.bytes;
   } finally {
     await staged.close();
@@ -988,7 +1005,13 @@ async function synchronizeControlContent(
       reference.locator.path !== `sha256/${reference.contentDigest.slice('sha256:'.length)}`
     )
       throw new ControlProductPreconditionError();
-    return preparePrivateControlContent(path, root, fileContent, entry, newDirectories);
+    return preparePrivateControlContent(
+      path,
+      newDirectories.privateRoot ?? root,
+      fileContent,
+      entry,
+      newDirectories
+    );
   }
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let bytes: Buffer;
@@ -1138,22 +1161,7 @@ async function prepareEntries(
       data.type === 'turn-completed' ||
       ('turn' in data && data.turn.status !== 'pending' && data.turn.status !== 'running') ||
       (data.type === 'turn-started' && data.status !== 'pending' && data.status !== 'running');
-    if (
-      terminalEvent &&
-      (!terminal ||
-        terminal.id !== input.turnId ||
-        !('turn' in data) ||
-        data.turn.status !== terminal.status ||
-        !terminalSnapshotFieldMatches('error', data.turn.error, terminal.error, sealedTurn) ||
-        !terminalSnapshotFieldMatches(
-          'completedAt',
-          data.turn.completedAt,
-          terminal.completedAt,
-          sealedTurn
-        ) ||
-        (data.type === 'turn-completed' &&
-          !terminalStopReasonMatches(data.stopReason, terminal.status)))
-    )
+    if (terminalEvent && !terminalEventMatchesTerminal(data, input.turnId, terminal, sealedTurn))
       throw new ControlProductPreconditionError();
     const referencedItemIds = new Set<string>();
     if ('item' in data) referencedItemIds.add(data.item.id);
@@ -1337,27 +1345,6 @@ async function assertControlItemDelta(
   }
   assertItemDeltaSequence(data, actualItem, [...history, ...preceding]);
 }
-
-/** Closed existing Item/event admissions; each category keeps its accepted equality rule. */
-export const ControlPublicationInputSchema = z
-  .object({
-    category: z.enum(['already-decided-publication', 'display-projection-refresh']),
-    turnId: z.string().min(1),
-    expectedRevision: z.number().int().positive(),
-    entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-  })
-  .strict();
-/** Entry-only publication; no metadata or outcome mutation is admitted. */
-export type ControlPublicationInput = z.infer<typeof ControlPublicationInputSchema>;
-
-/** Complete addressed Item intent; heads and durable bytes are resolved by the native owner. */
-export const ControlItemAppendSchema = z
-  .object({
-    item: ItemSchema,
-    category: ControlPublicationInputSchema.shape.category.optional(),
-  })
-  .strict();
-export type ControlItemAppend = z.infer<typeof ControlItemAppendSchema>;
 
 /** Carries an existing Store validation refusal, never a native SQL or filesystem diagnostic. */
 export class ControlItemAppendError extends Error {}
@@ -2196,82 +2183,6 @@ export function applyControlPublication(
   }
 }
 
-/** Closed original command partitions whose terminal publication can own their receipt. */
-const terminalReceiptSchema = z
-  .object({
-    key: z.string().min(1),
-    command: z.enum([
-      'conversation.submit',
-      'task.start',
-      'turn.start',
-      'turn.input.submit',
-      'turn.interrupt',
-      'knowledge.tell',
-      'knowledge.maintain',
-      'knowledge.server.tell',
-      'knowledge.server.maintain',
-    ] satisfies readonly CommandRequestName[]),
-    requestId: RequestIdSchema,
-    scope: z.record(z.string(), z.string()),
-    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    response: z
-      .object({
-        kind: z.string().min(1),
-        id: z.string().min(1),
-        conversationMetadata: z.unknown().optional(),
-      })
-      .strict(),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-
-const terminalCommandSchema = z
-  .object({
-    receipt: terminalReceiptSchema,
-    audit: AuditEventSchema.extend({
-      createdAt: z.string().datetime(),
-      occurredAt: z.string().datetime(),
-    }),
-  })
-  .strict();
-
-/** Complete local terminal tuple. Null execution means no native execution, not proof of release. */
-export const ControlTerminalTransitionSchema = z
-  .object({
-    owner: z.union([
-      StoredWorkOwnerV1Schema.options[0].strict(),
-      StoredWorkOwnerV1Schema.options[1].strict(),
-    ]),
-    turn: ControlProductMutationSchema.extend({ kind: z.literal('turn') }),
-    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-    pending: z
-      .array(z.lazy(() => ControlPendingCommandInputSchema))
-      .max(CONTROL_PRODUCT_LIMITS.entries)
-      .optional(),
-    reap: z.object({ reason: z.string().min(1), inferredBy: z.string().min(1) }).strict(),
-    evidence: z.array(StoredRuntimeEvidenceV1Schema).max(CONTROL_PRODUCT_LIMITS.entries),
-    evidenceContent: z.array(fileContentSchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    command: terminalCommandSchema.nullable(),
-    // Only the waiting internal Stop may converge with the original submission.
-    interruptCommand: terminalCommandSchema
-      .refine((command) => command.receipt.command === 'turn.interrupt')
-      .optional(),
-    execution: z
-      .object({
-        executionId: z.string().min(1),
-        terminalStepId: z.string().min(1),
-        expectedRevision: z.number().int().positive(),
-        cleanupStepId: z.string().min(1),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-/** Parsed complete native terminal input; it carries facts and references, never executable callbacks. */
-export type ControlTerminalTransition = z.infer<typeof ControlTerminalTransitionSchema>;
-
 /** Native-local preparation token. It cannot be serialized or substituted with a transport descriptor. */
 export interface PreparedControlTerminal {
   readonly turnId: string;
@@ -2303,6 +2214,45 @@ let terminalOwners:
     }
   | undefined;
 
+/**
+ * Loads the terminal writer's domain owners once, outside every SQL transaction. A Boot proof reads
+ * through these same owners, so it runs the writer's own checks across their Store import cycle.
+ *
+ * @returns The owners that `applyControlTerminal` calls in its deciding body.
+ */
+export async function loadControlTerminalOwners(): Promise<NonNullable<typeof terminalOwners>> {
+  if (!terminalOwners) {
+    const [store, requests, audit, task, evidence, observations] = await Promise.all([
+      import('./command-request-records.js'),
+      import('./command-request-records.js'),
+      import('../audit-events.js'),
+      import('../runtime/task-terminal-fact.js'),
+      import('../runtime/runtime-evidence.js'),
+      import('./work-observations.js'),
+    ]);
+    terminalOwners = { store, requests, audit, task, evidence, observations };
+  }
+  return terminalOwners;
+}
+
+/** The verified entries one prepared terminal writes; a later group of a grouped decision reads them. */
+export function preparedControlTerminalEntries(
+  prepared: PreparedControlTerminal
+): readonly PreparedControlEntry[] {
+  const preparation = terminalPreparations.get(prepared);
+  if (!preparation) throw new ControlProductPreconditionError();
+  return preparation.entries;
+}
+
+/** The verified entries one prepared publication writes; a later group of a grouped decision reads them. */
+export function preparedControlPublicationEntries(
+  prepared: PreparedControlPublication
+): readonly PreparedControlEntry[] {
+  const preparation = publicationPreparations.get(prepared);
+  if (!preparation) throw new ControlProductPreconditionError();
+  return preparation.entries;
+}
+
 const terminalPreparations = new WeakMap<
   PreparedControlTerminal,
   {
@@ -2326,6 +2276,95 @@ function terminalSnapshotFieldMatches(
   return (
     isDeepStrictEqual(actual, expected) ||
     (sealedTurn !== undefined && terminalFillableFields.has(field) && actual == null)
+  );
+}
+
+/**
+ * The Session rule of a Turn head mutation: a Turn that names an AgentSession needs that Session
+ * in the Turn's own Thread, and open unless this mutation seals the Turn's terminal.
+ *
+ * @param session Retained AgentSession record the Turn names, if any.
+ * @param turn Turn head record being written.
+ * @param sealing Whether this mutation seals that Turn's terminal.
+ */
+export function turnHeadSessionAdmits(
+  session: { readonly threadId?: unknown; readonly status?: unknown } | undefined,
+  turn: { readonly threadId?: unknown },
+  sealing: boolean
+): boolean {
+  return (
+    session !== undefined &&
+    session.threadId === turn.threadId &&
+    (sealing || (session.status !== 'closed' && session.status !== 'failed'))
+  );
+}
+
+/**
+ * The terminal tuple's snapshot proof: its completion snapshot names exactly the terminal record.
+ * A sealed record may still fill only its fillable fields that the snapshot leaves empty.
+ *
+ * @param snapshot Turn carried by the completion event.
+ * @param record Terminal Turn record of the same tuple.
+ * @param sealedTurn The retained record when the Turn was already sealed.
+ */
+export function terminalSnapshotMatchesRecord(
+  snapshot: Record<string, unknown>,
+  record: Record<string, unknown>,
+  sealedTurn: Record<string, unknown> | undefined
+): boolean {
+  // Transcript snapshots deliberately omit capture declarations; use that family's existing projection.
+  const snapshotMetadata = StoredTurnSnapshotV1Schema.parse({ ...snapshot, items: [] });
+  const terminalMetadata = StoredTurnSnapshotV1Schema.parse({ ...record, items: [] });
+  return Object.keys({ ...snapshotMetadata, ...terminalMetadata }).every((field) =>
+    terminalSnapshotFieldMatches(
+      field,
+      snapshotMetadata[field as keyof typeof snapshotMetadata],
+      terminalMetadata[field as keyof typeof terminalMetadata],
+      sealedTurn
+    )
+  );
+}
+
+/**
+ * The terminal tuple's Item proof: the completion snapshot carries the public Item payload.
+ * The retained row's private disposition stays a CAS dependency, not part of this comparison.
+ */
+export function terminalSnapshotItemMatches(payload: unknown, snapshotItem: unknown): boolean {
+  return isDeepStrictEqual(
+    StoredItemPayloadV1Schema.parse(payload),
+    StoredItemPayloadV1Schema.parse(snapshotItem)
+  );
+}
+
+/**
+ * The terminal tuple's completion-envelope rule: a terminal event names its tuple's terminal Turn
+ * and carries that Turn's status, error and completion time, and a completion's stop reason maps
+ * to that status. A sealed record may still fill a fillable field that the event leaves empty.
+ *
+ * @param data Decoded payload of one terminal event.
+ * @param turnId Turn that the event entry is addressed to.
+ * @param terminal Terminal Turn record of the same tuple, absent when the post carries none.
+ * @param sealedTurn The retained record when the Turn was already sealed.
+ */
+export function terminalEventMatchesTerminal(
+  data: object & { readonly type: string },
+  turnId: string,
+  terminal: Record<string, unknown> | undefined,
+  sealedTurn: Record<string, unknown> | undefined
+): boolean {
+  if (!terminal || terminal.id !== turnId || !('turn' in data)) return false;
+  const turn = data.turn as { status?: unknown; error?: unknown; completedAt?: unknown };
+  return (
+    turn.status === terminal.status &&
+    terminalSnapshotFieldMatches('error', turn.error, terminal.error, sealedTurn) &&
+    terminalSnapshotFieldMatches(
+      'completedAt',
+      turn.completedAt,
+      terminal.completedAt,
+      sealedTurn
+    ) &&
+    (data.type !== 'turn-completed' ||
+      terminalStopReasonMatches((data as { stopReason?: unknown }).stopReason, terminal.status))
   );
 }
 
@@ -2390,19 +2429,8 @@ async function prepareTerminalEntries(
       data: { turn: { items: Record<string, unknown>[] } };
     }
   ).data.turn;
-  // Transcript snapshots deliberately omit capture declarations; use that family's existing projection.
-  const snapshotMetadata = StoredTurnSnapshotV1Schema.parse({ ...snapshot, items: [] });
-  const terminalMetadata = StoredTurnSnapshotV1Schema.parse({ ...turn, items: [] });
   if (
-    Object.keys({ ...snapshotMetadata, ...terminalMetadata }).some(
-      (field) =>
-        !terminalSnapshotFieldMatches(
-          field,
-          snapshotMetadata[field as keyof typeof snapshotMetadata],
-          terminalMetadata[field as keyof typeof terminalMetadata],
-          sealedTurn
-        )
-    ) ||
+    !terminalSnapshotMatchesRecord(snapshot, turn, sealedTurn) ||
     terminalEvents[0]!.input.sequence !==
       Math.max(
         ...entries
@@ -2469,6 +2497,18 @@ async function prepareTerminalEntries(
     if (ids.has(id)) throw new ControlProductPreconditionError();
     ids.add(id);
     let prepared = supplied.get(id);
+    // An Item an earlier group of the same grouped decision writes is this terminal's dependency on
+    // that group's exact entry; the deciding body reads the row the earlier group produced.
+    const planned = prepared ? undefined : newDirectories?.planned?.get(id);
+    if (planned) {
+      if (planned.input.turnId !== turn.id) throw new ControlProductPreconditionError();
+      prepared = planned;
+      dependencies.push({
+        entry: planned,
+        contentJson: JSON.stringify(planned.input.content),
+        revision: planned.input.expectedRevision + 1,
+      });
+    }
     if (!prepared) {
       const row = db.sqlite
         .prepare(
@@ -2495,14 +2535,7 @@ async function prepareTerminalEntries(
       prepared = entry!;
       dependencies.push({ entry: prepared, contentJson: row.content_json, revision: row.revision });
     }
-    if (
-      !isDeepStrictEqual(
-        // The terminal event carries the public/embedded Item payload, not private
-        // retained-row disposition. Its actual descriptor/revision stays a CAS dependency.
-        StoredItemPayloadV1Schema.parse(preparedPayloads.get(prepared)),
-        StoredItemPayloadV1Schema.parse(item)
-      )
-    )
+    if (!terminalSnapshotItemMatches(preparedPayloads.get(prepared), item))
       throw new ControlProductPreconditionError();
   }
   if ([...supplied.keys()].some((id) => !ids.has(id))) throw new ControlProductPreconditionError();
@@ -2569,39 +2602,35 @@ export async function prepareControlTerminal(
   db: CoreDb | WorkspaceDb,
   value: ControlTerminalTransition,
   contentMount: ControlProductContentMount | undefined,
-  newDirectories?: ControlContentPreparation
+  newDirectories?: ControlContentPreparation,
+  carried: readonly ControlProductEntry[] = [],
+  carriedCloseout?: Extract<ControlPendingCommandInput, { action: 'closeout' }>
 ): Promise<PreparedControlTerminal> {
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  if (!terminalOwners) {
-    const [store, requests, audit, task, evidence, observations] = await Promise.all([
-      import('./command-request-records.js'),
-      import('./command-request-records.js'),
-      import('../audit-events.js'),
-      import('../runtime/task-terminal-fact.js'),
-      import('../runtime/runtime-evidence.js'),
-      import('./work-observations.js'),
-    ]);
-    terminalOwners = { store, requests, audit, task, evidence, observations };
-  }
+  await loadControlTerminalOwners();
   if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
-  const input = ControlTerminalTransitionSchema.parse(value);
-  terminalOwner(db, input.owner);
-  const turn = decode('turn', input.turn.record, input.owner);
+  const packet = ControlTerminalTransitionSchema.parse(value);
+  terminalOwner(db, packet.owner);
+  const turn = decode('turn', packet.turn.record, packet.owner);
   if (
     ['pending', 'running'].includes(String(turn.status)) ||
     !turn.completedAt ||
-    input.products.some((product) => product.kind === 'turn') ||
-    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
-    Buffer.byteLength(controlProductMetadataJson(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
+    packet.products.some((product) => product.kind === 'turn') ||
+    packet.products.length + packet.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
+    Buffer.byteLength(controlProductMetadataJson(packet)) > CONTROL_PRODUCT_LIMITS.metadataBytes
   )
     throw new ControlProductPreconditionError();
+  // The grouped reader checked each census frame before assembling this one native command.
+  const input = carriedCloseout ? { ...packet, pending: [carriedCloseout] } : packet;
   for (const content of input.evidenceContent)
     await synchronizeControlContent(input.owner, contentMount, content, newDirectories);
+  // A grouped decision carries a terminal's earlier entries in their own bounded groups; this
+  // packet keeps its ordinary bound and the one terminal decision covers every entry.
   const { entries, dependencies } = await prepareTerminalEntries(
     db,
     input.owner,
     turn,
-    input.entries,
+    [...carried, ...input.entries],
     contentMount,
     newDirectories
   );
@@ -2668,7 +2697,7 @@ export async function prepareControlTerminal(
             db,
             input.pending,
             contentMount,
-            input.entries,
+            [...carried, ...input.entries],
             entries,
             newDirectories
           )
@@ -2872,11 +2901,37 @@ function applyTerminalExecution(
       throw new ControlProductPreconditionError();
     return { executionId: root.id, revision: root.revision, phase: root.phase };
   }
-  if (cleanup.state !== 'intent') throw new ControlProductPreconditionError();
+  // PRE may have proved that a materialized preparation owns only a local release intent.
+  const releaseControl = JSON.parse(cleanup.control_json);
+  const terminalControl = JSON.parse(step.control_json);
+  const cancelledPreparation =
+    cleanup.state === 'cancelled' &&
+    turn.status === 'failed' &&
+    releaseControl.kind === 'release' &&
+    releaseControl.operationId === null &&
+    releaseControl.attemptId === terminalControl.attemptId &&
+    isDeepStrictEqual(releaseControl.inputRefs, terminalControl.inputRefs) &&
+    isDeepStrictEqual(releaseControl.outputRefs, []) &&
+    isDeepStrictEqual(releaseControl.physicalFenceRefs, []) &&
+    db.sqlite
+      .prepare(`SELECT 1 FROM control_execution_steps
+      WHERE execution_id=? AND state='completed'
+        AND json_extract(control_json,'$.attemptId')=?
+        AND json_extract(invocation_json,'$.carriage.operation')='worker.materialize' LIMIT 1`)
+      .get(root.id, releaseControl.attemptId) !== undefined;
+  if (cleanup.state !== 'intent' && !cancelledPreparation)
+    throw new ControlProductPreconditionError();
+  const canClose =
+    cancelledPreparation &&
+    !db.sqlite
+      .prepare(`SELECT 1 FROM control_execution_steps
+      WHERE execution_id=? AND step_id<>? AND state IN ('intent','unknown') LIMIT 1`)
+      .get(root.id, execution.terminalStepId);
   const exclusionRefs = z
     .array(z.string().min(1))
     .min(1)
     .parse(JSON.parse(root.exclusion_refs_json));
+  const nextPhase = canClose ? 'closed' : 'closing';
   const span = JSON.parse(step.span_json) as ExecutionJournalSettlement['span'];
   // Native decoding validates this retained span; no diagnostic field supplies control authority.
   const settled: ExecutionJournalSettlement = {
@@ -2893,16 +2948,16 @@ function applyTerminalExecution(
       // Publication ends now; the product's earlier completion time is not this local step's clock.
       endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
     },
-    nextPhase: 'closing',
+    nextPhase,
     terminalCause: root.terminal_cause ?? String(turn.status),
-    exclusionRefs,
+    exclusionRefs: canClose ? [] : exclusionRefs,
   };
   // Workspace qualification requires the owner-qualified journal primitive and Workspace0012, not a cast or alternate SQL writer.
   settleExecutionJournalStep(db, settled);
   const after = db.sqlite
     .prepare('SELECT revision FROM control_executions WHERE id=?')
     .get(root.id) as { revision: number };
-  return { executionId: root.id, revision: after.revision, phase: 'closing' };
+  return { executionId: root.id, revision: after.revision, phase: nextPhase };
 }
 
 function assertTerminalEntryDependencies(
@@ -2926,12 +2981,33 @@ function assertTerminalEntryDependencies(
 function assertTerminalItemCoverage(
   sqlite: Database.Database,
   turnId: string,
-  entries: readonly PreparedControlEntry[]
+  entries: readonly PreparedControlEntry[],
+  requireItemOrder = false
 ): void {
   const terminalEvent = entries.find(
     (entry) =>
       (preparedPayloads.get(entry) as { data?: { type?: string } }).data?.type === 'turn-completed'
   )!;
+  if (requireItemOrder) {
+    // Item revisions keep the position of their first entry in the resulting Turn history.
+    const order = sqlite
+      .prepare(
+        "SELECT id FROM control_product_entries WHERE kind='item' AND turn_id=? GROUP BY id ORDER BY min(sequence)"
+      )
+      .pluck()
+      .all(turnId);
+    const completion = preparedPayloads.get(terminalEvent) as {
+      data: { turn: { items: { id: string }[] } };
+    };
+    if (
+      !isDeepStrictEqual(
+        completion.data.turn.items.map(({ id }) => id),
+        order
+      )
+    )
+      throw new ControlProductPreconditionError();
+    return;
+  }
   if (
     sqlite
       .prepare(
@@ -2942,11 +3018,20 @@ function assertTerminalItemCoverage(
     throw new ControlProductPreconditionError();
 }
 
+/**
+ * The Turn a Workspace terminal hands to the Task owner: the decoded terminal record without
+ * Items. A Boot walk derives the same Turn to prove the Task fact before its first terminal.
+ */
+export function controlTerminalTaskTurn(turn: Record<string, unknown>) {
+  return { ...StoredTurnV1Schema.parse(turn), items: [] };
+}
+
 /** Applies the complete terminal tuple in its caller's active savepoint. It never commits, publishes or acknowledges. */
 export function applyControlTerminal(
   db: CoreDb | WorkspaceDb,
   value: ControlTerminalTransition,
-  prepared: PreparedControlTerminal
+  prepared: PreparedControlTerminal,
+  requireItemOrder = false
 ): ControlTerminalResult {
   assertControlProductWriter(db.sqlite);
   const input = ControlTerminalTransitionSchema.parse(value);
@@ -3038,13 +3123,10 @@ export function applyControlTerminal(
     preparation.entries,
     String(turn.id)
   );
-  assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries);
+  assertTerminalItemCoverage(db.sqlite, String(turn.id), preparation.entries, requireItemOrder);
   if (!terminalOwners) throw new ControlProductPreconditionError();
   if (db.scope === 'workspace')
-    terminalOwners.task.recordTaskTerminalFact(db, {
-      ...StoredTurnV1Schema.parse(turn),
-      items: [],
-    });
+    terminalOwners.task.recordTaskTerminalFact(db, controlTerminalTaskTurn(turn));
   for (const record of input.evidence) {
     if (
       input.owner.kind !== 'workspace' ||

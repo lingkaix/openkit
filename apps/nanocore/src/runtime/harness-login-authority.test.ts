@@ -16,14 +16,31 @@ import { resolveHarnessLogicalModelCatalog } from '../llm/logical-models.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { resolveAdmittedNanoHostWorkerBinding } from '../storage/nanohost-worker-binding.js';
 import { agentSessionsRoot, nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  dispatchNanoHostHarnessOperation,
+  queueNanoHostHarnessOperation,
+} from '../test-support/nanohost-harness.js';
+import {
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+} from '../test-support/nanohost-worker-lease.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import {
   createTestCoreDb,
@@ -49,20 +66,13 @@ import {
   type HarnessLoginContext,
   requireHarnessLoginBinding,
 } from './harness-login-authority.js';
-import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   fenceNanoHostSandboxRuntime,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
-  queueNanoHostHarnessOperation,
 } from './nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
@@ -169,14 +179,13 @@ async function fixture(
     requestId: randomUUID(),
     now: () => timestamp,
   });
-  const attempt = recordTestExecutionAttempt(coreDb, {
+  const preparedAttempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: allocateEntityId('attempt'),
     agentSessionId,
     inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
     bindingRef: attemptBindingRef,
     sessionCompatibilityKey: 'b'.repeat(64),
-    operationId: `submit:${turn.id}`,
     now: () => timestamp,
   });
   const backend = createEncryptedFileVaultBackend({
@@ -250,7 +259,7 @@ async function fixture(
       setup.logicalModels.allowed.map((model) => model.id)
     );
   }
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  const { value: nativeStorage } = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     agentSetup: setup,
@@ -271,42 +280,54 @@ async function fixture(
     createdAt: environmentPackage.createdAt,
   });
 
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-    deploymentId: 'login-auth-fixture',
-    identityId: 'login-auth-fixture',
-    targetId: 'login-auth-fixture',
-    observedAt: timestamp,
-  });
   const physicalEpoch = 'e'.repeat(64);
-  await upsertNanoHostRuntimeTarget(coreDb, {
-    ...target,
-    freshEmpty: true,
-    predecessorFenced: true,
-    ready: true,
+  // The target belongs to this root's deployment (the helper default), so an exact generation change can
+  // retire its Vault Epoch through Core; Core refuses a foreign deployment as a conflict.
+  const target = await recordTestNativeRuntimeTarget(coreDb, 'login-auth-fixture', {
+    identityId: 'login-auth-fixture',
+    allocationAt: timestamp,
+    readyAt: timestamp,
     physicalEpoch,
+  });
+  // This fixture begins after preparation and presents the original committed placement to the Harness.
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    coreDb,
+    store,
+    env: {},
+    nanoHostRecovery: { owner: { state: 'ready', value: nativeStorage.owner } },
+  });
+  const executor = runtime.turnExecutor;
+  const planner =
+    executor instanceof WorkerGovernanceTurnExecutor ? executor.executionBackend : undefined;
+  if (!planner || !('planSession' in planner) || typeof planner.planSession !== 'function')
+    throw new Error('Auth fixture lacks its NanoHost session planner.');
+  await recordWorkerBackendSessionMaterializing(coreDb, {
+    identity: planner.planSession(environmentPackage),
+    backendVersion: null,
+    backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
+    lineage: environmentPackage.scope,
+    sandboxBindingRef: attemptBindingRef,
+    now: () => timestamp,
+  });
+  await nativeStorage.owner.backendSession({
+    kind: 'transition',
+    attemptId: preparedAttempt.attemptId,
+    fromState: 'materializing',
+    toState: 'materialized',
     observedAt: timestamp,
   });
-  if (placement === 'shared-resident') {
-    // Pure plan and actual pre-effect anchor. This module fixture does not launch the backend.
-    const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
-    const executor = runtime.turnExecutor;
-    const planner =
-      executor instanceof WorkerGovernanceTurnExecutor ? executor.executionBackend : undefined;
-    if (!planner || !('planSession' in planner) || typeof planner.planSession !== 'function')
-      throw new Error('Auth fixture lacks the actual NanoHost session planner.');
-    await recordWorkerBackendSessionMaterializing(coreDb, {
-      identity: planner.planSession(environmentPackage),
-      backendVersion: null,
-      backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
-      lineage: environmentPackage.scope,
-      sandboxBindingRef: attemptBindingRef,
-      now: () => timestamp,
-    });
-  }
+  seedTestNanoHostCompletedWorkspaceHandoff(coreDb, preparedAttempt.attemptId);
+  const { grant: attempt } = retainPreparedTestNanoHostSubmission(coreDb, {
+    admission: entry,
+    attemptId: preparedAttempt.attemptId,
+    targetId: target.targetId,
+    generation: String(target.connectionGeneration),
+    observedAt: timestamp,
+  });
   const harnessInstanceId = `harness:${randomUUID()}`;
   const bindingId = `session-binding:${randomUUID()}`;
   const integrationRef = `integration:${randomUUID()}`;
-  await createNanoHostHarnessRuntime(coreDb, {
+  await createNanoHostHarnessRuntime(nativeStorage.owner, {
     maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: 'test',
@@ -322,7 +343,7 @@ async function fixture(
     runtimeTargetId: target.targetId,
     timestamp,
   });
-  await openNanoHostAgentSessionBinding(coreDb, {
+  await openNanoHostAgentSessionBinding(nativeStorage.owner, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId,
     agentSessionRuntimeBindingId: bindingId,
@@ -372,7 +393,19 @@ async function fixture(
     if (typeof value !== 'string') throw new Error('Auth fixture lacks an owner-produced token.');
     return value;
   };
-  const gateway = createDefaultWorkerControlGateway(coreDb);
+  // The gateway reaches the admitted owner through this binding. A case that restarts the writer rebinds the
+  // same root's owner after reopening it, and keeps the original gateway, registration and Login closure.
+  let gatewayOwner = nativeStorage.owner;
+  const rebindableOwner = new Proxy(nativeStorage.owner, {
+    get: (_original, property) => {
+      const value = Reflect.get(gatewayOwner, property, gatewayOwner);
+      return typeof value === 'function' ? value.bind(gatewayOwner) : value;
+    },
+  });
+  const gateway = createDefaultWorkerControlGateway(coreDb, undefined, {
+    state: 'ready',
+    value: { ...nativeStorage, owner: rebindableOwner },
+  });
   const registration = gateway.registerSession(environmentPackage, {
     sandboxBindingRef: attemptBindingRef,
     workerControlToken: token('workerControlToken'),
@@ -412,7 +445,9 @@ async function fixture(
     physicalEpoch,
     connectionGeneration: target.connectionGeneration,
     assertCurrent() {
-      const current = getNanoHostRuntimeTarget(coreDb, target.targetId);
+      const current = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getNanoHostRuntimeTarget({ sqlite }, target.targetId)
+      );
       if (
         !authority.mayCarryWork(physicalConnection) ||
         !current ||
@@ -436,6 +471,10 @@ async function fixture(
   let now = timestamp;
   return {
     coreDb,
+    nativeStorage,
+    rebindNativeOwner: (owner: typeof nativeStorage.owner) => {
+      gatewayOwner = owner;
+    },
     workspaceDb,
     gateway,
     physical,
@@ -498,14 +537,22 @@ describe('private Harness Login request authentication', () => {
     const f = await fixture('harness', 'shared-resident');
     if (!f.predecessorAttemptId) throw new Error('Auth fixture lacks the closed predecessor.');
     const previous = requireSchedulerExecutionAttempt(f.coreDb, f.predecessorAttemptId);
-    const current = resolveNanoHostAttemptTokenBinding(f.coreDb, {
-      sandboxBindingRef: f.attemptBindingRef,
-      lineage: f.context,
-      tokenFamily: 'worker-control',
-      token: f.registration.token,
-      now: f.now,
-    });
-    const anchor = getWorkerBackendSession(f.coreDb, f.context.leaseId);
+    const current = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      resolveAdmittedNanoHostWorkerBinding(
+        f.coreDb,
+        sqlite,
+        {
+          sandboxBindingRef: f.attemptBindingRef,
+          lineage: { ...f.context, requestId: f.environmentPackage.scope.requestId ?? null },
+          tokenFamily: 'worker-control',
+          token: f.registration.token,
+        },
+        f.now()
+      )
+    );
+    const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, f.context.leaseId)
+    );
     expect(
       previous.phase === 'closed' &&
         previous.bindingRef === f.sandboxBindingRef &&
@@ -972,6 +1019,9 @@ describe('private Harness Login request authentication', () => {
         // Stop the actual writer before the shared physical-corruption fixture changes its row.
         reader.close();
         await shutdownControlStoreWorkerClient();
+        // Rebind the existing admitted NanoHost owner of this root to the restarted writer, so the positive
+        // controls and the Login check below reach the canonical Workspace row, not a closed owner.
+        f.rebindNativeOwner((await reopenAdmittedTestNanoHost(f.coreDb)).value.owner);
         reader = openControlStoreProductReadHandle(scope.path, scope.owner);
         try {
           // Satisfy SQL's positive-revision constraint while violating the canonical safe integer.
@@ -1021,15 +1071,18 @@ describe('private Harness Login request authentication', () => {
       await Promise.resolve();
       if (changed === 'token') f.gateway.unregisterSession(f.environmentPackage.snapshotId);
       else if (changed === 'physical') f.authority.fenceAuthoritative(f.target.identityId);
-      else if (changed === 'generation')
-        await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      else if (changed === 'generation') {
+        const result = await transitionAdmittedNanoHostRuntimeTarget(f.nativeStorage, {
+          kind: 'allocate',
           targetId: f.target.targetId,
           identityId: f.target.identityId,
           deploymentId: f.target.deploymentId,
           observedAt: timestamp,
         });
-      else if (changed === 'binding')
-        await fenceNanoHostSandboxRuntime(f.coreDb, {
+        if (result.state !== 'ready')
+          throw new Error(`Fixture generation change: ${result.reason}`);
+      } else if (changed === 'binding')
+        await fenceNanoHostSandboxRuntime(f.nativeStorage.owner, {
           sandboxBindingRef: f.sandboxBindingRef,
           timestamp,
         });

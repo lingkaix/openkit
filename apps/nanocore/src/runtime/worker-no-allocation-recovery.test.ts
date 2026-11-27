@@ -10,8 +10,13 @@ import {
   ControlStoreWorkerError,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -23,15 +28,24 @@ import {
 } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestStore } from '../test-support/store.js';
+import { patchTestNanoHostRecoveryProof } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { hasNanoHostAttemptPreEffectProof } from './nanohost-attempt-recovery.js';
+
+/** Reads the pre-effect proof through the acknowledged NanoHost reader, as recovery does. */
+function preEffectProof(f: { coreDb: CoreDb; attemptId: string }): boolean {
+  return readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+    hasNanoHostAttemptPreEffectProof(f.coreDb, f.attemptId, { sqlite })
+  );
+}
+
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
@@ -49,7 +63,7 @@ afterEach(async () => {
 /** Syntax detection avoids inherited eval-only flags; process exit removes the real scheduler claim. */
 const producer = String.raw`
 import { readFileSync } from 'node:fs';
-import { createApp } from './src/app.ts';
+import { createApp, prepareNanoHostOwner } from './src/app.ts';
 import { FsStore } from './src/lib/store.ts';
 import { ProviderRegistry } from './src/providers/registry.ts';
 import { FileStorageAdmission } from './src/storage/artifacts/file-admission.ts';
@@ -103,8 +117,11 @@ store.updateTurn = async (...args) => {
 };
 const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
 const executor = new WorkerGovernanceTurnExecutor({ coreDb, backend, fileAdmission });
+// Boot joins the persisted admitted NanoHost owner of this root; image evidence is read there.
+const nanoHostStorage = await prepareNanoHostOwner(coreDb, { enabled: () => true });
+if (nanoHostStorage.state !== 'ready') throw new Error('NanoHost admission: ' + nanoHostStorage.reason);
 const app = createApp({
-  coreDb, dataRoot, store, turnExecutor: executor, fileAdmission, localUserId: userId,
+  coreDb, dataRoot, store, turnExecutor: executor, fileAdmission, localUserId: userId, nanoHostStorage,
   agentManifests: [setup.manifest], gatewayConfig,
   providerRegistry: new ProviderRegistry([{
     defaultModel: 'openai/gpt-5.2', displayName: 'Test inference provider',
@@ -143,7 +160,7 @@ async function stoppedOriginalWorker() {
   });
   const target = await recordTestNativeRuntimeTarget(coreDb);
   const setup = createTestAgentSetup({ requiredCapabilities: ['worker.runtime-provenance.v1'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   await shutdownControlStoreWorkerClient();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
@@ -176,6 +193,8 @@ async function stoppedOriginalWorker() {
   });
   const turnId = stopped.turnId as string;
   coreDb = openCoreDb(dataRoot);
+  // The producer child's Native file is rejoined by the acknowledged owner, as boot does.
+  await reopenAdmittedTestNanoHost(coreDb);
   workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   store = new FsStore({ dataRoot });
   const attemptId = (
@@ -212,6 +231,7 @@ async function stoppedOriginalWorker() {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
+    await reopenAdmittedTestNanoHost(coreDb);
     workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     store = new FsStore({ dataRoot });
   };
@@ -371,7 +391,7 @@ describe('original native Worker restart before allocation', () => {
   it('closes original obligations without a physical fence and remains unchanged after reopen', async () => {
     const f = await stoppedOriginalWorker();
     await expect(f.recover()).resolves.toBe('complete');
-    expect(hasNanoHostAttemptPreEffectProof(f.coreDb, f.attemptId)).toBe(true);
+    expect(preEffectProof(f)).toBe(true);
     expect(requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
       phase: 'closed',
       disposition: 'not_accepted',
@@ -454,28 +474,24 @@ describe('original native Worker restart before allocation', () => {
     await expect(
       f.recover(async () => {
         // Reach the named checkpoint refusal after real terminal acknowledgement and absent live claims.
-        expect(hasNanoHostAttemptPreEffectProof(f.coreDb, f.attemptId)).toBe(true);
+        expect(preEffectProof(f)).toBe(true);
         expect(
           f.steps().find((step) => JSON.parse(step.control).kind === 'terminal-publication')!.state
         ).toBe('completed');
         if (fault === 'unknown-materialize') {
           await endWorkerTurnMaterialization(f.store, f.workspaceDb, f.turnId, 'unknown');
         } else {
-          const sql = {
+          const sql: Partial<Record<typeof fault, string>> = {
             'missing-release':
               "DELETE FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json, '$.kind')='release'",
             'worker-sequence':
               'UPDATE scheduler_execution_attempts SET last_worker_sequence=1 WHERE attempt_id=?',
-            'recovery-owner':
-              "UPDATE scheduler_execution_attempts SET recovery_state='awaiting-reconnect' WHERE attempt_id=?",
-            'recovery-deadline':
-              "UPDATE scheduler_execution_attempts SET recovery_deadline='2999-01-01T00:00:00.000Z' WHERE attempt_id=?",
             'descriptor-authority':
               "UPDATE control_execution_steps SET control_json=json_set(control_json, '$.permittingDecisionRef', 'unrelated-permission') WHERE execution_id=? AND json_extract(control_json, '$.kind')='materialize'",
             'descriptor-backend':
               "UPDATE control_execution_steps SET control_json=json_set(control_json, '$.target.backendKind', 'unadmitted-backend') WHERE execution_id=? AND json_extract(control_json, '$.kind') IN ('materialize','release')",
             'missing-native-target': 'DELETE FROM nanohost_runtime_targets WHERE target_id=?',
-          }[fault];
+          };
           const native = !fault.startsWith('descriptor') && fault !== 'missing-release';
           const identity =
             fault === 'missing-native-target'
@@ -484,7 +500,37 @@ describe('original native Worker restart before allocation', () => {
                 ? f.attemptId
                 : f.originalRoot.id;
           try {
-            (native ? f.coreDb : f.workspaceDb).sqlite.prepare(sql).run(identity);
+            if (fault === 'worker-sequence') {
+              // K8 keeps accepted Worker sequences in the NanoHost file, not in the Core attempt row.
+              mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+                sqlite
+                  .prepare(
+                    `INSERT INTO worker_control_sequence_fingerprints (workspace_id, thread_id, turn_id,
+                    agent_session_id, package_snapshot_id, request_id, operation, sequence, fingerprint, accepted_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, 'heartbeat', 1, '{}', '2026-01-01T00:00:00.000Z')`
+                  )
+                  .run(
+                    DEMO_WORKSPACE_ID,
+                    DEMO_THREAD_ID,
+                    f.turnId,
+                    f.originalAttempt.agentSessionId,
+                    f.originalAttempt.inputRef
+                  )
+              );
+            } else if (fault === 'recovery-owner') {
+              // K8 keeps recovery facts in the Native recovery proof, not in the Core attempt row.
+              patchTestNanoHostRecoveryProof(f.coreDb, f.attemptId, {
+                recoveryState: 'awaiting-reconnect',
+              });
+            } else if (fault === 'recovery-deadline') {
+              patchTestNanoHostRecoveryProof(f.coreDb, f.attemptId, {
+                recoveryDeadline: '2999-01-01T00:00:00.000Z',
+              });
+            } else if (fault === 'missing-native-target') {
+              mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+                sqlite.prepare(sql['missing-native-target']!).run(identity)
+              );
+            } else (native ? f.coreDb : f.workspaceDb).sqlite.prepare(sql[fault]!).run(identity);
           } catch (error) {
             mutationError = error;
             throw error;
@@ -501,8 +547,10 @@ describe('original native Worker restart before allocation', () => {
         message: 'Execution step identity is immutable and an outcome settles once.',
       });
     else expect(mutationError).toBeUndefined();
-    expect(hasNanoHostAttemptPreEffectProof(f.coreDb, f.attemptId)).toBe(
-      fault !== 'worker-sequence'
+    // K8 keeps recovery facts in a Native session anchor, which is Worker evidence like a sequence
+    // fingerprint: the pre-effect proof is absent for those three, present for every other fault.
+    expect(preEffectProof(f)).toBe(
+      fault !== 'worker-sequence' && fault !== 'recovery-owner' && fault !== 'recovery-deadline'
     );
     expect(f.checkpoint()).not.toBeNull();
     expect(f.roots()[0]!.phase).not.toBe('closed');

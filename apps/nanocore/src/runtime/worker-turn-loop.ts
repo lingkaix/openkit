@@ -551,17 +551,30 @@ async function removeOwnCancelledPreparation(
   const coreEffects = input.coreDb.sqlite
     .prepare(`
     SELECT 1 FROM scheduler_execution_attempts WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
     UNION ALL SELECT 1 FROM idempotency_requests WHERE response_id = @turn OR json_extract(response_json, '$.downstream.turnId') = @turn
     LIMIT 1`)
     .get({
       turn: checkpoint.turnId,
     });
   if (coreEffects) return false;
+  try {
+    const native = getControlStoreWorkerClient().readAdmittedNanoHost(
+      input.coreDb.dataRoot,
+      (sqlite) =>
+        sqlite
+          .prepare(`
+    SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
+      LIMIT 1`)
+          .get({ turn: checkpoint.turnId })
+    );
+    if (native.state !== 'ready' || native.value) return false;
+  } catch {
+    return false;
+  }
   const dataRoot = input.store.getDataRoot();
   if (!dataRoot || dataRoot !== input.coreDb.dataRoot || input.workspaceDb.dataRoot !== dataRoot)
     return false;

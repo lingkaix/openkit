@@ -91,6 +91,7 @@ const ENTRY_KIND_HEADER: &str = "x-openkit-entry-kind";
 const EXECUTABLE_HEADER: &str = "x-openkit-executable";
 const SHA256_HEADER: &str = "x-openkit-sha256";
 const BYTE_LENGTH_HEADER: &str = "x-openkit-byte-length";
+const SANDBOX_BINDING_HEADER: &str = "x-openkit-sandbox-binding";
 const SANDBOX_INTEGRATION_BINDING_HEADER: &str = "x-openkit-integration-binding";
 const HARNESS_POLL_PATH: &str = "/worker-control/harness/poll";
 const HARNESS_RESULT_PATH: &str = "/worker-control/harness/result";
@@ -152,6 +153,7 @@ impl OuterRouteProjection {
         request: Request<h2::RecvStream>,
         mut respond: SendResponse<Bytes>,
         sandbox_integration_binding_ref: &str,
+        sandbox_binding_ref: &str,
     ) -> Result<bool, &'static str> {
         // Closed labels and stream identity only: never log URI queries, headers or bodies.
         let route = match request.uri().path() {
@@ -201,12 +203,13 @@ impl OuterRouteProjection {
             return Err("sandbox route path rejected");
         }
         let private_harness_route = path == HARNESS_POLL_PATH || path == HARNESS_RESULT_PATH;
-        if private_harness_route
-            && (request.headers().contains_key(http::header::AUTHORIZATION)
-                || request
-                    .headers()
-                    .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
-                || request.headers().contains_key("x-openkit-harness-binding"))
+        if request.headers().contains_key(SANDBOX_BINDING_HEADER)
+            || (private_harness_route
+                && (request.headers().contains_key(http::header::AUTHORIZATION)
+                    || request
+                        .headers()
+                        .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+                    || request.headers().contains_key("x-openkit-harness-binding")))
         {
             send_nested_status(&mut respond, StatusCode::BAD_REQUEST)?;
             return Err("sandbox Harness route supplied a forbidden header");
@@ -251,6 +254,11 @@ impl OuterRouteProjection {
             let binding = http::HeaderValue::from_str(sandbox_integration_binding_ref)
                 .map_err(|_| "Harness binding header invalid")?;
             builder = builder.header(SANDBOX_INTEGRATION_BINDING_HEADER, binding);
+        }
+        if path == HARNESS_POLL_PATH {
+            let binding = http::HeaderValue::from_str(sandbox_binding_ref)
+                .map_err(|_| "Sandbox bridge binding header invalid")?;
+            builder = builder.header(SANDBOX_BINDING_HEADER, binding);
         }
         let outer_request = builder
             .body(())
@@ -388,12 +396,22 @@ fn send_nested_status(
         .map_err(|_| "nested route response failed")
 }
 
+/// With no whitespace or comma, a private binding survives header parsing byte-for-byte.
+pub(crate) fn valid_sandbox_bridge_binding(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b',')
+}
+
 /// Recognizes the known Integration-scoped poll eligible for the readiness latch.
 fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     if method != Method::POST
         || path != HARNESS_POLL_PATH
         || headers.contains_key(http::header::AUTHORIZATION)
         || headers.contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+        || headers.contains_key(SANDBOX_BINDING_HEADER)
         || headers.contains_key("x-openkit-harness-binding")
     {
         return false;
@@ -2080,8 +2098,9 @@ where
 ///
 /// # Errors
 ///
-/// Rejects transport failure, any status other than `204` or `200`, an
-/// oversized or malformed command, missing `requestId`, a body operation
+/// Retries a complete HTTP `503` inside one bounded poll recovery window.
+/// Rejects transport failure, other unsuccessful responses, an oversized
+/// or malformed command, missing `requestId`, a body operation
 /// selector, or bulk/credential/physical-connection fields. A correlated raw
 /// import admission refusal returns only its identity and local failure reason
 /// for the existing typed effect result, without exposing unverified content.
@@ -2092,15 +2111,82 @@ pub async fn poll_effect_command(
     live_bridge: bool,
     staging_root: &std::path::Path,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
-    let first_poll = *cursor == 0;
     let kind = effect_kind_for_cursor(*cursor);
-    let operation = OuterSessionOperation::from(kind);
     let index = *cursor % EFFECT_PATHS.len();
-    let (path, _, _) = EFFECT_PATHS[index];
+    let original_cursor = *cursor;
     // Reserve zero for the first poll so a completed cycle cannot reopen its terminal window.
     *cursor = index + 1;
+    // Keep retries on this generation inside one existing outer recovery interval.
+    // The window starts before the original request, and a retry keeps its first-poll fences.
+    let deadline = tokio::time::Instant::now() + crate::OUTER_SESSION_RECONNECT_DELAY;
+    let mut polled = poll_effect_command_once(
+        authority,
+        sender,
+        original_cursor,
+        live_bridge,
+        staging_root,
+        deadline,
+    )
+    .await;
+    while let Err(failure) = &polled {
+        if failure.status() != Some(StatusCode::SERVICE_UNAVAILABLE.as_u16())
+            || !matches!(
+                failure.reason(),
+                "effect command poll rejected" | "reference.import command poll rejected"
+            )
+        {
+            break;
+        }
+        let retry_at = tokio::time::Instant::now() + crate::EFFECT_POLL_IDLE_DELAY;
+        if retry_at >= deadline {
+            break;
+        }
+        tokio::time::sleep_until(retry_at).await;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        polled = match tokio::time::timeout_at(
+            deadline,
+            poll_effect_command_once(
+                authority,
+                sender,
+                original_cursor,
+                live_bridge,
+                staging_root,
+                deadline,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(OuterSessionFailure::terminal(
+                OuterSessionStage::Poll,
+                OuterSessionOperation::from(kind),
+                None,
+                if kind == RuntimeEffectKind::OpenBridge && !live_bridge {
+                    "bridge.open command delivery unknown"
+                } else {
+                    "effect command poll retry deadline expired"
+                },
+            )),
+        };
+    }
+    polled
+}
+
+async fn poll_effect_command_once(
+    authority: &str,
+    sender: &mut h2::client::SendRequest<Bytes>,
+    cursor: usize,
+    live_bridge: bool,
+    staging_root: &std::path::Path,
+    deadline: tokio::time::Instant,
+) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
+    let (path, _, kind) = EFFECT_PATHS[cursor % EFFECT_PATHS.len()];
+    let first_poll = cursor == 0;
+    let operation = OuterSessionOperation::from(kind);
     if kind == RuntimeEffectKind::ImportReference {
-        return poll_reference_import(authority, sender, path, staging_root).await;
+        return poll_reference_import(authority, sender, path, staging_root, deadline).await;
     }
     let (status, body, trace_context) =
         match send_effect_request(authority, sender, path, b"{}", None).await {
@@ -2204,7 +2290,11 @@ pub async fn poll_effect_command(
                 "requestId",
                 "sandboxId",
             ],
-            RuntimeEffectKind::OpenBridge => &["requestId", "sandboxIntegrationBindingRef"],
+            RuntimeEffectKind::OpenBridge => &[
+                "requestId",
+                "sandboxBindingRef",
+                "sandboxIntegrationBindingRef",
+            ],
             RuntimeEffectKind::AcquireImage => &[
                 "backendSessionId",
                 "imageReference",
@@ -2257,7 +2347,11 @@ pub async fn poll_effect_command(
             return Err(terminal("effect command contains forbidden field"));
         }
         if kind == RuntimeEffectKind::OpenBridge
-            && (object.len() != 2
+            && (object.len() != 3
+                || !object
+                    .get("sandboxBindingRef")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(valid_sandbox_bridge_binding)
                 || !object
                     .get("sandboxIntegrationBindingRef")
                     .and_then(serde_json::Value::as_str)
@@ -2427,6 +2521,7 @@ async fn poll_reference_import(
     sender: &mut h2::client::SendRequest<Bytes>,
     path: &str,
     staging_root: &std::path::Path,
+    deadline: tokio::time::Instant,
 ) -> Result<Option<PolledEffectCommand>, OuterSessionFailure> {
     let operation = OuterSessionOperation::ImportReference;
     let terminal_without_status =
@@ -2487,6 +2582,16 @@ async fn poll_reference_import(
         return Ok(None);
     }
     if status != StatusCode::OK {
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            // A partial error response cannot trigger a retry on this physical session.
+            tokio::time::timeout_at(
+                deadline,
+                collect_effect_response_body(status, response.into_body()),
+            )
+            .await
+            .map_err(|_| terminal("effect command poll retry deadline expired"))?
+            .map_err(|(_, reason)| terminal(reason))?;
+        }
         return Err(terminal("reference.import command poll rejected"));
     }
     let headers = response.headers();
@@ -3191,7 +3296,15 @@ async fn send_effect_request(
         .map_err(|_| (None, "effect response failed"))?;
     let context = crate::telemetry::extract(response.headers());
     let status = response.status();
-    let mut response_body = response.into_body();
+    let bytes = collect_effect_response_body(status, response.into_body()).await?;
+    Ok((status, bytes, context))
+}
+
+/// Collects a complete control response using the existing in-flight byte limit.
+async fn collect_effect_response_body(
+    status: StatusCode,
+    mut response_body: h2::RecvStream,
+) -> Result<BytesMut, (Option<StatusCode>, &'static str)> {
     let mut bytes = BytesMut::new();
     while let Some(chunk) = response_body.data().await {
         let chunk = chunk.map_err(|_| (Some(status), "effect response failed"))?;
@@ -3204,7 +3317,7 @@ async fn send_effect_request(
             .map_err(|_| (Some(status), "effect response flow control failed"))?;
         bytes.extend_from_slice(&chunk);
     }
-    Ok((status, bytes, context))
+    Ok(bytes)
 }
 
 /// Test-only bounded request used to prove predecessor and replay fencing.
@@ -3442,6 +3555,7 @@ mod tests {
                 &mut sender,
                 "/api/nanohost/transport/effects/reference.import",
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await;
             driver.abort();
@@ -3511,7 +3625,11 @@ mod tests {
                 .enumerate()
                 .find(|(_, (path, _, _))| path.rsplit('/').next() == Some(operation))
                 .unwrap();
-            for extra in [false, true] {
+            let bridge = *kind == RuntimeEffectKind::OpenBridge;
+            for (extra, legacy_bridge) in [(false, false), (true, false), (false, true)] {
+                if legacy_bridge && !bridge {
+                    continue;
+                }
                 let mut command = fixture["command"].clone();
                 let dockerfile = fixture["input"]["dockerfile"]
                     .as_str()
@@ -3523,6 +3641,9 @@ mod tests {
                         .as_object_mut()
                         .unwrap()
                         .insert("futureAuthority".into(), serde_json::json!(true));
+                }
+                if legacy_bridge {
+                    command.as_object_mut().unwrap().remove("sandboxBindingRef");
                 }
                 let (client_io, server_io) = tokio::io::duplex(65536);
                 let raw_import = *kind == RuntimeEffectKind::ImportReference && !extra;
@@ -3608,10 +3729,10 @@ mod tests {
                     std::env::temp_dir().as_path(),
                 )
                 .await;
-                if extra && !additive_collect {
+                if legacy_bridge || (extra && !additive_collect) {
                     assert!(
                         result.is_err(),
-                        "{operation} admitted an unknown authority field"
+                        "{operation} admitted changed authority fields (extra={extra}, legacy={legacy_bridge})"
                     );
                 } else {
                     assert!(
@@ -3688,6 +3809,7 @@ mod tests {
                                     "sandboxIntegrationBindingRef",
                                 )
                                 .to_string(),
+                                sandbox_binding_ref: text("sandboxBindingRef").to_string(),
                             }
                             .validate()
                             .unwrap();
@@ -3938,6 +4060,212 @@ mod tests {
                 assert_eq!(observations.len(), 1);
             }
         }
+    }
+
+    /// Serves one in-memory Core whose result path answers with `statuses` in order; a missing
+    /// status closes the physical connection after the whole body was read. Records every request
+    /// path and body.
+    type ObservedRequests = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+
+    fn result_core(
+        server_io: tokio::io::DuplexStream,
+        statuses: Vec<StatusCode>,
+    ) -> (tokio::task::JoinHandle<()>, ObservedRequests) {
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = requests.clone();
+        let server = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(server_io)
+                .await
+                .expect("server handshake");
+            let results = std::sync::Arc::new(std::sync::Mutex::new(
+                statuses
+                    .into_iter()
+                    .collect::<std::collections::VecDeque<_>>(),
+            ));
+            let (close, mut closed) = tokio::sync::mpsc::unbounded_channel::<()>();
+            loop {
+                let request = tokio::select! {
+                    request = connection.accept() => request,
+                    _ = closed.recv() => return,
+                };
+                let Some(request) = request else { return };
+                let (request, mut respond) = request.expect("request");
+                let observed = observed.clone();
+                let results = results.clone();
+                let close = close.clone();
+                // The connection is polled by `accept`; each body is consumed by its own task.
+                tokio::spawn(async move {
+                    let path = request.uri().path().to_string();
+                    let mut body = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.expect("body");
+                        body.flow_control()
+                            .release_capacity(chunk.len())
+                            .expect("flow control");
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    observed
+                        .lock()
+                        .expect("observations")
+                        .push((path.clone(), bytes));
+                    let status = if path.ends_with("/result") {
+                        match results.lock().expect("results").pop_front() {
+                            Some(status) => status,
+                            // An operator restart or decommission closes the physical connection.
+                            None => {
+                                let _ = close.send(());
+                                return;
+                            }
+                        }
+                    } else {
+                        StatusCode::NO_CONTENT
+                    };
+                    respond
+                        .send_response(
+                            Response::builder()
+                                .status(status)
+                                .body(())
+                                .expect("response"),
+                            true,
+                        )
+                        .expect("send response");
+                });
+            }
+        });
+        (server, requests)
+    }
+
+    /// One verified export staged through the production `stage_export` boundary.
+    fn staged_export(
+        bytes: &[u8],
+    ) -> (
+        PolledEffectCommand,
+        crate::sandbox_bridge::RetainedExportResult,
+        std::path::PathBuf,
+    ) {
+        use crate::sandbox_bridge::{FileEffectKind, FileEffectPresence, FileEffectRequest};
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-b3-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let request = FileEffectRequest {
+            artifact_submission: true,
+            request_id: "e".repeat(64),
+            sandbox_id: "sandbox-live".into(),
+            slot: "main-worktree".into(),
+            relative_path: std::path::PathBuf::from("slot-a/report.md"),
+            sha256: String::new(),
+            byte_length: 1024,
+            kind: FileEffectKind::ExportFile,
+            presence: FileEffectPresence::Optional,
+        };
+        let mut stage = crate::file_transfer::FileStage::create(&root, request.byte_length, 0)
+            .expect("private file stage");
+        std::io::Write::write_all(&mut stage, bytes).expect("export bytes");
+        let retained =
+            crate::sandbox_bridge::stage_export(&request, stage, false).expect("verified export");
+        let command = PolledEffectCommand {
+            kind: RuntimeEffectKind::ExportFile,
+            request_id: request.request_id.clone(),
+            input: serde_json::json!({"maxByteLength": 1024}),
+            trace_context: opentelemetry::Context::new(),
+            file_data: None,
+            admission_failure: None,
+        };
+        (command, retained, root)
+    }
+
+    /// B3: the raw export sender treats a received non-204 as a definite refusal, never retries it,
+    /// and the production pending-slot rule drops the refused tuple.
+    #[tokio::test]
+    async fn raw_export_non_204_is_a_terminal_refusal_and_is_not_retained() {
+        let bytes = b"exported report bytes";
+        let (command, retained, root) = staged_export(bytes);
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let (mut sender, connection) = h2::client::handshake(client_io).await.expect("client");
+        let client_driver = tokio::spawn(connection);
+        let (server, requests) = result_core(server_io, vec![StatusCode::SERVICE_UNAVAILABLE]);
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut sender, &command, &retained),
+        )
+        .await
+        .expect("the raw export sender settled within 10 s")
+        .expect_err("a received 503 is a definite refusal");
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+        assert_eq!(failure.status(), Some(503));
+        assert_eq!(failure.reason(), "file export result rejected");
+        assert_eq!(
+            requests.lock().expect("observations").len(),
+            1,
+            "a definite refusal is never retried"
+        );
+        let mut pending = Some((command, crate::ExecutedEffectResult::FileExport(retained)));
+        crate::clear_pending_after_failure(&mut pending, &failure);
+        assert!(pending.is_none(), "a refused export is not retained");
+        client_driver.abort();
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// B3: a physical close after the export body is sent keeps the original bytes for the
+    /// successor through the production pending-slot rule, and the successor resends them exactly.
+    #[tokio::test]
+    async fn raw_export_physical_close_retains_original_bytes_for_the_successor() {
+        let bytes = b"exported report bytes";
+        let (command, retained, root) = staged_export(bytes);
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let (mut sender, connection) = h2::client::handshake(client_io).await.expect("client");
+        let client_driver = tokio::spawn(connection);
+        // No scripted status: the Core reads the whole body and closes the physical connection.
+        let (server, requests) = result_core(server_io, Vec::new());
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut sender, &command, &retained),
+        )
+        .await
+        .expect("the raw export sender settled within 10 s")
+        .expect_err("a closed connection cannot acknowledge the export");
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Reconnect);
+        assert_eq!(failure.reason(), "file export result delivery uncertain");
+        let first = requests.lock().expect("observations").clone();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1, bytes, "the whole original body was sent");
+        let mut pending = Some((command, crate::ExecutedEffectResult::FileExport(retained)));
+        crate::clear_pending_after_failure(&mut pending, &failure);
+        let (command, result) =
+            pending.expect("an unacknowledged export is kept for the successor");
+        let crate::ExecutedEffectResult::FileExport(retained) = result else {
+            panic!("the retained slot keeps the export tuple");
+        };
+        // The successor connection receives the same bytes from the retained file.
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let (mut successor, connection) = h2::client::handshake(client_io).await.expect("client");
+        let successor_driver = tokio::spawn(connection);
+        let (successor_server, successor_requests) =
+            result_core(server_io, vec![StatusCode::NO_CONTENT]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            submit_file_export_result("http://nanocore.test", &mut successor, &command, &retained),
+        )
+        .await
+        .expect("the successor resend settled within 10 s")
+        .expect("the successor acknowledges the retained export");
+        assert_eq!(
+            successor_requests.lock().expect("observations")[0].1,
+            bytes,
+            "the successor resend is byte-identical"
+        );
+        client_driver.abort();
+        server.abort();
+        successor_driver.abort();
+        successor_server.abort();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The raw entry boundary must reject unsafe carriage before exposing a Sandbox command.
@@ -4205,6 +4533,7 @@ mod tests {
                 &mut sender,
                 "/api/nanohost/transport/effects/reference.import",
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await;
             let admitted = result
@@ -4503,7 +4832,13 @@ mod tests {
                     let result_tx = result_tx.clone();
                     tokio::spawn(async move {
                         let result = projection
-                            .forward(RouteFamily::Capabilities, request, respond, "binding")
+                            .forward(
+                                RouteFamily::Capabilities,
+                                request,
+                                respond,
+                                "binding",
+                                "sandbox-binding",
+                            )
                             .await;
                         result_tx.send(result).expect("forward result");
                     });
@@ -4595,7 +4930,7 @@ mod tests {
                         let done_tx = done_tx.clone();
                         tokio::spawn(async move {
                             let family = crate::sandbox_bridge::route_family(request.uri().path()).unwrap();
-                            let result = projection.forward(family, request, respond, "binding").await;
+                            let result = projection.forward(family, request, respond, "binding", "sandbox-binding").await;
                             done_tx.send(result).unwrap();
                         });
                     }
@@ -4672,8 +5007,13 @@ mod tests {
                             request.uri().path_and_query().unwrap().as_str().to_string(),
                             request.headers().clone(),
                         )).unwrap();
+                        let status = if request.uri().path() == HARNESS_RESULT_PATH {
+                            StatusCode::CONFLICT
+                        } else {
+                            StatusCode::NO_CONTENT
+                        };
                         respond.send_response(Response::builder()
-                            .status(StatusCode::NO_CONTENT).body(()).unwrap(), true).unwrap();
+                            .status(status).body(()).unwrap(), true).unwrap();
                     });
                 }
             });
@@ -4692,6 +5032,7 @@ mod tests {
                     tokio::spawn(async move {
                         let result = projection.forward(
                             RouteFamily::WorkerControl, request, respond, "trusted-bridge-binding",
+                            "trusted-sandbox-binding",
                         ).await;
                         done_tx.send(result).unwrap();
                     });
@@ -4699,9 +5040,13 @@ mod tests {
             });
             let (mut client, connection) = h2::client::handshake(client_io).await.unwrap();
             let nested_driver = tokio::spawn(connection);
-            // Collect every bounded row so one query failure cannot hide the missing header guard.
+            // A result refusal is carried as HTTP on the same route. The next poll
+            // still reaches Core and proves live carriage through the same binding.
             let mut failures = Vec::new();
-            for route in [HARNESS_POLL_PATH, HARNESS_RESULT_PATH] {
+            for (route, expected) in [
+                (HARNESS_RESULT_PATH, StatusCode::CONFLICT),
+                (HARNESS_POLL_PATH, StatusCode::NO_CONTENT),
+            ] {
                 for query in ["", "?proof=sec2a"] {
                     let path = format!("{route}{query}");
                     let request = Request::builder().method(Method::POST).uri(&path)
@@ -4717,17 +5062,24 @@ mod tests {
                             && headers.get_all("x-openkit-integration-binding").iter().count() == 1
                             && headers.get("x-openkit-integration-binding")
                                 .is_some_and(|value| value == "trusted-bridge-binding")
+                            && (if route == HARNESS_POLL_PATH {
+                                headers.get_all(SANDBOX_BINDING_HEADER).iter().count() == 1
+                                    && headers.get(SANDBOX_BINDING_HEADER)
+                                        .is_some_and(|value| value == "trusted-sandbox-binding")
+                            } else {
+                                !headers.contains_key(SANDBOX_BINDING_HEADER)
+                            })
                             && headers.get("x-fixture-metadata")
                                 .is_some_and(|value| value == "preserved")
                             && !headers.contains_key("x-openkit-harness-binding")
                             && !headers.contains_key(http::header::AUTHORIZATION)
                     });
-                    if status != StatusCode::NO_CONTENT || result.is_err() || !exact_projection {
+                    if status != expected || result != Ok(route == HARNESS_POLL_PATH) || !exact_projection {
                         failures.push(format!("{path}: clean projection status={status}, exact={exact_projection}"));
                     }
                 }
                 for header in ["authorization", "x-openkit-integration-binding",
-                    "x-openkit-harness-binding"] {
+                    "x-openkit-harness-binding", SANDBOX_BINDING_HEADER] {
                     let request = Request::builder().method(Method::POST)
                         .uri(format!("{route}?proof=sec2a"))
                         .header("content-type", "application/json")
@@ -4792,6 +5144,7 @@ mod tests {
                     request,
                     respond,
                     "harness-binding",
+                    "sandbox-binding",
                 )
                 .await
         });
@@ -5128,6 +5481,7 @@ mod tests {
                     .unwrap()
                     .0,
                 std::env::temp_dir().as_path(),
+                test_startup_deadline(),
             )
             .await
             {
@@ -5458,6 +5812,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum TestEffectResponse {
         NoContent,
+        Rejected(StatusCode),
         PhysicalClose,
         OversizedBody,
     }
@@ -5605,6 +5960,22 @@ mod tests {
                             )
                             .expect("empty effect response send");
                     }
+                    TestEffectResponse::Rejected(status) => {
+                        let mut response = respond
+                            .send_response(
+                                Response::builder().status(status).body(()).unwrap(),
+                                false,
+                            )
+                            .unwrap();
+                        response
+                            .send_data(
+                                Bytes::from_static(
+                                    b"{\"code\":\"nanohost_transport_effect_rejected\"}",
+                                ),
+                                true,
+                            )
+                            .unwrap();
+                    }
                     TestEffectResponse::PhysicalClose => return,
                     TestEffectResponse::OversizedBody => {
                         let mut body = respond
@@ -5635,6 +6006,119 @@ mod tests {
             );
         });
         (client_io, server)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn effect_poll_retry_survives_transient_503_on_json_and_raw_routes() {
+        let (context, presentation) = test_outer_credentials();
+        for kind in [
+            RuntimeEffectKind::InspectStorage,
+            RuntimeEffectKind::ImportReference,
+        ] {
+            let cursor = EFFECT_PATHS
+                .iter()
+                .position(|(_, _, item)| *item == kind)
+                .unwrap();
+            let path = EFFECT_PATHS[cursor].0;
+            let next_path = EFFECT_PATHS[(cursor + 1) % EFFECT_PATHS.len()].0;
+            let (io, server) = scripted_outer_server(
+                8,
+                TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+                None,
+                vec![
+                    (
+                        path,
+                        TestEffectResponse::Rejected(StatusCode::SERVICE_UNAVAILABLE),
+                    ),
+                    (path, TestEffectResponse::NoContent),
+                    (next_path, TestEffectResponse::NoContent),
+                ],
+            );
+            let generation = run_outer_session(
+                io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                Some(7),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
+                |_, mut sender| async move {
+                    let mut cursor = cursor;
+                    for _ in 0..2 {
+                        assert!(
+                            poll_effect_command(
+                                "http://nanocore.test",
+                                &mut sender,
+                                &mut cursor,
+                                false,
+                                std::env::temp_dir().as_path(),
+                            )
+                            .await?
+                            .is_none()
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .await
+            .expect("503 must leave the same authoritative session able to poll");
+            assert_eq!(generation, 8);
+            server
+                .await
+                .expect("the same HTTP/2 session served both poll paths");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn effect_poll_retry_ends_session_on_exhaustion_or_terminal_refusal() {
+        let (context, presentation) = test_outer_credentials();
+        let cursor = EFFECT_PATHS
+            .iter()
+            .position(|(_, _, item)| *item == RuntimeEffectKind::InspectStorage)
+            .unwrap();
+        let path = EFFECT_PATHS[cursor].0;
+        for (status, responses) in [
+            (StatusCode::SERVICE_UNAVAILABLE, 3),
+            (StatusCode::CONFLICT, 1),
+        ] {
+            let (io, server) = scripted_outer_server(
+                8,
+                TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+                None,
+                vec![(path, TestEffectResponse::Rejected(status)); responses],
+            );
+            let failure = run_outer_session(
+                io,
+                "http://nanocore.test",
+                &context,
+                &presentation,
+                Some(7),
+                (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                    Ok(None)
+                }),
+                |_, mut sender| async move {
+                    let mut cursor = cursor;
+                    poll_effect_command(
+                        "http://nanocore.test",
+                        &mut sender,
+                        &mut cursor,
+                        false,
+                        std::env::temp_dir().as_path(),
+                    )
+                    .await
+                    .map(|_| ())
+                },
+            )
+            .await
+            .expect_err("the outer session must stop");
+            assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+            assert_eq!(failure.stage, OuterSessionStage::Poll);
+            assert_eq!(failure.operation, OuterSessionOperation::InspectStorage);
+            assert_eq!(failure.status(), Some(status.as_u16()));
+            assert_eq!(failure.reconnect_after(), Some(8));
+            server.await.expect("only the allowed number of polls");
+        }
     }
 
     #[tokio::test]

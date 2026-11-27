@@ -33,11 +33,6 @@ import {
   bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import * as pendingFlow from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
@@ -59,6 +54,7 @@ import {
   isCurrentAgentSessionStatus,
   nativeProductScope,
 } from '../storage/workspace-file-records.js';
+import { readAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -66,6 +62,10 @@ import {
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
@@ -91,7 +91,9 @@ interface MaterialProposalPublisher {
  * @param registerDemoMembership False when native Demo publication must precede membership.
  * @returns Migrated Core database handles.
  */
-async function createCoreDb(registerDemoMembership = true): CoreDb {
+async function createCoreDb(registerDemoMembership = true): Promise<CoreDb> {
+  // The packaged self-check selects the Native simulator writer before the worker starts.
+  process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-simulator-route-')));
 
   applyMigrations(coreDb);
@@ -112,22 +114,15 @@ async function createCoreDb(registerDemoMembership = true): CoreDb {
  * @param coreDb Migrated Core database handles.
  */
 async function configureNativeRuntimeTarget(coreDb: CoreDb): Promise<void> {
-  if (!getNanoHostRuntimeTarget(coreDb, 'target_local')) {
-    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
-      identityId: 'identity_local',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'target_local',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...runtimeTarget,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
+  await recordTestNativeRuntimeTarget(coreDb, 'target_local', {
+    deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    identityId: 'identity_local',
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
+    physicalEpoch: 'a'.repeat(64),
+  });
+  // Confirmed image defaults of the default fixture Agent live in the same admitted NanoHost file.
+  await admitTestNativeEnvironmentForRoot(coreDb, createTestAgentSetup().manifest);
 }
 
 /**
@@ -506,7 +501,9 @@ describe('SimulatedTurnExecutor', () => {
       expect(originalRuntime.isTurnExecutionActive(turn.id)).toBe(false);
       expect(store.getTurnById(turn.id).status).toBe('completed');
       expect(release).toHaveBeenCalledOnce();
-      const session = listWorkerBackendSessions(coreDb).find((row) => row.turnId === turn.id)!;
+      const session = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerBackendSessions({ sqlite })
+      ).find((row) => row.turnId === turn.id)!;
       expect(session.state).toBe('cleaned');
       const attempt = () =>
         coreDb.sqlite
@@ -593,6 +590,7 @@ describe('SimulatedTurnExecutor', () => {
       outputLimitBytes: 1024 * 1024,
       layerLimit: 1,
     };
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
@@ -635,9 +633,9 @@ describe('SimulatedTurnExecutor', () => {
       expect(response.status, JSON.stringify(turn)).toBe(202);
       expect(closeouts).toHaveBeenCalledOnce();
       await closeouts.mock.results[0]!.value.closeout;
-      const anchors = listWorkerBackendSessions(coreDb).filter(
-        (record) => record.turnId === turn.id
-      );
+      const anchors = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerBackendSessions({ sqlite })
+      ).filter((record) => record.turnId === turn.id);
       expect(anchors).toHaveLength(1);
       const anchor = anchors[0]!;
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, anchor.workspaceId);
@@ -712,7 +710,9 @@ describe('SimulatedTurnExecutor', () => {
           workspaceRoots: [],
         })
       ).rejects.toThrow('execution attempt SessionCompatibilityKey');
-      expect(listWorkerBackendSessions(coreDb)).toEqual([]);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) => listWorkerBackendSessions({ sqlite }))
+      ).toEqual([]);
       const workspaceDb = openWorkspaceDb(
         coreDb.dataRoot,
         'ws_00000000-0000-7000-8000-000000000001'
@@ -903,9 +903,13 @@ describe('SimulatedTurnExecutor', () => {
         models: ['openai/gpt-5.2'],
       },
     ]);
+    const firstManifest = createTestAgentSetup({ imageRef: imageRefA }).manifest;
+    const secondManifest = createTestAgentSetup({ imageRef: imageRefB }).manifest;
+    await admitTestNativeEnvironmentForRoot(coreDb, firstManifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, secondManifest);
     const firstApp = createApp({
       fileAdmission,
-      agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
+      agentManifests: [firstManifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
       openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
@@ -915,7 +919,7 @@ describe('SimulatedTurnExecutor', () => {
     });
     const secondApp = createApp({
       fileAdmission,
-      agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
+      agentManifests: [secondManifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
       openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
@@ -1056,9 +1060,12 @@ describe('SimulatedTurnExecutor', () => {
         });
         expect.soft(successorSnapshot?.snapshotId).not.toBe(predecessorSnapshot?.snapshotId);
 
-        const predecessorBackends = coreDb.sqlite
-          .prepare(`SELECT state FROM worker_backend_sessions WHERE agent_session_id = ?`)
-          .all(predecessorId) as Array<{ state: string }>;
+        // Backend sessions are retained by the admitted NanoHost journal, not Core.
+        const predecessorBackends = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT state FROM worker_backend_sessions WHERE agent_session_id = ?`)
+            .all(predecessorId)
+        ) as Array<{ state: string }>;
         expect
           .soft(
             predecessorBackends.length > 0 &&
@@ -1066,15 +1073,17 @@ describe('SimulatedTurnExecutor', () => {
             JSON.stringify(predecessorBackends)
           )
           .toBe(true);
-        const liveCurrentBindings = coreDb.sqlite
-          .prepare(
-            `SELECT agent_session_id AS agentSessionId, state
-             FROM worker_backend_sessions
-             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'
-               AND thread_id = 'th_00000000-0000-7000-8000-000000000001'
-               AND state NOT IN ('cleaned', 'physical-cleaned')`
-          )
-          .all() as Array<{ agentSessionId: string; state: string }>;
+        const liveCurrentBindings = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT agent_session_id AS agentSessionId, state
+               FROM worker_backend_sessions
+               WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'
+                 AND thread_id = 'th_00000000-0000-7000-8000-000000000001'
+                 AND state NOT IN ('cleaned', 'physical-cleaned')`
+            )
+            .all()
+        ) as Array<{ agentSessionId: string; state: string }>;
         expect
           .soft(
             liveCurrentBindings.filter((row) => row.agentSessionId === predecessorId),
@@ -1141,11 +1150,25 @@ describe('SimulatedTurnExecutor', () => {
       let candidateTurnId: string | undefined;
       let lookupUnavailable = false;
       let lookupRefusals = 0;
-      const getTurnById = store.getTurnById.bind(store);
-      const lookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
-        if (lookupUnavailable && turnId === candidateTurnId) {
+      // The losing admission proves its candidate absent in its own Workspace and Thread.
+      const getTurn = store.getTurn.bind(store);
+      const lookups = vi.spyOn(store, 'getTurn').mockImplementation((...args) => {
+        if (lookupUnavailable && args[2] === candidateTurnId) {
           lookupRefusals += 1;
           throw new Error('The losing Turn lookup is unavailable.');
+        }
+        return getTurn(...args);
+      });
+      // Neither the candidate's absence nor the winner is discovered through every Workspace.
+      let globalAdmissionReads = 0;
+      const getTurnById = store.getTurnById.bind(store);
+      const globalLookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
+        const limit = Error.stackTraceLimit;
+        Error.stackTraceLimit = 100;
+        try {
+          if (String(new Error().stack).includes('admitNextOutcome')) globalAdmissionReads += 1;
+        } finally {
+          Error.stackTraceLimit = limit;
         }
         return getTurnById(turnId);
       });
@@ -1311,6 +1334,7 @@ describe('SimulatedTurnExecutor', () => {
             .map((result) => result.value)
         );
         expect(lookupRefusals).toBe(unknownLookup ? 1 : 0);
+        expect(globalAdmissionReads).toBe(0);
         if (unknownLookup) {
           expect(original[0]!.status).toBe('rejected');
           if (original[0]!.status === 'rejected')
@@ -1334,6 +1358,7 @@ describe('SimulatedTurnExecutor', () => {
         terminalWake.mockRestore();
         creates.mockRestore();
         lookups.mockRestore();
+        globalLookups.mockRestore();
         commands.mockRestore();
         executions.mockRestore();
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -2672,7 +2697,9 @@ describe('SimulatedTurnExecutor', () => {
         expect
           .soft(store.listWorkspaceAgentSessions('ws_00000000-0000-7000-8000-000000000001'))
           .toEqual([]);
-        expect.soft(listWorkerBackendSessions(coreDb)).toEqual([]);
+        expect
+          .soft(readAdmittedTestNanoHost(coreDb, (sqlite) => listWorkerBackendSessions({ sqlite })))
+          .toEqual([]);
         expect
           .soft(
             store.listThreadTurns(

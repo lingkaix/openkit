@@ -3,9 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListWorkspaceReconciliationRecordsResponseSchema } from '@openkit/app-api-schemas';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -13,10 +18,9 @@ import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
-import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions.js';
+  getWorkerBackendSession,
+  recordWorkerBackendSessionMaterializing,
+} from './worker-backend-session-records.js';
 import { workerStorageScopeDigest } from './worker-storage-bindings.js';
 import {
   completeWorkspaceCaptureRecovery,
@@ -80,7 +84,7 @@ describe('workspace reconciliation records', () => {
           turnId: identity.turnId,
           now: () => timestamp,
         });
-        recordTestExecutionAttempt(coreDb, {
+        const attempt = recordTestExecutionAttempt(coreDb, {
           entry,
           attemptId: testEntityId('attempt', 'capture-receipt'),
           agentSessionId: identity.agentSessionId,
@@ -89,37 +93,67 @@ describe('workspace reconciliation records', () => {
           sessionCompatibilityKey: 'fixture',
           now: () => timestamp,
         });
-        const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-          deploymentId: 'deployment-test',
+        const native = await openAdmittedTestNanoHost(coreDb);
+        const target = {
+          deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
           identityId: 'nanohost-test',
           targetId: 'runtime-target-test',
           observedAt: timestamp,
+        };
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native.value, { ...target, kind: 'allocate' })
+        ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
+        await expect(
+          transitionAdmittedNanoHostRuntimeTarget(native.value, {
+            ...target,
+            kind: 'ready',
+            connectionGeneration: 1,
+            freshEmpty: true,
+            ready: true,
+            predecessorFenced: true,
+            physicalEpoch: 'a'.repeat(64),
+          })
+        ).resolves.toMatchObject({ state: 'ready' });
+        // This fixture seeds the original anchor that the mixed K7 writer still holds.
+        const sqlite = new Database(serverStoragePath(dataRoot, 'nanohost'), {
+          fileMustExist: true,
         });
-        await upsertNanoHostRuntimeTarget(coreDb, {
-          ...target,
-          freshEmpty: true,
-          ready: true,
-          predecessorFenced: true,
-          physicalEpoch: 'a'.repeat(64),
-          observedAt: timestamp,
-        });
-        const anchor = await recordWorkerBackendSessionMaterializing(coreDb, {
-          backendVersion: '0.0.99',
-          backendLineage: { kind: 'reference', imageRef: 'worker:test' },
-          identity: {
-            agentSessionId: identity.agentSessionId,
-            packageSnapshotId: identity.packageSnapshotId,
-            backendKind: 'openshell',
-            backendSessionId,
-            deploymentId: 'deployment-test',
-            runtimeTargetId: 'runtime-target-test',
-            stagingDirectoryRef: 'server/runtime/worker-backend-sessions/package',
-            transientProviderInstanceId: null,
-          },
-          lineage: identity,
-          sandboxBindingRef: 'lease-binding:capture-receipt',
-          now: () => timestamp,
-        });
+        try {
+          sqlite
+            .transaction(() => {
+              recordWorkerBackendSessionMaterializing(
+                coreDb,
+                {
+                  backendVersion: '0.0.99',
+                  backendLineage: { kind: 'reference', imageRef: 'worker:test' },
+                  identity: {
+                    agentSessionId: identity.agentSessionId,
+                    packageSnapshotId: identity.packageSnapshotId,
+                    backendKind: 'openshell',
+                    backendSessionId,
+                    deploymentId: target.deploymentId,
+                    runtimeTargetId: target.targetId,
+                    stagingDirectoryRef: 'server/runtime/worker-backend-sessions/package',
+                    transientProviderInstanceId: null,
+                  },
+                  lineage: identity,
+                  sandboxBindingRef: 'lease-binding:capture-receipt',
+                  now: () => timestamp,
+                },
+                // The admitted writer takes the NanoHost owner and the exact original Core attempt.
+                { owner: { sqlite }, attempt }
+              );
+            })
+            .immediate();
+        } finally {
+          sqlite.close();
+        }
+        const admitted = native.value.owner.read((sqlite) =>
+          getWorkerBackendSession({ sqlite }, attempt.attemptId)
+        );
+        if (admitted.state !== 'ready' || !admitted.value)
+          throw new Error('Original capture backend fixture is unavailable.');
+        const anchor = admitted.value;
         const base = { tree: '1'.repeat(40), manifest: '2'.repeat(40) };
         const head = { tree: '3'.repeat(40), manifest: '4'.repeat(40) };
         const candidate = Buffer.from('original captured work');
@@ -179,6 +213,7 @@ describe('workspace reconciliation records', () => {
         }
         expect(readWorkspaceCollection(db, identity)).toEqual(receipt);
       } finally {
+        await shutdownControlStoreWorkerClient();
         db.sqlite.close();
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });

@@ -80,6 +80,9 @@ export const ControlExecutionAttemptInputSchema = z.discriminatedUnion('kind', [
       backendId: identity,
       byteLength: z.number().int().nonnegative().safe(),
       attemptId: ExecutionAttemptIdSchema.optional(),
+      // Main-internal: the admissions that this dispatch pass deferred on a placement-held claim
+      // refusal, at most the fixed queued bound.
+      deferredQueueEntryIds: z.array(identity).max(20).optional(),
       ...clock,
     })
     .strict(),
@@ -165,7 +168,15 @@ export const ControlExecutionAttemptResultSchema = SchedulerExecutionAttemptSche
 /** Complete original row or the original absent observation. */
 export type ControlExecutionAttemptResult = z.infer<typeof ControlExecutionAttemptResultSchema>;
 /** Only fixed messages raised by the existing domain owner cross the trusted refusal channel. */
-export class ExecutionAttemptRefusal extends Error {}
+export class ExecutionAttemptRefusal extends Error {
+  constructor(
+    message: string,
+    /** The deciding claim refused because an unresolved writer holds the placement. */
+    readonly reason?: 'placement-held'
+  ) {
+    super(message);
+  }
+}
 /** Private refusal projection carries no SQL, credentials or arbitrary native diagnostic. */
 export const ControlExecutionAttemptRefusalSchema = z
   .object({
@@ -173,5 +184,6 @@ export const ControlExecutionAttemptRefusalSchema = z
     code: z.literal('attempt_refused'),
     message: z.string(),
     status: z.literal(409),
+    reason: z.literal('placement-held').optional(),
   })
   .strict();
