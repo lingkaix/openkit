@@ -194,6 +194,8 @@ export interface WorkerResidentOpenInput {
 
 /** Per-Turn input for one resident binding, resolved from the Turn's own AEP. */
 export interface WorkerResidentTurnInput {
+  /** Called once, only when this call's original input receives a verified native intake ACK. */
+  readonly onInputAccepted?: (() => void) | undefined;
   /** Cancels queued cold startup; admitted native work keeps its existing interrupt owner. */
   readonly signal?: AbortSignal;
   /** Shared value-free recorder for native events and host exit evidence unavailable to the Harness. */

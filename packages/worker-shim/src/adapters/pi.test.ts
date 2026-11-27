@@ -1254,7 +1254,7 @@ describe('Pi controlled channel faults', () => {
     }
   );
 
-  it('landing omits unobserved evidence and reports independent terminal and close facts', async () => {
+  it('notifies Pi input acceptance once on the correlated started reply and keeps terminal separate', async () => {
     const running = await peer('interrupt-no-terminal', undefined, { requestTimeoutMs: 100 });
     const runningTurn = await running.session.startTurn(turnInput(running.dirs));
     expect(running.session.nativeEvidence?.()).toEqual({});
@@ -1269,8 +1269,11 @@ describe('Pi controlled channel faults', () => {
 
     const { dirs, session } = await peer('ordinary');
     expect(session.nativeEvidence?.()).toEqual({});
-    const turn = await session.startTurn(turnInput(dirs));
+    const onInputAccepted = vi.fn();
+    const turn = await session.startTurn({ ...turnInput(dirs), onInputAccepted });
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
     expect((await turn.settled).nativeEvidence).toEqual({ nativeTerminal: true });
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
     expect(session.nativeEvidence?.()).toEqual({ nativeTerminal: true });
     await session.close();
     expect(session.nativeEvidence?.()).toEqual({

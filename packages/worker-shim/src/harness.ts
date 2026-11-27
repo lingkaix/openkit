@@ -14,10 +14,13 @@ import {
   type HarnessResultEnvelope,
   HarnessResultEnvelopeSchema,
   type HarnessSessionOpenBody,
+  HarnessSessionOpenBodySchema,
   type HarnessSessionSelectorBody,
   type HarnessTurnInterruptBody,
   type HarnessTurnStartBody,
+  HarnessTurnStartBodySchema,
   type HarnessTurnSteerBody,
+  HarnessTurnSteerBodySchema,
   isHarnessResultBodyValid,
   isProtectedNativeEnvironmentName,
   type WorkerStartupFailure,
@@ -28,11 +31,13 @@ import {
 } from '@openkit/worker-protocol';
 import {
   WORKER_ADAPTERS,
+  type WorkerAdapterResult,
   type WorkerHostManagedLoginAccess,
   type WorkerNativeHandle,
   type WorkerResidentAdapter,
   type WorkerResidentSession,
   type WorkerResidentTurn,
+  type WorkerStopDeclaration,
 } from './adapter-registry.js';
 import { isRetryableHttpStatus } from './control-client.js';
 import { credentialHelperDeclarations } from './credential-helper-binding.js';
@@ -52,6 +57,22 @@ import {
   runResidentTurn,
   type WorkerShimEnvironment,
 } from './turn.js';
+import type {
+  WorkerShimAbsence,
+  WorkerShimDesiredSet,
+  WorkerShimDisposition,
+  WorkerShimInterrupt,
+  WorkerShimInterruptReceipt,
+  WorkerShimInventory,
+  WorkerShimKeyedWork,
+  WorkerShimObservation,
+  WorkerShimOperationKey,
+  WorkerShimReceipt,
+  WorkerShimSession,
+  WorkerShimStart,
+  WorkerShimTurn,
+  WorkerShimTurnInput,
+} from './worker-shim-port.js';
 
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
@@ -101,6 +122,18 @@ interface ActiveTurn {
   readonly leaseId: string;
   readonly promise: Promise<void>;
   readonly turnId: string;
+  readonly shimTurn?: ShimTurnAdmission;
+}
+
+/** Exact input owner and the last pre-contact check for a Shim Turn. */
+interface ShimTurnAdmission {
+  readonly target: WorkerShimTurn;
+  readonly beforeNativeInput: (input: string) => void;
+  readonly onInputAccepted: () => void;
+  readonly finished: () => void;
+  contacted: boolean;
+  nativeSettled: boolean;
+  interrupt?: { signalled: boolean; cancelled: () => void };
 }
 
 interface HarnessSession {
@@ -134,6 +167,8 @@ interface HarnessSession {
   /** Digest of the reference stored under this AgentSession id, once one is ready. */
   handleDigest: string | null;
   readonly resident: WorkerResidentSession;
+  /** A Shim binding shares this close with startup rollback and desired stop. */
+  readonly closeResident: () => Promise<void>;
   readonly runtimeEnvironmentNames: ReadonlySet<string>;
   readonly nativeEnvironment: Readonly<Record<string, string>> | null;
   readonly sessionDirectory: string;
@@ -198,11 +233,8 @@ export interface WorkerHarnessOptions {
   readonly sandboxRoot?: string | undefined;
 }
 
-/**
- * One Harness instance: executes the seven private operations for the resident AgentSession
- * bindings of one adapter. The adapter is fixed by the first `session.open`, which names it.
- */
-export class WorkerHarness {
+/** Owns the resident lifecycle and native effects for one adapter's bindings. */
+class ResidentRuntime {
   private adapterId: string | null = null;
   private readonly adapters: Readonly<Record<string, WorkerResidentAdapter>>;
   private draining = false;
@@ -219,7 +251,7 @@ export class WorkerHarness {
   private readonly sandboxRoot: string;
   private readonly sessions = new Map<string, HarnessSession>();
 
-  /** Creates one Harness with an empty AgentSession registry. */
+  /** Starts with an empty AgentSession registry. */
   public constructor(options: WorkerHarnessOptions) {
     this.adapters = options.adapters ?? WORKER_ADAPTERS;
     this.environment = options.environment ?? process.env;
@@ -229,75 +261,24 @@ export class WorkerHarness {
     this.sandboxRoot = resolve(options.sandboxRoot ?? '/openkit');
   }
 
-  /**
-   * Executes one sequenced command and returns its exact result envelope.
-   *
-   * @param command Parsed command envelope.
-   * @returns A succeeded or refused result with a closed reason and, where applicable, the
-   *   observed exhausted bound or operation-specific startup-failure diagnostic.
-   */
-  public async handle(command: HarnessCommandEnvelope): Promise<HarnessResultEnvelope> {
-    try {
-      const body = parseBody(command.operation, command.body);
-      let resultBody: Readonly<Record<string, unknown>>;
-      switch (command.operation) {
-        case 'session.open':
-          resultBody = await this.openSession(body as HarnessSessionOpenBody);
-          break;
-        case 'session.inspect':
-          resultBody = await this.inspectSession(body as HarnessSessionSelectorBody);
-          break;
-        case 'turn.start':
-          resultBody = await this.startTurn(body as HarnessTurnStartBody);
-          break;
-        case 'turn.steer': {
-          const outcome = await this.steerTurn(body as HarnessTurnSteerBody);
-          return result(command, outcome.disposition, outcome.body);
-        }
-        case 'turn.interrupt':
-          resultBody = await this.interruptTurn(body as HarnessTurnInterruptBody);
-          break;
-        case 'session.close':
-          resultBody = await this.closeSession(body as HarnessSessionSelectorBody);
-          break;
-        case 'harness.drain':
-          this.draining = true;
-          resultBody = {
-            activeTurns: this.activeTurnCount(),
-            openSessions: this.sessions.size + this.unprovedResidents,
-            state: 'draining',
-          };
-          break;
-      }
-      return result(command, 'succeeded', resultBody);
-    } catch (error) {
-      const startupFailure =
-        (command.operation === 'turn.start' || command.operation === 'session.open') &&
-        error &&
-        typeof error === 'object' &&
-        'startupFailure' in error
-          ? WorkerStartupFailureSchema.safeParse(error.startupFailure).data
-          : undefined;
-      return result(command, 'refused', {
-        reasonCode: reasonCode(error),
-        ...(command.operation === 'session.open' &&
-        isRecord(error) &&
-        (error.retainedSessionWork === 'suspended' || error.retainedSessionWork === 'queued')
-          ? { retainedSessionWork: error.retainedSessionWork }
-          : {}),
-        ...(error &&
-        typeof error === 'object' &&
-        'exhaustedBound' in error &&
-        HarnessExhaustedBoundSchema.safeParse(error.exhaustedBound).success
-          ? { exhaustedBound: error.exhaustedBound }
-          : {}),
-        ...(startupFailure ? { startupFailure } : {}),
-      });
-    }
+  /** Stops new admissions and reports the remaining resident bindings. */
+  public drain() {
+    this.draining = true;
+    return {
+      activeTurns: this.activeTurnCount(),
+      openSessions: this.sessions.size + this.unprovedResidents,
+      state: 'draining',
+    };
   }
 
   /** Opens one resident binding, new or by resume, and registers its loopback credentials. */
-  private async openSession(body: HarnessSessionOpenBody) {
+  public async openSession(
+    body: HarnessSessionOpenBody,
+    admission?: {
+      readonly isCurrent: () => boolean;
+      readonly handoffChild: (child: WorkerResidentSession) => () => Promise<void>;
+    }
+  ) {
     if (
       this.adapterId !== null &&
       body.maxActiveTurns !== undefined &&
@@ -345,6 +326,7 @@ export class WorkerHarness {
     const resumeReference = body.resume
       ? await this.readResumeReference(body.resume, body.threadId, body.adapterId)
       : null;
+    if (admission && !admission.isCurrent()) throw harnessError('stale');
 
     if (this.adapterId === null) this.maxActiveTurns = body.maxActiveTurns ?? this.maxActiveTurns;
     this.adapterId = body.adapterId;
@@ -354,7 +336,7 @@ export class WorkerHarness {
       createHash('sha256').update(body.agentSessionRuntimeBindingId).digest('hex')
     );
     let loopbackRegistered = false;
-    let resident: WorkerResidentSession | null = null;
+    let closeResident: (() => Promise<void>) | undefined;
     try {
       try {
         this.integration.registerSessionLoopback(body.agentSessionId, {
@@ -407,9 +389,10 @@ export class WorkerHarness {
             ? initialPackage.credentials.declarations
             : undefined
         ).length > 0;
+      if (admission && !admission.isCurrent()) throw harnessError('stale');
       // The adapter contract owns the no-live-effect guarantee. A resident that still exists when
       // close fails keeps the Thread reserved and drains this Harness.
-      resident = await adapter
+      const resident = await adapter
         .openSession({
           agentSessionId: body.agentSessionId,
           controlRoot,
@@ -478,6 +461,8 @@ export class WorkerHarness {
             Object.assign(refusal, { retainedSessionWork: error.retainedSessionWork });
           throw refusal;
         });
+      closeResident = admission?.handoffChild(resident) ?? (() => resident.close());
+      if (admission && !admission.isCurrent()) throw harnessError('stale');
       const session: HarnessSession = {
         activeTurn: null,
         agentSessionId: body.agentSessionId,
@@ -495,6 +480,7 @@ export class WorkerHarness {
         failed: false,
         handleDigest: null,
         resident,
+        closeResident,
         runtimeEnvironmentNames: new Set(Object.keys(runtimeEnvironment)),
         nativeEnvironment,
         sessionDirectory,
@@ -502,7 +488,7 @@ export class WorkerHarness {
         turnsStarted: 0,
         workspaceId: body.workspaceId,
       };
-      const handle = await this.proveHandle(session).catch(() => {
+      const handle = await this.proveHandle(session, admission?.isCurrent).catch(() => {
         throw harnessError('dependency_failed');
       });
       if (
@@ -530,26 +516,26 @@ export class WorkerHarness {
       if (loopbackRegistered) this.integration.destroySessionLoopback(body.agentSessionId);
       let refusal = error;
       if (
-        resident &&
-        !(await resident.close().then(
+        closeResident &&
+        !(await closeResident().then(
           () => true,
           () => false
         ))
       ) {
-        // The refused host may still be live: keep its Thread reserved and fence this Harness.
+        // The refused host may still be live: keep its control material and Thread reservation.
         this.unprovedResidents += 1;
         this.draining = true;
         refusal = harnessError('cleanup_required');
       } else {
+        await rm(sessionDirectory, { force: true, recursive: true }).catch(() => undefined);
         LIVE_THREAD_BINDINGS.delete(threadKey);
       }
-      await rm(sessionDirectory, { force: true, recursive: true }).catch(() => undefined);
       throw refusal;
     }
   }
 
   /** Inspects one binding's native handle, host liveness, and cleanup without starting work. */
-  private async inspectSession(body: HarnessSessionSelectorBody) {
+  public async inspectSession(body: HarnessSessionSelectorBody) {
     const session = this.requireSession(body);
     if (session.activeTurn?.barrierReached) {
       await session.activeTurn.promise;
@@ -573,7 +559,7 @@ export class WorkerHarness {
   }
 
   /** Starts one Turn on the resident binding and answers once the runtime accepted it. */
-  private async startTurn(body: HarnessTurnStartBody) {
+  public async startTurn(body: HarnessTurnStartBody, admission?: ShimTurnAdmission) {
     const session = this.requireSession(body);
     if (session.failed || session.closing || (session.turnsStarted > 0 && !session.established)) {
       // A binding whose first Turn did not complete, whose host ended, whose native settlement is
@@ -680,6 +666,26 @@ export class WorkerHarness {
             session.cleanupState = 'pending';
           }
         },
+        ...(admission && {
+          beforeNativeInput: (input: string) => {
+            admission.beforeNativeInput(input);
+            admission.contacted = true;
+          },
+          onInputAccepted: admission.onInputAccepted,
+          onNativeInterrupt: () => {
+            if (admission.interrupt) admission.interrupt.signalled = true;
+          },
+          onNativeSettlement: (result: WorkerAdapterResult | undefined) => {
+            admission.nativeSettled = true;
+            if (
+              admission.interrupt?.signalled &&
+              result?.status === 'interrupted' &&
+              result.interruptRequested === true
+            ) {
+              admission.interrupt.cancelled();
+            }
+          },
+        }),
         packagePath,
         resident: session.resident,
         runtimeEnvironmentNames: session.runtimeEnvironmentNames,
@@ -719,6 +725,7 @@ export class WorkerHarness {
         if (session.cleanupState === 'clean' && session.activeTurn?.turnId === body.turnId) {
           session.activeTurn = null;
         }
+        admission?.finished();
       });
     session.activeTurn = {
       workerControlToken: body.workerControlToken,
@@ -729,6 +736,7 @@ export class WorkerHarness {
       leaseId: body.leaseId,
       promise: settled,
       turnId: body.turnId,
+      ...(admission ? { shimTurn: admission } : {}),
     };
     await Promise.race([
       started,
@@ -749,7 +757,10 @@ export class WorkerHarness {
   }
 
   /** Admits typed user text once through the exact active native work, without a queue or fallback. */
-  private async steerTurn(body: HarnessTurnSteerBody): Promise<{
+  public async steerTurn(
+    body: HarnessTurnSteerBody,
+    target?: WorkerShimTurn
+  ): Promise<{
     disposition: 'succeeded' | 'refused' | 'unknown';
     body: Readonly<Record<string, unknown>>;
   }> {
@@ -761,6 +772,7 @@ export class WorkerHarness {
       active.abort.signal.aborted ||
       session.failed ||
       session.closing ||
+      (target && (!active.shimTurn || !sameShimTurn(active.shimTurn.target, target))) ||
       body.turnId !== active.turnId ||
       body.leaseId !== active.leaseId ||
       body.packageSnapshotId !== active.packageSnapshotId ||
@@ -801,7 +813,7 @@ export class WorkerHarness {
   }
 
   /** Interrupts only the exact active Turn and answers after it settled. */
-  private async interruptTurn(body: HarnessTurnInterruptBody) {
+  public async interruptTurn(body: HarnessTurnInterruptBody) {
     const session = this.requireSession(body);
     const active = session.activeTurn;
     if (active && (body.turnId !== active.turnId || body.leaseId !== active.leaseId))
@@ -816,8 +828,28 @@ export class WorkerHarness {
     return { childState: session.resident.childState(), state: 'interrupted' };
   }
 
+  /** Aborts the original entered native attempt. Preparation uses its own pre-contact fence. */
+  public interruptShimTurn(
+    body: HarnessSessionSelectorBody,
+    target: WorkerShimTurn,
+    cancelled: () => void
+  ): void {
+    const active = this.requireSession(body).activeTurn;
+    const turn = active?.shimTurn;
+    if (
+      !active ||
+      !turn?.contacted ||
+      turn.nativeSettled ||
+      !sameShimTurn(turn.target, target) ||
+      active.abort.signal.aborted
+    )
+      return;
+    turn.interrupt = { signalled: false, cancelled };
+    active.abort.abort(new Error('Worker Turn interrupt.'));
+  }
+
   /** Closes one idle binding: revokes the native binding, loopback, and disposable control. */
-  private async closeSession(body: HarnessSessionSelectorBody) {
+  public async closeSession(body: HarnessSessionSelectorBody) {
     const session = this.requireSession(body);
     if (session.activeTurn) {
       if (session.cleanupState === 'unknown') throw harnessError('cleanup_required');
@@ -825,7 +857,7 @@ export class WorkerHarness {
     }
     session.closing = true;
     try {
-      await session.resident.close();
+      await session.closeResident();
     } catch {
       // The host may still hold the conversation: revoke its routes and fence the Harness.
       this.integration.destroySessionLoopback(session.agentSessionId);
@@ -844,17 +876,31 @@ export class WorkerHarness {
     return { childState: session.resident.childState(), privateState: 'absent', state: 'closed' };
   }
 
+  /** Stops entered Turn work before attempting the existing resident close. */
+  public async stopWorker(body: HarnessSessionSelectorBody) {
+    const active = this.requireSession(body).activeTurn;
+    if (active) {
+      active.abort.abort(new Error('Worker stop.'));
+      await active.promise;
+    }
+    return this.closeSession(body);
+  }
+
   /**
    * Proves the adapter's handle and projects it. The first ready reference is stored under the
    * AgentSession id; the adapter decides when its conversation carries that authority. A resumed
    * binding stores only the exact carried reference. A different reference is reported as unknown
    * and never replaces the stored one.
    */
-  private async proveHandle(session: HarnessSession): Promise<{
+  private async proveHandle(
+    session: HarnessSession,
+    isCurrent?: () => boolean
+  ): Promise<{
     readonly nativeHandleDigest: string | null;
     readonly nativeHandleState: 'pending' | 'ready' | 'unknown';
   }> {
     const handle: WorkerNativeHandle = await session.resident.nativeHandle();
+    if (isCurrent && !isCurrent()) throw harnessError('stale');
     if (handle.state !== 'ready') {
       return {
         nativeHandleDigest: null,
@@ -1029,6 +1075,507 @@ export class WorkerHarness {
   /** Maps a canonical `/openkit` path into the test-injectable Sandbox root. */
   private mapSandboxPath(path: string): string {
     return resolve(this.sandboxRoot, relative('/openkit', path));
+  }
+}
+
+/** Projects the sequenced Harness operations over the resident runtime. */
+export class WorkerHarness {
+  private readonly runtime: ResidentRuntime;
+
+  /** Creates a Harness with one adapter-scoped resident runtime. */
+  public constructor(options: WorkerHarnessOptions) {
+    this.runtime = new ResidentRuntime(options);
+  }
+
+  /**
+   * Executes one sequenced command and returns its exact result envelope.
+   *
+   * @param command Parsed command envelope.
+   * @returns A succeeded or refused result with a closed reason and, where applicable, the
+   *   observed exhausted bound or operation-specific startup-failure diagnostic.
+   */
+  public async handle(command: HarnessCommandEnvelope): Promise<HarnessResultEnvelope> {
+    try {
+      const body = parseBody(command.operation, command.body);
+      let resultBody: Readonly<Record<string, unknown>>;
+      switch (command.operation) {
+        case 'session.open':
+          resultBody = await this.runtime.openSession(body as HarnessSessionOpenBody);
+          break;
+        case 'session.inspect':
+          resultBody = await this.runtime.inspectSession(body as HarnessSessionSelectorBody);
+          break;
+        case 'turn.start':
+          resultBody = await this.runtime.startTurn(body as HarnessTurnStartBody);
+          break;
+        case 'turn.steer': {
+          const outcome = await this.runtime.steerTurn(body as HarnessTurnSteerBody);
+          return result(command, outcome.disposition, outcome.body);
+        }
+        case 'turn.interrupt':
+          resultBody = await this.runtime.interruptTurn(body as HarnessTurnInterruptBody);
+          break;
+        case 'session.close':
+          resultBody = await this.runtime.closeSession(body as HarnessSessionSelectorBody);
+          break;
+        case 'harness.drain':
+          resultBody = this.runtime.drain();
+          break;
+      }
+      return result(command, 'succeeded', resultBody);
+    } catch (error) {
+      const startupFailure =
+        (command.operation === 'turn.start' || command.operation === 'session.open') &&
+        error &&
+        typeof error === 'object' &&
+        'startupFailure' in error
+          ? WorkerStartupFailureSchema.safeParse(error.startupFailure).data
+          : undefined;
+      return result(command, 'refused', {
+        reasonCode: reasonCode(error),
+        ...(command.operation === 'session.open' &&
+        isRecord(error) &&
+        (error.retainedSessionWork === 'suspended' || error.retainedSessionWork === 'queued')
+          ? { retainedSessionWork: error.retainedSessionWork }
+          : {}),
+        ...(error &&
+        typeof error === 'object' &&
+        'exhaustedBound' in error &&
+        HarnessExhaustedBoundSchema.safeParse(error.exhaustedBound).success
+          ? { exhaustedBound: error.exhaustedBound }
+          : {}),
+        ...(startupFailure ? { startupFailure } : {}),
+      });
+    }
+  }
+}
+
+/** Retains the original start while child observations and local cleanup advance independently. */
+interface WorkerLifetime {
+  readonly start: WorkerShimStart;
+  readonly stopScope: WorkerStopDeclaration;
+  readonly runtime: ResidentRuntime;
+  readonly selector: HarnessSessionSelectorBody;
+  readonly result: Promise<WorkerShimDisposition>;
+  state?: WorkerShimObservation['state'];
+  child?: WorkerResidentSession;
+  closeChild?: () => Promise<void>;
+  opened: boolean;
+  stopped: boolean;
+}
+
+/** Checks the original authorized placement and retained reference before sharing its result. */
+function sameWorkerStart(original: WorkerShimStart, next: WorkerShimStart): boolean {
+  return (
+    original.workerId === next.workerId &&
+    original.adapterId === next.adapterId &&
+    original.agentSessionId === next.agentSessionId &&
+    original.workSlotRef === next.workSlotRef &&
+    original.resume?.locator === next.resume?.locator &&
+    original.resume?.digest === next.resume?.digest
+  );
+}
+
+/** Exact owner material resolved for a proposed input or steer key. */
+interface ShimWorkMaterial {
+  input(operationId: string): { work: WorkerShimTurnInput; body: HarnessTurnStartBody } | undefined;
+  steer(operationId: string): { work: WorkerShimKeyedWork; body: HarnessTurnSteerBody } | undefined;
+}
+
+/** Retains a one-shot decision independently of report acknowledgement. */
+interface ShimOperation {
+  readonly kind: WorkerShimReceipt['kind'];
+  readonly work: WorkerShimKeyedWork | WorkerShimTurnInput;
+  readonly result: Promise<WorkerShimDisposition>;
+  disposition?: WorkerShimDisposition;
+  acknowledged: boolean;
+}
+
+/** Keeps the original desired interruption distinct from later conflicts and settlement. */
+interface ShimInterrupt {
+  readonly request: WorkerShimInterrupt;
+  disposition: WorkerShimInterruptReceipt['disposition'];
+}
+
+/** Checks the exact active Worker, Turn and attempt. */
+function sameShimTurn(original: WorkerShimTurn, next: WorkerShimTurn): boolean {
+  return (
+    original.workerId === next.workerId &&
+    original.turnId === next.turnId &&
+    original.attemptId === next.attemptId
+  );
+}
+
+/** Matches the exact Core acknowledgement key. */
+function sameOperationKey(original: WorkerShimOperationKey, next: WorkerShimOperationKey): boolean {
+  return (
+    original.operationId === next.operationId &&
+    original.workerId === next.workerId &&
+    original.payloadDigest === next.payloadDigest
+  );
+}
+
+/** Protects the original input and authorization when sharing a prior decision. */
+function sameShimWork(
+  original: WorkerShimKeyedWork | WorkerShimTurnInput,
+  next: WorkerShimKeyedWork | WorkerShimTurnInput
+): boolean {
+  return (
+    sameOperationKey(original, next) &&
+    sameShimTurn(original, next) &&
+    original.inputRef === next.inputRef &&
+    ('routeGrant' in original
+      ? 'routeGrant' in next && original.routeGrant === next.routeGrant
+      : !('routeGrant' in next))
+  );
+}
+
+/** Supervises the Workers of one incarnation using owner-resolved start material. */
+export class WorkerShim {
+  private readonly workers = new Map<string, WorkerLifetime | null>();
+  private readonly occupiedSlots = new Set<string>();
+  private readonly operations = new Map<string, ShimOperation>();
+  private readonly interrupts: ShimInterrupt[] = [];
+  private generation = -1;
+  private revision = -1;
+
+  /** Binds one shim instance to its incarnation and the embedding owner's admitted placement. */
+  public constructor(
+    private readonly options: WorkerHarnessOptions,
+    private readonly incarnationId: string,
+    private readonly readStart: (workerId: string) =>
+      | {
+          readonly worker: WorkerShimStart;
+          readonly body: HarnessSessionOpenBody;
+        }
+      | undefined,
+    private readonly workMaterial?: ShimWorkMaterial
+  ) {}
+
+  /** Reserves the Worker and its local work slot before asynchronous setup can enter. */
+  public async start(worker: WorkerShimStart): Promise<WorkerShimDisposition> {
+    const previous = this.workers.get(worker.workerId);
+    if (previous === null || previous?.stopped || previous?.state === 'exited') return 'refused';
+    if (previous) return sameWorkerStart(previous.start, worker) ? previous.result : 'refused';
+
+    const admitted = this.readStart(worker.workerId);
+    if (!admitted || !sameWorkerStart(admitted.worker, worker)) return 'refused';
+    if (this.occupiedSlots.has(worker.workSlotRef)) return 'refused';
+    const adapter = (this.options.adapters ?? WORKER_ADAPTERS)[worker.adapterId];
+    if (!adapter) return 'refused';
+    const parsed = HarnessSessionOpenBodySchema.safeParse(admitted.body);
+    if (!parsed.success) return 'refused';
+    const body = parsed.data;
+    if (
+      !sameWorkerStart(worker, {
+        workerId: worker.workerId,
+        workSlotRef: worker.workSlotRef,
+        adapterId: body.adapterId,
+        agentSessionId: body.agentSessionId,
+        resume: body.resume,
+      })
+    )
+      return 'refused';
+    const entry: WorkerLifetime = {
+      start: { ...worker, resume: body.resume },
+      stopScope: adapter.stop ?? { kind: 'best-effort' },
+      runtime: new ResidentRuntime(this.options),
+      selector: {
+        agentSessionId: body.agentSessionId,
+        agentSessionRuntimeBindingId: body.agentSessionRuntimeBindingId,
+      },
+      opened: false,
+      stopped: false,
+      result: Promise.resolve().then(() => this.open(entry, body)),
+    };
+    this.workers.set(worker.workerId, entry);
+    this.occupiedSlots.add(worker.workSlotRef);
+    return entry.result;
+  }
+
+  /** Closes ingress once and leaves any entered open with its original cleanup owner. */
+  public async stop(workerId: string): Promise<'stopping' | 'exited' | 'unknown'> {
+    const entry = this.workers.get(workerId);
+    if (!entry) {
+      this.workers.set(workerId, null);
+      return 'unknown';
+    }
+    if (!entry.stopped) {
+      entry.stopped = true;
+      if (entry.state !== 'exited') entry.state = 'stopping';
+      // Handle inspection may need the child to close before the open can finish.
+      if (!entry.opened) void entry.closeChild?.().catch(() => undefined);
+      void entry.result.then(async () => {
+        if (!entry.opened) return;
+        try {
+          await entry.runtime.stopWorker(entry.selector);
+        } catch {
+          // The original slot remains held if local close fails.
+        }
+        if (entry.child?.childState() === 'absent') entry.state = 'exited';
+      });
+    }
+    return entry.state === 'exited' ? 'exited' : 'stopping';
+  }
+
+  /** Best-effort adapters have no qualified whole-tree proof to await locally. */
+  public async waitUntilAbsent(
+    _workerId: string,
+    _deadline: LifecycleDeadline
+  ): Promise<WorkerShimAbsence> {
+    return { state: 'held' };
+  }
+
+  /** Applies the original input once and retains uncertain native delivery. */
+  public keyedTurnInput(work: WorkerShimTurnInput): Promise<WorkerShimDisposition> {
+    return this.applyOperation(
+      'input',
+      work,
+      (id) => this.workMaterial?.input(id),
+      async (original, body) => {
+        const entry = this.workers.get(original.workerId);
+        if (!entry || entry.stopped || this.hasInterrupt(original)) return 'refused';
+        if (!entry.opened) await entry.result;
+        const parsed = HarnessTurnStartBodySchema.safeParse(body);
+        if (
+          !parsed.success ||
+          entry.stopped ||
+          entry.state !== 'running' ||
+          parsed.data.turnId !== original.turnId ||
+          parsed.data.agentSessionId !== entry.selector.agentSessionId ||
+          parsed.data.agentSessionRuntimeBindingId !== entry.selector.agentSessionRuntimeBindingId
+        )
+          return 'refused';
+
+        let disposition: WorkerShimDisposition | undefined;
+        let accept!: () => void;
+        const ack = new Promise<'accepted'>((resolve) => {
+          accept = () => resolve('accepted');
+        });
+        const admission: ShimTurnAdmission = {
+          target: original,
+          contacted: false,
+          nativeSettled: false,
+          beforeNativeInput: (input) => {
+            if (entry.stopped || entry.state !== 'running' || this.hasInterrupt(original))
+              throw harnessError('stale');
+            if (createHash('sha256').update(input).digest('hex') !== original.payloadDigest)
+              throw harnessError('conflict');
+          },
+          onInputAccepted: () => {
+            if (!admission.contacted || disposition) return;
+            disposition = 'accepted';
+            accept();
+          },
+          finished: () => {
+            // Once the original Turn joins, close its fenced Worker.
+            if (admission.contacted && disposition !== 'accepted')
+              void this.stop(original.workerId);
+          },
+        };
+        const handoff = entry.runtime
+          .startTurn(parsed.data, admission)
+          .then<WorkerShimDisposition, WorkerShimDisposition>(
+            () => {
+              if (disposition === 'accepted') return disposition;
+              // Keep the entered Turn's settlement owner and fence fresh effects before the receipt.
+              if (entry.state === 'running') entry.state = 'stopping';
+              disposition = 'unknown';
+              return disposition;
+            },
+            () => {
+              if (!admission.contacted) {
+                disposition = 'refused';
+                return disposition;
+              }
+              void this.stop(original.workerId);
+              disposition ??= 'unknown';
+              return disposition;
+            }
+          );
+        return Promise.race([ack, handoff]);
+      }
+    );
+  }
+
+  /** Sends steer only through the exact active Turn's qualified native compare-and-admit hook. */
+  public keyedSteer(work: WorkerShimKeyedWork): Promise<WorkerShimDisposition> {
+    return this.applyOperation(
+      'steer',
+      work,
+      (id) => this.workMaterial?.steer(id),
+      async (original, body) => {
+        const entry = this.workers.get(original.workerId);
+        if (!entry || entry.stopped || entry.state !== 'running' || this.hasInterrupt(original))
+          return 'refused';
+        const parsed = HarnessTurnSteerBodySchema.safeParse(body);
+        if (
+          !parsed.success ||
+          parsed.data.turnId !== original.turnId ||
+          parsed.data.inputItemId !== original.inputRef ||
+          parsed.data.inputDigest !== original.payloadDigest ||
+          parsed.data.agentSessionId !== entry.selector.agentSessionId ||
+          parsed.data.agentSessionRuntimeBindingId !== entry.selector.agentSessionRuntimeBindingId
+        )
+          return 'refused';
+        try {
+          const { disposition } = await entry.runtime.steerTurn(parsed.data, original);
+          return disposition === 'succeeded' ? 'accepted' : disposition;
+        } catch {
+          // The resident steer owner already turns any uncertain native contact into unknown.
+          return 'refused';
+        }
+      }
+    );
+  }
+
+  /** Checks owner scope before reserving the operation for asynchronous setup or native contact. */
+  private applyOperation<T extends WorkerShimKeyedWork, B>(
+    kind: WorkerShimReceipt['kind'],
+    work: T,
+    read: (id: string) => { work: T; body: B } | undefined,
+    apply: (work: T, body: B) => Promise<WorkerShimDisposition>
+  ): Promise<WorkerShimDisposition> {
+    const previous = this.operations.get(work.operationId);
+    if (previous)
+      return previous.kind === kind && sameShimWork(previous.work, work)
+        ? previous.result
+        : Promise.resolve('refused');
+    const admitted = read(work.operationId);
+    if (!admitted || !sameShimWork(admitted.work, work)) return Promise.resolve('refused');
+    const original = { ...work };
+    const entry: ShimOperation = {
+      kind,
+      work: original,
+      acknowledged: false,
+      result: Promise.resolve()
+        .then(() => apply(original, admitted.body))
+        .then((disposition) => {
+          entry.disposition = disposition;
+          return disposition;
+        }),
+    };
+    this.operations.set(original.operationId, entry);
+    return entry.result;
+  }
+
+  /** Closes native admission for a Turn with recorded desired interruption. */
+  private hasInterrupt(target: WorkerShimTurn): boolean {
+    return this.interrupts.some(({ request }) => sameShimTurn(request, target));
+  }
+
+  /** Records the first request and preserves conflicts without delivering them. */
+  private applyInterrupt(request: WorkerShimInterrupt): void {
+    const prior = this.interrupts.filter((entry) => sameShimTurn(entry.request, request));
+    if (
+      prior.some(
+        (entry) =>
+          entry.request.requestId === request.requestId && entry.request.cause === request.cause
+      )
+    )
+      return;
+    const original: ShimInterrupt = {
+      request: { ...request },
+      disposition: prior.length ? 'refused' : 'unknown',
+    };
+    this.interrupts.push(original);
+    if (prior.length) return;
+    const entry = this.workers.get(request.workerId);
+    if (!entry?.opened || entry.stopped || entry.state === 'exited') return;
+    entry.runtime.interruptShimTurn(entry.selector, original.request, () => {
+      original.disposition = 'cancelled';
+    });
+  }
+
+  /** Exchanges complete local observations before applying a current desired Worker set. */
+  public async poll(
+    session: WorkerShimSession,
+    exchange: (inventory: WorkerShimInventory) => Promise<WorkerShimDesiredSet>
+  ): Promise<'applied' | 'stale'> {
+    const { connectionGeneration: generation, sandboxIncarnationId } = session;
+    if (sandboxIncarnationId !== this.incarnationId || generation < this.generation) return 'stale';
+    if (generation > this.generation) {
+      this.generation = generation;
+      this.revision = -1;
+    }
+    const workers: WorkerShimObservation[] = [];
+    for (const [workerId, entry] of this.workers) {
+      if (entry?.state) workers.push({ workerId, state: entry.state, stop: entry.stopScope });
+    }
+    const receipts: WorkerShimReceipt[] = [];
+    for (const { kind, work, acknowledged, disposition } of this.operations.values()) {
+      if (!acknowledged && disposition) {
+        const { operationId, workerId, payloadDigest } = work;
+        receipts.push({ kind, key: { operationId, workerId, payloadDigest }, disposition });
+      }
+    }
+    const interrupts = this.interrupts.map(({ request, disposition }) => ({
+      ...request,
+      disposition,
+    }));
+    const desired = await exchange({ session, workers, receipts, interrupts });
+    if (
+      generation !== this.generation ||
+      desired.session.connectionGeneration !== generation ||
+      desired.session.sandboxIncarnationId !== this.incarnationId ||
+      desired.revision <= this.revision
+    )
+      return 'stale';
+    this.revision = desired.revision;
+    for (const key of desired.acknowledgedOperations) {
+      const original = this.operations.get(key.operationId);
+      if (original?.disposition && sameOperationKey(original.work, key)) {
+        original.acknowledged = true;
+      }
+    }
+    const effects: Promise<unknown>[] = [];
+    for (const worker of desired.workers) {
+      if (worker.state === 'stop') effects.push(this.stop(worker.workerId));
+    }
+    for (const interrupt of desired.interrupts) this.applyInterrupt(interrupt);
+    for (const worker of desired.workers) {
+      if (worker.state === 'run') effects.push(this.start(worker.worker));
+    }
+    for (const input of desired.inputs) effects.push(this.keyedTurnInput(input));
+    for (const steer of desired.steers) effects.push(this.keyedSteer(steer));
+    await Promise.all(effects);
+    return 'applied';
+  }
+
+  /** Reuses admitted setup and retains the slot whenever a child may have started. */
+  private async open(
+    entry: WorkerLifetime,
+    body: HarnessSessionOpenBody
+  ): Promise<WorkerShimDisposition> {
+    const isCurrent = () => !entry.stopped && entry.state !== 'exited';
+    try {
+      if (!isCurrent()) throw harnessError('stale');
+      await entry.runtime.openSession(body, {
+        isCurrent,
+        handoffChild: (child) => {
+          entry.child = child;
+          let closing: Promise<void> | undefined;
+          entry.closeChild = () => (closing ??= Promise.resolve().then(() => child.close()));
+          const exited = () => {
+            entry.state = 'exited';
+          };
+          void child.exited.then(exited, exited);
+          return entry.closeChild;
+        },
+      });
+      entry.opened = true;
+      if (!isCurrent()) return 'unknown';
+      entry.state = 'running';
+      return 'accepted';
+    } catch (error) {
+      if (!entry.child) {
+        this.occupiedSlots.delete(entry.start.workSlotRef);
+        return 'refused';
+      }
+      if (entry.child.childState() === 'absent') entry.state = 'exited';
+      else if (entry.state !== 'exited') entry.state = 'stopping';
+      return reasonCode(error) === 'cleanup_required' || entry.stopped ? 'unknown' : 'refused';
+    }
   }
 }
 

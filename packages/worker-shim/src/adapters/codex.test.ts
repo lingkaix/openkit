@@ -2910,7 +2910,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
   });
 
   it.each(['terminal-same-chunk', 'terminal-before'])(
-    'settles a terminal that races turn acceptance: %s',
+    'notifies Codex input acceptance once when terminal evidence races the ACK: %s',
     async (mode) => {
       const roots = await tempRoots();
       closers.push(async () => rm(roots.base, { recursive: true, force: true }));
@@ -2920,12 +2920,15 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
         spawnProcess: () => child,
       });
       sessions.push(session);
-      const turn = await session.startTurn(turnInput(roots, []));
+      const onInputAccepted = vi.fn();
+      const turn = await session.startTurn({ ...turnInput(roots, []), onInputAccepted });
+      expect(onInputAccepted).toHaveBeenCalledTimes(1);
       const outcome = await Promise.race([
         turn.settled,
         new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
       ]);
       expect(outcome).toMatchObject({ status: 'completed', assistantText: 'ok' });
+      expect(onInputAccepted).toHaveBeenCalledTimes(1);
     }
   );
 
@@ -2949,7 +2952,9 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     trackChild(child);
     const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
     sessions.push(session);
-    await expect(session.startTurn(turnInput(roots, []))).rejects.toThrow();
+    const onInputAccepted = vi.fn();
+    await expect(session.startTurn({ ...turnInput(roots, []), onInputAccepted })).rejects.toThrow();
+    expect(onInputAccepted).toHaveBeenCalledTimes(0);
     expect(session.childState()).toBe('absent');
   });
 

@@ -919,6 +919,7 @@ async function supervise(
               })(),
               setupDeadline.workRemainingMs()
             );
+            turn.signal?.throwIfAborted();
             promptStartedAt = Date.now();
             promptAttempted = true;
             nativeTerminal = undefined;
@@ -930,6 +931,7 @@ async function supervise(
               throw new Error('OpenCode prompt admission did not return an identity.');
             }
             promptId = admitted.id;
+            turn.onInputAccepted?.();
             // The admitted prompt now starts an actual correlated-terminal proof attempt.
             nativeTerminal = false;
           } catch (error) {

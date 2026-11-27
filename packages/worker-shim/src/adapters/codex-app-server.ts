@@ -265,11 +265,12 @@ export class CodexAppServer {
     return redactDiagnostic(text, this.secrets);
   }
 
-  /** Sends one request and resolves its result. The error text is redacted and not a thread id. */
+  /** Sends one request and resolves its result. The optional guard runs after prior writes drain. */
   async request(
     method: string,
     params: unknown,
-    timeoutMs: number = this.controlTimeoutMs
+    timeoutMs: number = this.controlTimeoutMs,
+    beforeWrite?: () => void
   ): Promise<unknown> {
     if (timeoutMs <= 0) throw new Error('Codex app-server control deadline expired.');
     if (this.broken) throw new Error('Codex app-server stream is unusable.');
@@ -287,7 +288,7 @@ export class CodexAppServer {
     });
     try {
       const message = await Promise.race([
-        Promise.all([this.send({ id, method, params }, abort.signal), response]).then(
+        Promise.all([this.send({ id, method, params }, abort.signal, beforeWrite), response]).then(
           ([, message]) => message
         ),
         deadline,
@@ -491,13 +492,15 @@ export class CodexAppServer {
     this.stderrText = bytes.subarray(0, end).toString('utf8');
   }
 
-  private send(payload: unknown, signal?: AbortSignal): Promise<void> {
+  private send(payload: unknown, signal?: AbortSignal, beforeWrite?: () => void): Promise<void> {
     const ownedAbort = signal ? null : new AbortController();
     const timer = ownedAbort
       ? setTimeout(() => ownedAbort.abort(), this.controlTimeoutMs)
       : undefined;
     signal ??= ownedAbort?.signal;
-    const run = this.outbound.then(() => this.writeLine(`${JSON.stringify(payload)}\n`, signal));
+    const run = this.outbound.then(() =>
+      this.writeLine(`${JSON.stringify(payload)}\n`, signal, beforeWrite)
+    );
     this.outbound = run.then(
       () => undefined,
       () => undefined
@@ -505,9 +508,10 @@ export class CodexAppServer {
     return run.finally(() => clearTimeout(timer));
   }
 
-  private writeLine(line: string, signal?: AbortSignal): Promise<void> {
+  private writeLine(line: string, signal?: AbortSignal, beforeWrite?: () => void): Promise<void> {
     if (this.broken || signal?.aborted || this.child.stdin.destroyed)
       return Promise.reject(new Error('Codex app-server stream is unusable.'));
+    beforeWrite?.();
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         this.child.stdin.off('error', failed);

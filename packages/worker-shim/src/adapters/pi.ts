@@ -678,6 +678,7 @@ export class PiResidentBinding implements WorkerResidentSession {
         deadline.workRemainingMs(),
         'Pi structural capture preparation timed out.'
       );
+      input.signal?.throwIfAborted();
       const active = this.#beginTurn(
         prepared.turnId,
         capture,
@@ -705,6 +706,7 @@ export class PiResidentBinding implements WorkerResidentSession {
             : 'Pi host did not accept the Turn.'
         );
       }
+      input.onInputAccepted?.();
       return {
         steer: (instruction, deadline) => this.#steer(active, instruction, deadline),
         interrupt: (deadline) => this.#interrupt(active, deadline),
