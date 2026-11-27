@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 /** Writes one identity file and returns its path. */
-function writeIdentity(contents: string): string {
+function writeIdentity(contents: string | Uint8Array): string {
   const root = mkdtempSync(join(tmpdir(), 'release-identity-'));
   roots.push(root);
   const path = join(root, 'release-identity.json');
@@ -68,9 +68,26 @@ describe('App release identity', () => {
 
   it('ignores unknown additive file keys and does not copy them into diagnostics', () => {
     const path = writeIdentity(
-      JSON.stringify({ releaseTag: TAG, sourceCommit: COMMIT, note: 'ignored' })
+      JSON.stringify({ releaseTag: TAG, sourceCommit: COMMIT, note: '\u2603\uFFFD' })
     );
     expect(readReleaseIdentity(path)).toEqual({ releaseTag: TAG, sourceCommit: COMMIT });
+  });
+
+  it.each(['image', 'fallback'])('rejects malformed UTF-8 in the %s identity', (reader) => {
+    const valid = writeIdentity(JSON.stringify({ releaseTag: TAG, sourceCommit: COMMIT }));
+    const invalid = writeIdentity(
+      Buffer.concat([
+        Buffer.from(`{"releaseTag":"${TAG}","sourceCommit":"${COMMIT}","note":"`),
+        Buffer.from([0xc3]),
+        Buffer.from('"}'),
+      ])
+    );
+    const missing = join(valid, '..', 'absent-image.json');
+    const [image, fallback] = reader === 'image' ? [invalid, valid] : [missing, invalid];
+
+    expect(() => readReleaseIdentity(image, fallback)).toThrowError(
+      expect.objectContaining({ code: 'invalid_release_identity' })
+    );
   });
 
   it('fails boot configuration for a malformed identity file', () => {

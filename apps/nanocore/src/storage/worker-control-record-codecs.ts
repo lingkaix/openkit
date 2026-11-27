@@ -58,6 +58,7 @@ export const ControlWorkerRecordPayloadSchema = z.union([
       operation: ControlOperationSchema,
       sequence: z.number().int().nonnegative(),
       fingerprint: z.string(),
+      requireContinuous: z.literal(true).optional(),
     })
     .strict(),
   z
@@ -106,6 +107,7 @@ export type ControlWorkerRecordCommand = Omit<ControlWorkerRecordInput, 'byteLen
 export type ControlWorkerOperationCommand = Omit<ControlWorkerRecordCommand, 'payload'> & {
   readonly payload: Extract<ControlWorkerRecordCommand['payload'], { kind: 'record' }>;
   readonly fingerprint: string;
+  readonly omitObservation?: true;
 };
 /** Durable decision returned after the original sequence stage and any required receipt stage. */
 export type ControlWorkerOperationResult = {

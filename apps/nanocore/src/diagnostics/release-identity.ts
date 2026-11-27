@@ -17,8 +17,8 @@ export const RELEASE_IDENTITY_PATH = '/usr/local/lib/openkit/release-identity.js
  *
  * A missing image file may use the source build's adjacent generated identity file. Missing
  * identities still report both fields null; an invalid image file never falls back. A present
- * file requires an exact 40-lowercase-hex commit. Its tag is null for an untagged
- * source build or a v-prefixed SemVer tag. Invalid JSON or core values fail boot configuration.
+ * file requires valid UTF-8 JSON and an exact 40-lowercase-hex commit. Its tag is null
+ * for an untagged source build or a v-prefixed SemVer tag. Invalid files fail boot configuration.
  * Unknown additive keys are ignored and are not returned.
  *
  * @param path Identity file path. Production uses the image path.
@@ -30,9 +30,9 @@ export function readReleaseIdentity(
   path: string | URL = RELEASE_IDENTITY_PATH,
   sourceBuildPath?: string | URL
 ): ReleaseBuildIdentity {
-  let raw: string;
+  let bytes: Buffer;
   try {
-    raw = readFileSync(path, 'utf8');
+    bytes = readFileSync(path);
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       const fallback =
@@ -50,7 +50,8 @@ export function readReleaseIdentity(
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    parsed = JSON.parse(text);
   } catch {
     throw new BootConfigError(
       'invalid_release_identity',

@@ -21,9 +21,13 @@ import { createTestStore } from '../test-support/store.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { admitDataRootForBoot, openCoreDb, recordDataRootDeploymentMove } from './db.js';
-import { coreDbPath, ensureLayout } from './fs-layout.js';
+import { coreDbPath, ensureLayout, readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
-import { dataRootInventory, retainedV010CoreBytes } from './test-support/data-root-admission.js';
+import {
+  dataRootInventory,
+  malformedPredecessorKeyBytes,
+  retainedV010CoreBytes,
+} from './test-support/data-root-admission.js';
 
 /**
  * Creates an isolated data root for NanoCore startup layout tests.
@@ -182,6 +186,43 @@ describe('NanoCore startup storage layout', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+
+  it.each(['malformed JSON', 'a self-predecessor', 'malformed UTF-8'])(
+    'refuses a current Core root with %s in its layout marker',
+    async (problem) => {
+      const dataRoot = createDataRoot();
+      try {
+        const coreDb = openCoreDb(dataRoot);
+        try {
+          applyMigrations(coreDb);
+        } finally {
+          coreDb.sqlite.close();
+        }
+        await expect(admitDataRootForBoot(dataRoot)).resolves.toBe(false);
+        const marker = readDataRootLayoutMarker(dataRoot);
+        let markerBytes: string | Buffer;
+        if (problem === 'malformed JSON') {
+          markerBytes = 'fixture-only-invalid-marker';
+        } else if (problem === 'malformed UTF-8') {
+          const predecessorDeploymentId = 'dep_00000000-0000-7000-8000-000000000002';
+          expect(marker.deploymentId).not.toBe(predecessorDeploymentId);
+          markerBytes = malformedPredecessorKeyBytes({ ...marker, predecessorDeploymentId });
+        } else {
+          markerBytes = JSON.stringify({ ...marker, predecessorDeploymentId: marker.deploymentId });
+        }
+        writeFileSync(join(dataRoot, 'server', 'layout.json'), markerBytes);
+        const before = dataRootInventory(dataRoot);
+
+        await expect(admitDataRootForBoot(dataRoot)).rejects.toMatchObject({
+          cause: { code: 'data_root_layout_unsupported' },
+          message: expect.stringContaining('v0.2.0 Storage Reinstall'),
+        });
+        expect(dataRootInventory(dataRoot)).toEqual(before);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   it.runIf(process.platform === 'linux')(
     'refuses inspection scratch within DATA_ROOT before creating a temporary entry',

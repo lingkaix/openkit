@@ -63,7 +63,8 @@ export function isWorkerCancellationFinalCause(cause: string | null): boolean {
   return (
     cause === 'turn-cancelled' ||
     cause === 'raw-output-exhausted' ||
-    cause === 'raw-output-unavailable'
+    cause === 'raw-output-unavailable' ||
+    cause === 'observation_limit_reached'
   );
 }
 

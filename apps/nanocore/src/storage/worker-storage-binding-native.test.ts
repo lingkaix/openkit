@@ -129,6 +129,51 @@ it('keeps an unproved attachment fenced across reopen while a disjoint binding c
     });
     expect(disjoint.targets[0]?.volumeRef).not.toBe(retained.targets[0]?.volumeRef);
     expect(getWorkerStorageBinding({ sqlite }, held)).toEqual(retained);
+
+    const idle = releaseWorkerStorageAttachment(
+      { sqlite },
+      { ...attachment, cleanupProved: true, expectedRevision: retained.revision, now: held.now }
+    );
+    expect(idle).toMatchObject({ currentAgentSessionId: null, state: 'idle' });
+    const successorFacts = {
+      ...held,
+      agentSessionId: 'session-successor',
+      expectedRevision: idle.revision,
+      threadId: 'thread-successor',
+    };
+    expect(() =>
+      reserveWorkerStorageAttachment(
+        { sqlite },
+        {
+          ...successorFacts,
+          authorizeContributor: (contributor) => contributor.threadId === held.threadId,
+        }
+      )
+    ).toThrow('Worker storage contributor is not currently authorized.');
+    expect(getWorkerStorageBinding({ sqlite }, held)).toEqual(idle);
+
+    const successor = reserveWorkerStorageAttachment(
+      { sqlite },
+      {
+        ...successorFacts,
+        authorizeContributor: (contributor) =>
+          contributor.threadId === held.threadId ||
+          contributor.threadId === successorFacts.threadId,
+      }
+    );
+    expect(successor).toMatchObject({
+      attachmentGeneration: retained.attachmentGeneration + 1,
+      currentAgentSessionId: successorFacts.agentSessionId,
+      state: 'reserved',
+      targets: retained.targets,
+    });
+    expect(() =>
+      releaseWorkerStorageAttachment(
+        { sqlite },
+        { ...attachment, cleanupProved: true, expectedRevision: successor.revision, now: held.now }
+      )
+    ).toThrow('Worker storage revision changed.');
+    expect(getWorkerStorageBinding({ sqlite }, held)).toEqual(successor);
     expect(sqlite.pragma('foreign_key_check')).toEqual([]);
   } finally {
     if (sqlite.open) sqlite.close();

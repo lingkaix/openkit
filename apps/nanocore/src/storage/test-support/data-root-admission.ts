@@ -3,12 +3,22 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { expect } from 'vitest';
 import { openCoreDb } from '../db.js';
-import { coreDbPath } from '../fs-layout.js';
+import { coreDbPath, type DataRootLayoutMarker } from '../fs-layout.js';
 import { applyMigrations } from '../migrate.js';
 
 /** v0.1.0 Core baseline ledger identity. The current journal still uses this timestamp. */
 const V010_CORE_LEDGER_AT = 1794664200000;
 const V010_CORE_BASELINE_HASH = 'b1a74eaf44c5d2a552c2c5af6389be73a8f338125fbd4244b4c139cd1e2408c4';
+
+/** Damages only the last byte of the predecessor key in a valid marker. */
+export function malformedPredecessorKeyBytes(
+  marker: DataRootLayoutMarker & { predecessorDeploymentId: string }
+): Buffer {
+  const key = '"predecessorDeploymentId"';
+  const bytes = Buffer.from(JSON.stringify(marker));
+  bytes[bytes.indexOf(key) + key.length - 2] = 0xff;
+  return bytes;
+}
 
 /**
  * Builds one current Core file in a disposable root and replaces only its baseline hash.

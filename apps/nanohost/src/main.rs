@@ -6,6 +6,7 @@
 
 mod credential_carrier;
 mod credential_slots;
+mod environment_provider;
 mod epoch_coordinator;
 #[cfg(not(test))]
 mod epoch_evidence;
@@ -16,6 +17,8 @@ mod image_store;
 mod image_store_cli;
 mod live_inspection;
 mod nanocore_session;
+#[allow(dead_code)] // Staged until the desired-set owner supplies admitted incarnation rows.
+mod openshell_address;
 mod openshell_client;
 mod openshell_policy;
 // Static #604 Slice 4 is activated; delegated refresh remains dormant.
@@ -541,10 +544,12 @@ fn execute_effect_command(
                     None,
                 )
                 .map_err(|error| match error {
-                    openshell_client::LifecycleEffectError::CreateCleanupProved => {
+                    environment_provider::LifecycleEffectError::CreateCleanupProved => {
                         epoch_coordinator::SANDBOX_CREATE_CLEANUP_PROVED_FAILURE
                     }
-                    openshell_client::LifecycleEffectError::Epoch(_) => "lifecycle effect failed",
+                    environment_provider::LifecycleEffectError::Epoch(_) => {
+                        "lifecycle effect failed"
+                    }
                 })?;
             let mut result = sandbox_lifecycle_result(command.kind, sandbox_id, state);
             if let Some(storage) = storage_attachment {
@@ -4216,7 +4221,7 @@ mod tests {
             .next()
             .expect("main production section");
         let client_source = include_str!("openshell_client.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .next()
             .expect("client production section");
         let coordinator_source = include_str!("epoch_coordinator.rs")

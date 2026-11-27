@@ -273,7 +273,8 @@ async function runResidentTurnImplementation(
       if (!controlSession) {
         throw new Error('Worker live event append requires initialized direct control.');
       }
-      await controlSession.appendEvent(record, controlAbortController.signal);
+      const ack = await controlSession.appendEvent(record, controlAbortController.signal);
+      if (!ack.accepted) writer.stopObservationDelivery();
     },
     lineage,
     sessionDir: options.sessionDir,

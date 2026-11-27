@@ -10,7 +10,7 @@ it('reads tagged and known untagged immutable builds without environment identit
   try {
     for (const releaseTag of [null, 'v0.1.0-rc.1']) {
       const identity = { sourceCommit: 'a'.repeat(40), releaseTag };
-      await writeFile(path, JSON.stringify({ ...identity, future: 'inert' }));
+      await writeFile(path, JSON.stringify({ ...identity, future: '\u2603\uFFFD' }));
       expect(await readWorkerReleaseIdentity(path)).toEqual(identity);
     }
   } finally {
@@ -30,6 +30,11 @@ it('keeps missing, malformed, unknown and oversized build metadata unknown', asy
       JSON.stringify({ sourceCommit: 'a'.repeat(40) }),
       JSON.stringify({ sourceCommit: 'a'.repeat(40), releaseTag: 1 }),
       JSON.stringify({ sourceCommit: 'a'.repeat(40), releaseTag: null, junk: 'x'.repeat(4096) }),
+      Buffer.concat([
+        Buffer.from(`{"sourceCommit":"${'a'.repeat(40)}","releaseTag":null,"future":"`),
+        Buffer.from([0xc3]),
+        Buffer.from('"}'),
+      ]),
     ]) {
       await writeFile(path, bytes);
       expect(await readWorkerReleaseIdentity(path)).toBeNull();

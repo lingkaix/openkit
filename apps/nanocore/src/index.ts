@@ -545,7 +545,18 @@ const bootResult = await runBootPhases({
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
           (accepted) => wakeRestartCloseout?.(accepted),
-          nanoHostStorage
+          nanoHostStorage,
+          async (lineage) => {
+            const executor = requireBootValue(
+              workerLifecycleRuntime,
+              'Worker lifecycle is unavailable.'
+            );
+            await executor.turnExecutor.interruptTurn(recoveryStore, lineage.turnId, {
+              requestId: null,
+              stopReason: 'observation_limit_reached',
+              observationLineage: lineage,
+            });
+          }
         );
         workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
           fileAdmission,
@@ -608,14 +619,19 @@ const bootResult = await runBootPhases({
               subject.attemptId
             );
             const anchored = 'state' in subject;
+            const observationStopped = subject.terminalCause === 'observation_limit_reached';
             const result = await terminalizeGovernedWorkerTurn({
               agentSessionId: subject.agentSessionId,
               completedAt: new Date().toISOString(),
-              errorCode: 'worker_governance_restart_recovery',
-              message: anchored
-                ? 'Worker execution was interrupted during scheduler recovery.'
-                : 'Worker execution stopped during scheduler recovery.',
-              outcome: anchored ? 'interrupted' : 'failed',
+              errorCode: observationStopped
+                ? 'observation_limit_reached'
+                : 'worker_governance_restart_recovery',
+              message: observationStopped
+                ? 'Work observation collection reached its limit.'
+                : anchored
+                  ? 'Worker execution was interrupted during scheduler recovery.'
+                  : 'Worker execution stopped during scheduler recovery.',
+              outcome: anchored || observationStopped ? 'interrupted' : 'failed',
               requestId: admission.requestId,
               store: recoveryStore,
               turnId: subject.turnId,

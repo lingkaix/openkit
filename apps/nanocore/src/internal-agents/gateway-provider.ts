@@ -38,6 +38,10 @@ import { TurnStartValidationError } from '../operation-error.js';
 import type { RegistryGatewayProviderResolver } from '../providers/llm-config.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { serverWorkUnavailable, withServerWorkProducer } from '../storage/server-work-command.js';
+import {
+  ObservationCollectionStoppedError,
+  readAdmittedObservationCutoff,
+} from '../storage/work-observations.js';
 import type {
   AgentAssistantMessage,
   AgentMessage,
@@ -133,6 +137,22 @@ export function createInternalAgentGatewayProvider(
       !context || captureDb.scope === 'core'
         ? captureDb
         : openAdmittedWorkspaceReadDb(captureDb.dataRoot, captureDb.workspaceId);
+    const captureStop = new AbortController();
+    const onCollectionStop = (error: ObservationCollectionStoppedError) => {
+      if (captureStop.signal.aborted) return;
+      captureStop.abort(error);
+      options.capture.onCollectionStop?.(error);
+    };
+    const requireObservationAdmission = () => {
+      const cutoff =
+        workspaceDb.scope === 'workspace'
+          ? readAdmittedObservationCutoff(workspaceDb, lineage)
+          : serverCapture?.read().turn.observationCutoff?.summary;
+      if (!cutoff) return;
+      const error = new ObservationCollectionStoppedError('closed', cutoff);
+      onCollectionStop(error);
+      throw error;
+    };
     let call: StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> | undefined;
     let serverWorkCall: ServerGatewayCallLedger | undefined;
     const serverLedger = () => (serverWorkCall ? { serverWorkCall } : {});
@@ -141,6 +161,7 @@ export function createInternalAgentGatewayProvider(
     let observedStatus: number | undefined;
     let dispatchCorrelation: { corr: string; attempt: number } | undefined;
     try {
+      requireObservationAdmission();
       if (workspaceDb.scope === 'core' && serverCapture && context && 'owner' in context) {
         serverWorkCall = await openServerGatewayCall(serverCapture.binding, {
           context: { ...context, ...lineage, requestId: context.requestId ?? randomUUID() },
@@ -176,7 +197,7 @@ export function createInternalAgentGatewayProvider(
               },
             }),
         ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
-        signal: request.signal,
+        signal: AbortSignal.any([request.signal, captureStop.signal]),
         ...(options.singleAttempt ? { singleAttempt: true } : {}),
         onAttemptStart: (correlation) => {
           // Resolution can fail before the producer runs; evidence belongs to this member only.
@@ -247,6 +268,7 @@ export function createInternalAgentGatewayProvider(
                 openkitGatewayDispatch: 'internal_agent',
                 capture: {
                   ...options.capture,
+                  onCollectionStop,
                   ...(call ? { capabilityCallId: call.id } : {}),
                   corr,
                   attempt,
@@ -280,6 +302,7 @@ export function createInternalAgentGatewayProvider(
                         final.codexTurnState
                       );
                       await execution.assertAuthority?.();
+                      requireObservationAdmission();
                       if (!executionStarted) options.assertExecutionAvailable?.();
                       // Stock handoff precedes asynchronous auth; only this final boundary admits the first request.
                       await serverWorkCall?.claimContact();
@@ -381,8 +404,10 @@ export function createInternalAgentGatewayProvider(
         ...(selected.response.usage === undefined ? {} : { usage: selected.response.usage }),
       });
       return { message };
-    } catch (error) {
+    } catch (caught) {
       callFinished = true;
+      const error =
+        captureStop.signal.aborted && !request.signal.aborted ? captureStop.signal.reason : caught;
       const cancelled =
         request.signal.aborted &&
         (error === request.signal.reason ||

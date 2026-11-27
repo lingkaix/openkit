@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { ModelCapture } from '../llm/model-capture.js';
+import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -398,6 +398,26 @@ describe('native terminal recovery observations', () => {
       ObservationCollectionStoppedError
     );
     const cold = { ...f, db, store: new FsStore({ dataRoot: f.dataRoot }) };
+    expect(observationBytes(cold)).toEqual(bytes);
+    const abort = new AbortController();
+    const providerContact = vi.fn(async () => 'unexpected contact');
+    await expect(
+      withTurnModelCapture(
+        {
+          store: cold.store,
+          turn: cold.store.getTurnById(f.owner.turnId),
+          workspaceDb: db,
+          onCollectionStop: (reason) => abort.abort(reason),
+        },
+        providerContact
+      )
+    ).rejects.toMatchObject({
+      code: 'observation_limit_reached',
+      disposition: 'closed',
+      truncation: summary,
+    });
+    expect(abort.signal.reason).toBeInstanceOf(ObservationCollectionStoppedError);
+    expect(providerContact).not.toHaveBeenCalled();
     expect(observationBytes(cold)).toEqual(bytes);
     expect(await recover(cold)).toMatchObject({ status: 'interrupted' });
     const rows = readWorkObservations(db, f.owner);

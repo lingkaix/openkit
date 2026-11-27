@@ -80,14 +80,25 @@ test -f "$DOCKER_CONFIG/private-subject-fixture"
 });
 
 test('registry inspection treats only a recognized missing manifest as absent', () => {
+  const missingReference = 'ghcr.io/openkit/missing:v1';
+  const missing = {
+    status: 1,
+    stderr: 'ERROR: ghcr.io/openkit/missing:v1: not found',
+    stdout: '',
+  };
   assert.equal(
-    resolveImageDigest('ghcr.io/openkit/missing:v1', () => ({
-      status: 1,
-      stderr: 'ERROR: ghcr.io/openkit/missing:v1: not found',
-      stdout: '',
-    })),
+    resolveImageDigest(missingReference, () => missing),
     ''
   );
+  for (const interruption of [
+    { status: null, signal: 'SIGTERM' },
+    { status: 255, signal: null }, // Docker CLI reports a terminated Buildx plugin as exit 255.
+  ]) {
+    assert.throws(
+      () => resolveImageDigest(missingReference, () => ({ ...missing, ...interruption })),
+      /Unable to inspect.*not found/
+    );
+  }
   assert.throws(
     () =>
       resolveImageDigest('ghcr.io/openkit/private:v1', () => ({

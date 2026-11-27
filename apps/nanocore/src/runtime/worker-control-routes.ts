@@ -13,6 +13,7 @@ import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { CoreDb } from '../storage/db.js';
+import { OBSERVATION_POSITION_CONFLICT } from '../storage/work-observation-collection.js';
 import { createCredentialHelperHandler } from './credential-helper-exchange.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
@@ -233,8 +234,12 @@ export function registerWorkerControlRoutes({
         lineage: parsed.data.lineage,
         record: parsed.data.record,
       });
-      const response = c.json(accepted instanceof Promise ? await accepted : accepted);
-      diagnose(response.status);
+      const acknowledgement = await accepted;
+      const response = c.json(acknowledgement);
+      diagnose(
+        response.status,
+        acknowledgement.accepted ? undefined : acknowledgement.diagnostics[0]?.code
+      );
       return response;
     } catch (error) {
       diagnose(
@@ -515,7 +520,7 @@ function observeControlRequest(
                   : 'startup'
               : null,
           code: code ?? null,
-          outcome: status < 400 ? 'accepted' : 'refused',
+          outcome: status < 400 && code !== 'observation_limit_reached' ? 'accepted' : 'refused',
           status,
         })
       );
@@ -543,6 +548,10 @@ async function quarantineWorkerControlRejection(input: {
     !input.lineage ||
     !(input.error instanceof WorkerControlGatewayError) ||
     input.error.code === 'worker_control_reconnect_required' ||
+    input.error.code === 'observation_limit_reached' ||
+    // A shifted replay must not replace its refused fingerprint with other durable growth.
+    (input.error.code === OBSERVATION_POSITION_CONFLICT.code &&
+      input.error.message === OBSERVATION_POSITION_CONFLICT.message) ||
     (input.error.status === 503 && input.error.code === 'worker_observation_storage_unavailable')
   ) {
     return;

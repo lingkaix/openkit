@@ -1216,7 +1216,6 @@ fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
         vec![endpoint],
         vec![NetworkBinary {
             path: "/usr/bin/curl".into(),
-            ..Default::default()
         }],
     )
     .unwrap();

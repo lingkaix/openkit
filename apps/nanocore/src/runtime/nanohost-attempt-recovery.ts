@@ -24,6 +24,7 @@ import {
 } from '../storage/core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import {
   type NanoHostRecoveryLease,
   type NanoHostRecoveryMutation,
@@ -261,7 +262,8 @@ export async function classifyNanoHostAttemptsAfterRestart(
         hasPendingWorkerCancellationFinal(native, timestamp)
       )
         continue;
-      const eligible = isNanoHostAttemptReconnectEligible(native, session, timestamp);
+      const cutoff = readWorkspaceObservationCutoff(coreDb.dataRoot, attempt);
+      const eligible = !cutoff && isNanoHostAttemptReconnectEligible(native, session, timestamp);
       if (eligible) {
         try {
           await commitRecoveryStage(
@@ -284,7 +286,7 @@ export async function classifyNanoHostAttemptsAfterRestart(
         coreDb,
         admitted,
         observation,
-        'restart-native-recovery',
+        cutoff ? 'observation_limit_reached' : 'restart-native-recovery',
         timestamp
       );
       await commitRecoveryStage(
@@ -572,7 +574,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           recovery
         );
       } else {
-        await input.projectRecoveredTurn(session);
+        await input.projectRecoveredTurn({ ...session, terminalCause: closed.terminalCause });
         settled =
           input.store !== undefined &&
           hasRecoveredTerminalHandoff(input.store, session, workspace.environmentPackage);

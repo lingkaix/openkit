@@ -152,6 +152,7 @@ export class WorkerTranscriptWriter {
       this.requireLiveAdmission();
       throw new Error('Runtime observations require unsealed live worker control.');
     }
+    if (this.observationDeliveryStopped) return;
     if (input.content.state === 'expected' && body !== undefined) {
       if (
         body.byteLength !== input.content.bytes ||

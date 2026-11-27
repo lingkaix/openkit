@@ -427,6 +427,35 @@ describe('WorkerTranscriptWriter', () => {
     }
   });
 
+  it('stops numbering new ordinary observations after an omission acknowledgement', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-observation-omission-'));
+    try {
+      const appendEvent = vi.fn(async () => undefined);
+      const writer = new WorkerTranscriptWriter({ lineage, sessionDir, appendEvent });
+      const observation: RuntimeObservation = {
+        observationId: 'obs_omitted',
+        sourceRef: 'source_test',
+        sourceSequence: 0,
+        observedAt: '2026-10-21T00:00:00.000Z',
+        fact: { kind: 'origin', runtimeOriginRef: null, phase: 'completed' },
+        content: { state: 'not-applicable' },
+      };
+      await writer.writeObservation(observation);
+      writer.stopObservationDelivery();
+      await writer.writeObservation({
+        ...observation,
+        observationId: 'obs_suppressed',
+        sourceSequence: 1,
+      });
+      expect(appendEvent).toHaveBeenCalledTimes(1);
+      await expect(
+        writer.writeTerminalOutcome({ status: 'interrupted', stopReason: 'aborted' })
+      ).resolves.toMatchObject({ sequence: 1 });
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   it('joins metadata admitted before cutoff while its local append is pending', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-metadata-stop-'));
     const appendEvent = vi.fn(async (_record: WorkerCanonicalEventRecord) => undefined);

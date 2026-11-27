@@ -334,7 +334,10 @@ import {
   ControlVaultResultSchema,
   isControlVaultRefusal,
 } from './vault-native-codecs.js';
-import { ObservationOmissionResultSchema } from './work-observation-collection.js';
+import {
+  OBSERVATION_POSITION_CONFLICT,
+  ObservationOmissionResultSchema,
+} from './work-observation-collection.js';
 import {
   ControlWorkObservationChunkInputSchema,
   type ControlWorkObservationCommandInput,
@@ -1953,6 +1956,7 @@ interface OrdinaryControlWorkerDomainRefusal {
   readonly operation:
     | 'app-kernel'
     | 'provenance'
+    | 'observation'
     | 'admin-recovery'
     | 'better-auth'
     | 'nanohost-transport'
@@ -2475,6 +2479,13 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'observation')
+    return (
+      value.code === OBSERVATION_POSITION_CONFLICT.code &&
+      value.message === OBSERVATION_POSITION_CONFLICT.message &&
+      value.status === OBSERVATION_POSITION_CONFLICT.status &&
+      exactFields(value, ['operation', 'code', 'message', 'status'])
+    );
   if (isRecord(value) && value.operation === 'security-trigger')
     return ControlSecurityTriggerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'automation-scanner')
