@@ -141,3 +141,54 @@ it('returns startup capacity after failure and refuses an already cancelled star
   await expect(admission.run(launch, signal)).rejects.toThrow('already cancelled');
   expect(launch).toHaveBeenCalledTimes(1);
 });
+
+it('hands a failed startup slot to the FIFO head while a peer remains active', async () => {
+  const admission = new NativeStartupAdmission(2);
+  const failFirst = gate();
+  const peerEntered = gate();
+  const acceptPeer = gate();
+  const acceptHead = gate();
+  const acceptTail = gate();
+  const queued = new AbortController();
+  const startupFailure = new Error('Native startup failed before acceptance');
+  const failing = admission.run(async () => {
+    await failFirst.promise;
+    throw startupFailure;
+  });
+  const peer = admission.run(() => {
+    peerEntered.resolve();
+    return acceptPeer.promise;
+  });
+  const launchHead = vi.fn(() => acceptHead.promise);
+  const launchTail = vi.fn(() => acceptTail.promise);
+  const head = admission.run(launchHead, queued.signal);
+  const tail = admission.run(launchTail, queued.signal);
+  const failed = expect(failing).rejects.toBe(startupFailure);
+  const settled = Promise.allSettled([failing, peer, head, tail]);
+
+  try {
+    await peerEntered.promise;
+    expect(launchHead).not.toHaveBeenCalled();
+    expect(launchTail).not.toHaveBeenCalled();
+    failFirst.resolve();
+    await failed;
+    expect(launchHead).toHaveBeenCalledOnce();
+    expect(launchTail).not.toHaveBeenCalled();
+
+    acceptPeer.resolve();
+    await peer;
+    expect(launchHead).toHaveBeenCalledOnce();
+    expect(launchTail).toHaveBeenCalledOnce();
+
+    acceptHead.resolve();
+    acceptTail.resolve();
+    await Promise.all([head, tail]);
+  } finally {
+    failFirst.resolve();
+    acceptPeer.resolve();
+    acceptHead.resolve();
+    acceptTail.resolve();
+    queued.abort();
+    await settled;
+  }
+});
