@@ -275,7 +275,7 @@ export class WorkerControlClient {
         return false;
       this.requireRetryable(error);
       this.heartbeatOutage = true;
-      if (isReconnectRequired(error)) await this.reconnect(signal);
+      if (isReconnectRequired(error)) await this.reconnect(error, signal);
       return false;
     }
   }
@@ -462,7 +462,7 @@ export class WorkerControlClient {
             this.retryingRequests += 1;
           }
           presentReconnectKey = isReconnectRequired(error);
-          await this.waitForRetry(signal);
+          await this.waitForRetry(error, signal);
         }
       }
     } finally {
@@ -498,6 +498,8 @@ export class WorkerControlClient {
     firstSentAt?: number
   ): Promise<unknown> {
     signal?.throwIfAborted();
+    // Every reconnect proof starts here, after the wait that queued it. A stop during that wait sends nothing.
+    if (reconnect && !this.postLaunchRecoveryEnabled) throw new RecoveryStoppedError();
     const startedAt = performance.now();
     const { sequence } = heartbeat;
     if (sequence === 1) this.firstLaunchHeartbeatAt ??= startedAt;
@@ -580,13 +582,14 @@ export class WorkerControlClient {
           }
           if (isReconnectRequired(error)) {
             try {
-              await this.reconnect(signal);
+              await this.reconnect(error, signal);
+              this.requireRetryable(error);
               continue;
             } catch (reconnectError) {
               this.requireRetryable(reconnectError);
             }
           }
-          await this.waitForRetry(signal);
+          await this.waitForRetry(error, signal);
         }
       }
     } finally {
@@ -594,8 +597,8 @@ export class WorkerControlClient {
     }
   }
 
-  /** Sends one exact-next reconnect heartbeat for all requests blocked by one restart. */
-  private async reconnect(signal?: AbortSignal): Promise<unknown> {
+  /** Sends one exact-next reconnect heartbeat for all requests blocked by one restart; a recovery stop returns each caller's own refusal. */
+  private async reconnect(cause: unknown, signal?: AbortSignal): Promise<unknown> {
     if (!this.reconnecting) {
       const recovery = this.periodicHeartbeats
         ? this.reconnectPeriodicHeartbeat(signal)
@@ -612,7 +615,11 @@ export class WorkerControlClient {
 
       this.reconnecting = tracked;
     }
-    return this.reconnecting;
+    try {
+      return await this.reconnecting;
+    } catch (error) {
+      throw error instanceof RecoveryStoppedError ? cause : error;
+    }
   }
 
   /** Drains entered exchanges and proves the exact next sequence before periodic sends resume. */
@@ -640,14 +647,15 @@ export class WorkerControlClient {
     }
   }
 
-  /** Waits once inside the original outage budget. */
-  private async waitForRetry(signal?: AbortSignal): Promise<void> {
+  /** Waits inside the original outage budget and rechecks whether recovery is still enabled. */
+  private async waitForRetry(error: unknown, signal?: AbortSignal): Promise<void> {
     await delay(
       this.outageDeadline?.remainingMs(LIFECYCLE_DEFAULTS.workerControlRetryMs) ??
         LIFECYCLE_DEFAULTS.workerControlRetryMs,
       undefined,
       signal ? { signal } : undefined
     );
+    if (!this.postLaunchRecoveryEnabled) throw error;
     if (this.outageDeadline && this.outageDeadline.remainingMs() <= 0) {
       throw new Error('Worker control outage budget expired.');
     }
@@ -776,6 +784,14 @@ export class WorkerControlClient {
         signal?.removeEventListener('abort', abortParent);
       }
     }
+  }
+}
+
+/** Internal refusal of a reconnect proof after recovery was disabled; callers receive their original error instead. */
+class RecoveryStoppedError extends Error {
+  /** Creates the refusal with a readable message in case it is ever observed directly. */
+  public constructor() {
+    super('Worker control recovery is disabled.');
   }
 }
 
