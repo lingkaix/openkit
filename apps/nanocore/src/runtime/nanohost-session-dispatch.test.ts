@@ -2496,11 +2496,15 @@ describe('authoritative NanoHost session dispatch', () => {
 
       const bridgeRequestId = 'c'.repeat(64);
       const bridgePromise = dispatch.effect({
-        input: { sandboxIntegrationBindingRef: 'harness-binding-special' },
+        input: {
+          sandboxBindingRef: 'sandbox-binding-special',
+          sandboxIntegrationBindingRef: 'harness-binding-special',
+        },
         kind: 'bridge.open',
         requestId: bridgeRequestId,
       });
       await expect(dispatch.poll(successorPhysical, 'bridge.open')).resolves.toEqual({
+        sandboxBindingRef: 'sandbox-binding-special',
         sandboxIntegrationBindingRef: 'harness-binding-special',
         requestId: bridgeRequestId,
       });

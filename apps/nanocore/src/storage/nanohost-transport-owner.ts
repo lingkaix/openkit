@@ -27,6 +27,7 @@ export interface NanoHostReleaseRefusal {
   reconcile(): Promise<readonly string[]>;
   withCarriage<Value>(
     integrationBindingRef: string,
+    sandboxBindingRef: string,
     handoff: (fenced: boolean) => Value
   ): Promise<Value>;
 }

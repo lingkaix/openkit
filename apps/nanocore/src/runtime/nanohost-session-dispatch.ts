@@ -139,6 +139,7 @@ const FILE_DATA_HEADERS = {
   slot: 'x-openkit-slot',
 } as const;
 const INTEGRATION_BINDING_HEADER = 'x-openkit-integration-binding';
+const SANDBOX_BINDING_HEADER = 'x-openkit-sandbox-binding';
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
 const HARNESS_LOGIN_PATH = '/worker-control/harness/login';
@@ -150,6 +151,7 @@ interface HarnessDelivery {
   readonly command: NanoHostHarnessCommand;
   readonly wire: string;
   readonly integrationBindingRef: string;
+  readonly sandboxBindingRef: string;
   readonly releaseTimer: ReturnType<typeof setTimeout>;
   carriage: number;
   proofExpiresAt?: number;
@@ -493,7 +495,8 @@ export interface NanoHostSessionDispatch {
   assertHarnessHandoff?(physicalConnection: object): void;
   recordSandboxReleaseRefusal?(
     physicalConnection: object,
-    integrationBindingRef: string
+    integrationBindingRef: string,
+    sandboxBindingRef: string
   ): Promise<void>;
 }
 
@@ -729,7 +732,8 @@ export function createNanoHostSessionDispatch(
       ? {
           async recordSandboxReleaseRefusal(
             physicalConnection: object,
-            integrationBindingRef: string
+            integrationBindingRef: string,
+            sandboxBindingRef: string
           ) {
             const readiness = readyPhysicalConnections.get(physicalConnection);
             if (!readiness) throw new Error('Sandbox release refusal has no Host readiness.');
@@ -740,6 +744,7 @@ export function createNanoHostSessionDispatch(
             await owner.record({
               kind: 'sandbox-release-refusal',
               integrationBindingRef,
+              sandboxBindingRef,
               target: {
                 identityId,
                 deploymentId,
@@ -2554,13 +2559,20 @@ export function registerNanoHostSessionSemanticRoutes(
           if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
+          const sandboxBindingRef = request.headers.get(SANDBOX_BINDING_HEADER);
+          if (!isSandboxBridgeBinding(sandboxBindingRef))
+            throw effectTransportError(503, 'NanoHost Sandbox bridge binding is unavailable.');
           const recordRefusal = input.dispatch.recordSandboxReleaseRefusal;
           try {
             requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
           } catch (error) {
             if (recordRefusal && error instanceof WorkerReleaseIncompatibleError) {
               try {
-                await recordRefusal(physicalConnection, sandboxIntegrationBindingRef);
+                await recordRefusal(
+                  physicalConnection,
+                  sandboxIntegrationBindingRef,
+                  sandboxBindingRef
+                );
               } catch {
                 throw effectTransportError(503, 'NanoHost Sandbox release refusal is unavailable.');
               }
@@ -2589,6 +2601,11 @@ export function registerNanoHostSessionSemanticRoutes(
           const progress = readHarnessPollProgress(value);
           let delivery: HarnessDelivery | undefined;
           for (const candidate of deliveries.values()) {
+            if (
+              candidate.integrationBindingRef !== sandboxIntegrationBindingRef ||
+              candidate.sandboxBindingRef !== sandboxBindingRef
+            )
+              continue;
             if (!(await pendingDelivery(candidate.command, request.signal))) {
               releaseDelivery(candidate);
               continue;
@@ -2601,10 +2618,7 @@ export function registerNanoHostSessionSemanticRoutes(
               await failDelivery(candidate.command);
               continue;
             }
-            if (
-              candidate.integrationBindingRef === sandboxIntegrationBindingRef &&
-              progress?.get(candidate.command.harnessInstanceId) === candidate.command.sequence
-            ) {
+            if (progress?.get(candidate.command.harnessInstanceId) === candidate.command.sequence) {
               delivery = candidate;
               break;
             }
@@ -2614,16 +2628,21 @@ export function registerNanoHostSessionSemanticRoutes(
           if (
             delivery &&
             refusal &&
-            (await refusal.withCarriage(sandboxIntegrationBindingRef, (fenced) => fenced))
+            (await refusal.withCarriage(
+              sandboxIntegrationBindingRef,
+              sandboxBindingRef,
+              (fenced) => fenced
+            ))
           )
             return context.body(null, 204);
           const dispatchStarted = performance.now();
           let command =
             delivery?.command ??
             (nativeHarness
-              ? await nativeHarness.dispatch({ sandboxIntegrationBindingRef })
+              ? await nativeHarness.dispatch({ sandboxIntegrationBindingRef, sandboxBindingRef })
               : await dispatchNanoHostHarnessOperation(input.coreDb, {
                   sandboxIntegrationBindingRef,
+                  sandboxBindingRef,
                 }));
           const committedAt = performance.now();
           if (command) {
@@ -2668,6 +2687,7 @@ export function registerNanoHostSessionSemanticRoutes(
                 command: handed,
                 wire,
                 integrationBindingRef: sandboxIntegrationBindingRef,
+                sandboxBindingRef,
                 releaseTimer,
                 carriage: 0,
               };
@@ -2732,7 +2752,7 @@ export function registerNanoHostSessionSemanticRoutes(
             return RESPONSE_ALREADY_SENT;
           };
           return refusal
-            ? await refusal.withCarriage(sandboxIntegrationBindingRef, handoff)
+            ? await refusal.withCarriage(sandboxIntegrationBindingRef, sandboxBindingRef, handoff)
             : handoff(false);
         }
         const result = HarnessResultEnvelopeReaderSchema.parse(value);
@@ -3218,16 +3238,27 @@ function requireBridgeOpenCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<Record<string, unknown>> {
-  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, 'sandboxIntegrationBindingRef')) {
+  if (
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, 'sandboxIntegrationBindingRef') ||
+    !isSandboxBridgeBinding(value.sandboxBindingRef)
+  ) {
     throw new Error('NanoHost bridge command contains an unowned field.');
   }
   return {
+    sandboxBindingRef: value.sandboxBindingRef,
     sandboxIntegrationBindingRef: readBoundedIdentity(
       value.sandboxIntegrationBindingRef,
       'Sandbox Integration binding'
     ),
     requestId,
   };
+}
+
+function isSandboxBridgeBinding(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[^!-~]|,/u.test(value)
+  );
 }
 
 /** Validates the closed required-or-optional export command projection. */

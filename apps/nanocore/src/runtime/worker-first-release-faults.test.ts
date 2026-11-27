@@ -456,19 +456,25 @@ async function faultFixture({
     path: string,
     body: unknown,
     signal?: AbortSignal,
-    integrationOverride?: string | null
+    integrationOverride?: string | null,
+    sandboxBindingOverride?: string | null
   ) => {
+    const bridge = effects.find((effect) => effect.kind === 'bridge.open')?.input;
     const integration =
       integrationOverride === undefined
-        ? effects.find((effect) => effect.kind === 'bridge.open')?.input
-            .sandboxIntegrationBindingRef
+        ? bridge?.sandboxIntegrationBindingRef
         : integrationOverride;
+    const sandboxBinding =
+      sandboxBindingOverride === undefined ? bridge?.sandboxBindingRef : sandboxBindingOverride;
     const resetFinishedResponse = finishNextPoll && path === '/worker-control/harness/poll';
     const stream = client.request({
       ':method': 'POST',
       ':path': path,
       'content-type': 'application/json',
       ...(typeof integration === 'string' ? { 'x-openkit-integration-binding': integration } : {}),
+      ...(path === '/worker-control/harness/poll' && typeof sandboxBinding === 'string'
+        ? { 'x-openkit-sandbox-binding': sandboxBinding }
+        : {}),
     });
     if (resetFinishedResponse) finishedResetStream = stream;
     const abort = () => stream.close(constants.NGHTTP2_CANCEL);
@@ -2681,8 +2687,43 @@ it('records one bound release refusal and leaves a foreign Sandbox untouched', a
         .run('c'.repeat(64), binding)
     );
     expect((await f.post(releaseRefusalPoll, mismatchedBuild, undefined, null)).status).toBe(409);
+    for (const proof of [null, `${binding}, ${binding}`]) {
+      expect(
+        (await f.post(releaseRefusalPoll, mismatchedBuild, undefined, undefined, proof)).status
+      ).toBe(503);
+    }
     expect(
-      (await f.post(releaseRefusalPoll, mismatchedBuild, undefined, 'other-integration')).status
+      await f.post(
+        releaseRefusalPoll,
+        {
+          schemaVersion: 2,
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        },
+        undefined,
+        undefined,
+        'different-sandbox-binding'
+      )
+    ).toEqual({ status: 204, body: '' });
+    expect(
+      onNative(f.coreDb, ({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT h.operation_state FROM harness_instance_records h
+            JOIN sandbox_runtime_records s USING (sandbox_runtime_id)
+            WHERE s.sandbox_binding_ref=?`)
+          .pluck()
+          .all(binding)
+      )
+    ).toEqual(['queued']);
+    expect(
+      (
+        await f.post(
+          releaseRefusalPoll,
+          mismatchedBuild,
+          undefined,
+          'other-integration',
+          'other-binding'
+        )
+      ).status
     ).toBe(503);
     expect(reopenReleaseRefusal(f.coreDb)).toEqual([]);
 
@@ -2949,6 +2990,7 @@ async function bootRefusalFixture() {
       kind: 'sandbox-release-refusal',
       target,
       integrationBindingRef: integration(),
+      sandboxBindingRef: 'sandbox-binding-original',
     });
   const reopen = async () => {
     await shutdownControlStoreWorkerClient();
@@ -3179,6 +3221,96 @@ it('keeps the original release refusal held when its resident has disappeared', 
   expect(releaseRefusalNativeState({ ...f, integration: () => 'integration-sibling' })).toEqual([
     { drain: 'accepting', harnessDrain: 'accepting', harnessLife: 'open' },
   ]);
+});
+
+it('keeps a delayed predecessor refusal from draining a same-Epoch replacement', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  let delayed: ReturnType<typeof f.post> | undefined;
+  try {
+    await f.waitQueued('session.open');
+    const integration = f.integration();
+    const predecessor = onNative(f.coreDb, (owner) =>
+      getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+    )!.sandboxBindingRef;
+    const { runtimeId, targetId } = onNative(
+      f.coreDb,
+      ({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT sandbox_runtime_id AS runtimeId, runtime_target_id AS targetId
+          FROM sandbox_runtime_records WHERE sandbox_binding_ref=?`)
+          .get(predecessor) as { runtimeId: string; targetId: string }
+    );
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+    const original = { binding: predecessor, state: 'intent', phase: 'open' };
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([{ ...original, drain: 'draining' }]);
+
+    const record = f.nativeOwner.releaseRefusal.record;
+    const barrier = vi
+      .spyOn(f.nativeOwner.releaseRefusal, 'record')
+      .mockImplementationOnce(async (input) => {
+        entered.resolve();
+        await resume.promise;
+        return record(input);
+      });
+    try {
+      delayed = f.post(releaseRefusalPoll, mismatchedBuild);
+      await Promise.race([
+        entered.promise,
+        delayed.then(() => {
+          throw new Error('The predecessor poll missed the Core decision barrier.');
+        }),
+      ]);
+      // Model proved retirement at its projection boundary. Both replacement writes run through
+      // the admitted Native writer, while the old poll is still waiting to post to Core.
+      await harnessRecords.removeNanoHostSandboxRuntimeByBinding(f.nativeOwner, predecessor);
+      const successor = 'sandbox-binding-refusal-successor';
+      await harnessRecords.createNanoHostHarnessRuntime(f.nativeOwner, {
+        adapterId: 'codex',
+        adapterVersion: 'fixture',
+        harnessBindingRef: 'harness-binding-refusal-successor',
+        harnessCompatibilityKey: DIGEST,
+        harnessInstanceId: 'harness-refusal-successor',
+        imageDigest: `sha256:${DIGEST}`,
+        originPhysicalEpoch: DIGEST,
+        runtimeTargetId: targetId,
+        sandboxBindingRef: successor,
+        sandboxCompatibilityKey: DIGEST,
+        sandboxIntegrationBindingRef: integration,
+        sandboxRuntimeId: runtimeId,
+        timestamp: new Date().toISOString(),
+      });
+      const accepting = [{ drain: 'accepting', harnessDrain: 'accepting', harnessLife: 'open' }];
+      expect(releaseRefusalNativeState(f)).toEqual(accepting);
+      // Count committed successor drain writes alongside the reopened state.
+      mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+        sqlite.exec(`
+          CREATE TABLE test_successor_drains (binding TEXT);
+          CREATE TRIGGER test_successor_drain AFTER UPDATE OF drain_state ON sandbox_runtime_records
+            WHEN OLD.sandbox_binding_ref='sandbox-binding-refusal-successor'
+            BEGIN INSERT INTO test_successor_drains VALUES (OLD.sandbox_binding_ref); END;
+        `);
+      });
+      resume.resolve();
+      const response = await delayed;
+      expect({
+        orders: reopenReleaseRefusal(f.coreDb),
+        successor: releaseRefusalNativeState(f),
+        writes: onNative(f.coreDb, ({ sqlite }) =>
+          sqlite.prepare('SELECT binding FROM test_successor_drains').pluck().all()
+        ),
+        deletes: f.effects.filter(({ kind }) => kind === 'sandbox.delete'),
+      }).toEqual({ orders: [original], successor: accepting, writes: [], deletes: [] });
+      expect(response.status).toBe(503);
+    } finally {
+      barrier.mockRestore();
+    }
+  } finally {
+    resume.resolve();
+    await delayed?.catch(() => undefined);
+    await closeReleaseRefusalFixture(f);
+  }
 });
 
 it('does not drain from a conflicting release refusal step under the original root', async () => {

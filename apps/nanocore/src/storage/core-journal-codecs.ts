@@ -313,6 +313,7 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('sandbox-release-refusal'),
+      sandboxBindingRef: text.max(512),
       integrationBindingRef: text.max(512),
       target: z
         .object({

@@ -4063,15 +4063,15 @@ class ControlStoreWorkerClient {
           }
           return completed;
         },
-        withCarriage: (integrationBindingRef, handoff) =>
+        withCarriage: (integrationBindingRef, sandboxBindingRef, handoff) =>
           withCoreHold(async (identity) => {
             const resident = readCurrent(
               (sqlite) =>
                 sqlite
                   .prepare(`SELECT runtime_target_id AS targetId, origin_physical_epoch AS epoch,
                 sandbox_binding_ref AS bindingRef FROM sandbox_runtime_records
-                WHERE sandbox_integration_binding_ref=?`)
-                  .get(integrationBindingRef) as
+                WHERE sandbox_integration_binding_ref=? AND sandbox_binding_ref=?`)
+                  .get(integrationBindingRef, sandboxBindingRef) as
                   | { targetId: string; epoch: string; bindingRef: string }
                   | undefined
             );
@@ -4167,7 +4167,7 @@ class ControlStoreWorkerClient {
           if (typeof result !== 'number') throw new ControlStoreWorkerError('integrity', 'unknown');
           return result;
         },
-        dispatch: async ({ sandboxIntegrationBindingRef, now }) => {
+        dispatch: async ({ sandboxIntegrationBindingRef, sandboxBindingRef, now }) => {
           const hasQueuedOperation = readers.hasQueuedNanoHostHarnessOperation;
           if (!hasQueuedOperation || opening.nanoHostTargetTransition)
             throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
@@ -4181,12 +4181,15 @@ class ControlStoreWorkerClient {
           }
           // Empty polls leave the Native and Core writers available to their live producers.
           if (
-            !readCurrent((sqlite) => hasQueuedOperation({ sqlite }, sandboxIntegrationBindingRef))
+            !readCurrent((sqlite) =>
+              hasQueuedOperation({ sqlite }, sandboxIntegrationBindingRef, sandboxBindingRef)
+            )
           )
             return null;
           const result = await writeHarnessTurn({
             kind: 'operation.dispatch',
             sandboxIntegrationBindingRef,
+            ...(sandboxBindingRef === undefined ? {} : { sandboxBindingRef }),
             ...(now ? { observedAt: now() } : {}),
           });
           if (typeof result !== 'object') throw new ControlStoreWorkerError('integrity', 'unknown');

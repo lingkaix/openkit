@@ -198,6 +198,7 @@ const harnessLifecycleInputSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('operation.dispatch'),
       sandboxIntegrationBindingRef: identity,
+      sandboxBindingRef: identity.optional(),
       observedAt: timestamp.optional(),
     })
     .strict(),

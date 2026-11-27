@@ -6435,6 +6435,10 @@ describe('createConfiguredTurnExecutor', () => {
             expect(value).toMatch(entityIdPattern('wst'));
             return 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
           }
+          if (key === 'sandboxBindingRef') {
+            expect(value).toMatch(/^(attempt|sandbox)-binding[-:]/);
+            return 'sandbox-binding-pin';
+          }
           if (key === 'sandboxIntegrationBindingRef') {
             expect(value).toMatch(/^integration-binding-/);
             return 'integration-pin';
