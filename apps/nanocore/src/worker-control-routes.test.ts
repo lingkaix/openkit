@@ -2215,7 +2215,9 @@ describe('worker control routes', () => {
       registerDurableWorkerControlSession(rebuiltGateway, environmentPackage, binding);
       app = createApp({ coreDb, mode: 'server', store, workerControlGateway: rebuiltGateway });
       const rejectedEvidence = () =>
-        listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId);
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, lineage.workspaceId)
+        );
       const beforeRejected = rejectedEvidence();
 
       const shifted = await append({ ...retained, sequence: openPosition });
@@ -2326,11 +2328,11 @@ describe('worker control routes', () => {
       throw new Error('Stop notice lost.');
     });
     const gateway = createDefaultWorkerControlGateway(
-        coreDb,
-        undefined,
-        await admittedRouteNanoHost(coreDb),
-        lostNotice
-      );
+      coreDb,
+      undefined,
+      await admittedRouteNanoHost(coreDb),
+      lostNotice
+    );
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
     let app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
     const post = (route: string, value: unknown) =>
@@ -2399,11 +2401,16 @@ describe('worker control routes', () => {
     expect(readWorkObservations(workspace, lineage).map((row) => row.id)).toEqual([
       'near-full-model-call',
     ]);
-    expect(listWorkerControlAcceptedEvents(coreDb, lineage)).toEqual([]);
-    const rejectedBefore = listWorkerControlRejectedEvidenceForWorkspace(
-      coreDb,
-      lineage.workspaceId
-    );
+    const acceptedEvents = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerControlAcceptedEvents({ sqlite }, lineage)
+      );
+    expect(acceptedEvents()).toEqual([]);
+    const rejectedEvidence = () =>
+      readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        listWorkerControlRejectedEvidenceForWorkspace({ sqlite }, lineage.workspaceId)
+      );
+    const rejectedBefore = rejectedEvidence();
     for (let replay = 0; replay < 2; replay++) {
       const refusedChunk = await post('events/append', {
         lineage,
@@ -2425,9 +2432,7 @@ describe('worker control routes', () => {
       expect(refusedChunk.status).toBe(409);
       expect(await refusedChunk.json()).toMatchObject({ code: 'observation_limit_reached' });
     }
-    expect(listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId)).toEqual(
-      rejectedBefore
-    );
+    expect(rejectedEvidence()).toEqual(rejectedBefore);
 
     expect(lostNotice).toHaveBeenCalledTimes(1);
     // Reopen the writer with the committed cutoff and no successful stop delivery.
@@ -2475,7 +2480,7 @@ describe('worker control routes', () => {
     const refused = await final(2);
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: 'worker_control_sequence_conflict' });
-    expect(listWorkerControlAcceptedEvents(coreDb, lineage)).toEqual([]);
+    expect(acceptedEvents()).toEqual([]);
     expect(
       workerControlJournal(coreDb)
         .prepare(

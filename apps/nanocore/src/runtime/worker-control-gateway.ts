@@ -1537,24 +1537,21 @@ export class WorkerControlGateway {
           503
         );
       return this.prepareObservation(record).then(
-            () => publish(),
-            async (error: unknown) => {
-              if (!(error instanceof ObservationCollectionStoppedError)) throw error;
-              try {
-                if (
-                  error.disposition === 'truncated' &&
-                  record.event.type === 'observation.recorded'
-                )
-                  return await publish(true);
-                throw new WorkerControlGatewayError(error.code, error.message, 409);
-              } finally {
-                if (error.disposition === 'truncated')
-                  void Promise.resolve()
-                    .then(() => this.onObservationStop?.(record.lineage))
-                    .catch(() => undefined);
-              }
-            }
-          );
+        () => publish(),
+        async (error: unknown) => {
+          if (!(error instanceof ObservationCollectionStoppedError)) throw error;
+          try {
+            if (error.disposition === 'truncated' && record.event.type === 'observation.recorded')
+              return await publish(true);
+            throw new WorkerControlGatewayError(error.code, error.message, 409);
+          } finally {
+            if (error.disposition === 'truncated')
+              void Promise.resolve()
+                .then(() => this.onObservationStop?.(record.lineage))
+                .catch(() => undefined);
+          }
+        }
+      );
     }
     const accept = (): WorkerControlResponseEnvelope => {
       input.recheckAdmission?.();

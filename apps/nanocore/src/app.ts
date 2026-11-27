@@ -726,7 +726,8 @@ export function createDefaultWorkerControlGateway(
       publishObservation(async () => {
         if (
           omitObservation &&
-          (payload.operation !== 'event_append' || payload.record.event.type !== 'observation.recorded')
+          (payload.operation !== 'event_append' ||
+            payload.record.event.type !== 'observation.recorded')
         )
           throw new ControlStoreWorkerError('invalid-request', 'not-committed');
         const accepted = await owner.workerControlRecord({
@@ -737,7 +738,8 @@ export function createDefaultWorkerControlGateway(
             sequence: payload.sequence,
             fingerprint,
             ...(payload.operation === 'event_append' &&
-            (omitObservation || readWorkspaceObservationCutoff(coreDb.dataRoot, coordinates.lineage))
+            (omitObservation ||
+              readWorkspaceObservationCutoff(coreDb.dataRoot, coordinates.lineage))
               ? { requireContinuous: true }
               : {}),
           },
