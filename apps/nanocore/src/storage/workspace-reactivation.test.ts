@@ -1,10 +1,20 @@
 // openkit-test-platform: posix
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -651,6 +661,67 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
     } finally {
       core.sqlite.close();
     }
+  }, 120_000);
+
+  it('keeps stopped reactivation stdout parseable when Core commits span a pressure sample', async () => {
+    const f = await fixture();
+    const script = join(f.root, 'reactivate-cli.mjs');
+    writeFileSync(
+      script,
+      `
+import { setTimeout as delay } from 'node:timers/promises';
+import { getControlStoreWorkerClient, shutdownControlStoreWorkerClient } from ${JSON.stringify(new URL('./control-store-worker-client.ts', import.meta.url).href)};
+import { runWorkspaceRecoveryCli } from ${JSON.stringify(new URL('./workspace-recovery-cli.ts', import.meta.url).href)};
+
+const client = getControlStoreWorkerClient();
+const reactivate = client.recoverySourceReactivation.bind(client);
+client.recoverySourceReactivation = async (database, input) => {
+  // Cross the five-second Core sampling window between revocation and report.
+  if (input.stage === 'report') await delay(5_150);
+  return reactivate(database, input);
+};
+try {
+  await runWorkspaceRecoveryCli(process.argv.slice(2));
+} finally {
+  await shutdownControlStoreWorkerClient();
+}
+`
+    );
+    const { stdout, stderr } = await promisify(execFile)(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        script,
+        'reactivate',
+        '--data-root',
+        f.dataRoot,
+        '--workspace-id',
+        workspaceId,
+        '--backup-id',
+        f.backupId,
+        '--expected-revision',
+        String(f.input.expectedRevision),
+        '--acknowledge-target-fenced',
+        '--acknowledge-copies-retired',
+      ],
+      { timeout: 60_000 }
+    );
+    expect(JSON.parse(stdout)).toMatchObject({
+      command: 'reactivate',
+      disposition: 'reactivated',
+      workspaceId,
+      currentRevision: f.input.expectedRevision + 1,
+    });
+    const sample = JSON.parse(
+      stderr.split('\n').find((line) => line.includes('openkit.control_store.pressure')) ?? 'null'
+    );
+    expect(sample).toMatchObject({
+      event: 'openkit.control_store.pressure',
+      scope: 'core',
+      commitSamples: 2,
+    });
+    expect(sample.windowMs).toBeGreaterThanOrEqual(5_000);
   }, 120_000);
 
   it('reactivates the real moved-out source while every Main Core and Workspace connection is query-only', async () => {

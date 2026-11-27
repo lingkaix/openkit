@@ -217,6 +217,7 @@ import {
   prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
+import { ControlStorePressureTelemetry } from './control-store-pressure-telemetry.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   assertControlProductWriter,
@@ -641,6 +642,7 @@ interface OwnedDatabase {
   /** Concrete domain handle, including ORM access on this exact worker-owned connection. */
   readonly scopeDb: CoreDb | WorkspaceDb | undefined;
   readonly writer: ReturnType<typeof controlStoreFor>;
+  readonly pressureTelemetry: ControlStorePressureTelemetry | undefined;
   readonly path: string;
   readonly identity: string;
   readonly productOwner: ControlProductOwner | undefined;
@@ -3299,6 +3301,8 @@ function flush(owner: OwnedDatabase): void {
     }
   }
   let bodyFinished = false;
+  let commitSucceeded = false;
+  let checkpointBlocked = false;
   let replies: ControlWorkerReply[];
   try {
     replies = owner.writer.write((sqlite) => {
@@ -4662,7 +4666,9 @@ function flush(owner: OwnedDatabase): void {
       bodyFinished = true;
       return outcomes;
     });
+    commitSucceeded = true;
   } catch (error) {
+    checkpointBlocked = error instanceof ControlStoreBusyError;
     const unknown =
       !(error instanceof ControlStoreNoSpaceError) && (bodyFinished || owner.sqlite.inTransaction);
     const code = failureCode(
@@ -4682,6 +4688,29 @@ function flush(owner: OwnedDatabase): void {
               code === 'integrity' ? code : unknown ? 'commit-unknown' : code,
               unknown ? 'unknown' : 'not-committed'
             ))
+    );
+  }
+  if ((commitSucceeded || checkpointBlocked) && owner.pressureTelemetry) {
+    const cutoffs = replies.filter((reply) => {
+      if (reply.status !== 'ok') return false;
+      if (reply.operation === 'observation' || reply.operation === 'provenance')
+        return 'disposition' in reply.result && reply.result.disposition === 'truncated';
+      return (
+        reply.operation === 'server-work-owner' &&
+        reply.result.kind === 'append-observation' &&
+        reply.result.value.disposition === 'truncated'
+      );
+    }).length;
+    owner.pressureTelemetry.observe(
+      commitSucceeded ? owner.writer.lastCommitMs : undefined,
+      cutoffs,
+      performance.now(),
+      () => ({
+        ...owner.writer.pressure(),
+        checkpointAgeMs: owner.writer.checkpointAgeMs,
+        queued: owner.pending.length,
+        open: databases.size,
+      })
     );
   }
   for (let index = 0; index < replies.length; index += 1)
@@ -5475,6 +5504,17 @@ async function openDatabase(request: OpenRequest): Promise<void> {
               ? bindCoreSqlite(sqlite, dataRoot)
               : bindWorkspaceSqlite(sqlite, dataRoot, request.productOwner.workspaceId),
         writer,
+        pressureTelemetry:
+          request.initialize === 'core'
+            ? new ControlStorePressureTelemetry(sqlite, path, { scope: 'core' })
+            : request.productOwner?.kind === 'workspace'
+              ? new ControlStorePressureTelemetry(sqlite, path, {
+                  scope: 'workspace',
+                  'openkit.workspace.id': request.productOwner.workspaceId,
+                })
+              : split?.owner === 'server-work'
+                ? new ControlStorePressureTelemetry(sqlite, path, { scope: 'server-work' })
+                : undefined,
         path,
         identity,
         productOwner: request.productOwner,

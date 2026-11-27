@@ -6,8 +6,10 @@ import { describe, expect, it } from 'vitest';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
+  denySchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
+  retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -157,6 +159,35 @@ describe('route B exact admission (Durable Scheduler Design: Admission And Launc
       expect(() => createSchedulerAdmissionEntry(db, command(20))).toThrow();
       expect(listQueuedSchedulerAdmissionEntries(db)).toHaveLength(20);
       expect(createSchedulerAdmissionEntry(db, command(0))).toEqual(original);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('refuses explicit retry at capacity and keeps its original FIFO position once a slot opens', () => {
+    const db = database();
+    try {
+      const older = createSchedulerAdmissionEntry(db, command(0));
+      const original = createSchedulerAdmissionEntry(db, command(1));
+      const denied = denySchedulerAdmissionEntry(db, {
+        queueEntryId: original.queueEntryId,
+        denialReason: 'authority-denied',
+      });
+      const younger = Array.from({ length: 19 }, (_, index) =>
+        createSchedulerAdmissionEntry(db, command(index + 2))
+      );
+      const retry = { queueEntryId: original.queueEntryId, workspaceId: original.workspaceId };
+      expect(() => retryDeniedSchedulerAdmissionEntry(db, retry)).toThrow(
+        expect.objectContaining({ reason: 'queue-full' })
+      );
+      expect(requireSchedulerAdmissionEntry(db, original.queueEntryId)).toEqual(denied);
+      expect(listQueuedSchedulerAdmissionEntries(db)).toEqual([older, ...younger]);
+
+      const [departing, ...remaining] = younger;
+      cancelSchedulerAdmissionEntry(db, departing);
+      const retried = retryDeniedSchedulerAdmissionEntry(db, retry);
+      expect(retried).toEqual(original);
+      expect(listQueuedSchedulerAdmissionEntries(db)).toEqual([older, original, ...remaining]);
     } finally {
       db.sqlite.close();
     }

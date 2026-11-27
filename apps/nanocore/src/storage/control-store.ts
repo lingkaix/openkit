@@ -116,6 +116,8 @@ export function controlStoreFor(
  */
 class ControlStore {
   private active = false;
+  private completeCheckpointAt: number | null = null;
+  private successfulCommitMs = 0;
   private uncheckpointedSince: number | null = null;
 
   /** Creates the owner through controlStoreFor, not from a second caller handle. */
@@ -140,6 +142,16 @@ class ControlStore {
   /** Whether the externally owned connection remains usable. */
   get isOpen(): boolean {
     return this.sqlite.open;
+  }
+
+  get lastCommitMs(): number {
+    return this.successfulCommitMs;
+  }
+
+  get checkpointAgeMs(): number | null {
+    return this.completeCheckpointAt === null
+      ? null
+      : performance.now() - this.completeCheckpointAt;
   }
 
   /** Reads pressure without holding a SQL read transaction or using wall-clock time. */
@@ -185,7 +197,9 @@ class ControlStore {
       // COMMIT can apply even when acknowledgement fails; retain conservative age first.
       this.uncheckpointedSince ??= performance.now();
       committing = true;
+      const enteredCommit = performance.now();
       this.sqlite.exec('COMMIT');
+      this.successfulCommitMs = performance.now() - enteredCommit;
       return result;
     } catch (error) {
       let rolledBack = !committing && !this.sqlite.inTransaction;
@@ -252,6 +266,7 @@ class ControlStore {
     )[0];
     if (progress.busy === 0 && progress.checkpointed >= progress.log) {
       this.uncheckpointedSince = null;
+      this.completeCheckpointAt = performance.now();
       const timeout = this.sqlite.pragma('busy_timeout', { simple: true });
       try {
         this.sqlite.pragma('busy_timeout = 0');

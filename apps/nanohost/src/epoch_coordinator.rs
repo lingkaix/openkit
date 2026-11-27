@@ -2539,13 +2539,17 @@ impl EpochCoordinator {
         reports
     }
 
-    /// Installs the real Harness liveness check for a fixture-owned response and route.
+    /// Installs the accepted Harness bridge and its matching liveness monitor for App replacement.
     #[cfg(test)]
-    pub(crate) fn fixture_watch_harness(
-        &self,
-        bootstrap: &WorkerBootstrapMonitor,
+    pub(crate) fn fixture_accept_harness_bridge(
+        &mut self,
+        bridge: OpenSandboxBridge,
+        bootstrap: WorkerBootstrapMonitor,
     ) -> Result<(), EpochFault> {
-        self.monitor.watch_harness(bootstrap)
+        self.monitor.watch_harness(&bootstrap)?;
+        self.bridge = Some(bridge);
+        self.worker_bootstrap_monitor = Some(bootstrap);
+        Ok(())
     }
 
     /// Injects a fault through the real monitor's report-before-fence path.

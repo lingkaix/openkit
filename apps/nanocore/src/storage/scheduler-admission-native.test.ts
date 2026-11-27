@@ -84,26 +84,53 @@ async function command(f: ReturnType<typeof fixture>, index: number) {
   };
 }
 
-it('refuses the twenty-first native admission without a row while Main is query-only', async () => {
+it('admits only one of two competing requests for the final native queue slot', async () => {
   const f = fixture();
   const retained: CoreSchedulerQueueEntry[] = [];
   // Durable Scheduler Design: Admission And Launch fixes the default queued bound at 20.
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 19; index += 1) {
     const result = await admitCoreScheduler(f.db, await command(f, index));
     expect(result.kind).toBe('queue');
     if (result.kind !== 'queue') throw new Error('Native admission omitted its queue entry.');
     retained.push(result.entry);
   }
-  const candidate = await command(f, 20);
-  const refused = admitCoreScheduler(f.db, candidate);
-  await expect(refused).rejects.toBeInstanceOf(SchedulerAdmissionTransitionError);
-  await expect(refused).rejects.toMatchObject({ reason: 'queue-full' });
+
+  const candidates = [await command(f, 19), await command(f, 20)];
+  const publish = Promise.withResolvers<void>();
+  let preparing = 0;
+  const prepare = async (candidate: (typeof candidates)[number]) => {
+    preparing += 1;
+    if (preparing === candidates.length) publish.resolve();
+    await publish.promise;
+    return candidate;
+  };
+  const decisions = await Promise.allSettled(
+    candidates.map((candidate) =>
+      admitCoreScheduler(f.db, candidate, prepare).finally(() => publish.resolve())
+    )
+  );
+  expect(preparing).toBe(2);
+  expect(decisions.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected']);
+  const winner = decisions.findIndex(({ status }) => status === 'fulfilled');
+  const loser = decisions.findIndex(({ status }) => status === 'rejected');
+  const committed = requireSchedulerAdmissionEntry(f.db, candidates[winner].entry.queueEntryId);
+  expect(decisions[winner]).toEqual({
+    status: 'fulfilled',
+    value: { kind: 'queue', entry: committed },
+  });
+  expect(decisions[loser]).toEqual({
+    status: 'rejected',
+    reason: expect.any(SchedulerAdmissionTransitionError),
+  });
+  expect(decisions[loser]).toMatchObject({ reason: { reason: 'queue-full' } });
   expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-  expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual(retained);
-  expect(() => requireSchedulerAdmissionEntry(f.db, candidate.entry.queueEntryId)).toThrow();
-  const replay = await admitCoreScheduler(f.db, await command(f, 0));
-  expect(replay).toEqual({ kind: 'queue', entry: retained[0] });
-  expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual(retained);
+  expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual([...retained, committed]);
+  expect(() =>
+    requireSchedulerAdmissionEntry(f.db, candidates[loser].entry.queueEntryId)
+  ).toThrow();
+  const replay = await admitCoreScheduler(f.db, candidates[winner]);
+  expect(replay).toEqual({ kind: 'queue', entry: committed });
+  expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual([...retained, committed]);
 });
 
 it('rechecks current authority after native open and refuses admission without a row', async () => {
