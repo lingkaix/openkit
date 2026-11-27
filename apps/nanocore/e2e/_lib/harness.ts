@@ -2,8 +2,8 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
@@ -13,6 +13,8 @@ import { shutdownControlStoreWorkerClient } from '../../dist/storage/control-sto
 export interface NanoCoreHarness {
   baseUrl: string;
   dataRoot: string;
+  /** Marks the start of a child stderr window and returns its safe fingerprint reader. */
+  startStderrFingerprint(): () => string;
   /** Immediately kills the child process and waits for exit. */
   kill(): Promise<void>;
   stop(): Promise<void>;
@@ -38,6 +40,24 @@ interface SseEventEnvelope {
 }
 
 const nanoCoreRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const stderrFrameNames = new Map<string, string>();
+for (const file of [
+  'runtime/goal-owner',
+  'runtime/goal-coordinator',
+  'runtime/idempotent-command',
+  'storage/control-store-worker-client',
+  'operation-json-routes',
+]) {
+  for (const [directory, extension] of [
+    ['src', 'ts'],
+    ['dist', 'js'],
+  ]) {
+    const path = join(nanoCoreRoot, directory, `${file}.${extension}`);
+    const name = basename(path);
+    stderrFrameNames.set(path, name);
+    stderrFrameNames.set(pathToFileURL(path).href, name);
+  }
+}
 
 /**
  * Starts a built NanoCore process for black-box e2e tests.
@@ -92,6 +112,7 @@ export async function startNanoCoreHarness(
   return {
     baseUrl,
     dataRoot,
+    startStderrFingerprint: output.startStderrFingerprint,
     kill: () => killProcess(child),
     stop: () => stopProcess(child),
   };
@@ -303,27 +324,57 @@ async function postJson(
 interface CapturedProcessOutput {
   stderr(): string;
   stdout(): string;
+  startStderrFingerprint(): () => string;
+}
+
+/** Returns up to three distinct allowlisted V8 source locations without log text. */
+function stderrFingerprint(window: string): string {
+  const frames = new Set<string>();
+  for (const line of window.split('\n')) {
+    const frame = /^\s*at (?:async )?(?:.* \()?([^()]+):([1-9]\d{0,5}):\d+\)?\s*$/.exec(line);
+    if (!frame) continue;
+    const name = stderrFrameNames.get(frame[1]!);
+    if (!name) continue;
+    frames.add(`${name}:${frame[2]}`);
+    if (frames.size === 3) break;
+  }
+  return frames.size === 0 ? 'unavailable' : [...frames].join(', ');
 }
 
 /**
- * Captures bounded child output for startup diagnostics.
+ * Captures bounded child output for startup and request diagnostics.
  */
 function captureProcessOutput(process: ChildProcessWithoutNullStreams): CapturedProcessOutput {
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const append = (buffer: string[], chunk: Buffer) => {
-    buffer.push(chunk.toString('utf8'));
+  let stderrEnd = 0;
+  const append = (buffer: string[], chunk: string) => {
+    buffer.push(chunk);
     while (buffer.join('').length > 4000) {
       buffer.shift();
     }
   };
 
-  process.stdout.on('data', (chunk: Buffer) => append(stdout, chunk));
-  process.stderr.on('data', (chunk: Buffer) => append(stderr, chunk));
+  process.stdout.on('data', (chunk: Buffer) => append(stdout, chunk.toString('utf8')));
+  process.stderr.on('data', (chunk: Buffer) => {
+    const text = chunk.toString('utf8');
+    stderrEnd += text.length;
+    append(stderr, text);
+  });
 
   return {
     stderr: () => stderr.join(''),
     stdout: () => stdout.join(''),
+    startStderrFingerprint: () => {
+      const start = stderrEnd;
+      return () => {
+        const retained = stderr.join('');
+        // The cursor stays valid when the bounded buffer drops older chunks.
+        return stderrFingerprint(
+          retained.slice(Math.max(0, retained.length - (stderrEnd - start)))
+        );
+      };
+    },
   };
 }
 

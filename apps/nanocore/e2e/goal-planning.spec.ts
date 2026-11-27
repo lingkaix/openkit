@@ -56,7 +56,9 @@ describe('Goal atomic cutover e2e', () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
     async function operation<T = GoalView>(id: string, input: Record<string, unknown>): Promise<T> {
       const requestId = id === 'goal.read' ? undefined : randomUUID();
-      const send = id === 'goal.plan.approve' ? fetch : fetchWhenCaptureAllows;
+      const readApprovalFingerprint =
+        id === 'goal.plan.approve' ? harness!.startStderrFingerprint() : undefined;
+      const send = readApprovalFingerprint ? fetch : fetchWhenCaptureAllows;
       const response = await send(`${harness!.baseUrl}/api/app/operations/${id}`, {
         method: 'POST',
         headers: {
@@ -66,10 +68,12 @@ describe('Goal atomic cutover e2e', () => {
         body: JSON.stringify(input),
       });
       const message = await response.clone().text();
-      const diagnostic =
-        id === 'goal.plan.approve' && response.status === 500
-          ? `\n${id} request ${requestId}: ${await readApprovalOutcome(harness!.baseUrl, input)}`
-          : '';
+      let diagnostic = '';
+      if (readApprovalFingerprint && response.status === 500) {
+        const fingerprint = readApprovalFingerprint();
+        const outcome = await readApprovalOutcome(harness!.baseUrl, input);
+        diagnostic = `\n${id} request ${requestId}: ${outcome}\nApproval stderr: ${fingerprint}`;
+      }
       expect(response.status, message + diagnostic).toBe(200);
       return (await response.json()) as T;
     }
