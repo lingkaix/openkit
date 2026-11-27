@@ -2051,6 +2051,11 @@ function applyNanoHostOwnerMutation(
       settleNanoHostEpochInvalidation(sqlite, mutation.input);
       return { kind: mutation.kind, value: null };
     case 'harness-lifecycle': {
+      if (
+        mutation.input.kind === 'runtime.create' ||
+        mutation.input.kind === 'session-binding.open'
+      )
+        throw new ControlProductPreconditionError();
       const value = applyControlHarnessLifecycle({ sqlite }, mutation.input);
       if (value !== null) throw new ControlProductPreconditionError();
       return { kind: mutation.kind, value };

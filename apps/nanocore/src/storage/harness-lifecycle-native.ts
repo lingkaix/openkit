@@ -1,5 +1,9 @@
 import { readRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
+import {
+  isSandboxReleaseRefusalFenced,
+  sandboxReleaseRefusalExecutionId,
+} from '../runtime/core-journal-records.js';
 import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import {
   nanoHostSandboxId,
@@ -91,6 +95,18 @@ export function applyControlHarnessLifecycle(
         if (admitted) return records.settleNanoHostHarnessOperation(admitted.coreDb, input, owner);
         break;
       case 'runtime.create':
+        if (
+          admitted &&
+          isSandboxReleaseRefusalFenced(
+            admitted.coreDb,
+            sandboxReleaseRefusalExecutionId(
+              input.runtimeTargetId,
+              input.originPhysicalEpoch,
+              input.sandboxBindingRef
+            )
+          )
+        )
+          throw new Error('NanoHost retained Sandbox is not admitting a new Harness.');
         records.createNanoHostHarnessRuntime(owner, presentControlFacts(input));
         return null;
       case 'sandbox.remove-for-harness':

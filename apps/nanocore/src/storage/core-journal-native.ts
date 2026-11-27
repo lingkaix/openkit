@@ -28,6 +28,7 @@ import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapsho
 import {
   abandonCoreImageJournal,
   hasCoreIdleCleanupConsumption,
+  isSandboxReleaseRefusalFenced,
   localCoreJournalIntent,
   readCoreHarnessConsumption,
   readSandboxReleaseRefusalOrder,
@@ -586,7 +587,19 @@ export function admitNanoHostFirstSubmissionInDb(
           return false;
         try {
           const session = readNanoHostSubmissionPlacement(nanoHost, grant, placement);
-          if (!session) return false;
+          if (
+            !session ||
+            (!original &&
+              isSandboxReleaseRefusalFenced(
+                coreDb,
+                sandboxReleaseRefusalExecutionId(
+                  session.runtimeTargetId,
+                  session.originPhysicalEpoch,
+                  session.sandboxBindingRef
+                )
+              ))
+          )
+            return false;
           const pkg = findNamedAgentEnvironmentPackageSnapshot(
             workspace,
             workspaceId,

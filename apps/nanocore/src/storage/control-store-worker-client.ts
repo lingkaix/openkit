@@ -4368,7 +4368,8 @@ class ControlStoreWorkerClient {
           },
           workerControlFinalStatus,
           harnessLifecycle: async (input) => {
-            if (input.kind === 'session-binding.open') await writeHarnessTurn(input);
+            if (input.kind === 'session-binding.open' || input.kind === 'runtime.create')
+              await writeHarnessTurn(input);
             else await write({ kind: 'harness-lifecycle', input });
           },
           workerImage: async (input) => {

@@ -909,6 +909,7 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
         | 'operation.dispatch'
         | 'operation.settle'
         | 'session-binding.open'
+        | 'runtime.create'
         | 'harness.claim-idle-capture-drain';
     }
   > =>
@@ -916,6 +917,7 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
     input.kind === 'operation.dispatch' ||
     input.kind === 'operation.settle' ||
     input.kind === 'session-binding.open' ||
+    input.kind === 'runtime.create' ||
     input.kind === 'harness.claim-idle-capture-drain'
 );
 
