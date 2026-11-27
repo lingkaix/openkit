@@ -2801,11 +2801,17 @@ it('fences cached redelivery after a Core-only release refusal and preserves its
   let redelivery: ReturnType<typeof f.poll> | undefined;
   try {
     await f.waitQueued('session.open');
-    const progress = onNative(f.coreDb, ({ sqlite }) => sqlite.prepare(`
+    const progress = onNative(
+      f.coreDb,
+      ({ sqlite }) =>
+        sqlite
+          .prepare(`
       SELECT h.harness_instance_id AS harnessInstanceId, h.operation_sequence AS nextSequence
       FROM harness_instance_records h JOIN sandbox_runtime_records s USING (sandbox_runtime_id)
       WHERE s.sandbox_integration_binding_ref=? AND h.operation_state='queued'
-    `).all(f.integration()) as { harnessInstanceId: string; nextSequence: number }[]);
+    `)
+          .all(f.integration()) as { harnessInstanceId: string; nextSequence: number }[]
+    );
     expect(progress).toHaveLength(1);
     const first = await f.poll(progress);
     expect(first.status).toBe(200);
@@ -2814,7 +2820,9 @@ it('fences cached redelivery after a Core-only release refusal and preserves its
     redelivery = f.poll(progress);
     await Promise.race([
       entered.promise,
-      redelivery.then(() => { throw new Error('Cached redelivery missed the handoff barrier.'); }),
+      redelivery.then(() => {
+        throw new Error('Cached redelivery missed the handoff barrier.');
+      }),
     ]);
     const cut = cutRefusalRequest(nativeRefusalPost, async () => {
       throw new Error('Stopped after Core and before Native drain.');
@@ -2917,13 +2925,13 @@ async function bootRefusalFixture() {
     ready: true,
     freshEmpty: true,
   });
-  const createRuntime = (key: string) =>
+  const createRuntime = (key: string, harness = key) =>
     harnessRecords.createNanoHostHarnessRuntime(owner, {
       adapterId: 'codex',
       adapterVersion: 'fixture',
-      harnessBindingRef: `harness-binding-${key}`,
-      harnessCompatibilityKey: DIGEST,
-      harnessInstanceId: `harness-${key}`,
+      harnessBindingRef: `harness-binding-${harness}`,
+      harnessCompatibilityKey: createHash('sha256').update(harness).digest('hex'),
+      harnessInstanceId: `harness-${harness}`,
       imageDigest: `sha256:${DIGEST}`,
       originPhysicalEpoch: DIGEST,
       runtimeTargetId: target.targetId,
@@ -2947,7 +2955,7 @@ async function bootRefusalFixture() {
     const storage = await openAdmittedTestNanoHost(coreDb);
     return storage.value.owner;
   };
-  return { coreDb, owner, integration, record, reopen };
+  return { coreDb, owner, integration, record, reopen, createRuntime };
 }
 
 it('resumes a Core-only release refusal on admitted Boot without another poll', async () => {
@@ -2962,6 +2970,11 @@ it('resumes a Core-only release refusal on admitted Boot without another poll', 
     expect(reopenReleaseRefusal(f.coreDb)).toEqual([
       { binding: 'sandbox-binding-original', state: 'intent', phase: 'open', drain: 'accepting' },
     ]);
+    expect(releaseRefusalNativeState(f)).toEqual(before);
+    await expect(f.createRuntime('original', 'successor')).rejects.toThrow(
+      'not admitting a new Harness'
+    );
+    await expect(f.createRuntime('sibling', 'healthy')).resolves.toBeUndefined();
     expect(releaseRefusalNativeState(f)).toEqual(before);
   } finally {
     cut.mockRestore();
@@ -3009,33 +3022,47 @@ it.each([false, true])(
             (row) => (row as { harnessDrain: string }).harnessDrain === 'accepting'
           )
         ).toBe(true);
+        expect(
+          await f.nativeOwner.harnessTurnLifecycle.dispatch({
+            sandboxIntegrationBindingRef: f.integration(),
+          })
+        ).toBeNull();
         expect(await f.poll()).toEqual({ status: 204, body: '' });
         if (!parentDrained) {
-          const { harnessInstanceId, workspaceId } = onNative(f.coreDb, ({ sqlite }) =>
-            sqlite.prepare(`SELECT h.harness_instance_id AS harnessInstanceId, b.workspace_id AS workspaceId
+          const { harnessInstanceId, workspaceId } = onNative(
+            f.coreDb,
+            ({ sqlite }) =>
+              sqlite
+                .prepare(`SELECT h.harness_instance_id AS harnessInstanceId, b.workspace_id AS workspaceId
               FROM harness_instance_records h JOIN agent_session_runtime_bindings b USING (harness_instance_id)
               JOIN sandbox_runtime_records s USING (sandbox_runtime_id)
-              WHERE s.sandbox_integration_binding_ref=?`).get(f.integration()) as {
+              WHERE s.sandbox_integration_binding_ref=?`)
+                .get(f.integration()) as {
                 harnessInstanceId: string;
                 workspaceId: string;
               }
           );
           const nextSession = testEntityId('as', 'release-refusal-next-session');
-          await expect(f.nativeOwner.harnessLifecycle({
-            kind: 'session-binding.open',
-            harnessInstanceId,
-            workspaceId,
-            threadId: testEntityId('th', 'release-refusal-next-thread'),
-            agentSessionId: nextSession,
-            agentSessionRuntimeBindingId: 'release-refusal-next-binding',
-            agentSessionCompatibilityKey: DIGEST,
-            effectiveSetupGeneration: 1,
-            timestamp: new Date().toISOString(),
-          })).rejects.toThrow('not accepting new work');
-          expect(onNative(f.coreDb, ({ sqlite }) =>
-            sqlite.prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id=?')
-              .get(nextSession)
-          )).toBeUndefined();
+          await expect(
+            f.nativeOwner.harnessLifecycle({
+              kind: 'session-binding.open',
+              harnessInstanceId,
+              workspaceId,
+              threadId: testEntityId('th', 'release-refusal-next-thread'),
+              agentSessionId: nextSession,
+              agentSessionRuntimeBindingId: 'release-refusal-next-binding',
+              agentSessionCompatibilityKey: DIGEST,
+              effectiveSetupGeneration: 1,
+              timestamp: new Date().toISOString(),
+            })
+          ).rejects.toThrow('not accepting new work');
+          expect(
+            onNative(f.coreDb, ({ sqlite }) =>
+              sqlite
+                .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id=?')
+                .get(nextSession)
+            )
+          ).toBeUndefined();
         }
       } finally {
         restore();
