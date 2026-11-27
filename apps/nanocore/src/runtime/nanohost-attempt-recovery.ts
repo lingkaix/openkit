@@ -24,7 +24,6 @@ import {
 } from '../storage/core-journal-native.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
-import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import {
   type NanoHostRecoveryLease,
   type NanoHostRecoveryMutation,
@@ -34,6 +33,7 @@ import {
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
 import type { StorageResult } from '../storage/storage-owner.js';
+import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
