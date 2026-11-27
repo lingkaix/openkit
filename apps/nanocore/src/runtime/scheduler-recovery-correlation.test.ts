@@ -98,13 +98,19 @@ it.each(['inspect', 'cancel'] as const)(
         outcomeRef: 'foreign-outcome',
         fenceRef: 'foreign-fence',
       };
+      const requestArrived = Promise.withResolvers<void>();
       const delivery = Promise.withResolvers<ExecutionBackendObservation>();
       const backend = {
         id: 'nanohost',
-        inspect: vi.fn<ExecutionBackendPort['inspect']>(async (key) =>
-          operation === 'inspect' && key.attemptId === target.attemptId ? delivery.promise : null
-        ),
-        cancel: vi.fn<ExecutionBackendPort['cancel']>(async () => delivery.promise),
+        inspect: vi.fn<ExecutionBackendPort['inspect']>(async (key) => {
+          if (operation !== 'inspect' || key.attemptId !== target.attemptId) return null;
+          requestArrived.resolve();
+          return delivery.promise;
+        }),
+        cancel: vi.fn<ExecutionBackendPort['cancel']>(async () => {
+          requestArrived.resolve();
+          return delivery.promise;
+        }),
         submit: vi.fn<ExecutionBackendPort['submit']>(),
         release: vi.fn<ExecutionBackendPort['release']>(),
       } satisfies ExecutionBackendPort;
@@ -117,7 +123,13 @@ it.each(['inspect', 'cancel'] as const)(
       };
       const pending = runSchedulerRecoveryMaintenance(db, input);
       try {
-        await vi.waitFor(() => expect(backend[operation]).toHaveBeenLastCalledWith(requested));
+        await Promise.race([
+          requestArrived.promise,
+          pending.then(() => {
+            throw new Error('Maintenance finished before requesting recovery evidence.');
+          }),
+        ]);
+        expect(backend[operation]).toHaveBeenLastCalledWith(requested);
         expect(requireSchedulerExecutionAttempt(db, foreign.attemptId)).toEqual(foreign);
       } finally {
         delivery.resolve(received);

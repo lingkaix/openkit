@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalJsonText } from '@openkit/protocol';
@@ -1817,17 +1817,17 @@ it.each([false, true])(
         sessionDir,
         lineage: { ...f.lineage },
         appendEvent: async (record) => {
-          if (
-            deferred ? record.sequence === firstChunk : record.event.type === 'observation.recorded'
-          ) {
-            // SOURCE-RETENTION requires all restricted bytes before first live exposure.
+          if (record.event.type === 'observation.recorded')
+            expect(existsSync(sourcePath)).toBe(false);
+          if (record.sequence === firstChunk) {
+            // The owner's metadata ACK precedes the spool, and all bytes precede the first live chunk.
             const source = readFileSync(sourcePath, 'utf8');
             expect(source.endsWith('\n')).toBe(true);
             const retained = source
               .slice(0, -1)
               .split('\n')
               .map((line) => WorkerCanonicalEventRecordSchema.parse(JSON.parse(line)));
-            expect(retained[0]).toEqual(deferred ? delivered[1] : record);
+            expect(retained[0]).toEqual(delivered[1]);
             expect(retained.map((entry) => entry.sequence)).toEqual([
               1,
               firstChunk,

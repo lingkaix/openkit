@@ -29,7 +29,11 @@ function nativeStartupConcurrency(): number {
     if (!fields) return 1;
     const period = Number(fields[2]);
     if (!Number.isFinite(period)) return 1;
-    if (fields[1] !== 'max') quotaCpus = Number(fields[1]) / period;
+    if (fields[1] !== 'max') {
+      const quota = Number(fields[1]);
+      if (!Number.isFinite(quota)) return 1;
+      quotaCpus = quota / period;
+    }
   } catch (error) {
     // A missing controller has no quota. An unreadable quota must not allow an extra cold start.
     if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') return 1;

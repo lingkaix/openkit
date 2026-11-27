@@ -5456,12 +5456,22 @@ class ControlStoreWorkerClient {
               const receipt = await inspectOriginal(mutation.admission);
               if (receipt.disposition !== 'applied')
                 throw new ControlStoreWorkerError('precondition', 'not-committed');
-              return (
-                await write(
-                  mutation,
-                  bodies.map((body) => body.bytes)
-                )
-              ).value;
+              const content = bodies.map((body) => body.bytes);
+              if (content.length && !mutation.input.deferBodyPublication) {
+                const declared = await write(
+                  {
+                    ...mutation,
+                    input: { ...mutation.input, deferBodyPublication: true },
+                  },
+                  content
+                );
+                if (!('observation' in declared.value)) return declared.value;
+                const published = (await write(mutation, content)).value;
+                if ('observation' in published)
+                  return { ...published, disposition: declared.value.disposition };
+                return published;
+              }
+              return (await write(mutation, content)).value;
             });
           },
           readIntent: (requestId) =>

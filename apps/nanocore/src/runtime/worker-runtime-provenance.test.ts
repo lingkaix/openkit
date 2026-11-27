@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -36,6 +36,7 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { appendWorkObservation } from '../storage/work-observations.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -116,6 +117,65 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
+  it('refuses a raw provenance bundle before copying when declared observation bodies fill the allowance', async () => {
+    const fixture = await createImportFixture('openkit-provenance-over-budget-', 'on');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-budget-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    try {
+      for (let index = 0; index < 4; index++) {
+        const id = `observation-${index}`;
+        const ts = '2026-07-13T00:00:00.000Z';
+        await appendWorkObservation(fixture.workspaceDb, {
+          threadId: fixture.lineage.threadId,
+          turnId: fixture.lineage.turnId,
+          observation: {
+            id,
+            ts,
+            obs: 'worker-shim',
+            type: 'runtime.observed',
+            payload: {
+              observationId: id,
+              sourceRef: 'provenance-budget',
+              sourceSequence: index,
+              observedAt: ts,
+              fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
+              content: {
+                state: 'expected',
+                boundary: 'tool-args',
+                mediaType: 'application/json',
+                bytes: 16 * 1024 * 1024,
+                chunkCount: 342,
+                sha256: `sha256:${'a'.repeat(64)}`,
+              },
+            },
+          },
+          bodies: [],
+        });
+      }
+      const backend = join(fixture.workspaceRoot, 'evidence', 'backend');
+      const before = existsSync(backend) ? readdirSync(backend) : [];
+      const expected = {
+        code: 'observation_limit_reached',
+        disposition: 'truncated',
+        truncation: { reason: 'body-bytes', firstOmittedSequence: 5, omittedCount: 1 },
+      };
+      await expect(importCapture(fixture, capture)).rejects.toMatchObject(expected);
+      await shutdownControlStoreWorkerClient();
+      await expect(importCapture(fixture, capture)).rejects.toMatchObject(expected);
+      expect(existsSync(backend) ? readdirSync(backend) : []).toEqual(before);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('preserves original extension-bearing raw bytes and digests while publishing only normalized known fields', async () => {
     const fixture = await createImportFixture('openkit-provenance-extensions-');
     const capture = createRuntimeCaptureFixture(
@@ -924,17 +984,135 @@ async function startGatewayCall(
   });
 }
 
+it.each([
+  ['node B', false],
+  ['node B', true],
+  ['node C', true],
+] as const)(
+  'charges retained raw files after reopening %s data (conflict=%s)',
+  async (source, conflict) => {
+    const fixture = await createImportFixture('openkit-retained-provenance-budget-', 'on');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-provenance-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    const target = { threadId: fixture.lineage.threadId, turnId: fixture.lineage.turnId };
+    const beforeImport = fixture.workspaceDb.sqlite
+      .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+      .get(target.turnId) as { record_json: string; revision: number };
+    let db = fixture.workspaceDb;
+    try {
+      const published = await importCapture(fixture, capture);
+      expect(published.complete).toBe(true);
+      const bundles = listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId);
+      expect(bundles).toHaveLength(2);
+      const files = (root: string) => readdirSync(root, { recursive: true }).sort();
+      const evidence = join(fixture.workspaceRoot, 'evidence');
+      const inventory = files(evidence);
+      await shutdownControlStoreWorkerClient();
+      if (source === 'node B') {
+        // Node B published the identical bundle rows and directories without changing the Turn.
+        db.sqlite
+          .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+          .run(beforeImport.record_json, beforeImport.revision, target.turnId);
+        expect(JSON.parse(beforeImport.record_json)).not.toHaveProperty('observationCounter');
+      }
+      db.sqlite.close();
+      db = openWorkspaceDb(dirname(dirname(fixture.workspaceRoot)), fixture.lineage.workspaceId);
+      const readTurn = () =>
+        db.sqlite
+          .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+          .get(target.turnId);
+      const oldCharge = readTurn();
+      if (conflict) {
+        const shorter = Buffer.from(
+          JSON.stringify(JSON.parse(capture.manifestBytes.toString('utf8')))
+        );
+        expect(shorter.length).toBeLessThan(capture.manifestBytes.length);
+        writeFileSync(capture.streamManifestPath, shorter);
+        try {
+          await expect(importCapture({ ...fixture, workspaceDb: db }, capture)).rejects.toThrow();
+          expect(readTurn()).toEqual(oldCharge);
+          expect(files(evidence)).toEqual(inventory);
+        } finally {
+          writeFileSync(capture.streamManifestPath, capture.manifestBytes);
+        }
+      }
+      const retainedBytes = inventory.reduce((sum, relativePath) => {
+        const info = statSync(join(evidence, relativePath));
+        return sum + (info.isFile() ? info.size : 0);
+      }, 0);
+      const unit = 16 * 1024 * 1024;
+      const lastBytes = unit - retainedBytes + 1;
+      expect(lastBytes).toBeGreaterThan(0);
+      for (let index = 0; index < 3; index++)
+        expect(await appendProvenanceBudgetDeclaration(db, target, index, unit)).toMatchObject({
+          disposition: 'committed',
+        });
+      await expect(
+        appendProvenanceBudgetDeclaration(db, target, 3, lastBytes)
+      ).rejects.toMatchObject({
+        disposition: 'truncated',
+        truncation: { reason: 'body-bytes', firstOmittedSequence: 4 },
+      });
+      const sealed = readTurn();
+      expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toEqual(published);
+      expect(readTurn()).toEqual(sealed);
+      expect(listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)).toEqual(bundles);
+      expect(files(evidence)).toEqual(inventory);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (db.sqlite.open) db.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  }
+);
+
+/** Declares an ordinary Worker body without publishing its bytes. */
+function appendProvenanceBudgetDeclaration(
+  db: WorkspaceDb,
+  target: { threadId: string; turnId: string },
+  index: number,
+  bytes: number
+) {
+  const id = `provenance-budget-${index}`;
+  const ts = '2026-07-13T00:00:00.000Z';
+  return appendWorkObservation(db, {
+    ...target,
+    observation: {
+      id,
+      ts,
+      obs: 'worker-shim',
+      type: 'runtime.observed',
+      payload: {
+        observationId: id,
+        sourceRef: 'provenance-budget',
+        sourceSequence: index,
+        observedAt: ts,
+        fact: { kind: 'tool', phase: 'completed', callRef: id, runtimeOriginRef: null },
+        content: {
+          state: 'expected',
+          boundary: 'tool-args',
+          mediaType: 'application/json',
+          bytes,
+          chunkCount: Math.ceil(bytes / (48 * 1024)),
+          sha256: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+    },
+    bodies: [],
+  });
+}
+
 /** Creates one migrated workspace and a provenance-required AEP. */
-async function createImportFixture(prefix: string): Promise<ImportFixture> {
+async function createImportFixture(
+  prefix: string,
+  value: 'on' | 'off' = 'off'
+): Promise<ImportFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  // Keep native source publication separate from the importer's empty database.
-  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-provenance-source-'));
   onTestFinished(async () => {
     await shutdownControlStoreWorkerClient();
-    rmSync(sourceRoot, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = await createDemoStore({ dataRoot: sourceRoot });
+  const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -942,7 +1120,9 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
-    }
+    },
+    null,
+    { captureCoverage: { scope: 'server', value } }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     await resolveAgentEnvironmentPackage({
@@ -965,6 +1145,7 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     })
   );
 
+  const workspaceDb = openWorkspaceDb(dataRoot, environmentPackage.scope.workspaceId);
   applyScopedMigrations(workspaceDb);
   return {
     environmentPackage,
@@ -1738,11 +1919,103 @@ describe('runtime provenance publication durability', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'recovers exact provenance after SIGKILL between canonical directory sync and native SQL',
+    'bounds complete raw staging copies across two pre-rename process losses',
     async () => {
-      const fixture = await createImportFixture('openkit-provenance-native-crash-');
+      const fixture = await createImportFixture('openkit-provenance-stage-retry-', 'on');
+      const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-stage-capture-'));
+      const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+      const rawBundleId = createWorkerRuntimeProvenanceBundleId(
+        'worker-runtime-provenance-raw',
+        fixture.environmentPackage.snapshotId
+      );
+      const backend = join(fixture.workspaceRoot, 'evidence', 'backend');
+      const staged = () =>
+        readdirSync(backend).filter((name) => name.startsWith(`${rawBundleId}.tmp-`));
+      const verifyRaw = (root: string) => {
+        expect(readFileSync(join(root, 'raw-streams.json'))).toEqual(capture.manifestBytes);
+        expect(readFileSync(join(root, 'native-origin-index.jsonl'))).toEqual(
+          capture.nativeOriginIndexBytes
+        );
+        for (const [ref, bytes] of capture.streams)
+          expect(readFileSync(join(root, 'raw', ref))).toEqual(bytes);
+      };
+      const beforeCopy = fixture.workspaceDb.sqlite
+        .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+        .get(fixture.lineage.turnId) as { record_json: string; revision: number };
+      const unrelated = join(backend, `evb_${'0'.repeat(24)}.tmp-${randomUUID()}`);
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const exited = runNativeProvenanceCrashChild({ capture, fixture, beforeRawRename: true });
+          expect(exited.error).toBeUndefined();
+          expect(exited.stderr).toBe('');
+          expect(exited.signal).toBe('SIGKILL');
+          expect(exited.stdout).toBe('before-raw-rename');
+          const inventory = staged();
+          expect(inventory).toHaveLength(1);
+          verifyRaw(join(backend, inventory[0]!));
+          expect(existsSync(join(backend, rawBundleId))).toBe(false);
+          if (attempt === 0) {
+            // Node B used a random private suffix and made no counter reservation before this cut.
+            renameSync(
+              join(backend, inventory[0]!),
+              join(backend, `${rawBundleId}.tmp-${randomUUID()}`)
+            );
+            mkdirSync(unrelated);
+            writeFileSync(join(unrelated, 'sentinel'), 'another family');
+            const prior = openWorkspaceDb(
+              dirname(dirname(fixture.workspaceRoot)),
+              fixture.lineage.workspaceId
+            );
+            try {
+              prior.sqlite
+                .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+                .run(beforeCopy.record_json, beforeCopy.revision, fixture.lineage.turnId);
+            } finally {
+              prior.sqlite.close();
+            }
+          }
+        }
+        const db = openWorkspaceDb(
+          dirname(dirname(fixture.workspaceRoot)),
+          fixture.lineage.workspaceId
+        );
+        try {
+          expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toMatchObject({
+            complete: true,
+            rawBundleId,
+          });
+          expect(staged()).toEqual([]);
+          verifyRaw(join(backend, rawBundleId));
+          expect(await importCapture({ ...fixture, workspaceDb: db }, capture)).toMatchObject({
+            complete: true,
+            rawBundleId,
+          });
+          expect(staged()).toEqual([]);
+          expect(readFileSync(join(unrelated, 'sentinel'), 'utf8')).toBe('another family');
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          db.sqlite.close();
+        }
+      } finally {
+        rmSync(captureRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32').each([
+    ['node B', 'before-normalized-rename'],
+    ['node C', 'before-normalized-rename'],
+    ['node B', 'after-directory-sync-before-sql'],
+    ['node C', 'after-directory-sync-before-sql'],
+  ] as const)(
+    'charges canonical provenance on reopen of %s at %s before any bundle receipt',
+    async (writer, cut) => {
+      const fixture = await createImportFixture('openkit-provenance-native-crash-', 'on');
       const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-native-crash-capture-'));
       const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+      const target = { threadId: fixture.lineage.threadId, turnId: fixture.lineage.turnId };
       const rawBundleId = createWorkerRuntimeProvenanceBundleId(
         'worker-runtime-provenance-raw',
         fixture.environmentPackage.snapshotId
@@ -1751,69 +2024,96 @@ describe('runtime provenance publication durability', () => {
         'worker-runtime-provenance-index',
         fixture.environmentPackage.snapshotId
       );
+      const readTurn = (db: WorkspaceDb) =>
+        db.sqlite
+          .prepare('SELECT record_json,revision FROM control_turns WHERE id=?')
+          .get(target.turnId) as { record_json: string; revision: number };
+      const beforeImport = readTurn(fixture.workspaceDb);
+      const beforeNormalizedRename = cut === 'before-normalized-rename';
       await shutdownControlStoreWorkerClient();
       fixture.workspaceDb.sqlite.close();
       try {
-        const exited = runNativeProvenanceCrashChild({ capture, fixture });
+        const exited = runNativeProvenanceCrashChild({ capture, fixture, beforeNormalizedRename });
         expect(exited.error).toBeUndefined();
         expect(exited.stderr).toBe('');
         expect(exited.signal).toBe('SIGKILL');
-        expect(exited.stdout).toBe('after-directory-sync-before-sql');
+        expect(exited.stdout).toBe(cut);
 
-        const reopened = openWorkspaceDb(
+        const db = openWorkspaceDb(
           dirname(dirname(fixture.workspaceRoot)),
           fixture.lineage.workspaceId
         );
         try {
           const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', rawBundleId);
-          const normalizedPath = join(
-            fixture.workspaceRoot,
-            'evidence',
-            'bundles',
-            indexBundleId,
-            'runtime-origin-index.jsonl'
+          const indexRoot = join(fixture.workspaceRoot, 'evidence', 'bundles', indexBundleId);
+          let stagedRoot = `${indexRoot}.tmp-reserved`;
+          if (writer === 'node B') {
+            // B wrote the same canonical files with no Turn reservation and a UUID stage.
+            db.sqlite
+              .prepare('UPDATE control_turns SET record_json=?,revision=? WHERE id=?')
+              .run(beforeImport.record_json, beforeImport.revision, target.turnId);
+            if (beforeNormalizedRename) {
+              const priorStage = `${indexRoot}.tmp-${randomUUID()}`;
+              renameSync(stagedRoot, priorStage);
+              stagedRoot = priorStage;
+            }
+          }
+          const rawFiles = new Map([
+            ['raw-streams.json', capture.manifestBytes],
+            ['native-origin-index.jsonl', capture.nativeOriginIndexBytes],
+            ...[...capture.streams].map(([ref, bytes]) => [`raw/${ref}`, bytes] as const),
+          ]);
+          for (const [relativePath, bytes] of rawFiles)
+            expect(readFileSync(join(rawRoot, relativePath))).toEqual(bytes);
+          expect(existsSync(indexRoot)).toBe(!beforeNormalizedRename);
+          const normalized = readFileSync(
+            join(beforeNormalizedRename ? stagedRoot : indexRoot, 'runtime-origin-index.jsonl')
           );
-          expect(readFileSync(join(rawRoot, 'raw-streams.json'))).toEqual(capture.manifestBytes);
-          expect(readFileSync(join(rawRoot, 'native-origin-index.jsonl'))).toEqual(
-            capture.nativeOriginIndexBytes
-          );
-          for (const [streamRef, bytes] of capture.streams)
-            expect(readFileSync(join(rawRoot, 'raw', streamRef))).toEqual(bytes);
-          const normalizedBytes = readFileSync(normalizedPath);
-          expect(normalizedBytes.byteLength).toBeGreaterThan(0);
-          expect(listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId)).toEqual([]);
-          expect(listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId)).toEqual([]);
+          expect(normalized.byteLength).toBeGreaterThan(0);
+          expect(listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)).toEqual([]);
+          expect(listWorkspaceRuntimeEvidence(db, fixture.lineage.workspaceId)).toEqual([]);
 
-          const replay = await importWorkerRuntimeProvenance({
-            backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
-            capture: {
-              nativeOriginIndexPath: capture.nativeOriginIndexPath,
-              rawStreamsRoot: capture.rawStreamsRoot,
-              streamManifestPath: capture.streamManifestPath,
-            },
-            collectedAt: '2026-07-13T00:00:01.000Z',
-            environmentPackage: fixture.environmentPackage,
-            workspaceDb: reopened,
-            workspaceRoot: fixture.workspaceRoot,
+          const unit = 16 * 1024 * 1024;
+          const retainedBytes = [...rawFiles.values()].reduce(
+            (sum, bytes) => sum + bytes.byteLength,
+            normalized.byteLength
+          );
+          const lastBytes = unit - retainedBytes + 1;
+          expect(lastBytes).toBeGreaterThan(0);
+          for (let index = 0; index < 3; index++)
+            expect(await appendProvenanceBudgetDeclaration(db, target, index, unit)).toMatchObject({
+              disposition: 'committed',
+            });
+          await expect(
+            appendProvenanceBudgetDeclaration(db, target, 3, lastBytes)
+          ).rejects.toMatchObject({
+            disposition: 'truncated',
+            truncation: { reason: 'body-bytes', firstOmittedSequence: 4, omittedCount: 1 },
           });
+          const sealed = readTurn(db);
+          const reopened = { ...fixture, workspaceDb: db };
+          const replay = await importCapture(reopened, capture);
           expect(replay).toMatchObject({ complete: true, rawBundleId, indexBundleId });
-          expect(readFileSync(normalizedPath)).toEqual(normalizedBytes);
+          expect(await importCapture(reopened, capture)).toEqual(replay);
+          expect(readTurn(db)).toEqual(sealed);
+          for (const [relativePath, bytes] of rawFiles)
+            expect(readFileSync(join(rawRoot, relativePath))).toEqual(bytes);
+          expect(readFileSync(join(indexRoot, 'runtime-origin-index.jsonl'))).toEqual(normalized);
+          expect(readdirSync(dirname(indexRoot))).toEqual([indexBundleId]);
           expect(
-            new Set(
-              listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId).map(
-                (bundle) => bundle.id
-              )
-            )
-          ).toEqual(new Set([rawBundleId, indexBundleId]));
-          const evidence = listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId);
-          expect(evidence).toHaveLength(1);
-          expect(evidence[0]).toMatchObject({
-            id: replay.runtimeEvidenceId,
-            evidenceBundleIds: [rawBundleId, indexBundleId],
-          });
+            listWorkspaceEvidenceBundles(db, fixture.lineage.workspaceId)
+              .map((bundle) => bundle.id)
+              .sort()
+          ).toEqual([rawBundleId, indexBundleId].sort());
+          expect(listWorkspaceRuntimeEvidence(db, fixture.lineage.workspaceId)).toEqual([
+            expect.objectContaining({
+              id: replay.runtimeEvidenceId,
+              evidenceBundleIds: [rawBundleId, indexBundleId],
+            }),
+          ]);
         } finally {
           await shutdownControlStoreWorkerClient();
-          reopened.sqlite.close();
+          db.sqlite.close();
         }
       } finally {
         rmSync(captureRoot, { recursive: true, force: true });
@@ -1975,6 +2275,8 @@ describe('uncommitted ancestor evidence recovery', () => {
 
 /** Runs the real native owner until both published directories are durable and SQL has not begun. */
 function runNativeProvenanceCrashChild(input: {
+  beforeNormalizedRename?: boolean;
+  beforeRawRename?: boolean;
   capture: RuntimeCaptureFixture;
   fixture: ImportFixture;
 }) {
@@ -2014,6 +2316,13 @@ threads.Worker = class extends RealWorker {
       };
       const rename = promises.rename.bind(promises);
       promises.rename = async (from, to) => {
+        if (
+          (workerData.beforeRawRename && String(to).includes('/evidence/backend/')) ||
+          (workerData.beforeNormalizedRename && String(to).includes('/evidence/bundles/'))
+        ) {
+          workerData.provenanceBoundaryPort.postMessage({ provenanceSqlBoundary: true });
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
         const result = await rename(from, to);
         publishedParents.add(dirname(String(to)));
         return result;
@@ -2046,11 +2355,13 @@ threads.Worker = class extends RealWorker {
         ...options?.workerData,
         provenanceDatabaseModule: require.resolve('better-sqlite3'),
         provenanceBoundaryPort: boundary.port2,
+        beforeNormalizedRename: input.beforeNormalizedRename,
+        beforeRawRename: input.beforeRawRename,
       },
     });
     boundary.port1.on('message', (message) => {
       if (message?.provenanceSqlBoundary) {
-        fs.writeSync(1, 'after-directory-sync-before-sql');
+        fs.writeSync(1, input.beforeRawRename ? 'before-raw-rename' : input.beforeNormalizedRename ? 'before-normalized-rename' : 'after-directory-sync-before-sql');
         process.kill(process.pid, 'SIGKILL');
       }
     });
@@ -2076,6 +2387,8 @@ await importWorkerRuntimeProvenance({
       'tsx',
       childPath,
       JSON.stringify({
+        beforeNormalizedRename: input.beforeNormalizedRename,
+        beforeRawRename: input.beforeRawRename,
         backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
         capture: {
           nativeOriginIndexPath: input.capture.nativeOriginIndexPath,
