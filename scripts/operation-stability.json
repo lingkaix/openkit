@@ -24,6 +24,10 @@
       "stability": "release-coupled",
       "state": "active"
     },
+    "administration.sandbox-hold-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
     "administration.server-mcp-create": {
       "stability": "settled",
       "state": "active",

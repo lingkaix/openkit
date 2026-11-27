@@ -331,6 +331,7 @@
     "administration.configuration-apply": "settled",
     "administration.conversation-submit": "release-coupled",
     "administration.cleanup-read": "settled",
+    "administration.sandbox-hold-read": "release-coupled",
     "app-update.preflight": "settled",
     "app-update.prepare": "settled",
     "app-update.start": "settled",
@@ -17793,6 +17794,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/administration.cleanup-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.sandbox-hold-read": {
+      "post": {
+        "operationId": "administration.sandbox-hold-read",
+        "x-openkit-stability": "release-coupled",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Read exact Sandbox release-mismatch holds and their corrective action.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.sandbox-hold-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read exact Sandbox release-mismatch holds and their corrective action.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.sandbox-hold-read.output"
                 }
               }
             }
@@ -170662,6 +170713,105 @@
         ],
         "additionalProperties": false
       },
+      "administration.sandbox-hold-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "pattern": "^sandbox-release-refusal:sha256:[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "administration.sandbox-hold-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "holds": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sandboxRuntimeId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "holdRef": {
+                  "type": "string",
+                  "pattern": "^sandbox-release-refusal:sha256:[a-f0-9]{64}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reason": {
+                  "type": "string",
+                  "const": "worker_release_incompatible"
+                },
+                "repairable": {
+                  "type": "boolean"
+                },
+                "repairBlockedReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "original-refusal-missing",
+                        "original-refusal-conflicting"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "correctiveAction": {
+                  "type": "string",
+                  "enum": [
+                    "activate-compatible-worker-image-and-repair",
+                    "await-exact-release",
+                    "inspect-original-refusal-order"
+                  ]
+                }
+              },
+              "required": [
+                "sandboxRuntimeId",
+                "holdRef",
+                "revision",
+                "reason",
+                "repairable",
+                "repairBlockedReason",
+                "correctiveAction"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sandbox-release-refusal:sha256:[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "holds",
+          "incomplete",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
       "app-update.preflight.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -183314,5 +183464,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:31dacf0e94e681228672b71fa9ba0bc0350c0a63a41509e38a0c5fcc9befffd2"
+  "x-openkit-source-digest": "sha256:5c23209744b5539295c5ea2f88159599965787dd4d70dd6972f41b77ef3aa265"
 }

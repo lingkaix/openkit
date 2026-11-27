@@ -1029,6 +1029,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     [
       'administration.cleanup-read',
       'administration.mcp-discovery-preview',
+      'administration.sandbox-hold-read',
       'administration.server-mcp-create',
       'administration.server-mcp-list',
       'administration.server-mcp-read',

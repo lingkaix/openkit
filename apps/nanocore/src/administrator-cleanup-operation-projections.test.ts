@@ -29,9 +29,18 @@ import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { localCoreJournalIntent } from './runtime/core-journal-records.js';
+import {
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+  readExecutionJournalInvocation,
+  readExecutionJournalRoot,
+  writeExecutionJournalIntent,
+} from './runtime/execution-journal.js';
+import type { ExecutionInvocation, ExecutionJournalRef } from './runtime/execution-step-journal.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
+  removeNanoHostSandboxRuntimeByBinding,
 } from './runtime/nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -44,7 +53,11 @@ import {
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
 import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './runtime/worker-storage-binding-records.js';
-import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from './scheduler-records.js';
+import { commandInputHash } from './storage/control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -406,6 +419,648 @@ afterEach(async () => {
     if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
     rmSync(f.dataRoot, { recursive: true, force: true });
   }
+});
+
+/** Models an admitted administrator decision with the existing journal writer. */
+function recordSandboxRepair(
+  coreDb: CoreDb,
+  hold: ExecutionJournalRef,
+  overrides: {
+    attemptId?: string;
+    bindingRef?: string;
+    systemActor?: boolean;
+    inputRefs?: string[];
+    target?: Partial<NonNullable<ExecutionInvocation['control']['target']>>;
+    physicalFenceRefs?: string[];
+  } = {}
+) {
+  const root = readExecutionJournalRoot(coreDb, hold);
+  const { control } = readExecutionJournalInvocation(coreDb, { execution: hold, stepId: 'fence' });
+  const intent = localCoreJournalIntent({
+    definitionVersion: CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+    executionId: hold.executionId,
+    stepId: 'repair',
+    workId: root.workId,
+    fingerprint: commandInputHash([hold.executionId, root.revision, REQUEST]),
+    kind: 'fence',
+    actorId: 'administrator',
+    inputRefs: overrides.inputRefs ?? [hold.executionId],
+    authorityRefs: [],
+    carriage: {
+      operation: 'sandbox.release-repair',
+      requestId: REQUEST,
+      sequence: null,
+      bindingRef: overrides.bindingRef ?? root.workId,
+    },
+    timestamp: CHANGED,
+    root,
+  });
+  coreDb.sqlite.transaction(() =>
+    writeExecutionJournalIntent(coreDb, {
+      ...intent,
+      control: {
+        ...intent.control,
+        actor: overrides.systemActor
+          ? intent.control.actor
+          : { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        attemptId: overrides.attemptId ?? control.attemptId,
+        target: control.target && { ...control.target, ...overrides.target },
+        physicalFenceRefs: overrides.physicalFenceRefs ?? control.physicalFenceRefs,
+      },
+    })
+  )();
+}
+
+/** Models the existing Core receipt after exact release and requeue. */
+function recordSandboxHandoff(coreDb: CoreDb, attemptId: string, orderId: string) {
+  coreDb.sqlite
+    .prepare(`UPDATE scheduler_execution_attempts
+      SET phase='closed', terminal_cause='sandbox-release-refusal', fence_ref=?
+      WHERE attempt_id=?`)
+    .run(orderId, attemptId);
+  coreDb.sqlite
+    .prepare(`UPDATE scheduler_admission_entries SET status='queued'
+      WHERE queue_entry_id=(SELECT queue_entry_id FROM scheduler_execution_attempts WHERE attempt_id=?)`)
+    .run(attemptId);
+}
+
+/** Seeds the Core fences and retained scheduler succession for the public read. */
+function recordSandboxHold(
+  coreDb: CoreDb,
+  sandboxRuntimeId: string,
+  bindingRef: string,
+  epoch: string,
+  options: {
+    omitOriginalReference?: boolean;
+    conflictOriginalOrder?: boolean;
+    intervening?: readonly ('automatic' | 'repaired')[];
+    useInterveningOrder?: boolean;
+    originalReference?: string;
+    ownFenceSequence?: number;
+    competingAttempt?: boolean;
+  } = {}
+) {
+  const definitionVersion = CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION;
+  const targetId = 'target_cleanup';
+  const record = (
+    binding: string,
+    attemptId: string,
+    operation: 'sandbox.release-refusal' | 'sandbox.release-refusal-hold',
+    inputRefs: readonly string[],
+    sequence: number | null = null,
+    originEpoch = epoch
+  ) => {
+    const fingerprint = commandInputHash([definitionVersion, targetId, originEpoch, binding]);
+    const executionId = `sandbox-release-refusal:${fingerprint}`;
+    const intent = localCoreJournalIntent({
+      definitionVersion,
+      executionId,
+      stepId: 'fence',
+      workId: binding,
+      fingerprint,
+      kind: 'fence',
+      actorId: 'nanohost-release-refusal',
+      inputRefs,
+      authorityRefs: [sandboxRuntimeId],
+      carriage: { operation, requestId: fingerprint, sequence, bindingRef: binding },
+      timestamp: CREATED,
+    });
+    writeExecutionJournalIntent(coreDb, {
+      ...intent,
+      control: {
+        ...intent.control,
+        attemptId,
+        target: { backendKind: 'openshell', targetId, allocationRef: binding },
+        physicalFenceRefs: [originEpoch],
+      },
+    });
+    return intent.execution.ref;
+  };
+  return coreDb.sqlite.transaction(() => {
+    const predecessor = attempt(coreDb, `predecessor-${bindingRef}`);
+    const next = (binding: string) =>
+      recordTestExecutionAttempt(coreDb, {
+        entry: requireSchedulerAdmissionEntry(coreDb, predecessor.queueEntryId),
+        attemptId: testEntityId('attempt', `successor-${binding}`),
+        agentSessionId: predecessor.agentSessionId!,
+        inputRef: `successor-package-${binding}`,
+        bindingRef: binding,
+        sessionCompatibilityKey: 'b'.repeat(64),
+        now: () => CHANGED,
+      });
+    const original = record(
+      predecessor.bindingRef!,
+      predecessor.attemptId,
+      'sandbox.release-refusal',
+      [],
+      options.conflictOriginalOrder ? 1 : null,
+      '1'.repeat(64)
+    );
+    recordSandboxHandoff(coreDb, predecessor.attemptId, original.executionId);
+    const intermediate = (options.intervening ?? []).map((kind, index) => {
+      const binding = `intervening-${index}-${bindingRef}`;
+      const attempt = next(binding);
+      const order = record(
+        binding,
+        attempt.attemptId,
+        kind === 'automatic' ? 'sandbox.release-refusal' : 'sandbox.release-refusal-hold',
+        kind === 'automatic' ? [] : [original.executionId],
+        null,
+        '2'.repeat(64)
+      );
+      if (kind === 'repaired') recordSandboxRepair(coreDb, order);
+      recordSandboxHandoff(coreDb, attempt.attemptId, order.executionId);
+      return { attempt, order };
+    });
+    const successor = next(bindingRef);
+    coreDb.sqlite
+      .prepare(`UPDATE scheduler_execution_attempts
+      SET phase='closing', terminal_cause='sandbox-release-refusal' WHERE attempt_id=?`)
+      .run(successor.attemptId);
+    const hold = record(
+      bindingRef,
+      successor.attemptId,
+      'sandbox.release-refusal-hold',
+      options.omitOriginalReference
+        ? []
+        : [
+            options.originalReference ??
+              (options.useInterveningOrder
+                ? intermediate[0]!.order.executionId
+                : original.executionId),
+          ],
+      options.ownFenceSequence ?? null
+    );
+    if (options.competingAttempt) {
+      // Model another attempt after the held one while retaining its original closing state.
+      recordSandboxHandoff(coreDb, successor.attemptId, hold.executionId);
+      const competing = next(`competing-${bindingRef}`);
+      coreDb.sqlite
+        .prepare("UPDATE scheduler_execution_attempts SET phase='closed' WHERE attempt_id=?")
+        .run(competing.attemptId);
+      coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_execution_attempts SET phase='closing', fence_ref=NULL WHERE attempt_id=?"
+        )
+        .run(successor.attemptId);
+    }
+    return { original, hold, predecessor, successor, intermediate };
+  })();
+}
+
+it('discovers the exact Sandbox hold from Core after the Native resident is gone', async () => {
+  const f = await fixture();
+  const id = 'administration.sandbox-hold-read';
+  const sandboxRuntimeId = 'sandbox-held';
+  const targetId = 'target_cleanup';
+  const oldEpoch = 'a'.repeat(64);
+  const oldBinding = `sandbox_binding_${sandboxRuntimeId}`;
+  await sandbox(f.coreDb, sandboxRuntimeId);
+  const { hold } = recordSandboxHold(f.coreDb, sandboxRuntimeId, oldBinding, oldEpoch, {
+    intervening: ['repaired'],
+  });
+  const expected = {
+    sandboxRuntimeId,
+    holdRef: hold.executionId,
+    revision: readExecutionJournalRoot(f.coreDb, hold).revision,
+    reason: 'worker_release_incompatible',
+    repairable: true,
+    repairBlockedReason: null,
+    correctiveAction: 'activate-compatible-worker-image-and-repair',
+  };
+  await expect(f.invoke(id, {}, { kind: 'public', actor: f.actor })).resolves.toEqual({
+    holds: [expected],
+    incomplete: false,
+    nextCursor: null,
+  });
+  const response = await f.app.request(`/api/app/operations/${id}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const payload = await response.json();
+  expect(response.status, JSON.stringify(payload)).toBe(200);
+  expect(payload).toEqual({ holds: [expected], incomplete: false, nextCursor: null });
+
+  // Model the acknowledged fresh-empty epoch after the old resident has been removed.
+  await removeNanoHostSandboxRuntimeByBinding(f.coreDb, oldBinding);
+  const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+    deploymentId: testEntityId('dep', 'deployment_cleanup'),
+    identityId: 'identity_cleanup',
+    targetId,
+    observedAt: CHANGED,
+  });
+  await upsertNanoHostRuntimeTarget(f.coreDb, {
+    ...generation,
+    freshEmpty: true,
+    predecessorFenced: true,
+    ready: true,
+    physicalEpoch: 'c'.repeat(64),
+    observedAt: CHANGED,
+  });
+  await shutdownControlStoreWorkerClient();
+  f.coreDb.sqlite.close();
+  const cold = openCoreDb(f.dataRoot);
+  fixtures.push({ coreDb: cold, dataRoot: f.dataRoot });
+  expect(
+    cold.sqlite.prepare('SELECT sandbox_runtime_id FROM sandbox_runtime_records').all()
+  ).toEqual([]);
+  const invoke = createOperationInvocation({ ...f, coreDb: cold });
+  const before = rows(cold);
+  const beforeFiles = files(f.dataRoot);
+  await expect(invoke(id, {}, { kind: 'public', actor: f.actor })).resolves.toEqual({
+    holds: [expected],
+    incomplete: false,
+    nextCursor: null,
+  });
+  expect(rows(cold)).toEqual(before);
+  expect(files(f.dataRoot)).toEqual(beforeFiles);
+
+  // A later resident can reuse the runtime ID. Its binding and epoch cannot retarget the hold.
+  await createNanoHostHarnessRuntime(cold, {
+    adapterId: 'pi',
+    adapterVersion: '1',
+    harnessInstanceId: 'replacement-harness',
+    harnessBindingRef: 'replacement-harness-binding',
+    harnessCompatibilityKey: 'b'.repeat(64),
+    imageDigest: `sha256:${'c'.repeat(64)}`,
+    originPhysicalEpoch: 'c'.repeat(64),
+    sandboxBindingRef: 'replacement-sandbox-binding',
+    sandboxCompatibilityKey: 'd'.repeat(64),
+    sandboxIntegrationBindingRef: 'replacement-integration',
+    sandboxRuntimeId,
+    runtimeTargetId: targetId,
+    timestamp: CHANGED,
+  });
+  const reused = rows(cold);
+  const reusedFiles = files(f.dataRoot);
+  await expect(invoke(id, {}, { kind: 'public', actor: f.actor })).resolves.toEqual({
+    holds: [expected],
+    incomplete: false,
+    nextCursor: null,
+  });
+  expect(rows(cold)).toEqual(reused);
+  expect(files(f.dataRoot)).toEqual(reusedFiles);
+  await expect(
+    invoke(
+      id,
+      {},
+      {
+        kind: 'public',
+        actor: { kind: 'session', userId: f.actor.userId },
+      }
+    )
+  ).rejects.toMatchObject({ status: 403 });
+});
+
+it.each([
+  ['missing reference', 'original-refusal-missing'],
+  ['missing order', 'original-refusal-missing'],
+  ['missing fence step', 'original-refusal-missing'],
+  ['conflicting order', 'original-refusal-conflicting'],
+  ['conflicting lineage', 'original-refusal-conflicting'],
+  ['conflicting predecessor binding', 'original-refusal-conflicting'],
+  ['conflicting successor binding', 'original-refusal-conflicting'],
+  ['skipped intervening refusal', 'original-refusal-conflicting'],
+  ['valid order and lineage', null],
+] as const)('Sandbox hold repairability matrix: %s', async (scenario, reason) => {
+  const f = await fixture();
+  const { original, hold, predecessor, successor } = recordSandboxHold(
+    f.coreDb,
+    'sandbox-held',
+    'sandbox-binding',
+    'a'.repeat(64),
+    {
+      omitOriginalReference: scenario === 'missing reference',
+      conflictOriginalOrder: scenario === 'conflicting order',
+      ...(scenario === 'missing order'
+        ? { originalReference: `sandbox-release-refusal:sha256:${'0'.repeat(64)}` }
+        : {}),
+      ...(scenario === 'skipped intervening refusal' ? { intervening: ['automatic'] } : {}),
+    }
+  );
+  switch (scenario) {
+    case 'missing fence step':
+      f.coreDb.sqlite
+        .prepare("DELETE FROM control_execution_steps WHERE execution_id=? AND step_id='fence'")
+        .run(original.executionId);
+      break;
+    case 'conflicting lineage':
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE attempt_id=?')
+        .run(testEntityId('as', 'unrelated-predecessor'), predecessor.attemptId);
+      break;
+    case 'conflicting predecessor binding':
+    case 'conflicting successor binding':
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET binding_ref=? WHERE attempt_id=?')
+        .run(
+          'unrelated-sandbox-binding',
+          scenario === 'conflicting predecessor binding'
+            ? predecessor.attemptId
+            : successor.attemptId
+        );
+      break;
+  }
+  await expect(
+    f.invoke('administration.sandbox-hold-read', {}, { kind: 'public', actor: f.actor })
+  ).resolves.toEqual({
+    holds: [
+      {
+        sandboxRuntimeId: 'sandbox-held',
+        holdRef: hold.executionId,
+        revision: readExecutionJournalRoot(f.coreDb, hold).revision,
+        reason: 'worker_release_incompatible',
+        repairable: reason === null,
+        repairBlockedReason: reason,
+        correctiveAction: reason
+          ? 'inspect-original-refusal-order'
+          : 'activate-compatible-worker-image-and-repair',
+      },
+    ],
+    incomplete: false,
+    nextCursor: null,
+  });
+});
+
+/** Compares the full public projection of the exact hold under test. */
+function projectedSandboxHold(
+  coreDb: CoreDb,
+  hold: ExecutionJournalRef,
+  status: 'eligible' | 'repairing' | 'conflicting'
+) {
+  return {
+    sandboxRuntimeId: 'sandbox-held',
+    holdRef: hold.executionId,
+    revision: readExecutionJournalRoot(coreDb, hold).revision,
+    reason: 'worker_release_incompatible',
+    repairable: status === 'eligible',
+    repairBlockedReason: status === 'conflicting' ? 'original-refusal-conflicting' : null,
+    correctiveAction: {
+      eligible: 'activate-compatible-worker-image-and-repair',
+      repairing: 'await-exact-release',
+      conflicting: 'inspect-original-refusal-order',
+    }[status],
+  };
+}
+
+it('keeps the pending exact Sandbox repair visible until its Core handoff', async () => {
+  const f = await fixture();
+  const { hold, successor } = recordSandboxHold(
+    f.coreDb,
+    'sandbox-held',
+    'binding',
+    'a'.repeat(64)
+  );
+  recordSandboxRepair(f.coreDb, hold);
+  const read = () =>
+    f.invoke('administration.sandbox-hold-read', {}, { kind: 'public', actor: f.actor });
+  await expect(read()).resolves.toEqual({
+    holds: [projectedSandboxHold(f.coreDb, hold, 'repairing')],
+    incomplete: false,
+    nextCursor: null,
+  });
+  recordSandboxHandoff(f.coreDb, successor.attemptId, hold.executionId);
+  await expect(read()).resolves.toEqual({ holds: [], incomplete: false, nextCursor: null });
+});
+
+it.each([1, 2])('recommends repair after %i exact deliberate handoffs', async (count) => {
+  const f = await fixture();
+  const { hold } = recordSandboxHold(f.coreDb, 'sandbox-held', 'binding', 'a'.repeat(64), {
+    intervening: Array.from({ length: count }, () => 'repaired' as const),
+  });
+  await expect(
+    f.invoke('administration.sandbox-hold-read', {}, { kind: 'public', actor: f.actor })
+  ).resolves.toEqual({
+    holds: [projectedSandboxHold(f.coreDb, hold, 'eligible')],
+    incomplete: false,
+    nextCursor: null,
+  });
+});
+
+describe.each(['intermediate', 'visible'] as const)('%s Sandbox repair identity', (position) => {
+  it.each([
+    'hold reference',
+    'extra hold reference',
+    'RuntimeTarget ID',
+    'RuntimeTarget backend',
+    'RuntimeTarget allocation',
+    'origin Epoch',
+    'extra origin Epoch',
+  ] as const)('rejects a contradictory %s', async (field) => {
+    const f = await fixture();
+    const { original, intermediate, hold } = recordSandboxHold(
+      f.coreDb,
+      'sandbox-held',
+      'binding',
+      'a'.repeat(64),
+      { intervening: position === 'intermediate' ? ['repaired'] : [] }
+    );
+    const repairedHold = position === 'intermediate' ? intermediate[0]!.order : hold;
+    const { control } = readExecutionJournalInvocation(f.coreDb, {
+      execution: repairedHold,
+      stepId: 'fence',
+    });
+    f.coreDb.sqlite
+      .prepare("DELETE FROM control_execution_steps WHERE execution_id=? AND step_id='repair'")
+      .run(repairedHold.executionId);
+    const overrides = {
+      'hold reference': { inputRefs: [original.executionId] },
+      'extra hold reference': { inputRefs: [repairedHold.executionId, original.executionId] },
+      'RuntimeTarget ID': { target: { targetId: 'foreign-target' } },
+      'RuntimeTarget backend': { target: { backendKind: 'foreign-backend' } },
+      'RuntimeTarget allocation': { target: { allocationRef: 'foreign-allocation' } },
+      'origin Epoch': { physicalFenceRefs: ['f'.repeat(64)] },
+      'extra origin Epoch': { physicalFenceRefs: [...control.physicalFenceRefs, 'f'.repeat(64)] },
+    }[field];
+    recordSandboxRepair(f.coreDb, repairedHold, overrides);
+
+    const result = f.invoke(
+      'administration.sandbox-hold-read',
+      {},
+      { kind: 'public', actor: f.actor }
+    );
+    if (position === 'intermediate') {
+      await expect(result).resolves.toEqual({
+        holds: [projectedSandboxHold(f.coreDb, hold, 'conflicting')],
+        incomplete: false,
+        nextCursor: null,
+      });
+    } else {
+      await expect(result).rejects.toMatchObject({
+        status: 503,
+        code: 'administrator_cleanup_unavailable',
+      });
+    }
+  });
+});
+
+it.each([
+  'released without repair',
+  'released with repair under another root',
+  'released with repair for another attempt',
+  'released with repair for another binding',
+  'released with a non-administrator repair actor',
+  'repair intent without release',
+  'release names another fence',
+  'earlier repair unproved',
+  'second automatic order claimed as original',
+  'malformed original after repair',
+  'foreign original after repair',
+  'different admission after repair',
+  'contradictory original reference',
+  'competing attempt after hold',
+] as const)('refuses a contradictory Sandbox repair lineage: %s', async (scenario) => {
+  const f = await fixture();
+  const originalReference =
+    scenario === 'foreign original after repair'
+      ? recordSandboxHold(f.coreDb, 'sandbox-foreign', 'foreign', 'b'.repeat(64)).original
+          .executionId
+      : scenario === 'contradictory original reference'
+        ? `sandbox-release-refusal:${commandInputHash([
+            CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+            'target_cleanup',
+            'a'.repeat(64),
+            'binding',
+          ])}`
+        : undefined;
+  const { original, hold, intermediate, successor } = recordSandboxHold(
+    f.coreDb,
+    'sandbox-held',
+    'binding',
+    'a'.repeat(64),
+    {
+      intervening:
+        scenario === 'second automatic order claimed as original'
+          ? ['automatic']
+          : scenario === 'earlier repair unproved'
+            ? ['repaired', 'repaired']
+            : ['repaired'],
+      useInterveningOrder: scenario === 'second automatic order claimed as original',
+      conflictOriginalOrder: scenario === 'malformed original after repair',
+      competingAttempt: scenario === 'competing attempt after hold',
+      ...(originalReference ? { originalReference } : {}),
+    }
+  );
+  const [predecessor] = intermediate;
+  const predecessorId = predecessor!.order.executionId;
+  const deleteRepair = () =>
+    f.coreDb.sqlite
+      .prepare("DELETE FROM control_execution_steps WHERE execution_id=? AND step_id='repair'")
+      .run(predecessorId);
+  switch (scenario) {
+    case 'released with repair under another root':
+      recordSandboxRepair(f.coreDb, original, {
+        attemptId: predecessor!.attempt.attemptId,
+        bindingRef: predecessor!.attempt.bindingRef!,
+      });
+      deleteRepair();
+      break;
+    case 'released without repair':
+    case 'earlier repair unproved':
+      deleteRepair();
+      break;
+    case 'released with repair for another attempt':
+      deleteRepair();
+      recordSandboxRepair(f.coreDb, predecessor!.order, { attemptId: successor.attemptId });
+      break;
+    case 'released with repair for another binding':
+      deleteRepair();
+      recordSandboxRepair(f.coreDb, predecessor!.order, { bindingRef: 'foreign' });
+      break;
+    case 'released with a non-administrator repair actor':
+      deleteRepair();
+      recordSandboxRepair(f.coreDb, predecessor!.order, { systemActor: true });
+      break;
+    case 'repair intent without release':
+    case 'release names another fence':
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET fence_ref=? WHERE attempt_id=?')
+        .run(
+          scenario === 'repair intent without release' ? null : original.executionId,
+          predecessor!.attempt.attemptId
+        );
+      break;
+    case 'different admission after repair': {
+      // Model a contradictory retained admission reference. Restore normal checks before reading.
+      const alternate = attempt(f.coreDb, 'alternate-admission');
+      f.coreDb.sqlite.pragma('foreign_keys = OFF');
+      try {
+        f.coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET queue_entry_id=? WHERE attempt_id=?')
+          .run(alternate.queueEntryId, successor.attemptId);
+      } finally {
+        f.coreDb.sqlite.pragma('foreign_keys = ON');
+      }
+      break;
+    }
+  }
+  const result = await f.invoke(
+    'administration.sandbox-hold-read',
+    {},
+    { kind: 'public', actor: f.actor }
+  );
+  expect(result.holds.find(({ holdRef }) => holdRef === hold.executionId)).toEqual(
+    projectedSandboxHold(f.coreDb, hold, 'conflicting')
+  );
+});
+
+it.each(['own fence', 'own repair attempt', 'own repair binding', 'unavailable snapshot'] as const)(
+  'refuses an unavailable Sandbox hold observation: %s',
+  async (scenario) => {
+    const f = await fixture();
+    const { hold, predecessor } = recordSandboxHold(
+      f.coreDb,
+      'sandbox-held',
+      'binding',
+      'a'.repeat(64),
+      {
+        ...(scenario === 'own fence' ? { ownFenceSequence: 1 } : {}),
+      }
+    );
+    switch (scenario) {
+      case 'own repair attempt':
+        recordSandboxRepair(f.coreDb, hold, { attemptId: predecessor.attemptId });
+        break;
+      case 'own repair binding':
+        recordSandboxRepair(f.coreDb, hold, { bindingRef: 'foreign' });
+        break;
+      case 'unavailable snapshot': {
+        const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+        vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+          if (sql.includes('SELECT root.id AS holdRef'))
+            throw new Database.SqliteError('Core hold snapshot unavailable.', 'SQLITE_IOERR');
+          return prepare(sql);
+        });
+        break;
+      }
+    }
+    await expect(
+      f.invoke('administration.sandbox-hold-read', {}, { kind: 'public', actor: f.actor })
+    ).rejects.toMatchObject({ status: 503, code: 'administrator_cleanup_unavailable' });
+  }
+);
+
+it('pages past the 100th Sandbox hold without clearing any hold', async () => {
+  const f = await fixture();
+  const expected = Array.from({ length: 101 }, (_, i) => {
+    const sandboxRuntimeId = `held-${i}`;
+    const { hold } = recordSandboxHold(f.coreDb, sandboxRuntimeId, `binding-${i}`, 'a'.repeat(64));
+    return { ...projectedSandboxHold(f.coreDb, hold, 'eligible'), sandboxRuntimeId };
+  }).sort((a, b) => (a.holdRef < b.holdRef ? -1 : 1));
+  const read = (input: { cursor?: string }) =>
+    f.invoke('administration.sandbox-hold-read', input, { kind: 'public', actor: f.actor });
+  const before = rows(f.coreDb);
+  const first = await read({});
+  expect(first).toEqual({
+    holds: expected.slice(0, 100),
+    incomplete: true,
+    nextCursor: expected[99]!.holdRef,
+  });
+
+  const second = await read({ cursor: first.nextCursor! });
+  expect(second).toEqual({ holds: expected.slice(100), nextCursor: null, incomplete: false });
+  expect(rows(f.coreDb)).toEqual(before);
 });
 
 describe('administrator cleanup public operation composition', () => {
