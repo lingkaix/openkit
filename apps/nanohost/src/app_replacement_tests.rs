@@ -4,9 +4,10 @@ use crate::credential_slots::{
     CredentialSelectionContext, CredentialSlot, SlotPairPaths, SlotWriteMaterial,
     write_credential_slot,
 };
-use crate::epoch_coordinator::{EpochCoordinator, EpochFault, WatchedTask};
+use crate::epoch_coordinator::{EpochCoordinator, EpochFault};
 use crate::nanocore_session::{TlsTrustMaterial, prepare_verified_session_transport};
 use crate::openshell_client::{WorkerBootstrapCompletion, WorkerBootstrapMonitor};
+use crate::sandbox_bridge::OpenSandboxBridge;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -157,7 +158,7 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
         .unwrap();
     // Supply the fixture's stock-forward byte boundary over loopback. The same
     // production route projection carries requests and resets across Core generations.
-    let route = WatchedTask::new(tokio::spawn(async move {
+    let route = tokio::spawn(async move {
         let mut connection = h2::server::handshake(shim_socket).await?;
         while let Some(incoming) = connection.accept().await {
             let (request, respond) = incoming?;
@@ -174,7 +175,9 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
             });
         }
         Ok(())
-    }));
+    });
+    let bridge =
+        OpenSandboxBridge::new(route, "fixture-authorization".into(), BINDING.into(), true);
     let response = tokio::spawn(async move {
         let status = shim
             .wait()
@@ -187,8 +190,15 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
             exit_status,
         })
     });
-    let bootstrap = WorkerBootstrapMonitor::from_test_task(response, route.clone());
-    coordinator.fixture_watch_harness(&bootstrap).unwrap();
+    let response_abort = response.abort_handle();
+    let bootstrap = WorkerBootstrapMonitor::from_test_task(response, bridge.task_handle());
+    coordinator
+        .fixture_accept_harness_bridge(bridge, bootstrap)
+        .unwrap();
+    assert!(
+        coordinator.has_live_bridge(),
+        "fixture must retain the live Harness bridge before shutdown"
+    );
 
     let host = crate::run_sessions(
         inputs,
@@ -251,7 +261,7 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
         );
         assert_eq!(successor["predecessorFenced"], true);
         assert_eq!(std::process::id(), host_pid);
-        assert!(bootstrap.is_live());
+        assert!(!response_abort.is_finished());
         eprintln!(
             "NanoHost PID {host_pid} and Epoch {physical_epoch} survived generations {} -> {} with predecessor fencing",
             first["generation"], successor["generation"]
@@ -265,6 +275,5 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
         _successor = replacement => {}
     }
     assert_eq!(std::fs::read_dir(reports).unwrap().count(), 0);
-    route.abort();
-    bootstrap.discard_after_sandbox_deletion();
+    response_abort.abort();
 }
