@@ -4,49 +4,82 @@ import { once } from 'node:events';
 import { createServer, type Http2ServerRequest } from 'node:http2';
 import { createInterface } from 'node:readline';
 import { serve } from '@hono/node-server';
+import { allocateEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from '../auth/nanohost-transport-admission.js';
 import { createNanoHostTransportSessionAuthority } from '../auth/nanohost-transport-session.js';
-import { createNanoHostTransportTokenRecord } from '../auth/nanohost-transport-token-store.js';
+import { createOpenKitAccessTokenSecret } from '../auth/nanohost-transport-token.js';
+import { enrollNanoHostTransportIdentity } from '../auth/nanohost-transport-token-store.js';
 import { createNanoHostHarnessRuntime } from '../runtime/nanohost-harness.js';
-import {
-  fenceNanoHostRuntimeTargetAfterRestart,
-  getNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
+import { dispatchNanoHostHarnessOperation } from '../runtime/nanohost-harness-records.js';
 import {
   createNanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
 } from '../runtime/nanohost-session-dispatch.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openCoreDb, openCoreReadDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { openAdmittedTestNanoHost, reopenAdmittedTestNanoHost } from './admitted-nanohost.js';
 
 const [root, successorPort] = process.argv.slice(2);
 assert(root);
-const coreDb = openCoreDb(root);
+const coreDb = successorPort === undefined ? openCoreDb(root) : openCoreReadDb(root);
 const identityId = 'nanohost-a';
-const deploymentId = 'deployment-a';
+const { deploymentId } = readDataRootLayoutMarker(root);
+const nanoHostConfig = { identityId, deploymentId };
 const now = new Date();
 const releaseIdentity = { sourceCommit: 'a'.repeat(40), releaseTag: 'v0.1.0' };
-let secret: string | undefined;
 if (successorPort === undefined) {
   applyMigrations(coreDb);
-  coreDb.sqlite
-    .prepare(`INSERT INTO nanohost_integration_identities
-      (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`)
-    .run(identityId, deploymentId, now.toISOString());
-  const token = await createNanoHostTransportTokenRecord(coreDb, {
+} else {
+  const scope = nativeProductScope(root, { kind: 'server' });
+  await getControlStoreWorkerClient().open({
+    database: `core:${scope.path}`,
+    path: scope.path,
+    dataRoot: root,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+}
+const nativeStorage =
+  successorPort === undefined
+    ? await openAdmittedTestNanoHost(coreDb)
+    : await reopenAdmittedTestNanoHost(coreDb);
+const { readTarget } = createNanoHostCoreReads(nativeStorage.value.owner);
+const observeTarget = () => {
+  const observed = readTarget(identityId);
+  assert.equal(observed.state, 'ready');
+  return observed.value;
+};
+let secret: string | undefined;
+if (successorPort === undefined) {
+  const token = await enrollNanoHostTransportIdentity(nativeStorage.value, {
     deploymentId,
     expiresAt: new Date(now.getTime() + 60_000).toISOString(),
     now,
     ownerNanoHostIdentityId: identityId,
     responsibleServerAdminActorId: 'fixture-admin',
+    secret: createOpenKitAccessTokenSecret(),
+    tokenId: allocateEntityId('nhtok'),
   });
   secret = token.secret;
 } else {
-  await fenceNanoHostRuntimeTargetAfterRestart(coreDb, now.toISOString());
+  const restart = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+    kind: 'restart',
+    observedAt: now.toISOString(),
+  });
+  assert.equal(restart.state, 'ready');
 }
 
 const emit = (observation: object) => process.stdout.write(`${JSON.stringify(observation)}\n`);
@@ -73,9 +106,9 @@ if (successorPort === undefined) {
   app.use('/api/nanohost/transport/session/readiness', async (context, next) => {
     await next();
     assert.equal(context.res.status, 204);
-    const target = getNanoHostRuntimeTarget(coreDb, identityId);
+    const target = observeTarget();
     assert(target?.physicalEpoch);
-    await createNanoHostHarnessRuntime(coreDb, {
+    await createNanoHostHarnessRuntime(nativeStorage.value.owner, {
       adapterId: 'codex',
       adapterVersion: '0.166.0',
       harnessBindingRef: 'app-replacement-harness-binding',
@@ -107,7 +140,7 @@ app.use('/worker-control/harness/poll', async (context, next) => {
   // A second successor poll proves the same shim received the first reply.
   if (poll === (successorPort === undefined ? 1 : 2)) {
     assert.equal(context.res.status, 204, 'the resident Harness has no queued work');
-    const target = getNanoHostRuntimeTarget(coreDb, identityId);
+    const target = observeTarget();
     assert(target?.ready);
     emit({
       generation: target.connectionGeneration,
@@ -116,14 +149,35 @@ app.use('/worker-control/harness/poll', async (context, next) => {
     });
   }
 });
-registerNanoHostTransportAdmissionRoutes({ app, coreDb, sessionAuthority: authority });
+registerNanoHostTransportAdmissionRoutes({
+  app,
+  coreDb,
+  nativeStorage,
+  sessionAuthority: authority,
+});
 const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
 registerNanoHostSessionEffectRoutes({ app, dispatch });
 registerNanoHostSessionSemanticRoutes({
   app,
   coreDb,
   dispatch,
-  nanoHostConfig: { identityId, deploymentId },
+  nanoHostConfig,
+  nativeStorage,
+  nativeHarnessLifecycle: {
+    async dispatch(query) {
+      // This fixture carries only idle polls. Use the original binding and queue
+      // lookup on the admitted reader, which refuses any actual dispatch write.
+      const observed = nativeStorage.value.owner.read((sqlite) =>
+        dispatchNanoHostHarnessOperation(coreDb, query, { owner: { sqlite } })
+      );
+      assert.equal(observed.state, 'ready');
+      assert.equal(observed.value, null, 'the resident Harness has no queued work');
+      return observed.value;
+    },
+    async settle() {
+      throw new Error('The idle Harness fixture does not settle operations.');
+    },
+  },
   releaseIdentity,
 });
 const server = serve({
@@ -147,7 +201,7 @@ process.once('SIGTERM', async () => {
   );
   await authority.closeAllPhysicalConnections();
   await listenerClosed;
-  const target = getNanoHostRuntimeTarget(coreDb, identityId);
+  const target = observeTarget();
   assert(target);
   emit({ stopped: true, ready: target.ready, generation: target.connectionGeneration });
   coreDb.sqlite.close();
@@ -156,4 +210,4 @@ process.once('SIGTERM', async () => {
   process.stdin.destroy();
 });
 // The attempt-local credential is available only to the Rust caller's private pipe.
-emit({ port: address.port, secret });
+emit({ port: address.port, deploymentId, secret });

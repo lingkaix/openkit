@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { AgentEnvironmentCredentialDeclarationSchema } from '@openkit/config-schema';
 import {
   allocateEntityId,
   readRetainedV1,
@@ -6,12 +7,15 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import type { z } from 'zod';
+import { sha256Hex } from '@openkit/protocol/digest';
+import { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { revokeRunBoundAccessTokensInDb } from '../auth/run-bound-access-token-native.js';
 import {
   type CoreSchedulerQueueEntry,
+  listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
+  schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
 import type { ExecutionGrant } from '../storage/control-kernel-port.js';
 import { commandInputHash } from '../storage/control-store-input.js';
@@ -28,11 +32,17 @@ import type {
 } from './execution-backend.js';
 import {
   admitKernelSchedulerGrantInDb,
+  commitSchedulerAttemptLifecycleStepInDb,
   kernelSchedulerGrantClockAllowsOperation,
   kernelSchedulerScopeIsHeld,
   readKernelSchedulerGrantInDb,
 } from './execution-journal.js';
-import type { ExecutionJournalIntent } from './execution-step-journal.js';
+import {
+  type ExecutionJournalIntent,
+  type SchedulerPreparationClaim,
+  SchedulerPreparationClaimSchema,
+} from './execution-step-journal.js';
+import { nanoHostStartupDeadline } from './nanohost-attempt-clocks.js';
 
 /** The production execution authority budget, fixed once at native submission. */
 export const EXECUTION_ATTEMPT_BUDGET_MS = 7_200_000;
@@ -48,22 +58,184 @@ function requireQualifiedSchedulerBackend(backendId: string): void {
 /** Generic durable attempt projection deliberately excludes NanoHost proof fields. */
 export type SchedulerExecutionAttemptRecord = z.infer<typeof AttemptSchema>;
 
-const attemptSelect = `SELECT schema_version AS schemaVersion, attempt_id AS attemptId, queue_entry_id AS queueEntryId,
-  backend_id AS backendId, workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
-  agent_session_id AS agentSessionId, preparation_input_json AS preparationInputJson,
-  input_ref AS inputRef, binding_ref AS bindingRef, phase, disposition, operation_id AS operationId,
-  deadline, terminal_cause AS terminalCause, outcome_ref AS outcomeRef, fence_ref AS fenceRef,
-  created_at AS createdAt, updated_at AS updatedAt FROM scheduler_execution_attempts`;
+const attemptSelect = `SELECT attempt.schema_version AS schemaVersion, attempt.attempt_id AS attemptId,
+  attempt.queue_entry_id AS queueEntryId, admission.backend_id AS backendId,
+  attempt.workspace_id AS workspaceId, attempt.thread_id AS threadId, attempt.turn_id AS turnId,
+  attempt.agent_session_id AS agentSessionId, attempt.input_ref AS inputRef,
+  attempt.binding_ref AS bindingRef, attempt.phase, attempt.disposition,
+  attempt.operation_id AS operationId, attempt.deadline, attempt.terminal_cause AS terminalCause,
+  attempt.created_at AS createdAt,
+  json_extract(claim.invocation_json, '$.carriage.schedulerPreparation') AS claim,
+  (SELECT json_extract(step.span_json, '$.endTimeUnixNano')
+     FROM control_execution_steps AS step
+     WHERE step.execution_id = claim.execution_id AND step.state = 'completed'
+     ORDER BY step.ordinal DESC LIMIT 1) AS lifecycleClock,
+  (SELECT substr(ref.value, 9)
+     FROM control_execution_steps AS step, json_each(step.control_json, '$.outputRefs') AS ref
+     WHERE step.execution_id = claim.execution_id AND step.state = 'completed'
+       AND json_extract(step.control_json, '$.kind') IN ('observe', 'cancel')
+       AND ref.value GLOB 'outcome:*' ORDER BY step.ordinal LIMIT 1) AS outcomeRef,
+  (SELECT substr(ref.value, 7)
+     FROM control_execution_steps AS step, json_each(step.control_json, '$.outputRefs') AS ref
+     WHERE step.execution_id = claim.execution_id AND step.state = 'completed'
+       AND json_extract(step.control_json, '$.kind') IN ('observe', 'release')
+       AND (attempt.phase <> 'closed' OR json_extract(step.control_json, '$.kind') = 'release')
+       AND json_extract(step.control_json, '$.operationId') IS attempt.operation_id
+       AND ref.value GLOB 'fence:*' ORDER BY step.ordinal LIMIT 1) AS fenceRef
+  FROM scheduler_execution_attempts AS attempt LEFT JOIN scheduler_admission_entries AS admission
+    ON admission.queue_entry_id = attempt.queue_entry_id AND admission.workspace_id = attempt.workspace_id
+    AND admission.thread_id = attempt.thread_id AND admission.turn_id = attempt.turn_id
+    AND admission.schema_version = ${writeRetainedV1({}).schemaVersion}
+  LEFT JOIN control_executions AS lifecycle ON lifecycle.id = 'scheduler-lifecycle:' || attempt.attempt_id
+    AND lifecycle.schema_version = 1 AND lifecycle.work_id = attempt.turn_id
+    AND lifecycle.definition_version = 'core-scheduler-lifecycle/v1'
+    AND lifecycle.input_fingerprint = admission.input_hash
+  LEFT JOIN control_execution_steps AS claim ON claim.execution_id = lifecycle.id
+    AND claim.step_id = 'claim' AND claim.state = 'completed'
+    AND json_extract(claim.control_json, '$.attemptId') = attempt.attempt_id`;
+
+const preparationSnapshot = z.object({
+  admission: z
+    .object({ queueEntryId: z.string(), inputHash: z.string() })
+    .optional()
+    .catch(undefined),
+  manifest: z
+    .object({
+      id: z.string(),
+      sandbox: z.object({ credentialDeclarations: z.array(z.unknown()).optional() }).optional(),
+    })
+    .optional(),
+});
+
+function preparationClaim(
+  entry: CoreSchedulerQueueEntry,
+  input: unknown
+): SchedulerPreparationClaim {
+  const { admission, manifest } = preparationSnapshot.parse(input);
+  if (
+    entry.inputHash !== schedulerAdmissionInputHash(entry) ||
+    (admission &&
+      (admission.queueEntryId !== entry.queueEntryId || admission.inputHash !== entry.inputHash))
+  )
+    throw new ExecutionAttemptRefusal('Attempt preparation conflicts with the original admission.');
+  const declarations =
+    manifest?.sandbox?.credentialDeclarations?.flatMap((value) => {
+      const parsed = AgentEnvironmentCredentialDeclarationSchema.safeParse(value);
+      return parsed.success && parsed.data.id === 'security_honey_inbound' ? [parsed.data] : [];
+    }) ?? [];
+  return SchedulerPreparationClaimSchema.parse({
+    version: 1,
+    queueEntryId: entry.queueEntryId,
+    admissionHash: entry.inputHash,
+    inputId: entry.inputRef.inputId,
+    inputDigest: entry.inputRef.digest,
+    preparationDigest: sha256Hex(JSON.stringify(input)),
+    credential:
+      manifest?.id === entry.requestedAgentId && declarations.length === 1
+        ? { agentId: manifest.id, declaration: declarations[0]! }
+        : null,
+  });
+}
+
+const projectionRow = z.looseObject({
+  queueEntryId: z.string(),
+  workspaceId: z.string(),
+  threadId: z.string(),
+  turnId: z.string(),
+  backendId: z.string(),
+  lifecycleClock: z.string().regex(/^\d+$/),
+  claim: z.string(),
+});
+
+const projectionAdmissionKey = projectionRow.pick({ queueEntryId: true });
+
+function decodeAttempt(coreDb: CoreDb, row: unknown): SchedulerExecutionAttemptRecord {
+  return readRetainedV1(row, (value) => {
+    const { queueEntryId } = projectionAdmissionKey.parse(value);
+    const admission = requireSchedulerAdmissionEntry(coreDb, queueEntryId);
+    const fields = projectionRow.parse(value);
+    const claim = SchedulerPreparationClaimSchema.parse(JSON.parse(fields.claim));
+    if (
+      claim.queueEntryId !== admission.queueEntryId ||
+      claim.admissionHash !== admission.inputHash ||
+      claim.admissionHash !== schedulerAdmissionInputHash(admission) ||
+      claim.inputId !== admission.inputRef.inputId ||
+      claim.inputDigest !== admission.inputRef.digest ||
+      fields.workspaceId !== admission.workspaceId ||
+      fields.threadId !== admission.threadId ||
+      fields.turnId !== admission.turnId ||
+      fields.backendId !== admission.backendId ||
+      (claim.credential && claim.credential.agentId !== admission.requestedAgentId)
+    )
+      throw new ExecutionAttemptRefusal('Attempt preparation has no exact original claim.');
+    return AttemptSchema.parse({
+      ...fields,
+      updatedAt: new Date(Number(BigInt(fields.lifecycleClock) / 1_000_000n)).toISOString(),
+      // These are the exact pre-AEP facts used by recovery and run-bound Vault authorization.
+      preparationInputJson: JSON.stringify({
+        admission: { ...admission, status: 'queued', denialReason: null },
+        ...(claim.credential
+          ? {
+              manifest: {
+                id: claim.credential.agentId,
+                sandbox: { credentialDeclarations: [claim.credential.declaration] },
+              },
+            }
+          : {}),
+      }),
+    });
+  });
+}
+
+function recordLifecycle(
+  db: CoreDb,
+  attempt: Pick<
+    SchedulerExecutionAttemptRecord,
+    'attemptId' | 'queueEntryId' | 'turnId' | 'operationId'
+  >,
+  input: Omit<
+    Parameters<typeof commitSchedulerAttemptLifecycleStepInDb>[1],
+    'attemptId' | 'actor' | 'turnId' | 'admissionHash' | 'operationId'
+  >
+): void {
+  const admission = requireSchedulerAdmissionEntry(db, attempt.queueEntryId);
+  commitSchedulerAttemptLifecycleStepInDb(db, {
+    ...input,
+    attemptId: attempt.attemptId,
+    actor: admission.triggerActor,
+    turnId: attempt.turnId,
+    admissionHash: admission.inputHash,
+    operationId: attempt.operationId,
+  });
+}
 
 /** Loads exact current authority and refuses unknown core values rather than guessing a phase. */
 export function requireSchedulerExecutionAttempt(
   coreDb: CoreDb,
   attemptId: string
 ): SchedulerExecutionAttemptRecord {
-  return readRetainedV1(
-    coreDb.sqlite.prepare(`${attemptSelect} WHERE attempt_id = ?`).get(attemptId),
-    (value) => AttemptSchema.parse(value)
+  return decodeAttempt(
+    coreDb,
+    coreDb.sqlite.prepare(`${attemptSelect} WHERE attempt.attempt_id = ?`).get(attemptId)
   );
+}
+
+/**
+ * Reads at most the requested attempt-ID prefix inside the caller's Core snapshot.
+ * Invoke the returned decoder for an observed item only, after testing the count sentinel.
+ */
+export function* readSchedulerExecutionAttemptPrefix(
+  coreDb: CoreDb,
+  limit: number
+): Generator<() => SchedulerExecutionAttemptRecord, void, undefined> {
+  if (!Number.isSafeInteger(limit) || limit < 0)
+    throw new RangeError('Attempt prefix requires a finite nonnegative row limit.');
+  if (!coreDb.sqlite.inTransaction)
+    throw new ExecutionAttemptRefusal('Attempt prefix requires its Core snapshot.');
+  const rows = coreDb.sqlite
+    .prepare(`${attemptSelect} ORDER BY attempt.attempt_id LIMIT ?`)
+    .iterate(limit);
+  for (const row of rows) yield () => decodeAttempt(coreDb, row);
 }
 
 /** Reads the exact released predecessor of the sole next attempt for this admission. */
@@ -126,10 +298,10 @@ export function* readSchedulerExecutionAttemptPagesForTurn(
   for (;;) {
     const rows = coreDb.sqlite
       .prepare(
-        `${attemptSelect.replace('SELECT ', 'SELECT CAST(rowid AS TEXT) AS pageRowid, ')}
-        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
-          ${after === undefined ? '' : 'AND rowid > ?'}
-        ORDER BY rowid LIMIT 128`
+        `${attemptSelect.replace('SELECT ', 'SELECT CAST(attempt.rowid AS TEXT) AS pageRowid, ')}
+        WHERE attempt.workspace_id = ? AND attempt.thread_id = ? AND attempt.turn_id = ?
+          ${after === undefined ? '' : 'AND attempt.rowid > ?'}
+        ORDER BY attempt.rowid LIMIT 128`
       )
       .all(
         input.workspaceId,
@@ -138,9 +310,7 @@ export function* readSchedulerExecutionAttemptPagesForTurn(
         ...(after === undefined ? [] : [after])
       ) as Array<{ pageRowid: string } & Record<string, unknown>>;
     if (!rows.length) return;
-    const page = rows.map(({ pageRowid: _pageRowid, ...row }) =>
-      readRetainedV1(row, (value) => AttemptSchema.parse(value))
-    );
+    const page = rows.map(({ pageRowid: _pageRowid, ...row }) => decodeAttempt(coreDb, row));
     after = rows.at(-1)!.pageRowid;
     yield page;
   }
@@ -152,9 +322,9 @@ export function listSchedulerExecutionAttemptsByTurnId(
   turnId: string
 ): SchedulerExecutionAttemptRecord[] {
   return coreDb.sqlite
-    .prepare(`${attemptSelect} WHERE turn_id = ? ORDER BY rowid`)
+    .prepare(`${attemptSelect} WHERE attempt.turn_id = ? ORDER BY attempt.rowid`)
     .all(turnId)
-    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
+    .map((row) => decodeAttempt(coreDb, row));
 }
 
 /** Closed busy refusals contain no execution and cannot compete with the later original-Turn attempt. */
@@ -172,9 +342,20 @@ export function listOpenSchedulerExecutionAttempts(
   coreDb: CoreDb
 ): SchedulerExecutionAttemptRecord[] {
   return coreDb.sqlite
-    .prepare(`${attemptSelect} WHERE phase <> 'closed' ORDER BY rowid`)
+    .prepare(`${attemptSelect} WHERE attempt.phase <> 'closed' ORDER BY attempt.rowid`)
     .all()
-    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
+    .map((row) => decodeAttempt(coreDb, row));
+}
+
+/** Lists the Core scopes that an unresolved writer can hold against one scheduler claim. */
+function schedulerClaimScopes(entry: CoreSchedulerQueueEntry): string[] {
+  const storage = entry.workerStorageChoice;
+  return [
+    `workspace:${entry.workspaceId}`,
+    `thread:${entry.threadId}`,
+    `turn:${entry.turnId}`,
+    ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
+  ];
 }
 
 /** Acquires only the selected entry's product boundaries, before any preparation effect. */
@@ -184,6 +365,8 @@ export function createSchedulerExecutionAttempt(
     readonly entry: CoreSchedulerQueueEntry;
     readonly attemptId?: string;
     readonly preparationInput: unknown;
+    /** Admissions that this dispatch pass deferred on a placement-held claim refusal. */
+    readonly deferredQueueEntryIds?: readonly string[];
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
@@ -200,30 +383,37 @@ export function createSchedulerExecutionAttempt(
       ) {
         throw new ExecutionAttemptRefusal('The exact queued admission is no longer dispatchable.');
       }
-      const storage = entry.workerStorageChoice;
+      const scopes = schedulerClaimScopes(entry);
+      // A deferred older admission keeps its FIFO priority over this claim once its placement is
+      // free. Decide it in this claim's transaction, so a release cannot commit between the two.
+      const deferred = new Set(input.deferredQueueEntryIds);
       if (
-        kernelSchedulerScopeIsHeld(coreDb, [
-          `workspace:${entry.workspaceId}`,
-          `thread:${entry.threadId}`,
-          `turn:${entry.turnId}`,
-          ...(storage?.kind === 'selected' ? [storage.storageRef] : []),
-        ])
+        (deferred.size > 0 &&
+          listQueuedSchedulerAdmissionEntries(coreDb).some((queued) => {
+            if (!deferred.has(queued.queueEntryId)) return false;
+            const deferredScopes = schedulerClaimScopes(queued);
+            return (
+              deferredScopes.some((scope) => scopes.includes(scope)) &&
+              !kernelSchedulerScopeIsHeld(coreDb, deferredScopes)
+            );
+          })) ||
+        kernelSchedulerScopeIsHeld(coreDb, scopes)
       )
-        throw new ExecutionAttemptRefusal('Execution placement has an unresolved writer.');
+        throw new ExecutionAttemptRefusal(
+          'Execution placement has an unresolved writer.',
+          'placement-held'
+        );
       coreDb.sqlite
         .prepare(`INSERT INTO scheduler_execution_attempts
-      (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
-       preparation_input_json, phase, disposition, created_at, updated_at, schema_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 'not_accepted', ?, ?, ?)`)
+      (attempt_id, queue_entry_id, workspace_id, thread_id, turn_id,
+       phase, disposition, created_at, schema_version)
+      VALUES (?, ?, ?, ?, ?, 'open', 'not_accepted', ?, ?)`)
         .run(
           attemptId,
           entry.queueEntryId,
-          entry.backendId,
           entry.workspaceId,
           entry.threadId,
           entry.turnId,
-          JSON.stringify(input.preparationInput),
-          timestamp,
           timestamp,
           writeRetainedV1({}).schemaVersion
         );
@@ -234,6 +424,15 @@ export function createSchedulerExecutionAttempt(
         .run(entry.queueEntryId);
       if (acquired.changes !== 1)
         throw new ExecutionAttemptRefusal('Admission ownership changed before preparation.');
+      recordLifecycle(
+        coreDb,
+        { ...entry, attemptId, operationId: null },
+        {
+          kind: 'admit',
+          timestamp,
+          preparation: preparationClaim(entry, input.preparationInput),
+        }
+      );
       return requireSchedulerExecutionAttempt(coreDb, attemptId);
     })
     .immediate();
@@ -264,17 +463,17 @@ export function bindSchedulerExecutionAttemptSession(
         )
       )
         throw new ExecutionAttemptRefusal('Selected AgentSession has an unresolved writer.');
+      if (attempt.agentSessionId === input.agentSessionId) return attempt;
       const updated = coreDb.sqlite
-        .prepare(`UPDATE scheduler_execution_attempts SET agent_session_id = ?, updated_at = ?
+        .prepare(`UPDATE scheduler_execution_attempts SET agent_session_id = ?
     WHERE attempt_id = ? AND phase = 'open' AND agent_session_id IS ?`)
-        .run(
-          input.agentSessionId,
-          input.now?.() ?? new Date().toISOString(),
-          attempt.attemptId,
-          attempt.agentSessionId
-        );
+        .run(input.agentSessionId, attempt.attemptId, attempt.agentSessionId);
       if (updated.changes !== 1)
         throw new ExecutionAttemptRefusal('Attempt lost its AgentSession binding race.');
+      recordLifecycle(coreDb, attempt, {
+        kind: 'open-session',
+        timestamp: input.now?.() ?? new Date().toISOString(),
+      });
       return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
     })
     .immediate();
@@ -290,28 +489,37 @@ export function finalizeSchedulerExecutionAttemptInput(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
-  if (
-    attempt.phase !== 'open' ||
-    !attempt.agentSessionId ||
-    (attempt.inputRef && attempt.inputRef !== input.inputRef) ||
-    (attempt.bindingRef && attempt.bindingRef !== input.bindingRef)
-  )
-    throw new ExecutionAttemptRefusal('Finalized attempt input contradicts its owner.');
-  const updated = coreDb.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts SET input_ref = ?, binding_ref = ?, updated_at = ?
-    WHERE attempt_id = ? AND phase = 'open' AND input_ref IS ? AND binding_ref IS ?`)
-    .run(
-      input.inputRef,
-      input.bindingRef,
-      input.now?.() ?? new Date().toISOString(),
-      attempt.attemptId,
-      attempt.inputRef,
-      attempt.bindingRef
-    );
-  if (updated.changes !== 1)
-    throw new ExecutionAttemptRefusal('Finalized input lost its attempt ownership race.');
-  return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+  return coreDb.sqlite
+    .transaction(() => {
+      const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+      if (
+        attempt.phase !== 'open' ||
+        !attempt.agentSessionId ||
+        (attempt.inputRef && attempt.inputRef !== input.inputRef) ||
+        (attempt.bindingRef && attempt.bindingRef !== input.bindingRef)
+      )
+        throw new ExecutionAttemptRefusal('Finalized attempt input contradicts its owner.');
+      if (attempt.inputRef === input.inputRef && attempt.bindingRef === input.bindingRef)
+        return attempt;
+      const updated = coreDb.sqlite
+        .prepare(`UPDATE scheduler_execution_attempts SET input_ref = ?, binding_ref = ?
+      WHERE attempt_id = ? AND phase = 'open' AND input_ref IS ? AND binding_ref IS ?`)
+        .run(
+          input.inputRef,
+          input.bindingRef,
+          attempt.attemptId,
+          attempt.inputRef,
+          attempt.bindingRef
+        );
+      if (updated.changes !== 1)
+        throw new ExecutionAttemptRefusal('Finalized input lost its attempt ownership race.');
+      recordLifecycle(coreDb, attempt, {
+        kind: 'resolve-setup',
+        timestamp: input.now?.() ?? new Date().toISOString(),
+      });
+      return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    })
+    .immediate();
 }
 
 /** Records exact possible acceptance before an operation can affect the backend. */
@@ -324,42 +532,48 @@ export function recordSchedulerExecutionOperation(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  if (!input.operationId)
-    throw new ExecutionAttemptRefusal('Backend operation identity is required before an effect.');
-  const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
-  const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
-  requireQualifiedSchedulerBackend(attempt.backendId);
-  const timestamp = input.now?.() ?? new Date().toISOString();
-  if (
-    attempt.phase !== 'open' ||
-    !currentSchedulerAdmissionWorkspaceAuthority(coreDb, entry, 'runtime.launch', true)
-  )
-    throw new ExecutionAttemptRefusal('Execution authority was revoked before the operation.');
-  if (input.submission && (!attempt.agentSessionId || !attempt.inputRef || !attempt.bindingRef))
-    throw new ExecutionAttemptRefusal('Submission has no finalized package or assigned binding.');
-  if (attempt.disposition === 'unknown')
-    throw new ExecutionAttemptRefusal(
-      'An unknown operation must be inspected or fenced before another effect.'
-    );
-  if (input.submission && attempt.deadline !== null)
-    throw new ExecutionAttemptRefusal('This attempt already owns a possible submission.');
-  const deadline = input.submission
-    ? new Date(Date.parse(timestamp) + EXECUTION_ATTEMPT_BUDGET_MS).toISOString()
-    : attempt.deadline;
-  const updated = coreDb.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts SET operation_id = ?, disposition = 'unknown', deadline = ?, updated_at = ?
-    WHERE attempt_id = ? AND phase = 'open' AND operation_id IS ? AND deadline IS ?`)
-    .run(
-      input.operationId,
-      deadline,
-      timestamp,
-      attempt.attemptId,
-      attempt.operationId,
-      attempt.deadline
-    );
-  if (updated.changes !== 1)
-    throw new ExecutionAttemptRefusal('Operation intent lost its attempt ownership race.');
-  return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+  return coreDb.sqlite
+    .transaction(() => {
+      if (!input.operationId)
+        throw new ExecutionAttemptRefusal(
+          'Backend operation identity is required before an effect.'
+        );
+      const attempt = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+      const entry = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
+      requireQualifiedSchedulerBackend(attempt.backendId);
+      const timestamp = input.now?.() ?? new Date().toISOString();
+      if (
+        attempt.phase !== 'open' ||
+        !currentSchedulerAdmissionWorkspaceAuthority(coreDb, entry, 'runtime.launch', true)
+      )
+        throw new ExecutionAttemptRefusal('Execution authority was revoked before the operation.');
+      if (input.submission && (!attempt.agentSessionId || !attempt.inputRef || !attempt.bindingRef))
+        throw new ExecutionAttemptRefusal(
+          'Submission has no finalized package or assigned binding.'
+        );
+      if (attempt.disposition === 'unknown')
+        throw new ExecutionAttemptRefusal(
+          'An unknown operation must be inspected or fenced before another effect.'
+        );
+      if (input.submission && attempt.deadline !== null)
+        throw new ExecutionAttemptRefusal('This attempt already owns a possible submission.');
+      const deadline = input.submission
+        ? new Date(Date.parse(timestamp) + EXECUTION_ATTEMPT_BUDGET_MS).toISOString()
+        : attempt.deadline;
+      const updated = coreDb.sqlite
+        .prepare(`UPDATE scheduler_execution_attempts SET operation_id = ?, disposition = 'unknown', deadline = ?
+      WHERE attempt_id = ? AND phase = 'open' AND operation_id IS ? AND deadline IS ?`)
+        .run(input.operationId, deadline, attempt.attemptId, attempt.operationId, attempt.deadline);
+      if (updated.changes !== 1)
+        throw new ExecutionAttemptRefusal('Operation intent lost its attempt ownership race.');
+      recordLifecycle(
+        coreDb,
+        { ...attempt, operationId: input.operationId },
+        { kind: 'deliver-start', timestamp }
+      );
+      return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    })
+    .immediate();
 }
 
 /** Returns the original operation identity for inspection, cancellation, or release without replay. */
@@ -429,6 +643,22 @@ export function recordSchedulerExecutionGrantInDb(
       throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
     const now = BigInt(currentMs) * 1_000_000n;
     const proposalDeadline = input.proposal.control.deadlineUnixNano;
+    const preparation =
+      input.submission === true &&
+      currentAttempt.backendId === 'nanohost' &&
+      currentAttempt.deadline === null &&
+      currentAttempt.operationId !== null &&
+      currentAttempt.disposition === 'accepted'
+        ? {
+            operationId: currentAttempt.operationId,
+            actor: entry.triggerActor,
+            turnId: currentAttempt.turnId,
+            admissionHash: entry.inputHash,
+            started: BigInt(startedMs) * 1_000_000n,
+            startupDeadline:
+              BigInt(Date.parse(nanoHostStartupDeadline(currentAttempt))) * 1_000_000n,
+          }
+        : undefined;
     if (
       (proposalDeadline !== null && now >= proposalDeadline) ||
       (currentAttempt.operationId !== null &&
@@ -437,7 +667,8 @@ export function recordSchedulerExecutionGrantInDb(
           execution,
           currentAttempt.deadline !== null,
           now,
-          BigInt(deadlineMs) * 1_000_000n
+          BigInt(deadlineMs) * 1_000_000n,
+          preparation
         ))
     )
       throw new ExecutionAttemptRefusal('Original execution clock is unavailable or expired.');
@@ -473,51 +704,62 @@ export function acceptSchedulerExecutionObservation(
   coreDb: CoreDb,
   observation: ExecutionBackendObservation | null
 ): SchedulerExecutionAttemptRecord | null {
-  if (!observation) return null;
-  const found = coreDb.sqlite
-    .prepare(`${attemptSelect} WHERE attempt_id = ?`)
-    .get(observation.attemptId);
-  if (!found) return null;
-  const attempt = readRetainedV1(found, (value) => AttemptSchema.parse(value));
-  if (
-    attempt.backendId !== observation.backendId ||
-    attempt.bindingRef !== observation.bindingRef ||
-    attempt.inputRef !== observation.inputRef ||
-    attempt.operationId !== observation.operationId ||
-    !['not_accepted', 'accepted', 'unknown'].includes(observation.disposition) ||
-    !['pending', 'running', 'terminal', 'unknown'].includes(observation.execution) ||
-    (observation.outcomeRef !== null &&
-      (typeof observation.outcomeRef !== 'string' || !observation.outcomeRef)) ||
-    (observation.fenceRef !== null &&
-      (typeof observation.fenceRef !== 'string' || !observation.fenceRef)) ||
-    (attempt.outcomeRef !== null &&
-      observation.outcomeRef !== null &&
-      attempt.outcomeRef !== observation.outcomeRef) ||
-    (attempt.fenceRef !== null &&
-      observation.fenceRef !== null &&
-      attempt.fenceRef !== observation.fenceRef)
-  )
-    return null;
-  // Uncertainty cannot erase definite acceptance; cancellation never reopens authority.
-  const disposition: ExecutionOperationDisposition =
-    attempt.disposition === 'accepted' && observation.disposition === 'unknown'
-      ? 'accepted'
-      : observation.disposition;
-  if (attempt.disposition === 'accepted' && disposition === 'not_accepted') return null;
-  if (attempt.phase === 'closed') return attempt;
-  coreDb.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts SET disposition = ?, outcome_ref = COALESCE(outcome_ref, ?), fence_ref = COALESCE(fence_ref, ?), updated_at = ?
-    WHERE attempt_id = ? AND phase = ? AND operation_id = ?`)
-    .run(
-      disposition,
-      observation.outcomeRef,
-      observation.fenceRef,
-      new Date().toISOString(),
-      attempt.attemptId,
-      attempt.phase,
-      attempt.operationId
-    );
-  return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+  return coreDb.sqlite
+    .transaction(() => {
+      if (!observation) return null;
+      const found = coreDb.sqlite
+        .prepare(`${attemptSelect} WHERE attempt.attempt_id = ?`)
+        .get(observation.attemptId);
+      if (!found) return null;
+      const attempt = decodeAttempt(coreDb, found);
+      if (
+        attempt.backendId !== observation.backendId ||
+        attempt.bindingRef !== observation.bindingRef ||
+        attempt.inputRef !== observation.inputRef ||
+        attempt.operationId !== observation.operationId ||
+        !['not_accepted', 'accepted', 'unknown'].includes(observation.disposition) ||
+        !['pending', 'running', 'terminal', 'unknown'].includes(observation.execution) ||
+        (observation.outcomeRef !== null &&
+          (typeof observation.outcomeRef !== 'string' || !observation.outcomeRef)) ||
+        (observation.fenceRef !== null &&
+          (typeof observation.fenceRef !== 'string' || !observation.fenceRef)) ||
+        (attempt.outcomeRef !== null &&
+          observation.outcomeRef !== null &&
+          attempt.outcomeRef !== observation.outcomeRef) ||
+        (attempt.fenceRef !== null &&
+          observation.fenceRef !== null &&
+          attempt.fenceRef !== observation.fenceRef)
+      )
+        return null;
+      // Uncertainty cannot erase definite acceptance; cancellation never reopens authority.
+      const disposition: ExecutionOperationDisposition =
+        attempt.disposition === 'accepted' && observation.disposition === 'unknown'
+          ? 'accepted'
+          : observation.disposition;
+      if (attempt.disposition === 'accepted' && disposition === 'not_accepted') return null;
+      if (attempt.phase === 'closed') return attempt;
+      const outputRefs = [
+        ...(attempt.outcomeRef === null && observation.outcomeRef !== null
+          ? [`outcome:${observation.outcomeRef}`]
+          : []),
+        ...(attempt.fenceRef === null && observation.fenceRef !== null
+          ? [`fence:${observation.fenceRef}`]
+          : []),
+      ];
+      if (disposition === attempt.disposition && outputRefs.length === 0) return attempt;
+      const updated = coreDb.sqlite
+        .prepare(`UPDATE scheduler_execution_attempts SET disposition = ?
+      WHERE attempt_id = ? AND phase = ? AND operation_id = ?`)
+        .run(disposition, attempt.attemptId, attempt.phase, attempt.operationId);
+      if (updated.changes !== 1) return null;
+      recordLifecycle(coreDb, attempt, {
+        kind: 'observe',
+        timestamp: new Date().toISOString(),
+        outputRefs,
+      });
+      return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    })
+    .immediate();
 }
 
 /** Revokes new authority before cancellation or terminal handoff; the first cause survives late facts. */
@@ -531,22 +773,31 @@ export function markSchedulerExecutionAttemptClosing(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  const current = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
-  // The native owner decides whether submission or expiry owns this transition.
-  if (input.requireUnsubmitted && (current.phase !== 'open' || current.deadline !== null))
-    return current;
-  revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
-  coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = COALESCE(terminal_cause, ?), outcome_ref = COALESCE(outcome_ref, ?), updated_at = ? WHERE attempt_id = ? AND phase <> 'closed'`
-    )
-    .run(
-      input.cause,
-      input.outcomeRef ?? null,
-      input.now?.() ?? new Date().toISOString(),
-      input.attemptId
-    );
-  return requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+  return coreDb.sqlite
+    .transaction(() => {
+      const current = requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+      // The native owner decides whether submission or expiry owns this transition.
+      if (
+        current.phase === 'closed' ||
+        (input.requireUnsubmitted && (current.phase !== 'open' || current.deadline !== null))
+      )
+        return current;
+      const outcomeRef = current.outcomeRef === null ? input.outcomeRef : null;
+      if (current.phase === 'closing' && !outcomeRef) return current;
+      revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = COALESCE(terminal_cause, ?) WHERE attempt_id = ? AND phase <> 'closed'`
+        )
+        .run(input.cause, input.attemptId);
+      recordLifecycle(coreDb, current, {
+        kind: 'cancel',
+        timestamp: input.now?.() ?? new Date().toISOString(),
+        outputRefs: outcomeRef ? [`outcome:${outcomeRef}`] : [],
+      });
+      return requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+    })
+    .immediate();
 }
 
 /** Closes only the entire attempt's definite no-effect refusal, preserving the same queued Turn on busy. */
@@ -575,15 +826,20 @@ export function closeSchedulerExecutionAttemptWithoutEffects(
       revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
       coreDb.sqlite
         .prepare(
-          `UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'not_accepted', terminal_cause = COALESCE(terminal_cause, ?), updated_at = ? WHERE attempt_id = ? AND phase <> 'closed'`
+          `UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'not_accepted', terminal_cause = COALESCE(terminal_cause, ?) WHERE attempt_id = ? AND phase <> 'closed'`
         )
-        .run(input.cause, timestamp, attempt.attemptId);
+        .run(input.cause, attempt.attemptId);
       if (input.requeue)
         coreDb.sqlite
           .prepare(
             "UPDATE scheduler_admission_entries SET status = 'queued' WHERE queue_entry_id = ? AND status = 'admitted'"
           )
           .run(attempt.queueEntryId);
+      recordLifecycle(coreDb, attempt, {
+        kind: 'release',
+        timestamp,
+        closed: true,
+      });
       return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
     })
     .immediate();
@@ -599,38 +855,46 @@ export function closeSchedulerExecutionAttemptWithFence(
     readonly now?: () => string;
   }
 ): SchedulerExecutionAttemptRecord {
-  const attempt = requireSchedulerExecutionAttempt(coreDb, input.correlation.attemptId);
-  if (
-    commandInputHash(schedulerExecutionCorrelation(attempt)) !==
-      commandInputHash(input.correlation) ||
-    !input.fenceRef ||
-    (attempt.fenceRef !== null && attempt.fenceRef !== input.fenceRef) ||
-    ![
-      input.proof.terminalHandoff,
-      input.proof.output,
-      input.proof.evidence,
-      input.proof.outsideWorkspaceCollection,
-      input.proof.integrationDrain,
-      input.proof.routesRevoked,
-    ].every((value) => value === true)
-  )
-    throw new ExecutionAttemptRefusal('Attempt release has unresolved handoff or fencing proof.');
-  if (attempt.phase === 'closed') return attempt;
-  if (attempt.phase !== 'closing')
-    throw new ExecutionAttemptRefusal('Attempt release has no revoked owner.');
-  const updated = coreDb.sqlite
-    .prepare(
-      `UPDATE scheduler_execution_attempts SET phase = 'closed', fence_ref = ?, updated_at = ? WHERE attempt_id = ? AND phase = 'closing' AND operation_id = ?`
-    )
-    .run(
-      input.fenceRef,
-      input.now?.() ?? new Date().toISOString(),
-      attempt.attemptId,
-      attempt.operationId
-    );
-  if (updated.changes !== 1)
-    throw new ExecutionAttemptRefusal('Release proof lost its attempt ownership race.');
-  return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+  return coreDb.sqlite
+    .transaction(() => {
+      const attempt = requireSchedulerExecutionAttempt(coreDb, input.correlation.attemptId);
+      if (
+        commandInputHash(schedulerExecutionCorrelation(attempt)) !==
+          commandInputHash(input.correlation) ||
+        !input.fenceRef ||
+        ((attempt.phase === 'closed' || attempt.fenceRef !== null) &&
+          attempt.fenceRef !== input.fenceRef) ||
+        ![
+          input.proof.terminalHandoff,
+          input.proof.output,
+          input.proof.evidence,
+          input.proof.outsideWorkspaceCollection,
+          input.proof.integrationDrain,
+          input.proof.routesRevoked,
+        ].every((value) => value === true)
+      )
+        throw new ExecutionAttemptRefusal(
+          'Attempt release has unresolved handoff or fencing proof.'
+        );
+      if (attempt.phase === 'closed') return attempt;
+      if (attempt.phase !== 'closing')
+        throw new ExecutionAttemptRefusal('Attempt release has no revoked owner.');
+      const updated = coreDb.sqlite
+        .prepare(
+          `UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ? AND phase = 'closing' AND operation_id = ?`
+        )
+        .run(attempt.attemptId, attempt.operationId);
+      if (updated.changes !== 1)
+        throw new ExecutionAttemptRefusal('Release proof lost its attempt ownership race.');
+      recordLifecycle(coreDb, attempt, {
+        kind: 'release',
+        timestamp: input.now?.() ?? new Date().toISOString(),
+        closed: true,
+        outputRefs: [`fence:${input.fenceRef}`],
+      });
+      return requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    })
+    .immediate();
 }
 
 /** Terminal product publication revokes authority; only the backend's complete release proof closes it. */

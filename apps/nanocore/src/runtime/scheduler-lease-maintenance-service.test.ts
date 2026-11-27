@@ -4,11 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
+import {
+  currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -17,19 +25,21 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import {
+  seedTestNanoHostHeartbeat,
+  seedTestWorkerControlReceipt,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
-import { acceptNanoHostAttemptHeartbeat } from './nanohost-attempt-records.js';
-import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target';
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
+} from './execution-attempt-records.js';
+import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions';
 import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -41,6 +51,8 @@ import {
   updateBackendWorkspaceHandleCleanupStatus,
 } from './workspace-sync-records';
 import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
+
+afterEach(shutdownControlStoreWorkerClient);
 
 /** Creates an isolated migrated Core database for scheduler maintenance tests. */
 async function createMigratedCoreDb() {
@@ -119,7 +131,9 @@ function recordCanonicalWorkspaceHandoff(
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   let backendSessionId: string;
   try {
-    const owner = listWorkerBackendSessions(coreDb).find(
+    const owner = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      listWorkerBackendSessions({ sqlite })
+    ).find(
       (record) =>
         record.agentSessionId === environmentPackage.scope.agentSessionId &&
         record.packageSnapshotId === environmentPackage.snapshotId
@@ -173,9 +187,10 @@ function recordCanonicalWorkspaceHandoff(
 
 /** Establishes exact authorized submitted Native authority and its original physical anchor. */
 async function dispatchLease(
-  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
   suffix: string,
-  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
+  triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID },
+  retainedNative = false
 ): Promise<void> {
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -193,22 +208,70 @@ async function dispatchLease(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     now: () => '2026-07-05T00:00:01.000Z',
   });
-  recordTestExecutionAttempt(coreDb, {
+  if (retainedNative) {
+    await openAdmittedTestNanoHost(coreDb);
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    // This maintenance fixture begins after launch: retain the already-decided submit
+    // and Native tuple. No fixture decides later cleanup or release.
+    const original = submitTestNanoHostWorkerLease(
+      coreDb,
+      entry,
+      `lease-binding:lease_${suffix}`,
+      {
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${entry.turnId}_${agentSessionId}`,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      {
+        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        observedAt: '2026-07-05T00:00:02.000Z',
+      }
+    );
+    // Match the fixture's original package image, not the generic route fixture image.
+    mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET backend_lineage_json = ? WHERE attempt_id = ?')
+        .run(JSON.stringify({ imageRef: 'openkit/worker-codex:dev' }), original.attemptId);
+    });
+    return;
+  }
+  const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: testEntityId('attempt', `lease_${suffix}`),
     agentSessionId: testEntityId('as', `as_${suffix}`),
     inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
     bindingRef: `lease-binding:lease_${suffix}`,
     sessionCompatibilityKey: 'c'.repeat(64),
-    operationId: `original:${suffix}`,
     now: () => '2026-07-05T00:00:02.000Z',
   });
   await recordBackendSession(coreDb, suffix);
+  recordSchedulerExecutionOperation(coreDb, {
+    attemptId: attempt.attemptId,
+    operationId: `original:${suffix}`,
+    submission: true,
+    now: () => '2026-07-05T00:00:02.000Z',
+  });
 }
 
 /** The Native recovery subject owns Workspace projection; only its product terminal callback is modeled here. */
-function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () => string) {
+function recoveryInput(
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
+  now: () => string,
+  admitted = false
+) {
+  const owner = currentAdmittedTestNanoHostOwner(coreDb);
+  if (admitted && !owner) throw new Error('Maintenance fixture requires admitted Native recovery.');
   return {
+    ...(admitted && owner
+      ? {
+          admittedNanoHostRecovery: {
+            state: 'ready' as const,
+            value: bindBootNanoHostAttemptRecovery(owner),
+          },
+        }
+      : {}),
     executionBackend: new SimulatedTurnExecutor({ coreDb }),
     now,
     cleanupBackendSession: vi.fn(async () => {}),
@@ -222,25 +285,15 @@ function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () 
 
 /** Records the production backend anchor owned by one dispatched test lease. */
 async function recordBackendSession(
-  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  coreDb: Awaited<ReturnType<typeof createMigratedCoreDb>>,
   suffix: string
 ): Promise<void> {
-  if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'identity-test',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'runtime-target-test',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...allocated,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
+  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+    deploymentId: 'deployment-test',
+    identityId: 'identity-test',
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
+  });
   await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.80',
@@ -307,13 +360,15 @@ function expectUnprovedWorkspaceReconciliation(
     expect(record.collectedOutputManifestIds).toEqual([]);
     expect(['unknown', 'unavailable']).toContain(record.backendReachability.status);
     if (record.retentionDecision === 'retain-backend') {
-      const backend = getWorkerBackendSession(
-        coreDb,
-        (
-          coreDb.sqlite
-            .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ?')
-            .get(environmentPackage.scope.turnId) as { attempt_id: string }
-        ).attempt_id
+      const backend = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession(
+          { sqlite },
+          (
+            coreDb.sqlite
+              .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE turn_id = ?')
+              .get(environmentPackage.scope.turnId) as { attempt_id: string }
+          ).attempt_id
+        )
       );
       expect(
         backend,
@@ -334,15 +389,15 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'heartbeat');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      await dispatchLease(coreDb, 'heartbeat', undefined, true);
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -356,7 +411,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
@@ -377,15 +432,15 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'server_user', triggerActor);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      await dispatchLease(coreDb, 'server_user', triggerActor, true);
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -400,7 +455,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
@@ -417,19 +472,24 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'actor_mismatch', {
-        kind: 'automation',
-        id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
-        responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
-      });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      await dispatchLease(
+        coreDb,
+        'actor_mismatch',
+        {
+          kind: 'automation',
+          id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
+          responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
+        },
+        true
+      );
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_actor_mismatch'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -448,7 +508,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       ).catch((error: AggregateError) => errors.push(...error.errors));
 
       expect(errors).toEqual([
@@ -469,7 +529,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'release_retry');
+      await dispatchLease(coreDb, 'release_retry', undefined, true);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retry',
         workspaceInputIds: ['repo'],
@@ -484,7 +544,7 @@ describe('scheduler lease maintenance service', () => {
       for (let index = 0; index < 2; index += 1) {
         await runNanoHostAttemptRecoveryMaintenance(
           coreDb,
-          recoveryInput(coreDb, () => '2026-07-05T00:05:12.000Z')
+          recoveryInput(coreDb, () => '2026-07-05T00:05:12.000Z', true)
         );
       }
 
@@ -509,14 +569,14 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb);
       await dispatchLease(coreDb, 'zero_input');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_zero_input'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -552,15 +612,15 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      await dispatchLease(coreDb, 'partial_handoff');
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      await dispatchLease(coreDb, 'partial_handoff', undefined, true);
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -579,7 +639,7 @@ describe('scheduler lease maintenance service', () => {
       // Either outcome must preserve exclusion until the missing input can be evaluated.
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:00.000Z', true)
       ).catch((error: AggregateError) => {
         expect(error.errors).toEqual(
           expect.arrayContaining([
@@ -603,7 +663,7 @@ describe('scheduler lease maintenance service', () => {
 
       await runNanoHostAttemptRecoveryMaintenance(
         coreDb,
-        recoveryInput(coreDb, () => '2026-07-05T00:03:01.000Z')
+        recoveryInput(coreDb, () => '2026-07-05T00:03:01.000Z', true)
       );
 
       expectUnprovedWorkspaceReconciliation(coreDb, workspaceDb, environmentPackage);
@@ -645,14 +705,14 @@ describe('scheduler lease maintenance service', () => {
         'retained',
         '2026-07-05T00:00:20.000Z'
       );
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_stale_retained'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -690,14 +750,14 @@ describe('scheduler lease maintenance service', () => {
         workspaceInputIds: ['repo'],
       });
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_release_timeout'),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -709,7 +769,7 @@ describe('scheduler lease maintenance service', () => {
         cause: 'worker-final-status',
       });
 
-      recordWorkerControlAcceptedRecord(coreDb, {
+      seedTestWorkerControlReceipt(coreDb, {
         acceptedAt: '2026-07-05T00:00:11.000Z',
         lineage: {
           ...environmentPackage.scope,
@@ -753,7 +813,9 @@ describe('scheduler lease maintenance service', () => {
       expect(recovery.reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(3);
       expect(recovery.cleanupBackendSession).not.toHaveBeenCalled();
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_release_timeout'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_release_timeout'))
+        )
       ).toMatchObject({
         state: 'materializing',
         physicalCleanedAt: null,

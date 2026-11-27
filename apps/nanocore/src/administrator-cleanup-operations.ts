@@ -42,7 +42,10 @@ import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 /** Joins existing deletion and runtime observations without opening or changing a Workspace. */
 export function createAdministratorCleanupOperationImplementations(
-  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'dataRoot'>
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'dataRoot' | 'nanoHostCleanupOwner'
+  >
 ) {
   return {
     'administration.sandbox-hold-read': ({ cursor }, context) => {
@@ -210,6 +213,9 @@ export function createAdministratorCleanupOperationImplementations(
       try {
         runtime = readRuntimeCleanupView({
           coreDb,
+          ...(dependencies.nanoHostCleanupOwner
+            ? { nanoHostCleanupOwner: dependencies.nanoHostCleanupOwner }
+            : {}),
           actor,
           now,
           maxEntries: exhausted ? 0 : ADMINISTRATOR_CLEANUP_MAX_ENTRIES - items.length,
@@ -257,29 +263,45 @@ export function createAdministratorCleanupOperationImplementations(
 /** Reads one page from Core alone, including when the original resident is gone. */
 function readSandboxHolds(coreDb: CoreDb, cursor: string | undefined) {
   const limit = ADMINISTRATOR_CLEANUP_MAX_ENTRIES;
-  const rows = coreDb.sqlite
-    .prepare(`SELECT root.id AS holdRef, repair.step_id IS NOT NULL AS repairing
+  const candidates = coreDb.sqlite
+    .prepare(`SELECT root.id AS holdRef, repair.step_id IS NOT NULL AS repairing,
+        attempt.attempt_id AS closedAttemptId,
+        json_extract(fence.invocation_json, '$.carriage.bindingRef') AS bindingRef
       FROM control_executions root
       JOIN control_execution_steps fence ON fence.execution_id = root.id AND fence.step_id = 'fence'
       LEFT JOIN control_execution_steps repair ON repair.execution_id = root.id
         AND repair.step_id = 'repair'
+      LEFT JOIN scheduler_execution_attempts attempt
+        ON attempt.attempt_id = json_extract(fence.control_json, '$.attemptId')
+        AND attempt.phase = 'closed'
+        AND json_extract(repair.invocation_json, '$.carriage.operation') = 'sandbox.release-repair'
       WHERE root.definition_version = ? AND root.id > ? AND root.phase <> 'closed'
         AND json_extract(fence.invocation_json, '$.carriage.operation') = 'sandbox.release-refusal-hold'
-        AND NOT EXISTS (
-          SELECT 1 FROM scheduler_execution_attempts attempt
-          WHERE attempt.attempt_id = json_extract(fence.control_json, '$.attemptId')
-            AND attempt.binding_ref = json_extract(fence.invocation_json, '$.carriage.bindingRef')
-            AND attempt.phase = 'closed' AND attempt.fence_ref = root.id
-            AND attempt.terminal_cause = 'sandbox-release-refusal'
-            AND attempt.deadline IS NULL AND attempt.disposition = 'not_accepted'
-            AND attempt.input_ref IS NOT NULL AND attempt.agent_session_id IS NOT NULL
-            AND json_extract(repair.invocation_json, '$.carriage.operation') = 'sandbox.release-repair'
-        )
-      ORDER BY root.id LIMIT ?`)
-    .all(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION, cursor ?? '', limit + 1) as {
+      ORDER BY root.id`)
+    .iterate(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION, cursor ?? '') as Iterable<{
     holdRef: string;
     repairing: 0 | 1;
-  }[];
+    closedAttemptId: string | null;
+    bindingRef: string | null;
+  }>;
+  const rows = [];
+  for (const { holdRef, repairing, closedAttemptId, bindingRef } of candidates) {
+    if (closedAttemptId && bindingRef) {
+      try {
+        const attempt = requireSchedulerExecutionAttempt(coreDb, closedAttemptId);
+        if (
+          matchesRefusedAttempt(attempt, { attemptId: closedAttemptId, bindingRef }) &&
+          completedSandboxHandoff(attempt, holdRef)
+        )
+          continue;
+      } catch (error) {
+        if (error instanceof Database.SqliteError || !coreDb.sqlite.open) throw error;
+        // Retain unproved handoffs for the per-hold fence and lineage checks.
+      }
+    }
+    rows.push({ holdRef, repairing });
+    if (rows.length > limit) break;
+  }
   const incomplete = rows.length > limit;
   return {
     holds: rows.slice(0, limit).map(({ holdRef, repairing }) => {
@@ -394,7 +416,7 @@ function hasExactSandboxRepair(coreDb: CoreDb, hold: RefusalJournalFence): boole
 /** Matches the retained attempt to its own pre-submission refusal fence. */
 function matchesRefusedAttempt(
   attempt: SchedulerExecutionAttemptRecord,
-  fence: RefusalJournalFence
+  fence: Pick<RefusalJournalFence, 'attemptId' | 'bindingRef'>
 ): boolean {
   return (
     attempt.attemptId === fence.attemptId &&
@@ -410,9 +432,9 @@ function matchesRefusedAttempt(
 /** Only the committed pre-submission handoff records closure against this refusal. */
 function completedSandboxHandoff(
   attempt: SchedulerExecutionAttemptRecord,
-  fence: RefusalJournalFence
+  fenceRef: string
 ): boolean {
-  return attempt.phase === 'closed' && attempt.fenceRef === fence.root.ref.executionId;
+  return attempt.phase === 'closed' && attempt.fenceRef === fenceRef;
 }
 
 /** Authenticates the original order and every completed deliberate handoff in one Core snapshot. */
@@ -474,7 +496,7 @@ function originalRefusalProblem(
       if (attempt.attemptId === original.attemptId) {
         if (
           !matchesRefusedAttempt(attempt, original) ||
-          !completedSandboxHandoff(attempt, original)
+          !completedSandboxHandoff(attempt, reference)
         )
           return 'original-refusal-conflicting';
         continue;
@@ -505,7 +527,7 @@ function originalRefusalProblem(
         prior.fence.control.inputRefs[0] !== reference ||
         !matchesRefusedAttempt(attempt, prior) ||
         !hasExactSandboxRepair(coreDb, prior) ||
-        !completedSandboxHandoff(attempt, prior)
+        !completedSandboxHandoff(attempt, prior.root.ref.executionId)
       )
         return 'original-refusal-conflicting';
     }

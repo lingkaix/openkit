@@ -2,7 +2,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { mutateNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
+import {
+  mutateNanoHostRuntimeTarget,
+  type NanoHostRuntimeTargetRecord,
+} from '../runtime/nanohost-runtime-target-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   epochPlacementOfIntent,
@@ -280,6 +283,31 @@ export function verifyNanoHostRetiringPlacement(
     return false;
   assertRetiringTarget(target, placement);
   return true;
+}
+
+/** Verifies the acknowledged close of the exact original physical placement. */
+export function hasAcknowledgedNanoHostClosedPlacement(
+  sqlite: Database.Database,
+  target: NanoHostRuntimeTargetRecord | null,
+  placement: NanoHostEpochPlacement
+): boolean {
+  if (
+    !target ||
+    target.targetId !== placement.runtimeTargetId ||
+    target.deploymentId !== placement.deploymentId ||
+    String(target.connectionGeneration) !== placement.generation ||
+    target.ready ||
+    target.freshEmpty ||
+    !target.predecessorFenced ||
+    target.physicalEpoch !== null
+  )
+    return false;
+  const fence = readEpochFence(readTarget(sqlite, target.targetId)?.epochFence);
+  return (
+    fence?.receipt?.disposition === 'applied' &&
+    isDeepStrictEqual(fence.placement, placement) &&
+    isDeepStrictEqual(fence.lastTransition?.result, target)
+  );
 }
 
 /** Independently verifies the exact original intent under the native readiness hold. */

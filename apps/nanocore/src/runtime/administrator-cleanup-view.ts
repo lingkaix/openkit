@@ -7,6 +7,7 @@ import {
   type AdministratorCleanupReadResponse,
   type AdministratorCleanupRuntimeItem,
 } from '@openkit/app-api-schemas';
+import type Database from 'better-sqlite3';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
@@ -14,6 +15,12 @@ import {
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
+import type { AdmittedNanoHostTransportStorage } from '../storage/nanohost-transport-owner.js';
+import type { StorageResult } from '../storage/storage-owner.js';
+import {
+  readSchedulerExecutionAttemptPrefix,
+  type SchedulerExecutionAttemptRecord,
+} from './execution-attempt-records.js';
 import {
   getNanoHostRuntimeTarget,
   requireNanoHostPhysicalEpoch,
@@ -29,7 +36,7 @@ const runtimeSources = [
   'worker-storage',
 ] as const;
 
-/** The five existing Core record owners observed by this reader. */
+/** The five runtime sources observed by this reader. */
 type RuntimeSource = (typeof runtimeSources)[number];
 /** Public item branches restricted to the runtime sources. */
 export type RuntimeCleanupItem = AdministratorCleanupRuntimeItem;
@@ -44,8 +51,13 @@ export type RuntimeCleanupView = Omit<AdministratorCleanupReadResponse, 'items' 
 };
 /** Trusted invocation inputs, never caller-selected public options. */
 export interface ReadRuntimeCleanupViewInput {
-  /** Existing Core authority and source records. */
+  /** Current administrator, Workspace and execution authority. */
   readonly coreDb: CoreDb;
+  /** Selected NanoHost owner for all physical observations. */
+  readonly nanoHostCleanupOwner?: StorageResult<
+    'nanohost',
+    Pick<AdmittedNanoHostTransportStorage['owner'], 'read'>
+  >;
   /** Original authenticated actor, not an ActorRef or retained eligibility result. */
   readonly actor: Actor | undefined;
   /** Trusted observation time; no live Host inspection follows from it. */
@@ -57,9 +69,7 @@ export interface ReadRuntimeCleanupViewInput {
 }
 
 /** Only known state and opaque target columns enter the projection, never private payloads. */
-const sourceSelects: Record<RuntimeSource, string> = {
-  'execution-attempt': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
-    phase, disposition, updated_at FROM scheduler_execution_attempts ORDER BY attempt_id LIMIT ?`,
+const sourceSelects: Record<Exclude<RuntimeSource, 'execution-attempt'>, string> = {
   'backend-session': `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
     state, workspace_handoff_state, physical_cleaned_at, updated_at, runtime_target_id,
     origin_physical_epoch, deployment_id
@@ -113,57 +123,89 @@ export function readRuntimeCleanupView(input: ReadRuntimeCleanupViewInput): Runt
   let itemBytes = 0;
   let remainingWork = input.maxEntries + 1;
   let exhausted: 'count_limit' | 'byte_limit' | undefined;
+  function markUnavailable(coverage: RuntimeSourceCoverage) {
+    coverage.availability = 'unavailable';
+    coverage.incomplete = true;
+    coverage.reasons = ['source_unavailable'];
+  }
+
+  function observeSource(coverage: RuntimeSourceCoverage, sqlite: Database.Database) {
+    // A denied source must never become a successful partial disclosure, even after a limit.
+    requireAdministrator(input);
+    if (exhausted || result.items.length === input.maxEntries || remainingWork === 0) {
+      markUnavailable(coverage);
+      coverage.reasons.unshift(exhausted ?? 'count_limit');
+      return;
+    }
+    try {
+      if (coverage.source !== 'sandbox-runtime') {
+        input.coreDb.sqlite.prepare('SELECT status FROM workspace_registry LIMIT 0').get();
+      }
+      const limit = Math.min(input.maxEntries - result.items.length + 1, remainingWork);
+      const rows =
+        coverage.source === 'execution-attempt'
+          ? readSchedulerExecutionAttemptPrefix(input.coreDb, limit)
+          : sqlite.prepare(sourceSelects[coverage.source]).iterate(limit);
+      for (const row of rows) {
+        remainingWork -= 1;
+        if (result.items.length === input.maxEntries) {
+          exhausted = 'count_limit';
+          break;
+        }
+        const facts =
+          coverage.source === 'execution-attempt'
+            ? projectAttempt((row as () => SchedulerExecutionAttemptRecord)())
+            : row;
+        const item = projectRecord(input.coreDb, sqlite, coverage.source, facts, observedAt);
+        const addedBytes = jsonBytes(item) + (result.items.length > 0 ? 1 : 0);
+        if (metadataBytes(result) + itemBytes + addedBytes > input.maxBytes) {
+          exhausted = 'byte_limit';
+          break;
+        }
+        result.items.push(item);
+        itemBytes += addedBytes;
+      }
+      if (remainingWork === 0 && !exhausted) exhausted = 'count_limit';
+      if (exhausted) {
+        coverage.incomplete = true;
+        coverage.reasons = [exhausted];
+      }
+    } catch {
+      // Keep previously admitted rows. No identifier from the unavailable record is returned.
+      markUnavailable(coverage);
+    }
+    if (metadataBytes(result) + itemBytes > input.maxBytes) exhausted = 'byte_limit';
+  }
+
   try {
     input.coreDb.sqlite.transaction(() => {
-      for (const coverage of result.sources) {
-        // A denied source must never become a successful partial disclosure, even after a limit.
-        requireAdministrator(input);
-        if (exhausted || result.items.length === input.maxEntries || remainingWork === 0) {
-          coverage.availability = 'unavailable';
-          coverage.incomplete = true;
-          coverage.reasons = [exhausted ?? 'count_limit', 'source_unavailable'];
-          continue;
-        }
+      const [execution, ...nativeSources] = result.sources;
+      observeSource(execution!, input.coreDb.sqlite);
+      const native = input.nanoHostCleanupOwner;
+      const coreItemCount = result.items.length;
+      // The four Native sources and their RuntimeTarget comparisons use one owner snapshot.
+      let admitted = false;
+      if (native?.state === 'ready' && !exhausted && result.items.length < input.maxEntries) {
         try {
-          if (coverage.source !== 'sandbox-runtime') {
-            // Establish the Workspace source-authority dependency without enumerating its ids.
-            input.coreDb.sqlite.prepare('SELECT status FROM workspace_registry LIMIT 0').get();
-          }
-          const limit = Math.min(input.maxEntries - result.items.length + 1, remainingWork);
-          const rows = input.coreDb.sqlite.prepare(sourceSelects[coverage.source]).iterate(limit);
-          coverage.availability = 'available';
-          coverage.incomplete = false;
-          coverage.reasons = [];
-          for (const row of rows) {
-            remainingWork -= 1;
-            if (result.items.length === input.maxEntries) {
-              exhausted = 'count_limit';
-              break;
-            }
-            const item = projectRecord(input.coreDb, coverage.source, row, observedAt);
-            const addedBytes = jsonBytes(item) + (result.items.length > 0 ? 1 : 0);
-            if (metadataBytes(result) + itemBytes + addedBytes > input.maxBytes) {
-              exhausted = 'byte_limit';
-              break;
-            }
-            result.items.push(item);
-            itemBytes += addedBytes;
-          }
-          if (remainingWork === 0 && !exhausted) exhausted = 'count_limit';
-          if (exhausted) {
-            coverage.incomplete = true;
-            coverage.reasons = [exhausted];
-          }
-        } catch {
-          // Keep only observations already independently admitted. No identifier or raw error
-          // from the unavailable record is returned, and other source owners remain readable.
-          coverage.availability = 'unavailable';
-          coverage.incomplete = true;
-          coverage.reasons = ['source_unavailable'];
+          admitted =
+            native.value.read((sqlite) =>
+              sqlite.transaction(() => {
+                for (const source of nativeSources) observeSource(source, sqlite);
+              })()
+            ).state === 'ready';
+        } catch (error) {
+          if (error instanceof DeploymentAdminRequiredError || error instanceof OperationError)
+            throw error;
         }
-        // Known failure or sentinel metadata cannot shrink in a later source. Stop row work
-        // immediately when that observation exhausts the remaining encoded prefix budget.
-        if (metadataBytes(result) + itemBytes > input.maxBytes) exhausted = 'byte_limit';
+      }
+      if (!admitted) {
+        result.items.length = coreItemCount;
+        for (const source of nativeSources) {
+          requireAdministrator(input);
+          markUnavailable(source);
+          if (exhausted || result.items.length === input.maxEntries)
+            source.reasons.unshift(exhausted ?? 'count_limit');
+        }
       }
     })();
   } catch (error) {
@@ -237,9 +279,23 @@ function metadataBytes(result: RuntimeCleanupView): number {
   });
 }
 
+function projectAttempt(attempt: SchedulerExecutionAttemptRecord) {
+  return {
+    attempt_id: attempt.attemptId,
+    workspace_id: attempt.workspaceId,
+    thread_id: attempt.threadId,
+    turn_id: attempt.turnId,
+    agent_session_id: attempt.agentSessionId,
+    phase: attempt.phase,
+    disposition: attempt.disposition,
+    updated_at: attempt.updatedAt,
+  };
+}
+
 /** Admits a fixed source target before the public schema selects its known fields. */
 function projectRecord(
   coreDb: CoreDb,
+  sourceDb: Database.Database,
   source: RuntimeSource,
   raw: unknown,
   observedAt: string
@@ -261,7 +317,7 @@ function projectRecord(
     // Core rows alone cannot establish that audience; this read never opens Workspace content.
     throw new Error('Cleanup source audience is unavailable.');
   }
-  return projectKnownFields(coreDb, source, row, observedAt);
+  return projectKnownFields(sourceDb, source, row, observedAt);
 }
 
 /** Unknown evidence reasons are shared contract values, not new cleanup states. */
@@ -276,12 +332,12 @@ interface EpochObservation {
  * Compares only current, owner-qualified stored Epoch witnesses. A disconnected target or a
  * different deployment cannot turn old source state into current cleanup proof.
  */
-function observeEpoch(coreDb: CoreDb, row: Record<string, unknown>): EpochObservation {
+function observeEpoch(sqlite: Database.Database, row: Record<string, unknown>): EpochObservation {
   try {
     if (typeof row.runtime_target_id !== 'string' || typeof row.origin_physical_epoch !== 'string')
       return { relation: 'unknown', reason: 'missing' };
     requireStoredNanoHostPhysicalEpoch(row.origin_physical_epoch);
-    const target = getNanoHostRuntimeTarget(coreDb, row.runtime_target_id);
+    const target = getNanoHostRuntimeTarget({ sqlite }, row.runtime_target_id);
     if (!target) return { relation: 'unknown', reason: 'missing' };
     if (row.deployment_id !== undefined && target.deploymentId !== row.deployment_id)
       return { relation: 'unknown', reason: 'contradictory' };
@@ -299,7 +355,7 @@ function observeEpoch(coreDb: CoreDb, row: Record<string, unknown>): EpochObserv
 
 /** Selects only the shared closed branch's target, owner state and source-defined proof facts. */
 function projectKnownFields(
-  coreDb: CoreDb,
+  sourceDb: Database.Database,
   source: RuntimeSource,
   row: Record<string, unknown>,
   observedAt: string
@@ -323,7 +379,7 @@ function projectKnownFields(
       if (row.disposition === 'unknown') reason = 'unavailable';
       break;
     case 'backend-session': {
-      const epoch = observeEpoch(coreDb, row);
+      const epoch = observeEpoch(sourceDb, row);
       target = {
         kind: source,
         attemptId: row.attempt_id,
@@ -364,7 +420,7 @@ function projectKnownFields(
       // updated_at dates a row transition; it is not a separate session.close proof timestamp.
       break;
     case 'sandbox-runtime': {
-      const epoch = observeEpoch(coreDb, row);
+      const epoch = observeEpoch(sourceDb, row);
       target = {
         kind: source,
         sandboxRuntimeId: row.sandbox_runtime_id,

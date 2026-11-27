@@ -556,7 +556,8 @@ describe('governed current-self Memory search', () => {
     ).toBe(pageBytes);
     expect(await readUserKnowledgeSource(f.alice.writer, source.id, 'model')).toBeNull();
     expect(readMemoryPage(f.alice.writer, 'preferences')).toBeNull();
-  });
+    // Five real retrievals cross Git, the Kernel index, and the approval/forget transaction.
+  }, 60_000);
 
   it.each(['shared', 'missing Timeline', 'Worker', 'disabled'] as const)(
     'refuses %s context before private generation or trace publication',

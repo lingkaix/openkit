@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 import type {
@@ -23,6 +24,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  canonicalJsonText,
   type Item,
   KernelAuditEventSchema,
   writeRetainedV1,
@@ -30,10 +32,16 @@ import {
 import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { prepareCommunicationOwner } from '../app.js';
+import {
+  prepareCommunicationOwner,
+  prepareNanoHostOwner,
+  readNanoHostRestartCensus,
+} from '../app.js';
+import { observeAppUpdatePreflight } from '../app-update/preflight.js';
 import { auditEventFromRow, listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import type { ControlNanoHostTransportInput } from '../auth/nanohost-transport-codecs.js';
 import { listNanoHostTransportTokenRecords } from '../auth/nanohost-transport-token-store.js';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { openCommunicationDiscordChannel } from '../channels/discord-owner.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -49,15 +57,36 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
+import { inspectCoreHarnessConsumption } from '../runtime/core-journal-records.js';
 import {
+  bindSchedulerExecutionAttemptSession,
   createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
+  recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
+import {
+  admitKernelSchedulerGrantInDb,
+  CORE_SCHEDULER_EXECUTION_DEFINITION,
+} from '../runtime/execution-journal.js';
+import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
+import {
+  hasQueuedNanoHostHarnessOperation,
+  prepareNanoHostHarnessOperation,
+} from '../runtime/nanohost-harness-records.js';
 import { stageSchedulerStartInput } from '../runtime/scheduler-input-staging.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
+import { prepareWorkerStorageContributor } from '../runtime/worker-storage-binding-records.js';
+import { recordWorkspaceBackendHandoff } from '../runtime/workspace-backend-handoff.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from '../runtime/workspace-materializer.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
@@ -72,10 +101,11 @@ import { communicationOwner } from './communication-owner.js';
 import type { ControlKernelStore } from './control-kernel-port.js';
 import { admitCoreScheduler } from './control-store-admission.js';
 import { WorkspaceQueueInputRefSchema } from './control-store-admission-codecs.js';
-import { frameControlScalarText } from './control-store-input.js';
+import { commandInputHash, frameControlScalarText } from './control-store-input.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
+  readAdmittedNanoHostAttempt,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import {
@@ -104,8 +134,13 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from './migrate.js';
-import { vaultEpochFenceOccurrence } from './nanohost-epoch-invalidation.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import {
+  type NanoHostRuntimeTargetEpochKernel,
+  vaultEpochFenceOccurrence,
+} from './nanohost-epoch-invalidation.js';
+import {
+  inspectNanoHostRuntimeTargetTransition,
   prepareNanoHostRuntimeTargetTransition,
   readNanoHostEpochInvalidation,
   readPendingNanoHostEpochRetirement,
@@ -128,6 +163,7 @@ import { serverWorkStorageDescriptor } from './server-work-schema.js';
 import { storageReceipt, storageRequestId } from './storage-owner.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import { listWorkspaceMaterializationRecords } from './workspace-handoff-read.js';
 
 /** These roots have no independently admitted file publishers outside their native fixture. */
 function pauseFixturePublishers(): Promise<() => void> {
@@ -138,6 +174,7 @@ const interception = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
   gate: undefined as SharedArrayBuffer | undefined,
   point: 'before' as 'before' | 'after' | 'open-ack',
+  coreReadProbe: undefined as { path: string; reads: Int32Array } | undefined,
 }));
 
 // This fixture wraps the actual entry, not a fake SQL service or a production fault option.
@@ -152,6 +189,16 @@ vi.mock('node:worker_threads', async (load) => {
             const {parentPort, workerData} = require('node:worker_threads');
             const Database = require(workerData.databaseModule);
             const original = Database.prototype.exec;
+            const probe = workerData.coreReadProbe;
+            if (probe) {
+              const prepare = Database.prototype.prepare;
+              Database.prototype.prepare = function(sql) {
+                if (this.name === probe.path && /^\\s*(?:SELECT|WITH)\\b/i.test(sql)) {
+                  Atomics.add(probe.reads, 0, 1);
+                }
+                return prepare.call(this, sql);
+              };
+            }
             function hold(path, sqlite) {
               if (workerData.gate.length > 3 && Atomics.load(workerData.gate, 3) !== workerData.index) return;
               if (workerData.gate.length > 4) {
@@ -196,6 +243,7 @@ vi.mock('node:worker_threads', async (load) => {
               gate: new Int32Array(interception.gate),
               point: interception.point,
               index: interception.workers.length,
+              coreReadProbe: interception.coreReadProbe,
             },
           });
         } else {
@@ -399,6 +447,7 @@ afterEach(async () => {
   client = undefined;
   for (const db of nativeHandles.splice(0)) if (db.sqlite.open) db.sqlite.close();
   interception.gate = undefined;
+  interception.coreReadProbe = undefined;
   interception.workers.length = 0;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -1259,17 +1308,29 @@ describe('admitted Server work owner worker', () => {
 });
 
 const nanoHostReaders = {
+  getWorkerBackendSession,
+  hasQueuedNanoHostHarnessOperation,
+  isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
   listNanoHostTransportTokenRecords,
   prepareNanoHostRuntimeTargetTransition,
   readNanoHostEpochInvalidation,
+  inspectNanoHostRuntimeTargetTransition,
   readPendingNanoHostEpochRetirement,
 };
 
 /** Uses the shipped journals and intercepts only the NanoHost file's real FULL commit. */
-async function nanoHostWorkerFixture() {
+async function nanoHostWorkerFixture(
+  serving: Parameters<ReturnType<typeof getControlStoreWorkerClient>['bindNanoHostOwner']>[2] = {
+    enabled: () => true,
+  },
+  seed?: (path: string) => void,
+  coreReads?: Int32Array
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'control-nanohost-')));
   roots.push(root);
   ensureLayout(root);
+  const corePath = coreDbPath(root);
+  if (coreReads) interception.coreReadProbe = { path: corePath, reads: coreReads };
   const path = serverStoragePath(root, 'nanohost');
   const database = `server-owner:${path}`;
   const gate = new Int32Array(new SharedArrayBuffer(4 * (6 + path.length)));
@@ -1285,7 +1346,6 @@ async function nanoHostWorkerFixture() {
 
   const writer = getControlStoreWorkerClient();
   client = writer;
-  const corePath = coreDbPath(root);
   const coreKey = `core:${corePath}`;
   await writer.open({
     database: coreKey,
@@ -1295,7 +1355,14 @@ async function nanoHostWorkerFixture() {
     productOwner: { kind: 'server' },
     dataRoot: root,
   });
-  await expect(writer.bindNanoHostOwner(root, nanoHostReaders)).resolves.toEqual({
+  await expect(
+    writer.bindNanoHostOwner(root, nanoHostReaders, { enabled: () => false })
+  ).resolves.toEqual({
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'disabled',
+  });
+  await expect(writer.bindNanoHostOwner(root, nanoHostReaders, serving)).resolves.toEqual({
     state: 'unavailable',
     owner: 'nanohost',
     reason: 'missing',
@@ -1307,9 +1374,10 @@ async function nanoHostWorkerFixture() {
   });
   await writer.closeServerOwner(root, 'nanohost');
 
-  const bound = await writer.bindNanoHostOwner(root, nanoHostReaders);
+  seed?.(path);
+  const bound = await writer.bindNanoHostOwner(root, nanoHostReaders, serving);
   if (bound.state !== 'ready') throw new Error('Expected the existing NanoHost owner to bind.');
-  return { writer, root, path, database, gate, owner: bound.value, coreKey, corePath };
+  return { writer, root, path, database, gate, owner: bound.value, coreKey, corePath, serving };
 }
 
 async function prepareNanoHostTarget(
@@ -1319,6 +1387,24 @@ async function prepareNanoHostTarget(
   const prepared = await owner.prepareRuntimeTarget(input, crypto.randomUUID());
   if (prepared.state !== 'ready') throw new Error('Expected the original NanoHost target tuple.');
   return prepared.value;
+}
+
+function expectNanoHostTablesAbsent(path: string, ...tables: string[]) {
+  const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const table = sqlite.prepare(
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?"
+    );
+    for (const name of tables) {
+      // This base still creates the NanoHost tables in Core. Absence and an empty table both
+      // prove the fixture wrote no Core rows; any row is a failure.
+      if (table.pluck().get(name) === undefined) continue;
+      if (!/^[A-Za-z_]+$/.test(name)) throw new Error(`Unexpected table name: ${name}`);
+      expect(sqlite.prepare(`SELECT COUNT(*) FROM "${name}"`).pluck().get(), name).toBe(0);
+    }
+  } finally {
+    sqlite.close();
+  }
 }
 
 const nanoHostTarget = {
@@ -1363,7 +1449,809 @@ const nanoHostReceipt = storageReceipt(nanoHostIntent, {
 const nanoHostHeld = { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
 const nanoHostAck = { state: 'ready', value: undefined };
 
+const nanoHostKernelHeld = {
+  state: 'unavailable',
+  owner: 'control-kernel',
+  reason: 'recovery-required',
+};
+const nanoHostUnknownKernel: NanoHostRuntimeTargetEpochKernel = {
+  async reserveHolderIntent() {
+    return { state: 'ready', value: null };
+  },
+  async inspectNanoHostEpochFence() {
+    return { state: 'ready', value: { state: 'unknown' } };
+  },
+  async fenceNanoHostEpoch() {
+    throw new Error('Unknown receipt cannot authorize a new fence.');
+  },
+};
+
 describe('admitted NanoHost owner worker', () => {
+  it('holds mixed Core Harness, backend and storage mutations before their physical SQL', async () => {
+    const coreReads = new Int32Array(new SharedArrayBuffer(4));
+    const f = await nanoHostWorkerFixture(undefined, undefined, coreReads);
+    const refusal = { code: 'owner-recovery-required', commit: 'not-committed' };
+    await expect(
+      f.writer.harnessLifecycle(f.coreKey, {
+        kind: 'sandbox.restore-admission',
+        sandboxRuntimeId: 'original-sandbox',
+      })
+    ).rejects.toMatchObject(refusal);
+    await expect(
+      f.writer.harnessLifecycle(f.coreKey, {
+        kind: 'operation.dispatch',
+        sandboxIntegrationBindingRef: 'original-integration',
+      })
+    ).rejects.toMatchObject(refusal);
+    const beforeLaunch = Atomics.load(coreReads, 0);
+    await expect(
+      f.writer.backendSession(f.coreKey, {
+        kind: 'launching',
+        attemptId: allocateEntityId('attempt'),
+      })
+    ).rejects.toMatchObject(refusal);
+    expect(Atomics.load(coreReads, 0) - beforeLaunch).toBe(0);
+    await expect(
+      f.writer.workerStorageBinding(f.coreKey, {
+        kind: 'purge-pending',
+        storageRef: 'original-storage',
+        expectedRevision: 1,
+        schedulerRows: [],
+      })
+    ).rejects.toMatchObject(refusal);
+    expectNanoHostTablesAbsent(
+      f.corePath,
+      'harness_instance_records',
+      'worker_backend_sessions',
+      'worker_storage_bindings'
+    );
+  });
+
+  it('holds the original Core Login observation before the Native binding read', async () => {
+    const f = await nanoHostWorkerFixture();
+    // Reopen through Vault's existing Core product descriptor and its content mount.
+    await f.writer.close(f.coreKey);
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const runtimeBinding = 'original-runtime-binding';
+    const now = nanoHostTarget.observedAt;
+    await expect(
+      f.writer.vault(core, 'reference-login-observe', {
+        context: {
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: DEMO_THREAD_ID,
+          agentSessionId: allocateEntityId('as'),
+          agentSessionRuntimeBindingId: runtimeBinding,
+          packageSnapshotId: 'original-package',
+          turnId: allocateEntityId('tu'),
+          leaseId: allocateEntityId('attempt'),
+          turnSequence: 0,
+          runtimeTargetId: nanoHostTarget.targetId,
+          physicalEpoch: 'a'.repeat(64),
+          connectionGeneration: 1,
+        },
+        referenceId: allocateEntityId('vault'),
+        grantId: 'original-grant',
+        planId: 'original-plan',
+        receiptId: 'original-receipt',
+        materialGeneration: 1,
+        accountId: 'original-test-account',
+        now: () => now,
+        observations: {
+          state: 'unknown',
+          windows: [],
+          source: 'native-read',
+          observedAt: now,
+          bindingId: runtimeBinding,
+          materialGeneration: 1,
+        },
+      })
+    ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+  });
+
+  it('places rejected Worker evidence only on the admitted Native owner and holds retired openings', async () => {
+    const f = await nanoHostWorkerFixture();
+    const row = {
+      rejectionId: randomUUID(),
+      workspaceId: allocateEntityId('ws'),
+      threadId: allocateEntityId('th'),
+      turnId: allocateEntityId('tu'),
+      agentSessionId: allocateEntityId('as'),
+      packageSnapshotId: 'original-package',
+      requestId: null,
+      route: '/worker/heartbeat',
+      operation: 'heartbeat',
+      errorCode: 'worker_control_lease_not_live',
+      httpStatus: 403,
+      message: 'The original lease is closed.',
+      rejectedAt: nanoHostTarget.observedAt,
+    };
+    await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+    await expect(
+      f.writer.executionAttempt(f.coreKey, {
+        kind: 'native-reconnect-arm',
+        attemptId: allocateEntityId('attempt'),
+        classifiedAt: nanoHostTarget.observedAt,
+        expectedRecoveryDeadline: null,
+      })
+    ).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+    await expect(f.writer.workerControlEvidence(f.coreKey, row)).resolves.toBeUndefined();
+    expect(
+      f.owner.read((sqlite) =>
+        sqlite.prepare('SELECT rejection_id FROM worker_control_rejected_evidence').pluck().all()
+      )
+    ).toEqual({ state: 'ready', value: [row.rejectionId] });
+    expectNanoHostTablesAbsent(f.corePath, 'worker_control_rejected_evidence');
+    await f.writer.closeServerOwner(f.root, 'nanohost');
+    await expect(f.writer.workerControlEvidence(f.coreKey, row)).rejects.toMatchObject({
+      code: 'owner-recovery-required',
+      commit: 'not-committed',
+    });
+  });
+
+  it.each(['live Native materialization', 'self-check final replay'])(
+    'uses the original Core preparation for %s',
+    async (path) => {
+      const selfCheck = path === 'self-check final replay';
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', selfCheck ? '1' : '0');
+      try {
+        let workspaceHandoff = false;
+        const f = await nanoHostWorkerFixture({
+          enabled: () => true,
+          verifyWorkspaceHandoff: () => workspaceHandoff,
+        });
+        const core = openCoreDb(f.root);
+        nativeHandles.push(core);
+        const workspaceId = DEMO_WORKSPACE_ID;
+        const ownerUserId = ensureLocalUser(core);
+        recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
+        const triggerActor = { kind: 'user' as const, id: ownerUserId };
+        if (!selfCheck) ensureWorkspaceLayout(f.root, workspaceId);
+        const workspace = selfCheck ? null : openWorkspaceDb(f.root, workspaceId);
+        if (workspace) {
+          nativeHandles.push(workspace);
+          applyScopedMigrations(workspace);
+          const scope = nativeProductScope(f.root, { kind: 'workspace', workspaceId });
+          await f.writer.open({
+            database: `workspace:${scope.path}`,
+            path: scope.path,
+            dataRoot: f.root,
+            create: false,
+            initialize: 'workspace',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          });
+        }
+        const pkg = workspace
+          ? await recordTestAgentEnvironmentPackage(workspace, {
+              suffix: 'worker_submission',
+              triggerActor,
+              workspaceInputIds: ['repo'],
+            })
+          : null;
+        const turnId = pkg?.scope.turnId ?? allocateEntityId('tu');
+        const threadId = pkg?.scope.threadId ?? DEMO_THREAD_ID;
+        const agentSessionId = pkg?.scope.agentSessionId ?? allocateEntityId('as');
+        const packageSnapshotId = pkg?.snapshotId ?? 'self-check-package-original';
+        const sandboxBindingRef = 'self-check-sandbox-original';
+        const when = new Date().toISOString();
+        const entry = createSchedulerAdmissionEntry(core, {
+          queueEntryId: 'self-check-worker-route',
+          backendId: 'nanohost',
+          triggerActor,
+          workspaceId,
+          threadId,
+          turnId,
+          inputRef: schedulerFixtureInput(workspaceId, turnId, 'Native self-check worker route.'),
+          requestedAgentId: 'agent_worker',
+        });
+        const attempt = createSchedulerExecutionAttempt(core, {
+          entry,
+          preparationInput: { admission: entry },
+          now: () => when,
+        });
+        await f.writer.executionAttempt(f.coreKey, {
+          kind: 'bind-session',
+          attemptId: attempt.attemptId,
+          agentSessionId,
+          observedAt: when,
+        });
+        await f.writer.executionAttempt(f.coreKey, {
+          kind: 'finalize-input',
+          attemptId: attempt.attemptId,
+          inputRef: packageSnapshotId,
+          bindingRef: sandboxBindingRef,
+          observedAt: when,
+        });
+        const deploymentId = readDataRootLayoutMarker(f.root).deploymentId;
+        const kernel = f.writer.nanoHostEpochKernel(core);
+        for (const target of [nanoHostTarget, nanoHostReady]) {
+          const command = await prepareNanoHostTarget(f.owner, { ...target, deploymentId });
+          await expect(f.owner.transitionRuntimeTarget(kernel, command)).resolves.toMatchObject({
+            state: 'ready',
+          });
+        }
+
+        const materializing = {
+          kind: 'materializing',
+          identity: {
+            agentSessionId,
+            backendKind: 'openshell',
+            backendSessionId: `self-check_${packageSnapshotId}`,
+            deploymentId,
+            packageSnapshotId,
+            runtimeTargetId: nanoHostTarget.targetId,
+            stagingDirectoryRef: 'self-check-workspace-staging',
+            transientProviderInstanceId: null,
+          },
+          backendVersion: pkg ? '0.0.80' : null,
+          backendLineage: { kind: 'reference', imageRef: 'fixture-image' },
+          lineage: { threadId, turnId, workspaceId },
+          sandboxBindingRef,
+          observedAt: when,
+        } as const;
+        await expect(
+          f.writer.backendSession(f.coreKey, {
+            ...materializing,
+            sandboxBindingRef: 'different-binding',
+          })
+        ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()
+          )
+        ).toEqual({ state: 'ready', value: [] });
+        if (!selfCheck) Atomics.store(f.gate, 0, 0);
+        const materialized = f.writer.backendSession(f.coreKey, materializing);
+        try {
+          if (!selfCheck) {
+            await waitForHold(f.gate);
+            expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+              state: 'ready',
+              value: { connectionGeneration: 1, ready: true, deploymentId },
+            });
+            expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+          }
+        } finally {
+          release(f.gate);
+        }
+        await expect(materialized).resolves.toMatchObject({
+          attemptId: attempt.attemptId,
+          state: 'materializing',
+        });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT attempt_id FROM worker_backend_sessions').all()
+          )
+        ).toEqual({ state: 'ready', value: [{ attempt_id: attempt.attemptId }] });
+        const backend = { attemptId: attempt.attemptId, observedAt: when };
+        if (!selfCheck) {
+          const attachment = {
+            kind: 'create-and-reserve' as const,
+            workspaceId,
+            threadId,
+            agentSessionId,
+            responsibleUserId: ownerUserId,
+            purpose: 'work' as const,
+            storageRef: 'original-live-attachment',
+            runtimeTargetId: nanoHostTarget.targetId,
+            deploymentId,
+            layout: {
+              family: 'openkit-worker',
+              version: '1',
+              uid: 1000,
+              gid: 1000,
+              workingDirectory: '/workspace',
+              platform: { architecture: 'amd64', os: 'linux' },
+              targets: [{ target: '/workspace' }],
+            },
+            expectedRevision: 1,
+            now: when,
+          };
+          const contributor = prepareWorkerStorageContributor(
+            { storageRef: attachment.storageRef, workspaceId, contributors: [] },
+            attachment,
+            when,
+            1
+          );
+          const guard = vi.fn(() => true);
+          Atomics.store(f.gate, 1, 0);
+          Atomics.store(f.gate, 0, 0);
+          const reserving = f.owner.writeStorageAttachment(
+            { ...attachment, authorizedContributorRefs: [contributor.contributorRef] },
+            { attemptId: attempt.attemptId, verifyBeforePost: guard }
+          );
+          try {
+            await waitForHold(f.gate);
+            expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+              state: 'ready',
+              value: { connectionGeneration: 1, ready: true, deploymentId },
+            });
+            expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+          } finally {
+            release(f.gate);
+          }
+          await expect(reserving).resolves.toMatchObject({ state: 'reserved' });
+          expect(guard).toHaveBeenCalledTimes(1);
+          await expect(
+            f.writer.backendSession(f.coreKey, {
+              kind: 'transition',
+              fromState: 'materializing',
+              toState: 'launching',
+              ...backend,
+            })
+          ).rejects.toMatchObject({ code: 'owner-recovery-required', commit: 'not-committed' });
+          await expect(
+            f.writer.backendSession(f.coreKey, {
+              kind: 'transition',
+              fromState: 'materializing',
+              toState: 'materialized',
+              ...backend,
+            })
+          ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'pending' });
+          await expect(
+            f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
+          ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+          workspaceHandoff = true;
+          await expect(
+            f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend })
+          ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'complete' });
+          if (!workspace || !pkg) throw new Error('Expected the original Workspace package.');
+          await expect(f.owner.firstSubmission(backend)).rejects.toThrow(
+            'The original execution grant is unavailable.'
+          );
+          expect(requireSchedulerExecutionAttempt(core, attempt.attemptId).operationId).toBeNull();
+          const inputSnapshots = buildWorkspaceInputSnapshots({
+            backendCapabilities: ['trusted-worker-inference-relay'],
+            backendKind: 'openshell',
+            createdAt: when,
+            environmentPackage: pkg,
+          });
+          await recordWorkspaceBackendHandoff(
+            workspace,
+            inputSnapshots,
+            buildWorkspaceMaterializationRecords({
+              createdAt: when,
+              inputSnapshots,
+              materialization: {
+                backendKind: 'openshell',
+                backendStatus: { health: 'ready', version: materializing.backendVersion! },
+                packageSnapshotId,
+                requiredCapabilities: pkg.backend.requiredCapabilities,
+                sandbox: { name: materializing.identity.backendSessionId, state: 'created' },
+                workspaceInputs: pkg.workspace.inputs.map(({ id, target }) => ({ id, target })),
+              },
+            })
+          );
+          Atomics.store(f.gate, 3, 0);
+          Atomics.store(f.gate, 4, f.corePath.length);
+          for (let index = 0; index < f.corePath.length; index++)
+            Atomics.store(f.gate, 5 + index, f.corePath.charCodeAt(index));
+          Atomics.store(f.gate, 1, 0);
+          Atomics.store(f.gate, 0, 0);
+          const submission = f.owner.firstSubmission(backend);
+          let acknowledged = false;
+          void submission.then(
+            () => {
+              acknowledged = true;
+            },
+            () => {}
+          );
+          try {
+            await waitForHold(f.gate);
+            expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+            expect(acknowledged).toBe(false);
+            expect(requireSchedulerExecutionAttempt(core, attempt.attemptId).operationId).toBe(
+              commandInputHash({
+                attemptId: attempt.attemptId,
+                inputRef: packageSnapshotId,
+                operation: 'submit',
+              })
+            );
+            await expect(f.writer.pauseForDataRootBackup()).rejects.toMatchObject({
+              code: 'busy',
+              commit: 'not-committed',
+            });
+            await expect(f.owner.firstSubmission(backend)).rejects.toMatchObject({
+              code: 'busy',
+              commit: 'not-committed',
+            });
+          } finally {
+            release(f.gate);
+          }
+          const original = await submission;
+          expect(original.state).toBe('admitted-now');
+          await expect(f.owner.firstSubmission(backend)).resolves.toEqual({
+            state: 'inspect-original',
+            attempt: original.attempt,
+          });
+          expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions');
+          await f.writer.closeServerOwner(f.root, 'nanohost');
+          expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+            state: 'unavailable',
+          });
+          return;
+        }
+        await f.writer.backendSession(f.coreKey, { kind: 'handoff', ...backend });
+        await f.writer.backendSession(f.coreKey, {
+          kind: 'transition',
+          fromState: 'materializing',
+          toState: 'materialized',
+          ...backend,
+        });
+
+        core.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET disposition='accepted', operation_id=? WHERE attempt_id=?"
+          )
+          .run(
+            commandInputHash({
+              attemptId: attempt.attemptId,
+              inputRef: packageSnapshotId,
+              operation: 'submit',
+            }),
+            attempt.attemptId
+          );
+        const final = {
+          kind: 'simulator-final',
+          attemptId: attempt.attemptId,
+          acceptedAt: when,
+          lineage: {
+            agentSessionId,
+            packageSnapshotId,
+            threadId,
+            turnId,
+            workspaceId,
+            requestId: null,
+          },
+        } as const;
+        const original = await f.writer.executionAttempt(f.coreKey, final);
+        expect(original).toMatchObject({ attemptId: attempt.attemptId, disposition: 'accepted' });
+        await expect(f.writer.executionAttempt(f.coreKey, final)).resolves.toEqual(original);
+        vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '0');
+        await expect(f.writer.executionAttempt(f.coreKey, final)).rejects.toMatchObject({
+          code: 'owner-recovery-required',
+          commit: 'not-committed',
+        });
+        expect(
+          f.owner.read((sqlite) =>
+            sqlite.prepare('SELECT operation, record_key FROM worker_control_records').all()
+          )
+        ).toEqual({ state: 'ready', value: [{ operation: 'final_status', record_key: '1' }] });
+        expectNanoHostTablesAbsent(f.corePath, 'worker_backend_sessions', 'worker_control_records');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+  );
+
+  it('joins the restart window and preflight hold to the original Core grant and current Native opening', async () => {
+    const workspaceId = allocateEntityId('ws');
+    const threadId = allocateEntityId('th');
+    const turnId = allocateEntityId('tu');
+    const agentSessionId = allocateEntityId('as');
+    const attemptId = allocateEntityId('attempt');
+    const inputRef = 'joined-recovery-package';
+    const bindingRef = 'joined-recovery-binding';
+    const operationId = commandInputHash({ attemptId, inputRef, operation: 'submit' });
+    const started = new Date().toISOString();
+    const now = () => started;
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const ownerUserId = ensureLocalUser(core);
+    recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId });
+    const entry = createSchedulerAdmissionEntry(core, {
+      backendId: 'nanohost',
+      queueEntryId: 'joined-recovery-queue',
+      triggerActor: { kind: 'user', id: ownerUserId },
+      requestedAgentId: 'agent_worker',
+      workspaceId,
+      threadId,
+      turnId,
+      inputRef: schedulerFixtureInput(workspaceId, turnId, 'The original admitted input'),
+    });
+    createSchedulerExecutionAttempt(core, {
+      entry,
+      attemptId,
+      preparationInput: { admission: entry },
+      now,
+    });
+    bindSchedulerExecutionAttemptSession(core, { attemptId, agentSessionId, now });
+    finalizeSchedulerExecutionAttemptInput(core, { attemptId, inputRef, bindingRef, now });
+    const attempt = recordSchedulerExecutionOperation(core, {
+      attemptId,
+      operationId,
+      submission: true,
+      now,
+    });
+    if (!attempt.deadline) throw new Error('Fixture did not submit its exact attempt.');
+    const grant = {
+      execution: { owner: { kind: 'server' as const }, executionId: attemptId },
+      backendId: 'nanohost',
+      operationId,
+      attemptId,
+      turnId,
+      inputRef,
+      bindingRef,
+      generation: '1',
+      deadline: attempt.deadline,
+    };
+    const recoveryDeadline = new Date(
+      Math.min(Date.parse(grant.deadline), Date.parse(started) + 300_000)
+    ).toISOString();
+    const startupDeadline = new Date(Date.parse(started) + 15_000).toISOString();
+    const recovery = {
+      version: 1,
+      sessionCompatibilityKey: 'joined-worker',
+      startupDeadline,
+      heartbeatDeadline: startupDeadline,
+      heartbeatTimeoutMs: 15_000,
+      lastAcceptedHeartbeatAt: started,
+      lastWorkerSequence: 1,
+      workerProcessKeyHash: 'a'.repeat(43),
+      recoveryState: null,
+      recoveryDeadline: null,
+    };
+    const seed = () => {
+      const sqlite = new Database(f.path, { fileMustExist: true });
+      try {
+        sqlite
+          .prepare(`INSERT INTO worker_backend_sessions (
+          attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+          backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+          workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+          origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, worker_route_binding_json,
+          worker_recovery_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 'openshell', ?, 'joined-backend', 'joined-staging',
+                  'complete', 'launching', ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            attemptId,
+            workspaceId,
+            threadId,
+            turnId,
+            agentSessionId,
+            inputRef,
+            readDataRootLayoutMarker(f.root).deploymentId,
+            started,
+            started,
+            nanoHostTarget.targetId,
+            nanoHostReady.physicalEpoch,
+            JSON.stringify({ imageRef: 'registry.invalid/worker' }),
+            bindingRef,
+            canonicalJsonText({
+              version: 1,
+              operationId,
+              generation: '1',
+              deadline: grant.deadline,
+              control: 'a'.repeat(64),
+              inference: 'b'.repeat(64),
+              capability: 'c'.repeat(64),
+              harnessInstanceId: 'joined-harness',
+              harnessOperationId: 'd'.repeat(64),
+              harnessSequence: 1,
+            }),
+            canonicalJsonText(recovery)
+          );
+      } finally {
+        sqlite.close();
+      }
+    };
+    await f.writer.closeServerOwner(f.root, 'nanohost');
+    seed();
+    const selected = await prepareNanoHostOwner(core, f.serving);
+    if (selected.state !== 'ready') throw new Error('Expected the acknowledged NanoHost owner.');
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual(nanoHostHeld);
+
+    const rootSpan = {
+      traceId: '1'.repeat(32),
+      spanId: '1'.repeat(16),
+      flags: 1,
+      name: 'Joined worker attempt',
+      kind: 'INTERNAL' as const,
+      startTimeUnixNano: BigInt(Date.parse(started)) * 1_000_000n,
+      endTimeUnixNano: null,
+      status: { code: 'UNSET' as const },
+      attributes: [],
+      droppedAttributesCount: 0,
+      events: [],
+      droppedEventsCount: 0,
+      links: [],
+      droppedLinksCount: 0,
+      instrumentationScope: { name: 'openkit.fixture', attributes: [], droppedAttributesCount: 0 },
+      resource: { attributes: [], droppedAttributesCount: 0 },
+    };
+    const proposal: ExecutionJournalIntent = {
+      execution: {
+        ref: grant.execution,
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        workId: turnId,
+        fingerprint: entry.inputHash,
+        exclusionRefs: [`turn:${turnId}`],
+        span: rootSpan,
+      },
+      stepId: 'original-submission',
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: { operation: 'turn.start', requestId: operationId, sequence: null, bindingRef },
+      control: {
+        definitionVersion: CORE_SCHEDULER_EXECUTION_DEFINITION,
+        kind: 'admit',
+        target: null,
+        workId: turnId,
+        operationId,
+        attemptId,
+        invocationId: operationId,
+        actor: entry.triggerActor,
+        inputRefs: [inputRef],
+        outputRefs: [],
+        fingerprint: entry.inputHash,
+        permittingDecisionRef: null,
+        authorityRefs: [],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: BigInt(Date.parse(grant.deadline)) * 1_000_000n,
+        physicalFenceRefs: [],
+      },
+      span: { ...rootSpan, spanId: '2'.repeat(16), parentSpanId: rootSpan.spanId },
+    };
+    expect(
+      core.sqlite.transaction(() =>
+        admitKernelSchedulerGrantInDb(core, proposal, grant, () => true, true)
+      )()
+    ).toMatchObject({ state: 'settled', receipt: grant });
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual({
+      state: 'ready',
+      value: [],
+    });
+    const readCurrent = (owner: typeof selected.value.owner) =>
+      owner.read((sqlite) =>
+        readAdmittedNanoHostAttempt(core, sqlite, requireSchedulerExecutionAttempt(core, attemptId))
+      );
+    const initial = readCurrent(selected.value.owner);
+    if (initial.state !== 'ready') throw new Error('Expected the exact Native observation.');
+    const arm = {
+      lease: initial.value.lease,
+      expectedSession: initial.value.session,
+      expectedRecovery: initial.value.proof,
+      kind: 'arm-reconnect',
+      classifiedAt: started,
+      observedAt: started,
+    } as const;
+    await expect(
+      selected.value.owner.classifyRecovery({
+        ...arm,
+        lease: { ...arm.lease, grant: { ...arm.lease.grant, generation: '2' } },
+      })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(readCurrent(selected.value.owner)).toEqual(initial);
+    await expect(selected.value.owner.classifyRecovery(arm)).resolves.toMatchObject({
+      state: 'ready',
+      value: { attemptId, state: 'launching' },
+    });
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual({
+      state: 'ready',
+      value: [expect.objectContaining({ grant })],
+    });
+    expect(readNanoHostRestartCensus(core, selected, recoveryDeadline)).toEqual({
+      state: 'ready',
+      value: [],
+    });
+
+    const observed = readCurrent(selected.value.owner);
+    if (observed.state !== 'ready') throw new Error('Expected the exact Native observation.');
+    const { lease, session, proof } = observed.value;
+    const close = { lease, session, proof, cause: 'native-cleanup', observedAt: started };
+    await expect(
+      selected.value.owner.closeRecovery({
+        ...close,
+        proof: { ...proof, lastWorkerSequence: 2 },
+      })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(requireSchedulerExecutionAttempt(core, attemptId).phase).toBe('open');
+    await expect(selected.value.owner.closeRecovery(close)).resolves.toMatchObject({
+      state: 'ready',
+      value: { attemptId, phase: 'closing', terminalCause: 'native-cleanup' },
+    });
+    const retained = requireSchedulerExecutionAttempt(core, attemptId);
+    await expect(
+      selected.value.owner.closeRecovery({ ...close, observedAt: recoveryDeadline })
+    ).resolves.toEqual({ state: 'ready', value: retained });
+    await expect(
+      selected.value.owner.closeRecovery({ ...close, cause: 'other-observation' })
+    ).resolves.toMatchObject({ state: 'unavailable', reason: 'recovery-required' });
+    expect(requireSchedulerExecutionAttempt(core, attemptId)).toEqual(retained);
+    const store = new FsStore({ dataRoot: f.root });
+    const preflight = () =>
+      observeAppUpdatePreflight({ coreDb: core, store, inflightCommands: new WeakMap() });
+    expect(preflight()).toMatchObject({ state: 'busy', counts: { closingAttempts: 1 } });
+    await f.writer.closeServerOwner(f.root, 'nanohost');
+    expect(preflight()).toMatchObject({ state: 'busy', counts: { closingAttempts: 1 } });
+    const reopened = await prepareNanoHostOwner(core, f.serving);
+    if (reopened.state !== 'ready') throw new Error('Expected the original NanoHost owner.');
+    expect(readNanoHostRestartCensus(core, selected, started)).toEqual(nanoHostHeld);
+    const pending = readCurrent(reopened.value.owner);
+    if (pending.state !== 'ready') throw new Error('Expected the original recovery observation.');
+    await expect(
+      reopened.value.owner.classifyRecovery({
+        lease: pending.value.lease,
+        expectedSession: pending.value.session,
+        expectedRecovery: pending.value.proof,
+        kind: 'needs-evidence',
+        observedAt: started,
+      })
+    ).resolves.toMatchObject({ state: 'ready', value: { attemptId } });
+    expect(preflight()).toMatchObject({ state: 'idle', counts: { closingAttempts: 0 } });
+  });
+
+  it('covers the original NanoHost restart fence with the actual Core worker receipt', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreReadDb(f.root);
+    try {
+      const kernel = f.writer.nanoHostEpochKernel(core);
+      const deploymentId = readDataRootLayoutMarker(f.root).deploymentId;
+      const allocation = await prepareNanoHostTarget(f.owner, { ...nanoHostTarget, deploymentId });
+      await expect(f.owner.transitionRuntimeTarget(kernel, allocation)).resolves.toMatchObject({
+        state: 'ready',
+        value: { connectionGeneration: 1, ready: false },
+      });
+      const readiness = await prepareNanoHostTarget(f.owner, { ...nanoHostReady, deploymentId });
+      await expect(f.owner.transitionRuntimeTarget(kernel, readiness)).resolves.toMatchObject({
+        state: 'ready',
+        value: { connectionGeneration: 1, ready: true },
+      });
+
+      const placement = { ...nanoHostPlacement, deploymentId };
+      await expect(kernel.reserveHolderIntent(placement)).resolves.toEqual(nanoHostKernelHeld);
+      const restart = await prepareNanoHostTarget(f.owner, {
+        kind: 'restart',
+        observedAt: '2026-11-21T00:00:01.000Z',
+      });
+      expect(restart.retirement).toEqual(placement);
+      const closed = await f.owner.transitionRuntimeTarget(
+        {
+          ...kernel,
+          async reserveHolderIntent(original) {
+            await expect(
+              f.writer.pauseForDataRootBackup().then((resume) => resume())
+            ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+            return kernel.reserveHolderIntent(original);
+          },
+        },
+        restart
+      );
+      expect(closed).toMatchObject({ state: 'ready', value: { ready: false } });
+      await expect(f.owner.transitionRuntimeTarget(kernel, restart)).resolves.toEqual(closed);
+
+      const requestId = storageRequestId(vaultEpochFenceOccurrence(placement));
+      const staged = await f.owner.readEpochInvalidation(requestId);
+      expect(staged).toMatchObject({ state: 'ready', value: { target: { holderReceiptIds: [] } } });
+      if (staged.state !== 'ready' || !staged.value)
+        throw new Error('The admitted restart did not retain its original fence.');
+      await f.writer.closeServerOwner(f.root, 'nanohost');
+      await expect(kernel.inspectNanoHostEpochFence(staged.value)).resolves.toMatchObject({
+        state: 'ready',
+        value: {
+          state: 'settled',
+          receipt: {
+            disposition: 'applied',
+            intent: staged.value,
+            result: { fencedHolderReceiptIds: [] },
+          },
+        },
+      });
+    } finally {
+      core.sqlite.close();
+    }
+  });
+
   it('ACKs local transport at FULL and leaves deciding administrator authority and both Audit tuples on Core', async () => {
     const f = await nanoHostWorkerFixture();
     const input: Extract<ControlNanoHostTransportInput, { kind: 'enroll' }> = {
@@ -1401,9 +2289,7 @@ describe('admitted NanoHost owner worker', () => {
           drained = true;
           return resume;
         });
-        await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).resolves.toMatchObject({
-          connectionGeneration: 1,
-        });
+        await expect(f.writer.checkpoint(f.coreKey)).resolves.toBeDefined();
         expect(drained).toBe(false);
         return { captured };
       } finally {
@@ -1445,16 +2331,407 @@ describe('admitted NanoHost owner worker', () => {
       precondition
     );
 
+    expectNanoHostTablesAbsent(
+      f.corePath,
+      'nanohost_transport_tokens',
+      'nanohost_integration_identities'
+    );
     const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
     try {
-      expect(core.prepare('SELECT count(*) FROM nanohost_transport_tokens').pluck().get()).toBe(0);
-      expect(
-        core.prepare('SELECT count(*) FROM nanohost_integration_identities').pluck().get()
-      ).toBe(0);
       expect(core.prepare('SELECT count(*) FROM audit_events').pluck().get()).toBe(0);
     } finally {
       core.close();
     }
+  });
+
+  it('keeps the current Core administrator check ordered through the Native enrollment ACK', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const administrator = ensureLocalUser(core);
+    const enrollment = (userId: string) =>
+      f.owner.enrollTransport({
+        kind: 'enroll',
+        actor: { kind: 'local', userId },
+        record: {
+          tokenId: allocateEntityId('nhtok'),
+          tokenHash: `sha256:${'b'.repeat(64)}`,
+          ownerNanoHostIdentityId: nanoHostTarget.identityId,
+          deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+          responsibleServerAdminActorId: userId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      });
+    await expect(enrollment(allocateEntityId('usr'))).rejects.toMatchObject({
+      code: 'deployment_admin_required',
+      status: 403,
+    });
+    expect(await f.owner.listTransportTokens()).toEqual({ state: 'ready', value: [] });
+
+    Atomics.store(f.gate, 0, 0);
+    const committed = enrollment(administrator);
+    let checkpoint: ReturnType<typeof f.writer.checkpoint> | undefined;
+    try {
+      await waitForHold(f.gate);
+      const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+      checkpoint = f.writer.checkpoint(f.coreKey);
+      await expect(f.writer.pauseForDataRootBackup()).rejects.toMatchObject({
+        code: 'busy',
+        commit: 'not-committed',
+      });
+      expect(posted).not.toHaveBeenCalled();
+    } finally {
+      release(f.gate);
+    }
+    await expect(committed).resolves.toMatchObject({
+      kind: 'record',
+      record: { responsibleServerAdminActorId: administrator, status: 'active' },
+    });
+    await expect(checkpoint).resolves.toBeDefined();
+  });
+
+  it('rechecks the current Core administrator before each administrator Token stage', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreDb(f.root);
+    nativeHandles.push(core);
+    const administrator = ensureLocalUser(core);
+    const tokenId = allocateEntityId('nhtok');
+    await f.owner.enrollTransport({
+      kind: 'enroll',
+      actor: { kind: 'local', userId: administrator },
+      record: {
+        tokenId,
+        tokenHash: `sha256:${'b'.repeat(64)}`,
+        ownerNanoHostIdentityId: nanoHostTarget.identityId,
+        deploymentId: readDataRootLayoutMarker(f.root).deploymentId,
+        responsibleServerAdminActorId: administrator,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    });
+    const revoke = (actor?: { kind: 'local'; userId: string }) =>
+      f.owner.administerTransport({ kind: 'revoke', tokenId, ...(actor ? { actor } : {}) });
+    await expect(revoke({ kind: 'local', userId: allocateEntityId('usr') })).rejects.toMatchObject({
+      code: 'deployment_admin_required',
+      status: 403,
+    });
+    await expect(revoke()).rejects.toMatchObject({
+      code: 'precondition',
+      commit: 'not-committed',
+    });
+    await expect(f.owner.listTransportTokens()).resolves.toMatchObject({
+      state: 'ready',
+      value: [{ tokenId, status: 'active' }],
+    });
+    await expect(revoke({ kind: 'local', userId: administrator })).resolves.toMatchObject({
+      kind: 'record',
+      record: { tokenId, status: 'revoked' },
+    });
+  });
+
+  it('admits only local serving tuples and rechecks original proof before dispatch', async () => {
+    const workspaceId = allocateEntityId('ws');
+    const materialization = {
+      id: 'materialization-original',
+      inputSnapshotId: 'snapshot-original',
+      workspaceId,
+      backendKind: 'managed-sandbox',
+      packageSnapshotId: 'package-original',
+      workerSessionId: 'backend-session-original',
+      strategy: 'filesystem',
+      materializedRootRef: 'root-ref',
+      base: { commit: null, contentDigest: 'contents' },
+      policyDigest: 'policy-digest',
+      readinessEvidence: [{ kind: 'materialized', ref: 'proof-ref' }],
+      createdAt: nanoHostTarget.observedAt,
+    } as const;
+    const image = {
+      kind: 'settlement',
+      value: {
+        requestId: 'e'.repeat(64),
+        operation: 'image.build',
+        authoredArtifactId: allocateEntityId('ar'),
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'c'.repeat(64)}`,
+        inputDigest: `sha256:${'d'.repeat(64)}`,
+        outcome: { kind: 'success', imageDigest: `sha256:${'f'.repeat(64)}` },
+      },
+    } as const;
+    const activation = {
+      kind: 'environment',
+      candidate: {
+        authoredArtifactId: image.value.authoredArtifactId,
+        authoredArtifactVersion: image.value.authoredArtifactVersion,
+        authoredContentDigest: image.value.authoredContentDigest,
+        inputDigest: image.value.inputDigest,
+      },
+      environment: {
+        imageDigest: image.value.outcome.imageDigest,
+        defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+        values: {},
+      },
+    } as const;
+    let enabled = true;
+    let imageAuthorized = false;
+    let workspace: ReturnType<typeof openWorkspaceDb> | undefined;
+    const f = await nanoHostWorkerFixture(
+      {
+        enabled: () => enabled,
+        verifyImagePublication: (input) =>
+          imageAuthorized &&
+          (isDeepStrictEqual(input, image) || isDeepStrictEqual(input, activation)),
+        verifyStorageBinding: (input) =>
+          input.kind === 'create-and-reserve' &&
+          input.workspaceId === workspaceId &&
+          input.storageRef === 'storage-original',
+        verifyWorkspaceHandoff: (session) =>
+          workspace !== undefined &&
+          session.workspaceId === workspaceId &&
+          listWorkspaceMaterializationRecords(workspace, workspaceId).some(
+            (record) =>
+              isDeepStrictEqual(record, materialization) &&
+              record.packageSnapshotId === session.packageSnapshotId &&
+              record.workerSessionId === session.backendSessionId
+          ),
+      },
+      (path) => {
+        const sqlite = new Database(path, { fileMustExist: true });
+        try {
+          sqlite
+            .prepare(`INSERT INTO worker_backend_sessions
+          (attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+            backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+            workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+            origin_physical_epoch, backend_lineage_json, sandbox_binding_ref)
+          VALUES (?, ?, 'thread-original', 'turn-original', 'session-original', 'package-original',
+            'nanohost', ?, 'backend-session-original', 'staging-original', 'pending',
+            'materializing', ?, ?, ?, ?, ?, 'sandbox-binding-original')`)
+            .run(
+              'attempt-original',
+              workspaceId,
+              nanoHostTarget.deploymentId,
+              nanoHostTarget.observedAt,
+              nanoHostTarget.observedAt,
+              nanoHostTarget.targetId,
+              nanoHostReady.physicalEpoch,
+              JSON.stringify({ imageRef: 'fixture-image' })
+            );
+        } finally {
+          sqlite.close();
+        }
+      }
+    );
+
+    const invalid = { code: 'invalid-request', commit: 'not-committed' };
+    await expect(
+      Reflect.apply(f.owner.harnessLifecycle, undefined, [
+        { kind: 'sandbox.restore-admission', sandboxRuntimeId: 'sandbox-original' },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.backendSession, undefined, [
+        { kind: 'launching', attemptId: 'attempt-original' },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.workerStorageBinding, undefined, [
+        {
+          kind: 'purge-pending',
+          storageRef: 'storage-original',
+          expectedRevision: 1,
+          schedulerRows: [],
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(
+      Reflect.apply(f.owner.workerImage, undefined, [
+        {
+          ...image,
+          value: { ...image.value, operation: 'image.acquire' },
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    const precondition = { code: 'precondition', commit: 'not-committed' };
+    await expect(f.owner.workerImage(image)).rejects.toMatchObject(precondition);
+
+    const resume = await f.writer.pauseForDataRootBackup(f.database);
+    try {
+      imageAuthorized = true;
+      const deferred = f.owner.workerImage(image);
+      const refused = expect(deferred).rejects.toMatchObject(precondition);
+      imageAuthorized = false;
+      resume();
+      await refused;
+    } finally {
+      resume();
+    }
+    imageAuthorized = true;
+    Atomics.store(f.gate, 0, 0);
+    const imageWrite = f.owner.workerImage(image);
+    try {
+      await waitForHold(f.gate);
+      expect(Atomics.load(f.gate, f.gate.length - 1)).toBe(2);
+      expect(f.owner.read(() => 'unacknowledged')).toEqual(nanoHostHeld);
+    } finally {
+      release(f.gate);
+    }
+    await expect(imageWrite).resolves.toBeUndefined();
+    expect(
+      f.owner.read((sqlite) =>
+        sqlite
+          .prepare('SELECT image_digest FROM worker_image_settlements WHERE request_id = ?')
+          .pluck()
+          .get(image.value.requestId)
+      )
+    ).toEqual({ state: 'ready', value: image.value.outcome.imageDigest });
+
+    const allocation = await prepareNanoHostTarget(f.owner, nanoHostTarget);
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, allocation)
+    ).resolves.toMatchObject({ state: 'ready' });
+    const ready = await prepareNanoHostTarget(f.owner, nanoHostReady);
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, ready)
+    ).resolves.toMatchObject({
+      state: 'ready',
+    });
+    Atomics.store(f.gate, 1, 0);
+    Atomics.store(f.gate, 0, 0);
+    const activating = f.owner.workerImage(activation);
+    try {
+      await waitForHold(f.gate);
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'ready',
+        value: { ready: true, physicalEpoch: nanoHostReady.physicalEpoch, connectionGeneration: 1 },
+      });
+      expect(f.owner.read(() => 'unacknowledged')).toEqual(nanoHostHeld);
+    } finally {
+      release(f.gate);
+    }
+    await expect(activating).resolves.toBeUndefined();
+    await expect(
+      f.owner.harnessLifecycle({
+        kind: 'runtime.create',
+        adapterId: 'codex',
+        adapterVersion: 'fixture',
+        harnessBindingRef: 'harness-binding',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: 'harness-original',
+        imageDigest: image.value.outcome.imageDigest,
+        originPhysicalEpoch: nanoHostReady.physicalEpoch,
+        runtimeTargetId: nanoHostTarget.targetId,
+        sandboxBindingRef: 'sandbox-binding-original',
+        sandboxCompatibilityKey: 'c'.repeat(64),
+        sandboxIntegrationBindingRef: 'sandbox-integration',
+        sandboxRuntimeId: 'sandbox-original',
+        timestamp: nanoHostTarget.observedAt,
+      })
+    ).resolves.toBeUndefined();
+    expect(
+      f.owner.read((sqlite) =>
+        sqlite.prepare('SELECT harness_instance_id FROM harness_instance_records').pluck().get()
+      )
+    ).toEqual({ state: 'ready', value: 'harness-original' });
+
+    const handoff = { kind: 'handoff', attemptId: 'attempt-original' } as const;
+    await expect(
+      f.owner.backendSession({
+        kind: 'transition',
+        attemptId: handoff.attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+      })
+    ).resolves.toMatchObject({ state: 'materialized', workspaceHandoffState: 'pending' });
+    await expect(
+      Reflect.apply(f.owner.backendSession, undefined, [
+        {
+          kind: 'transition',
+          attemptId: handoff.attemptId,
+          fromState: 'materialized',
+          toState: 'launching',
+        },
+      ])
+    ).rejects.toMatchObject(invalid);
+    await expect(f.owner.backendSession(handoff)).rejects.toMatchObject(precondition);
+    ensureWorkspaceLayout(f.root, workspaceId);
+    workspace = openWorkspaceDb(f.root, workspaceId);
+    nativeHandles.push(workspace);
+    applyScopedMigrations(workspace);
+    await recordWorkspaceBackendHandoff(
+      workspace,
+      [
+        {
+          id: materialization.inputSnapshotId,
+          workspaceId,
+          resourceId: 'resource-original',
+          resourceKind: 'filesystem',
+          strategy: 'filesystem',
+          pathScope: ['source'],
+          writableRoots: [],
+          ignoredPaths: [],
+          generatedFiles: [],
+          base: materialization.base,
+          backend: { kind: 'managed-sandbox', label: 'Fixture', capabilitySummary: [] },
+          createdAt: materialization.createdAt,
+        },
+      ],
+      [{ ...materialization, readinessEvidence: [...materialization.readinessEvidence] }]
+    );
+    await expect(f.owner.backendSession(handoff)).resolves.toMatchObject({
+      attemptId: handoff.attemptId,
+      workspaceHandoffState: 'complete',
+    });
+
+    const storage = {
+      kind: 'create-and-reserve' as const,
+      now: nanoHostTarget.observedAt,
+      expectedRevision: 1,
+      layout: {
+        family: 'openkit-worker',
+        version: '1',
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/tmp/openkit-bootstrap',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/workspace' }, { target: '/sandbox' }],
+      },
+      purpose: 'work' as const,
+      responsibleUserId: FIXTURE_LOCAL_USER_ID,
+      storageRef: 'storage-original',
+      threadId: 'thread-original',
+      workspaceId,
+      agentSessionId: 'session-original',
+      runtimeTargetId: nanoHostTarget.targetId,
+      deploymentId: nanoHostTarget.deploymentId,
+    };
+    await expect(
+      f.owner.workerStorageBinding({ ...storage, authorizedContributorRefs: [] })
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const contributor = prepareWorkerStorageContributor(
+      { storageRef: storage.storageRef, workspaceId, contributors: [] },
+      storage,
+      storage.now,
+      1
+    );
+    await expect(
+      f.owner.workerStorageBinding({
+        ...storage,
+        authorizedContributorRefs: [contributor.contributorRef],
+      })
+    ).resolves.toMatchObject({ storageRef: 'storage-original', state: 'reserved' });
+
+    enabled = false;
+    const query = vi.fn();
+    expect(f.owner.read(query)).toEqual({
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'disabled',
+    });
+    expect(query).not.toHaveBeenCalled();
+    await expect(f.owner.workerImage(image)).rejects.toMatchObject({
+      code: 'unavailable',
+      commit: 'not-committed',
+    });
+    expectNanoHostTablesAbsent(f.corePath, 'worker_image_settlements', 'worker_backend_sessions');
   });
 
   it('holds a live epoch until exact applied coverage and rejects retired storage and target generations', async () => {
@@ -1468,47 +2745,63 @@ describe('admitted NanoHost owner worker', () => {
         throw new Error('Expected a real NanoHost owner request.');
       return postMessage.call(this, { ...message, openingRequestId: message.openingRequestId + 1 });
     });
-    await expect(f.owner.runtimeTarget(firstAllocation)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
-    });
-    posted.mockRestore();
-    const first = await f.owner.runtimeTarget(firstAllocation);
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, firstAllocation)
+    ).resolves.toEqual(nanoHostHeld);
+    const first = await f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, firstAllocation);
     expect(first).toMatchObject({
       state: 'ready',
       value: { connectionGeneration: 1, ready: false },
     });
-    await expect(f.owner.runtimeTarget(firstAllocation)).resolves.toEqual(first);
+    expect(posted.mock.calls.at(-1)?.[0]).toMatchObject({
+      operation: 'nanohost-owner',
+      mutation: { kind: 'runtime-target', input: firstAllocation },
+    });
+    posted.mockClear();
     await expect(
-      f.owner.runtimeTarget({
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, firstAllocation)
+    ).resolves.toEqual(first);
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, {
         ...firstAllocation,
         input: { ...nanoHostTarget, observedAt: '2026-11-21T00:00:01.000Z' },
       })
     ).resolves.toEqual(nanoHostHeld);
+    expect(posted).not.toHaveBeenCalled();
+    posted.mockRestore();
     const firstReady = await prepareNanoHostTarget(f.owner, nanoHostReady);
-    await expect(f.owner.runtimeTarget(firstReady)).resolves.toMatchObject({
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, firstReady)
+    ).resolves.toMatchObject({
       state: 'ready',
       value: { ready: true, physicalEpoch: nanoHostPlacement.physicalEpoch },
     });
     const readinessBeforeRetirement = await prepareNanoHostTarget(f.owner, nanoHostReady);
 
-    const targetHeld = {
-      code: 'precondition',
-      commit: 'not-committed',
-      domain: { code: 'runtime_target_refused' },
-    };
     const successor = await prepareNanoHostTarget(f.owner, nanoHostTarget);
-    await expect(f.owner.runtimeTarget(successor)).resolves.toEqual(nanoHostHeld);
-    await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
-    await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
-      state: 'ready',
-      value: nanoHostPlacement,
-    });
-    await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
-      state: 'ready',
-      value: null,
-    });
-    await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
+    expect(successor.retirement).toEqual(nanoHostPlacement);
+    let applied = false;
+    const kernel: NanoHostRuntimeTargetEpochKernel = {
+      ...nanoHostUnknownKernel,
+      async reserveHolderIntent(input) {
+        expect(input).toEqual(nanoHostPlacement);
+        await expect(f.owner.readPendingEpochRetirement()).resolves.toEqual({
+          state: 'ready',
+          value: nanoHostPlacement,
+        });
+        return { state: 'ready', value: nanoHostIntent };
+      },
+      async inspectNanoHostEpochFence(input) {
+        expect(input).toEqual(nanoHostIntent);
+        return {
+          state: 'ready',
+          value: applied ? { state: 'settled', receipt: nanoHostReceipt } : { state: 'unknown' },
+        };
+      },
+    };
+    await expect(f.owner.transitionRuntimeTarget(kernel, successor)).resolves.toEqual(
+      nanoHostKernelHeld
+    );
     await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual({
       state: 'ready',
       value: nanoHostIntent,
@@ -1518,8 +2811,15 @@ describe('admitted NanoHost owner worker', () => {
       result: { fencedHolderReceiptIds: ['holder-a'] },
     });
     await expect(f.owner.settleEpochInvalidation(partialReceipt)).resolves.toEqual(nanoHostHeld);
-    await expect(f.owner.runtimeTarget(successor)).rejects.toMatchObject(targetHeld);
-    await expect(f.owner.settleEpochInvalidation(nanoHostReceipt)).resolves.toEqual(nanoHostAck);
+    await expect(f.owner.transitionRuntimeTarget(kernel, successor)).resolves.toEqual(
+      nanoHostKernelHeld
+    );
+    applied = true;
+    const successorResult = await f.owner.transitionRuntimeTarget(kernel, successor);
+    expect(successorResult).toMatchObject({
+      state: 'ready',
+      value: { connectionGeneration: 2, ready: false },
+    });
     await expect(
       f.owner.settleEpochInvalidation({
         ...nanoHostReceipt,
@@ -1530,53 +2830,246 @@ describe('admitted NanoHost owner worker', () => {
       state: 'ready',
       value: null,
     });
+    await expect(
+      f.owner.transitionRuntimeTarget(kernel, readinessBeforeRetirement)
+    ).resolves.toEqual(nanoHostHeld);
     await expect(f.owner.prepareRuntimeTarget(nanoHostReady, crypto.randomUUID())).resolves.toEqual(
       nanoHostHeld
     );
-    await expect(f.owner.runtimeTarget(readinessBeforeRetirement)).resolves.toEqual(nanoHostHeld);
-    await expect(f.owner.runtimeTarget(successor)).resolves.toMatchObject({
-      state: 'ready',
-      value: { connectionGeneration: 2, ready: false },
-    });
     await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostHeld);
 
     const closing = f.writer.closeServerOwner(f.root, 'nanohost');
-    await Promise.all([
-      expect(f.owner.readPendingEpochRetirement()).resolves.toEqual(nanoHostHeld),
-      expect(f.owner.runtimeTarget(successor)).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      }),
-      closing,
-    ]);
-    const reopened = await f.writer.bindNanoHostOwner(f.root, nanoHostReaders);
+    expect(f.owner.read((reader) => reader.open)).toEqual(nanoHostHeld);
+    await expect(f.owner.transitionRuntimeTarget(kernel, successor)).resolves.toEqual(nanoHostHeld);
+    await closing;
+    const reopened = await f.writer.bindNanoHostOwner(f.root, nanoHostReaders, f.serving);
     if (reopened.state !== 'ready')
       throw new Error('Expected the retained NanoHost owner to reopen.');
-    await expect(f.owner.runtimeTarget(successor)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
+    expect(f.owner.read((reader) => reader.open)).toEqual(nanoHostHeld);
+    await expect(f.owner.transitionRuntimeTarget(kernel, successor)).resolves.toEqual(nanoHostHeld);
+    const currentReads = createNanoHostCoreReads(reopened.value);
+    const retiredReads = createNanoHostCoreReads(f.owner);
+    expect(currentReads.readTarget(nanoHostTarget.targetId)).toMatchObject({
+      state: 'ready',
+      value: { connectionGeneration: 2, ready: false },
     });
+    expect(retiredReads.readTarget(nanoHostTarget.targetId)).toEqual(nanoHostHeld);
+    await expect(
+      reopened.value.transitionRuntimeTarget(nanoHostUnknownKernel, successor)
+    ).resolves.toEqual(successorResult);
+
     const successorReady = await prepareNanoHostTarget(reopened.value, {
       ...nanoHostReady,
       connectionGeneration: 2,
       physicalEpoch: 'c'.repeat(64),
     });
-    await expect(reopened.value.runtimeTarget(successorReady)).resolves.toMatchObject({
-      state: 'ready',
-      value: { connectionGeneration: 2, ready: true },
+    await expect(
+      reopened.value.transitionRuntimeTarget(kernel, successorReady)
+    ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 2, ready: true } });
+    expectNanoHostTablesAbsent(f.corePath, 'nanohost_runtime_targets');
+  });
+
+  it('lets exact RuntimeTarget and Harness polls proceed while completion awaits serving FULL', async () => {
+    const f = await nanoHostWorkerFixture();
+    for (const target of [nanoHostTarget, nanoHostReady]) {
+      const original = await prepareNanoHostTarget(f.owner, target);
+      await expect(
+        f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, original)
+      ).resolves.toMatchObject({
+        state: 'ready',
+      });
+    }
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const poll = () =>
+      f.owner.harnessTurnLifecycle.dispatch({
+        sandboxIntegrationBindingRef: 'sandbox-integration',
+      });
+    const completion = vi.fn(() => true);
+    const authority = vi.fn(() => f.owner.read(() => 'admitted'));
+    let joined:
+      | ReturnType<typeof f.owner.afterWorkerControlAcknowledgement<ReturnType<typeof authority>>>
+      | undefined;
+    Atomics.store(f.gate, 0, 0);
+    const writing = f.owner.harnessLifecycle({
+      kind: 'runtime.create',
+      adapterId: 'codex',
+      adapterVersion: 'fixture',
+      harnessBindingRef: 'harness-binding',
+      harnessCompatibilityKey: 'b'.repeat(64),
+      harnessInstanceId: 'harness-original',
+      imageDigest: `sha256:${'c'.repeat(64)}`,
+      originPhysicalEpoch: nanoHostReady.physicalEpoch,
+      runtimeTargetId: nanoHostTarget.targetId,
+      sandboxBindingRef: 'sandbox-binding',
+      sandboxCompatibilityKey: 'd'.repeat(64),
+      sandboxIntegrationBindingRef: 'sandbox-integration',
+      sandboxRuntimeId: 'sandbox-original',
+      timestamp: nanoHostTarget.observedAt,
     });
-    const core = new Database(f.corePath, { readonly: true, fileMustExist: true });
     try {
-      expect(core.prepare('SELECT count(*) FROM nanohost_runtime_targets').pluck().get()).toBe(0);
+      await waitForHold(f.gate);
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'ready',
+        value: { connectionGeneration: 1, ready: true },
+      });
+      expect(f.owner.read(() => true)).toMatchObject({ state: 'unavailable' });
+      expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'pending' });
+      expect(completion).not.toHaveBeenCalled();
+      await expect(poll()).resolves.toBeNull();
+
+      const cancelled = new AbortController();
+      const stopped = f.owner.afterWorkerControlAcknowledgement(authority, cancelled.signal);
+      const reason = new Error('Worker request disconnected.');
+      cancelled.abort(reason);
+      await expect(stopped).rejects.toBe(reason);
+      expect(authority).not.toHaveBeenCalled();
+
+      // If the owner loses its bound, break the test's wait before releasing the real writer.
+      const watchdog = AbortSignal.timeout(6500);
+      await expect(
+        f.owner.afterWorkerControlAcknowledgement(authority, watchdog)
+      ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed', status: 503 });
+      expect(authority).not.toHaveBeenCalled();
+      joined = f.owner.afterWorkerControlAcknowledgement(authority);
+      expect(authority).not.toHaveBeenCalled();
     } finally {
-      core.close();
+      release(f.gate);
+    }
+    await expect(writing).resolves.toBeUndefined();
+    await expect(joined).resolves.toEqual({ state: 'ready', value: 'admitted' });
+    expect(authority).toHaveBeenCalledTimes(1);
+    expect(f.owner.readWorkerCompletion(completion)).toEqual({ state: 'ready', value: true });
+    expect(completion).toHaveBeenCalledTimes(1);
+
+    await expect(poll()).resolves.toBeNull();
+    expect(posted.mock.calls.map(([frame]) => frame)).not.toContainEqual(
+      expect.objectContaining({
+        operation: 'nanohost-owner',
+        mutation: expect.objectContaining({
+          kind: 'harness-turn-lifecycle',
+          input: expect.objectContaining({ kind: 'operation.dispatch' }),
+        }),
+      })
+    );
+  });
+
+  it('commits the original Core idle close receipt before the Native FULL acknowledgement', async () => {
+    const f = await nanoHostWorkerFixture();
+    const core = openCoreReadDb(f.root);
+    try {
+      const selected = await prepareNanoHostOwner(core, f.serving);
+      if (selected.state !== 'ready') throw new Error('Expected the admitted NanoHost owner.');
+      const { owner } = selected.value;
+      const { harnessTurnLifecycle: lifecycle } = owner;
+      for (const target of [nanoHostTarget, nanoHostReady]) {
+        const original = await prepareNanoHostTarget(owner, target);
+        await expect(
+          owner.transitionRuntimeTarget(nanoHostUnknownKernel, original)
+        ).resolves.toMatchObject({ state: 'ready' });
+      }
+
+      const timestamp = new Date().toISOString();
+      const harnessBindingRef = 'idle-close-harness-binding';
+      const harnessInstanceId = 'idle-close-harness';
+      const sandboxIntegrationBindingRef = 'idle-close-integration';
+      await owner.harnessLifecycle({
+        kind: 'runtime.create',
+        adapterId: 'codex',
+        adapterVersion: 'fixture',
+        harnessBindingRef,
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId,
+        imageDigest: `sha256:${'c'.repeat(64)}`,
+        originPhysicalEpoch: nanoHostReady.physicalEpoch,
+        runtimeTargetId: nanoHostTarget.targetId,
+        sandboxBindingRef: 'idle-close-sandbox-binding',
+        sandboxCompatibilityKey: 'd'.repeat(64),
+        sandboxIntegrationBindingRef,
+        sandboxRuntimeId: 'idle-close-sandbox',
+        timestamp,
+      });
+      const consumer = {
+        workspaceId: allocateEntityId('ws'),
+        threadId: allocateEntityId('th'),
+        agentSessionId: allocateEntityId('as'),
+        agentSessionRuntimeBindingId: 'idle-close-agent-session',
+      };
+      await owner.harnessLifecycle({
+        kind: 'session-binding.open',
+        ...consumer,
+        agentSessionCompatibilityKey: 'e'.repeat(64),
+        effectiveSetupGeneration: 1,
+        harnessInstanceId,
+        timestamp,
+      });
+      const request = {
+        harnessInstanceId,
+        operation: 'session.close' as const,
+        body: {
+          agentSessionId: consumer.agentSessionId,
+          agentSessionRuntimeBindingId: consumer.agentSessionRuntimeBindingId,
+        },
+        timestamp,
+      };
+      const prepared = owner.read((sqlite) =>
+        prepareNanoHostHarnessOperation(core, request, { sqlite })
+      );
+      if (prepared.state !== 'ready') throw new Error('Expected the original idle close.');
+      await lifecycle.queue({ ...request, prepared: prepared.value });
+      const dispatched = await lifecycle.dispatch({ sandboxIntegrationBindingRef });
+      expect(dispatched).toMatchObject({ operation: 'session.close' });
+      if (!dispatched) throw new Error('Expected the original idle close dispatch.');
+      const result = {
+        schemaVersion: 2 as const,
+        harnessInstanceId,
+        operationId: dispatched.operationId,
+        sequence: dispatched.sequence,
+        disposition: 'succeeded' as const,
+        body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+      };
+      const key = {
+        harnessBindingRef,
+        operationId: result.operationId,
+        sequence: result.sequence,
+        resultFingerprint: sha256CanonicalJson(result),
+      };
+      const settlementInput = { sandboxIntegrationBindingRef, timestamp, result };
+      expect(inspectCoreHarnessConsumption(core, key)).toBeNull();
+
+      Atomics.store(f.gate, 0, 0);
+      const settlement = lifecycle.settle(settlementInput);
+      // An unexpected refusal must still release the Native test gate.
+      void settlement.catch(() => undefined);
+      const receipt = { consumer: canonicalJsonText(consumer), acknowledgedAt: timestamp };
+      try {
+        await waitForHold(f.gate);
+        expect(inspectCoreHarnessConsumption(core, key)).toEqual(receipt);
+      } finally {
+        release(f.gate);
+      }
+      await expect(settlement).resolves.toBe('settled');
+      const replayClock = new Date(Date.parse(timestamp) + 1000).toISOString();
+      await expect(lifecycle.settle({ ...settlementInput, timestamp: replayClock })).resolves.toBe(
+        'replayed'
+      );
+      await lifecycle.acknowledge({
+        result,
+        harnessBindingRef,
+        consumerReceipt: receipt.consumer,
+        timestamp: replayClock,
+      });
+      expect(inspectCoreHarnessConsumption(core, key)).toEqual(receipt);
+    } finally {
+      core.sqlite.close();
     }
   });
 
   it('holds a successor when the original local settlement commits but loses its ACK', async () => {
     const f = await nanoHostWorkerFixture();
-    await f.owner.runtimeTarget(await prepareNanoHostTarget(f.owner, nanoHostTarget));
-    await f.owner.runtimeTarget(await prepareNanoHostTarget(f.owner, nanoHostReady));
+    const allocation = await prepareNanoHostTarget(f.owner, nanoHostTarget);
+    await f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, allocation);
+    const ready = await prepareNanoHostTarget(f.owner, nanoHostReady);
+    await f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, ready);
     const successor = await prepareNanoHostTarget(f.owner, nanoHostTarget);
     await expect(f.owner.beginEpochRetirement(nanoHostPlacement)).resolves.toEqual(nanoHostAck);
     await expect(f.owner.stageEpochInvalidation(nanoHostIntent)).resolves.toEqual(nanoHostAck);
@@ -1585,10 +3078,15 @@ describe('admitted NanoHost owner worker', () => {
     const settlement = f.owner.settleEpochInvalidation(nanoHostReceipt);
     try {
       await waitForHold(f.gate);
-      await expect(f.owner.runtimeTarget(successor)).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
+      expect(f.owner.readRuntimeTarget(nanoHostTarget.targetId)).toMatchObject({
+        state: 'unavailable',
       });
+      const completion = vi.fn(() => true);
+      expect(f.owner.readWorkerCompletion(completion)).toMatchObject({ state: 'unavailable' });
+      expect(completion).not.toHaveBeenCalled();
+      await expect(
+        f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, successor)
+      ).resolves.toEqual(nanoHostHeld);
       const read = new Database(f.path, { readonly: true, fileMustExist: true });
       try {
         const row = read
@@ -1609,16 +3107,13 @@ describe('admitted NanoHost owner worker', () => {
     await expect(f.owner.readEpochInvalidation(nanoHostIntent.requestId)).resolves.toEqual(
       nanoHostHeld
     );
-    await expect(f.owner.runtimeTarget(successor)).rejects.toMatchObject({
-      code: 'owner-recovery-required',
-      commit: 'not-committed',
-    });
-    await expect(f.writer.bindNanoHostOwner(f.root, nanoHostReaders)).resolves.toEqual(
+    await expect(
+      f.owner.transitionRuntimeTarget(nanoHostUnknownKernel, successor)
+    ).resolves.toEqual(nanoHostHeld);
+    await expect(f.writer.bindNanoHostOwner(f.root, nanoHostReaders, f.serving)).resolves.toEqual(
       nanoHostHeld
     );
-    await expect(f.writer.runtimeTarget(f.coreKey, nanoHostTarget)).resolves.toMatchObject({
-      connectionGeneration: 1,
-    });
+    await expect(f.writer.checkpoint(f.coreKey)).resolves.toBeDefined();
   });
 });
 

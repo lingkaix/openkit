@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -9,6 +18,11 @@ import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { commandRequestKey, FsStore } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import {
+  CONTROL_PENDING_PLAN_BYTES,
+  type ControlPendingPlan,
+  controlPendingPlanInputs,
+} from '../storage/control-store-pending-plan.js';
+import {
   ControlProductEntrySchema,
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
@@ -16,22 +30,99 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openWorkspaceDb } from '../storage/db.js';
+import {
+  pendingPlanStagePath,
+  plannedRetainedProductJson,
+  prepareProductFile,
+} from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  copyRetainedPendingHistory,
+  reviseGoalIntent,
+  seedEndedGoalTask,
+  workspaceEvidence,
+} from '../test-support/boot-walk-evidence.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { archiveThread, createThread } from '../thread-routes.js';
 import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
-import { archiveThreadWithCloseout, raiseRecordedPendingRequest } from './pending-request-flow.js';
+import {
+  archiveThreadWithCloseout,
+  raiseRecordedPendingRequest,
+  recoverPendingRequestsAtBoot,
+  respondRecordedApproval,
+} from './pending-request-flow.js';
 import {
   pendingRequestItemId,
+  pendingRequestSystemActor,
   readPendingRequest,
   validateCanonicalLoad,
 } from './pending-requests.js';
 
 const archiveReadFault = vi.hoisted(() => ({
   gate: undefined as Int32Array | undefined,
+  planIo: undefined as Int32Array | undefined,
+  failPlanCopy: false,
+  failPlanClose: false,
+  planCloseFailures: 0,
+  planCopyFailures: 0,
   workers: 0,
 }));
+
+vi.mock('node:fs/promises', async (load) => {
+  const fs = await load<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const file = await fs.open(...args);
+      if (archiveReadFault.failPlanCopy && args[1] === 'wx' && String(args[0]).endsWith('.tmp')) {
+        const write = file.write;
+        file.write = (async (...parts: unknown[]) => {
+          await Reflect.apply(write, file, parts);
+          archiveReadFault.failPlanCopy = false;
+          archiveReadFault.planCopyFailures++;
+          throw Object.assign(new Error('Partial encoded plan copy refused'), { code: 'EIO' });
+        }) as typeof file.write;
+      }
+      if (archiveReadFault.failPlanClose && args[1] === 'wx' && String(args[0]).endsWith('.tmp')) {
+        const close = file.close;
+        file.close = async () => {
+          await close.call(file);
+          archiveReadFault.failPlanClose = false;
+          archiveReadFault.planCloseFailures++;
+          throw Object.assign(new Error('Encoded plan close refused'), { code: 'EIO' });
+        };
+      }
+      return file;
+    },
+  };
+});
+
+/** Replaces the staged plan for a writer fault, keeping the original body's staging ownership. */
+async function replaceGroupedPlan(
+  scope: ReturnType<typeof nativeProductScope>,
+  reference: ControlPendingPlan['plan'],
+  bytes: Buffer
+): Promise<ControlPendingPlan['plan']> {
+  const root = scope.contentMount.root;
+  const staged = await prepareProductFile(
+    scope.contentMount,
+    scope.owner,
+    join(dirname(dirname(root)), 'runtime', 'staging'),
+    bytes
+  );
+  const temporary = staged.publication.temporary;
+  const stage = pendingPlanStagePath(root, temporary);
+  renameSync(pendingPlanStagePath(root, reference.temporary), stage);
+  renameSync(join(root, temporary), join(stage, 'plan'));
+  return {
+    ...reference,
+    temporary,
+    byteLength: staged.content.byteLength,
+    contentDigest: staged.content.reference.contentDigest,
+  };
+}
 
 // Private interception runs the actual entry and fails a real read only after owner initialization.
 vi.mock('node:worker_threads', async (load) => {
@@ -41,7 +132,7 @@ vi.mock('node:worker_threads', async (load) => {
     Worker: class extends actual.Worker {
       constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
         archiveReadFault.workers++;
-        if (!archiveReadFault.gate) {
+        if (!archiveReadFault.gate && !archiveReadFault.planIo) {
           super(filename, options);
           return;
         }
@@ -51,21 +142,82 @@ vi.mock('node:worker_threads', async (load) => {
         super(
           `const {workerData} = require('node:worker_threads');
         const Database = require(workerData.databaseModule);
+        if (workerData.planIo) {
+          const fs = require('node:fs');
+          const files = require('node:fs/promises');
+          const {syncBuiltinESMExports} = require('node:module');
+          const open = files.open;
+          const link = fs.linkSync;
+          const io = workerData.planIo;
+          let measuredPlan = false;
+          const firstSynced = Promise.withResolvers();
+          files.open = async function(path, ...args) {
+            const origin = String(new Error().stack);
+            const opensPlan = origin.includes('prepareControlPendingPlan');
+            const mode = Atomics.load(io, 0);
+            if (mode === 5 && opensPlan) {
+              Atomics.add(io, 2, 1);
+              throw Object.assign(new Error('plan open failed'), {code: 'EIO'});
+            }
+            const file = await open(path, ...args);
+            const read = file.read.bind(file);
+            if (mode === 4 && opensPlan) {
+              file.read = async (buffer) => {
+                Atomics.add(io, 2, 1);
+                return {bytesRead: 0, buffer};
+              };
+            }
+            if (mode === 1 && !measuredPlan && opensPlan) {
+              measuredPlan = true;
+              file.read = async (buffer, offset, length, position) => {
+                Atomics.store(io, 1, Math.max(Atomics.load(io, 1), length));
+                return read(buffer, offset, length, position);
+              };
+            }
+            if (mode === 2 && origin.includes('preparePrivateControlContent') &&
+                String(path).endsWith('.tmp')) {
+              const part = Atomics.add(io, 1, 1);
+              if (part === 0) {
+                const sync = file.sync.bind(file);
+                file.sync = async () => { await sync(); firstSynced.resolve(); };
+              }
+              if (part === 1) {
+                file.read = async (buffer) => {
+                  await firstSynced.promise;
+                  return {bytesRead: 0, buffer};
+                };
+                Atomics.add(io, 2, 1);
+              }
+            }
+            return file;
+          };
+          fs.linkSync = function(...args) {
+            const mode = Atomics.load(io, 0);
+            if (String(new Error().stack).includes('linkStagedFiles') &&
+                (mode === 3 || (mode === 6 && Atomics.add(io, 1, 1) === 1))) {
+              Atomics.add(io, 2, 1);
+              throw Object.assign(new Error('grouped link failed'), {code: 'EIO'});
+            }
+            return link(...args);
+          };
+          syncBuiltinESMExports();
+        }
         const original = Database.prototype.prepare;
         Database.prototype.prepare = function(sql) {
-          if (sql === 'SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?' &&
+          if (workerData.gate && sql === 'SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?' &&
               Atomics.compareExchange(workerData.gate, 0, 1, 0) === 1) {
             Atomics.add(workerData.gate, 1, 1);
             return original.call(this, 'SELECT * FROM temp.__archive_receipt_read_fault__');
           }
           return original.call(this, sql);
-        };` + entry,
+        };${entry}`,
           {
             ...options,
             eval: true,
             workerData: {
               databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
               gate: archiveReadFault.gate,
+              planIo: archiveReadFault.planIo,
             },
           }
         );
@@ -84,6 +236,7 @@ afterEach(async () => {
   closeFixtureReaders();
   await shutdownControlStoreWorkerClient();
   archiveReadFault.gate = undefined;
+  archiveReadFault.planIo = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -713,6 +866,8 @@ describe('native standalone archive and concurrent Pending raise', () => {
       const nativePending = client.pendingCommand.bind(client);
       const packet = Promise.withResolvers<Parameters<typeof nativePending>>();
       const reply = Promise.withResolvers<Awaited<ReturnType<typeof nativePending>>>();
+      // The closeout is one grouped Pending decision; its plan's closeout group is the packet here.
+      const planned = vi.spyOn(f.store, 'publishPendingPlan');
       // Hold only the real producer's first post; the unchanged packet receives a real native reply.
       const boundary = vi.spyOn(client, 'pendingCommand').mockImplementationOnce((...args) => {
         packet.resolve(args);
@@ -733,27 +888,40 @@ describe('native standalone archive and concurrent Pending raise', () => {
         (reason: unknown) => ({ status: 'rejected' as const, reason })
       );
       const args = await packet.promise;
+      expect(args[1]).toEqual({
+        plan: expect.objectContaining({
+          workspaceId: f.workspace.id,
+          operation: 'pending-closeout',
+        }),
+      });
+      const group = planned.mock.calls[0]![2].find((candidate) => candidate.kind === 'pending');
+      if (group?.kind !== 'pending') throw new Error('The closeout plan has no closeout group.');
+      const closeout = group.input;
       let winningTurn: Awaited<ReturnType<typeof f.store.createTurn>>;
       let winningThread: ReturnType<typeof f.store.getThread>;
       let beforeRelease: ReturnType<typeof committedRows>;
       try {
-        expect(args[1].input).toMatchObject({
+        expect(closeout.input).toMatchObject({
           action: 'closeout',
           workspaceId: f.workspace.id,
           threadId: f.thread.id,
-          expectedThreadCensus: [f.raise.requestId],
-          expected: [expect.objectContaining({ requestId: f.raise.requestId })],
         });
-        expect(args[1].terminal).toMatchObject({
+        expect(planned.mock.calls[0]![2]).toContainEqual({
+          kind: 'closeout-sources',
+          census: [f.raise.requestId],
+          expected: [expect.objectContaining({ requestId: f.raise.requestId })],
+          events: [],
+        });
+        expect(closeout.terminal).toMatchObject({
           turn: { expectedRevision: 0, record: { status: 'completed' } },
           execution: null,
           command: null,
           evidence: [],
         });
-        expect(args[1].receipt).toBeNull();
+        expect(closeout.receipt).toBeNull();
         if (path === 'public') {
           const scope = { workspaceId: f.workspace.id, threadId: f.thread.id };
-          expect(args[1].admission?.receipt).toMatchObject({
+          expect(closeout.admission?.receipt).toMatchObject({
             key: commandRequestKey('thread.archive', f.archive.requestId, scope),
             command: 'thread.archive',
             requestId: f.archive.requestId,
@@ -761,12 +929,12 @@ describe('native standalone archive and concurrent Pending raise', () => {
             inputHash: commandInputHash(f.archive),
             response: { kind: 'thread', id: f.thread.id },
           });
-          expect(args[1].admission?.audit).toMatchObject({
+          expect(closeout.admission?.audit).toMatchObject({
             requestId: f.archive.requestId,
             action: 'thread.archive',
           });
         } else {
-          expect(args[1].admission).toBeUndefined();
+          expect(closeout.admission).toBeUndefined();
         }
         expect(committedRows(f.reader)).toEqual(beforePreparation);
         winningTurn = await f.store.createTurn(
@@ -792,6 +960,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
       const result = await archiveAttempt;
       expect(boundary).toHaveBeenCalledTimes(1);
       boundary.mockRestore();
+      planned.mockRestore();
       // A refusal must roll back every selected request, product, original receipt and Audit write.
       expect(committedRows(f.reader)).toEqual(beforeRelease);
       expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toEqual(request);
@@ -959,6 +1128,804 @@ describe('native standalone archive and concurrent Pending raise', () => {
       )
     ).toBeNull();
   });
+
+  // V1-P vehicle gate: the archive closeout's final group goes stale after planning. Only the Task's
+  // Goal changes before A's writer decides; the Task owner accepts it, so the closeout's own input
+  // recheck refuses with no prefix and no new name, and a retry archives once.
+  it('refuses a grouped archive closeout whose Task Goal changed after planning with no prefix, then archives once', async () => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const goalThread = await f.store.createThread(f.workspace.id, 'Goal coordination');
+    const goalId = seedEndedGoalTask(f.root, f.workspace.id, {
+      taskThreadId: f.thread.id,
+      goalThreadId: goalThread.id,
+      userId,
+    });
+    const request = readPendingRequest(f.reader.sqlite, f.raise.requestId);
+    const original = workspaceEvidence(f.root, f.workspace.id);
+    const publish = f.store.publishPendingPlan.bind(f.store);
+    const planned = vi
+      .spyOn(f.store, 'publishPendingPlan')
+      .mockImplementationOnce(async (...args) => {
+        expect(reviseGoalIntent(f.root, f.workspace.id, goalId)).toBe(1);
+        return publish(...args);
+      });
+    const archive = () =>
+      archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      );
+
+    await expect(archive()).rejects.toMatchObject({
+      code: 'conflict',
+      status: 409,
+      message: 'The Pending closeout changed after it was planned.',
+    });
+    expect(planned).toHaveBeenCalledTimes(1);
+    // Zero prefix: the Thread stays active with its one Turn, the request is unchanged, and
+    // every file and table but the changed Goal is as planned.
+    expect(f.store.getThread(f.workspace.id, f.thread.id).status).toBe('active');
+    expect(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toHaveLength(1);
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toEqual(request);
+    const refused = workspaceEvidence(f.root, f.workspace.id);
+    expect(refused.files).toEqual(original.files);
+    const { goals: plannedGoal, ...plannedRest } = original.content;
+    const { goals: changedGoal, ...refusedRest } = refused.content;
+    expect(changedGoal).not.toBe(plannedGoal);
+    expect(refusedRest).toEqual(plannedRest);
+
+    // A retry plans on the changed Goal and archives once, with one closeout Turn.
+    expect(await archive()).toBe(f.thread.id);
+    expect(planned).toHaveBeenCalledTimes(2);
+    expect(f.store.getThread(f.workspace.id, f.thread.id).status).toBe('archived');
+    const turns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+    expect(turns).toHaveLength(2);
+    const closeout = turns.find((turn) => turn.id !== f.turn.id)!;
+    expect(closeout).toMatchObject({ status: 'completed', threadId: f.thread.id });
+    expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)).toMatchObject({
+      state: 'ended',
+      publicationTurnId: closeout.id,
+      delivery: 'closed-out',
+    });
+  });
+
+  it('archives a census above one writer frame with bounded native plan reads and one completion', async () => {
+    const io = new Int32Array(new SharedArrayBuffer(12));
+    archiveReadFault.planIo = io;
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const requests = [
+      f.raise.requestId,
+      ...copyRetainedPendingHistory(f.root, f.workspace.id, f.raise.requestId, 4199),
+    ];
+    const client = getControlStoreWorkerClient();
+    const post = client.pendingCommand.bind(client);
+    const staged = vi.spyOn(client, 'pendingCommand').mockImplementationOnce((database, input) => {
+      expect(input).toHaveProperty('plan');
+      if (!('plan' in input)) throw new Error('Missing grouped closeout reference.');
+      expect(input.plan.byteLength).toBeGreaterThan(1024 * 1024);
+      expect(input.plan.byteLength).toBeLessThan(CONTROL_PENDING_PLAN_BYTES);
+      Atomics.store(io, 0, 1);
+      return post(database, input);
+    });
+    await expect(
+      archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      )
+    ).resolves.toBe(f.thread.id);
+    expect(staged).toHaveBeenCalledTimes(1);
+    const largestRead = Atomics.load(io, 1);
+    console.info(`Largest native plan read: ${largestRead} bytes`);
+    expect(largestRead).toBeGreaterThan(0);
+    expect(largestRead).toBeLessThanOrEqual(64 * 1024);
+    const results = f.reader.sqlite
+      .prepare(
+        "SELECT request_id,publication_turn_id FROM pending_requests WHERE thread_id=? AND delivery='closed-out'"
+      )
+      .all(f.thread.id) as { request_id: string; publication_turn_id: string }[];
+    expect(new Set(results.map(({ request_id }) => request_id))).toEqual(new Set(requests));
+    const completions = new Set(results.map(({ publication_turn_id }) => publication_turn_id));
+    expect(completions.size).toBe(1);
+    expect(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toHaveLength(2);
+    const completion = f.store.getTurn(f.workspace.id, f.thread.id, [...completions][0]!);
+    expect(completion.status).toBe('completed');
+    expect(
+      f.store
+        .getTurnEventsForExport(completion.id)
+        .filter((event) => event.data.type === 'turn-completed')
+    ).toHaveLength(1);
+  }, 300_000);
+
+  it.each([
+    'reference operation',
+    'group count',
+    'live Thread',
+    'Boot operation',
+    'authority-loss archive',
+  ] as const)(
+    'refuses a grouped closeout at the writer with a mismatched %s before effects',
+    async (fault) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      // Resolved denials can accumulate behind a busy Thread without increasing the open count.
+      await respondRecordedApproval({
+        store: f.store,
+        sqlite: f.reader.sqlite,
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        approvalRequestId: f.raise.requestId,
+        decision: 'denied',
+        actorId: userId,
+        coreDb: undefined,
+        requestActor: actor,
+        dependencies: { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+      });
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const other = await f.store.createThread(f.workspace.id, 'Different Thread');
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const client = getControlStoreWorkerClient();
+      const post = client.pendingCommand.bind(client);
+      vi.spyOn(client, 'pendingCommand').mockImplementationOnce(async (database, input) => {
+        if (!('plan' in input)) throw new Error('Missing grouped closeout reference.');
+        if (fault === 'reference operation')
+          return post(database, { plan: { ...input.plan, operation: 'pending-boot' } });
+        const scope = nativeProductScope(f.root, f.turn.owner);
+        const path = join(
+          pendingPlanStagePath(scope.contentMount.root, input.plan.temporary),
+          'plan'
+        );
+        const lines = readFileSync(path, 'utf8').split('\n');
+        const header = JSON.parse(lines[0]!);
+        if (fault === 'group count') header.groups++;
+        if (fault === 'live Thread') header.threadId = other.id;
+        if (fault === 'Boot operation') {
+          header.operation = 'pending-boot';
+          header.threadId = null;
+        }
+        if (fault === 'authority-loss archive') {
+          for (let index = 1; index < lines.length - 1; index++) {
+            const frame = JSON.parse(lines[index]!);
+            if (frame.kind === 'closeout-sources')
+              frame.events = frame.expected.map(({ requestId }: { requestId: string }) => ({
+                requestId,
+                event: 'membership-revoked',
+              }));
+            if (frame.kind === 'pending') {
+              const actor = pendingRequestSystemActor(null);
+              const triggerSource = {
+                kind: 'system-input',
+                summary: 'Requester authority was lost.',
+              };
+              const terminal = frame.input.terminal;
+              const command = {
+                ...frame.input.input,
+                actor: { kind: actor.kind, id: actor.id },
+                invalidatingEvents: [],
+              };
+              frame.input.input = command;
+              terminal.pending = [command];
+              Object.assign(terminal.turn.record, { triggerActor: actor, triggerSource });
+              const event = terminal.entries[0];
+              const envelope = JSON.parse(event.content.reference.body);
+              Object.assign(envelope.data.turn, { triggerActor: actor, triggerSource });
+              terminal.entries[0] = {
+                ...event,
+                ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+              };
+            }
+            lines[index] = JSON.stringify(frame);
+          }
+        }
+        header.inputs = controlPendingPlanInputs(f.reader.sqlite, f.workspace.id, header.threadId);
+        lines[0] = JSON.stringify(header);
+        const plan = await replaceGroupedPlan(scope, input.plan, Buffer.from(lines.join('\n')));
+        return post(database, {
+          plan: { ...plan, operation: header.operation },
+        });
+      });
+      await expect(
+        archiveThreadWithCloseout(
+          f.store,
+          { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+          f.workspace.id,
+          f.thread.id,
+          { kind: 'user', id: userId }
+        )
+      ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
+  it.each(['terminal rename', 'terminal clock', 'receipt rename', 'receipt resource'] as const)(
+    'refuses an unrelated change in the archive $0 mutation',
+    async (form) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const lifecycle = form.startsWith('terminal ');
+      const publish = f.store.publishPendingPlan.bind(f.store);
+      vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
+        (workspaceId, header, groups, turns) => {
+          const target = groups.find((group) => group.kind === 'pending');
+          if (!target?.input.terminal) throw new Error('Missing original archive closeout.');
+          const owner = lifecycle ? target.input.terminal : target.input.admission;
+          if (!owner?.products[0]) throw new Error('Missing original archive mutation.');
+          if (form === 'receipt resource')
+            target.input.admission!.audit.resource = 'Unrelated resource';
+          else if (form === 'terminal clock')
+            owner.products[0].record.updatedAt = '2001-01-01T00:00:00.000Z';
+          else owner.products[0].record.name = 'Independent rename';
+          return publish(workspaceId, header, groups, turns);
+        }
+      );
+      const result = !lifecycle
+        ? archiveThread(f.archive, f.dependencies, actor)
+        : archiveThreadWithCloseout(
+            f.store,
+            { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+            f.workspace.id,
+            f.thread.id,
+            { kind: 'user', id: userId }
+          );
+      await expect(result).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
+  it.each([
+    'without its completion',
+    'with an unrelated Thread rename',
+    'with an unowned Item in the admission',
+    'with an unowned Item carried into the terminal',
+    'without a usable settlement source',
+    'with a person batch marked unknown before completion',
+    'with a substituted outcome start status',
+    'with substituted capture coverage',
+    'with reversed completion Item order',
+  ] as const)(
+    'refuses a grouped Boot person freeze %s',
+    async (fault) => {
+      const f = await fixture();
+      const pending = {
+        openWorkspace: f.dependencies.repositoryWorkspaceDb,
+        agentAuthority: () => true,
+      };
+      const requests = [f.raise];
+      if (fault === 'with reversed completion Item order') {
+        const requestId = randomUUID();
+        requests.push({
+          ...f.raise,
+          requestId,
+          requestItemId: pendingRequestItemId(requestId, 'request'),
+        });
+      }
+      for (const request of requests) {
+        await raiseRecordedPendingRequest(f.store, f.reader.sqlite, request);
+        await respondRecordedApproval({
+          store: f.store,
+          sqlite: f.reader.sqlite,
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          approvalRequestId: request.requestId,
+          decision: 'denied',
+          actorId: userId,
+          coreDb: undefined,
+          requestActor: actor,
+          dependencies: pending,
+        });
+      }
+      if (fault === 'with substituted capture coverage')
+        f.store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      expect(readPendingRequest(f.reader.sqlite, f.raise.requestId)?.delivery).toBe('undelivered');
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const publish = f.store.publishPendingPlan.bind(f.store);
+      const client = getControlStoreWorkerClient();
+      const posts = vi.spyOn(client, 'pendingCommand');
+      let outcomeTurnId: unknown;
+      let refusal: unknown;
+      const plans = vi
+        .spyOn(f.store, 'publishPendingPlan')
+        .mockImplementationOnce(async (workspaceId, header, groups, turns) => {
+          const products = groups.find((group) => group.kind === 'products');
+          const completion = groups.find((group) => group.kind === 'terminal');
+          if (!products || !completion) throw new Error('Missing real person outcome groups.');
+          expect(products.transition.pending?.[0]).toMatchObject({
+            action: 'freeze',
+            executor: 'person',
+          });
+          expect(completion.input.pending).toEqual([
+            expect.objectContaining({
+              action: 'delivery-prove',
+              turnId: completion.input.turn.record.id,
+            }),
+          ]);
+          let modified = [...groups];
+          if (fault === 'without its completion')
+            modified = modified.filter((group) => group !== completion);
+          if (fault === 'with an unrelated Thread rename')
+            products.transition.products.find((entry) => entry.kind === 'thread')!.record.name =
+              'Independent rename';
+          if (fault === 'with a substituted outcome start status')
+            products.transition.products.find((entry) => entry.kind === 'turn')!.record.status =
+              'pending';
+          if (fault === 'with substituted capture coverage') {
+            const admission = products.transition.products.find((entry) => entry.kind === 'turn')!;
+            expect(admission.record.captureCoverage).toEqual({ scope: 'server', value: 'off' });
+            expect(completion.input.turn.record.captureCoverage).toEqual(
+              admission.record.captureCoverage
+            );
+            admission.record.captureCoverage = { scope: 'server', value: 'on' };
+            completion.input.turn.record.captureCoverage = admission.record.captureCoverage;
+            outcomeTurnId = admission.record.id;
+          }
+          if (fault === 'with reversed completion Item order') {
+            const scope = nativeProductScope(f.root, f.turn.owner);
+            const event = completion.input.entries[0]!;
+            const reference = event.content.reference;
+            if (!('representation' in reference)) throw new Error('Expected inline completion.');
+            const envelope = JSON.parse(reference.body);
+            expect(envelope.data.turn.items).toHaveLength(2);
+            envelope.data.turn.items.reverse();
+            completion.input.entries[0] = {
+              ...event,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+            };
+          }
+          if (fault === 'without a usable settlement source') {
+            const settlement = groups.find(
+              (g) => g.kind === 'pending' && g.input.input.action === 'settle-unfinished'
+            );
+            if (
+              settlement?.kind !== 'pending' ||
+              settlement.input.input.action !== 'settle-unfinished'
+            )
+              throw new Error('Missing real settlement census.');
+            settlement.input.input.expected = [];
+          }
+          if (fault === 'with a person batch marked unknown before completion') {
+            const freeze = products.transition.pending?.[0];
+            if (freeze?.action !== 'freeze') throw new Error('Missing person freeze.');
+            modified.splice(modified.indexOf(completion), 0, {
+              kind: 'pending',
+              input: {
+                input: {
+                  action: 'delivery-unknown',
+                  workspaceId,
+                  turnId: freeze.turnId,
+                  now: freeze.now,
+                },
+                products: [],
+                entries: [],
+                receipt: null,
+              },
+            });
+          }
+          if (
+            fault === 'with an unowned Item in the admission' ||
+            fault === 'with an unowned Item carried into the terminal'
+          ) {
+            const scope = nativeProductScope(f.root, f.turn.owner);
+            const event = completion.input.entries[0]!;
+            const reference = event.content.reference;
+            if (!('representation' in reference)) throw new Error('Expected inline completion.');
+            const envelope = JSON.parse(reference.body);
+            const item = {
+              schemaVersion: 1,
+              id: allocateEntityId('it'),
+              owner: f.turn.owner,
+              threadId: f.thread.id,
+              turnId: event.turnId,
+              type: 'status',
+              status: 'completed',
+              title: 'Unrelated',
+              summary: 'Unrelated to this Pending batch.',
+              level: 'info',
+              createdAt: envelope.timestamp,
+              completedAt: envelope.timestamp,
+            };
+            const extra = {
+              kind: 'item' as const,
+              turnId: event.turnId,
+              sequence: products.transition.entries.length + 1,
+              expectedRevision: 0,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, item),
+            };
+            envelope.data.turn.items.push(item);
+            completion.input.entries[0] = {
+              ...event,
+              ...plannedRetainedProductJson(scope.contentMount, scope.owner, envelope),
+            };
+            if (fault === 'with an unowned Item in the admission')
+              products.transition.entries.push(extra);
+            else
+              modified.splice(modified.indexOf(completion), 0, {
+                kind: 'entries',
+                entries: [extra],
+              });
+          }
+          try {
+            return await publish(workspaceId, header, modified, turns);
+          } catch (error) {
+            refusal = error;
+            throw error;
+          }
+        });
+      f.store.startPendingRequestDelivery(pending);
+      await recoverPendingRequestsAtBoot(f.store, pending);
+      expect(plans).toHaveBeenCalledTimes(1);
+      expect(refusal).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      if (fault === 'with substituted capture coverage')
+        // The reference carries the Store's own selection; no caller input reaches it.
+        expect(posts.mock.calls.flatMap(([, input]) => ('plan' in input ? [input] : []))).toEqual([
+          {
+            plan: expect.objectContaining({
+              outcomeCoverageDigest: commandInputHash([
+                [outcomeTurnId, { scope: 'server', value: 'off' }],
+              ]),
+            }),
+          },
+        ]);
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
+  it('refuses an unselected Item in the original closeout Turn', async () => {
+    const f = await fixture();
+    await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+    const original = workspaceEvidence(f.root, f.workspace.id);
+    const publish = f.store.publishPendingPlan.bind(f.store);
+    vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
+      async (workspaceId, header, groups, turns) => {
+        const scope = nativeProductScope(f.root, f.turn.owner);
+        const carrier = groups.find((group) => group.kind === 'entries');
+        const final = groups.find((group) => group.kind === 'pending');
+        if (!carrier || !final?.input.terminal)
+          throw new Error('Expected a closeout Item and terminal.');
+        const entry = carrier.entries[0]!;
+        const event = final.input.terminal.entries[0]!;
+        const body = (descriptor: typeof entry) => {
+          const reference = descriptor.content.reference;
+          if (!('representation' in reference)) throw new Error('Expected fixture inline content.');
+          return JSON.parse(reference.body);
+        };
+        const { causationId: _, ...unrelated } = { ...body(entry), id: allocateEntityId('it') };
+        const completion = body(event);
+        completion.data.turn.items.push(unrelated);
+        const injected = groups.map((group) => {
+          if (group === carrier)
+            return {
+              ...carrier,
+              entries: [
+                ...carrier.entries,
+                {
+                  ...entry,
+                  sequence: entry.sequence + 1,
+                  ...plannedRetainedProductJson(scope.contentMount, scope.owner, unrelated),
+                },
+              ],
+            };
+          if (group === final)
+            return {
+              ...final,
+              input: {
+                ...final.input,
+                terminal: {
+                  ...final.input.terminal!,
+                  entries: [
+                    {
+                      ...event,
+                      ...plannedRetainedProductJson(scope.contentMount, scope.owner, completion),
+                    },
+                  ],
+                },
+              },
+            };
+          return group;
+        });
+        return publish(workspaceId, header, injected, turns);
+      }
+    );
+    await expect(
+      archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      )
+    ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+  }, 90_000);
+
+  it('refuses a non-Pending Item in a grouped Boot plan before effects', async () => {
+    const f = await fixture();
+    const original = workspaceEvidence(f.root, f.workspace.id);
+    await expect(
+      f.store.publishPendingPlan(
+        f.workspace.id,
+        {
+          operation: 'pending-boot',
+          threadId: null,
+          inputs: controlPendingPlanInputs(f.reader.sqlite, f.workspace.id, null),
+        },
+        [
+          {
+            kind: 'pending',
+            input: {
+              input: {
+                action: 'settle-unfinished',
+                workspaceId: f.workspace.id,
+                now: f.turn.startedAt!,
+                expected: [],
+              },
+              products: [],
+              entries: [],
+              receipt: null,
+            },
+          },
+          {
+            kind: 'item',
+            input: {
+              category: 'already-decided-publication',
+              item: {
+                id: allocateEntityId('it'),
+                owner: f.turn.owner,
+                turnId: f.turn.id,
+                threadId: f.thread.id,
+                type: 'status',
+                title: 'Unrelated',
+                summary: 'Unrelated to the original Pending selection.',
+                level: 'info',
+                status: 'completed',
+                createdAt: f.turn.startedAt!,
+                completedAt: f.turn.startedAt!,
+              },
+            },
+          },
+        ],
+        [f.turn.id]
+      )
+    ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    closeFixtureReaders();
+    await shutdownControlStoreWorkerClient();
+    expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+  }, 90_000);
+
+  it.each(['partial plan copy', 'encoded plan close', 'pre-admission post'] as const)(
+    'releases the producer staging after a refused %s',
+    async (fault) => {
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const scope = nativeProductScope(f.root, f.turn.owner);
+      await prepareProductFile(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+        Buffer.from('Independent staged bytes')
+      );
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const client = getControlStoreWorkerClient();
+      const post = vi.spyOn(client, 'pendingCommand');
+      archiveReadFault.planCopyFailures = 0;
+      archiveReadFault.planCloseFailures = 0;
+      if (fault === 'partial plan copy') archiveReadFault.failPlanCopy = true;
+      else if (fault === 'encoded plan close') archiveReadFault.failPlanClose = true;
+      else
+        post.mockImplementationOnce(async (_database, input) => {
+          if (!('plan' in input)) throw new Error('Missing assembled grouped plan.');
+          expect(
+            readdirSync(pendingPlanStagePath(scope.contentMount.root, input.plan.temporary))
+          ).toContain('plan');
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+        });
+      try {
+        await expect(
+          archiveThreadWithCloseout(
+            f.store,
+            { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+            f.workspace.id,
+            f.thread.id,
+            { kind: 'user', id: userId }
+          )
+        ).rejects.toMatchObject(
+          fault === 'pre-admission post'
+            ? { code: 'busy', commit: 'not-committed' }
+            : { code: 'EIO' }
+        );
+      } finally {
+        archiveReadFault.failPlanCopy = false;
+        archiveReadFault.failPlanClose = false;
+      }
+      expect(post).toHaveBeenCalledTimes(fault === 'pre-admission post' ? 1 : 0);
+      if (fault === 'partial plan copy') expect(archiveReadFault.planCopyFailures).toBe(1);
+      if (fault === 'encoded plan close') expect(archiveReadFault.planCloseFailures).toBe(1);
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      expect(workspaceEvidence(f.root, f.workspace.id)).toEqual(original);
+    },
+    90_000
+  );
+
+  it.each([
+    { mode: 0, phase: 'Workspace binding', code: 'precondition' },
+    { mode: 0, phase: 'staged-name binding', code: 'precondition' },
+    { mode: 5, phase: 'plan open', code: 'sql-failed' },
+    { mode: 0, phase: 'plan length', code: 'precondition' },
+    { mode: 4, phase: 'plan read', code: 'precondition' },
+    { mode: 0, phase: 'plan digest', code: 'precondition' },
+    { mode: 0, phase: 'first frame', code: 'precondition' },
+    { mode: 0, phase: 'header operation', code: 'precondition' },
+    { mode: 2, phase: 'body preparation', code: 'precondition' },
+    { mode: 3, phase: 'grouped link', code: 'sql-failed' },
+    { mode: 6, phase: 'second grouped link', code: 'sql-failed' },
+  ])(
+    'keeps retained rows and file inventories intact after $phase fails',
+    async ({ mode, phase, code }) => {
+      const io = new Int32Array(new SharedArrayBuffer(12));
+      archiveReadFault.planIo = io;
+      const f = await fixture();
+      await raiseRecordedPendingRequest(f.store, f.reader.sqlite, f.raise);
+      if (mode === 6)
+        await f.store.createItem({
+          id: allocateEntityId('it'),
+          owner: f.turn.owner,
+          threadId: f.thread.id,
+          turnId: f.turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text: 'Retained body '.repeat(7_000),
+          createdAt: f.turn.startedAt!,
+          completedAt: f.turn.startedAt!,
+        });
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const original = workspaceEvidence(f.root, f.workspace.id);
+      const scope = nativeProductScope(f.root, f.turn.owner);
+      let afterWriter: typeof original | undefined;
+      const client = getControlStoreWorkerClient();
+      const post = client.pendingCommand.bind(client);
+      vi.spyOn(client, 'pendingCommand').mockImplementationOnce(async (database, input) => {
+        if (!('plan' in input)) throw new Error('Missing staged grouped plan.');
+        let plan = input.plan;
+        const stage = pendingPlanStagePath(scope.contentMount.root, plan.temporary);
+        expect(readdirSync(stage).filter((name) => name.endsWith('.tmp')).length).toBeGreaterThan(
+          1
+        );
+        const path = join(stage, 'plan');
+        if (phase === 'Workspace binding') plan = { ...plan, workspaceId: 'different-workspace' };
+        if (phase === 'staged-name binding')
+          plan = { ...plan, contentDigest: `sha256:${'0'.repeat(64)}` };
+        if (phase === 'plan length') plan = { ...plan, byteLength: plan.byteLength + 1 };
+        if (phase === 'plan digest') {
+          const bytes = readFileSync(path);
+          bytes[0] = 0x5b;
+          chmodSync(path, 0o600);
+          writeFileSync(path, bytes);
+          chmodSync(path, 0o444);
+        }
+        if (phase === 'first frame') {
+          const lines = readFileSync(path, 'utf8').split('\n');
+          lines.splice(1, 0, '{"kind":"unknown-group"}');
+          plan = await replaceGroupedPlan(scope, plan, Buffer.from(lines.join('\n')));
+        }
+        if (phase === 'header operation') plan = { ...plan, operation: 'pending-boot' };
+        try {
+          return await post(database, { plan });
+        } finally {
+          // Observe the writer's own release before the sender unwinds a refused post.
+          afterWriter = workspaceEvidence(f.root, f.workspace.id);
+        }
+      });
+      const publish = f.store.publishPendingPlan.bind(f.store);
+      vi.spyOn(f.store, 'publishPendingPlan').mockImplementationOnce(
+        async (workspaceId, header, groups, turns) => {
+          const stage = async (entry: Parameters<typeof ControlProductEntrySchema.parse>[0]) => {
+            const parsed = ControlProductEntrySchema.parse(entry);
+            const reference = parsed.content.reference;
+            if (!('representation' in reference))
+              throw new Error('Expected original inline test body.');
+            return {
+              ...parsed,
+              ...(await prepareProductFile(
+                scope.contentMount,
+                scope.owner,
+                join(dirname(dirname(scope.contentMount.root)), 'runtime', 'staging'),
+                Buffer.from(reference.body)
+              )),
+            };
+          };
+          const fileBacked = await Promise.all(
+            groups.map(async (group) => {
+              if (group.kind === 'entries')
+                return { ...group, entries: await Promise.all(group.entries.map(stage)) };
+              if (group.kind === 'pending' && group.input.terminal)
+                return {
+                  ...group,
+                  input: {
+                    ...group.input,
+                    terminal: {
+                      ...group.input.terminal,
+                      entries: await Promise.all(group.input.terminal.entries.map(stage)),
+                    },
+                  },
+                };
+              return group;
+            })
+          );
+          Atomics.store(io, 0, mode);
+          return publish(workspaceId, header, fileBacked, turns);
+        }
+      );
+      const failure = await archiveThreadWithCloseout(
+        f.store,
+        { openWorkspace: f.dependencies.repositoryWorkspaceDb },
+        f.workspace.id,
+        f.thread.id,
+        { kind: 'user', id: userId }
+      ).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      if (mode) expect(Atomics.load(io, 2)).toBe(1);
+      if (mode === 2) expect(Atomics.load(io, 1)).toBe(2);
+      closeFixtureReaders();
+      await shutdownControlStoreWorkerClient();
+      const reopened = workspaceEvidence(f.root, f.workspace.id);
+      expect(afterWriter).toEqual(reopened);
+      if (mode === 6) {
+        expect(Atomics.load(io, 1)).toBe(2);
+        expect(
+          Object.keys(original.files).some((name) => name.startsWith('evidence/backend/sha256/'))
+        ).toBe(true);
+        expect(reopened.content).toEqual(original.content);
+        expect(reopened.files).toMatchObject(original.files);
+        const additions = Object.keys(reopened.files).filter((name) => !(name in original.files));
+        expect(additions).toEqual([
+          expect.stringMatching(/^evidence\/backend\/sha256\/[a-f0-9]{64}$/),
+        ]);
+      } else {
+        expect(reopened).toEqual(original);
+      }
+      expect(failure).toMatchObject({ code, commit: 'not-committed' });
+    },
+    90_000
+  );
 
   it('rolls back fresh lifecycle closeout when the native archived-status write fails', async () => {
     const f = await fixture();

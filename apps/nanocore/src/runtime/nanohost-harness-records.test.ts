@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
@@ -17,19 +17,34 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  seedAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import {
   acknowledgeTestExternalWorkspaceConsumer,
-  queueTestPreparedHarnessOperation as queueNanoHostHarnessOperation,
-  recordTestExecutionAttempt,
-} from '../test-support/execution-attempt.js';
+  dispatchNanoHostHarnessOperation as dispatchFixtureHarnessOperation,
+  queueNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from '../test-support/nanohost-harness.js';
+import {
+  readTestNativeAttemptEvidence,
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+} from '../test-support/nanohost-worker-lease.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import { readAdmittedTestNanoHostRefusing } from '../test-support/tail-port-a.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { EXECUTION_ATTEMPT_BUDGET_MS } from './execution-attempt-records.js';
 import {
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
-  dispatchNanoHostHarnessOperation,
   drainNanoHostHarnessAdmission,
   drainNanoHostSandboxAdmission,
   expireNanoHostHarnessQueuedOperation,
@@ -45,18 +60,23 @@ import {
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
   removeNanoHostSandboxRuntimeForHarness,
-  settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import { requireNanoHostLoginRemoval } from './nanohost-harness-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessions.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 
 const now = '2098-08-21T00:00:00.000Z';
+const submissionDeadline = new Date(Date.parse(now) + EXECUTION_ATTEMPT_BUDGET_MS).toISOString();
+
+function dispatchNanoHostHarnessOperation(
+  coreDb: ReturnType<typeof openCoreDb>,
+  input: Parameters<typeof dispatchFixtureHarnessOperation>[1]
+) {
+  return dispatchFixtureHarnessOperation(coreDb, { now: () => now, ...input });
+}
 const physicalEpoch = 'e'.repeat(64);
+afterEach(shutdownControlStoreWorkerClient);
 
 describe('Workspace invocation deadline and exclusion controls', () => {
   it('T2 refuses changed queued input and preserves the original Thread exclusion', async () => {
@@ -70,7 +90,7 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         timestamp: now,
       };
       expect(await queueNanoHostHarnessOperation(db, input)).toBe(0);
-      const before = db.sqlite.serialize();
+      const before = serializeFixtureAuthority(db);
       await expect(
         queueNanoHostHarnessOperation(db, {
           ...input,
@@ -78,7 +98,7 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         })
       ).rejects.toThrow('NanoHost Harness already has an unsettled operation.');
       await expect(
-        openNanoHostAgentSessionBinding(db, {
+        openNanoHostAgentSessionBinding(await fixtureHarnessWriter(db), {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'journal-conflicting-session'),
           agentSessionRuntimeBindingId: 'journal-conflicting-binding',
@@ -89,7 +109,7 @@ describe('Workspace invocation deadline and exclusion controls', () => {
           workspaceId: testEntityId('ws', 'workspace-1'),
         })
       ).rejects.toThrow();
-      expect(db.sqlite.serialize().equals(before)).toBe(true);
+      expect(serializeFixtureAuthority(db).equals(before)).toBe(true);
       expect(harnessOperation(db)).toEqual({ operation: 'turn.start', state: 'queued' });
     } finally {
       db.sqlite.close();
@@ -132,11 +152,13 @@ describe('Workspace invocation deadline and exclusion controls', () => {
           timestamp: now,
         })
       ).toBe('settled');
-      const receipt = db.sqlite
-        .prepare(
-          "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
-        )
-        .get() as { bytes: string; fingerprint: string };
+      const receipt = readAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+          )
+          .get()
+      ) as { bytes: string; fingerprint: string };
       expect(JSON.parse(receipt.bytes)).toEqual(result);
       expect(receipt.fingerprint).toBe(createHash('sha256').update(receipt.bytes).digest('hex'));
       db.sqlite.close();
@@ -160,11 +182,13 @@ describe('Workspace invocation deadline and exclusion controls', () => {
       expect.soft(successor !== null).toBe(false);
       expect
         .soft(
-          db.sqlite
-            .prepare(
-              "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
-            )
-            .get()
+          readAdmittedTestNanoHost(db, (sqlite) =>
+            sqlite
+              .prepare(
+                "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+              )
+              .get()
+          )
         )
         .toEqual(receipt);
     } finally {
@@ -186,18 +210,20 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         sandboxIntegrationBindingRef: 'integration-binding-1',
         now: () => now,
       }))!;
-      await markNanoHostHarnessOperationUnknown(db, {
+      await markNanoHostHarnessOperationUnknown(await fixtureHarnessWriter(db), {
         harnessBindingRef: 'harness-binding-1',
         operationId: command.operationId,
         timestamp: now,
       });
-      const before = db.sqlite
-        .prepare(
-          "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
-        )
-        .all();
+      const before = readAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
+          )
+          .all()
+      );
       expect(before).toHaveLength(1);
-      await createNanoHostHarnessRuntime(db, {
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(db), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         maxActiveTurns: 1,
@@ -223,7 +249,7 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'journal-sibling-workspace'),
       };
-      await openNanoHostAgentSessionBinding(db, sibling);
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(db), sibling);
       await queueNanoHostHarnessOperation(db, {
         body: {
           ...sessionOpenBody(),
@@ -262,25 +288,31 @@ describe('Workspace invocation deadline and exclusion controls', () => {
       ).toBe('settled');
       expect(harnessOperation(db)).toEqual({ operation: 'turn.interrupt', state: 'unknown' });
       expect(
-        db.sqlite
-          .prepare(
-            "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
-          )
-          .all()
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
+            )
+            .all()
+        )
       ).toEqual(before);
       expect(
-        db.sqlite
-          .prepare(
-            "SELECT active_turn_count AS count FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
-          )
-          .get()
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              "SELECT active_turn_count AS count FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+            )
+            .get()
+        )
       ).toEqual({ count: 1 });
       expect(
-        db.sqlite
-          .prepare(
-            "SELECT lifecycle_state AS state FROM agent_session_runtime_bindings WHERE harness_instance_id = 'journal-sibling-harness'"
-          )
-          .get()
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              "SELECT lifecycle_state AS state FROM agent_session_runtime_bindings WHERE harness_instance_id = 'journal-sibling-harness'"
+            )
+            .get()
+        )
       ).toEqual({ state: 'open' });
     } finally {
       db.sqlite.close();
@@ -302,12 +334,14 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         now: () => now,
       }))!;
       expect(command.operation).toBe('turn.interrupt');
-      await markNanoHostHarnessOperationUnknown(db, {
+      await markNanoHostHarnessOperationUnknown(await fixtureHarnessWriter(db), {
         harnessBindingRef: 'harness-binding-1',
         operationId: command.operationId,
         timestamp: now,
       });
-      const before = db.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all();
+      const before = readAdmittedTestNanoHost(db, (sqlite) =>
+        sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()
+      );
       expect(before).toHaveLength(1);
       expect(
         await dispatchNanoHostHarnessOperation(db, {
@@ -335,11 +369,15 @@ describe('Workspace invocation deadline and exclusion controls', () => {
         });
       }
       expect(harnessOperation(db)).toEqual({ operation: 'turn.interrupt', state: 'unknown' });
-      expect(db.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()).toEqual(
-        before
-      );
       expect(
-        db.sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()
+        )
+      ).toEqual(before);
+      expect(
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+        )
       ).toEqual({ count: 1 });
     } finally {
       db.sqlite.close();
@@ -353,7 +391,7 @@ describe('private NanoHost Harness records', () => {
     const removalDb = await openOpeningBindingDb('openkit-harness-native-removal-');
     try {
       coreDb.sqlite.exec('PRAGMA query_only = ON');
-      await createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-2',
@@ -379,32 +417,34 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'native-owner-workspace-2'),
       };
-      await openNanoHostAgentSessionBinding(coreDb, secondBinding);
-      await copyNanoHostMeasuredHarnessIdentity(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), secondBinding);
+      await copyNanoHostMeasuredHarnessIdentity(await fixtureHarnessWriter(coreDb), {
         agentSessionRuntimeBindingId: secondBinding.agentSessionRuntimeBindingId,
         imageDigest: `sha256:${'f'.repeat(64)}`,
         timestamp: now,
       });
-      await drainNanoHostHarnessAdmission(coreDb, {
+      await drainNanoHostHarnessAdmission(await fixtureHarnessWriter(coreDb), {
         harnessBindingRef: 'harness-binding-2',
         timestamp: now,
       });
-      await drainNanoHostSandboxAdmission(coreDb, {
+      await drainNanoHostSandboxAdmission(await fixtureHarnessWriter(coreDb), {
         originPhysicalEpoch: physicalEpoch,
         sandboxBindingRef: 'sandbox-binding-1',
       });
-      await fenceNanoHostSandboxRuntime(coreDb, {
+      await fenceNanoHostSandboxRuntime(await fixtureHarnessWriter(coreDb), {
         harnessBindingRef: 'harness-binding-2',
         timestamp: now,
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
                     drain_state AS drainState, cleanup_state AS cleanupState
              FROM sandbox_runtime_records WHERE sandbox_runtime_id = 'sandbox-runtime-1'`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({
         cleanupState: 'unknown',
         drainState: 'draining',
@@ -412,34 +452,49 @@ describe('private NanoHost Harness records', () => {
         lifecycleState: 'failed',
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT harness_instance_id AS harnessInstanceId, lifecycle_state AS lifecycleState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT harness_instance_id AS harnessInstanceId, lifecycle_state AS lifecycleState,
                     drain_state AS drainState FROM harness_instance_records ORDER BY harness_instance_id`
-          )
-          .all()
+            )
+            .all()
+        )
       ).toEqual([
         { drainState: 'draining', harnessInstanceId: 'harness-1', lifecycleState: 'failed' },
         { drainState: 'draining', harnessInstanceId: 'harness-2', lifecycleState: 'failed' },
       ]);
-      await removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-2');
+      await removeNanoHostSandboxRuntimeForHarness(await fixtureHarnessWriter(coreDb), 'harness-2');
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 0 });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        )
       ).toEqual({ count: 0 });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+        )
       ).toEqual({ count: 0 });
 
       removalDb.sqlite.exec('PRAGMA query_only = ON');
-      await removeNanoHostSandboxRuntimeByBinding(removalDb, 'sandbox-binding-1');
+      await removeNanoHostSandboxRuntimeByBinding(
+        await fixtureHarnessWriter(removalDb),
+        'sandbox-binding-1'
+      );
       expect(
-        removalDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(removalDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 0 });
       expect(
-        removalDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        readAdmittedTestNanoHost(removalDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        )
       ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
@@ -509,7 +564,7 @@ describe('private NanoHost Harness records', () => {
         now: () => now,
         sandboxIntegrationBindingRef: 'integration-binding-1',
       });
-      await markNanoHostHarnessOperationUnknown(unknownDb, {
+      await markNanoHostHarnessOperationUnknown(await fixtureHarnessWriter(unknownDb), {
         harnessBindingRef: 'harness-binding-1',
         operationId: command!.operationId,
         timestamp: now,
@@ -526,24 +581,105 @@ describe('private NanoHost Harness records', () => {
         operation: 'harness.drain',
         timestamp: now,
       });
-      await expireNanoHostHarnessQueuedOperation(expiryDb, {
+      await expireNanoHostHarnessQueuedOperation(await fixtureHarnessWriter(expiryDb), {
         harnessBindingRef: 'harness-binding-1',
         timestamp: now,
       });
       expect(harnessOperation(expiryDb)).toEqual({ operation: 'harness.drain', state: 'unknown' });
       expect(
-        expiryDb.sqlite
-          .prepare(
-            `SELECT lifecycle_state AS lifecycleState, drain_state AS drainState
+        readAdmittedTestNanoHost(expiryDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT lifecycle_state AS lifecycleState, drain_state AS drainState
              FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({ drainState: 'draining', lifecycleState: 'failed' });
     } finally {
       unknownDb.sqlite.close();
       expiryDb.sqlite.close();
     }
   });
+
+  it.each(['timer', 'expired-poll', 'dispatched'] as const)(
+    'orders queued inspection expiry against %s in the admitted writer',
+    async (winner) => {
+      const core = await openActiveTurnDb('openkit-harness-inspection-expiry-');
+      try {
+        const receiver = { sandboxIntegrationBindingRef: 'integration-binding-1' };
+        await queueNanoHostHarnessOperation(core, {
+          body: { ...interruptBody(), purpose: 'interrupt' },
+          harnessInstanceId: 'harness-1',
+          operation: 'turn.interrupt',
+          timestamp: now,
+        });
+        const command = (await dispatchNanoHostHarnessOperation(core, receiver))!;
+        const predecessor = {
+          ...receiver,
+          result: {
+            body: { childState: 'running', state: 'interrupted' },
+            disposition: 'succeeded' as const,
+            harnessInstanceId: 'harness-1',
+            operationId: command.operationId,
+            schemaVersion: 2 as const,
+            sequence: command.sequence,
+          },
+          timestamp: now,
+        };
+        expect(await settleNanoHostHarnessOperation(core, predecessor)).toBe('settled');
+        await consumeFixtureWorkspaceResult(core);
+        const inspection = {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.inspect' as const,
+          timestamp: now,
+        };
+        const { operationId, sequence } = prepareNanoHostHarnessOperation(core, inspection).command;
+        expect(await queueNanoHostHarnessOperation(core, inspection)).toBe(sequence);
+        const expiry = new Date(Date.parse(now) + 300_000).toISOString();
+        const expire = async (expectedSequence: number) =>
+          expireNanoHostHarnessQueuedOperation(await fixtureHarnessWriter(core), {
+            harnessBindingRef: 'harness-binding-1',
+            timestamp: expiry,
+            expectedInspection: { operationId, sequence: expectedSequence },
+          });
+        if (winner === 'dispatched') {
+          expect(await dispatchNanoHostHarnessOperation(core, receiver)).toMatchObject({
+            operationId,
+            sequence,
+          });
+          await expect(expire(sequence)).rejects.toThrow('does not match a queued operation');
+          expect(harnessOperation(core)).toEqual({
+            operation: 'session.inspect',
+            state: 'dispatched',
+          });
+          return;
+        }
+        const before = serializeFixtureAuthority(core);
+        await expect(expire(sequence + 1)).rejects.toThrow('queued inspection changed');
+        expect(serializeFixtureAuthority(core).equals(before)).toBe(true);
+        if (winner === 'timer') await expire(sequence);
+        else
+          expect(
+            await dispatchNanoHostHarnessOperation(core, { ...receiver, now: () => expiry })
+          ).toBeNull();
+        expect(harnessOperation(core)).toEqual({ operation: null, state: 'idle' });
+        expect(await settleNanoHostHarnessOperation(core, predecessor)).toBe('replayed');
+        expect(
+          await queueNanoHostHarnessOperation(core, { ...inspection, timestamp: expiry })
+        ).toBe(sequence);
+        expect(
+          await dispatchNanoHostHarnessOperation(core, { ...receiver, now: () => expiry })
+        ).toMatchObject({ operationId, sequence });
+      } finally {
+        core.sqlite.close();
+      }
+    }
+  );
 
   it('replays one committed settlement after its native acknowledgement is lost', async () => {
     const coreDb = await openActiveTurnDb('openkit-harness-native-settlement-loss-');
@@ -583,11 +719,16 @@ describe('private NanoHost Harness records', () => {
           typeof reply === 'object' &&
           reply !== null &&
           'operation' in reply &&
-          reply.operation === 'harness-lifecycle' &&
+          reply.operation === 'nanohost-owner' &&
           'status' in reply &&
           reply.status === 'ok' &&
           'result' in reply &&
-          reply.result === 'settled'
+          typeof reply.result === 'object' &&
+          reply.result !== null &&
+          'kind' in reply.result &&
+          reply.result.kind === 'harness-turn-lifecycle' &&
+          'value' in reply.result &&
+          reply.result.value === 'settled'
         ) {
           termination = this.terminate();
           return true;
@@ -608,20 +749,24 @@ describe('private NanoHost Harness records', () => {
         replies.mockRestore();
       }
 
-      const retained = coreDb.sqlite
-        .prepare(
-          `SELECT operation_id AS operationId, operation_sequence AS sequence, operation_state AS operationState,
+      await shutdownControlStoreWorkerClient();
+      // A fresh worker generation needs its Core opening as well as the Native owner.
+      await openAdmittedTestNanoHost(coreDb);
+      const retained = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT operation_id AS operationId, operation_sequence AS sequence, operation_state AS operationState,
                   result_json AS resultJson, result_fingerprint AS resultFingerprint
            FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
-        )
-        .get();
+          )
+          .get()
+      );
       expect(retained).toMatchObject({
         operationId: command.operationId,
         operationState: 'settled',
         sequence: command.sequence,
       });
 
-      await shutdownControlStoreWorkerClient();
       expect(
         await settleNanoHostHarnessOperation(coreDb, {
           result,
@@ -630,13 +775,15 @@ describe('private NanoHost Harness records', () => {
         })
       ).toBe('replayed');
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT operation_id AS operationId, operation_sequence AS sequence, operation_state AS operationState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT operation_id AS operationId, operation_sequence AS sequence, operation_state AS operationState,
                     result_json AS resultJson, result_fingerprint AS resultFingerprint
              FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual(retained);
       expect(
         await dispatchNanoHostHarnessOperation(coreDb, {
@@ -694,21 +841,25 @@ describe('private NanoHost Harness records', () => {
         sequence: 0,
       };
       // Owner-module retained-state injection follows valid owner setup; new producers may use a new encoding.
-      coreDb.sqlite
-        .prepare(
-          `UPDATE harness_instance_records
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            `UPDATE harness_instance_records
            SET command_body_json = ?, command_fingerprint = ?, operation_id = ?
            WHERE harness_instance_id = 'harness-1'`
-        )
-        .run(historical.bytes, historical.fingerprint, historical.operationId);
+          )
+          .run(historical.bytes, historical.fingerprint, historical.operationId);
+      });
       const readCommand = () =>
-        coreDb.sqlite
-          .prepare(
-            `SELECT command_body_json AS bytes, command_fingerprint AS fingerprint,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT command_body_json AS bytes, command_fingerprint AS fingerprint,
                     operation_id AS operationId, operation_sequence AS sequence
              FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
-          )
-          .get();
+            )
+            .get()
+        );
       const root = coreDb.dataRoot;
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
@@ -717,18 +868,22 @@ describe('private NanoHost Harness records', () => {
       expect(createHash('sha256').update(historical.bytes).digest('hex')).toBe(
         historical.fingerprint
       );
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET command_body_json = ?')
-        .run(`${historical.bytes}\n`);
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare('UPDATE harness_instance_records SET command_body_json = ?')
+          .run(`${historical.bytes}\n`);
+      });
       await expect(
         dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
           now: () => now,
         })
       ).rejects.toThrow(/corrupt|fingerprint/);
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET command_body_json = ?')
-        .run(historical.bytes);
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare('UPDATE harness_instance_records SET command_body_json = ?')
+          .run(historical.bytes);
+      });
       const command = await dispatchNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-1',
         now: () => now,
@@ -763,20 +918,24 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         });
       expect(await settle()).toBe('settled');
-      const receipt = coreDb.sqlite
-        .prepare(
-          'SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records'
-        )
-        .get() as { bytes: string; fingerprint: string };
-      coreDb.sqlite.close();
-      coreDb = openCoreDb(root);
-      expect(await settle()).toBe('replayed');
-      expect(
-        coreDb.sqlite
+      const receipt = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
           .prepare(
             'SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records'
           )
           .get()
+      ) as { bytes: string; fingerprint: string };
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      expect(await settle()).toBe('replayed');
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records'
+            )
+            .get()
+        )
       ).toEqual(receipt);
       expect(readCommand()).toEqual(historical);
     } finally {
@@ -837,10 +996,12 @@ describe('private NanoHost Harness records', () => {
         operation: 'session.open',
         timestamp: now,
       });
-      coreDb.sqlite.exec(
-        "UPDATE harness_instance_records SET schema_version = 2, command_body_json = '{'"
-      );
-      const before = coreDb.sqlite.serialize();
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.exec(
+          "UPDATE harness_instance_records SET schema_version = 2, command_body_json = '{'"
+        );
+      });
+      const before = serializeFixtureAuthority(coreDb);
       await expect(
         dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -856,12 +1017,12 @@ describe('private NanoHost Harness records', () => {
         })
       ).rejects.toThrow('Unsupported retained record format.');
       await expect(
-        drainNanoHostHarnessAdmission(coreDb, {
+        drainNanoHostHarnessAdmission(await fixtureHarnessWriter(coreDb), {
           harnessBindingRef: 'harness-binding-1',
           timestamp: now,
         })
       ).rejects.toThrow('Unsupported retained record format.');
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+      expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }
@@ -870,10 +1031,12 @@ describe('private NanoHost Harness records', () => {
   it('refuses an unknown AgentSession binding before decoding environment or granting reuse', async () => {
     const coreDb = await openOpeningBindingDb('openkit-harness-binding-format-');
     try {
-      coreDb.sqlite.exec(
-        "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{'"
-      );
-      const before = coreDb.sqlite.serialize();
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.exec(
+          "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{'"
+        );
+      });
+      const before = serializeFixtureAuthority(coreDb);
       await expect(
         queueNanoHostHarnessOperation(coreDb, {
           body: sessionOpenBody(),
@@ -883,19 +1046,24 @@ describe('private NanoHost Harness records', () => {
         })
       ).rejects.toThrow('Unsupported retained record format.');
       expect(() =>
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          workspaceId: testEntityId('ws', 'workspace-1'),
-          threadId: testEntityId('th', 'thread-1'),
-        })
+        readAdmittedTestNanoHostRefusing(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding(
+            { sqlite },
+            {
+              workspaceId: testEntityId('ws', 'workspace-1'),
+              threadId: testEntityId('th', 'thread-1'),
+            }
+          )
+        )
       ).toThrow('Unsupported retained record format.');
       await expect(
-        copyNanoHostMeasuredHarnessIdentity(coreDb, {
+        copyNanoHostMeasuredHarnessIdentity(await fixtureHarnessWriter(coreDb), {
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
           imageDigest: `sha256:${'f'.repeat(64)}`,
           timestamp: now,
         })
       ).rejects.toThrow('Unsupported retained record format.');
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+      expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }
@@ -907,11 +1075,13 @@ describe('private NanoHost Harness records', () => {
       const coreDb = await openActiveTurnDb(`bound-${bound}-thread-turns-`, bound);
       try {
         // Test the active bound separately from the independent open-resident bound.
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET max_open_sessions = ?')
-          .run(bound + 1);
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET max_open_sessions = ?')
+            .run(bound + 1);
+        });
         for (let index = 2; index <= bound + 1; index += 1) {
-          await openNanoHostAgentSessionBinding(coreDb, {
+          await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
             agentSessionCompatibilityKey: 'b'.repeat(64),
             agentSessionId: testEntityId('as', `agent-session-${index}`),
             agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
@@ -954,9 +1124,9 @@ describe('private NanoHost Harness records', () => {
           await consumeFixtureWorkspaceResult(coreDb, index);
         }
         expect(
-          coreDb.sqlite
-            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-            .get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+          )
         ).toEqual({ count: bound });
         // The last start belongs to the final sibling, not the addressed Thread 1.
         await queueNanoHostHarnessOperation(coreDb, {
@@ -983,9 +1153,9 @@ describe('private NanoHost Harness records', () => {
         });
         await consumeFixtureWorkspaceResult(coreDb);
         expect(
-          coreDb.sqlite
-            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-            .get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+          )
         ).toEqual({ count: bound });
         await queueNanoHostHarnessOperation(coreDb, {
           body: {
@@ -1019,23 +1189,27 @@ describe('private NanoHost Harness records', () => {
           },
         });
         expect(
-          coreDb.sqlite
-            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-            .get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+          )
         ).toEqual({ count: bound - 1 });
         expect(
-          coreDb.sqlite
-            .prepare(
-              "SELECT COUNT(*) AS count FROM agent_session_runtime_bindings WHERE lifecycle_state = 'active'"
-            )
-            .get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                "SELECT COUNT(*) AS count FROM agent_session_runtime_bindings WHERE lifecycle_state = 'active'"
+              )
+              .get()
+          )
         ).toEqual({ count: bound - 1 });
         expect(
-          coreDb.sqlite
-            .prepare(
-              'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
-            )
-            .get(testEntityId('as', `agent-session-${bound}`))
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+              )
+              .get(testEntityId('as', `agent-session-${bound}`))
+          )
         ).toEqual({ attempt: testEntityId('attempt', `lease-${bound}`) });
       } finally {
         coreDb.sqlite.close();
@@ -1066,7 +1240,7 @@ describe('private NanoHost Harness records', () => {
         harnessInstanceId: 'harness-1',
         timestamp: now,
       };
-      await openNanoHostAgentSessionBinding(coreDb, binding);
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), binding);
       const { harnessInstanceId, timestamp, ...openBinding } = binding;
       await queueNanoHostHarnessOperation(coreDb, {
         body: { ...sessionOpenBody(), ...openBinding },
@@ -1092,14 +1266,18 @@ describe('private NanoHost Harness records', () => {
         },
       });
       // Deliberate count fault: exact live-attempt refusal must remain independent.
-      coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
+      });
       const active = {
         ...scope,
         agentSessionId: testEntityId('as', 'agent-session-1'),
         threadId: testEntityId('th', 'thread-1'),
       };
       expect(() => inspectNanoHostAgentSessionContinuity(coreDb, active)).toThrow();
-      coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
+      });
       expect(
         inspectNanoHostAgentSessionContinuity(coreDb, {
           ...scope,
@@ -1114,7 +1292,7 @@ describe('private NanoHost Harness records', () => {
   it('reserves the shared Sandbox bound while another runtime Harness start is still queued', async () => {
     const coreDb = await openActiveTurnDb('cross-harness-queued-capacity-', 2);
     try {
-      await createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         maxActiveTurns: 2,
         adapterId: 'pi',
         adapterVersion: '1.4.0',
@@ -1131,7 +1309,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       for (const index of [2, 3]) {
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', `agent-session-${index}`),
           agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
@@ -1179,9 +1357,11 @@ describe('private NanoHost Harness records', () => {
         },
       });
       expect(
-        coreDb.sqlite
-          .prepare('SELECT SUM(active_turn_count) AS active FROM harness_instance_records')
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT SUM(active_turn_count) AS active FROM harness_instance_records')
+            .get()
+        )
       ).toEqual({ active: 2 });
       await expect(third()).rejects.toThrow('Sandbox active-Turn capacity is exhausted');
     } finally {
@@ -1193,10 +1373,14 @@ describe('private NanoHost Harness records', () => {
     const coreDb = await openOpeningBindingDb('sandbox-concurrent-capacity-');
     try {
       expect(() =>
-        coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
+        )
       ).not.toThrow();
       expect(() =>
-        coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 0')
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 0')
+        )
       ).toThrow();
     } finally {
       coreDb.sqlite.close();
@@ -1218,21 +1402,25 @@ describe('private NanoHost Harness records', () => {
         : [];
       expect(rows).toHaveLength(1);
       const attemptId = rows[0]!.attempt_id;
-      const started = coreDb.sqlite
-        .prepare(
-          "SELECT command_body_json AS body FROM harness_instance_records WHERE operation = 'turn.start'"
-        )
-        .get() as { body: string };
+      const started = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            "SELECT command_body_json AS body FROM harness_instance_records WHERE operation = 'turn.start'"
+          )
+          .get()
+      ) as { body: string };
       expect(JSON.parse(started.body)).toMatchObject({
         leaseId: attemptId,
         turnId: testEntityId('tu', 'turn-1'),
       });
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT current_attempt_id AS currentAttemptId,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT current_attempt_id AS currentAttemptId,
         current_turn_id AS currentTurnId, lifecycle_state AS lifecycleState
         FROM agent_session_runtime_bindings WHERE agent_session_id = ?`)
-          .get(testEntityId('as', 'agent-session-1'))
+            .get(testEntityId('as', 'agent-session-1'))
+        )
       ).toEqual({
         currentAttemptId: attemptId,
         currentTurnId: testEntityId('tu', 'turn-1'),
@@ -1253,10 +1441,14 @@ describe('private NanoHost Harness records', () => {
         turnId: testEntityId('tu', 'turn-1'),
       });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        )
       ).toEqual({ count: 1 });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 1 });
     } finally {
       coreDb.sqlite.close();
@@ -1267,8 +1459,8 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-open-refusal-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -1283,7 +1475,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -1367,9 +1559,9 @@ describe('private NanoHost Harness records', () => {
           },
         })
       ).resolves.toBe('settled');
-      const stored = coreDb.sqlite
-        .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
-        .get() as { result_json: string; result_fingerprint: string };
+      const stored = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('SELECT result_json, result_fingerprint FROM harness_instance_records').get()
+      ) as { result_json: string; result_fingerprint: string };
       expect(JSON.parse(stored.result_json)).toEqual(result);
       expect(stored.result_fingerprint).toBe(
         createHash('sha256').update(stored.result_json).digest('hex')
@@ -1384,13 +1576,13 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-multi-harness-records-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
+      await seedRuntimeTarget(coreDb);
       for (const [adapterId, adapterVersion, harnessInstanceId, compatibilityKey] of [
         ['codex', '0.153.4', 'harness-codex', 'b'.repeat(64)],
         ['opencode', '1.18.1', 'harness-opencode', 'c'.repeat(64)],
         ['pi', '0.85.1', 'harness-pi', 'd'.repeat(64)],
       ] as const) {
-        await createNanoHostHarnessRuntime(coreDb, {
+        await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId,
           adapterVersion,
           harnessBindingRef: `binding-${harnessInstanceId}`,
@@ -1408,22 +1600,26 @@ describe('private NanoHost Harness records', () => {
       }
 
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT adapter_id AS adapterId, harness_compatibility_key AS harnessCompatibilityKey FROM harness_instance_records ORDER BY adapter_id'
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT adapter_id AS adapterId, harness_compatibility_key AS harnessCompatibilityKey FROM harness_instance_records ORDER BY adapter_id'
+            )
+            .all()
+        )
       ).toEqual([
         { adapterId: 'codex', harnessCompatibilityKey: 'b'.repeat(64) },
         { adapterId: 'opencode', harnessCompatibilityKey: 'c'.repeat(64) },
         { adapterId: 'pi', harnessCompatibilityKey: 'd'.repeat(64) },
       ]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT adapter_id AS adapterId, capabilities_json AS capabilities FROM harness_instance_records ORDER BY adapter_id'
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT adapter_id AS adapterId, capabilities_json AS capabilities FROM harness_instance_records ORDER BY adapter_id'
+            )
+            .all()
+        )
       ).toEqual([
         // Every resident binding follows one lifecycle, so no adapter carries a continuity mode.
         { adapterId: 'codex', capabilities: '[]' },
@@ -1431,45 +1627,56 @@ describe('private NanoHost Harness records', () => {
         { adapterId: 'pi', capabilities: '[]' },
       ]);
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 1 });
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT COUNT(h.harness_instance_id) AS count,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT COUNT(h.harness_instance_id) AS count,
           s.max_harnesses AS maxHarnesses FROM sandbox_runtime_records s
           JOIN harness_instance_records h ON h.sandbox_runtime_id = s.sandbox_runtime_id
           WHERE s.sandbox_runtime_id = ?`)
-          .get('sandbox-runtime-shared')
+            .get('sandbox-runtime-shared')
+        )
       ).toEqual({ count: 3, maxHarnesses: 8 });
-      const readyTarget = coreDb.sqlite.prepare(`SELECT ready, fresh_empty AS freshEmpty,
+      const readyTarget = () =>
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT ready, fresh_empty AS freshEmpty,
         predecessor_fenced AS predecessorFenced, physical_epoch AS physicalEpoch
-        FROM nanohost_runtime_targets WHERE target_id = ?`);
-      expect(readyTarget.get('nanohost-a1')).toEqual({
+        FROM nanohost_runtime_targets WHERE target_id = ?`)
+            .get('nanohost-a1')
+        );
+      expect(readyTarget()).toEqual({
         ready: 1,
         freshEmpty: 1,
         predecessorFenced: 1,
         physicalEpoch,
       });
       // Sandbox termination stops admission across the Integration, including a new Harness.
-      await drainNanoHostSandboxAdmission(coreDb, {
+      await drainNanoHostSandboxAdmission(await fixtureHarnessWriter(coreDb), {
         sandboxBindingRef: 'sandbox-binding-shared',
         originPhysicalEpoch: physicalEpoch,
       });
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT lifecycle_state AS lifecycleState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT lifecycle_state AS lifecycleState,
         health_state AS healthState, drain_state AS drainState, cleanup_state AS cleanupState
         FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?`)
-          .get('sandbox-runtime-shared')
+            .get('sandbox-runtime-shared')
+        )
       ).toEqual({
         lifecycleState: 'open',
         healthState: 'ready',
         drainState: 'draining',
         cleanupState: 'clean',
       });
-      const before = coreDb.sqlite.serialize();
+      const before = serializeFixtureAuthority(coreDb);
       await expect(
-        createNanoHostHarnessRuntime(coreDb, {
+        createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId: 'codex',
           adapterVersion: '0.153.5',
           harnessBindingRef: 'binding-harness-late',
@@ -1485,8 +1692,8 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         })
       ).rejects.toThrow();
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      expect(readyTarget.get('nanohost-a1')).toEqual({
+      expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
+      expect(readyTarget()).toEqual({
         ready: 1,
         freshEmpty: 1,
         predecessorFenced: 1,
@@ -1528,8 +1735,8 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-enqueue-budget-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-expiry',
@@ -1557,11 +1764,13 @@ describe('private NanoHost Harness records', () => {
         })
       ).toBeNull();
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT operation_state AS operationState, lifecycle_state AS lifecycleState FROM harness_instance_records WHERE harness_instance_id = ?'
-          )
-          .get('harness-expiry')
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT operation_state AS operationState, lifecycle_state AS lifecycleState FROM harness_instance_records WHERE harness_instance_id = ?'
+            )
+            .get('harness-expiry')
+        )
       ).toEqual({ lifecycleState: 'failed', operationState: 'unknown' });
       expect(
         await dispatchNanoHostHarnessOperation(coreDb, {
@@ -1578,23 +1787,17 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-sandbox-epoch-race-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      const replacement = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-a1',
-        identityId: 'nanohost-a1',
-        observedAt: '2098-08-21T00:00:01.000Z',
-        targetId: 'nanohost-a1',
-      });
-      await upsertNanoHostRuntimeTarget(coreDb, {
-        ...replacement,
-        freshEmpty: true,
-        observedAt: '2098-08-21T00:00:02.000Z',
-        physicalEpoch: 'f'.repeat(64),
-        predecessorFenced: true,
-        ready: true,
+      await seedRuntimeTarget(coreDb);
+      // The publication is the subject. Install the successor witness before offering the old Epoch.
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(`UPDATE nanohost_runtime_targets
+            SET connection_generation = connection_generation + 1, physical_epoch = ?, observed_at = ?
+            WHERE target_id = ?`)
+          .run('f'.repeat(64), '2098-08-21T00:00:02.000Z', 'nanohost-a1');
       });
       await expect(
-        createNanoHostHarnessRuntime(coreDb, {
+        createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId: 'codex',
           adapterVersion: '0.153.4',
           harnessBindingRef: 'harness-binding-old-epoch',
@@ -1611,7 +1814,9 @@ describe('private NanoHost Harness records', () => {
         })
       ).rejects.toThrow(/publication physical Epoch is not current/i);
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
@@ -1624,8 +1829,8 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(root);
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -1640,7 +1845,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -1651,18 +1856,22 @@ describe('private NanoHost Harness records', () => {
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(
-        coreDb.sqlite
-          .prepare('SELECT schema_version AS schemaVersion FROM harness_instance_records')
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT schema_version AS schemaVersion FROM harness_instance_records')
+            .get()
+        )
       ).toEqual({ schemaVersion: 1 });
       expect(
-        coreDb.sqlite
-          .prepare('SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings')
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings')
+            .get()
+        )
       ).toEqual({ schemaVersion: 1 });
       await expect
         .soft(
-          openNanoHostAgentSessionBinding(coreDb, {
+          openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
             agentSessionCompatibilityKey: 'c'.repeat(64),
             agentSessionId: testEntityId('as', 'agent-session-same-thread'),
             agentSessionRuntimeBindingId: 'agent-session-binding-same-thread',
@@ -1675,28 +1884,40 @@ describe('private NanoHost Harness records', () => {
         )
         .rejects.toThrow();
       expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: testEntityId('th', 'thread-1'),
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        })
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding(
+            { sqlite },
+            {
+              threadId: testEntityId('th', 'thread-1'),
+              workspaceId: testEntityId('ws', 'workspace-1'),
+            }
+          )
+        )
       ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
       expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: testEntityId('th', 'thread-missing'),
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        })
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding(
+            { sqlite },
+            {
+              threadId: testEntityId('th', 'thread-missing'),
+              workspaceId: testEntityId('ws', 'workspace-1'),
+            }
+          )
+        )
       ).toBeNull();
       expect
         .soft(
-          coreDb.sqlite
-            .prepare(
-              'SELECT agent_session_id FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-            )
-            .get('agent-session-binding-same-thread')
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT agent_session_id FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+              )
+              .get('agent-session-binding-same-thread')
+          )
         )
         .toBeUndefined();
       await expect(
-        openNanoHostAgentSessionBinding(coreDb, {
+        openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'c'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -1709,29 +1930,35 @@ describe('private NanoHost Harness records', () => {
       ).resolves.toBeUndefined();
 
       expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sandbox_runtime_records', 'harness_instance_records', 'agent_session_runtime_bindings') ORDER BY name"
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sandbox_runtime_records', 'harness_instance_records', 'agent_session_runtime_bindings') ORDER BY name"
+            )
+            .all()
+        )
       ).toEqual([
         { name: 'agent_session_runtime_bindings' },
         { name: 'harness_instance_records' },
         { name: 'sandbox_runtime_records' },
       ]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT open_session_count AS openSessionCount, max_active_turns AS maxActiveTurns FROM harness_instance_records'
-          )
-          .get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT open_session_count AS openSessionCount, max_active_turns AS maxActiveTurns FROM harness_instance_records'
+            )
+            .get()
+        )
       ).toEqual({ maxActiveTurns: 20, openSessionCount: 2 });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT agent_session_id AS agentSessionId, native_handle_state AS nativeHandleState FROM agent_session_runtime_bindings ORDER BY agent_session_id'
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT agent_session_id AS agentSessionId, native_handle_state AS nativeHandleState FROM agent_session_runtime_bindings ORDER BY agent_session_id'
+            )
+            .all()
+        )
       ).toEqual([
         { agentSessionId: testEntityId('as', 'agent-session-1'), nativeHandleState: 'pending' },
         { agentSessionId: testEntityId('as', 'agent-session-2'), nativeHandleState: 'pending' },
@@ -1754,8 +1981,8 @@ describe('private NanoHost Harness records', () => {
       const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-unproved-inspect-')));
       try {
         applyMigrations(coreDb);
-        seedRuntimeTarget(coreDb);
-        await createNanoHostHarnessRuntime(coreDb, {
+        await seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId: 'codex',
           adapterVersion: '0.153.4',
           harnessBindingRef: 'harness-binding-1',
@@ -1770,7 +1997,7 @@ describe('private NanoHost Harness records', () => {
           runtimeTargetId: 'nanohost-a1',
           timestamp: now,
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -1788,7 +2015,7 @@ describe('private NanoHost Harness records', () => {
             agentSessionRuntimeBindingId: 'agent-session-binding-1',
             contextPackageId: 'context-package-1',
             contextRef: 'sandbox://context/1',
-            deadline: '2099-01-01T00:00:00.000Z',
+            deadline: submissionDeadline,
             leaseId: testEntityId('attempt', 'lease-1'),
             packageSnapshotId: 'package-snapshot-1',
             threadId: testEntityId('th', 'thread-1'),
@@ -1847,15 +2074,17 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         });
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
                       current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
                       cleanup_state AS cleanupState
                FROM agent_session_runtime_bindings
                WHERE agent_session_runtime_binding_id = ?`
-            )
-            .get('agent-session-binding-1')
+              )
+              .get('agent-session-binding-1')
+          )
         ).toEqual({
           agentSessionId: testEntityId('as', 'agent-session-1'),
           cleanupState: 'clean',
@@ -1864,7 +2093,7 @@ describe('private NanoHost Harness records', () => {
           lifecycleState: state,
         });
         await expect(
-          openNanoHostAgentSessionBinding(coreDb, {
+          openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
             agentSessionCompatibilityKey: 'c'.repeat(64),
             agentSessionId: testEntityId('as', 'agent-session-2'),
             agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -1876,14 +2105,20 @@ describe('private NanoHost Harness records', () => {
           })
         ).rejects.toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
         expect(
-          readNanoHostThreadAgentSessionBinding(coreDb, {
-            threadId: testEntityId('th', 'thread-1'),
-            workspaceId: testEntityId('ws', 'workspace-1'),
-          })
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            readNanoHostThreadAgentSessionBinding(
+              { sqlite },
+              {
+                threadId: testEntityId('th', 'thread-1'),
+                workspaceId: testEntityId('ws', 'workspace-1'),
+              }
+            )
+          )
         ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
-        coreDb.sqlite
-          .prepare(
-            `INSERT INTO agent_session_runtime_bindings (
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              `INSERT INTO agent_session_runtime_bindings (
                agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
                workspace_id, thread_id, agent_session_compatibility_key,
                effective_setup_generation, native_handle_state, native_handle_digest,
@@ -1891,22 +2126,28 @@ describe('private NanoHost Harness records', () => {
                created_at, updated_at, image_digest
              ) VALUES (?, 'harness-1', ?, ?, ?, ?, 1, 'pending', NULL,
                        'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
-          )
-          .run(
-            'agent-session-binding-2',
-            testEntityId('as', 'agent-session-2'),
-            testEntityId('ws', 'workspace-1'),
-            testEntityId('th', 'thread-1'),
-            'c'.repeat(64),
-            now,
-            now,
-            `sha256:${'f'.repeat(64)}`
-          );
+            )
+            .run(
+              'agent-session-binding-2',
+              testEntityId('as', 'agent-session-2'),
+              testEntityId('ws', 'workspace-1'),
+              testEntityId('th', 'thread-1'),
+              'c'.repeat(64),
+              now,
+              now,
+              `sha256:${'f'.repeat(64)}`
+            );
+        });
         expect(() =>
-          readNanoHostThreadAgentSessionBinding(coreDb, {
-            threadId: testEntityId('th', 'thread-1'),
-            workspaceId: testEntityId('ws', 'workspace-1'),
-          })
+          readAdmittedTestNanoHostRefusing(coreDb, (sqlite) =>
+            readNanoHostThreadAgentSessionBinding(
+              { sqlite },
+              {
+                threadId: testEntityId('th', 'thread-1'),
+                workspaceId: testEntityId('ws', 'workspace-1'),
+              }
+            )
+          )
         ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
       } finally {
         coreDb.sqlite.close();
@@ -1920,8 +2161,8 @@ describe('private NanoHost Harness records', () => {
       const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-sequence-')));
       try {
         applyMigrations(coreDb);
-        seedRuntimeTarget(coreDb);
-        await createNanoHostHarnessRuntime(coreDb, {
+        await seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId: 'codex',
           adapterVersion: '0.153.4',
           harnessBindingRef: 'harness-binding-1',
@@ -1936,7 +2177,7 @@ describe('private NanoHost Harness records', () => {
           runtimeTargetId: 'nanohost-a1',
           timestamp: now,
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -1958,7 +2199,7 @@ describe('private NanoHost Harness records', () => {
             agentSessionRuntimeBindingId: 'agent-session-binding-1',
             contextPackageId: 'context-package-1',
             contextRef: 'sandbox://context/1',
-            deadline: '2099-01-01T00:00:00.000Z',
+            deadline: submissionDeadline,
             leaseId: testEntityId('attempt', 'lease-1'),
             packageSnapshotId: 'package-snapshot-1',
             threadId: testEntityId('th', 'thread-1'),
@@ -1992,9 +2233,13 @@ describe('private NanoHost Harness records', () => {
           sequence: 0,
         });
         expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
-        const attempt = observeExecutionAttempts(coreDb).find(
-          (row) => row.turn_id === testEntityId('tu', 'turn-1')
-        );
+        const evidence = readTestNativeAttemptEvidence(coreDb, testEntityId('attempt', 'lease-1'));
+        const attempt = {
+          ...evidence,
+          worker_control_token_hash: evidence.workerControlTokenHash,
+          worker_inference_token_hash: evidence.workerInferenceTokenHash,
+          worker_capability_token_hash: evidence.workerCapabilityTokenHash,
+        };
         expect(attempt).toMatchObject({
           worker_control_token_hash: createHash('sha256')
             .update(Buffer.from(workerControlToken, 'base64url'))
@@ -2016,7 +2261,9 @@ describe('private NanoHost Harness records', () => {
         for (const token of [workerControlToken, inferenceToken, capabilityToken])
           expect(JSON.stringify(attempt)).not.toContain(token);
         const durableHarness = JSON.stringify(
-          coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM harness_instance_records').get()
+          )
         );
         expect(durableHarness).not.toContain(workerControlToken);
         expect(durableHarness).not.toContain(inferenceToken);
@@ -2107,9 +2354,9 @@ describe('private NanoHost Harness records', () => {
           result,
           timestamp: now,
         });
-        const receipt = coreDb.sqlite
-          .prepare('SELECT result_json FROM harness_instance_records')
-          .get() as { result_json: string };
+        const receipt = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+        ) as { result_json: string };
         expect(JSON.parse(receipt.result_json)).toEqual(result);
         await expect(
           settleNanoHostHarnessOperation(coreDb, {
@@ -2119,11 +2366,13 @@ describe('private NanoHost Harness records', () => {
           })
         ).rejects.toThrow(/conflict|replay|result/i);
         expect(
-          coreDb.sqlite
-            .prepare(
-              'SELECT next_sequence AS nextSequence, operation_state AS operationState FROM harness_instance_records'
-            )
-            .get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                'SELECT next_sequence AS nextSequence, operation_state AS operationState FROM harness_instance_records'
+              )
+              .get()
+          )
         ).toEqual({ nextSequence: 1, operationState: 'settled' });
 
         // docs/specs/20261019-durable_execution_and_control_store.md:301-305 requires receipt retention and blocked dispatch.
@@ -2144,7 +2393,9 @@ describe('private NanoHost Harness records', () => {
         });
         expect(inspect).toBeNull();
         expect(
-          coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+          )
         ).toEqual(receipt);
       } finally {
         coreDb.sqlite.close();
@@ -2156,8 +2407,8 @@ describe('private NanoHost Harness records', () => {
     let coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-session-close-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -2172,7 +2423,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -2182,7 +2433,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -2221,27 +2472,33 @@ describe('private NanoHost Harness records', () => {
       await expect(settle()).resolves.toBe('settled');
 
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
+            )
+            .all()
+        )
       ).toEqual([{ agentSessionId: testEntityId('as', 'agent-session-2') }]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT open_session_count AS openSessionCount, drain_state AS drainState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT open_session_count AS openSessionCount, drain_state AS drainState,
                     lifecycle_state AS lifecycleState FROM harness_instance_records`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({ drainState: 'accepting', lifecycleState: 'open', openSessionCount: 1 });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
                     drain_state AS drainState, cleanup_state AS cleanupState FROM sandbox_runtime_records`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({
         cleanupState: 'clean',
         drainState: 'accepting',
@@ -2250,34 +2507,45 @@ describe('private NanoHost Harness records', () => {
       });
       // DX Physical Receipt Consumption: idle close consumes through Core, without a Turn.
       expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
-      const retained = coreDb.sqlite
-        .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
-        .get() as { result_json: string; result_fingerprint: string };
+      const retained = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('SELECT result_json, result_fingerprint FROM harness_instance_records').get()
+      ) as { result_json: string; result_fingerprint: string };
       const root = coreDb.dataRoot;
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
       expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
       expect(await settle()).toBe('replayed');
       expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          workspaceId: testEntityId('ws', 'workspace-1'),
-          threadId: testEntityId('th', 'thread-1'),
-        })
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding(
+            { sqlite },
+            {
+              workspaceId: testEntityId('ws', 'workspace-1'),
+              threadId: testEntityId('th', 'thread-1'),
+            }
+          )
+        )
       ).toBeNull();
       const sibling = {
         workspaceId: testEntityId('ws', 'workspace-1'),
         threadId: testEntityId('th', 'thread-2'),
       };
-      expect(readNanoHostThreadAgentSessionBinding(coreDb, sibling)).toEqual({
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding({ sqlite }, sibling)
+        )
+      ).toEqual({
         agentSessionId: testEntityId('as', 'agent-session-2'),
       });
       // Fault injection changes a real settled receipt; it creates no successful setup fact.
       const receipt = JSON.parse(retained.result_json) as Record<string, unknown>;
       const writeFault = (value: Record<string, unknown>, fingerprint?: string) => {
         const bytes = JSON.stringify(value);
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-          .run(bytes, fingerprint ?? createHash('sha256').update(bytes).digest('hex'));
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+            .run(bytes, fingerprint ?? createHash('sha256').update(bytes).digest('hex'));
+        });
       };
       // Both false and a refusal exception mean the invalid receipt was not acknowledged.
       const consumed = (
@@ -2306,12 +2574,18 @@ describe('private NanoHost Harness records', () => {
       );
       writeFault(receipt, '0'.repeat(64));
       expect(consumed()).toBe(false);
-      expect(readNanoHostThreadAgentSessionBinding(coreDb, sibling)).toEqual({
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding({ sqlite }, sibling)
+        )
+      ).toEqual({
         agentSessionId: testEntityId('as', 'agent-session-2'),
       });
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-        .run(retained.result_json, retained.result_fingerprint);
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+          .run(retained.result_json, retained.result_fingerprint);
+      });
       expect(consumed()).toBe(true);
     } finally {
       coreDb.sqlite.close();
@@ -2324,7 +2598,7 @@ describe('private NanoHost Harness records', () => {
       const coreDb = await openActiveTurnDb('openkit-harness-close-occupancy-');
       try {
         recordFinalStatus(coreDb, 'failed', 'error');
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'c'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -2361,9 +2635,11 @@ describe('private NanoHost Harness records', () => {
             timestamp: now,
           })
         ).toBe('settled');
-        const stored = coreDb.sqlite
-          .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
-          .get() as { result_json: string; result_fingerprint: string };
+        const stored = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
+            .get()
+        ) as { result_json: string; result_fingerprint: string };
         const retained = JSON.parse(stored.result_json) as Record<string, unknown>;
         const { consumerContext, ...retainedResult } = retained;
         // DX Physical Receipt Consumption retains the removed binding's namespace and Core idle proof.
@@ -2403,9 +2679,11 @@ describe('private NanoHost Harness records', () => {
           note: 'retained extension',
           body: { ...result.body, note: 'retained extension' },
         });
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-          .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+            .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        });
         expect(
           await settleNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -2415,14 +2693,18 @@ describe('private NanoHost Harness records', () => {
         ).toBe('replayed');
         expect(
           (
-            coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get() as {
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+            ) as {
               result_json: string;
             }
           ).result_json
         ).toBe(retainedBytes);
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
-          .run('0'.repeat(64));
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
+            .run('0'.repeat(64));
+        });
         await expect(
           settleNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -2430,9 +2712,11 @@ describe('private NanoHost Harness records', () => {
             timestamp: now,
           })
         ).rejects.toThrow(/fingerprint/);
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
-          .run(createHash('sha256').update(retainedBytes).digest('hex'));
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
+            .run(createHash('sha256').update(retainedBytes).digest('hex'));
+        });
         await expect(
           settleNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -2441,24 +2725,28 @@ describe('private NanoHost Harness records', () => {
           })
         ).rejects.toThrow(/replay|conflict/);
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount,
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount,
                     operation_state AS operationState FROM harness_instance_records`
-            )
-            .get()
+              )
+              .get()
+          )
         ).toEqual({
           activeTurnCount: closedSession === 1 ? 0 : 1,
           openSessionCount: 1,
           operationState: 'settled',
         });
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
                     current_attempt_id AS currentAttemptId FROM agent_session_runtime_bindings`
-            )
-            .all()
+              )
+              .all()
+          )
         ).toEqual([
           closedSession === 1
             ? {
@@ -2511,29 +2799,35 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         });
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount
                FROM harness_instance_records`
-            )
-            .get()
+              )
+              .get()
+          )
         ).toEqual({ activeTurnCount: 1, openSessionCount: 1 });
         // cleanup_required fences admission without releasing the Turn. Unknown already drains.
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT drain_state AS drainState, lifecycle_state AS lifecycleState
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT drain_state AS drainState, lifecycle_state AS lifecycleState
                FROM harness_instance_records`
-            )
-            .get()
+              )
+              .get()
+          )
         ).toEqual({ drainState: 'draining', lifecycleState: 'failed' });
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
                FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
-            )
-            .get('agent-session-binding-1')
+              )
+              .get('agent-session-binding-1')
+          )
         ).toEqual({
           currentTurnId: testEntityId('tu', 'turn-1'),
           currentAttemptId: testEntityId('attempt', 'lease-1'),
@@ -2584,11 +2878,13 @@ describe('private NanoHost Harness records', () => {
     const capabilityDigest = createHash('sha256')
       .update('resident-capability-loopback')
       .digest('hex');
-    coreDb.sqlite
-      .prepare(`UPDATE agent_session_runtime_bindings
+    await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare(`UPDATE agent_session_runtime_bindings
       SET inference_loopback_credential_digest = ?, capability_loopback_credential_digest = ?
       WHERE agent_session_runtime_binding_id = ?`)
-      .run(inferenceDigest, capabilityDigest, 'agent-session-binding-1');
+        .run(inferenceDigest, capabilityDigest, 'agent-session-binding-1');
+    });
     const settle = async (
       operation: 'session.inspect' | 'turn.interrupt',
       commandBody: Readonly<Record<string, unknown>>,
@@ -2645,23 +2941,27 @@ describe('private NanoHost Harness records', () => {
         );
       }
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT h.active_turn_count AS active, b.lifecycle_state AS lifecycleState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT h.active_turn_count AS active, b.lifecycle_state AS lifecycleState,
                     b.current_turn_id AS turnId
              FROM agent_session_runtime_bindings b
              JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual(expected);
       expect(
-        coreDb.sqlite
-          .prepare(`SELECT h.open_session_count AS openSessions,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(`SELECT h.open_session_count AS openSessions,
         b.inference_loopback_credential_digest AS inferenceDigest,
         b.capability_loopback_credential_digest AS capabilityDigest
         FROM agent_session_runtime_bindings b JOIN harness_instance_records h
         ON h.harness_instance_id = b.harness_instance_id`)
-          .get()
+            .get()
+        )
       ).toEqual({
         openSessions: 1,
         inferenceDigest,
@@ -2728,9 +3028,11 @@ describe('private NanoHost Harness records', () => {
             note: 'retained inert addition',
           },
         });
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-          .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+            .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        });
         if (queued)
           await queueNanoHostHarnessOperation(coreDb, {
             body: {},
@@ -2739,7 +3041,7 @@ describe('private NanoHost Harness records', () => {
             timestamp: now,
           });
         // Buffer.equals compares every SQLite byte without deep equality enumerating byte indexes.
-        const before = coreDb.sqlite.serialize();
+        const before = serializeFixtureAuthority(coreDb);
         const extended = { ...body, ...collision, note: 'different inert addition' };
         expect(await settle(extended)).toBe('replayed');
         if (queued && retainedCollision) {
@@ -2749,10 +3051,10 @@ describe('private NanoHost Harness records', () => {
           // Even a collision in incoming metadata cannot affect the trusted predecessor reader.
           expect(await settle(body)).toBe('replayed');
         }
-        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
         for (const cleanupState of ['unknown', 'future']) {
           await expect(settle({ ...extended, cleanupState })).rejects.toThrow();
-          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+          expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
         }
         for (const missing of [
           'cleanupState',
@@ -2763,7 +3065,7 @@ describe('private NanoHost Harness records', () => {
           const incomplete: Record<string, unknown> = { ...extended };
           delete incomplete[missing];
           await expect(settle(incomplete)).rejects.toThrow();
-          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+          expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
         }
       } finally {
         coreDb.sqlite.close();
@@ -2820,7 +3122,7 @@ describe('private NanoHost Harness records', () => {
           operation: 'harness.drain',
           timestamp: now,
         });
-        const before = coreDb.sqlite.serialize();
+        const before = serializeFixtureAuthority(coreDb);
         expect(await settle(body)).toBe('replayed');
         expect(
           await settle({
@@ -2836,7 +3138,7 @@ describe('private NanoHost Harness records', () => {
               : {}),
           })
         ).toBe('replayed');
-        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
         expect(readFixtureWorkspaceConsumption(coreDb)).toEqual(consumption);
         const changedBodies = [
           { ...body, reasonCode: 'conflict' },
@@ -2857,7 +3159,7 @@ describe('private NanoHost Harness records', () => {
         ];
         for (const changed of changedBodies) {
           await expect(settle(changed)).rejects.toThrow();
-          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+          expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
           expect(readFixtureWorkspaceConsumption(coreDb)).toEqual(consumption);
         }
       } finally {
@@ -2899,7 +3201,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
       });
       // Exact drain replay and changed core use this receiver owner, without a synthetic consumer.
-      const beforeReplay = coreDb.sqlite.serialize();
+      const beforeReplay = serializeFixtureAuthority(coreDb);
       const replay = async (body: Record<string, unknown>) =>
         await settleNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -2907,14 +3209,16 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         });
       expect(await replay({ ...result.body, note: 'ignored replay addition' })).toBe('replayed');
-      expect(coreDb.sqlite.serialize().equals(beforeReplay)).toBe(true);
+      expect(serializeFixtureAuthority(coreDb).equals(beforeReplay)).toBe(true);
       await expect(replay({ ...result.body, activeTurns: 1 })).rejects.toThrow();
-      expect(coreDb.sqlite.serialize().equals(beforeReplay)).toBe(true);
+      expect(serializeFixtureAuthority(coreDb).equals(beforeReplay)).toBe(true);
       const bytes = JSON.stringify({ ...result, body: { state: 'future' } });
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-        .run(bytes, createHash('sha256').update(bytes).digest('hex'));
-      const before = coreDb.sqlite.serialize();
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+          .run(bytes, createHash('sha256').update(bytes).digest('hex'));
+      });
+      const before = serializeFixtureAuthority(coreDb);
       await expect(
         settleNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -2922,7 +3226,7 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         })
       ).rejects.toThrow();
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+      expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2936,8 +3240,8 @@ describe('private NanoHost Harness records', () => {
       );
       try {
         applyMigrations(coreDb);
-        seedRuntimeTarget(coreDb);
-        await createNanoHostHarnessRuntime(coreDb, {
+        await seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
           adapterId: 'codex',
           adapterVersion: '0.153.4',
           harnessBindingRef: 'harness-binding-1',
@@ -2952,7 +3256,7 @@ describe('private NanoHost Harness records', () => {
           runtimeTargetId: 'nanohost-a1',
           timestamp: now,
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -2987,7 +3291,7 @@ describe('private NanoHost Harness records', () => {
           result: closeResult,
           timestamp: now,
         });
-        await openNanoHostAgentSessionBinding(coreDb, {
+        await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           agentSessionCompatibilityKey: 'c'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-2'),
           agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -3013,13 +3317,15 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         });
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT operation AS operation, operation_id AS operationId,
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT operation AS operation, operation_id AS operationId,
                     operation_state AS operationState FROM harness_instance_records
              WHERE harness_instance_id = ?`
-            )
-            .get('harness-1')
+              )
+              .get('harness-1')
+          )
         ).toEqual({
           operation: 'session.open',
           operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -3035,11 +3341,15 @@ describe('private NanoHost Harness records', () => {
               cleanupState: 'clean',
             },
           });
-          coreDb.sqlite
-            .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-            .run(bytes, createHash('sha256').update(bytes).digest('hex'));
+          await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                'UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?'
+              )
+              .run(bytes, createHash('sha256').update(bytes).digest('hex'));
+          });
         }
-        const before = coreDb.sqlite.serialize();
+        const before = serializeFixtureAuthority(coreDb);
         const replay = async () =>
           await settleNanoHostHarnessOperation(coreDb, {
             sandboxIntegrationBindingRef: 'integration-binding-1',
@@ -3048,15 +3358,17 @@ describe('private NanoHost Harness records', () => {
           });
         if (inspectionCollision) await expect(replay()).rejects.toThrow(/result.*match|conflict/i);
         else expect(await replay()).toBe('replayed');
-        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        expect(serializeFixtureAuthority(coreDb).equals(before)).toBe(true);
         expect(
-          coreDb.sqlite
-            .prepare(
-              `SELECT operation AS operation, operation_id AS operationId,
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                `SELECT operation AS operation, operation_id AS operationId,
                     operation_state AS operationState FROM harness_instance_records
              WHERE harness_instance_id = ?`
-            )
-            .get('harness-1')
+              )
+              .get('harness-1')
+          )
         ).toEqual({
           operation: 'session.open',
           operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -3074,8 +3386,8 @@ describe('private NanoHost Harness records', () => {
     );
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3090,7 +3402,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -3100,7 +3412,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -3136,13 +3448,15 @@ describe('private NanoHost Harness records', () => {
       });
 
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT open_session_count AS openSessionCount, drain_state AS drainState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT open_session_count AS openSessionCount, drain_state AS drainState,
                     lifecycle_state AS lifecycleState, operation_state AS operationState
              FROM harness_instance_records`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({
         drainState: 'draining',
         lifecycleState: 'failed',
@@ -3150,12 +3464,14 @@ describe('private NanoHost Harness records', () => {
         operationState: 'unknown',
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT lifecycle_state AS lifecycleState, health_state AS healthState,
                     drain_state AS drainState, cleanup_state AS cleanupState FROM sandbox_runtime_records`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({
         cleanupState: 'unknown',
         drainState: 'draining',
@@ -3163,11 +3479,13 @@ describe('private NanoHost Harness records', () => {
         lifecycleState: 'failed',
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
-          )
-          .all()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT agent_session_id AS agentSessionId FROM agent_session_runtime_bindings ORDER BY agent_session_id'
+            )
+            .all()
+        )
       ).toEqual([
         { agentSessionId: testEntityId('as', 'agent-session-1') },
         { agentSessionId: testEntityId('as', 'agent-session-2') },
@@ -3181,13 +3499,13 @@ describe('private NanoHost Harness records', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-goal-pin-')));
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      const sandboxColumns = coreDb.sqlite
-        .prepare('PRAGMA table_info(sandbox_runtime_records)')
-        .all() as { name: string; notnull: number }[];
+      await seedRuntimeTarget(coreDb);
+      const sandboxColumns = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite.prepare('PRAGMA table_info(sandbox_runtime_records)').all()
+      ) as { name: string; notnull: number }[];
       expect(sandboxColumns.map((column) => column.name)).not.toContain('pinned_goal_id');
 
-      await createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3202,7 +3520,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -3275,7 +3593,7 @@ describe('private NanoHost Harness records', () => {
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
         contextPackageId: 'context-package-1',
         contextRef: 'sandbox://context/1',
-        deadline: '2099-01-01T00:00:00.000Z',
+        deadline: submissionDeadline,
         leaseId: testEntityId('attempt', 'lease-1'),
         packageSnapshotId: 'package-snapshot-1',
         threadId: testEntityId('th', 'thread-1'),
@@ -3291,9 +3609,11 @@ describe('private NanoHost Harness records', () => {
       });
       const queuedTurnStart = JSON.parse(
         (
-          coreDb.sqlite
-            .prepare('SELECT command_body_json AS commandBodyJson FROM harness_instance_records')
-            .get() as { commandBodyJson: string }
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite
+              .prepare('SELECT command_body_json AS commandBodyJson FROM harness_instance_records')
+              .get()
+          ) as { commandBodyJson: string }
         ).commandBodyJson
       ) as Record<string, unknown>;
       expect(Object.keys(queuedTurnStart).sort()).toEqual(
@@ -3342,15 +3662,17 @@ describe('private NanoHost Harness records', () => {
       expect(draws).toEqual([]);
       const digest = (credential: string) =>
         createHash('sha256').update(credential, 'utf8').digest('hex');
-      const durable = coreDb.sqlite
-        .prepare(
-          `SELECT h.command_body_json AS commandBody,
+      const durable = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT h.command_body_json AS commandBody,
                   b.inference_loopback_credential_digest AS inferenceDigest,
                   b.capability_loopback_credential_digest AS capabilityDigest
            FROM harness_instance_records h
            JOIN agent_session_runtime_bindings b ON b.harness_instance_id = h.harness_instance_id`
-        )
-        .get() as { capabilityDigest: string; commandBody: string; inferenceDigest: string };
+          )
+          .get()
+      ) as { capabilityDigest: string; commandBody: string; inferenceDigest: string };
       expect(durable.inferenceDigest).toBe(digest(inference));
       expect(durable.capabilityDigest).toBe(digest(capability));
       expect(JSON.parse(durable.commandBody)).toMatchObject({
@@ -3473,17 +3795,21 @@ describe('private NanoHost Harness records', () => {
           testEntityId('attempt', 'lease-1'),
         ],
       ] as const) {
-        coreDb.sqlite
-          .prepare(
-            `UPDATE agent_session_runtime_bindings SET ${column} = ? WHERE agent_session_runtime_binding_id = ?`
-          )
-          .run(wrongValue, 'agent-session-binding-1');
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              `UPDATE agent_session_runtime_bindings SET ${column} = ? WHERE agent_session_runtime_binding_id = ?`
+            )
+            .run(wrongValue, 'agent-session-binding-1');
+        });
         await expectRejected(column);
-        coreDb.sqlite
-          .prepare(
-            `UPDATE agent_session_runtime_bindings SET ${column} = ? WHERE agent_session_runtime_binding_id = ?`
-          )
-          .run(originalValue, 'agent-session-binding-1');
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              `UPDATE agent_session_runtime_bindings SET ${column} = ? WHERE agent_session_runtime_binding_id = ?`
+            )
+            .run(originalValue, 'agent-session-binding-1');
+        });
       }
 
       const attemptId = testEntityId('attempt', 'lease-1');
@@ -3554,9 +3880,9 @@ describe('private NanoHost Harness records', () => {
 
       recordFinalStatus(coreDb, 'completed', 'completed');
       await expectRejected('accepted final status');
-      coreDb.sqlite
-        .prepare("DELETE FROM worker_control_records WHERE operation = 'final_status'")
-        .run();
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite.prepare("DELETE FROM worker_control_records WHERE operation = 'final_status'").run();
+      });
 
       await queueNanoHostHarnessOperation(coreDb, {
         body,
@@ -3575,7 +3901,9 @@ describe('private NanoHost Harness records', () => {
       recordFinalStatus(coreDb, 'completed', 'completed');
       expect(harnessOperation(coreDb)).toEqual({ operation: 'turn.interrupt', state: 'queued' });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM harness_instance_records').get()
+        )
       ).toEqual({ count: 1 });
     } finally {
       coreDb.sqlite.close();
@@ -3587,8 +3915,8 @@ describe('private NanoHost Harness records', () => {
     const imageDigest = `sha256:${'f'.repeat(64)}`;
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3603,7 +3931,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -3614,19 +3942,25 @@ describe('private NanoHost Harness records', () => {
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-          )
-          .get('agent-session-binding-1')
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+            )
+            .get('agent-session-binding-1')
+        )
       ).toEqual({ imageDigest });
-      await removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
+      await removeNanoHostSandboxRuntimeForHarness(await fixtureHarnessWriter(coreDb), 'harness-1');
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 0 });
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(
-        imageDigest
-      );
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-1')
+        )
+      ).toBe(imageDigest);
     } finally {
       coreDb.sqlite.close();
     }
@@ -3637,8 +3971,8 @@ describe('private NanoHost Harness records', () => {
     const imageDigest = `sha256:${'f'.repeat(64)}`;
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3653,7 +3987,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -3663,7 +3997,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -3674,26 +4008,34 @@ describe('private NanoHost Harness records', () => {
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT agent_session_runtime_binding_id AS bindingId, image_digest AS imageDigest
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT agent_session_runtime_binding_id AS bindingId, image_digest AS imageDigest
              FROM agent_session_runtime_bindings ORDER BY agent_session_runtime_binding_id`
-          )
-          .all()
+            )
+            .all()
+        )
       ).toEqual([
         { bindingId: 'agent-session-binding-1', imageDigest },
         { bindingId: 'agent-session-binding-2', imageDigest },
       ]);
-      await removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
+      await removeNanoHostSandboxRuntimeForHarness(await fixtureHarnessWriter(coreDb), 'harness-1');
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 0 });
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(
-        imageDigest
-      );
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')).toBe(
-        imageDigest
-      );
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-1')
+        )
+      ).toBe(imageDigest);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-2')
+        )
+      ).toBe(imageDigest);
     } finally {
       coreDb.sqlite.close();
     }
@@ -3714,8 +4056,8 @@ describe('private NanoHost Harness records', () => {
     } as const;
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3730,9 +4072,12 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, { ...bindingInput, timestamp: now });
-      await removeNanoHostSandboxRuntimeForHarness(coreDb, 'harness-1');
-      await createNanoHostHarnessRuntime(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
+        ...bindingInput,
+        timestamp: now,
+      });
+      await removeNanoHostSandboxRuntimeForHarness(await fixtureHarnessWriter(coreDb), 'harness-1');
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3748,29 +4093,40 @@ describe('private NanoHost Harness records', () => {
         timestamp: '2098-08-21T00:00:01.000Z',
       });
       await expect(
-        openNanoHostAgentSessionBinding(coreDb, {
+        openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
           ...bindingInput,
           timestamp: '2098-08-21T00:00:01.000Z',
         })
       ).resolves.toBeUndefined();
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        )
       ).toEqual({ count: 1 });
       expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+        )
       ).toEqual({ count: 1 });
       expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-          )
-          .get('agent-session-binding-1')
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT image_digest AS imageDigest FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+            )
+            .get('agent-session-binding-1')
+        )
       ).toEqual({ imageDigest: digestB });
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(digestB);
-      expect(listNanoHostMeasuredHarnessIdentities(coreDb, 'agent-session-binding-1')).toEqual([
-        digestA,
-        digestB,
-      ]);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-1')
+        )
+      ).toBe(digestB);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          listNanoHostMeasuredHarnessIdentities({ sqlite }, 'agent-session-binding-1')
+        )
+      ).toEqual([digestA, digestB]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -3782,8 +4138,8 @@ describe('private NanoHost Harness records', () => {
     const digestB = `sha256:${'b'.repeat(64)}`;
     try {
       applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
+      await seedRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-1',
@@ -3798,7 +4154,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding-2',
@@ -3813,7 +4169,7 @@ describe('private NanoHost Harness records', () => {
         runtimeTargetId: 'nanohost-a1',
         timestamp: now,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-1'),
         agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -3823,7 +4179,7 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'f'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -3833,10 +4189,24 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).toBe(digestA);
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')).toBe(digestB);
-      expect(readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-1')).not.toBe(
-        readNanoHostMeasuredHarnessIdentity(coreDb, 'agent-session-binding-2')
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-1')
+        )
+      ).toBe(digestA);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-2')
+        )
+      ).toBe(digestB);
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-1')
+        )
+      ).not.toBe(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostMeasuredHarnessIdentity({ sqlite }, 'agent-session-binding-2')
+        )
       );
     } finally {
       coreDb.sqlite.close();
@@ -3852,7 +4222,7 @@ function concurrentTurnStartBody(index: number): Readonly<Record<string, unknown
     agentSessionId: testEntityId('as', `agent-session-${index}`),
     agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
     contextPackageId: `context-package-${index}`,
-    deadline: '2099-01-01T00:00:00.000Z',
+    deadline: submissionDeadline,
     leaseId: testEntityId('attempt', `lease-${index}`),
     packageSnapshotId: `package-snapshot-${index}`,
     threadId: testEntityId('th', `thread-${index}`),
@@ -3877,11 +4247,13 @@ function harnessOperation(coreDb: ReturnType<typeof openCoreDb>): {
   operation: string;
   state: string;
 } {
-  const row = coreDb.sqlite
-    .prepare(
-      'SELECT operation, operation_state AS state FROM harness_instance_records WHERE harness_instance_id = ?'
-    )
-    .get('harness-1');
+  const row = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    sqlite
+      .prepare(
+        'SELECT operation, operation_state AS state FROM harness_instance_records WHERE harness_instance_id = ?'
+      )
+      .get('harness-1')
+  );
   return row as { operation: string; state: string };
 }
 
@@ -3891,21 +4263,26 @@ function recordFinalStatus(
   status: 'completed' | 'failed',
   stopReason: 'completed' | 'error'
 ): void {
-  recordWorkerControlAcceptedRecord(coreDb, {
-    acceptedAt: now,
-    lineage: {
-      agentSessionId: testEntityId('as', 'agent-session-1'),
-      packageSnapshotId: 'package-snapshot-1',
-      requestId: 'request-1',
-      threadId: testEntityId('th', 'thread-1'),
-      turnId: testEntityId('tu', 'turn-1'),
-      workspaceId: testEntityId('ws', 'workspace-1'),
-    },
-    operation: 'final_status',
-    record: { sequence: 1, status, stopReason },
-    recordKey: '1',
-    sequence: 1,
-  });
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+    writeWorkerControlAcceptedRecord(
+      { sqlite },
+      {
+        acceptedAt: now,
+        lineage: {
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          packageSnapshotId: 'package-snapshot-1',
+          requestId: 'request-1',
+          threadId: testEntityId('th', 'thread-1'),
+          turnId: testEntityId('tu', 'turn-1'),
+          workspaceId: testEntityId('ws', 'workspace-1'),
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status, stopReason },
+        recordKey: '1',
+        sequence: 1,
+      }
+    )
+  );
 }
 
 /** Returns the queued `session.open` body for the fixture's opening binding. */
@@ -3935,8 +4312,8 @@ async function openOpeningBindingDb(
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
-  seedRuntimeTarget(coreDb);
-  await createNanoHostHarnessRuntime(coreDb, {
+  await seedRuntimeTarget(coreDb);
+  await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
     maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: '0.153.4',
@@ -3952,7 +4329,7 @@ async function openOpeningBindingDb(
     runtimeTargetId: 'nanohost-a1',
     timestamp: now,
   });
-  await openNanoHostAgentSessionBinding(coreDb, {
+  await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
     nativeEnvironment,
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId: identities?.agentSessionId ?? testEntityId('as', 'agent-session-1'),
@@ -3973,8 +4350,8 @@ async function openActiveTurnDb(
 ): Promise<ReturnType<typeof openCoreDb>> {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), prefix)));
   applyMigrations(coreDb);
-  seedRuntimeTarget(coreDb);
-  await createNanoHostHarnessRuntime(coreDb, {
+  await seedRuntimeTarget(coreDb);
+  await createNanoHostHarnessRuntime(await fixtureHarnessWriter(coreDb), {
     maxActiveTurns,
     adapterId: 'codex',
     adapterVersion: '0.153.4',
@@ -3990,7 +4367,7 @@ async function openActiveTurnDb(
     runtimeTargetId: 'nanohost-a1',
     timestamp: now,
   });
-  await openNanoHostAgentSessionBinding(coreDb, {
+  await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId: testEntityId('as', 'agent-session-1'),
     agentSessionRuntimeBindingId: 'agent-session-binding-1',
@@ -4009,7 +4386,7 @@ async function openActiveTurnDb(
       agentSessionRuntimeBindingId: 'agent-session-binding-1',
       contextPackageId: 'context-package-1',
       contextRef: 'sandbox://context/1',
-      deadline: '2099-01-01T00:00:00.000Z',
+      deadline: submissionDeadline,
       leaseId: testEntityId('attempt', 'lease-1'),
       packageSnapshotId: 'package-snapshot-1',
       threadId: testEntityId('th', 'thread-1'),
@@ -4074,20 +4451,19 @@ async function seedSubmittedAttempt(
     ),
     workspaceId: testEntityId('ws', 'workspace-1'),
   });
-  recordTestExecutionAttempt(coreDb, {
+  const attempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: testEntityId('attempt', `lease-${index}`),
     agentSessionId: testEntityId('as', `agent-session-${index}`),
     inputRef: `package-snapshot-${index}`,
     bindingRef: testEntityId('tu', `turn-route-binding-${index}`),
     sessionCompatibilityKey: 'b'.repeat(64),
-    operationId: `submit:turn-${index}`,
     now: () => now,
   });
   await recordWorkerBackendSessionMaterializing(coreDb, {
     identity: {
       agentSessionId: testEntityId('as', `agent-session-${index}`),
-      backendKind: 'nanohost',
+      backendKind: 'openshell',
       backendSessionId: `nanohost-sandbox-fixture-${index}`,
       deploymentId: 'deployment-a1',
       packageSnapshotId: `package-snapshot-${index}`,
@@ -4108,18 +4484,53 @@ async function seedSubmittedAttempt(
     now: () => now,
     sandboxBindingRef: testEntityId('tu', `turn-route-binding-${index}`),
   });
+  const owner = await fixtureHarnessWriter(coreDb);
+  await owner.backendSession({
+    kind: 'transition',
+    attemptId: attempt.attemptId,
+    fromState: 'materializing',
+    toState: 'materialized',
+    observedAt: now,
+  });
+  seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attempt.attemptId);
+  const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, 'nanohost-a1')
+  );
+  if (!target) throw new Error('Submitted fixture requires its exact Native RuntimeTarget.');
+  retainPreparedTestNanoHostSubmission(coreDb, {
+    admission: entry,
+    attemptId: attempt.attemptId,
+    targetId: target.targetId,
+    generation: String(target.connectionGeneration),
+    observedAt: now,
+    exclusionRefs: [`thread:${entry.threadId}`, `turn:${entry.turnId}`],
+  });
+}
+
+/** Combines the exact bytes of the two files that now hold the original witness. */
+function serializeFixtureAuthority(coreDb: ReturnType<typeof openCoreDb>): Buffer {
+  const core = coreDb.sqlite.serialize();
+  const native = readAdmittedTestNanoHost(coreDb, (sqlite) => sqlite.serialize());
+  const lengths = Buffer.alloc(16);
+  lengths.writeBigUInt64LE(BigInt(core.length));
+  lengths.writeBigUInt64LE(BigInt(native.length), 8);
+  return Buffer.concat([lengths, core, native]);
+}
+
+/** Returns the existing acknowledged Native writer for owner-local Harness operations. */
+async function fixtureHarnessWriter(coreDb: ReturnType<typeof openCoreDb>) {
+  return (await openAdmittedTestNanoHost(coreDb)).value.owner;
 }
 
 /** Seeds the configured RuntimeTarget that owns one private Sandbox projection. */
-function seedRuntimeTarget(coreDb: ReturnType<typeof openCoreDb>): void {
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_runtime_targets (
-         target_id, identity_id, deployment_id, connection_generation,
-         predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-       ) VALUES ('nanohost-a1', 'nanohost-a1', 'deployment-a1', 1, 1, 1, 1, ?, ?, 1)`
-    )
-    .run(physicalEpoch, now);
+async function seedRuntimeTarget(coreDb: ReturnType<typeof openCoreDb>) {
+  await recordTestNativeRuntimeTarget(coreDb, 'nanohost-a1', {
+    deploymentId: 'deployment-a1',
+    identityId: 'nanohost-a1',
+    allocationAt: now,
+    readyAt: now,
+    physicalEpoch,
+  });
 }
 
 /** Reads attempt evidence without a legacy grant projection or simulated lifecycle. */
@@ -4140,10 +4551,12 @@ function observeExecutionAttempts(
 
 /** Reads the exact native journal tuple independently of the production projection reader. */
 function readFixtureWorkspaceConsumption(coreDb: ReturnType<typeof openCoreDb>) {
-  const harness = coreDb.sqlite
-    .prepare(`SELECT harness_binding_ref, result_json, result_fingerprint
+  const harness = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    sqlite
+      .prepare(`SELECT harness_binding_ref, result_json, result_fingerprint
       FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`)
-    .get() as { harness_binding_ref: string; result_json: string; result_fingerprint: string };
+      .get()
+  ) as { harness_binding_ref: string; result_json: string; result_fingerprint: string };
   const result = JSON.parse(harness.result_json) as {
     operationId: string;
     sequence: number;
@@ -4254,7 +4667,11 @@ describe('private Login removal Core receipt boundary', () => {
         sequence: command.sequence,
         completedAt: settlement.timestamp,
       };
-      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding({ sqlite }, removal)
+        )
+      ).toBeNull();
       expect(() => readNanoHostHarnessCloseReceiver(coreDb, receiver)).toThrow();
       expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(false);
       expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
@@ -4287,7 +4704,7 @@ describe('private Login removal Core receipt boundary', () => {
           sequence: command.sequence + 1,
         })
       ).toThrow();
-      await drainNanoHostHarnessAdmission(coreDb, {
+      await drainNanoHostHarnessAdmission(await fixtureHarnessWriter(coreDb), {
         harnessBindingRef: 'harness-binding-1',
         timestamp: '2098-08-21T00:00:01.000Z',
       });
@@ -4339,9 +4756,13 @@ describe('private Login removal Core receipt boundary', () => {
         completedAt: settlement.timestamp,
       };
       expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
-      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding({ sqlite }, removal)
+        )
+      ).toBeNull();
       expect(requireNanoHostLoginRemoval(coreDb, removal)).toBe(settlement.timestamp);
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(await fixtureHarnessWriter(coreDb), {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: testEntityId('as', 'agent-session-2'),
         agentSessionRuntimeBindingId: 'agent-session-binding-2',
@@ -4351,9 +4772,11 @@ describe('private Login removal Core receipt boundary', () => {
         timestamp: settlement.timestamp,
         workspaceId: removal.workspaceId,
       });
-      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)?.agentSessionId).toBe(
-        testEntityId('as', 'agent-session-2')
-      );
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          readNanoHostThreadAgentSessionBinding({ sqlite }, removal)
+        )?.agentSessionId
+      ).toBe(testEntityId('as', 'agent-session-2'));
       expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
     } finally {
       coreDb.sqlite.close();
@@ -4377,10 +4800,12 @@ describe('ORACLE S5 Harness consumption authority', () => {
         if (state.endsWith('-history')) {
           // Fault injection after real owner-produced history: clearing current pointers must
           // never hide an unresolved prior attempt from the Core idle consumer.
-          db.sqlite
-            .prepare(`UPDATE agent_session_runtime_bindings
+          await seedAdmittedTestNanoHost(db, (sqlite) => {
+            sqlite
+              .prepare(`UPDATE agent_session_runtime_bindings
             SET current_turn_id=NULL,current_attempt_id=NULL,lifecycle_state='open'`)
-            .run();
+              .run();
+          });
           db.sqlite
             .prepare('UPDATE scheduler_execution_attempts SET phase=?')
             .run(state.split('-')[0]);
@@ -4424,7 +4849,11 @@ describe('ORACLE S5 Harness consumption authority', () => {
           sequence: command.sequence,
           completedAt: now,
         };
-        expect(readNanoHostThreadAgentSessionBinding(db, removal)).toBeNull();
+        expect(
+          readAdmittedTestNanoHost(db, (sqlite) =>
+            readNanoHostThreadAgentSessionBinding({ sqlite }, removal)
+          )
+        ).toBeNull();
         db.sqlite.close();
         db = openCoreDb(root);
         expect(readConsumedNanoHostHarnessResult(db, result) !== null).toBe(expectedConsumed);
@@ -4525,11 +4954,13 @@ describe('ORACLE S5 Harness consumption authority', () => {
         timestamp: now,
       });
       const readOriginal = () =>
-        db.sqlite
-          .prepare(
-            'SELECT result_json,result_fingerprint FROM harness_instance_records WHERE harness_instance_id=?'
-          )
-          .get(command.harnessInstanceId);
+        readAdmittedTestNanoHost(db, (sqlite) =>
+          sqlite
+            .prepare(
+              'SELECT result_json,result_fingerprint FROM harness_instance_records WHERE harness_instance_id=?'
+            )
+            .get(command.harnessInstanceId)
+        );
       const original = readOriginal();
       expect(readConsumedNanoHostHarnessResult(db, result)).toBeNull();
       // This existing double represents only the external Workspace ACK, not its transaction.

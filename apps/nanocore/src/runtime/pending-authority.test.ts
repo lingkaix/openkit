@@ -651,6 +651,7 @@ async function capturedFixture() {
     interception,
     workerMcpGateway: gateway,
     workerControlGateway: {
+      afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
       authenticatePackageToken: () => environmentPackage,
     } as unknown as WorkerControlGateway,
     runtimeConfig: () =>

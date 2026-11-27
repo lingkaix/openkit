@@ -86,6 +86,7 @@ export function registerWorkerControlRoutes({
     return {
       input: {
         authorization: c.req.header('authorization') ?? null,
+        signal: c.req.raw.signal,
         tokenFamily: 'worker-control' as const,
         recheckAdmission: () => assertExposureAvailable(c),
         onAuthenticated: (lineage: WorkerControlLineage) => {
@@ -530,7 +531,8 @@ function observeControlRequest(
 }
 
 /**
- * Stores product-safe evidence only after gateway authentication proved the request lineage.
+ * Stores product-safe evidence after gateway authentication. A transient ACK expiry must return
+ * before entering the writer that may still be held by the original request.
  *
  * @param input Rejection metadata from a worker-control route.
  */
@@ -549,7 +551,8 @@ async function quarantineWorkerControlRejection(input: {
     input.error.code === 'observation_limit_reached' ||
     // A shifted replay must not replace its refused fingerprint with other durable growth.
     (input.error.code === OBSERVATION_POSITION_CONFLICT.code &&
-      input.error.message === OBSERVATION_POSITION_CONFLICT.message)
+      input.error.message === OBSERVATION_POSITION_CONFLICT.message) ||
+    (input.error.status === 503 && input.error.code === 'worker_observation_storage_unavailable')
   ) {
     return;
   }

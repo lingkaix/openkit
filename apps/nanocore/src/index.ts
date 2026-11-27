@@ -14,8 +14,11 @@ import {
   createDefaultVaultUnlockState,
   createDefaultWorkerControlGateway,
   prepareCommunicationOwner,
+  prepareNanoHostOwner,
   prepareServerWorkOwner,
+  readNanoHostRestartCensus,
   restoreWorkspaceDeletionMutationAdmission,
+  settlePreparedNanoHostImage,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from './auth/bootstrap-ensure.js';
@@ -33,6 +36,7 @@ import {
   recordShutdownAuditEvent,
 } from './bootstrap/audit.js';
 import { acquireDataRootLock, type DataRootLock, dataRootLockPath } from './bootstrap/lock.js';
+import { bindBootNanoHostAttemptRecovery } from './bootstrap/nanohost-recovery.js';
 import { formatBootFailureMessage, runBootPhases } from './bootstrap/phases.js';
 import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import {
@@ -87,13 +91,11 @@ import {
   createVaultProviderCredentialResolver,
 } from './providers/vault-credential-resolver.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
-import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './runtime/nanohost-attempt-recovery.js';
-import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createProductionNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { recoverPendingRequestsAtBoot } from './runtime/pending-request-flow.js';
 import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
@@ -119,9 +121,8 @@ import {
   type ConfiguredWorkerLifecycleRuntime,
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
-import { getWorkerBackendSession } from './runtime/worker-backend-session-records.js';
 import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js';
-import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
+import type { WorkerControlFinalStatusAcceptedHook } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
@@ -153,6 +154,8 @@ import {
 } from './storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
+import { nanoHostStoreDescriptor } from './storage/nanohost-store-descriptor.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './storage/nanohost-transport-owner.js';
 import { openServerWorkProductReadHandle } from './storage/server-work-product-reads.js';
 import { serverWorkStorageDescriptor } from './storage/server-work-schema.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
@@ -202,6 +205,11 @@ let communicationBinding: Awaited<ReturnType<typeof prepareCommunicationOwner>> 
   owner: 'communication',
   reason: 'missing',
 };
+let nanoHostStorage: Awaited<ReturnType<typeof prepareNanoHostOwner>> = {
+  state: 'unavailable',
+  owner: 'nanohost',
+  reason: 'missing',
+};
 let freshCoreInitialization = false;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
@@ -209,7 +217,6 @@ let workerLifecycleRuntime: ConfiguredWorkerLifecycleRuntime | undefined;
 let runRecoveryMaintenance: SchedulerAttemptMaintenanceInput['runRecoveryMaintenance'] | undefined;
 let sharedStore: FsStore | undefined;
 let serverWorkReader: ControlStoreProductReadHandle | undefined;
-const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 // Recovery can stage files before the live configuration manager is assembled.
 let readFileReserveBytes = () =>
@@ -221,6 +228,10 @@ const nanoHostSessionDispatch = createProductionNanoHostSessionDispatch({
   get coreDb() {
     return coreDb;
   },
+  get nativeStorage() {
+    return nanoHostStorage;
+  },
+  settlePreparedImage: (input) => settlePreparedNanoHostImage(coreDb, nanoHostStorage, input),
   sessionAuthority: nanohostTransportSessionAuthority,
 });
 
@@ -507,11 +518,22 @@ const bootResult = await runBootPhases({
           coreDb: recoveryCoreDb,
           dataRoot,
         });
-        // The instance lock is held and transport admission has not started. No target can
-        // appear during this boot-only read; an empty set has no durable fence to publish.
-        // Existing targets still require the native deciding section and its FULL ACK.
-        if (recoveryCoreDb.sqlite.prepare('SELECT 1 FROM nanohost_runtime_targets LIMIT 1').get()) {
-          await fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
+        // Startup fences the exact admitted RuntimeTarget before any native transport starts.
+        const writer = getControlStoreWorkerClient();
+        const provisioned = freshCoreInitialization
+          ? await writer.provisionServerOwner(dataRoot, nanoHostStoreDescriptor)
+          : undefined;
+        nanoHostStorage =
+          provisioned?.state === 'unavailable'
+            ? provisioned
+            : await prepareNanoHostOwner(recoveryCoreDb, { enabled: () => true });
+        if (nanoHostStorage.state === 'ready') {
+          await nanoHostStorage.value.owner.releaseRefusal.reconcile();
+          const restart = await transitionAdmittedNanoHostRuntimeTarget(nanoHostStorage.value, {
+            kind: 'restart',
+            observedAt: new Date().toISOString(),
+          });
+          if (restart.state === 'unavailable') nanoHostStorage = { ...restart, owner: 'nanohost' };
         }
         // Startup owns abandoned private staging before dispatch and upload admission open.
         // A later read-only Store construction must not remove another live request's bytes.
@@ -520,9 +542,11 @@ const bootResult = await runBootPhases({
         await recoverServerKnowledgeManagerTurns(sharedStore);
         await recoverWorkspaceAssistantTurns(sharedStore);
         const recoveryStore = sharedStore;
+        let wakeRestartCloseout: WorkerControlFinalStatusAcceptedHook | undefined;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,
-          scheduleCommittedFinalStatusCloseout,
+          (accepted) => wakeRestartCloseout?.(accepted),
+          nanoHostStorage,
           async (lineage) => {
             const executor = requireBootValue(
               workerLifecycleRuntime,
@@ -541,6 +565,26 @@ const bootResult = await runBootPhases({
           // Defer snapshot reads until admission, after the shared manager is initialized below.
           readRuntimeConfig: () => runtimeConfigManager.current(),
           nanoHostSessionDispatch,
+          nanoHostRecovery: {
+            owner:
+              nanoHostStorage.state === 'ready'
+                ? { state: 'ready', value: nanoHostStorage.value.owner }
+                : nanoHostStorage,
+            ...(nanoHostStorage.state === 'ready'
+              ? {
+                  admitSubmission: nanoHostStorage.value.owner.firstSubmission,
+                  harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
+                  idleSandbox: {
+                    writeIdleHarnessDrain: nanoHostStorage.value.owner.writeIdleHarnessDrain,
+                    releaseStorage: nanoHostStorage.value.owner.releaseIdleSandboxStorage,
+                  },
+                  readWorkerCompletion: nanoHostStorage.value.owner.readWorkerCompletion,
+                  releaseTerminalScopes: nanoHostStorage.value.owner.releaseTerminalScopes,
+                  writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
+                  commitCloseout: nanoHostStorage.value.owner.classifyRecovery,
+                }
+              : {}),
+          },
           releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
           store: recoveryStore,
           vaultBackend: () =>
@@ -548,15 +592,28 @@ const bootResult = await runBootPhases({
           workerControlGateway: bootWorkerControlGateway,
         });
         const recoveryRuntime = workerLifecycleRuntime;
+        const admittedNanoHostRecovery =
+          nanoHostStorage.state === 'ready'
+            ? {
+                state: 'ready' as const,
+                value: bindBootNanoHostAttemptRecovery(nanoHostStorage.value.owner, {
+                  coreDb: recoveryCoreDb,
+                  reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
+                }),
+              }
+            : nanoHostStorage;
         const recoveryInput = {
           executionBackend: requireBootValue(
             recoveryRuntime.turnExecutor.executionBackend,
             'Execution backend was not initialized.'
           ),
-          reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
-          reconcileAcceptedFinalStatus: recoveryRuntime.reconcileAcceptedFinalStatus,
           store: recoveryStore,
+          admittedNanoHostRecovery,
+          reconcileExecutions: () => recoveryRuntime.executionReconciler.runOnce(),
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
+          awaitPreparedBackendCleanup: recoveryRuntime.awaitPreparedBackendCleanup,
+          prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
+          restoreBackendSession: recoveryRuntime.restoreBackendSession,
           isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
           projectRecoveredTurn: async (subject) => {
             const admission = requireSchedulerExecutionAttemptAdmissionContext(
@@ -611,14 +668,28 @@ const bootResult = await runBootPhases({
             }
             return { status: result.status };
           },
-          prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
-          restoreBackendSession: recoveryRuntime.restoreBackendSession,
         } satisfies RunNanoHostAttemptRecoveryInput;
         const schedulerRecovery = await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput);
         const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(
           recoveryCoreDb,
           recoveryInput
         );
+        const reconnects = readNanoHostRestartCensus(recoveryCoreDb, nanoHostStorage);
+        if (reconnects.state === 'ready') {
+          const pending = new Map(reconnects.value.map(({ grant }) => [grant.inputRef, grant]));
+          wakeRestartCloseout = ({ lineage, sandboxBindingRef }) => {
+            const grant = pending.get(lineage.packageSnapshotId);
+            if (!grant || grant.bindingRef !== sandboxBindingRef || grant.turnId !== lineage.turnId)
+              return;
+            pending.delete(lineage.packageSnapshotId);
+            void runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput).catch(() => {
+              pending.set(lineage.packageSnapshotId, grant);
+              console.warn('Worker final-status closeout requires recovery.');
+            });
+          };
+        } else if (reconnects.reason === 'recovery-required') {
+          console.warn('NanoHost reconnect census requires the admitted attempt evidence.');
+        }
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
@@ -654,15 +725,6 @@ const bootResult = await runBootPhases({
           native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),
           checkpoints: () => classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb),
         };
-        for (const row of recoveryCoreDb.sqlite
-          .prepare(
-            `SELECT input_ref AS packageSnapshotId
-             FROM scheduler_execution_attempts
-             WHERE recovery_state = 'awaiting-reconnect'`
-          )
-          .all() as Array<{ readonly packageSnapshotId: string }>) {
-          restartCloseoutPackageSnapshots.add(row.packageSnapshotId);
-        }
         return schedulerRestartRecoveryOutcome(
           [...schedulerRecovery.failedAttemptIds, ...nativeRecovery.failedAttemptIds],
           checkpointRecoveryFailures
@@ -881,6 +943,8 @@ const app = createApp({
   },
   mode,
   nanoHostSessionDispatch,
+  nanoHostStorage,
+  enableNanoHostEnrollment: true,
   nanohostTransportSessionAuthority,
   runtimeConfigManager,
   providerSubscriptionAccountManager,
@@ -911,6 +975,9 @@ startTelemetry({
   serviceVersion: releaseIdentity?.releaseTag ?? releaseIdentity?.sourceCommit ?? undefined,
   deploymentEnvironment: mode,
 });
+// Each startup Pending handoff reaches its first admission decision before either listener
+// binds: a shared writer failure stops Boot here, with neither the App nor NanoHost serving.
+await store.startupPendingDeliveryDecisions();
 appServer = appTlsListen
   ? serve(
       {
@@ -1044,36 +1111,6 @@ codexResetMaintenance = setInterval(() => {
     .catch(() => console.warn('Codex reset maintenance requires inspection.'));
 }, 5 * 60_000);
 codexResetMaintenance.unref();
-
-/** Schedules at most one process-local closeout for an accepted `final_status`. */
-function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
-  const database = coreDb;
-  const runtime = workerLifecycleRuntime;
-  const packageSnapshotId = input.lineage.packageSnapshotId;
-  if (!database || !runtime || !restartCloseoutPackageSnapshots.delete(packageSnapshotId)) {
-    return;
-  }
-  void (async () => {
-    const lease = database.sqlite
-      .prepare(
-        'SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE binding_ref = ?'
-      )
-      .get(input.sandboxBindingRef) as { readonly attemptId: string } | undefined;
-    const session = lease ? getWorkerBackendSession(database, lease.attemptId) : null;
-    if (!session) {
-      throw new Error('Accepted worker final status has no durable backend session.');
-    }
-    const result = await runtime.reconcileAcceptedFinalStatus(session);
-    await markSchedulerAttemptForTerminalTurn(database, result.turn);
-  })().catch((error) => {
-    restartCloseoutPackageSnapshots.add(packageSnapshotId);
-    console.warn(
-      `Worker final-status closeout failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  });
-}
 
 /**
  * Releases process-local resources during an orderly shutdown.

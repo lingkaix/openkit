@@ -62,6 +62,9 @@ export function applyControlExecutionAttempt(
         entry: { ...entry, backendId: input.backendId },
         preparationInput: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)),
         ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
+        ...(input.deferredQueueEntryIds === undefined
+          ? {}
+          : { deferredQueueEntryIds: input.deferredQueueEntryIds }),
         ...now,
       });
     }

@@ -22,12 +22,13 @@ import {
 } from '../runtime/execution-attempt-records.js';
 import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
+import { reopenAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { createMeasurementEffectFixture } from '../test-support/load-effect.fixture.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -238,6 +239,7 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
     // Existing fixture boundary supplies an authenticated outside AEP; every durable/current
     // Turn, Workspace, policy and capability predicate remains in the actual Tool route.
     workerControlGateway: {
+      afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
       authenticatePackageToken: () => aep,
     } as unknown as WorkerControlGateway,
   });
@@ -441,9 +443,11 @@ it('opens unborrowed Workspace and Server model capture as readers before native
 });
 
 it('uses reader opens through the first real simulator execution and retains its terminal Turn', async () => {
+  vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+  onTestFinished(() => vi.unstubAllEnvs());
   const f = await fixture();
   const agentSetup = createTestAgentSetup();
-  admitTestNativeEnvironment(f.coreDb, agentSetup.manifest);
+  await admitTestNativeEnvironmentForRoot(f.coreDb, agentSetup.manifest);
   await recordTestNativeRuntimeTarget(f.coreDb);
   const executor = new SimulatedTurnExecutor({
     coreDb: f.coreDb,
@@ -498,6 +502,7 @@ it('uses reader opens through the first real simulator execution and retains its
   await shutdownControlStoreWorkerClient();
   closeWorkspaceProductReadHandles(f.dataRoot);
   const fence = observeServingOpens([workspaceDbPath(f.dataRoot, f.workspace.id)]);
+  await reopenAdmittedTestNanoHost(f.coreDb);
   await throughFullCommit(() =>
     executor.startTurn(f.store, turn.id, text, {
       attemptId: attempt.attemptId,

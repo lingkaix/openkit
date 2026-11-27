@@ -20,6 +20,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import {
   findSchedulerAdmissionForWorkerLineage,
   listSchedulerAdmissionEntriesForWorkspace,
@@ -72,7 +73,7 @@ export interface GoalTaskPolicyContext {
   readonly environmentRevision?: string;
 }
 
-/** Canonical Turn content remains required; a metadata-only projection cannot establish Task authority. */
+/** Task authority reads exact Turn metadata and its original immutable input Item. */
 export type GoalTaskPolicyReadPort = Pick<
   FsStore,
   'getTurnMetadata' | 'getThread' | 'getTurn' | 'getThreadItem'
@@ -320,7 +321,7 @@ export function requiredTaskTurn(input: {
 function hasCollectedConversationTaskOrigin(input: {
   readonly workspaceId: string;
   readonly store: GoalTaskPolicyReadPort;
-  readonly turn: Turn;
+  readonly turn: Omit<Turn, 'items'>;
   readonly requestId: string;
 }): boolean {
   const { workspaceId, store, turn, requestId } = input;
@@ -419,9 +420,8 @@ export function readGoalTaskPolicyContext(input: {
   // Later Turns have their own Worker/package and can have a different human trigger.
   // Native Pending cause identifies system-authored frozen input; it supplies no Task scope.
   const pending = listThreadPendingRequests(db.sqlite, lineage.workspaceId, lineage.threadId);
-  const readWorkerSource = (scope: SchedulerExecutionLineage) => {
+  const readWorkerSource = (scope: SchedulerExecutionLineage, turn: Omit<Turn, 'items'>) => {
     const admission = findSchedulerAdmissionForWorkerLineage(coreDb, scope);
-    const turn = store.getTurn(scope.workspaceId, scope.threadId, scope.turnId);
     if (
       !admission ||
       admission.status !== 'admitted' ||
@@ -429,7 +429,11 @@ export function readGoalTaskPolicyContext(input: {
       schedulerAdmissionInputHash(admission) !== admission.inputHash
     )
       throw unavailable();
-    const turnInput = readScheduledAdmissionText(coreDb, admission);
+    const turnInput = readScheduledAdmissionText(
+      coreDb,
+      admission,
+      db.sqlite.readonly ? db : undefined
+    );
     if (turnInput === null) throw unavailable();
     const attempts = listSchedulerExecutionAttemptsForTurn(coreDb, scope).filter(
       (attempt) =>
@@ -448,9 +452,14 @@ export function readGoalTaskPolicyContext(input: {
     );
     // Direct Task checkpoints hash the original entry request before its structured expansion.
     // Exact structured bytes and their canonical context digest are checked below.
-    const initiatingItem = turn.items.find(
-      (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
-    );
+    const initiatingItemId = deriveEntityId('it', ['task-user', turn.id]);
+    let initiatingItem: ReturnType<GoalTaskPolicyReadPort['getThreadItem']>;
+    try {
+      initiatingItem = store.getThreadItem(scope.workspaceId, scope.threadId, initiatingItemId);
+    } catch (error) {
+      if (error instanceof StoreRecordNotFoundError) throw unavailable();
+      throw error;
+    }
     if (
       !attempt ||
       attempts.length !== 1 ||
@@ -460,7 +469,7 @@ export function readGoalTaskPolicyContext(input: {
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== admission.requestedAgentId ||
       !isDeepStrictEqual(turn.triggerActor, admission.triggerActor) ||
-      !initiatingItem ||
+      initiatingItem.id !== initiatingItemId ||
       initiatingItem.type !== 'user-message' ||
       initiatingItem.status !== 'completed' ||
       workspaceIdForOwner(initiatingItem.owner) !== scope.workspaceId ||
@@ -484,10 +493,13 @@ export function readGoalTaskPolicyContext(input: {
       throw unavailable();
     return { admission, turn, checkpoint, turnInput };
   };
-  const current = readWorkerSource(lineage);
+  const current = readWorkerSource(lineage, addressedTurn);
   // The Task owner declares these exact Thread and Turn names. Match that native source,
   // never the first parseable JSON or a later request that resembles a delegation.
-  const originalTurn = store.getTurn(lineage.workspaceId, lineage.threadId, original.turnId);
+  const originalTurn =
+    original.turnId === lineage.turnId
+      ? addressedTurn
+      : store.getTurnMetadata(lineage.workspaceId, lineage.threadId, original.turnId);
   const originalAttempts = listSchedulerExecutionAttemptsForTurn(coreDb, original).filter(
     (attempt) =>
       attempt.queueEntryId === original.queueEntryId &&
@@ -502,13 +514,21 @@ export function readGoalTaskPolicyContext(input: {
     !originalAttempt.inputRef
   )
     throw unavailable();
-  const source = readWorkerSource({
-    workspaceId: lineage.workspaceId,
-    threadId: lineage.threadId,
-    turnId: original.turnId,
-    agentSessionId: originalAttempt.agentSessionId,
-    packageSnapshotId: originalAttempt.inputRef,
-  });
+  const source =
+    originalTurn.id === addressedTurn.id &&
+    originalAttempt.agentSessionId === lineage.agentSessionId &&
+    originalAttempt.inputRef === lineage.packageSnapshotId
+      ? current
+      : readWorkerSource(
+          {
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+            turnId: original.turnId,
+            agentSessionId: originalAttempt.agentSessionId,
+            packageSnapshotId: originalAttempt.inputRef,
+          },
+          originalTurn
+        );
   const request = StructuredWorkerDelegationRequestSchema.parse(JSON.parse(source.turnInput));
   // Only the original Task preparation owns this required checkpoint and structured digest.
   if (

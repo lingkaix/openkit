@@ -6,7 +6,6 @@ import { WorkerEnvironmentImageDeclarationSchema } from '@openkit/app-api-schema
 import { EMPTY_BUILD_CONTEXT_DIGEST, EMPTY_BUILD_CONTEXT_REF } from '@openkit/config-schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { canonicalJson } from './context/worker-context-package.js';
-import { resolveAgentEnvironmentPackage } from './runtime/agent-environment.js';
 import { createFilesystemSnapshotManifest } from './runtime/filesystem-workspace-sync.js';
 import {
   createNanoHostEffectRequest,
@@ -21,10 +20,8 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
-import {
-  admitTestNativeEnvironment,
-  createTestNativeEnvironmentDb,
-} from './test-support/native-environment.js';
+import { createTestNativeEnvironmentDb } from './test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { materializeRuntimeImage } from './worker-environments/worker-environment-preparation.js';
 
 // #532 COORD06:59: these owners retain their encodings and use UTF-16 code-unit order.
@@ -357,8 +354,6 @@ describe.each(['en', 'de', 'sv'])(
         const resolveImage = async (argumentsValue: Record<string, string>) => {
           const agentSetup = createTestAgentSetup();
           agentSetup.manifest.runtime.image = buildDeclaration(argumentsValue);
-          // Admit defaults through the existing native fixture before the real AEP resolver runs.
-          admitTestNativeEnvironment(coreDb, agentSetup.manifest);
           const environmentPackage = await resolveAgentEnvironmentPackage({
             agentSetup,
             agentSessionId: 'as_00000000-0000-7895-8bf8-bb6a8790a424',

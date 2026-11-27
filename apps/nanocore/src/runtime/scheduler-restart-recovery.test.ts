@@ -11,7 +11,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { observeAppUpdatePreflight } from '../app-update/preflight.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -30,6 +30,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
+  requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -39,19 +40,34 @@ import {
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import * as dbOwner from '../storage/db.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { StoredEventPayloadV1Schema } from '../storage/retained-work-events-v1.js';
 import { StoredItemV1Schema } from '../storage/retained-work-items-v1.js';
 import { readBlockers } from '../storage/workspace-backup.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  seedAdmittedTestNanoHost,
+  testNanoHostRecoveryJoins,
+} from '../test-support/admitted-nanohost.js';
+import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import {
+  bootTestNanoHost,
+  keepTestDirectNanoHostRecovery,
+  testBootNanoHostRecovery,
+} from '../test-support/boot-nanohost-recovery.js';
 import { confirmContextDefaultsForApp } from '../test-support/context-defaults.js';
 import {
   createDemoStore,
@@ -66,7 +82,21 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  postTestNativeWorkerHeartbeat,
+  readTestNativeAttemptEvidence,
+  removeTestNativeWorkerAnchor,
+  retainPreparedTestNanoHostSubmission,
+  seedTestNanoHostCompletedWorkspaceHandoff,
+  seedTestNanoHostHeartbeat,
+  seedTestNanoHostWorkerLaunch,
+  submitTestNanoHostWorkerLease,
+} from '../test-support/nanohost-worker-lease.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+  transitionTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
@@ -95,14 +125,13 @@ import {
 import * as attempts from './execution-attempt-records.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import {
-  acceptNanoHostAttemptHeartbeat,
-  acceptNanoHostAttemptHeartbeatByBinding,
   adoptNanoHostAttemptReconnect,
   isNanoHostAttemptReconnectEligible,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
+  hasNanoHostAttemptPreEffectProof,
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
@@ -111,11 +140,7 @@ import {
   deriveNanoHostAgentSessionCompatibilityKey,
   openNanoHostAgentSessionBinding,
 } from './nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  recordNanoHostRuntimeTargetConnectionClose,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -143,13 +168,12 @@ import {
   listWorkerBackendSessions,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
-  transitionWorkerBackendSessionState,
   type WorkerBackendSessionState,
   workerBackendImageIdentity,
 } from './worker-backend-sessions.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import { WorkerControlGateway, type WorkerControlLineage } from './worker-control-gateway.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -158,6 +182,7 @@ import {
 } from './worker-governance-turn-executor.js';
 import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
 import {
+  type AdmittedWorkerStorageAttachment,
   activateWorkerStorageAttachment,
   createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
@@ -281,9 +306,15 @@ async function createFailedStartFixture(
   outcome = false,
   anchored = true,
   finalized = true,
-  workspaceInputIds: readonly string[] = []
+  workspaceInputIds: readonly string[] = [],
+  // A submitted failed start launched before its cleanup (production order); 'unlaunched' holds the
+  // original grant but failed before launch, straight to cleanup.
+  anchorSubmission: 'launched' | 'unlaunched' | 'retired-core-operation' = 'launched',
+  // Keeps the prepared attempt open (production state before any failed start) for fixtures that continue it.
+  leaveAttemptOpen = false
 ) {
   const coreDb = createFailedStartBase();
+  await openAdmittedTestNanoHost(coreDb);
   const dataRoot = coreDb.dataRoot;
   const store = new FsStore({ dataRoot });
   const threadId = testEntityId('th', `th_${suffix}`);
@@ -428,13 +459,7 @@ async function createFailedStartFixture(
     );
   }
   await store.updateTurn(turnId, { status: 'running' });
-  dispatchLease(
-    coreDb,
-    suffix,
-    { kind: 'user', id: LOCAL_USER_ID },
-    anchored,
-    finalized || anchored
-  );
+  dispatchLease(coreDb, suffix, { kind: 'user', id: LOCAL_USER_ID }, false, finalized || anchored);
   if (finalized || anchored) {
     const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
       suffix,
@@ -454,8 +479,16 @@ async function createFailedStartFixture(
   }
   // Before binding, a refused planned Session has no product Session or native execution to invent.
   if (anchored) {
-    await recordBackendSession(coreDb, suffix, 'cleaned');
-    const anchor = getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))!;
+    await recordBackendSession(
+      coreDb,
+      suffix,
+      'cleaned',
+      undefined,
+      anchorSubmission === 'launched' ? true : anchorSubmission
+    );
+    const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+    )!;
     const environmentPackage = requireAgentEnvironmentPackageSnapshot(
       workspaceDb,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -478,12 +511,17 @@ async function createFailedStartFixture(
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(projection.workspaceHandoffComplete).toBe(true);
-    await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-      attemptId: anchor.attemptId,
-      now: () => anchor.physicalCleanedAt!,
-    });
+    // A launched anchor completed its Native handoff before launch (production order); only an
+    // unlaunched anchor still carries the pending marker.
+    if (anchor.workspaceHandoffState === 'pending')
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+        attemptId: anchor.attemptId,
+        now: () => anchor.physicalCleanedAt!,
+      });
   }
-  if (anchored) {
+  if (leaveAttemptOpen) {
+    // The caller continues the open attempt.
+  } else if (anchored) {
     const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
       attemptId: testEntityId('attempt', `lease_${suffix}`),
       cause: 'turn-start-failed',
@@ -621,11 +659,12 @@ function observeExecutionAttempts(
 /** Existing failed-start fixture used to measure and challenge the retained recovery proof. */
 type FailedStartFixture = Awaited<ReturnType<typeof createFailedStartFixture>>;
 
-/** Counts actual Core statement invocations, including calls through cached prepared statements. */
+/** Counts owner statements, including calls through cached prepared statements. */
 function countRecoverySqlExecutions(coreDb: ReturnType<typeof openCoreDb>) {
   const statement = coreDb.sqlite.prepare('SELECT 1');
   const prototype = Object.getPrototypeOf(statement) as Database.Statement;
   const counts = { executions: 0, reads: 0 };
+  const nativePath = serverStoragePath(coreDb.dataRoot, 'nanohost');
   const restore: Array<() => void> = [];
   for (const method of ['get', 'all', 'iterate', 'run'] as const) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, method)!;
@@ -633,7 +672,7 @@ function countRecoverySqlExecutions(coreDb: ReturnType<typeof openCoreDb>) {
     Object.defineProperty(prototype, method, {
       ...descriptor,
       value: function (this: Database.Statement, ...parameters: unknown[]) {
-        if (this.database === coreDb.sqlite) {
+        if (this.database === coreDb.sqlite || this.database.name === nativePath) {
           counts.executions++;
           if (/^\s*(SELECT|WITH|EXPLAIN)\b/i.test(this.source)) counts.reads++;
         }
@@ -732,10 +771,12 @@ function recoveryProofSnapshot(f: FailedStartFixture) {
     session: f.store.getAgentSession(f.agentSessionId),
     events: f.store.getTurnEvents(f.turnId),
     attempts: recoveryAttemptDigest(f.coreDb),
-    backends: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid').all(),
-    bindings: f.coreDb.sqlite
-      .prepare('SELECT * FROM agent_session_runtime_bindings ORDER BY rowid')
-      .all(),
+    backends: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite.prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid').all()
+    ),
+    bindings: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite.prepare('SELECT * FROM agent_session_runtime_bindings ORDER BY rowid').all()
+    ),
   };
 }
 
@@ -771,51 +812,92 @@ function recoveryCostInput(f: FailedStartFixture) {
   };
 }
 
+/** Attaches contradictory Native evidence to the selected busy-history sibling. */
+function recordRecoverySiblingNativeEvidence(
+  f: FailedStartFixture,
+  siblingId: string,
+  field: 'worker_recovery_json' | 'worker_route_binding_json',
+  key: string,
+  value: string | number
+): void {
+  const sibling = attempts.requireSchedulerExecutionAttempt(f.coreDb, siblingId);
+  const written = mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+    sqlite
+      .prepare(`INSERT INTO worker_backend_sessions (
+      attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id,
+      backend_kind, deployment_id, backend_session_id, staging_directory_ref,
+      workspace_handoff_state, state, created_at, updated_at, runtime_target_id,
+      origin_physical_epoch, backend_lineage_json, sandbox_binding_ref, ${field}
+    )
+    SELECT ?, ?, ?, ?, ?, ?, backend_kind, deployment_id, ?, ?,
+      'pending', 'cleaned', created_at, updated_at, runtime_target_id,
+      origin_physical_epoch, backend_lineage_json, ?, ?
+    FROM worker_backend_sessions WHERE attempt_id = ?`)
+      .run(
+        siblingId,
+        sibling.workspaceId,
+        sibling.threadId,
+        sibling.turnId,
+        sibling.agentSessionId ?? testEntityId('as', siblingId),
+        `unproved-package:${siblingId}`,
+        `unproved-backend:${siblingId}`,
+        `server/runtime/worker-backend-sessions/${siblingId}`,
+        `unproved-binding:${siblingId}`,
+        JSON.stringify({ version: 1, [key]: value }),
+        f.attemptId
+      )
+  );
+  if (written.changes !== 1)
+    throw new Error('Sibling evidence requires the fixture RuntimeTarget.');
+}
+
 /** Adds retained runtime proof with independently chosen Session, Turn, and Attempt associations. */
-function recordRecoverySiblingBinding(
+async function recordRecoverySiblingBinding(
   f: FailedStartFixture,
   siblingId: string,
   match: 'session' | 'turn' | 'attempt' | 'unrelated',
   state: string
 ) {
   const timestamp = f.input.now();
-  f.coreDb.sqlite
-    .prepare(`INSERT INTO sandbox_runtime_records
+  await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+    sqlite
+      .prepare(`INSERT INTO sandbox_runtime_records
     (sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
      sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
      max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
      cleanup_state, created_at, updated_at)
     VALUES ('sandbox_cost', 'runtime-target-test', ?, 'sandbox-cost', 'integration-cost', ?, ?, 'test',
       2, 2, 1, 'open', 'ready', 'accepting', 'unknown', ?, ?)`)
-    .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), timestamp, timestamp);
-  f.coreDb.sqlite
-    .prepare(`INSERT INTO harness_instance_records
+      .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), timestamp, timestamp);
+    sqlite
+      .prepare(`INSERT INTO harness_instance_records
     (harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
      runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json, max_open_sessions,
      max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state, next_sequence,
      operation_state, created_at, updated_at)
     VALUES ('harness_cost', 'sandbox_cost', 'harness-cost', ?, 'codex', 'codex', 'test', 1, '[]',
       2, 1, 1, 1, 'open', 'accepting', 1, 'idle', ?, ?)`)
-    .run('a'.repeat(64), timestamp, timestamp);
-  f.coreDb.sqlite
-    .prepare(`INSERT INTO agent_session_runtime_bindings
+      .run('a'.repeat(64), timestamp, timestamp);
+    sqlite
+      .prepare(`INSERT INTO agent_session_runtime_bindings
     (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
      agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
      current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
     VALUES ('binding_cost', 'harness_cost', ?, 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000164', ?, 1, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)`)
-    .run(
-      match === 'session'
-        ? testEntityId('as', `as_${siblingId}`)
-        : testEntityId('as', 'as_unrelated_binding'),
-      'a'.repeat(64),
-      state === 'malformed' ? '' : 'absent',
-      state === 'malformed' ? 'closed' : state,
-      match === 'turn' ? f.turnId : testEntityId('tu', 'turn_unrelated_binding'),
-      match === 'attempt' ? siblingId : testEntityId('attempt', 'attempt_unrelated_binding'),
-      timestamp,
-      timestamp,
-      'a'.repeat(64)
-    );
+      .run(
+        match === 'session'
+          ? testEntityId('as', `as_${siblingId}`)
+          : testEntityId('as', 'as_unrelated_binding'),
+        'a'.repeat(64),
+        state === 'malformed' ? '' : 'absent',
+        state === 'malformed' ? 'closed' : state,
+        match === 'turn' ? f.turnId : testEntityId('tu', 'turn_unrelated_binding'),
+        match === 'attempt' ? siblingId : testEntityId('attempt', 'attempt_unrelated_binding'),
+        timestamp,
+        timestamp,
+        'a'.repeat(64)
+      );
+  });
 }
 
 describe('failed-start busy-history proof cost (#164)', () => {
@@ -846,7 +928,17 @@ describe('failed-start busy-history proof cost (#164)', () => {
       reads: number;
     }> = [];
     for (const siblings of [0, 378, 37800]) {
-      const f = await createFailedStartFixture(`cost_${siblings}`);
+      const f = await createFailedStartFixture(
+        `cost_${siblings}`,
+        false,
+        true,
+        true,
+        [],
+        'retired-core-operation'
+      );
+      // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+      // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+      keepTestDirectNanoHostRecovery(f.coreDb);
       await terminalizeRecoveryCostFixture(f);
       seedRecoveryBusyHistory(f, siblings);
       const before = recoveryProofSnapshot(f);
@@ -917,32 +1009,41 @@ describe('failed-start busy-history proof cost (#164)', () => {
       ['invalid-deadline', 'deadline', 'invalid'],
       ['invalid-created-at', 'created_at', 'invalid'],
       ['empty-binding', 'binding_ref', ''],
-      ['empty-backend', 'backend_id', ''],
-      ['heartbeat', 'last_accepted_heartbeat_at', '2026-07-05T00:00:00.000Z'],
-      ['sequence-zero', 'last_worker_sequence', 0],
-      ['process-key', 'worker_process_key_hash', 'a'.repeat(64)],
-      ['control-token', 'worker_control_token_hash', 'a'.repeat(64)],
-      ['inference-token', 'worker_inference_token_hash', 'b'.repeat(64)],
-      ['capability-token', 'worker_capability_token_hash', 'c'.repeat(64)],
-      ['empty-heartbeat', 'last_accepted_heartbeat_at', ''],
-      ['empty-process-key', 'worker_process_key_hash', ''],
-      ['empty-token', 'worker_control_token_hash', ''],
+      ['heartbeat', 'lastAcceptedHeartbeatAt', '2026-07-05T00:00:00.000Z', 'worker_recovery_json'],
+      ['sequence-zero', 'lastWorkerSequence', 0, 'worker_recovery_json'],
+      ['process-key', 'workerProcessKeyHash', 'a'.repeat(64), 'worker_recovery_json'],
+      ['control-token', 'control', 'a'.repeat(64), 'worker_route_binding_json'],
+      ['inference-token', 'inference', 'b'.repeat(64), 'worker_route_binding_json'],
+      ['capability-token', 'capability', 'c'.repeat(64), 'worker_route_binding_json'],
+      ['empty-heartbeat', 'lastAcceptedHeartbeatAt', '', 'worker_recovery_json'],
+      ['empty-process-key', 'workerProcessKeyHash', '', 'worker_recovery_json'],
+      ['empty-token', 'control', '', 'worker_route_binding_json'],
     ] as const;
-    const f = await createFailedStartFixture('cost_conflict');
+    const f = await createFailedStartFixture(
+      'cost_conflict',
+      false,
+      true,
+      true,
+      [],
+      'retired-core-operation'
+    );
     try {
       await terminalizeRecoveryCostFixture(f);
       const siblingId = seedRecoveryBusyHistory(f, 3)!;
       const baseline = recoveryProofSnapshot(f);
-      for (const [name, column, value] of variants) {
+      for (const [name, column, value, nativeField] of variants) {
         const label = `sibling ${name}`;
         const original = f.coreDb.sqlite
           .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
           .get(siblingId) as Record<string, string | number | null>;
         const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
-          f.coreDb.sqlite
-            .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-            .run(value, siblingId);
+          if (nativeField)
+            recordRecoverySiblingNativeEvidence(f, siblingId, nativeField, column, value!);
+          else
+            f.coreDb.sqlite
+              .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+              .run(value, siblingId);
           const before = recoveryProofSnapshot(f);
           const recovery = recoveryCostInput(f);
           try {
@@ -957,9 +1058,16 @@ describe('failed-start busy-history proof cost (#164)', () => {
           } finally {
             recovery.restore();
           }
-          f.coreDb.sqlite
-            .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-            .run(original[column], siblingId);
+          if (nativeField)
+            mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              sqlite
+                .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
+                .run(siblingId)
+            );
+          else
+            f.coreDb.sqlite
+              .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+              .run(original[column], siblingId);
           expect(recoveryProofSnapshot(f), label).toEqual(baseline);
         } finally {
           log.mockRestore();
@@ -984,11 +1092,21 @@ describe('failed-start busy-history proof cost (#164)', () => {
     ['unrelated', 'closed'],
   ] as const)('checks sibling binding %s %s without replay', async (match, state) => {
     const label = `sibling binding ${match} ${state}`;
-    const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
+    const f = await createFailedStartFixture(
+      `cost_binding_${match}_${state}`,
+      false,
+      true,
+      true,
+      [],
+      'retired-core-operation'
+    );
+    // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+    // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+    if (match === 'unrelated') keepTestDirectNanoHostRecovery(f.coreDb);
     await terminalizeRecoveryCostFixture(f);
     const siblingId = seedRecoveryBusyHistory(f, 3)!;
     const baseline = recoveryProofSnapshot(f);
-    recordRecoverySiblingBinding(f, siblingId, match, state);
+    await recordRecoverySiblingBinding(f, siblingId, match, state);
     const before = recoveryProofSnapshot(f);
     const recovery = recoveryCostInput(f);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1004,17 +1122,23 @@ describe('failed-start busy-history proof cost (#164)', () => {
       log.mockRestore();
       recovery.restore();
     }
-    f.coreDb.sqlite
-      .prepare(
-        'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-      )
-      .run('binding_cost');
-    f.coreDb.sqlite
-      .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
-      .run('harness_cost');
-    f.coreDb.sqlite
-      .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
-      .run('sandbox_cost');
+    await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+      sqlite
+        .prepare(
+          'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run('binding_cost');
+    });
+    await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+      sqlite
+        .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
+        .run('harness_cost');
+    });
+    await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+      sqlite
+        .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
+        .run('sandbox_cost');
+    });
     expect(recoveryProofSnapshot(f), label).toEqual(baseline);
     f.coreDb.sqlite.close();
   });
@@ -1023,13 +1147,20 @@ describe('failed-start busy-history proof cost (#164)', () => {
     const variants = ['cleaned', 'unknown', 'malformed'] as const;
     for (const proof of variants) {
       const label = `sibling backend ${proof}`;
-      const f = await createFailedStartFixture(`cost_backend_${proof}`);
+      const f = await createFailedStartFixture(
+        `cost_backend_${proof}`,
+        false,
+        true,
+        true,
+        [],
+        'retired-core-operation'
+      );
       await terminalizeRecoveryCostFixture(f);
       const siblingId = seedRecoveryBusyHistory(f, 3)!;
       const baseline = recoveryProofSnapshot(f);
-      const columns = f.coreDb.sqlite.pragma('table_info(worker_backend_sessions)') as Array<{
-        name: string;
-      }>;
+      const columns = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        sqlite.pragma('table_info(worker_backend_sessions)')
+      ) as Array<{ name: string }>;
       const replacements: Record<string, string> = {
         attempt_id: siblingId,
         agent_session_id: testEntityId('as', `as_${siblingId}`),
@@ -1041,11 +1172,13 @@ describe('failed-start busy-history proof cost (#164)', () => {
         ...(proof === 'malformed' ? { backend_lineage_json: 'invalid-json' } : {}),
       };
       const keys = columns.filter(({ name }) => name in replacements).map(({ name }) => name);
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
+      await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+        sqlite
+          .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
       SELECT ${columns.map(({ name }) => (name in replacements ? '?' : name)).join(', ')}
       FROM worker_backend_sessions WHERE attempt_id = ?`)
-        .run(...keys.map((name) => replacements[name]), f.attemptId);
+          .run(...keys.map((name) => replacements[name]), f.attemptId);
+      });
       const before = recoveryProofSnapshot(f);
       const recovery = recoveryCostInput(f);
       const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1062,9 +1195,9 @@ describe('failed-start busy-history proof cost (#164)', () => {
         log.mockRestore();
         recovery.restore();
       }
-      f.coreDb.sqlite
-        .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
-        .run(siblingId);
+      await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+        sqlite.prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?').run(siblingId);
+      });
       expect(recoveryProofSnapshot(f), label).toEqual(baseline);
       f.coreDb.sqlite.close();
     }
@@ -1082,7 +1215,15 @@ describe('terminal failed-start product recovery', () => {
     'cleanup-unknown',
   ] as const)('checks repeated failed-start settlement with busy history: %s', async (proof) => {
     const suffix = `busy_history_${proof}`;
-    const f = await createFailedStartFixture(suffix);
+    // Its busy attempts share the failed start's Workspace scope (retired seed kept; fixtures-7 md).
+    const f = await createFailedStartFixture(
+      suffix,
+      false,
+      true,
+      true,
+      [],
+      'retired-core-operation'
+    );
     const attemptId = testEntityId('attempt', `lease_${suffix}`);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -1126,23 +1267,29 @@ describe('terminal failed-start product recovery', () => {
           )
           .run(competingId);
       else if (proof === 'native-evidence')
-        f.coreDb.sqlite
-          .prepare(
-            'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
-          )
-          .run(competingId);
+        recordRecoverySiblingNativeEvidence(
+          f,
+          competingId,
+          'worker_recovery_json',
+          'lastWorkerSequence',
+          1
+        );
       else if (proof === 'cleanup-failed')
-        f.coreDb.sqlite
-          .prepare(
-            "UPDATE worker_backend_sessions SET state = 'cleanup-failed', physical_cleaned_at = NULL WHERE attempt_id = ?"
-          )
-          .run(attemptId);
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              "UPDATE worker_backend_sessions SET state = 'cleanup-failed', physical_cleaned_at = NULL WHERE attempt_id = ?"
+            )
+            .run(attemptId);
+        });
       else if (proof === 'cleanup-unknown')
-        f.coreDb.sqlite
-          .prepare(
-            'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
-          )
-          .run(attemptId);
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+            )
+            .run(attemptId);
+        });
       await terminalizeGovernedWorkerTurn({
         store: f.store,
         turnId: f.turnId,
@@ -1233,10 +1380,14 @@ describe('terminal failed-start product recovery', () => {
         db.sqlite.close();
       }
       expect(
-        getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'lease_pre_snapshot_108'))
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_pre_snapshot_108'))
+        )
       ).toBeNull();
       expect(
-        f.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_records').get()
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          sqlite.prepare('SELECT COUNT(*) AS count FROM worker_control_records').get()
+        )
       ).toEqual({ count: 0 });
       await recoverTestStartup(f.coreDb, input);
       expect(cleanup).not.toHaveBeenCalled();
@@ -1465,6 +1616,9 @@ describe('terminal failed-start product recovery', () => {
     'leaves complete %s publication unchanged across later passes and display refreshes',
     async (owner) => {
       const f = await createFailedStartFixture(`repeat_${owner}`, owner === 'maintenance');
+      // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+      // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+      if (owner === 'ordinary-owner') keepTestDirectNanoHostRecovery(f.coreDb);
       let timestamp = f.input.now();
       f.input.now = () => timestamp;
       try {
@@ -1559,11 +1713,13 @@ describe('terminal failed-start product recovery', () => {
           title: 'Worker Turn accepted',
           summary: 'Conversation continued with agent_codex_host.',
         });
-        const lease = requireNanoHostExecutionAttempt(
+        const lease = readTestNativeAttemptEvidence(
           f.coreDb,
           testEntityId('attempt', `lease_repeat_${owner}`)
         );
-        const backend = getWorkerBackendSession(f.coreDb, lease.attemptId);
+        const backend = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, lease.attemptId)
+        );
         const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         const pending = readPendingRequest(db.sqlite, `input_repeat_${owner}`);
         db.sqlite.close();
@@ -1577,8 +1733,12 @@ describe('terminal failed-start product recovery', () => {
           expect(durable.getTurnById(f.turnId)).toEqual(current);
           expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
           expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
-          expect(requireNanoHostExecutionAttempt(f.coreDb, lease.attemptId)).toEqual(lease);
-          expect(getWorkerBackendSession(f.coreDb, lease.attemptId)).toEqual(backend);
+          expect(readTestNativeAttemptEvidence(f.coreDb, lease.attemptId)).toEqual(lease);
+          expect(
+            readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, lease.attemptId)
+            )
+          ).toEqual(backend);
           const after = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
           expect(readPendingRequest(after.sqlite, `input_repeat_${owner}`)).toEqual(pending);
           after.sqlite.close();
@@ -1590,15 +1750,11 @@ describe('terminal failed-start product recovery', () => {
     }
   );
 
-  it.each([
-    'status',
-    'stop-reason',
-    'agent',
-    'session',
-    'error-code',
-    'error-message',
-    'completion-time',
-  ] as const)(
+  // Test value (11-22): 'agent', 'session', 'error-code', 'error-message' and 'completion-time'
+  // were deleted as duplicates. Like 'status', they reach the one whole-Turn isDeepStrictEqual
+  // branch (nanohost-attempt-recovery.ts "Failed-start terminal publication contradicts its decided
+  // Turn"). 'stop-reason' is its own condition.
+  it.each(['status', 'stop-reason'] as const)(
     'preserves a contradictory terminal %s and still maintains an independent lease',
     async (contradiction) => {
       const suffix = `publication_${contradiction}`;
@@ -1636,19 +1792,6 @@ describe('terminal failed-start product recovery', () => {
               turn: {
                 ...decided,
                 ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
-                ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
-                ...(contradiction === 'session'
-                  ? { agentSessionId: testEntityId('as', 'as_foreign') }
-                  : {}),
-                ...(contradiction === 'error-code'
-                  ? { error: { ...decided.error, code: 'delivery_unknown' } }
-                  : {}),
-                ...(contradiction === 'error-message'
-                  ? { error: { ...decided.error, message: 'A different failure.' } }
-                  : {}),
-                ...(contradiction === 'completion-time'
-                  ? { completedAt: '2026-10-02T23:59:00.000Z' }
-                  : {}),
               },
             },
           })
@@ -1684,7 +1827,7 @@ describe('terminal failed-start product recovery', () => {
             executorKind: 'worker',
           }
         );
-        dispatchLease(f.coreDb, sibling);
+        dispatchLease(f.coreDb, sibling, undefined, false);
         const siblingWorkspace = openWorkspaceDb(
           f.dataRoot,
           'ws_00000000-0000-7000-8000-000000000001'
@@ -1698,7 +1841,7 @@ describe('terminal failed-start product recovery', () => {
           siblingWorkspace.sqlite.close();
         }
         await admitFixtureJournal(f.coreDb, f.store, sibling);
-        await recordBackendSession(f.coreDb, sibling, 'cleaned');
+        await recordBackendSession(f.coreDb, sibling, 'cleaned', undefined, true);
         beginOwnedAttemptCloseout(f.coreDb, {
           attemptId: testEntityId('attempt', `lease_${sibling}`),
           firstTerminalCause: 'turn-start-failed',
@@ -1735,21 +1878,7 @@ describe('terminal failed-start product recovery', () => {
               publication.data.turn[key as keyof typeof before]
             )
         );
-        expect(differingFields).toEqual(
-          contradiction === 'stop-reason'
-            ? []
-            : [
-                contradiction === 'status'
-                  ? 'status'
-                  : contradiction === 'agent'
-                    ? 'agentId'
-                    : contradiction === 'session'
-                      ? 'agentSessionId'
-                      : contradiction === 'completion-time'
-                        ? 'completedAt'
-                        : 'error',
-              ]
-        );
+        expect(differingFields).toEqual(contradiction === 'stop-reason' ? [] : ['status']);
         const input = { ...f.input, store, cleanupBackendSession: vi.fn(async () => {}) };
         const completedAt = '2026-10-03T00:01:00.000Z';
         for (let pass = 0; pass < 2; pass += 1) {
@@ -1770,7 +1899,9 @@ describe('terminal failed-start product recovery', () => {
             )?.phase
           ).toBe('closed');
           expect(
-            getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${sibling}`))?.state
+            readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${sibling}`))
+            )?.state
           ).toBe('cleaned');
           expect(durable.getTurnById(testEntityId('tu', `turn_${sibling}`))).toMatchObject({
             status: 'failed',
@@ -1942,7 +2073,7 @@ describe('terminal failed-start product recovery', () => {
   it('recovers direct Task admission and successor continuity on the same Thread', async () => {
     const f = await createFailedStartFixture('worker_conversation', true);
     const setup = createTestAgentSetup();
-    admitTestNativeEnvironment(f.coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(f.coreDb, setup.manifest);
     await prepareReconnectLease(f.coreDb, 'worker_conversation_sibling');
     const recoveryInput = {
       ...f.input,
@@ -1954,7 +2085,9 @@ describe('terminal failed-start product recovery', () => {
       f.coreDb,
       testEntityId('attempt', 'lease_worker_conversation_sibling')
     );
-    const liveBackend = getWorkerBackendSession(f.coreDb, live.attemptId);
+    const liveBackend = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, live.attemptId)
+    );
     expect(liveBackend).not.toBeNull();
     let finishSubmit!: () => void;
     const submitGate = new Promise<void>((resolve) => {
@@ -2213,7 +2346,11 @@ describe('terminal failed-start product recovery', () => {
         ...live,
         updatedAt: expect.any(String),
       });
-      expect(getWorkerBackendSession(f.coreDb, live.attemptId)).toEqual(liveBackend);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, live.attemptId)
+        )
+      ).toEqual(liveBackend);
     } finally {
       finishSubmit();
       await Promise.allSettled(starts.mock.results.map((result) => result.value));
@@ -2311,7 +2448,11 @@ describe('terminal failed-start product recovery', () => {
       const f = await createFailedStartFixture(
         `contradictory_${contradiction}`,
         false,
-        ['package', 'request', 'runtime-binding'].includes(contradiction)
+        ['package', 'request', 'route-token', 'runtime-binding'].includes(contradiction),
+        true,
+        [],
+        // A Worker route binding contradicts only an anchor that never launched.
+        contradiction === 'route-token' ? 'unlaunched' : 'launched'
       );
       if (contradiction === 'package')
         await f.store.updateAgentSession(f.agentSessionId, {
@@ -2322,11 +2463,15 @@ describe('terminal failed-start product recovery', () => {
           .prepare('UPDATE scheduler_admission_entries SET request_id = ? WHERE turn_id = ?')
           .run('request_other', f.turnId);
       if (contradiction === 'route-token')
-        f.coreDb.sqlite
-          .prepare(
-            'UPDATE scheduler_execution_attempts SET worker_control_token_hash = ? WHERE turn_id = ?'
-          )
-          .run('a'.repeat(64), f.turnId);
+        mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          const changed = sqlite
+            .prepare(`UPDATE worker_backend_sessions
+            SET worker_route_binding_json = json_set(COALESCE(worker_route_binding_json, '{"version":1}'), '$.control', ?)
+            WHERE attempt_id = ?`)
+            .run('a'.repeat(64), f.attemptId);
+          if (changed.changes !== 1)
+            throw new Error('Route fault requires its exact Native anchor.');
+        });
       if (contradiction === 'anchor')
         f.coreDb.sqlite
           .prepare(
@@ -2336,43 +2481,49 @@ describe('terminal failed-start product recovery', () => {
       if (contradiction === 'stale-session')
         await f.store.updateAgentSession(f.agentSessionId, { stale: true });
       if (contradiction === 'runtime-binding') {
-        f.coreDb.sqlite
-          .prepare(`INSERT INTO sandbox_runtime_records
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(`INSERT INTO sandbox_runtime_records
         (sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
          sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
          max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
          cleanup_state, created_at, updated_at)
         VALUES ('sandbox_contradictory', 'runtime-target-test', ?, 'sandbox-binding-contradictory',
          'integration-binding-contradictory', ?, ?, 'test', 2, 2, 1, 'open', 'ready', 'accepting', 'unknown', ?, ?)`)
-          .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), f.input.now(), f.input.now());
-        f.coreDb.sqlite
-          .prepare(`INSERT INTO harness_instance_records
+            .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), f.input.now(), f.input.now());
+        });
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(`INSERT INTO harness_instance_records
         (harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
          runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json, max_open_sessions,
          max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state, next_sequence,
          operation_state, created_at, updated_at)
         VALUES ('harness_contradictory', 'sandbox_contradictory', 'harness-binding-contradictory', ?,
          'codex', 'codex', 'test', 1, '[]', 2, 1, 1, 1, 'open', 'accepting', 1, 'idle', ?, ?)`)
-          .run('a'.repeat(64), f.input.now(), f.input.now());
-        f.coreDb.sqlite
-          .prepare(`INSERT INTO agent_session_runtime_bindings
+            .run('a'.repeat(64), f.input.now(), f.input.now());
+        });
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(`INSERT INTO agent_session_runtime_bindings
       (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
        agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
        current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
       VALUES (?, ?, ?, ?, ?, ?, 1, 'absent', 'active', ?, ?, 1, 'unknown', ?, ?, ?)`)
-          .run(
-            'binding_contradictory',
-            'harness_contradictory',
-            f.agentSessionId,
-            'ws_00000000-0000-7000-8000-000000000001',
-            f.threadId,
-            'a'.repeat(64),
-            f.turnId,
-            testEntityId('attempt', `lease_contradictory_${contradiction}`),
-            f.input.now(),
-            f.input.now(),
-            'a'.repeat(64)
-          );
+            .run(
+              'binding_contradictory',
+              'harness_contradictory',
+              f.agentSessionId,
+              'ws_00000000-0000-7000-8000-000000000001',
+              f.threadId,
+              'a'.repeat(64),
+              f.turnId,
+              testEntityId('attempt', `lease_contradictory_${contradiction}`),
+              f.input.now(),
+              f.input.now(),
+              'a'.repeat(64)
+            );
+        });
       }
       const before = f.store.getTurnById(f.turnId);
       try {
@@ -2483,7 +2634,15 @@ describe('terminal failed-start product recovery', () => {
   it('preserves a live sibling and its exact awaiting-reconnect attempt', async () => {
     const f = await createFailedStartFixture('beside_live');
     f.input.now = () => '2026-07-05T00:01:00.000Z';
-    await prepareReconnectLease(f.coreDb, 'surviving_sibling');
+    const workspaceId = await createIndependentRecoveryWorkspace(f.coreDb, f.store);
+    await prepareReconnectLease(
+      f.coreDb,
+      'surviving_sibling',
+      true,
+      undefined,
+      undefined,
+      workspaceId
+    );
     const live = requireNanoHostExecutionAttempt(
       f.coreDb,
       testEntityId('attempt', 'lease_surviving_sibling')
@@ -2528,22 +2687,27 @@ describe('terminal failed-start product recovery', () => {
         db.sqlite.close();
       }
       if (owner === 'accepted-final')
-        recordWorkerControlAcceptedRecord(f.coreDb, {
-          acceptedAt: f.input.now(),
-          lineage: {
-            agentSessionId: f.agentSessionId,
-            packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
-            requestId: fixtureRequestId(`request_${suffix}`),
-            threadId: f.threadId,
-            turnId: f.turnId,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-          recordKey: '1',
-          sandboxBindingRef: `lease-binding:lease_${suffix}`,
-          sequence: 1,
-        });
+        mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          writeWorkerControlAcceptedRecord(
+            { sqlite },
+            {
+              acceptedAt: f.input.now(),
+              lineage: {
+                agentSessionId: f.agentSessionId,
+                packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+                requestId: fixtureRequestId(`request_${suffix}`),
+                threadId: f.threadId,
+                turnId: f.turnId,
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              },
+              operation: 'final_status',
+              record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+              recordKey: '1',
+              sandboxBindingRef: `lease-binding:lease_${suffix}`,
+              sequence: 1,
+            }
+          )
+        );
       const before = f.store.getTurnById(f.turnId);
       const session = f.store.getAgentSession(f.agentSessionId);
       try {
@@ -2581,8 +2745,16 @@ function testRecoveryInput(
     prepareBackendCleanup: () => false,
     restoreBackendSession: async () => {},
     reconcileAcceptedFinalStatus: async () => {},
+    // Boot passes the admitted NanoHost recovery of the same root (index.ts); an explicit input still wins.
+    ...bootRecovery(coreDb),
     ...input,
   };
+}
+
+/** The Boot recovery selection when this fixture root holds an admitted NanoHost opening. */
+function bootRecovery(coreDb: ReturnType<typeof createMigratedCoreDb>) {
+  const admittedNanoHostRecovery = testBootNanoHostRecovery(coreDb);
+  return admittedNanoHostRecovery ? { admittedNanoHostRecovery } : {};
 }
 
 /** Exercises the two independent startup owners in the order used by index.ts. */
@@ -2590,6 +2762,7 @@ async function recoverTestStartup(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   input: Parameters<typeof testRecoveryInput>[1]
 ) {
+  await bootTestNanoHost(coreDb);
   const current = testRecoveryInput(coreDb, input);
   const recovery = await runSchedulerRestartRecovery(coreDb, current);
   const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(coreDb, current);
@@ -2606,6 +2779,7 @@ async function drainTestRecovery(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   input: Parameters<typeof testRecoveryInput>[1]
 ) {
+  await bootTestNanoHost(coreDb);
   const current = testRecoveryInput(coreDb, input);
   await runSchedulerRecoveryMaintenance(coreDb, current);
   await runNanoHostAttemptRecoveryMaintenance(coreDb, current);
@@ -2634,7 +2808,7 @@ async function recordTestAgentEnvironmentPackage(
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   try {
     const setup = createTestAgentSetup();
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const sourceCommit = 'a'.repeat(40);
     const triggerActor = input.triggerActor ?? { kind: 'user' as const, id: LOCAL_USER_ID };
     const environmentPackage = await resolveAgentEnvironmentPackage({
@@ -2697,6 +2871,16 @@ async function recordTestAgentEnvironmentPackage(
   }
 }
 
+/** An independent writer must not share the held Workspace scope of the original attempt. */
+async function createIndependentRecoveryWorkspace(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  store: FsStore
+): Promise<string> {
+  const workspace = await store.createWorkspace('Independent recovery');
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
+  return workspace.id;
+}
+
 /** Persists the exact Generic and Native preparation boundary before any acknowledgement. */
 function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
@@ -2705,7 +2889,9 @@ function dispatchLease(
   submitted = true,
   nativePrepared = true,
   threadId = testEntityId('th', `th_${suffix}`),
-  admittedAt = '2026-07-05T00:00:01.000Z'
+  admittedAt = '2026-07-05T00:00:01.000Z',
+  admittedSubmission = false,
+  workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
 ): void {
   const responsible =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
@@ -2718,16 +2904,16 @@ function dispatchLease(
       .run(responsible, responsible, `${responsible}@restart.invalid`, at, at);
     coreDb.sqlite
       .prepare(
-        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, 'active', NULL, ?, NULL, 1, ?, ?)"
+        "INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)"
       )
       .run(
+        workspaceId,
         responsible,
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z',
         '2026-07-05T00:00:00.000Z'
       );
   }
-  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
@@ -2741,6 +2927,26 @@ function dispatchLease(
     workspaceId,
     now: () => admittedAt,
   });
+  if (admittedSubmission) {
+    const agentSessionId = testEntityId('as', `as_${suffix}`);
+    submitTestNanoHostWorkerLease(
+      coreDb,
+      entry,
+      `lease-binding:lease_${suffix}`,
+      {
+        agentSessionId,
+        packageSnapshotId: `aepsnap_${turnId}_${agentSessionId}`,
+        workerControlTokenHash: 'a'.repeat(64),
+        workerInferenceTokenHash: 'b'.repeat(64),
+        workerCapabilityTokenHash: 'c'.repeat(64),
+      },
+      {
+        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        observedAt: new Date(Date.parse(admittedAt) + 1_000).toISOString(),
+      }
+    );
+    return;
+  }
   if (!nativePrepared) {
     const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
       entry,
@@ -2754,22 +2960,67 @@ function dispatchLease(
       now: () => new Date(Date.parse(admittedAt) + 1_000).toISOString(),
     });
   } else {
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    const observedAt = new Date(Date.parse(admittedAt) + 1_000).toISOString();
     recordTestExecutionAttempt(coreDb, {
       entry,
-      attemptId: testEntityId('attempt', `lease_${suffix}`),
+      attemptId,
       agentSessionId: testEntityId('as', `as_${suffix}`),
       inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
       bindingRef: `lease-binding:lease_${suffix}`,
       sessionCompatibilityKey: 'sha256:restart-fixture',
-      now: () => new Date(Date.parse(admittedAt) + 1_000).toISOString(),
-      ...(submitted ? { operationId: `operation_${suffix}` } : {}),
+      now: () => observedAt,
     });
+    // A submitted lease holds the production Core grant (operationId = commandInputHash of the submit).
+    if (submitted)
+      retainPreparedTestNanoHostSubmission(coreDb, {
+        admission: entry,
+        attemptId,
+        targetId: 'runtime-target-test',
+        generation: '1',
+        observedAt,
+      });
   }
 }
 
 /** Returns the non-reversible lease binding for one memory-only reconnect key. */
 function reconnectKeyHash(reconnectKey: string): string {
   return createHash('sha256').update(Buffer.from(reconnectKey, 'base64url')).digest('base64url');
+}
+
+/**
+ * Presents one Worker reconnect heartbeat to the admitted owner, as the Worker control gateway does
+ * (`worker-control-gateway.ts` publish): the request lineage, the launch's control-token hash and the
+ * hashed process key. Production has no separate adoption step.
+ */
+async function presentReconnectHeartbeat(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  input: {
+    readonly acceptedAt: string;
+    readonly lineage: WorkerControlLineage;
+    readonly reconnectKey: string;
+    readonly sandboxBindingRef: string;
+    readonly workerSequence: number;
+  }
+) {
+  const { value: native } = await openAdmittedTestNanoHost(coreDb);
+  return native.owner.workerControlHeartbeat({
+    sandboxBindingRef: input.sandboxBindingRef,
+    lineage: input.lineage,
+    // The launching anchor registered this control-token hash (`recordBackendSession`).
+    tokenHash: 'a'.repeat(64),
+    payload: {
+      acceptedAt: input.acceptedAt,
+      reconnectProcessKeyHash: reconnectKeyHash(input.reconnectKey),
+      request: {
+        schemaVersion: 2,
+        lineage: input.lineage,
+        operation: 'heartbeat',
+        sequence: input.workerSequence,
+        body: { status: 'running' },
+      },
+    },
+  });
 }
 
 /** Creates one deterministic canonical 256-bit process key for a test worker. */
@@ -2791,13 +3042,13 @@ async function prepareReconnectLease(
   suffix: string,
   postLaunch = true,
   reconnectKey = reconnectKeyFor(suffix),
-  threadId = testEntityId('th', `th_${suffix}`)
+  threadId = testEntityId('th', `th_${suffix}`),
+  workspaceId?: string
 ): Promise<{ readonly lineage: WorkerControlLineage; readonly reconnectKey: string }> {
-  dispatchLease(coreDb, suffix, undefined, true, true, threadId);
-  const submitted = attempts.requireSchedulerExecutionAttempt(
-    coreDb,
-    testEntityId('attempt', `lease_${suffix}`)
-  );
+  dispatchLease(coreDb, suffix, undefined, false, true, threadId, undefined, false, workspaceId);
+  await recordBackendSession(coreDb, suffix, 'launching', threadId, true);
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
   attempts.acceptSchedulerExecutionObservation(
     coreDb,
     await new SimulatedTurnExecutor({ coreDb }).submit({
@@ -2805,12 +3056,7 @@ async function prepareReconnectLease(
       deadline: submitted.deadline!,
     })
   );
-  await recordBackendSession(coreDb, suffix, 'launching', threadId);
-  await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-    attemptId: testEntityId('attempt', `lease_${suffix}`),
-    now: () => '2026-07-05T00:00:04.000Z',
-  });
-  acceptNanoHostAttemptHeartbeat(coreDb, {
+  seedTestNanoHostHeartbeat(coreDb, {
     heartbeatTimeoutMs: 30_000,
     attemptId: testEntityId('attempt', `lease_${suffix}`),
     now: () => '2026-07-05T00:00:05.000Z',
@@ -2818,7 +3064,7 @@ async function prepareReconnectLease(
     workerSequence: 0,
   });
   if (postLaunch) {
-    acceptNanoHostAttemptHeartbeat(coreDb, {
+    seedTestNanoHostHeartbeat(coreDb, {
       heartbeatTimeoutMs: 30_000,
       attemptId: testEntityId('attempt', `lease_${suffix}`),
       now: () => '2026-07-05T00:00:06.000Z',
@@ -2833,10 +3079,56 @@ async function prepareReconnectLease(
       requestId: fixtureRequestId(`request_${suffix}`),
       threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId: submitted.workspaceId,
     },
     reconnectKey,
   };
+}
+
+/** Retains the exact Core submit and then loses only its acknowledged Native backend anchor. */
+async function loseOriginalBackendAnchor(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  suffix: string,
+  disposition: 'accepted' | 'unknown' = 'unknown'
+) {
+  dispatchLease(coreDb, suffix, undefined, false);
+  await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+  expect(submitted.operationId).toBe(fixtureSubmitOperationId(suffix));
+  const retained =
+    disposition === 'accepted'
+      ? attempts.acceptSchedulerExecutionObservation(
+          coreDb,
+          await new SimulatedTurnExecutor({ coreDb }).submit({
+            ...attempts.schedulerExecutionCorrelation(submitted),
+            deadline: submitted.deadline!,
+          })
+        )
+      : submitted;
+  expect(retained.disposition).toBe(disposition);
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+  ).toMatchObject({ attemptId, state: 'launching' });
+  removeTestNativeWorkerAnchor(coreDb, attemptId);
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+  ).toBeNull();
+  return retained;
+}
+
+/** The original submit operationId the production grant writer derives for one fixture suffix. */
+function fixtureSubmitOperationId(suffix: string): string {
+  return commandInputHash({
+    attemptId: testEntityId('attempt', `lease_${suffix}`),
+    inputRef: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+    operation: 'submit',
+  });
+}
+
+/** The deployment identity of the Data Root: production placements always carry the layout marker's value. */
+function testDeploymentId(coreDb: ReturnType<typeof createMigratedCoreDb>): string {
+  return readDataRootLayoutMarker(coreDb.dataRoot).deploymentId;
 }
 
 /** Returns one production-shaped NanoHost backend attempt identity for a fixture suffix. */
@@ -2845,40 +3137,60 @@ function testNanoHostBackendSessionId(suffix: string): string {
   return `nh-${digest.slice(0, 16)}-${digest.slice(16, 32)}`;
 }
 
+/** Retains the original submit grant through the production Core grant writer for one fixture attempt. */
+function retainFixtureSubmission(
+  coreDb: ReturnType<typeof createMigratedCoreDb>,
+  attemptId: string
+): void {
+  const prepared = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+  const admission = requireSchedulerAdmissionEntry(coreDb, prepared.queueEntryId);
+  const placement = readAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const session = getWorkerBackendSession({ sqlite }, attemptId);
+    const target = session && getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId);
+    if (!session || !target || session.originPhysicalEpoch !== target.physicalEpoch)
+      throw new Error('Fixture submission has no original Native placement.');
+    return {
+      runtimeTargetId: target.targetId,
+      identityId: target.identityId,
+      deploymentId: session.deploymentId,
+      physicalEpoch: session.originPhysicalEpoch,
+      connectionGeneration: target.connectionGeneration,
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      agentSessionId: session.agentSessionId,
+    };
+  });
+  retainPreparedTestNanoHostSubmission(coreDb, {
+    admission,
+    attemptId,
+    targetId: placement.runtimeTargetId,
+    generation: String(placement.connectionGeneration),
+    observedAt: prepared.createdAt,
+    authorityRefs: [admission.queueEntryId, commandInputHash(placement)],
+  });
+}
+
 /** Records one durable backend anchor and advances it to the requested state. */
 async function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
   state: WorkerBackendSessionState = 'materializing',
-  threadId = testEntityId('th', `th_${suffix}`)
+  threadId = testEntityId('th', `th_${suffix}`),
+  submitAfterAnchor: boolean | 'unlaunched' | 'retired-core-operation' = false
 ): Promise<void> {
-  const existingRuntimeTarget = coreDb.sqlite
-    .prepare('SELECT target_id FROM nanohost_runtime_targets LIMIT 1')
-    .get() as { readonly target_id: string } | undefined;
-  if (!existingRuntimeTarget) {
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: 'deployment-test',
-      identityId: 'identity-test',
-      observedAt: '2026-07-05T00:00:00.000Z',
-      targetId: 'runtime-target-test',
-    });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...allocated,
-      freshEmpty: true,
-      observedAt: '2026-07-05T00:00:01.000Z',
-      physicalEpoch: 'a'.repeat(64),
-      predecessorFenced: true,
-      ready: true,
-    });
-  }
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test', {
+    deploymentId: testDeploymentId(coreDb),
+    identityId: 'identity-test',
+    allocationAt: '2026-07-05T00:00:00.000Z',
+    readyAt: '2026-07-05T00:00:01.000Z',
+  });
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  const { workspaceId } = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {
     applyScopedMigrations(workspaceDb);
     if (
-      !listExportableAgentEnvironmentPackageSnapshots(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001'
-      ).some(
+      !listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId).some(
         (record) =>
           record.snapshotId ===
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
@@ -2900,7 +3212,7 @@ async function recordBackendSession(
       agentSessionId: testEntityId('as', `as_${suffix}`),
       backendKind: 'openshell',
       backendSessionId: testNanoHostBackendSessionId(suffix),
-      deploymentId: 'deployment-test',
+      deploymentId: testDeploymentId(coreDb),
       packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
       runtimeTargetId: 'runtime-target-test',
       stagingDirectoryRef: `server/runtime/worker-backend-sessions/aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
@@ -2909,32 +3221,83 @@ async function recordBackendSession(
     lineage: {
       threadId,
       turnId: testEntityId('tu', `turn_${suffix}`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     },
     now: () => '2026-07-05T00:00:03.000Z',
     sandboxBindingRef: `lease-binding:lease_${suffix}`,
   });
+  // A launching anchor takes its original submit grant from the production Core grant writer
+  // (operationId = commandInputHash of the submit) after its Native handoff, as production does.
+  const retainSubmission = () => retainFixtureSubmission(coreDb, attemptId);
+  // Production binds the Worker routes with the original submit grant (the launching step below). A
+  // submitted anchor that reached cleanup therefore launched first, unless it failed before launch
+  // ('unlaunched'); an earlier anchor holds the grant without a Native launch.
+  const cleanupPath: WorkerBackendSessionState[] =
+    state === 'cleanup-pending'
+      ? ['cleanup-pending']
+      : state === 'cleanup-failed'
+        ? ['cleanup-pending', 'cleanup-failed']
+        : state === 'physical-cleaned'
+          ? ['cleanup-pending', 'physical-cleaned']
+          : state === 'cleaned'
+            ? ['cleanup-pending', 'physical-cleaned', 'cleaned']
+            : [];
+  const launchedFirst = submitAfterAnchor === true && cleanupPath.length > 0;
+  if (
+    (submitAfterAnchor === true && !launchedFirst && state !== 'launching') ||
+    submitAfterAnchor === 'unlaunched'
+  )
+    retainSubmission();
+  // Kept only for seeds whose later sibling attempts share this Workspace: a production grant holds the
+  // Workspace scope that no recovery or non-accepted closeout releases (fixtures-7 md, product rows).
+  if (submitAfterAnchor === 'retired-core-operation' && state !== 'launching') {
+    const prepared = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    attempts.recordSchedulerExecutionOperation(coreDb, {
+      attemptId,
+      operationId: `operation_${suffix}`,
+      submission: true,
+      now: () => prepared.createdAt,
+    });
+  }
   const path: WorkerBackendSessionState[] =
     state === 'materializing'
       ? []
       : state === 'materialized'
         ? ['materialized']
-        : state === 'launching'
-          ? ['materialized', 'launching']
-          : state === 'cleanup-pending'
-            ? ['cleanup-pending']
-            : state === 'cleanup-failed'
-              ? ['cleanup-pending', 'cleanup-failed']
-              : state === 'physical-cleaned'
-                ? ['cleanup-pending', 'physical-cleaned']
-                : ['cleanup-pending', 'physical-cleaned', 'cleaned'];
+        : state === 'launching' || launchedFirst
+          ? ['materialized', 'launching', ...cleanupPath]
+          : cleanupPath;
+  const { value: native } = await openAdmittedTestNanoHost(coreDb);
   let fromState: WorkerBackendSessionState = 'materializing';
   for (const toState of path) {
-    await transitionWorkerBackendSessionState(coreDb, {
+    if (toState === 'launching') {
+      // Production launches only a submitted anchor whose Native Workspace handoff is complete.
+      if (submitAfterAnchor !== true)
+        throw new Error('A launching anchor requires its original submission.');
+      // The modeled backend has no Workspace handle rows for the owner's handoff gate to verify.
+      seedTestNanoHostCompletedWorkspaceHandoff(coreDb, attemptId);
+      retainSubmission();
+      seedTestNanoHostWorkerLaunch(
+        coreDb,
+        attemptId,
+        {
+          agentSessionId: testEntityId('as', `as_${suffix}`),
+          packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+          workerControlTokenHash: 'a'.repeat(64),
+          workerInferenceTokenHash: 'b'.repeat(64),
+          workerCapabilityTokenHash: 'c'.repeat(64),
+        },
+        '2026-07-05T00:00:07.000Z'
+      );
+      fromState = toState;
+      continue;
+    }
+    await native.owner.backendSession({
+      kind: 'transition',
       fromState,
-      attemptId: testEntityId('attempt', `lease_${suffix}`),
+      attemptId,
       toState,
-      now: () => '2026-07-05T00:00:07.000Z',
+      observedAt: '2026-07-05T00:00:07.000Z',
     });
     fromState = toState;
   }
@@ -2949,7 +3312,9 @@ function recordCanonicalWorkspaceHandoff(
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   let backendSessionId: string;
   try {
-    const owner = listWorkerBackendSessions(coreDb).find(
+    const owner = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      listWorkerBackendSessions({ sqlite })
+    ).find(
       (record) =>
         record.agentSessionId === environmentPackage.scope.agentSessionId &&
         record.packageSnapshotId === environmentPackage.snapshotId
@@ -3067,48 +3432,89 @@ class RejectRecoveredTurnExecutor implements TurnExecutor {
   public async interruptTurn(): Promise<void> {}
 }
 
-/** Seeds the crash between physical materialization and Workspace handoff publication. */
-async function createHeldHandoffFixture(suffix: string, fenced: boolean) {
-  const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+/**
+ * Seeds a launched anchor whose Workspace handoff rows were never published (the modeled backend
+ * completes the Native handoff marker before launch, as production orders it; no Workspace rows exist).
+ */
+async function createHeldHandoffFixture(
+  suffix: string,
+  fenced: boolean,
+  anchorState: 'launching' | 'physical-cleaned' = 'launching'
+) {
+  const f = await createFailedStartFixture(
+    suffix,
+    false,
+    false,
+    true,
+    ['source'],
+    'launched',
+    true
+  );
   const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  // Production order: the anchor holds its original submit grant and completes its Native handoff before launch
+  // (the launching seed), and a physical-cleaned anchor launched first.
+  await recordBackendSession(f.coreDb, suffix, anchorState, undefined, true);
+  // Storage attaches during preparation, through the admitted Native owner while the attempt is still open.
+  const { value: nativeStorage } = await openAdmittedTestNanoHost(f.coreDb);
+  const storageTarget = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+    getNanoHostRuntimeTarget({ sqlite }, 'runtime-target-test')
+  );
+  if (!storageTarget) throw new Error('Fixture requires its recorded RuntimeTarget.');
+  const storageOwner: AdmittedWorkerStorageAttachment = {
+    attemptId,
+    target: storageTarget,
+    read: nativeStorage.owner.read,
+    write: nativeStorage.owner.writeStorageAttachment,
+    authorizeContributor: () => true,
+    isCurrentAttempt: () =>
+      attempts.requireSchedulerExecutionAttempt(f.coreDb, attemptId).phase === 'open',
+  };
+  const reserved = await createAndReserveWorkerStorageAttachment(
+    f.coreDb,
+    {
+      agentSessionId: f.agentSessionId,
+      authorizeContributor: () => true,
+      deploymentId: testDeploymentId(f.coreDb),
+      runtimeTargetId: 'runtime-target-test',
+      threadId: f.threadId,
+      workspaceId: workspaceIdForOwner(f.turn.owner),
+      purpose: 'work',
+      responsibleUserId: LOCAL_USER_ID,
+      layout: {
+        family: 'openkit-worker',
+        gid: 1000,
+        uid: 1000,
+        version: '1',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+        workingDirectory: '/tmp/openkit-bootstrap',
+      },
+    },
+    storageOwner
+  );
+  const storage = await activateWorkerStorageAttachment(
+    f.coreDb,
+    {
+      attachmentGeneration: reserved.attachmentGeneration,
+      expectedRevision: reserved.revision,
+      sandboxBindingRef: `lease-binding:lease_${suffix}`,
+      storageRef: reserved.storageRef,
+      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+    },
+    storageOwner
+  );
+  // Inject the retained closing fault only after the anchor acknowledged its launch.
   f.coreDb.sqlite
     .prepare(`UPDATE scheduler_execution_attempts
-    SET phase='open', terminal_cause=NULL, disposition='unknown',
-        operation_id=?, deadline=?, recovery_state=NULL
-    WHERE attempt_id=?`)
-    .run(`operation_${suffix}`, '2026-07-05T00:00:50.000Z', attemptId);
-  await recordBackendSession(f.coreDb, suffix, 'launching');
-  // The anchor owner requires a live attempt; inject the retained closing fault only after its FULL acknowledgement.
-  f.coreDb.sqlite
-    .prepare(`UPDATE scheduler_execution_attempts
-    SET phase='closing', terminal_cause='restart-native-recovery', recovery_state='needs-evidence'
+    SET phase='closing', terminal_cause='restart-native-recovery'
     WHERE attempt_id=?`)
     .run(attemptId);
-  const reserved = await createAndReserveWorkerStorageAttachment(f.coreDb, {
-    agentSessionId: f.agentSessionId,
-    authorizeContributor: () => true,
-    deploymentId: 'deployment-test',
-    runtimeTargetId: 'runtime-target-test',
-    threadId: f.threadId,
-    workspaceId: workspaceIdForOwner(f.turn.owner),
-    purpose: 'work',
-    responsibleUserId: LOCAL_USER_ID,
-    layout: {
-      family: 'openkit-worker',
-      gid: 1000,
-      uid: 1000,
-      version: '1',
-      platform: { architecture: 'amd64', os: 'linux' },
-      targets: [{ target: '/sandbox' }, { target: '/workspace' }],
-      workingDirectory: '/tmp/openkit-bootstrap',
-    },
-  });
-  const storage = await activateWorkerStorageAttachment(f.coreDb, {
-    attachmentGeneration: reserved.attachmentGeneration,
-    expectedRevision: reserved.revision,
-    sandboxBindingRef: `lease-binding:lease_${suffix}`,
-    storageRef: reserved.storageRef,
-    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+  mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+    sqlite
+      .prepare(`UPDATE worker_backend_sessions
+        SET worker_recovery_json = json_set(COALESCE(worker_recovery_json, '{"version":1}'), '$.recoveryState', 'needs-evidence')
+        WHERE attempt_id = ?`)
+      .run(attemptId);
   });
   await f.store.updateAgentSession(f.agentSessionId, {
     retainedStorage: {
@@ -3139,14 +3545,19 @@ async function createHeldHandoffFixture(suffix: string, fenced: boolean) {
     },
   });
   if (fenced) {
-    const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-      deploymentId: 'deployment-test',
+    const generation = await transitionTestNativeRuntimeTarget(f.coreDb, {
+      kind: 'allocate',
+      deploymentId: testDeploymentId(f.coreDb),
       identityId: 'identity-test',
       observedAt: '2026-07-05T00:01:00.000Z',
       targetId: 'runtime-target-test',
     });
-    await upsertNanoHostRuntimeTarget(f.coreDb, {
-      ...generation,
+    await transitionTestNativeRuntimeTarget(f.coreDb, {
+      kind: 'ready',
+      connectionGeneration: generation.connectionGeneration,
+      deploymentId: generation.deploymentId,
+      identityId: generation.identityId,
+      targetId: generation.targetId,
       freshEmpty: true,
       predecessorFenced: true,
       ready: true,
@@ -3154,6 +3565,7 @@ async function createHeldHandoffFixture(suffix: string, fenced: boolean) {
       physicalEpoch: 'b'.repeat(64),
     });
   }
+  await bootTestNanoHost(f.coreDb);
   const input = testRecoveryInput(f.coreDb, {
     store: f.store,
     executionBackend: runtime.turnExecutor.executionBackend!,
@@ -3201,8 +3613,14 @@ describe('scheduler restart recovery', () => {
           await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)).rejects.toSatisfy(
             (error: unknown) => hasRecoveryFailure(error, 'Injected lost release acknowledgement.')
           );
-          expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closing');
-          expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+          expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId).phase).toBe(
+            'closing'
+          );
+          expect(
+            readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, f.attemptId)
+            )
+          ).toMatchObject({
             state: 'cleaned',
             workspaceHandoffState: 'complete',
           });
@@ -3230,7 +3648,9 @@ describe('scheduler restart recovery', () => {
         ).toEqual([]);
         expect(f.effects).toEqual([]);
         expect(
-          getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerStorageBinding({ sqlite }, { storageRef: f.storage.storageRef })
+          )
         ).toMatchObject({
           state: 'idle',
           storageRef: f.storage.storageRef,
@@ -3251,20 +3671,8 @@ describe('scheduler restart recovery', () => {
   it.each(['launching', 'physical-cleaned'] as const)(
     'FS-CORE T2a holds an unpublished handoff with %s cleanup while the original Epoch is unfenced',
     async (state) => {
-      const f = await createHeldHandoffFixture('fs_core_unfenced_handoff', false);
+      const f = await createHeldHandoffFixture('fs_core_unfenced_handoff', false, state);
       try {
-        if (state === 'physical-cleaned') {
-          await transitionWorkerBackendSessionState(f.coreDb, {
-            attemptId: f.attemptId,
-            fromState: 'launching',
-            toState: 'cleanup-pending',
-          });
-          await transitionWorkerBackendSessionState(f.coreDb, {
-            attemptId: f.attemptId,
-            fromState: 'cleanup-pending',
-            toState: 'physical-cleaned',
-          });
-        }
         const cleanup = vi.spyOn(f.input, 'cleanupBackendSession');
         await runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input);
         expect(f.store.getTurnById(f.turnId).status).toBe('running');
@@ -3272,15 +3680,21 @@ describe('scheduler restart recovery', () => {
           phase: 'closing',
           recoveryState: 'needs-evidence',
         });
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )
+        ).toMatchObject({
           state,
           physicalCleanedAt: state === 'physical-cleaned' ? expect.any(String) : null,
-          workspaceHandoffState: 'pending',
+          workspaceHandoffState: 'complete',
         });
         expect(cleanup).not.toHaveBeenCalled();
-        expect(getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })).toEqual(
-          f.storage
-        );
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerStorageBinding({ sqlite }, { storageRef: f.storage.storageRef })
+          )
+        ).toEqual(f.storage);
         expect(f.effects).toEqual([]);
       } finally {
         f.coreDb.sqlite.close();
@@ -3291,17 +3705,27 @@ describe('scheduler restart recovery', () => {
   it('FS-CORE T2a leaves a different backend untouched during native maintenance after listen', async () => {
     const f = await createHeldHandoffFixture('fs_core_other_backend', true);
     try {
-      f.coreDb.sqlite
-        .prepare('UPDATE scheduler_execution_attempts SET backend_id=? WHERE attempt_id=?')
-        .run('unavailable-backend', f.attemptId);
       const attempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
-      const backend = getWorkerBackendSession(f.coreDb, f.attemptId);
+      const backend = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, f.attemptId)
+      );
+      // The maintenance pass of a different execution backend owns none of this NanoHost attempt.
+      const otherBackend = Object.create(f.input.executionBackend, {
+        id: { value: 'unavailable-backend' },
+      });
       const cleanup = vi.spyOn(f.input, 'cleanupBackendSession');
       await expect(
-        runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)
+        runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
+          ...f.input,
+          executionBackend: otherBackend,
+        })
       ).resolves.toBeUndefined();
       expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toEqual(attempt);
-      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backend);
+      expect(
+        readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, f.attemptId)
+        )
+      ).toEqual(backend);
       expect(f.store.getTurnById(f.turnId).status).toBe('running');
       expect(cleanup).not.toHaveBeenCalled();
       expect(f.effects).toEqual([]);
@@ -3323,7 +3747,7 @@ describe('scheduler restart recovery', () => {
           const pkg = requireAgentEnvironmentPackageSnapshot(
             db,
             db.workspaceId,
-            requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).inputRef
+            attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId).inputRef!
           ).snapshot;
           recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:01:59.000Z');
           published = true;
@@ -3337,7 +3761,7 @@ describe('scheduler restart recovery', () => {
       await runNanoHostAttemptRecoveryMaintenance(f.coreDb, recoveryInput);
       expect(published).toBe(true);
       expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
-      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closed');
+      expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closed');
       const db = openWorkspaceDb(f.dataRoot, workspaceIdForOwner(f.turn.owner));
       try {
         expect(listBackendWorkspaceHandles(db, db.workspaceId)).toHaveLength(1);
@@ -3362,7 +3786,7 @@ describe('scheduler restart recovery', () => {
     async (boundary) => {
       const f = await createHeldHandoffFixture(`fs_core_raw_capture_${boundary}`, true);
       try {
-        const pkg = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).inputRef;
+        const pkg = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId).inputRef!;
         const identity = {
           workspaceId: workspaceIdForOwner(f.turn.owner),
           threadId: f.threadId,
@@ -3438,11 +3862,19 @@ describe('scheduler restart recovery', () => {
         expect(readFileSync(join(raw, 'complete'))).toEqual(bytes);
         expect(cleanup).not.toHaveBeenCalled();
         expect(f.store.getTurnById(f.turnId).status).toBe('running');
-        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closing');
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)?.physicalCleanedAt).toBeNull();
-        expect(getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })).toEqual(
-          f.storage
+        expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId).phase).toBe(
+          'closing'
         );
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )?.physicalCleanedAt
+        ).toBeNull();
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerStorageBinding({ sqlite }, { storageRef: f.storage.storageRef })
+          )
+        ).toEqual(f.storage);
         expect(f.effects).toEqual([]);
       } finally {
         f.coreDb.sqlite.close();
@@ -3504,7 +3936,9 @@ describe('scheduler restart recovery', () => {
       projectRecoveredTurn: async () => ({ status: 'failed' }),
     });
     const expectFencedAuthority = () => {
-      const backendSession = getWorkerBackendSession(coreDb, leaseId);
+      const backendSession = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, leaseId)
+      );
       expect(['cleanup-pending', 'cleanup-failed']).toContain(backendSession?.state);
       expect(backendSession?.physicalCleanedAt).toBeNull();
       expect(['open', 'closing']).toContain(
@@ -3513,14 +3947,16 @@ describe('scheduler restart recovery', () => {
 
       expect(effects).toEqual([]);
       expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              `SELECT
                (SELECT COUNT(*) FROM sandbox_runtime_records) AS sandboxes,
                (SELECT COUNT(*) FROM harness_instance_records) AS harnesses,
                (SELECT COUNT(*) FROM agent_session_runtime_bindings) AS bindings`
-          )
-          .get()
+            )
+            .get()
+        )
       ).toEqual({ bindings: 0, harnesses: 0, sandboxes: 0 });
     };
     const rejectUnexpectedRegistrations = () => {
@@ -3540,23 +3976,27 @@ describe('scheduler restart recovery', () => {
     };
 
     try {
-      dispatchLease(coreDb, suffix);
-      await recordBackendSession(coreDb, suffix, 'cleanup-pending');
-      coreDb.sqlite
-        .prepare(
-          `UPDATE worker_backend_sessions
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'cleanup-pending', undefined, true);
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            `UPDATE worker_backend_sessions
            SET runtime_target_id = ?
            WHERE attempt_id = ?`
-        )
-        .run(runtimeTargetId, leaseId);
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO nanohost_runtime_targets (
+          )
+          .run(runtimeTargetId, leaseId);
+      });
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            `INSERT INTO nanohost_runtime_targets (
              target_id, identity_id, deployment_id, connection_generation,
              predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
            ) VALUES (?, ?, 'deployment-test', 1, 1, 1, 1, ?, ?, 1)`
-        )
-        .run(runtimeTargetId, `identity_${suffix}`, 'a'.repeat(64), '2026-07-05T00:00:00.000Z');
+          )
+          .run(runtimeTargetId, `identity_${suffix}`, 'a'.repeat(64), '2026-07-05T00:00:00.000Z');
+      });
       expectFencedAuthority();
 
       const initialRuntime = createRuntime();
@@ -3566,9 +4006,10 @@ describe('scheduler restart recovery', () => {
       expect(resultOnlyRegistrations).toBe(1);
       const initialMaintenance = drainTestRecovery(coreDb, initialInput);
       const sameCoordinatorReadyAt = '2026-07-05T00:01:01.000Z';
-      await upsertNanoHostRuntimeTarget(coreDb, {
+      await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'ready',
         connectionGeneration: 1,
-        deploymentId: 'deployment-test',
+        deploymentId: testDeploymentId(coreDb),
         freshEmpty: true,
         identityId: `identity_${suffix}`,
         observedAt: sameCoordinatorReadyAt,
@@ -3586,25 +4027,29 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, /unknown/i)
       );
       expectFencedAuthority();
-      const fenceObservedAt = getWorkerBackendSession(coreDb, leaseId)?.updatedAt;
+      const fenceObservedAt = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, leaseId)
+      )?.updatedAt;
       if (!fenceObservedAt) {
         throw new Error('Poll-first unknown did not retain a durable backend fence time.');
       }
       expect(fenceObservedAt).toBe(recoveryTime);
       await expectMaintenanceFenced(initialInput);
 
-      coreDb.sqlite
-        .prepare(
-          `UPDATE nanohost_runtime_targets
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            `UPDATE nanohost_runtime_targets
            SET predecessor_fenced = 1, ready = 1, fresh_empty = 1,
                physical_epoch = ?, observed_at = ?
            WHERE target_id = ?`
-        )
-        .run(
-          'a'.repeat(64),
-          new Date(Date.parse(fenceObservedAt) - 1).toISOString(),
-          runtimeTargetId
-        );
+          )
+          .run(
+            'a'.repeat(64),
+            new Date(Date.parse(fenceObservedAt) - 1).toISOString(),
+            runtimeTargetId
+          );
+      });
       await expectMaintenanceFenced(initialInput);
 
       const restartedRuntime = createRuntime();
@@ -3621,34 +4066,38 @@ describe('scheduler restart recovery', () => {
         [1, 1, 0, 1],
         [1, 1, 1, 0],
       ] as const) {
-        coreDb.sqlite
-          .prepare(
-            `UPDATE nanohost_runtime_targets
+        await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              `UPDATE nanohost_runtime_targets
              SET predecessor_fenced = ?, ready = ?, fresh_empty = ?,
                  physical_epoch = ?, observed_at = ?
              WHERE target_id = ?`
-          )
-          .run(
-            predecessorFenced,
-            ready,
-            freshEmpty,
-            ready === 1 ? 'a'.repeat(64) : null,
-            new Date(Date.parse(fenceObservedAt) + observedOffsetMs).toISOString(),
-            runtimeTargetId
-          );
+            )
+            .run(
+              predecessorFenced,
+              ready,
+              freshEmpty,
+              ready === 1 ? 'a'.repeat(64) : null,
+              new Date(Date.parse(fenceObservedAt) + observedOffsetMs).toISOString(),
+              runtimeTargetId
+            );
+        });
         await expectMaintenanceFenced(restartedInput, 2);
       }
 
       const successorObservedAt = new Date(Date.parse(fenceObservedAt) + 1).toISOString();
-      const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
+      const successor = await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'allocate',
+        deploymentId: testDeploymentId(coreDb),
         identityId: `identity_${suffix}`,
         observedAt: successorObservedAt,
         targetId: runtimeTargetId,
       });
-      await upsertNanoHostRuntimeTarget(coreDb, {
+      await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'ready',
         connectionGeneration: successor.connectionGeneration,
-        deploymentId: 'deployment-test',
+        deploymentId: testDeploymentId(coreDb),
         freshEmpty: true,
         identityId: `identity_${suffix}`,
         observedAt: successorObservedAt,
@@ -3665,10 +4114,15 @@ describe('scheduler restart recovery', () => {
       expect(cleanupExpectations).toHaveLength(2);
       expect(cleanupExpectations[1]).toEqual(cleanupExpectations[0]);
       expect(effects).toEqual([]);
-      expect(getWorkerBackendSession(coreDb, leaseId)).toMatchObject({
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, leaseId))
+      ).toMatchObject({
         state: 'cleaned',
       });
-      expect(getWorkerBackendSession(coreDb, leaseId)?.physicalCleanedAt).not.toBeNull();
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, leaseId))
+          ?.physicalCleanedAt
+      ).not.toBeNull();
       expect(
         observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
       ).toBe('closing');
@@ -3703,19 +4157,28 @@ describe('scheduler restart recovery', () => {
           projectRecoveredTurn: async () => ({ status: 'failed' }),
         });
         if (mismatch === 'backend')
-          coreDb.sqlite
-            .prepare('UPDATE worker_backend_sessions SET agent_session_id=? WHERE attempt_id=?')
-            .run(testEntityId('as', 'as_other'), testEntityId('attempt', `lease_${suffix}`));
+          await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+            sqlite
+              .prepare('UPDATE worker_backend_sessions SET agent_session_id=? WHERE attempt_id=?')
+              .run(testEntityId('as', 'as_other'), testEntityId('attempt', `lease_${suffix}`));
+          });
         if (mismatch === 'package')
-          coreDb.sqlite
-            .prepare('UPDATE worker_backend_sessions SET package_snapshot_id=? WHERE attempt_id=?')
-            .run('aepsnap_other', testEntityId('attempt', `lease_${suffix}`));
+          await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                'UPDATE worker_backend_sessions SET package_snapshot_id=? WHERE attempt_id=?'
+              )
+              .run('aepsnap_other', testEntityId('attempt', `lease_${suffix}`));
+          });
         if (mismatch === 'epoch')
-          coreDb.sqlite
-            .prepare('UPDATE nanohost_runtime_targets SET physical_epoch=?')
-            .run('b'.repeat(64));
+          await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+            sqlite
+              .prepare('UPDATE nanohost_runtime_targets SET physical_epoch=?')
+              .run('b'.repeat(64));
+          });
+        // Production adopts in the reconnect heartbeat itself (`recordNanoHostRecoveryHeartbeat`).
         const adopt = () =>
-          adoptNanoHostAttemptReconnect(coreDb, {
+          presentReconnectHeartbeat(coreDb, {
             acceptedAt: '2026-07-05T00:01:01.000Z',
             lineage: fixture.lineage,
             reconnectKey: mismatch === 'process' ? reconnectKeyFor('other') : fixture.reconnectKey,
@@ -3723,21 +4186,45 @@ describe('scheduler restart recovery', () => {
               mismatch === 'binding' ? 'wrong-binding' : `lease-binding:lease_${suffix}`,
             workerSequence: mismatch === 'sequence' ? 3 : 2,
           });
-        if (mismatch === 'none')
-          expect(adopt()).toMatchObject({
-            phase: 'open',
-            recoveryState: null,
-            lastWorkerSequence: 1,
+        if (mismatch === 'none') {
+          await expect(adopt()).resolves.toMatchObject({
+            duplicate: false,
+            nextExpectedSequence: 3,
           });
-        else {
-          const before = requireNanoHostExecutionAttempt(
-            coreDb,
-            testEntityId('attempt', `lease_${suffix}`)
-          );
-          expect(adopt).toThrow();
           expect(
             requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
-          ).toEqual(before);
+          ).toMatchObject({
+            phase: 'open',
+            recoveryState: null,
+            lastWorkerSequence: 2,
+          });
+        } else {
+          // The complete Native anchor row (recovery proof included): a refused adoption writes nothing.
+          // The backend/package faults make the Core evidence reader refuse, so the row is read directly.
+          const nativeAnchor = () =>
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              sqlite
+                .prepare('SELECT * FROM worker_backend_sessions WHERE attempt_id = ?')
+                .get(testEntityId('attempt', `lease_${suffix}`))
+            );
+          const before = nativeAnchor();
+          // Keep the original Native domain reasons for backend lineage and process authority.
+          // A sanitized writer error leaves those witnesses red while we still check retained state.
+          await expect.soft(adopt()).rejects.toMatchObject({
+            name: 'ControlStoreWorkerError',
+            commit: 'not-committed',
+            ...{
+              binding: { domain: { code: 'worker_control_unauthorized', status: 401 } },
+              backend: { domain: { message: 'NanoHost recovery has no original native lease.' } },
+              package: { domain: { code: 'worker_control_unauthorized', status: 401 } },
+              process: {
+                domain: { message: 'NanoHost heartbeat has no exact reconnect authority.' },
+              },
+              sequence: { domain: { code: 'worker_control_sequence_stale', status: 409 } },
+              epoch: { domain: { code: 'worker_control_lease_not_live', status: 403 } },
+            }[mismatch],
+          });
+          expect(nativeAnchor()).toEqual(before);
         }
       } finally {
         coreDb.sqlite.close();
@@ -3780,11 +4267,13 @@ describe('scheduler restart recovery', () => {
         f.coreDb.sqlite
           .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
           .run(testEntityId('attempt', `lease_${suffix}`));
-        f.coreDb.sqlite
-          .prepare(
-            'UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?'
-          )
-          .run('2026-10-08T04:30:35.231Z', testEntityId('attempt', `lease_${suffix}`));
+        await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?'
+            )
+            .run('2026-10-08T04:30:35.231Z', testEntityId('attempt', `lease_${suffix}`));
+        });
         await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
         const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
@@ -3812,11 +4301,10 @@ describe('scheduler restart recovery', () => {
                 f.input.now()
               );
           const checkpoint = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get();
-          const anchor = getWorkerBackendSession(
-            f.coreDb,
-            testEntityId('attempt', `lease_${suffix}`)
+          const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
           )!;
-          const attempt = requireNanoHostExecutionAttempt(
+          const attempt = readTestNativeAttemptEvidence(
             f.coreDb,
             testEntityId('attempt', `lease_${suffix}`)
           );
@@ -3845,24 +4333,30 @@ describe('scheduler restart recovery', () => {
           expect(session).toMatchObject({ status: 'created', nativeHandleDigest: null });
           expect(turn).toMatchObject({ status: 'running', completedAt: null, error: null });
           expect(
-            f.coreDb.sqlite
-              .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
-              .get()
+            readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+            )
           ).toEqual({ count: 0 });
-          await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+          await transitionTestNativeRuntimeTarget(f.coreDb, {
+            kind: 'close',
             targetId: 'runtime-target-test',
             closedGeneration: 1,
             authoritativeGeneration: null,
             observedAt: '2026-10-08T04:30:36.000Z',
           });
-          const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-            deploymentId: 'deployment-test',
+          const allocated = await transitionTestNativeRuntimeTarget(f.coreDb, {
+            kind: 'allocate',
+            deploymentId: testDeploymentId(f.coreDb),
             identityId: 'identity-test',
             observedAt: '2026-10-08T04:30:37.000Z',
             targetId: 'runtime-target-test',
           });
-          await upsertNanoHostRuntimeTarget(f.coreDb, {
-            ...allocated,
+          await transitionTestNativeRuntimeTarget(f.coreDb, {
+            kind: 'ready',
+            connectionGeneration: allocated.connectionGeneration,
+            deploymentId: allocated.deploymentId,
+            identityId: allocated.identityId,
+            targetId: allocated.targetId,
             freshEmpty: true,
             observedAt: '2026-10-08T04:30:38.000Z',
             physicalEpoch: 'b'.repeat(64),
@@ -3909,8 +4403,12 @@ describe('scheduler restart recovery', () => {
             expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get()).toEqual(
               checkpoint
             );
-            expect(getWorkerBackendSession(f.coreDb, attempt.attemptId)).toEqual(anchor);
-            expect(requireNanoHostExecutionAttempt(f.coreDb, attempt.attemptId)).toEqual(attempt);
+            expect(
+              readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+                getWorkerBackendSession({ sqlite }, attempt.attemptId)
+              )
+            ).toEqual(anchor);
+            expect(readTestNativeAttemptEvidence(f.coreDb, attempt.attemptId)).toEqual(attempt);
           }
           expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
         } finally {
@@ -3929,7 +4427,7 @@ describe('scheduler restart recovery', () => {
     { partial: false, workspaceInputIds: ['source'] },
     { partial: true, workspaceInputIds: ['source'] },
   ])(
-    'terminalizes a no-operation failed start despite unused-anchor cleanup failure ($partial, $workspaceInputIds)',
+    'terminalizes a no-operation failed start and retains its cleanup-failed unused anchor untouched ($partial, $workspaceInputIds)',
     async ({ partial, workspaceInputIds }) => {
       const suffix = `no_effect_cleanup_failure_${partial}_${workspaceInputIds.length}`;
       const f = await createFailedStartFixture(suffix, false, false, true, workspaceInputIds);
@@ -3942,20 +4440,26 @@ describe('scheduler restart recovery', () => {
           .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
           .run(testEntityId('attempt', `lease_${suffix}`));
         await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
-        expect(
-          f.coreDb.sqlite
-            .prepare(`SELECT
-          (SELECT COUNT(*) FROM scheduler_execution_attempts) AS attempts,
+        expect({
+          attempts: f.coreDb.sqlite
+            .prepare('SELECT COUNT(*) FROM scheduler_execution_attempts')
+            .pluck()
+            .get(),
+          ...readAdmittedTestNanoHost(
+            f.coreDb,
+            (sqlite) =>
+              sqlite
+                .prepare(`SELECT
           (SELECT COUNT(*) FROM agent_session_runtime_bindings) AS bindings,
           (SELECT COUNT(*) FROM harness_instance_records) AS harnesses,
           (SELECT COUNT(*) FROM sandbox_runtime_records) AS sandboxes`)
-            .get()
-        ).toEqual({ attempts: 1, bindings: 0, harnesses: 0, sandboxes: 0 });
-        const anchor = getWorkerBackendSession(
-          f.coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
+                .get() as Record<string, unknown>
+          ),
+        }).toEqual({ attempts: 1, bindings: 0, harnesses: 0, sandboxes: 0 });
+        const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
         )!;
-        const originalAttempt = requireNanoHostExecutionAttempt(
+        const originalAttempt = readTestNativeAttemptEvidence(
           f.coreDb,
           testEntityId('attempt', `lease_${suffix}`)
         );
@@ -3977,20 +4481,26 @@ describe('scheduler restart recovery', () => {
           workerCapabilityTokenHash: null,
           terminalCause: 'turn-start-failed',
         });
-        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        await transitionTestNativeRuntimeTarget(f.coreDb, {
+          kind: 'close',
           targetId: 'runtime-target-test',
           closedGeneration: 1,
           authoritativeGeneration: null,
           observedAt: '2026-10-08T04:30:00.000Z',
         });
-        const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-          deploymentId: 'deployment-test',
+        const allocated = await transitionTestNativeRuntimeTarget(f.coreDb, {
+          kind: 'allocate',
+          deploymentId: testDeploymentId(f.coreDb),
           identityId: 'identity-test',
           observedAt: '2026-10-08T04:30:01.000Z',
           targetId: 'runtime-target-test',
         });
-        await upsertNanoHostRuntimeTarget(f.coreDb, {
-          ...allocated,
+        await transitionTestNativeRuntimeTarget(f.coreDb, {
+          kind: 'ready',
+          connectionGeneration: allocated.connectionGeneration,
+          deploymentId: allocated.deploymentId,
+          identityId: allocated.identityId,
+          targetId: allocated.targetId,
           freshEmpty: true,
           observedAt: '2026-10-08T04:30:02.000Z',
           physicalEpoch: 'b'.repeat(64),
@@ -4013,18 +4523,31 @@ describe('scheduler restart recovery', () => {
           vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
             throw new Error('Injected partial terminal publication.');
           });
+        // An unsubmitted failed-start anchor has no original grant for the orphan census, which skips it
+        // (nanohost-attempt-recovery.ts), so cleanup is never attempted and its failed state is retained.
+        const unusedAnchorCleanup = vi.fn(async () => {
+          throw new Error('Unused anchor cleanup unavailable.');
+        });
         const recovery = testRecoveryInput(f.coreDb, {
           ...f.input,
-          cleanupBackendSession: async () => {
-            throw new Error('Unused anchor cleanup unavailable.');
-          },
+          cleanupBackendSession: unusedAnchorCleanup,
         });
-        await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
-          'Native attempt recovery failed'
-        );
-        await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
-          'Native attempt recovery failed'
-        );
+        if (partial)
+          await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toSatisfy(
+            (error: unknown) =>
+              hasRecoveryFailure(
+                error,
+                'Governed worker turn terminalization encountered partial persistence errors.'
+              )
+          );
+        else
+          await expect(
+            runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)
+          ).resolves.toBeUndefined();
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)
+        ).resolves.toBeUndefined();
+        expect(unusedAnchorCleanup).not.toHaveBeenCalled();
         expect(
           requireSchedulerExecutionAttemptAdmissionContext(
             f.coreDb,
@@ -4061,10 +4584,12 @@ describe('scheduler restart recovery', () => {
         const events = f.store.getTurnEvents(f.turnId);
         expect(session.status).toBe('failed');
         expect(
-          getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+          )
         ).toEqual(anchor);
         expect(
-          requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+          readTestNativeAttemptEvidence(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
         ).toEqual(originalAttempt);
         f.coreDb.sqlite.close();
         const restartedCore = openCoreDb(f.dataRoot);
@@ -4077,20 +4602,18 @@ describe('scheduler restart recovery', () => {
           });
           await recoverTestStartup(restartedCore, restartedInput);
           for (let pass = 0; pass < 6; pass++)
-            await expect(drainTestRecovery(restartedCore, restartedInput)).rejects.toThrow(
-              'Native attempt recovery failed'
-            );
+            await expect(drainTestRecovery(restartedCore, restartedInput)).resolves.toBeUndefined();
+          expect(unusedAnchorCleanup).not.toHaveBeenCalled();
           expect(restartedStore.getTurnById(f.turnId)).toEqual(terminal);
           expect(restartedStore.getAgentSession(f.agentSessionId)).toEqual(session);
           expect(restartedStore.getTurnEvents(f.turnId)).toEqual(events);
           expect(
-            getWorkerBackendSession(restartedCore, testEntityId('attempt', `lease_${suffix}`))
+            readAdmittedTestNanoHost(restartedCore, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+            )
           ).toEqual(anchor);
           expect(
-            requireNanoHostExecutionAttempt(
-              restartedCore,
-              testEntityId('attempt', `lease_${suffix}`)
-            )
+            readTestNativeAttemptEvidence(restartedCore, testEntityId('attempt', `lease_${suffix}`))
           ).toEqual(originalAttempt);
           expect(() => restartedStore.getTurnById(admission.turnId)).toThrow();
           expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
@@ -4121,11 +4644,13 @@ describe('scheduler restart recovery', () => {
         const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
           if (proof === 'native-evidence')
-            f.coreDb.sqlite
-              .prepare(
-                'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
-              )
-              .run(testEntityId('attempt', `lease_${suffix}`));
+            mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+              sqlite
+                .prepare(`UPDATE worker_backend_sessions
+                  SET worker_recovery_json = json_set(COALESCE(worker_recovery_json, '{"version":1}'), '$.lastWorkerSequence', 1)
+                  WHERE attempt_id = ?`)
+                .run(testEntityId('attempt', `lease_${suffix}`));
+            });
           else if (proof === 'operation')
             f.coreDb.sqlite
               .prepare(
@@ -4157,9 +4682,8 @@ describe('scheduler restart recovery', () => {
         }
         const turn = f.store.getTurnById(f.turnId);
         const session = f.store.getAgentSession(f.agentSessionId);
-        const anchor = getWorkerBackendSession(
-          f.coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
+        const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
         );
         const recovery = testRecoveryInput(f.coreDb, {
           ...f.input,
@@ -4177,7 +4701,9 @@ describe('scheduler restart recovery', () => {
         expect(f.store.getTurnById(f.turnId)).toEqual(turn);
         expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
         expect(
-          getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+          )
         ).toEqual(anchor);
         expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
         expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
@@ -4274,12 +4800,12 @@ describe('scheduler restart recovery', () => {
       let opening: { mockRestore: () => void } | undefined;
       try {
         applyScopedMigrations(workspaceDb);
-        dispatchLease(coreDb, suffix);
+        dispatchLease(coreDb, suffix, undefined, false);
         const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
           suffix,
           workspaceInputIds: ['repo', 'docs'],
         });
-        await recordBackendSession(coreDb, suffix, 'launching');
+        await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
         // The Workspace writer remains closed from setup through handoff publication and fault DDL.
         recordCanonicalWorkspaceHandoff(
           workspaceDb,
@@ -4400,7 +4926,11 @@ describe('scheduler restart recovery', () => {
         }
         expect(cleanup).not.toHaveBeenCalled();
         expect(project).not.toHaveBeenCalled();
-        expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+        expect(
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, attemptId)
+          )
+        ).toMatchObject({
           physicalCleanedAt: null,
         });
         expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
@@ -4454,12 +4984,12 @@ describe('scheduler restart recovery', () => {
 
       try {
         applyScopedMigrations(workspaceDb);
-        dispatchLease(coreDb, suffix);
+        dispatchLease(coreDb, suffix, undefined, false);
         const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
           suffix,
           workspaceInputIds,
         });
-        await recordBackendSession(coreDb, suffix, 'launching');
+        await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
         if (workspaceInputIds.length > 0) {
           recordCanonicalWorkspaceHandoff(
             workspaceDb,
@@ -4479,7 +5009,9 @@ describe('scheduler restart recovery', () => {
           expect(cleanup).not.toHaveBeenCalled();
           expect(project).not.toHaveBeenCalled();
           expect(
-            getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+            )
           ).toMatchObject({
             physicalCleanedAt: null,
           });
@@ -4490,7 +5022,7 @@ describe('scheduler restart recovery', () => {
             )
           ).toMatchObject({
             phase: 'closing',
-            operationId: `operation_${suffix}`,
+            operationId: fixtureSubmitOperationId(suffix),
             disposition: 'unknown',
             fenceRef: null,
           });
@@ -4550,12 +5082,12 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix);
+      dispatchLease(coreDb, suffix, undefined, false);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
-      await recordBackendSession(coreDb, suffix, 'launching');
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, '2026-07-05T00:00:10.000Z');
 
       const cleanup = vi.fn(async () => {
@@ -4572,7 +5104,9 @@ describe('scheduler restart recovery', () => {
       expect(cleanup).not.toHaveBeenCalled();
       expect(project).not.toHaveBeenCalled();
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         physicalCleanedAt: null,
         workspaceHandoffState: 'pending',
@@ -4589,7 +5123,9 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, 'product projection crash after handoff repair')
       );
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         physicalCleanedAt: '2026-07-05T00:01:03.000Z',
         state: 'physical-cleaned',
@@ -4629,16 +5165,13 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix);
+      dispatchLease(coreDb, suffix, undefined, false);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
-      await recordBackendSession(coreDb, suffix, 'launching');
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
-        now: () => '2026-07-05T00:00:11.000Z',
-      });
+      // The launching seed already completed the Native handoff, which production requires before launch.
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -4650,7 +5183,9 @@ describe('scheduler restart recovery', () => {
         })
       ).resolves.toMatchObject({ failedAttemptIds: [] });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         physicalCleanedAt: null,
       });
@@ -4662,7 +5197,7 @@ describe('scheduler restart recovery', () => {
         )
       ).toMatchObject({
         phase: 'closing',
-        operationId: `operation_${suffix}`,
+        operationId: fixtureSubmitOperationId(suffix),
         disposition: 'unknown',
         fenceRef: null,
       });
@@ -4691,7 +5226,9 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(1);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -4713,12 +5250,12 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix);
+      dispatchLease(coreDb, suffix, undefined, false);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
-      await recordBackendSession(coreDb, suffix, 'physical-cleaned');
+      await recordBackendSession(coreDb, suffix, 'physical-cleaned', undefined, true);
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, '2026-07-05T00:00:10.000Z');
       const row = workspaceDb.sqlite
         .prepare(
@@ -4749,7 +5286,9 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, 'backend handle handoff is incomplete')
       );
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'physical-cleaned',
       });
@@ -4781,21 +5320,23 @@ describe('scheduler restart recovery', () => {
       const cleanupObservations: unknown[] = [];
 
       try {
-        dispatchLease(coreDb, suffix);
+        dispatchLease(coreDb, suffix, undefined, false);
+        await recordBackendSession(coreDb, suffix, anchorState, undefined, true);
         if (heartbeat) {
-          acceptNanoHostAttemptHeartbeat(coreDb, {
+          seedTestNanoHostHeartbeat(coreDb, {
             heartbeatTimeoutMs: 900_000,
             attemptId: testEntityId('attempt', `lease_${suffix}`),
             now: () => '2026-07-05T00:00:10.000Z',
             workerSequence: 1,
           });
         }
-        await recordBackendSession(coreDb, suffix, anchorState);
 
         await runRestartRecoveryThroughMaintenance(coreDb, {
           cleanupBackendSession: async (_session) => {
             cleanupObservations.push({
-              anchor: getWorkerBackendSession(coreDb, leaseId),
+              anchor: readAdmittedTestNanoHost(coreDb, (sqlite) =>
+                getWorkerBackendSession({ sqlite }, leaseId)
+              ),
               phase: observeExecutionAttempts(coreDb).find(
                 (attempt) => attempt.attempt_id === leaseId
               )?.phase,
@@ -4812,7 +5353,9 @@ describe('scheduler restart recovery', () => {
           },
         ]);
         expect(
-          getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+          )
         ).toMatchObject({
           state: 'cleaned',
         });
@@ -4838,14 +5381,14 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 900_000,
         attemptId: testEntityId('attempt', `lease_${suffix}`),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      await recordBackendSession(coreDb, suffix, 'launching');
 
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: async () => {
@@ -4856,7 +5399,9 @@ describe('scheduler restart recovery', () => {
         prepareBackendCleanup: (identity) => {
           expect(cleanupAttempts).toBe(0);
           expect(
-            getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+            )
           ).toMatchObject({
             state: 'cleanup-pending',
           });
@@ -4879,7 +5424,9 @@ describe('scheduler restart recovery', () => {
         transientProviderInstanceId: null,
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleanup-pending',
       });
@@ -4905,7 +5452,9 @@ describe('scheduler restart recovery', () => {
         })
       ).rejects.toSatisfy((error: unknown) => hasRecoveryFailure(error, 'NanoHost cleanup failed'));
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleanup-failed',
       });
@@ -4919,7 +5468,9 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupAttempts).toBe(2);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -4942,17 +5493,20 @@ describe('scheduler restart recovery', () => {
   it('terminalizes a cleaned releasing anchor without cleanup, redispatch, or adoption', async () => {
     const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_already_cleaned';
+    // Test value (11-22): low-quality recovery witness, kept until replaced. Its seed has no original
+    // submitted Core grant, so it passes only on the direct (pre-Boot) recovery input.
+    keepTestDirectNanoHostRecovery(coreDb);
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, suffix);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'cleaned', undefined, true);
+      seedTestNanoHostHeartbeat(coreDb, {
         heartbeatTimeoutMs: 900_000,
         attemptId: testEntityId('attempt', `lease_${suffix}`),
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      await recordBackendSession(coreDb, suffix, 'cleaned');
       beginOwnedAttemptCloseout(coreDb, {
         attemptId: testEntityId('attempt', `lease_${suffix}`),
         now: () => '2026-07-05T00:00:11.000Z',
@@ -4983,8 +5537,8 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_stale_anchor';
 
     try {
-      dispatchLease(coreDb, suffix);
-      await recordBackendSession(coreDb, suffix, 'launching');
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'heartbeat-timeout' WHERE attempt_id = ?"
@@ -4998,7 +5552,9 @@ describe('scheduler restart recovery', () => {
       });
 
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5019,8 +5575,8 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, suffix);
-      await recordBackendSession(coreDb, suffix, 'cleaned');
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'cleaned', undefined, true);
       beginOwnedAttemptCloseout(coreDb, {
         attemptId: testEntityId('attempt', `lease_${suffix}`),
         now: () => '2026-07-05T00:00:10.000Z',
@@ -5075,8 +5631,8 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, suffix);
-      await recordBackendSession(coreDb, suffix, 'launching');
+      dispatchLease(coreDb, suffix, undefined, false);
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -5093,7 +5649,9 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, 'product store write failed')
       );
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'physical-cleaned',
       });
@@ -5116,7 +5674,9 @@ describe('scheduler restart recovery', () => {
       expect(cleanupCalls).toBe(1);
       expect(projectionAttempts).toBe(2);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5138,9 +5698,9 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix);
+      dispatchLease(coreDb, suffix, undefined, false);
       await recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
-      await recordBackendSession(coreDb, suffix, 'launching');
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -5156,7 +5716,9 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, 'crash after cleanup projection')
       );
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'physical-cleaned',
         updatedAt: '2026-07-05T00:01:00.000Z',
@@ -5177,7 +5739,9 @@ describe('scheduler restart recovery', () => {
 
       expect(cleanupCalls).toBe(1);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5344,26 +5908,14 @@ describe('scheduler restart recovery', () => {
     ['closing', 'unknown'],
     ['closing', 'accepted'],
   ] as const)(
-    'retains the original %s/%s operation without a durable backend anchor',
+    'reports a lost Native anchor and retains the original %s/%s operation',
     async (phase, disposition) => {
       const coreDb = await createMigratedCoreDb();
       const suffix = `restart_missing_anchor_${phase}_${disposition}`;
       const cleanup = vi.fn(async () => {});
       const project = vi.fn(async () => ({ status: 'failed' as const }));
       try {
-        dispatchLease(coreDb, suffix);
-        let row = attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        );
-        if (disposition === 'accepted')
-          row = attempts.acceptSchedulerExecutionObservation(coreDb, {
-            ...attempts.schedulerExecutionCorrelation(row),
-            disposition: 'accepted',
-            execution: 'pending',
-            fenceRef: null,
-            outcomeRef: null,
-          });
+        let row = await loseOriginalBackendAnchor(coreDb, suffix, disposition);
         if (phase === 'closing')
           row = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
             attemptId: row.attemptId,
@@ -5377,9 +5929,25 @@ describe('scheduler restart recovery', () => {
         };
         expect(await recoverTestStartup(coreDb, input)).toEqual({
           preparationFailedAttemptIds: [],
-          failedAttemptIds: [],
+          failedAttemptIds: [row.attemptId],
         });
-        await drainTestRecovery(coreDb, input);
+        const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          await expect(drainTestRecovery(coreDb, input)).rejects.toSatisfy((error: unknown) =>
+            hasRecoveryFailure(error, 'NanoHost recovery owner is unavailable.')
+          );
+          expect(log.mock.calls.map(([line]) => JSON.parse(line))).toContainEqual(
+            expect.objectContaining({
+              attributes: expect.objectContaining({
+                'openkit.error.code': 'scheduler.native_attempt_recovery_failed',
+                'openkit.attempt.id': row.attemptId,
+                'openkit.turn.id': row.turnId,
+              }),
+            })
+          );
+        } finally {
+          log.mockRestore();
+        }
         expect(attempts.requireSchedulerExecutionAttempt(coreDb, row.attemptId)).toEqual({
           ...row,
           updatedAt: expect.any(String),
@@ -5419,42 +5987,68 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it('preserves exclusion for a stale post-launch attempt without a durable backend anchor', async () => {
+  it('R22 preserves exclusion for a stale post-launch attempt without a durable backend anchor', async () => {
     const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_stale_launched';
-
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
     try {
-      dispatchLease(coreDb, suffix);
-      acceptNanoHostAttemptHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 30_000,
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
+      const { value: storage } = await openAdmittedTestNanoHost(coreDb);
+      dispatchLease(coreDb, suffix, undefined, true, true, undefined, undefined, true);
+      const original = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+      await postTestNativeWorkerHeartbeat(storage.owner, {
+        sandboxBindingRef: original.bindingRef!,
+        tokenHash: 'a'.repeat(64),
+        sequence: 1,
+        observedAt: '2026-07-05T00:00:10.000Z',
+        lineage: {
+          workspaceId: original.workspaceId,
+          threadId: original.threadId,
+          turnId: original.turnId,
+          agentSessionId: original.agentSessionId!,
+          packageSnapshotId: original.inputRef!,
+          requestId: fixtureRequestId(`request_${suffix}`),
+        },
       });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'heartbeat-timeout' WHERE attempt_id = ?"
+      removeTestNativeWorkerAnchor(coreDb, attemptId);
+      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId,
+        cause: 'heartbeat-timeout',
+        now: () => '2026-07-05T00:01:00.000Z',
+      });
+      expect(
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          hasNanoHostAttemptPreEffectProof(coreDb, attemptId, { sqlite })
         )
-        .run(testEntityId('attempt', `lease_${suffix}`));
-
-      const recovery = await recoverTestStartup(coreDb, {
+      ).toBe(false);
+      const neverMutate = vi.fn(async () => {
+        throw new Error('Recovery cannot act without the original Native anchor.');
+      });
+      const input = testRecoveryInput(coreDb, {
         now: () => '2026-07-05T00:01:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        admittedNanoHostRecovery: {
+          state: 'ready',
+          value: {
+            owner: storage.owner,
+            close: neverMutate,
+            commit: neverMutate,
+            cleanup: neverMutate,
+            reconcileFinal: neverMutate,
+          },
+        },
       });
+      const recovery = await runSchedulerRestartRecovery(coreDb, input);
       expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
+      await expect(classifyNanoHostAttemptsAfterRestart(coreDb, input)).resolves.toEqual({
+        failedAttemptIds: [attemptId],
+      });
+      expect(neverMutate).not.toHaveBeenCalled();
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        operationId: original.operationId,
         fenceRef: null,
       });
       expect(['open', 'closing']).toContain(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-        )?.phase
+        observeExecutionAttempts(coreDb).find((row) => row.attempt_id === attemptId)?.phase
       );
     } finally {
       coreDb.sqlite.close();
@@ -5466,25 +6060,23 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_missing_anchor_stale_starting';
 
     try {
-      dispatchLease(coreDb, suffix);
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = 'heartbeat-timeout' WHERE attempt_id = ?"
-        )
-        .run(testEntityId('attempt', `lease_${suffix}`));
+      const original = await loseOriginalBackendAnchor(coreDb, suffix);
+      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: original.attemptId,
+        cause: 'heartbeat-timeout',
+        now: () => '2026-07-05T00:02:00.000Z',
+      });
 
       const recovery = await recoverTestStartup(coreDb, {
         now: () => '2026-07-05T00:01:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
+      expect(recovery).toEqual({
+        preparationFailedAttemptIds: [],
+        failedAttemptIds: [original.attemptId],
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, original.attemptId)).toMatchObject({
+        operationId: original.operationId,
         fenceRef: null,
       });
       expect(['open', 'closing']).toContain(
@@ -5502,9 +6094,9 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_missing_anchor_expired_releasing';
 
     try {
-      dispatchLease(coreDb, suffix);
+      const original = await loseOriginalBackendAnchor(coreDb, suffix);
       beginOwnedAttemptCloseout(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${suffix}`),
+        attemptId: original.attemptId,
         now: () => '2026-07-05T00:00:10.000Z',
         firstTerminalCause: 'worker-final-status',
       });
@@ -5513,14 +6105,12 @@ describe('scheduler restart recovery', () => {
         now: () => '2026-07-05T00:06:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        operationId: `operation_${suffix}`,
+      expect(recovery).toEqual({
+        preparationFailedAttemptIds: [],
+        failedAttemptIds: [original.attemptId],
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, original.attemptId)).toMatchObject({
+        operationId: original.operationId,
         fenceRef: null,
       });
       expect(
@@ -5545,13 +6135,13 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix, triggerActor);
+      dispatchLease(coreDb, suffix, triggerActor, false);
       await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         triggerActor,
         workspaceInputIds: [],
       });
-      await recordBackendSession(coreDb, suffix, 'launching');
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
 
       await runRestartRecoveryThroughMaintenance(coreDb, {
         cleanupBackendSession: async () => undefined,
@@ -5578,11 +6168,16 @@ describe('scheduler restart recovery', () => {
 
     try {
       applyScopedMigrations(workspaceDb);
-      dispatchLease(coreDb, suffix, {
-        kind: 'automation',
-        id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
-        responsibleUserId: 'usr_00000000-0000-7177-883a-d86169c75e9b',
-      });
+      dispatchLease(
+        coreDb,
+        suffix,
+        {
+          kind: 'automation',
+          id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
+          responsibleUserId: 'usr_00000000-0000-7177-883a-d86169c75e9b',
+        },
+        false
+      );
       await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         triggerActor: {
@@ -5592,7 +6187,7 @@ describe('scheduler restart recovery', () => {
         },
         workspaceInputIds: [],
       });
-      await recordBackendSession(coreDb, suffix, 'launching');
+      await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -5609,7 +6204,9 @@ describe('scheduler restart recovery', () => {
       // AEP 273/293 and Scheduler 76 keep contradictory authority from cleanup effects.
       expect(cleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
       ).toMatchObject({
         physicalCleanedAt: null,
       });
@@ -5620,7 +6217,7 @@ describe('scheduler restart recovery', () => {
         )
       ).toMatchObject({
         phase: 'closing',
-        operationId: `operation_${suffix}`,
+        operationId: fixtureSubmitOperationId(suffix),
         disposition: 'unknown',
         fenceRef: null,
       });
@@ -5635,10 +6232,10 @@ describe('scheduler restart recovery', () => {
     const cleanupCalls: string[] = [];
 
     try {
-      dispatchLease(coreDb, 'aggregate_a');
-      dispatchLease(coreDb, 'aggregate_b');
-      await recordBackendSession(coreDb, 'aggregate_a', 'launching');
-      await recordBackendSession(coreDb, 'aggregate_b', 'launching');
+      dispatchLease(coreDb, 'aggregate_a', undefined, false);
+      dispatchLease(coreDb, 'aggregate_b', undefined, false);
+      await recordBackendSession(coreDb, 'aggregate_a', 'launching', undefined, true);
+      await recordBackendSession(coreDb, 'aggregate_b', 'launching', undefined, true);
 
       await expect(
         runRestartRecoveryThroughMaintenance(coreDb, {
@@ -5660,12 +6257,16 @@ describe('scheduler restart recovery', () => {
         testNanoHostBackendSessionId('aggregate_b'),
       ]);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_aggregate_a'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_aggregate_a'))
+        )
       ).toMatchObject({
         state: 'cleanup-failed',
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_aggregate_b'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_aggregate_b'))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5684,11 +6285,13 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, 'mismatched_package');
-      await recordBackendSession(coreDb, 'mismatched_package', 'launching');
-      coreDb.sqlite
-        .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
-        .run('thread_attacker', testEntityId('attempt', 'lease_mismatched_package'));
+      dispatchLease(coreDb, 'mismatched_package', undefined, false);
+      await recordBackendSession(coreDb, 'mismatched_package', 'launching', undefined, true);
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare('UPDATE worker_backend_sessions SET thread_id = ? WHERE attempt_id = ?')
+          .run('thread_attacker', testEntityId('attempt', 'lease_mismatched_package'));
+      });
 
       await expect(
         recoverTestStartup(coreDb, {
@@ -5704,7 +6307,9 @@ describe('scheduler restart recovery', () => {
 
       expect(cleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_mismatched_package'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_mismatched_package'))
+        )
       ).toMatchObject({
         state: 'launching',
       });
@@ -5723,8 +6328,8 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, 'orphan_anchor');
-      await recordBackendSession(coreDb, 'orphan_anchor', 'launching');
+      dispatchLease(coreDb, 'orphan_anchor', undefined, false);
+      await recordBackendSession(coreDb, 'orphan_anchor', 'launching', undefined, true);
       // Retain the canonical Core owner: D111 retires residency with no live attempt, while missing ownership remains fenced.
       const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', 'lease_orphan_anchor'),
@@ -5758,7 +6363,9 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_orphan_anchor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_orphan_anchor'))
+        )
       ).toMatchObject({
         state: 'launching',
       });
@@ -5772,7 +6379,9 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(1);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_orphan_anchor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_orphan_anchor'))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5792,8 +6401,8 @@ describe('scheduler restart recovery', () => {
   it('keeps an unowned effect-capable binding fenced when physical cleanup fails', async () => {
     const coreDb = await createMigratedCoreDb();
     try {
-      dispatchLease(coreDb, 'orphan_cleanup_failure');
-      await recordBackendSession(coreDb, 'orphan_cleanup_failure', 'launching');
+      dispatchLease(coreDb, 'orphan_cleanup_failure', undefined, false);
+      await recordBackendSession(coreDb, 'orphan_cleanup_failure', 'launching', undefined, true);
       // Retain the canonical Core owner: D111 retires residency with no live attempt, while missing ownership remains fenced.
       const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', 'lease_orphan_cleanup_failure'),
@@ -5831,7 +6440,12 @@ describe('scheduler restart recovery', () => {
         })
       ).rejects.toSatisfy((error: unknown) => hasRecoveryFailure(error, 'backend unavailable'));
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_orphan_cleanup_failure'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession(
+            { sqlite },
+            testEntityId('attempt', 'lease_orphan_cleanup_failure')
+          )
+        )
       ).toMatchObject({
         state: 'cleanup-failed',
       });
@@ -5843,8 +6457,14 @@ describe('scheduler restart recovery', () => {
   it('finishes retirement of an orphan already physically cleaned before restart', async () => {
     const coreDb = await createMigratedCoreDb();
     try {
-      dispatchLease(coreDb, 'orphan_physical_cleaned');
-      await recordBackendSession(coreDb, 'orphan_physical_cleaned', 'physical-cleaned');
+      dispatchLease(coreDb, 'orphan_physical_cleaned', undefined, false);
+      await recordBackendSession(
+        coreDb,
+        'orphan_physical_cleaned',
+        'physical-cleaned',
+        undefined,
+        true
+      );
       // Retain the canonical Core owner: D111 retires residency with no live attempt, while missing ownership remains fenced.
       const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', 'lease_orphan_physical_cleaned'),
@@ -5882,7 +6502,12 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_orphan_physical_cleaned'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession(
+            { sqlite },
+            testEntityId('attempt', 'lease_orphan_physical_cleaned')
+          )
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5896,8 +6521,8 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      dispatchLease(coreDb, 'terminal_dirty_anchor');
-      await recordBackendSession(coreDb, 'terminal_dirty_anchor', 'launching');
+      dispatchLease(coreDb, 'terminal_dirty_anchor', undefined, false);
+      await recordBackendSession(coreDb, 'terminal_dirty_anchor', 'launching', undefined, true);
       const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', 'lease_terminal_dirty_anchor'),
         cause: 'terminal-product-handoff',
@@ -5925,7 +6550,12 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_terminal_dirty_anchor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession(
+            { sqlite },
+            testEntityId('attempt', 'lease_terminal_dirty_anchor')
+          )
+        )
       ).toMatchObject({
         state: 'launching',
       });
@@ -5939,7 +6569,12 @@ describe('scheduler restart recovery', () => {
       });
       expect(cleanupCalls).toBe(1);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_terminal_dirty_anchor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession(
+            { sqlite },
+            testEntityId('attempt', 'lease_terminal_dirty_anchor')
+          )
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -5958,8 +6593,8 @@ describe('scheduler restart recovery', () => {
     const coreDb = await createMigratedCoreDb();
     try {
       for (const suffix of ['shared_first', 'shared_second']) {
-        dispatchLease(coreDb, suffix);
-        await recordBackendSession(coreDb, suffix, 'launching');
+        dispatchLease(coreDb, suffix, undefined, false);
+        await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
         // Retain the canonical Core owner: D111 retires residency with no live attempt, while missing ownership remains fenced.
         const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: testEntityId('attempt', `lease_${suffix}`),
@@ -5985,9 +6620,8 @@ describe('scheduler restart recovery', () => {
         });
       }
       await prepareReconnectLease(coreDb, 'unrelated_survivor');
-      const unrelated = getWorkerBackendSession(
-        coreDb,
-        testEntityId('attempt', 'lease_unrelated_survivor')
+      const unrelated = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_unrelated_survivor'))
       );
       await recoverTestStartup(coreDb, {
         now: () => '2026-07-05T00:01:00.000Z',
@@ -6004,7 +6638,9 @@ describe('scheduler restart recovery', () => {
       expect(cleanupCalls).toBe(2);
       for (const suffix of ['shared_first', 'shared_second']) {
         expect(
-          getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+          )
         ).toMatchObject({
           state: 'cleaned',
         });
@@ -6018,7 +6654,9 @@ describe('scheduler restart recovery', () => {
           .get()
       ).toEqual({ count: 2 });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_unrelated_survivor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_unrelated_survivor'))
+        )
       ).toEqual(unrelated);
     } finally {
       coreDb.sqlite.close();
@@ -6029,8 +6667,8 @@ describe('scheduler restart recovery', () => {
     const coreDb = await createMigratedCoreDb();
     try {
       for (const suffix of ['failed_shared_first', 'failed_shared_second']) {
-        dispatchLease(coreDb, suffix);
-        await recordBackendSession(coreDb, suffix, 'launching');
+        dispatchLease(coreDb, suffix, undefined, false);
+        await recordBackendSession(coreDb, suffix, 'launching', undefined, true);
         // Retain the canonical Core owner: D111 retires residency with no live attempt, while missing ownership remains fenced.
         const closing = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: testEntityId('attempt', `lease_${suffix}`),
@@ -6056,9 +6694,8 @@ describe('scheduler restart recovery', () => {
         });
       }
       await prepareReconnectLease(coreDb, 'unrelated_survivor');
-      const unrelated = getWorkerBackendSession(
-        coreDb,
-        testEntityId('attempt', 'lease_unrelated_survivor')
+      const unrelated = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_unrelated_survivor'))
       );
       await recoverTestStartup(coreDb, {
         now: () => '2026-07-05T00:01:00.000Z',
@@ -6077,12 +6714,16 @@ describe('scheduler restart recovery', () => {
         hasRecoveryFailure(error, 'second cleanup unavailable')
       );
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_failed_shared_first'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_failed_shared_first'))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_failed_shared_second'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_failed_shared_second'))
+        )
       ).toMatchObject({
         state: 'cleanup-failed',
       });
@@ -6100,12 +6741,16 @@ describe('scheduler restart recovery', () => {
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_failed_shared_first'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_failed_shared_first'))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_failed_shared_second'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_failed_shared_second'))
+        )
       ).toMatchObject({
         state: 'cleaned',
       });
@@ -6117,7 +6762,9 @@ describe('scheduler restart recovery', () => {
           .get()
       ).toEqual({ count: 2 });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_unrelated_survivor'))
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_unrelated_survivor'))
+        )
       ).toEqual(unrelated);
     } finally {
       coreDb.sqlite.close();
@@ -6214,77 +6861,96 @@ describe('minimal scheduler reconnect contract', () => {
       await prepareReconnectLease(coreDb, suffix);
       const attemptId = testEntityId('attempt', `lease_${suffix}`);
       const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
-      const backendBefore = getWorkerBackendSession(coreDb, attemptId)!;
+      const backendBefore = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, attemptId)
+      )!;
       const classifiedAt = '2026-07-05T00:01:00.000Z';
       const firstDeadline = '2026-07-05T00:06:00.000Z';
       expect(isNanoHostAttemptReconnectEligible(before, backendBefore, classifiedAt)).toBe(true);
       expect(before).toMatchObject({ phase: 'open', recoveryState: null, recoveryDeadline: null });
       const client = getControlStoreWorkerClient();
-      const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
-      const database = `core:${scope.path}`;
-      await client.open({
-        database,
-        path: scope.path,
-        dataRoot: coreDb.dataRoot,
-        create: false,
-        initialize: 'core',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
+      const { value: native } = await openAdmittedTestNanoHost(coreDb);
+      const lease = readRetainedNanoHostSubmission(coreDb, attemptId)!.lease;
+      const observed = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        readNanoHostRecoveryLease(sqlite, lease)
+      );
+      // The owner's writes queue on the admitted NanoHost file, so the existing capture hold takes that key.
+      const database = `server-owner:${serverStoragePath(coreDb.dataRoot, 'nanohost')}`;
       // The existing capture hold retains request order and real admission slots; it replaces no writer.
       const resume = await client.pauseForDataRootBackup(database);
       const pending: Promise<unknown>[] = [];
       try {
         coreDb.sqlite.pragma('query_only = ON');
         expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        const arm = (observedAt: string, classifiedAt: string, expectedRecovery = observed.proof) =>
+          native.owner.classifyRecovery({
+            kind: 'arm-reconnect',
+            classifiedAt,
+            lease,
+            expectedSession: observed.session,
+            expectedRecovery,
+            observedAt,
+          });
         const earlier =
           conflict === 'backend'
-            ? client.backendSession(database, {
+            ? native.owner.backendSession({
                 kind: 'transition',
                 attemptId,
                 fromState: 'launching',
                 toState: 'cleanup-pending',
                 observedAt: classifiedAt,
               })
-            : client.executionAttempt(database, {
-                kind: 'native-reconnect-arm',
-                attemptId,
-                classifiedAt,
-                expectedRecoveryDeadline: null,
-                observedAt: classifiedAt,
-              });
+            : arm(classifiedAt, classifiedAt);
         pending.push(earlier);
         let settled = false;
-        const stale = client
-          .executionAttempt(database, {
-            kind: 'native-reconnect-arm',
-            attemptId,
-            classifiedAt: '2026-07-05T00:01:01.000Z',
-            expectedRecoveryDeadline: conflict === 'expired' ? firstDeadline : null,
-            observedAt:
-              conflict === 'expired' ? '2026-07-05T00:06:00.000Z' : '2026-07-05T00:01:01.000Z',
-          })
-          .then(
-            (value) => {
-              settled = true;
-              return { ok: true as const, value };
-            },
-            (error: unknown) => {
-              settled = true;
-              return { ok: false as const, error };
-            }
-          );
+        // The expired replay presents the first accepted window exactly and arrives at its deadline.
+        const stale = (
+          conflict === 'expired'
+            ? arm('2026-07-05T00:06:00.000Z', '2026-07-05T00:01:01.000Z', {
+                ...observed.proof,
+                recoveryState: 'awaiting-reconnect',
+                recoveryDeadline: firstDeadline,
+              })
+            : arm('2026-07-05T00:01:01.000Z', '2026-07-05T00:01:01.000Z')
+        ).then(
+          (value) => {
+            settled = true;
+            return { ok: true as const, value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { ok: false as const, error };
+          }
+        );
         pending.push(stale);
         expect(settled).toBe(false);
-        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-        expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(backendBefore);
+        // The admitted reader refuses reads while an owner write is pending, so the held file is read directly.
+        const heldNanoHost = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+          fileMustExist: true,
+          readonly: true,
+        });
+        try {
+          expect(readNanoHostRecoveryLease(heldNanoHost, lease).attempt).toEqual(before);
+          expect(getWorkerBackendSession({ sqlite: heldNanoHost }, attemptId)).toEqual(
+            backendBefore
+          );
+        } finally {
+          heldNanoHost.close();
+        }
         resume();
         await earlier;
         const refused = await stale;
-        expect(refused.ok).toBe(false);
-        if (!refused.ok) expect(refused.error).toBeInstanceOf(Error);
+        // The owner answers a stale CAS with its typed recovery-required refusal instead of throwing.
+        expect(refused).toEqual({
+          ok: true,
+          value: { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' },
+        });
         if (conflict === 'backend') {
-          expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+          expect(
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, attemptId)
+            )
+          ).toMatchObject({
             state: 'cleanup-pending',
           });
           expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
@@ -6295,7 +6961,11 @@ describe('minimal scheduler reconnect contract', () => {
             recoveryState: 'awaiting-reconnect',
             recoveryDeadline: firstDeadline,
           });
-          expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(backendBefore);
+          expect(
+            readAdmittedTestNanoHost(coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, attemptId)
+            )
+          ).toEqual(backendBefore);
         }
       } finally {
         resume();
@@ -6307,7 +6977,7 @@ describe('minimal scheduler reconnect contract', () => {
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
     const coreDb = await createMigratedCoreDb(false);
     const suffix = 'graceful_same_epoch_reconnect';
-    const epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
+    let epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
     const at = (value: string) => new Date(Date.parse(value) + epochShift).toISOString();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
@@ -6357,15 +7027,22 @@ describe('minimal scheduler reconnect contract', () => {
       },
     };
     const leaseId = testEntityId('attempt', `lease_${suffix}`);
-    const sandboxBindingRef = requireNanoHostExecutionAttempt(coreDb, leaseId).bindingRef!;
-    const runtimeTargetId = getWorkerBackendSession(coreDb, leaseId)!.runtimeTargetId;
+    const sandboxBindingRef = attempts.requireSchedulerExecutionAttempt(coreDb, leaseId)
+      .bindingRef!;
+    const runtimeTargetId = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, leaseId)
+    )!.runtimeTargetId;
     // The real backend restoration must join the same target selected by the original admission.
-    coreDb.sqlite
-      .prepare('UPDATE nanohost_runtime_targets SET target_id = ? WHERE target_id = ?')
-      .run(runtimeTargetId, 'runtime-target-test');
-    coreDb.sqlite
-      .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE attempt_id = ?')
-      .run(runtimeTargetId, leaseId);
+    await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare('UPDATE nanohost_runtime_targets SET target_id = ? WHERE target_id = ?')
+        .run(runtimeTargetId, 'runtime-target-test');
+    });
+    await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+      sqlite
+        .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE attempt_id = ?')
+        .run(runtimeTargetId, leaseId);
+    });
     let cleanupRegistrations = 0;
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -6470,6 +7147,7 @@ describe('minimal scheduler reconnect contract', () => {
         readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
+        nanoHostRecovery: testNanoHostRecoveryJoins(await openAdmittedTestNanoHost(coreDb)),
         workerControlGateway: new WorkerControlGateway(),
       });
       const initialBackend = (
@@ -6485,13 +7163,15 @@ describe('minimal scheduler reconnect contract', () => {
           };
         }
       ).backend;
-      coreDb.sqlite
-        .prepare(
-          `UPDATE worker_backend_sessions
+      await seedAdmittedTestNanoHost(coreDb, (sqlite) => {
+        sqlite
+          .prepare(
+            `UPDATE worker_backend_sessions
            SET backend_session_id = ?
            WHERE attempt_id = ?`
-        )
-        .run(initialBackend.planSession(environmentPackage).backendSessionId, leaseId);
+          )
+          .run(initialBackend.planSession(environmentPackage).backendSessionId, leaseId);
+      });
       // Admit the actual Workspace journal before native materialization, on its live clock.
       await store.createTurn(
         environmentPackage.scope.workspaceId,
@@ -6525,14 +7205,40 @@ describe('minimal scheduler reconnect contract', () => {
         workspaceRoots: [],
         sandboxBindingRef,
       });
+      // Core stamps the retained preparation clock during its ACK, after the attempt projection's
+      // updatedAt. Order the replay timeline from the completed preparation, not updatedAt + 1 ms.
+      const submissionInstant = '2026-07-05T00:00:07.000Z';
+      epochShift = Date.now() - Date.parse(submissionInstant);
+      const submittedAt = at(submissionInstant);
       vi.useFakeTimers({ toFake: ['Date'] });
-      vi.setSystemTime(new Date(at('2026-07-05T00:00:07.000Z')));
+      vi.setSystemTime(new Date(submittedAt));
       try {
-        const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
+        // The owner launches only a submitted anchor whose Native Workspace handoff is complete.
+        const { value: native } = await openAdmittedTestNanoHost(coreDb);
+        await native.owner.backendSession({
+          kind: 'transition',
+          fromState: 'materializing',
           attemptId: leaseId,
-          operationId: `operation_${suffix}`,
-          submission: true,
+          toState: 'materialized',
+          observedAt: submittedAt,
         });
+        seedTestNanoHostCompletedWorkspaceHandoff(coreDb, leaseId);
+        // The real materialization already holds the preparation grant: the submit grant joins it through
+        // the owner's first submission on the materialized, handed-off anchor, as the Worker executor does.
+        await native.owner.firstSubmission({ attemptId: leaseId, observedAt: submittedAt });
+        seedTestNanoHostWorkerLaunch(
+          coreDb,
+          leaseId,
+          {
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            workerControlTokenHash: 'a'.repeat(64),
+            workerInferenceTokenHash: 'b'.repeat(64),
+            workerCapabilityTokenHash: 'c'.repeat(64),
+          },
+          submittedAt
+        );
+        const submitted = attempts.requireSchedulerExecutionAttempt(coreDb, leaseId);
         attempts.acceptSchedulerExecutionObservation(
           coreDb,
           await new SimulatedTurnExecutor({ coreDb }).submit({
@@ -6540,24 +7246,13 @@ describe('minimal scheduler reconnect contract', () => {
             deadline: submitted.deadline!,
           })
         );
-        await transitionWorkerBackendSessionState(coreDb, {
-          attemptId: leaseId,
-          fromState: 'materializing',
-          toState: 'materialized',
-        });
-        await transitionWorkerBackendSessionState(coreDb, {
-          attemptId: leaseId,
-          fromState: 'materialized',
-          toState: 'launching',
-        });
-        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
-        acceptNanoHostAttemptHeartbeat(coreDb, {
+        seedTestNanoHostHeartbeat(coreDb, {
           attemptId: leaseId,
           heartbeatTimeoutMs: 30_000,
           workerProcessKeyHash: reconnectKeyHash(fixture.reconnectKey),
           workerSequence: 0,
         });
-        acceptNanoHostAttemptHeartbeat(coreDb, {
+        seedTestNanoHostHeartbeat(coreDb, {
           attemptId: leaseId,
           heartbeatTimeoutMs: 30_000,
           workerSequence: 1,
@@ -6565,16 +7260,18 @@ describe('minimal scheduler reconnect contract', () => {
       } finally {
         vi.useRealTimers();
       }
-      const harness = coreDb.sqlite
-        .prepare(
-          `SELECT h.adapter_id AS adapterId, h.adapter_version AS adapterVersion,
+      const harness = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            `SELECT h.adapter_id AS adapterId, h.adapter_version AS adapterVersion,
                   h.harness_compatibility_key AS harnessCompatibilityKey,
                   h.harness_instance_id AS harnessInstanceId
            FROM harness_instance_records h
            JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
            WHERE s.origin_physical_epoch = ?`
-        )
-        .get('a'.repeat(64)) as {
+          )
+          .get('a'.repeat(64))
+      ) as {
         readonly adapterId: 'codex';
         readonly adapterVersion: string;
         readonly harnessCompatibilityKey: string;
@@ -6587,7 +7284,7 @@ describe('minimal scheduler reconnect contract', () => {
         sessionCompatibilityKey: agentSessionCompatibilityKeyFromPackage(environmentPackage),
         threadId: environmentPackage.scope.threadId,
       });
-      await openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding((await openAdmittedTestNanoHost(coreDb)).value.owner, {
         agentSessionCompatibilityKey,
         agentSessionId: environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: `binding_${suffix}`,
@@ -6598,7 +7295,8 @@ describe('minimal scheduler reconnect contract', () => {
         workspaceId: environmentPackage.scope.workspaceId,
       });
       effects.length = 0;
-      await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+      await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'close',
         authoritativeGeneration: null,
         closedGeneration: 1,
         observedAt: at('2026-07-05T00:00:08.000Z'),
@@ -6612,10 +7310,15 @@ describe('minimal scheduler reconnect contract', () => {
         readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
+        nanoHostRecovery: testNanoHostRecoveryJoins(await openAdmittedTestNanoHost(coreDb)),
         workerControlGateway: new WorkerControlGateway(),
       });
       await expect(
-        restartedRuntime.restoreBackendSession(getWorkerBackendSession(coreDb, leaseId)!)
+        restartedRuntime.restoreBackendSession(
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, leaseId)
+          )!
+        )
       ).resolves.toBeUndefined();
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: restartedRuntime.cleanupBackendSession,
@@ -6656,71 +7359,85 @@ describe('minimal scheduler reconnect contract', () => {
           workspaceId: environmentPackage.scope.workspaceId,
         })
       ).rejects.toThrow(/not ready for admission/i);
-      expect(() =>
-        adoptNanoHostAttemptReconnect(coreDb, {
+      await expect(
+        presentReconnectHeartbeat(coreDb, {
           acceptedAt: at('2026-07-05T00:01:01.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,
           workerSequence: 2,
         })
-      ).toThrow(
-        expect.objectContaining({
-          reason: 'reconnect-required',
-        })
-      );
+      ).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+        domain: { code: 'worker_control_lease_not_live', status: 403 },
+      });
 
-      const differentGeneration = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
+      const differentGeneration = await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'allocate',
+        deploymentId: testDeploymentId(coreDb),
         identityId: 'identity-test',
         observedAt: at('2026-07-05T00:01:02.000Z'),
         targetId: runtimeTargetId,
       });
-      await upsertNanoHostRuntimeTarget(coreDb, {
-        ...differentGeneration,
+      await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'ready',
+        connectionGeneration: differentGeneration.connectionGeneration,
+        deploymentId: differentGeneration.deploymentId,
+        identityId: differentGeneration.identityId,
+        targetId: differentGeneration.targetId,
         freshEmpty: true,
         observedAt: at('2026-07-05T00:01:03.000Z'),
         physicalEpoch: 'b'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
-      expect(() =>
-        adoptNanoHostAttemptReconnect(coreDb, {
+      await expect(
+        presentReconnectHeartbeat(coreDb, {
           acceptedAt: at('2026-07-05T00:01:04.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,
           workerSequence: 2,
         })
-      ).toThrow(
-        expect.objectContaining({
-          reason: 'attempt-changed',
-        })
-      );
+      ).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+        domain: { code: 'worker_control_lease_not_live', status: 403 },
+      });
 
-      const sameGeneration = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        deploymentId: 'deployment-test',
+      const sameGeneration = await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'allocate',
+        deploymentId: testDeploymentId(coreDb),
         identityId: 'identity-test',
         observedAt: at('2026-07-05T00:01:05.000Z'),
         targetId: runtimeTargetId,
       });
-      await upsertNanoHostRuntimeTarget(coreDb, {
-        ...sameGeneration,
+      await transitionTestNativeRuntimeTarget(coreDb, {
+        kind: 'ready',
+        connectionGeneration: sameGeneration.connectionGeneration,
+        deploymentId: sameGeneration.deploymentId,
+        identityId: sameGeneration.identityId,
+        targetId: sameGeneration.targetId,
         freshEmpty: true,
         observedAt: at('2026-07-05T00:01:06.000Z'),
         physicalEpoch: 'a'.repeat(64),
         predecessorFenced: true,
         ready: true,
       });
-      expect(
-        adoptNanoHostAttemptReconnect(coreDb, {
+      await expect(
+        presentReconnectHeartbeat(coreDb, {
           acceptedAt: at('2026-07-05T00:01:07.000Z'),
           lineage: fixture.lineage,
           reconnectKey: fixture.reconnectKey,
           sandboxBindingRef,
           workerSequence: 2,
         })
-      ).toMatchObject({ recoveryState: null, phase: 'open' });
+      ).resolves.toMatchObject({ duplicate: false });
+      expect(requireNanoHostExecutionAttempt(coreDb, leaseId)).toMatchObject({
+        recoveryState: null,
+        phase: 'open',
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -6775,28 +7492,28 @@ describe('minimal scheduler reconnect contract', () => {
         testEntityId('attempt', 'lease_exact_reconnect')
       );
 
-      const adopted = adoptNanoHostAttemptReconnect(coreDb, {
-        acceptedAt: '2026-07-05T00:01:01.000Z',
-        lineage: fixture.lineage,
-        reconnectKey: fixture.reconnectKey,
-        sandboxBindingRef: 'lease-binding:lease_exact_reconnect',
-        workerSequence: 2,
-      });
+      expect(armed).toMatchObject({ lastWorkerSequence: 1, recoveryState: 'awaiting-reconnect' });
 
-      expect(adopted).toMatchObject({
-        heartbeatDeadline: armed.recoveryDeadline,
-        lastWorkerSequence: 1,
-        recoveryDeadline: null,
-        recoveryState: null,
-      });
-      expect(
-        acceptNanoHostAttemptHeartbeatByBinding(coreDb, {
+      // Production adopts in the reconnect heartbeat itself: the original process key at the exact
+      // next sequence (`recordNanoHostRecoveryHeartbeat`).
+      await expect(
+        presentReconnectHeartbeat(coreDb, {
           acceptedAt: '2026-07-05T00:01:01.000Z',
           lineage: fixture.lineage,
+          reconnectKey: fixture.reconnectKey,
           sandboxBindingRef: 'lease-binding:lease_exact_reconnect',
           workerSequence: 2,
         })
-      ).toMatchObject({ lastWorkerSequence: 2, phase: 'open' });
+      ).resolves.toMatchObject({ duplicate: false, nextExpectedSequence: 3 });
+      expect(
+        requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', 'lease_exact_reconnect'))
+      ).toMatchObject({
+        heartbeatDeadline: '2026-07-05T00:01:31.000Z',
+        lastWorkerSequence: 2,
+        phase: 'open',
+        recoveryDeadline: null,
+        recoveryState: null,
+      });
     } finally {
       coreDb.sqlite.close();
     }
@@ -6824,19 +7541,31 @@ describe('minimal scheduler reconnect contract', () => {
             ? { ...fixture.lineage, turnId: testEntityId('tu', 'turn_from_another_worker') }
             : fixture.lineage;
 
-        expect(() =>
-          adoptNanoHostAttemptReconnect(coreDb, {
-            acceptedAt:
-              mismatch === 'deadline'
-                ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
-                : '2026-07-05T00:01:01.000Z',
-            lineage,
-            reconnectKey:
-              mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
-            sandboxBindingRef: `lease-binding:lease_${suffix}`,
-            workerSequence: mismatch === 'sequence' ? 3 : 2,
-          })
-        ).toThrow();
+        await expect
+          .soft(
+            presentReconnectHeartbeat(coreDb, {
+              acceptedAt:
+                mismatch === 'deadline'
+                  ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
+                  : '2026-07-05T00:01:01.000Z',
+              lineage,
+              reconnectKey:
+                mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
+              sandboxBindingRef: `lease-binding:lease_${suffix}`,
+              workerSequence: mismatch === 'sequence' ? 3 : 2,
+            })
+          )
+          .rejects.toMatchObject({
+            name: 'ControlStoreWorkerError',
+            commit: 'not-committed',
+            ...{
+              // A generic writer error must not satisfy the wrong-key refusal.
+              key: { domain: { message: 'NanoHost heartbeat has no exact reconnect authority.' } },
+              lineage: { domain: { code: 'worker_control_lineage_mismatch', status: 403 } },
+              sequence: { domain: { code: 'worker_control_sequence_stale', status: 409 } },
+              deadline: { domain: { code: 'worker_control_lease_not_live', status: 403 } },
+            }[mismatch],
+          });
         expect(
           requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
         ).toMatchObject({
@@ -6870,7 +7599,7 @@ describe('minimal scheduler reconnect contract', () => {
         stage: 'running_worker',
         iteration: 0,
       });
-      await shutdownControlStoreWorkerClient();
+      await f.restart();
       await recoverTestStartup(f.coreDb, f.input);
       const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
       if (!armed.inputRef || !armed.bindingRef) throw new Error('Native binding is missing.');
@@ -6905,7 +7634,9 @@ describe('minimal scheduler reconnect contract', () => {
       const turnBefore = f.store.getTurnById(f.turnId);
       const sessionBefore = f.store.getAgentSession(f.agentSessionId);
       const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
-      const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
+      const backendBefore = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, f.attemptId)
+      );
       expect(backendBefore).toMatchObject({
         state: 'cleaned',
         physicalCleanedAt: expect.any(String),
@@ -6962,7 +7693,11 @@ describe('minimal scheduler reconnect contract', () => {
         expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
           attemptsBefore
         );
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )
+        ).toEqual(backendBefore);
         expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
         expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
         expect(executor.calls).toEqual([]);
@@ -7007,7 +7742,7 @@ describe('minimal scheduler reconnect contract', () => {
           stage: 'running_worker',
           iteration: 0,
         });
-        await shutdownControlStoreWorkerClient();
+        await f.restart();
         await recoverTestStartup(f.coreDb, f.input);
         const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
         if (!armed.inputRef || !armed.bindingRef || !armed.recoveryDeadline)
@@ -7022,7 +7757,11 @@ describe('minimal scheduler reconnect contract', () => {
           fenceRef: expect.any(String),
           inputRef: armed.inputRef,
         });
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )
+        ).toMatchObject({
           state: 'cleaned',
           physicalCleanedAt: expect.any(String),
           workspaceHandoffState: 'complete',
@@ -7034,7 +7773,9 @@ describe('minimal scheduler reconnect contract', () => {
         const turnBefore = f.store.getTurnById(f.turnId);
         const sessionBefore = f.store.getAgentSession(f.agentSessionId);
         const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
-        const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
+        const backendBefore = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, f.attemptId)
+        );
         const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
         const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
         // Keep the real native command and its seven-day receipt on the fixture clock.
@@ -7112,7 +7853,11 @@ describe('minimal scheduler reconnect contract', () => {
         expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
           attemptsBefore
         );
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
+        expect(
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )
+        ).toEqual(backendBefore);
         expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
         expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
         expect(executor.calls).toEqual([]);
@@ -7219,7 +7964,7 @@ describe('minimal scheduler reconnect contract', () => {
           iteration: 0,
           diagnosticsSummary: origin.marker,
         });
-        await shutdownControlStoreWorkerClient();
+        await f.restart();
         await recoverTestStartup(coreDb, f.input);
         const armed = requireNanoHostExecutionAttempt(coreDb, f.attemptId);
         if (!armed.recoveryDeadline) throw new Error('Restart did not arm exact reconnect.');
@@ -7240,7 +7985,11 @@ describe('minimal scheduler reconnect contract', () => {
           phase: 'closed',
           fenceRef: expect.any(String),
         });
-        expect(getWorkerBackendSession(coreDb, f.attemptId)).toMatchObject({
+        expect(
+          readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, f.attemptId)
+          )
+        ).toMatchObject({
           threadId: origin.threadId,
           state: 'cleaned',
           workspaceHandoffState: 'complete',
@@ -7395,11 +8144,10 @@ describe('minimal scheduler reconnect contract', () => {
         'failed-preparation'
       );
       const original = f.store.getTurnById(f.turnId);
-      dispatchLease(f.coreDb, 'early_image_sibling');
-      await recordBackendSession(f.coreDb, 'early_image_sibling');
-      const sibling = getWorkerBackendSession(
-        f.coreDb,
-        testEntityId('attempt', 'lease_early_image_sibling')
+      dispatchLease(f.coreDb, 'early_image_sibling', undefined, false);
+      await recordBackendSession(f.coreDb, 'early_image_sibling', undefined, undefined, true);
+      const sibling = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, testEntityId('attempt', 'lease_early_image_sibling'))
       );
       const db = openWorkspaceDb(f.coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       const cleanup = vi.fn(f.input.cleanupBackendSession);
@@ -7432,7 +8180,11 @@ describe('minimal scheduler reconnect contract', () => {
           await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
             'Native attempt recovery failed.'
           );
-          expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+          expect(
+            readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              getWorkerBackendSession({ sqlite }, f.attemptId)
+            )
+          ).toMatchObject({
             state: 'cleaned',
             workspaceHandoffState: 'complete',
           });
@@ -7488,7 +8240,12 @@ describe('minimal scheduler reconnect contract', () => {
           });
         }
         expect(
-          getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'lease_early_image_sibling'))
+          readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession(
+              { sqlite },
+              testEntityId('attempt', 'lease_early_image_sibling')
+            )
+          )
         ).toEqual(sibling);
         if (proof !== 'partial') {
           expect(
@@ -7543,30 +8300,42 @@ describe('minimal scheduler reconnect contract', () => {
       const reconcileAcceptedFinalStatus = vi.fn(async () => {});
       const projectRecoveredTurn = vi.fn(async () => ({ status: 'completed' as const }));
       try {
-        dispatchLease(coreDb, suffix);
-        await recordBackendSession(coreDb, suffix, state);
-        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
+        dispatchLease(coreDb, suffix, undefined, false);
+        await recordBackendSession(coreDb, suffix, state, undefined, true);
+        // The launched anchor completed its Native handoff before launch (production order).
+        if (
+          readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, leaseId))
+            ?.workspaceHandoffState === 'pending'
+        )
+          await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
         beginOwnedAttemptCloseout(coreDb, {
           attemptId: leaseId,
           firstTerminalCause: 'worker-final-status',
         });
-        recordWorkerControlAcceptedRecord(coreDb, {
-          acceptedAt: '2026-07-05T00:00:07.000Z',
-          lineage: {
-            agentSessionId: testEntityId('as', `as_${suffix}`),
-            packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
-            requestId: fixtureRequestId(`request_${suffix}`),
-            threadId: testEntityId('th', `th_${suffix}`),
-            turnId: testEntityId('tu', `turn_${suffix}`),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-          recordKey: '1',
-          sandboxBindingRef: `lease-binding:lease_${suffix}`,
-          sequence: 1,
-        });
-        const original = getWorkerBackendSession(coreDb, leaseId);
+        mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+          writeWorkerControlAcceptedRecord(
+            { sqlite },
+            {
+              acceptedAt: '2026-07-05T00:00:07.000Z',
+              lineage: {
+                agentSessionId: testEntityId('as', `as_${suffix}`),
+                packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+                requestId: fixtureRequestId(`request_${suffix}`),
+                threadId: testEntityId('th', `th_${suffix}`),
+                turnId: testEntityId('tu', `turn_${suffix}`),
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              },
+              operation: 'final_status',
+              record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+              recordKey: '1',
+              sandboxBindingRef: `lease-binding:lease_${suffix}`,
+              sequence: 1,
+            }
+          )
+        );
+        const original = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, leaseId)
+        );
         const input: RecoveryFixtureInput = {
           cleanupBackendSession,
           reconcileAcceptedFinalStatus,
@@ -7575,7 +8344,9 @@ describe('minimal scheduler reconnect contract', () => {
           projectRecoveredTurn,
         };
         await drainTestRecovery(coreDb, input);
-        expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
+        expect(
+          readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, leaseId))
+        ).toEqual(original);
         expect(
           observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
         ).toBe('closing');
@@ -7587,7 +8358,9 @@ describe('minimal scheduler reconnect contract', () => {
         expect(reconcileAcceptedFinalStatus).toHaveBeenCalledWith(original);
         expect(cleanupBackendSession).not.toHaveBeenCalled();
         expect(projectRecoveredTurn).not.toHaveBeenCalled();
-        expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
+        expect(
+          readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, leaseId))
+        ).toEqual(original);
         expect(
           observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
         ).toBe('closing');
@@ -7602,9 +8375,7 @@ describe('minimal scheduler reconnect contract', () => {
     let cleanupCalls = 0;
     let closeoutCalls = 0;
     let fallbackProjectionCalls = 0;
-    let preparedIdentity:
-      | Parameters<NonNullable<RecoveryFixtureInput['prepareBackendCleanup']>>[0]
-      | null = null;
+    let prepareCleanupCalls = 0;
 
     try {
       const suffix = 'accepted_final_status';
@@ -7614,23 +8385,31 @@ describe('minimal scheduler reconnect contract', () => {
         now: () => '2026-07-05T00:00:06.000Z',
         firstTerminalCause: 'worker-final-status',
       });
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-07-05T00:00:07.000Z',
-        lineage: fixture.lineage,
-        operation: 'final_status',
-        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-        recordKey: '1',
-        sandboxBindingRef: `lease-binding:lease_${suffix}`,
-        sequence: 1,
-      });
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            acceptedAt: '2026-07-05T00:00:07.000Z',
+            lineage: fixture.lineage,
+            operation: 'final_status',
+            record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+            recordKey: '1',
+            sandboxBindingRef: `lease-binding:lease_${suffix}`,
+            sequence: 1,
+          }
+        )
+      );
+      const original = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+      );
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: async () => {
           cleanupCalls += 1;
         },
         now: () => '2026-07-05T00:01:00.000Z',
         reconcileExecutions: async () => {},
-        prepareBackendCleanup: (identity) => {
-          preparedIdentity = identity;
+        prepareBackendCleanup: () => {
+          prepareCleanupCalls += 1;
           return false;
         },
         projectRecoveredTurn: async (session) => {
@@ -7656,17 +8435,13 @@ describe('minimal scheduler reconnect contract', () => {
         closeoutCalls: 0,
         fallbackProjectionCalls: 0,
       });
-      expect(preparedIdentity).toMatchObject({
-        agentSessionId: testEntityId('as', `as_${suffix}`),
-        backendSessionId: testNanoHostBackendSessionId(suffix),
-        packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
-        runtimeTargetId: 'runtime-target-test',
-      });
+      // Startup classification never prepares or moves backend cleanup; only post-listen maintenance does.
+      expect(prepareCleanupCalls).toBe(0);
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
-      ).toMatchObject({
-        state: 'cleanup-pending',
-      });
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
+      ).toEqual(original);
       expect(
         observeExecutionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
@@ -7691,16 +8466,24 @@ describe('minimal scheduler reconnect contract', () => {
         now: () => '2026-07-05T00:00:06.000Z',
         firstTerminalCause: 'worker-final-status',
       });
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-07-05T00:00:07.000Z',
-        lineage: fixture.lineage,
-        operation: 'final_status',
-        record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
-        recordKey: '1',
-        sandboxBindingRef: `lease-binding:lease_${suffix}`,
-        sequence: 1,
-      });
+      mutateAdmittedTestNanoHost(coreDb, (sqlite) =>
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            acceptedAt: '2026-07-05T00:00:07.000Z',
+            lineage: fixture.lineage,
+            operation: 'final_status',
+            record: { sequence: 1, status: 'blocked', stopReason: 'ask_user' },
+            recordKey: '1',
+            sandboxBindingRef: `lease-binding:lease_${suffix}`,
+            sequence: 1,
+          }
+        )
+      );
 
+      const original = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+      );
       await recoverTestStartup(coreDb, {
         cleanupBackendSession: async () => {
           cleanupCalls += 1;
@@ -7724,10 +8507,10 @@ describe('minimal scheduler reconnect contract', () => {
         fallbackProjectionCalls: 0,
       });
       expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
-      ).toMatchObject({
-        state: 'cleanup-pending',
-      });
+        readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, testEntityId('attempt', `lease_${suffix}`))
+        )
+      ).toEqual(original);
       expect(
         observeExecutionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
@@ -7824,7 +8607,7 @@ async function createFinalReviewRecoveryFixture(
   if (boundary === 'running')
     await prepareReconnectLease(coreDb, suffix, true, reconnectKeyFor(suffix), threadId);
   else {
-    dispatchLease(coreDb, suffix, undefined, boundary !== 'failed-preparation');
+    dispatchLease(coreDb, suffix, undefined, false);
     if (boundary === 'failed-preparation') {
       const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
@@ -7833,7 +8616,7 @@ async function createFinalReviewRecoveryFixture(
         const context = '# Original bounded Task Context\n';
         writeFileSync(join(contextRoot, 'context.md'), context);
         const setup = createTestAgentSetup();
-        admitTestNativeEnvironment(coreDb, setup.manifest);
+        await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
         await recordAgentEnvironmentPackageSnapshot(workspace, {
           createdAt: '2026-07-05T00:00:03.000Z',
           environmentPackage: await resolveAgentEnvironmentPackage({
@@ -7865,7 +8648,11 @@ async function createFinalReviewRecoveryFixture(
     await recordBackendSession(
       coreDb,
       suffix,
-      boundary === 'failed-preparation' || boundary === 'completed' ? 'cleaned' : 'physical-cleaned'
+      boundary === 'failed-preparation' || boundary === 'completed'
+        ? 'cleaned'
+        : 'physical-cleaned',
+      threadId,
+      boundary !== 'failed-preparation'
     );
   }
   await admitFixtureJournal(coreDb, store, suffix);
@@ -7880,7 +8667,9 @@ async function createFinalReviewRecoveryFixture(
     if (boundary !== 'failed-preparation')
       recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
     else {
-      const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+      const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, attemptId)
+      )!;
       const request = createNanoHostEffectRequest(anchor, attemptId, 'image.acquire', {
         imageReference:
           pkg.runtime.environment?.imageDigest ?? (pkg.runtime.image as { ref: string }).ref,
@@ -7902,14 +8691,17 @@ async function createFinalReviewRecoveryFixture(
   }
   if (
     boundary !== 'failed-preparation' &&
-    getWorkerBackendSession(coreDb, attemptId)?.workspaceHandoffState === 'pending'
+    readAdmittedTestNanoHost(coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, attemptId))
+      ?.workspaceHandoffState === 'pending'
   )
     await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
   if (boundary === 'completed') {
     // Retained completion consumes the original native journal and exact modeled backend cleanup.
     const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+      const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getWorkerBackendSession({ sqlite }, attemptId)
+      )!;
       const pkg = requireAgentEnvironmentPackageSnapshot(
         workspace,
         workspace.workspaceId,
@@ -7971,39 +8763,40 @@ async function createFinalReviewRecoveryFixture(
       now: () => '2026-07-05T00:00:08.000Z',
     });
   }
-  const runtime = createConfiguredWorkerLifecycleRuntime({
-    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
-    coreDb,
-    store,
-    env: {},
-    workerControlGateway: new WorkerControlGateway(),
-    nanoHostSessionDispatch: {
-      async effect() {
-        throw new Error('Recovery cannot launch or replay a worker.');
+  const buildRuntime = async () =>
+    createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      coreDb,
+      store,
+      env: {},
+      workerControlGateway: new WorkerControlGateway(),
+      nanoHostRecovery: testNanoHostRecoveryJoins(await openAdmittedTestNanoHost(coreDb)),
+      nanoHostSessionDispatch: {
+        async effect() {
+          throw new Error('Recovery cannot launch or replay a worker.');
+        },
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('No worker route is admitted during closeout.');
+        },
+        async fileExportResult() {
+          throw new Error('No outside file export is pending.');
+        },
+        async workspaceCollectResult() {
+          throw new Error('This package has no Workspace inputs.');
+        },
+        async imageBuildInput() {
+          throw new Error('Recovery cannot rebuild the worker image.');
+        },
       },
-      async poll() {
-        return null;
-      },
-      async result() {},
-      async route() {
-        throw new Error('No worker route is admitted during closeout.');
-      },
-      async fileExportResult() {
-        throw new Error('No outside file export is pending.');
-      },
-      async workspaceCollectResult() {
-        throw new Error('This package has no Workspace inputs.');
-      },
-      async imageBuildInput() {
-        throw new Error('Recovery cannot rebuild the worker image.');
-      },
-    },
-  });
-  const executionBackend = runtime.turnExecutor.executionBackend!;
+    });
   const clock = { now: '2026-07-05T00:01:00.000Z' };
   const input: RunNanoHostAttemptRecoveryInput = {
     store,
-    executionBackend,
+    executionBackend: (await buildRuntime()).turnExecutor.executionBackend!,
     now: () => clock.now,
     // A definite external cleanup reply is modeled; the production owners record exact cleanup,
     // project handoff, publish the canonical outcome, derive barriers and invoke real Native release.
@@ -8031,14 +8824,24 @@ async function createFinalReviewRecoveryFixture(
       return { status: result.status };
     },
   };
-  return { coreDb, store, threadId, turnId, agentSessionId, attemptId, input, clock };
+  /**
+   * Restarts the process as Boot does: the control store exits, then the Core file and the persisted
+   * NanoHost owner are rejoined and the Worker lifecycle runtime is composed on them before recovery.
+   */
+  const restart = async () => {
+    await shutdownControlStoreWorkerClient();
+    input.executionBackend = (await buildRuntime()).turnExecutor.executionBackend!;
+  };
+  return { coreDb, store, threadId, turnId, agentSessionId, attemptId, input, clock, restart };
 }
 
 /** Decides release using actual fenced closure and same-Thread/same-AgentSession admission, never cleanup counts. */
 async function assertRecoveryClosedAndNextTurnAdmitted(
   f: Awaited<ReturnType<typeof createFinalReviewRecoveryFixture>>
 ) {
-  expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+  expect(
+    readAdmittedTestNanoHost(f.coreDb, (sqlite) => getWorkerBackendSession({ sqlite }, f.attemptId))
+  ).toMatchObject({
     state: 'cleaned',
     physicalCleanedAt: expect.any(String),
     workspaceHandoffState: 'complete',

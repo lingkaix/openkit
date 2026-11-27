@@ -28,10 +28,12 @@ import type {
 import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
 import * as schedulerDispatch from '../runtime/scheduler-dispatch-loop.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceReadDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -41,7 +43,11 @@ import {
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  openTestNativeImagePeer,
+  seedTestNativeImageSettlement,
+} from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -114,7 +120,7 @@ function createNanoHostDispatch(
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await writeWorkerImageSettlement(coreDb, {
+        await seedTestNativeImageSettlement(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,
@@ -256,6 +262,8 @@ describe('Worker environment App composition', () => {
           );
           return actualReload(input);
         });
+        // The injected peer is a connected ready target of the admitted NanoHost owner.
+        const nanoHostStorage = await openTestNativeImagePeer(coreDb);
         const app = createApp({
           releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           runtimeConfigManager,
@@ -264,6 +272,7 @@ describe('Worker environment App composition', () => {
           dataRoot,
           llmGatewayDispatcher: { createResponses },
           mode: 'server',
+          nanoHostStorage,
           nanoHostSessionDispatch: createNanoHostDispatch(coreDb, nanoHostEffect),
           store,
         });
@@ -529,17 +538,60 @@ describe('Worker environment App composition', () => {
           resolvedCandidate: prepared.resolvedCandidate,
           target: prepared.target,
         };
-        const activatedResponse = await app.request(
-          ...operationRequest(
-            'worker-environment.activate',
-            {},
-            {
-              method: 'POST',
-              headers: adminHeaders,
-              body: JSON.stringify(activationInput),
-            }
-          )
+        const activate = () =>
+          app.request(
+            ...operationRequest(
+              'worker-environment.activate',
+              {},
+              {
+                method: 'POST',
+                headers: adminHeaders,
+                body: JSON.stringify(activationInput),
+              }
+            )
+          );
+        const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+          dataRoot,
+          privateWorkspace.id,
+          () => []
         );
+        if (frozen.status !== 'frozen')
+          throw new Error('Expected the administration capture gate.');
+        const imagePublication = vi.spyOn(nanoHostStorage.value.owner, 'workerImage');
+        try {
+          const response = await activate();
+          const refusal = await response.json();
+          expect(response.status).toBe(409);
+          expect.soft(response.headers.get('retry-after')).toBe('1');
+          expect.soft(response.headers.get('x-openkit-retry-context')).toMatch(/^[a-f0-9]{64}$/);
+          expect(refusal).toMatchObject({
+            code: 'workspace_frozen',
+            details: {
+              workspaceId: privateWorkspace.id,
+              operation: 'capture',
+              retryable: true,
+              blockers: [
+                {
+                  kind: 'publication',
+                  reason: 'frozen',
+                  reference: { workspaceId: privateWorkspace.id },
+                  actions: [],
+                },
+              ],
+            },
+          });
+          expect.soft(nanoHostEffect).toHaveBeenCalledTimes(beforeEffects);
+          expect.soft(imagePublication).not.toHaveBeenCalled();
+          expect(reload).not.toHaveBeenCalled();
+          expect(store.listThreadTurns(privateWorkspace.id, administrationThread.id)).toEqual(
+            beforeTurns
+          );
+          expect(readFileSync(agentPath, 'utf8')).toBe(initialAgentContent);
+        } finally {
+          frozen.release();
+        }
+
+        const activatedResponse = await activate();
         const activated = (await activatedResponse.json()) as ActivateWorkerEnvironmentResponse;
         const activatedAgentContent = readFileSync(agentPath, 'utf8');
 
@@ -582,17 +634,7 @@ describe('Worker environment App composition', () => {
         // Reload can await native Policy publication before it reports the applied snapshot.
         expect(await reload.mock.results[0]?.value).toMatchObject({ status: 'applied' });
         const effectsBeforeReplay = nanoHostEffect.mock.calls.length;
-        const replay = await app.request(
-          ...operationRequest(
-            'worker-environment.activate',
-            {},
-            {
-              method: 'POST',
-              headers: adminHeaders,
-              body: JSON.stringify(activationInput),
-            }
-          )
-        );
+        const replay = await activate();
         expect(replay.status).toBe(200);
         expect(await replay.json()).toEqual(activated);
         expect(reload).toHaveBeenCalledTimes(1);
@@ -711,7 +753,12 @@ describe('Worker environment App composition', () => {
       writeFileSync(agentPath, JSON.stringify(agentSetup.manifest, null, 2));
       const initialRevision = contentRevision(readFileSync(agentPath, 'utf8'));
       const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-      admitTestNativeEnvironment(coreDb, agentSetup.manifest, {}, IMAGE_DIGEST);
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(
+        coreDb,
+        agentSetup.manifest,
+        {},
+        IMAGE_DIGEST
+      );
       native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => runtimeConfigManager.current(),
       });
@@ -734,6 +781,7 @@ describe('Worker environment App composition', () => {
         });
       restoreCollection = () => collection.mockRestore();
       const app = createApp({
+        nanoHostStorage,
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         agentManifests: [agentSetup.manifest],
         auth: ownerSessionAuth(USER_ID),
@@ -1014,7 +1062,8 @@ describe('Worker environment App composition', () => {
               .all(),
             attempts: coreDb.sqlite
               .prepare(
-                'SELECT attempt_id, turn_id, phase, disposition, operation_id, terminal_cause, fence_ref FROM scheduler_execution_attempts'
+                // K8 retired fence_ref from the Core attempt row; this is failure diagnostics only.
+                'SELECT attempt_id, turn_id, phase, disposition, operation_id, terminal_cause FROM scheduler_execution_attempts'
               )
               .all(),
           })

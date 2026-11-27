@@ -1,6 +1,25 @@
-import { ActorRefSchema, PolicyDocumentV1Schema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  ActorRefSchema,
+  AgentSessionIdSchema,
+  ExecutionAttemptIdSchema,
+  PolicyDocumentV1Schema,
+  ThreadIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { WorkerImageSettlementSchema } from '../runtime/worker-image-settlements-records.js';
+import {
+  KernelExecutionGrantSchema,
+  KernelExecutionProofIntentSchema,
+  SelectedKernelInputSchema,
+} from './control-kernel-proof-codecs.js';
+import { SchedulerExecutionAttemptSchema } from './execution-attempt-codecs.js';
+import {
+  ControlWorkerFinalStatusInputSchema,
+  ControlWorkerFinalStatusPayloadSchema,
+} from './worker-control-final-status-codecs.js';
 
 const text = z.string().min(1);
 const stepRef = z
@@ -11,6 +30,202 @@ const stepRef = z
     stepId: text,
   })
   .strict();
+const imageTarget = z
+  .object({
+    targetId: text,
+    identityId: text,
+    deploymentId: text,
+    connectionGeneration: z.number().int().positive().safe(),
+    physicalEpoch: text,
+  })
+  .strict();
+
+/** The original normalized Harness result and its exact idle consumer. */
+export const CoreIdleHarnessConsumptionEvidenceSchema = z.strictObject({
+  key: z.strictObject({
+    harnessBindingRef: text.max(512),
+    operationId: z.string().regex(/^[a-f0-9]{64}$/),
+    sequence: z.number().int().nonnegative().safe(),
+    resultFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  consumer: z.strictObject({
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    agentSessionId: AgentSessionIdSchema,
+    agentSessionRuntimeBindingId: text.max(512),
+  }),
+});
+
+export type CoreIdleHarnessConsumptionEvidence = z.infer<
+  typeof CoreIdleHarnessConsumptionEvidenceSchema
+>;
+
+export const ControlCoreIdleHarnessConsumptionInputSchema =
+  CoreIdleHarnessConsumptionEvidenceSchema.extend({ observedAt: z.iso.datetime().optional() });
+
+export type ControlCoreIdleHarnessConsumptionInput = z.infer<
+  typeof ControlCoreIdleHarnessConsumptionInputSchema
+>;
+
+/** Exact result frame for the original acquisition under the current admitted NanoHost read. */
+export const ControlCoreImageResultSchema = z
+  .object({
+    kind: z.literal('image-result'),
+    ref: stepRef,
+    settlement: WorkerImageSettlementSchema.extend({ operation: z.literal('image.acquire') }),
+    target: imageTarget,
+  })
+  .strict();
+
+export type ControlCoreImageResult = z.infer<typeof ControlCoreImageResultSchema>;
+
+const finalClocks = { acceptedAt: z.iso.datetime(), eventAcceptedAt: z.iso.datetime() };
+const finalFingerprint = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+
+/** Closed Core command carried under the existing Worker final-status byte admission. */
+export const ControlCoreNanoHostFinalInputSchema = ControlWorkerFinalStatusInputSchema.omit({
+  byteLength: true,
+}).extend({
+  sandboxBindingRef: text.max(512),
+  payload: ControlWorkerFinalStatusPayloadSchema.extend(finalClocks),
+});
+
+/** The original Core intake, with the first decision class distinct from a Native replay. */
+export const CoreNanoHostFinalIntakeSchema = z
+  .object({
+    kind: z.enum(['decided', 'cancellation-decided']),
+    fingerprint: finalFingerprint,
+    ...finalClocks,
+  })
+  .strict();
+
+/** Exact reply to the Native final writer. A preparation grant cannot authorize a final. */
+export const ControlCoreNanoHostFinalDecisionSchema = CoreNanoHostFinalIntakeSchema.extend({
+  kind: z.enum(['decided', 'cancellation-decided', 'replay']),
+  grant: KernelExecutionGrantSchema.options[1],
+});
+
+/** First observation and inspection both carry the exact committed Core receipt. */
+export const ControlCoreNanoHostAcceptedFinalResultSchema = z.union([
+  z
+    .object({
+      state: z.enum(['applied', 'inspect-original']),
+      receipt: z
+        .object({
+          intent: KernelExecutionProofIntentSchema,
+          disposition: z.literal('applied'),
+          receiptDigest: finalFingerprint,
+          result: z.object({ step: stepRef }).strict(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z.object({ state: z.enum(['unknown', 'conflict']) }).strict(),
+]);
+
+export type ControlCoreNanoHostAcceptedFinalResult = z.infer<
+  typeof ControlCoreNanoHostAcceptedFinalResultSchema
+>;
+
+/** Exact original claim and the Native placement of the proposed materialization. */
+export const ControlNanoHostMaterializationPreparationInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  queueEntryId: text,
+  admissionHash: finalFingerprint,
+  selectedInput: SelectedKernelInputSchema.shape.input,
+  workspaceId: WorkspaceIdSchema,
+  threadId: ThreadIdSchema,
+  turnId: TurnIdSchema,
+  agentSessionId: AgentSessionIdSchema,
+  inputRef: text,
+  bindingRef: text,
+  target: imageTarget.extend({ physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/) }),
+  observedAt: z.iso.datetime().optional(),
+});
+
+export type ControlNanoHostMaterializationPreparationInput = z.infer<
+  typeof ControlNanoHostMaterializationPreparationInputSchema
+>;
+
+/** First submission names the attempt and the exact admitted Native placement. */
+export const ControlNanoHostFirstSubmissionInputSchema = z
+  .object({
+    attemptId: ExecutionAttemptIdSchema,
+    observedAt: z.string().datetime().optional(),
+    placement: z
+      .object({
+        runtimeTargetId: text,
+        identityId: text,
+        deploymentId: text,
+        physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/),
+        connectionGeneration: z.number().int().positive().safe(),
+      })
+      .strict(),
+  })
+  .strict();
+/** The private Worker frame carries placement facts only, with peer handles supplied by the writer. */
+export type ControlNanoHostFirstSubmissionInput = z.infer<
+  typeof ControlNanoHostFirstSubmissionInputSchema
+>;
+
+/** A replay carries the original submitted attempt without another dispatch permission. */
+export const ControlNanoHostFirstSubmissionResultSchema = z
+  .object({
+    state: z.enum(['admitted-now', 'inspect-original']),
+    attempt: SchedulerExecutionAttemptSchema.extend({
+      backendId: z.literal('nanohost'),
+      agentSessionId: AgentSessionIdSchema,
+      inputRef: text,
+      bindingRef: text,
+      operationId: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      deadline: z.string().datetime(),
+    }).strict(),
+  })
+  .strict();
+/** Complete submitted attempt and a decision state that distinguishes the first ACK from an inspection. */
+export type ControlNanoHostFirstSubmissionResult = z.infer<
+  typeof ControlNanoHostFirstSubmissionResultSchema
+>;
+
+/** Core consumes the exact physical retirement decision under the admitted peer openings. */
+export const ControlNanoHostOrphanRetirementInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  inputRef: text,
+  bindingRef: text,
+  backendSessionId: text,
+  target: imageTarget,
+  observationHash: finalFingerprint,
+  physicalCleanedAt: z.iso.datetime(),
+  observedAt: z.iso.datetime().optional(),
+});
+
+export type ControlNanoHostOrphanRetirementInput = z.infer<
+  typeof ControlNanoHostOrphanRetirementInputSchema
+>;
+
+const endedWorkerStep = z.strictObject({ stepId: text.max(128), digest: finalFingerprint });
+
+/** Original Workspace handoff, Native fence and scoped release occurrence. */
+export const ControlNanoHostTerminalReleaseInputSchema = z.strictObject({
+  attemptId: ExecutionAttemptIdSchema,
+  target: imageTarget,
+  fenceRef: text.max(512),
+  coveredScopeRefs: z.array(text.max(512)).min(1).max(4),
+  workspaceExecutionId: text.max(128),
+  workspaceSteps: z.strictObject({
+    terminal: endedWorkerStep,
+    output: endedWorkerStep,
+    evidence: endedWorkerStep,
+    collection: endedWorkerStep,
+    consume: endedWorkerStep,
+    release: endedWorkerStep,
+  }),
+});
+
+export type ControlNanoHostTerminalReleaseInput = z.infer<
+  typeof ControlNanoHostTerminalReleaseInputSchema
+>;
+
 /** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
 export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
   version: 'containment/v1',
@@ -34,6 +249,29 @@ export const SECURITY_OBSERVATION_LIMITS = Object.freeze({
 });
 
 /** Closed existing Core producer decisions; callers cannot provide permission or capacity results. */
+export const ControlSandboxReleaseRefusalHandoffSchema = z.strictObject({
+  kind: z.literal('sandbox-release-refusal-handoff'),
+  ref: stepRef,
+  workspaceFence: z.strictObject({
+    workspaceId: WorkspaceIdSchema,
+    executionId: text,
+    stepId: text,
+  }),
+});
+
+export const UndeliveredRefusalSuccessorSchema = z.strictObject({
+  attemptId: text,
+  workspaceId: WorkspaceIdSchema,
+  stage: z.enum(['close', 'hold', 'origin-ended', 'teardown', 'release']),
+});
+
+export const SandboxReleaseRefusalAttachmentSchema = z.strictObject({
+  storageRef: text,
+  workSlotRef: text,
+  attachmentGeneration: z.number().int().safe().positive(),
+  revision: z.number().int().safe().positive(),
+});
+
 export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -91,21 +329,14 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
       kind: z.literal('image-intent'),
       intentJson: text,
       processWitness: text,
-      target: z
-        .object({
-          targetId: text,
-          identityId: text,
-          deploymentId: text,
-          connectionGeneration: z.number().int().positive().safe(),
-          physicalEpoch: text,
-        })
-        .strict(),
+      target: imageTarget,
     })
     .strict(),
   z.object({ kind: z.literal('image-abandon'), ref: stepRef, accepted: z.boolean() }).strict(),
   z
     .object({
       kind: z.literal('sandbox-release-refusal'),
+      sandboxBindingRef: text.max(512),
       integrationBindingRef: text.max(512),
       target: z
         .object({
@@ -118,19 +349,8 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
         .strict(),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal('sandbox-release-refusal-handoff'),
-      ref: stepRef,
-      workspaceFence: z
-        .object({
-          workspaceId: WorkspaceIdSchema,
-          executionId: text,
-          stepId: text,
-        })
-        .strict(),
-    })
-    .strict(),
+  ControlSandboxReleaseRefusalHandoffSchema,
+  UndeliveredRefusalSuccessorSchema.extend({ kind: z.literal('undelivered-refusal-successor') }),
   z
     .object({
       kind: z.literal('idle-intent'),
@@ -201,7 +421,7 @@ export function readCoreJournalLineage(inputRefs: readonly string[]): WorkerLine
 export class CoreJournalRefusal extends Error {
   constructor(
     message: string,
-    readonly reasonCode?: 'idle_cleanup_result_only'
+    readonly reasonCode?: 'idle_cleanup_result_only' | 'image_result_conflict'
   ) {
     super(message);
   }
@@ -213,6 +433,6 @@ export const ControlCoreJournalRefusalSchema = z
     code: z.literal('core_journal_refused'),
     message: text,
     status: z.literal(409),
-    reasonCode: z.literal('idle_cleanup_result_only').optional(),
+    reasonCode: z.enum(['idle_cleanup_result_only', 'image_result_conflict']).optional(),
   })
   .strict();

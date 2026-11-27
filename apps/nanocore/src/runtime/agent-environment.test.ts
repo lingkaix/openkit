@@ -43,18 +43,26 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { importWorkspaceVaultGrants } from '../storage/test-support/vault-retained-fixtures.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { seedTestNanoHostHeartbeat } from '../test-support/nanohost-worker-lease.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import {
-  admitTestNativeEnvironment,
-  createTestNativeEnvironmentDb,
-} from '../test-support/native-environment.js';
+  resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
+  resolveAgentSessionCompatibilityKey,
+} from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
+import {
+  markTestNanoHostAwaitingReconnect,
+  submitPreparedTestNanoHostLease,
+} from '../test-support/tail-port-a.js';
 import { createVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -62,55 +70,14 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  resolveAgentSessionCompatibilityKey as resolveCompatibility,
-  resolveAgentEnvironmentPackageMetadata as resolveMetadata,
-  resolveAgentEnvironmentPackage as resolvePackage,
-} from './agent-environment.js';
-import {
-  markSchedulerExecutionAttemptClosing,
-  recordSchedulerExecutionOperation,
-} from './execution-attempt-records.js';
-import {
-  acceptNanoHostAttemptHeartbeat,
-  resolveNanoHostAttemptTokenBinding,
-} from './nanohost-attempt-records.js';
+import { resolveAgentEnvironmentPackage as resolvePackageWithoutFixture } from './agent-environment.js';
+import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
+import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
 import { DeterministicAgentPreparationError } from './types.js';
-
-// Other-contract fixtures explicitly confirm synthetic image defaults before resolution.
-const environmentFixtureDb = createTestNativeEnvironmentDb();
-function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
-  input: T
-): T & { coreDb: typeof environmentFixtureDb } {
-  const coreDb = input.coreDb ?? environmentFixtureDb;
-  admitTestNativeEnvironment(coreDb, input.agentSetup.manifest);
-  const readRuntimeConfig =
-    input.readRuntimeConfig ??
-    (input.workspaceDataSourceCatalog
-      ? () =>
-          createInMemoryRuntimeConfigSnapshot({
-            dataRoot: null,
-            workspaceDataSourceCatalogs: [
-              {
-                workspaceId: workspaceIdForOwner(input.turn.owner),
-                path: 'data-sources.jsonc',
-                catalog: input.workspaceDataSourceCatalog!,
-              },
-            ],
-          })
-      : undefined);
-  return { ...input, coreDb, ...(readRuntimeConfig ? { readRuntimeConfig } : {}) };
-}
-const resolveAgentEnvironmentPackage: typeof resolvePackage = (input) =>
-  resolvePackage(preparedInput(input));
-const resolveAgentEnvironmentPackageMetadata: typeof resolveMetadata = (input) =>
-  resolveMetadata(preparedInput(input));
-const resolveAgentSessionCompatibilityKey: typeof resolveCompatibility = (input) =>
-  resolveCompatibility(preparedInput(input));
 
 const USER_TRIGGER_ACTOR = {
   kind: 'user',
@@ -858,8 +825,8 @@ describe('agent environment package resolver', () => {
     };
     await expect(
       async () =>
-        await resolveAgentEnvironmentPackage(
-          input as Parameters<typeof resolveAgentEnvironmentPackage>[0]
+        await resolvePackageWithoutFixture(
+          input as Parameters<typeof resolvePackageWithoutFixture>[0]
         )
     ).rejects.toThrow('expected object');
   });
@@ -1723,6 +1690,7 @@ describe('agent environment package resolver', () => {
     }> = [];
 
     applyMigrations(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1837,32 +1805,31 @@ describe('agent environment package resolver', () => {
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
       // A submitted Native process awaiting exact adoption has revoked mediated route authority.
-      recordSchedulerExecutionOperation(coreDb, {
+      coreDb.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?')
+        .run(`aepsnap_${turn.id}_session_direct_1`, turn.id);
+      submitPreparedTestNanoHostLease(coreDb, {
+        admission: requireSchedulerAdmissionEntry(coreDb, `queue_${turn.id}`),
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
-        operationId: `submit:${turn.id}`,
-        submission: true,
+        tokens: { control: 'c'.repeat(64), inference: 'd'.repeat(64), capability: 'e'.repeat(64) },
+        observedAt: new Date().toISOString(),
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 0,
         workerProcessKeyHash: 'a'.repeat(43),
         heartbeatTimeoutMs: 30_000,
       });
-      acceptNanoHostAttemptHeartbeat(coreDb, {
+      seedTestNanoHostHeartbeat(coreDb, {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
         workerSequence: 1,
         heartbeatTimeoutMs: 30_000,
       });
-      coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_execution_attempts SET input_ref = ?, recovery_state = ?, recovery_deadline = ? WHERE turn_id = ?'
-        )
-        .run(
-          `aepsnap_${turn.id}_session_direct_1`,
-          'awaiting-reconnect',
-          '2099-01-01T00:00:00.000Z',
-          turn.id
-        );
+      markTestNanoHostAwaitingReconnect(
+        coreDb,
+        testEntityId('attempt', `lease_${turn.id}`),
+        '2099-01-01T00:00:00.000Z'
+      );
       expect(
         resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: `lease-token:${turn.id}`,
@@ -2914,8 +2881,10 @@ describe('public network AEP admission', () => {
       workspaceRoots: [],
     };
     try {
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
       createApp({
         coreDb,
+        nanoHostStorage,
         dataRoot,
         store,
         mode: 'local',
@@ -2948,6 +2917,7 @@ describe('public network AEP admission', () => {
         preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)
       ).toThrow(/removed or changed/i);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

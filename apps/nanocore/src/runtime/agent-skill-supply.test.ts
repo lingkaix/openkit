@@ -10,7 +10,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
@@ -98,7 +98,7 @@ describe('release-declared catalog Skill supply', () => {
       const agentSetup = createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] });
       // Inert runtime additions cannot grant release-owned supply qualification.
       Object.assign(agentSetup.manifest.runtime, { supplyForms: ['skill-filesystem-copy'] });
-      admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+      await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
       const unexpectedBackendCall = vi.fn(() => {
         throw new Error('Unexpected backend effect');
       });

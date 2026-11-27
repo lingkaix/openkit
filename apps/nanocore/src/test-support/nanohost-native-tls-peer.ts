@@ -7,18 +7,22 @@ import { createSecureServer } from 'node:http2';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { serve } from '@hono/node-server';
+import { allocateEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from '../auth/nanohost-transport-admission.js';
 import { createNanoHostTransportSessionAuthority } from '../auth/nanohost-transport-session.js';
-import { createNanoHostTransportTokenRecord } from '../auth/nanohost-transport-token-store.js';
-import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
+import { createOpenKitAccessTokenSecret } from '../auth/nanohost-transport-token.js';
+import { enrollNanoHostTransportIdentity } from '../auth/nanohost-transport-token-store.js';
 import {
   createNanoHostSessionDispatch,
   registerNanoHostSessionSemanticRoutes,
 } from '../runtime/nanohost-session-dispatch.js';
 import { openCoreDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { openAdmittedTestNanoHost } from './admitted-nanohost.js';
 
 const root = process.argv[2];
 assert(root, 'Rust fixture must supply an isolated temporary directory.');
@@ -93,18 +97,19 @@ execFileSync(
 const coreDb = openCoreDb(root);
 applyMigrations(coreDb);
 const identityId = 'nanohost-a';
-const deploymentId = 'deployment-a';
+const { deploymentId } = readDataRootLayoutMarker(root);
+const nanoHostConfig = { identityId, deploymentId };
 const now = new Date();
-coreDb.sqlite
-  .prepare(`INSERT INTO nanohost_integration_identities
-  (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`)
-  .run(identityId, deploymentId, now.toISOString());
-const token = await createNanoHostTransportTokenRecord(coreDb, {
+const nativeStorage = await openAdmittedTestNanoHost(coreDb);
+const { readTarget } = createNanoHostCoreReads(nativeStorage.value.owner);
+const token = await enrollNanoHostTransportIdentity(nativeStorage.value, {
   deploymentId,
   expiresAt: new Date(now.getTime() + 60_000).toISOString(),
   now,
   ownerNanoHostIdentityId: identityId,
   responsibleServerAdminActorId: 'fixture-admin',
+  secret: createOpenKitAccessTokenSecret(),
+  tokenId: allocateEntityId('nhtok'),
 });
 const authority = createNanoHostTransportSessionAuthority();
 const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
@@ -119,7 +124,9 @@ app.use('*', async (context, next) => {
 });
 app.use('/api/nanohost/transport/session/readiness', async (context, next) => {
   await next();
-  const target = getNanoHostRuntimeTarget(coreDb, identityId);
+  const observed = readTarget(identityId);
+  assert.equal(observed.state, 'ready');
+  const target = observed.value;
   assert(target);
   assert.equal(context.res.status, 204);
   assert.equal(target?.ready, true);
@@ -130,12 +137,18 @@ app.use('/api/nanohost/transport/session/readiness', async (context, next) => {
     `${JSON.stringify({ ready: target.ready, generation: target.connectionGeneration })}\n`
   );
 });
-registerNanoHostTransportAdmissionRoutes({ app, coreDb, sessionAuthority: authority });
+registerNanoHostTransportAdmissionRoutes({
+  app,
+  coreDb,
+  nativeStorage,
+  sessionAuthority: authority,
+});
 registerNanoHostSessionSemanticRoutes({
   app,
   coreDb,
   dispatch,
-  nanoHostConfig: { identityId, deploymentId },
+  nanoHostConfig,
+  nativeStorage,
 });
 // Use the same native server factory and TLS options as index.ts, without allowHTTP1.
 const server = serve({
@@ -152,12 +165,15 @@ await once(server, 'listening');
 const address = server.address();
 assert(address && typeof address !== 'string');
 // Only the captured child pipe carries the attempt-local credential.
-process.stdout.write(`${JSON.stringify({ port: address.port, secret: token.secret })}\n`);
+process.stdout.write(
+  `${JSON.stringify({ port: address.port, deploymentId, secret: token.secret })}\n`
+);
 // An explicit post-attempt query observes absence without a guessed wait or retained secrets.
 createInterface({ input: process.stdin }).on('line', (line) => {
   assert.equal(line, 'observe');
-  const target = getNanoHostRuntimeTarget(coreDb, identityId);
+  const observed = readTarget(identityId);
+  assert.equal(observed.state, 'ready');
   process.stdout.write(
-    `${JSON.stringify({ requestCount, tokenPresentationCount, targetExists: target !== null })}\n`
+    `${JSON.stringify({ requestCount, tokenPresentationCount, targetExists: observed.value !== null })}\n`
   );
 });

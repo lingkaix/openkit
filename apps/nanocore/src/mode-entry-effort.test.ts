@@ -20,7 +20,10 @@ import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.j
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { observeExecutionAttempts } from './test-support/mode-entry-fixture.js';
-import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -87,6 +90,8 @@ describe('reasoning effort admission and replay', () => {
   ] as const)(
     'records submission then Agent default for $entry: %j',
     async ({ entry, supplied, defaultEffort, expected }) => {
+      vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+      onTestFinished(() => vi.unstubAllEnvs());
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-effort-admission-'));
       const coreDb = openCoreDb(dataRoot);
       applyMigrations(coreDb);
@@ -114,11 +119,13 @@ describe('reasoning effort admission and replay', () => {
           ...(defaultEffort !== undefined ? { reasoningEffort: defaultEffort } : {}),
         },
       };
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       const makeApp = (activeStore: FsStore) =>
         createApp({
           coreDb,
           dataRoot,
           fileAdmission,
+          nanoHostStorage,
           store: activeStore,
           agentManifests: [manifest],
           openKitConfig: { defaults: { defaultAgentId: manifest.id } },

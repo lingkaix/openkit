@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,8 +72,7 @@ export async function startIsolatedWebStack(
   await assertRetrievalKernel();
   await assertNanoCoreBuilt();
 
-  const corePort = await findOpenPort();
-  const webPort = await findOpenPort();
+  const [corePort, webPort] = await findOpenPorts();
   const stackRoot = await mkdtemp(join(tmpdir(), 'openkit-web-e2e-'));
   const dataRoot = options.dataRoot ?? join(stackRoot, 'data-root');
   const fixtureRoot = join(stackRoot, 'fixture');
@@ -136,10 +135,10 @@ export async function startIsolatedWebStack(
     delete coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   }
 
-  let coreFailureCode: string | undefined;
+  let coreFailureCode = 'boot.reason-unavailable';
   /** Spawns NanoCore and recognizes safe boot phase names without publishing child output or paths. */
   const spawnCore = (): ChildProcessWithoutNullStreams => {
-    coreFailureCode = undefined;
+    coreFailureCode = 'boot.reason-unavailable';
     const child = spawn(process.execPath, [nanoCoreEntry], {
       cwd: nanoCoreRoot,
       env: coreEnv,
@@ -217,8 +216,13 @@ export async function startIsolatedWebStack(
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
-    await waitForHttp(webUrl, web);
-    await waitForHttp(`${webUrl}/src/main.tsx`, web);
+    let webFailureCode = 'web.reason-unavailable';
+    web.stderr.on('data', (bytes: Buffer) => {
+      if (bytes.toString('utf8').includes(`Port ${webPort} is already in use`))
+        webFailureCode = 'web.listener-in-use';
+    });
+    await waitForHttp(webUrl, web, () => webFailureCode);
+    await waitForHttp(`${webUrl}/src/main.tsx`, web, () => webFailureCode);
   } catch (error) {
     await stop();
     throw error;
@@ -379,19 +383,19 @@ async function assertNanoCoreBuilt(): Promise<void> {
  *
  * @param url URL to poll.
  * @param process Child process to monitor.
- * @param failureCode Optional recognized safe startup reason; raw child output must stay private.
+ * @param failureCode Safe startup reason from the monitored child.
  */
 async function waitForHttp(
   url: string,
   process: ChildProcessWithoutNullStreams,
-  failureCode?: () => string | undefined
+  failureCode: () => string
 ): Promise<void> {
   const deadline = Date.now() + 30_000;
 
   while (Date.now() < deadline) {
     if (process.exitCode !== null) {
       throw new Error(
-        `Process exited before ${url} became ready: ${process.exitCode}; ${failureCode?.() ?? 'boot.reason-unavailable'}`
+        `Process exited before ${url} became ready: ${process.exitCode}; ${failureCode()}`
       );
     }
 
@@ -466,28 +470,34 @@ async function stopProcess(
   await Promise.race([exited, sleep(2_000)]);
 }
 
-/**
- * Finds one available localhost TCP port.
- *
- * @returns Available port.
- */
-async function findOpenPort(): Promise<number> {
-  return await new Promise((resolvePort, reject) => {
-    const server = createServer();
-
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-
-      if (typeof address !== 'object' || address === null) {
-        server.close(() => reject(new Error('Could not allocate a TCP port.')));
-        return;
-      }
-
-      const port = address.port;
-      server.close(() => resolvePort(port));
+/** Holds the first localhost port until the second is bound, so the kernel cannot reuse it. */
+async function findOpenPorts(): Promise<[corePort: number, webPort: number]> {
+  const core = createServer();
+  const web = createServer();
+  const listen = (server: Server) =>
+    new Promise<number>((resolvePort, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const address = server.address();
+        if (!address || typeof address === 'string')
+          reject(new Error('Could not allocate a TCP port.'));
+        else resolvePort(address.port);
+      });
     });
-  });
+  try {
+    return [await listen(core), await listen(web)];
+  } finally {
+    await Promise.all(
+      [core, web]
+        .filter((server) => server.listening)
+        .map(
+          (server) =>
+            new Promise<void>((resolveClose, reject) => {
+              server.close((error) => (error ? reject(error) : resolveClose()));
+            })
+        )
+    );
+  }
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   publishCanonicalPath,
   readCanonicalFile,
   readCanonicalTextFile,
+  removePrivateTreeSync,
   removeUnkeptCanonicalDirectories as removeStaleDirectories,
   syncCanonicalDirectory,
   throwCanonicalLinkError,
@@ -192,7 +193,7 @@ import {
   ensureWorkspaceLayoutRoot,
   WorkOwnershipViolationError,
 } from './fs-layout.js';
-import { readImmutableProductJson } from './immutable-content.js';
+import { isPendingPlanStageName, readImmutableProductJson } from './immutable-content.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredArtifactSnapshotV1Schema,
@@ -1799,6 +1800,22 @@ export function* readNativeTurnHistorySteps(
 }
 
 /** Repeats the retained Turn decoder for verified Items and the selected native metadata. */
+/**
+ * The Turn this reader reconstructs once one admission writes this exact record and these first
+ * Item revisions, for a grouped decision that closes the Turn in the same rollback boundary.
+ */
+export function plannedNativeTurn(
+  record: ControlProductSnapshot['record'],
+  retained: readonly Record<string, unknown>[]
+): Turn {
+  const items = retained.map((value) => {
+    const parsed = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+    const { schemaVersion: _header, ...payload } = value;
+    return preserveDescriptiveRecord(payload, parsed, parsed) as Item;
+  });
+  return nativeTurnWithVerifiedItems(record, items);
+}
+
 function nativeTurnWithVerifiedItems(
   record: ControlProductSnapshot['record'],
   items: Item[]
@@ -2242,6 +2259,8 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
       if (!current?.isDirectory() || current.isSymbolicLink()) break;
       if (part === 'backend' || part === 'sha256') {
         for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (part === 'backend' && entry.isDirectory() && isPendingPlanStageName(entry.name))
+            removePrivateTreeSync(join(directory, entry.name));
           if (
             entry.isFile() &&
             /^\.[0-9a-f]{64}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/.test(

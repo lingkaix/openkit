@@ -24,7 +24,10 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
@@ -40,6 +43,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.unstubAllEnvs();
 });
 type QuestionItem = Extract<Item, { type: 'user-input-request' }>;
 
@@ -454,9 +458,11 @@ describe('Shared attention run origin and exact question summary', () => {
   }, 30_000);
 
   it('derives positive viewer-caused handoff only from the real public Task producer metadata', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
     const f = await fixture();
     await recordTestNativeRuntimeTarget(f.coreDb);
     const setup = createTestAgentSetup();
+    await admitTestNativeEnvironmentForRoot(f.coreDb, setup.manifest);
     const fileAdmission = new FileStorageAdmission(f.root, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb, fileAdmission });
     const closeouts: Promise<unknown>[] = [];

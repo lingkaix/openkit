@@ -9,6 +9,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -70,14 +71,16 @@ it.each([
     const workspace = await store.createWorkspace('Actual asynchronous credential boundary');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: owner.id });
     const thread = await store.createThread(workspace.id, 'Client-owned Task');
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const native = await createNativeTaskAdmissionFixture(coreDb, store);
     onTestFinished(async () => {
       await native.restore();
     });
-    const setup = createTestAgentSetup({
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
     const app = createApp({
+      nanoHostStorage,
       mode: 'server',
       coreDb,
       dataRoot,

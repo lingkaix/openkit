@@ -151,7 +151,7 @@ export async function setTestExecutionAttemptBackend(
 
 /**
  * Injects one contradictory Turn reference into a genuine native session in a disposable fixture.
- * Drains the native writer before corruption; callers exclude other fixture producers.
+ * Callers exclude other fixture producers; the acknowledged Native opening remains admitted.
  * This changes no lifecycle, receipt or Audit and grants no cleanup authority.
  * @param coreDb Existing fixture owner containing the original native session.
  * @param attemptId Exact session owner to corrupt after valid setup.
@@ -162,12 +162,14 @@ export async function setTestBackendSessionTurn(
   attemptId: string,
   turnId: string
 ): Promise<void> {
-  await shutdownControlStoreWorkerClient();
-  const changed = coreDb.sqlite
-    .prepare('UPDATE worker_backend_sessions SET turn_id=? WHERE attempt_id=?')
-    .run(turnId, attemptId);
-  if (changed.changes !== 1)
-    throw new Error('Lineage fault requires one existing backend session.');
+  const { mutateAdmittedTestNanoHost } = await import('./admitted-nanohost.js');
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    const changed = sqlite
+      .prepare('UPDATE worker_backend_sessions SET turn_id=? WHERE attempt_id=?')
+      .run(turnId, attemptId);
+    if (changed.changes !== 1)
+      throw new Error('Lineage fault requires one existing backend session.');
+  });
 }
 
 /** Opens only an already initialized Workspace fixture; creates no records or authority. */

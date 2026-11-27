@@ -1236,6 +1236,16 @@ function requireTrustedWorkerInferenceRoute(
   return route;
 }
 
+const WORKER_INFERENCE_STORAGE_MESSAGE = 'NanoHost Worker control storage is unavailable.';
+
+function isWorkerInferenceStorageRefusal(error: unknown): error is WorkerControlGatewayError {
+  return (
+    error instanceof WorkerControlGatewayError &&
+    error.status === 503 &&
+    error.code === 'worker_observation_storage_unavailable'
+  );
+}
+
 /**
  * Converts worker inference failures into stable OpenAI-compatible envelopes.
  *
@@ -1266,6 +1276,19 @@ function asWorkerInferenceError(error: unknown): Response {
           code: error.code,
           message: error.message,
           type: error.type,
+        },
+      },
+      { status: error.status }
+    );
+  }
+
+  if (isWorkerInferenceStorageRefusal(error)) {
+    return Response.json(
+      {
+        error: {
+          code: error.code,
+          message: WORKER_INFERENCE_STORAGE_MESSAGE,
+          type: 'service_unavailable',
         },
       },
       { status: error.status }
@@ -1705,12 +1728,14 @@ async function finishDurableLlmGatewayFailure(
     cancelled ? 'aborted' : isGatewayTimeout(error) ? 'timed-out' : 'failed',
     cancelled
       ? cancellationCode
-      : error instanceof GatewayUnsupportedFeatureError ||
-          (error as { failure?: PiAiFailure } | null)?.failure?.kind === 'unsupported'
-        ? 'unsupported_gateway_feature'
-        : error instanceof LogicalModelRoutesExhaustedError
-          ? error.code
-          : failureCode
+      : isWorkerInferenceStorageRefusal(error)
+        ? error.code
+        : error instanceof GatewayUnsupportedFeatureError ||
+            (error as { failure?: PiAiFailure } | null)?.failure?.kind === 'unsupported'
+          ? 'unsupported_gateway_feature'
+          : error instanceof LogicalModelRoutesExhaustedError
+            ? error.code
+            : failureCode
   );
   return cancelled;
 }
@@ -1773,8 +1798,9 @@ function createGatewayTerminalErrorSse(
     errorCode ?? publicGatewayFailureCode(normalized.code, 'gateway_stream_failed');
   const payload = {
     error: {
-      message:
-        publicCode === 'gateway_context_overflow'
+      message: isWorkerInferenceStorageRefusal(error)
+        ? WORKER_INFERENCE_STORAGE_MESSAGE
+        : publicCode === 'gateway_context_overflow'
           ? gatewayProviderFailureMessage(publicCode)
           : (failureMessage ?? gatewayProviderFailureMessage(publicCode)),
       type: normalized.type,
@@ -1806,6 +1832,8 @@ function createGatewayTerminalErrorSse(
  * @returns Public gateway error type and code.
  */
 export function projectGatewayFailure(error: unknown, fallbackCode: string) {
+  if (isWorkerInferenceStorageRefusal(error))
+    return { type: 'service_unavailable', code: error.code };
   if (error instanceof ObservationCollectionStoppedError)
     return { type: 'invalid_request_error', code: error.code };
   if (error instanceof LogicalModelRoutesExhaustedError)
@@ -1985,12 +2013,12 @@ export function registerWorkerInferenceRoutes({
   ): Promise<Response> {
     const startedAt = performance.now();
     try {
-      const workerInferenceTokenHashAuthentication = {
-        tokenFamily: 'inference',
-      } as const;
-      const environmentPackage = workerControlGateway.authenticatePackageToken(
-        c.req.header('authorization') ?? null,
-        workerInferenceTokenHashAuthentication
+      const authorization = c.req.header('authorization') ?? null;
+      const authenticate = () =>
+        workerControlGateway.authenticatePackageToken(authorization, { tokenFamily: 'inference' });
+      const environmentPackage = await workerControlGateway.afterWorkerControlAcknowledgement(
+        authenticate,
+        c.req.raw.signal
       );
 
       assertExposureAvailable();
@@ -2020,36 +2048,34 @@ export function registerWorkerInferenceRoutes({
       const runtimeOriginRef = runtimeHint
         ? createWorkerRuntimeOriginRef(environmentPackage.snapshotId, runtimeHint.nativeThreadId)
         : null;
-      const assertAuthority = () => {
-        workerControlGateway.authenticatePackageToken(
-          c.req.header('authorization') ?? null,
-          workerInferenceTokenHashAuthentication
-        );
-        if (
-          !coreDb ||
-          !currentWorkerLineageWorkspaceAuthority(
-            coreDb,
-            {
-              workspaceId: environmentPackage.scope.workspaceId,
-              threadId: environmentPackage.scope.threadId,
-              turnId: environmentPackage.scope.turnId,
-              agentSessionId: environmentPackage.scope.agentSessionId,
-              packageSnapshotId: environmentPackage.snapshotId,
-              triggerActor: environmentPackage.scope.triggerActor,
-            },
-            'llm.gateway.use',
-            true
-          )
-        ) {
-          throw new WorkerInferenceRouteError(
-            'worker_inference_unavailable',
-            'Worker inference durable attribution is unavailable.',
-            503
-          );
-        }
-        assertExposureAvailable();
-      };
-      assertAuthority();
+      const assertAuthority = (signal = c.req.raw.signal) =>
+        workerControlGateway.afterWorkerControlAcknowledgement(() => {
+          authenticate();
+          if (
+            !coreDb ||
+            !currentWorkerLineageWorkspaceAuthority(
+              coreDb,
+              {
+                workspaceId: environmentPackage.scope.workspaceId,
+                threadId: environmentPackage.scope.threadId,
+                turnId: environmentPackage.scope.turnId,
+                agentSessionId: environmentPackage.scope.agentSessionId,
+                packageSnapshotId: environmentPackage.snapshotId,
+                triggerActor: environmentPackage.scope.triggerActor,
+              },
+              'llm.gateway.use',
+              true
+            )
+          ) {
+            throw new WorkerInferenceRouteError(
+              'worker_inference_unavailable',
+              'Worker inference durable attribution is unavailable.',
+              503
+            );
+          }
+          assertExposureAvailable();
+        }, signal);
+      await assertAuthority();
       let admittedRoute: LogicalModelSupply | null = null;
       try {
         admittedRoute = resolveLogicalModelSupply(
@@ -2267,12 +2293,14 @@ export function registerWorkerInferenceRoutes({
           const kind =
             failure?.kind ??
             (error instanceof LogicalModelRoutesExhaustedError ? error.cause : undefined);
-          const status = failure?.status ?? observedHttpRejection;
+          const storageRefusal = isWorkerInferenceStorageRefusal(error) ? error : undefined;
+          const status = storageRefusal?.status ?? failure?.status ?? observedHttpRejection;
           console.warn(
             JSON.stringify({
               code: 'worker_inference_failed',
               message: 'Worker inference call failed.',
               phase: failurePhase,
+              ...(storageRefusal ? { storageCode: storageRefusal.code } : {}),
               failureKind: kind && Object.hasOwn(GATEWAY_FAILURE_CODES, kind) ? kind : 'unknown',
               ...(kind === undefined || kind === 'unknown'
                 ? { exceptionClass: observedExceptionClass ?? workerInferenceExceptionClass(error) }
@@ -2425,7 +2453,10 @@ export function registerWorkerInferenceRoutes({
           }) => {
             activeExecution = execution;
             phase = 'dispatch';
-            let admissionFailure: ModelRequestAdmissionError | undefined;
+            let admissionFailure:
+              | ModelRequestAdmissionError
+              | WorkerControlGatewayError
+              | undefined;
             try {
               const cache = resolveWorkerPromptCacheKey({
                 accountSlotId: provider.accountSlotId ?? null,
@@ -2462,7 +2493,7 @@ export function registerWorkerInferenceRoutes({
               durableCall.assertAuthority = async () => {
                 await execution.assertAuthority?.();
                 requireObservationAdmission();
-                assertAuthority();
+                await assertAuthority(rawSignal);
               };
               const dispatchContext: LLMGatewayDispatchContext = {
                 openkitGatewayDispatch: 'worker_inference',
@@ -2492,9 +2523,15 @@ export function registerWorkerInferenceRoutes({
                         outputReserveTokens: final.outputReserveTokens,
                       });
                       await execution.assertAuthority?.();
-                      assertAuthority();
+                      const remaining = Math.max(0, execution.deadline - Date.now());
+                      await assertAuthority(
+                        AbortSignal.any([rawSignal, AbortSignal.timeout(Math.ceil(remaining))])
+                      );
                     } catch (error) {
-                      if (error instanceof ModelRequestAdmissionError) {
+                      if (
+                        error instanceof ModelRequestAdmissionError ||
+                        error instanceof WorkerControlGatewayError
+                      ) {
                         admissionFailure = error;
                         // This trusted callback runs before inference, so its refusal has known zero output.
                         // Source settlement remains required by the existing raw-output closeout.
@@ -2665,19 +2702,20 @@ export function registerWorkerInferenceRoutes({
             } catch (error) {
               observedExceptionClass = workerInferenceExceptionClass(error);
               // Stock can normalize callback errors; retain the trusted pre-inference refusal category.
-              const failure = admissionFailure
-                ? new GatewayAttemptFailure(
-                    {
-                      kind:
-                        admissionFailure.code === 'internal_agent_context_exceeded'
-                          ? 'context_overflow'
-                          : 'invalid_request',
-                      settled: true,
-                    },
-                    admissionFailure,
-                    true
-                  )
-                : error;
+              const failure =
+                admissionFailure instanceof ModelRequestAdmissionError
+                  ? new GatewayAttemptFailure(
+                      {
+                        kind:
+                          admissionFailure.code === 'internal_agent_context_exceeded'
+                            ? 'context_overflow'
+                            : 'invalid_request',
+                        settled: true,
+                      },
+                      admissionFailure,
+                      true
+                    )
+                  : (admissionFailure ?? error);
               observedFailure = (failure as { failure?: PiAiFailure } | null)?.failure;
               throw failure;
             }
@@ -2701,7 +2739,7 @@ export function registerWorkerInferenceRoutes({
             : undefined;
         const failure =
           cutoffFailure ??
-          (durableCall.rawOutputFailureCode
+          (!isWorkerInferenceStorageRefusal(error) && durableCall.rawOutputFailureCode
             ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
               ? new WorkerRawOutputBudgetExceededError()
               : new WorkerRawOutputAuthorityError()
@@ -2726,6 +2764,7 @@ export function registerWorkerInferenceRoutes({
         if (
           !cutoffFailure &&
           !durableCall.rawOutputFailureCode &&
+          !isWorkerInferenceStorageRefusal(failure) &&
           runtimeHint?.requestKind === 'compaction' &&
           !activeExecution?.outputBegan &&
           (activeExecution !== undefined ||

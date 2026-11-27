@@ -25,7 +25,7 @@ import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import {
   createNativeCommandTurn,
   createNativeTaskAdmissionFixture,
@@ -63,7 +63,8 @@ async function liveWorkerFixture() {
     requiredCapabilities: ['trusted-worker-inference-relay'],
   }).manifest;
   manifest.runtime.version = QUALIFIED_STEER_PINS.codex;
-  admitTestNativeEnvironment(f.coreDb, manifest);
+  // Image evidence is retained by the admitted NanoHost file; the App serves from the same owner.
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(f.coreDb, manifest);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(f.root),
     agentManifests: [manifest],
@@ -135,6 +136,7 @@ async function liveWorkerFixture() {
     providerRegistry: configuration.providerRegistry,
     openKitConfig: configuration.openKitConfig,
     turnExecutor: native.executor,
+    nanoHostStorage,
   });
   return { ...f, app, turnId, agentSessionId };
 }

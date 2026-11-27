@@ -39,7 +39,7 @@ export function createDiagnosticsOperationImplementations(
   dependencies: OperationInvocationDependencies
 ) {
   return {
-    'diagnostics.app': () => {
+    'diagnostics.app': async (_input, context) => {
       const {
         runtimeConfig,
         runtimeConfigManager,
@@ -60,7 +60,7 @@ export function createDiagnosticsOperationImplementations(
       return {
         service: 'nanocore',
         boot,
-        readiness: observeOperationalReadiness(dependencies, boot),
+        readiness: await observeOperationalReadiness(dependencies, boot, Date.now, context.signal),
         process: createProcessDiagnosticsSample(),
         build: releaseIdentity,
         gateway: {

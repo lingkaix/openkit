@@ -10,16 +10,17 @@ import type Database from 'better-sqlite3';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import type { StorageResult } from '../storage/storage-owner.js';
+import { AgentEnvironmentSnapshotReadError } from '../storage/workspace-file-records.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import type { NanoHostExecutionAttemptRecord } from './nanohost-attempt-records.js';
 import {
-  AgentEnvironmentSnapshotReadError,
-  requireAgentEnvironmentPackageSnapshot,
-} from './aep-snapshot-ledger.js';
-import {
-  listRestorableNanoHostExecutionAttempts,
-  type NanoHostExecutionAttemptRecord,
-  requireNanoHostExecutionAttempt,
-} from './nanohost-attempt-records.js';
+  listWorkerBackendSessions,
+  readNanoHostWorkerRouteBinding,
+} from './worker-backend-session-records.js';
 import {
   assertWorkerControlRestoreRecords,
   type WorkerControlArtifactNotice,
@@ -40,9 +41,17 @@ interface WorkerControlRecordRow {
   readonly recordJson: string;
 }
 
+/** A closed predecessor whose own Workspace cannot prove its replay; it holds only that replay. */
+interface WorkerControlRestoreHold {
+  readonly attemptId: string;
+  readonly workspaceId: string;
+  readonly causeCode: 'workspace-not-admitted' | 'package-unreadable';
+}
+
 /**
  * Restores live control, cancellation-only first-final serving state and exact final replay.
  * The acknowledged NanoHost reader must cover the entire plan before any session is published.
+ * A closed predecessor's own Workspace fault holds only its replay. Any other fault holds all.
  */
 export function rebuildWorkerControlGatewaySessions(
   coreDb: CoreDb,
@@ -51,30 +60,48 @@ export function rebuildWorkerControlGatewaySessions(
     query: (sqlite: Database.Database) => Value
   ) => StorageResult<'nanohost', Value>
 ): StorageResult<'nanohost', void> {
-  const plan = (sqlite: Database.Database) => planWorkerControlRestore(coreDb, { sqlite });
-  if (!readNanoHost) {
-    gateway.restoreSessions(plan(coreDb.sqlite));
-    return { state: 'ready', value: undefined };
-  }
+  const held: WorkerControlRestoreHold[] = [];
+  const plan = (sqlite: Database.Database) => {
+    held.length = 0;
+    return planWorkerControlRestore(coreDb, { sqlite }, held);
+  };
   try {
-    const observed = readNanoHost(plan);
+    const observed = readNanoHost
+      ? readNanoHost(plan)
+      : readNanoHostObservation(coreDb.dataRoot, plan);
     if (observed.state !== 'ready') return observed;
     gateway.restoreSessions(observed.value);
-    return { state: 'ready', value: undefined };
   } catch {
     return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+  }
+  for (const hold of held) reportWorkerControlRestoreHold(hold);
+  return { state: 'ready', value: undefined };
+}
+
+/** Makes one per-owner replay hold inspectable with finite fields: no paths or exception text. */
+function reportWorkerControlRestoreHold(hold: WorkerControlRestoreHold): void {
+  try {
+    console.error(
+      JSON.stringify({
+        event: 'worker.control.restore-held',
+        errorCode: 'recovery_required',
+        causeCode: hold.causeCode,
+        attemptId: hold.attemptId,
+        workspaceId: hold.workspaceId,
+      })
+    );
+  } catch {
+    // Diagnostics must not change the owning operation.
   }
 }
 
 function planWorkerControlRestore(
   coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database }
+  owner: { readonly sqlite: Database.Database },
+  held: WorkerControlRestoreHold[]
 ): WorkerControlSessionRestoreInput[] {
   const now = new Date().toISOString();
-  const leases = [
-    ...listRestorableNanoHostExecutionAttempts(coreDb),
-    ...listTerminalControlLeases(coreDb, owner, now),
-  ];
+  const leases = listAdmittedWorkerControlLeases(coreDb, owner);
   const planned: WorkerControlSessionRestoreInput[] = [];
   for (const lease of leases) {
     if (
@@ -98,19 +125,31 @@ function planWorkerControlRestore(
     if (
       lease.phase !== 'open' &&
       !getWorkerControlAcceptedFinalStatus(owner, lineage) &&
-      !hasPendingWorkerCancellationFinal(lease, now)
+      !hasPendingWorkerCancellationFinal(lease, now) &&
+      !(
+        lease.phase === 'closing' &&
+        lease.terminalCause === 'worker-final-status' &&
+        lease.fenceRef === null &&
+        lease.recoveryState === null &&
+        lease.heartbeatDeadline > now &&
+        lease.deadline &&
+        lease.deadline > now
+      )
     )
       continue;
-    // Accepted records are shared Core authority: an unreadable or schema-invalid one holds the
-    // whole plan, so it is read and validated before any owner-local hold can skip this lease.
+    // Native accepted records are shared authority. Read and validate them before either
+    // owner-local skip so an unreadable or schema-invalid record holds the whole restore plan.
     const records = readAcceptedRecords(owner, lineage);
     assertWorkerControlRestoreRecords(records);
-    // Closed exact-replay branch only. A closing first-final candidate and an open lease keep the
-    // shared hold. A closed predecessor whose own Workspace is not admitted, or whose retained AEP
-    // its own decoder refuses, holds only this replay: its old routes stay unrestored (401) and its
-    // exit is that owner's repair or proved retirement at the next boot.
+    // Closed exact-replay branch only (a closed lease qualifies only through its accepted final). A
+    // closing first-final candidate keeps the shared hold. The replay's own Workspace is checked
+    // before executable admission: a quarantined or retired owner holds only this replay; its exit
+    // is that owner's repair and re-admission at the next hydration, or its proved retirement.
     const closed = lease.phase === 'closed';
-    if (closed && !isScopeAdmitted(coreDb.dataRoot, 'workspace', lease.workspaceId)) continue;
+    if (closed && !isScopeAdmitted(coreDb.dataRoot, 'workspace', lease.workspaceId)) {
+      held.push({ ...ownerOf(lease), causeCode: 'workspace-not-admitted' });
+      continue;
+    }
     const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
@@ -121,8 +160,11 @@ function planWorkerControlRestore(
         lease.inputRef
       ).snapshot;
     } catch (error) {
-      if (closed && error instanceof AgentEnvironmentSnapshotReadError) continue;
-      throw error;
+      // Only the retained package decoder's own refusal is owner-local. A missing, duplicate or
+      // contradicting package, and every Core or NanoHost fault, still holds the whole plan.
+      if (!closed || !(error instanceof AgentEnvironmentSnapshotReadError)) throw error;
+      held.push({ ...ownerOf(lease), causeCode: 'package-unreadable' });
+      continue;
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -142,61 +184,28 @@ function planWorkerControlRestore(
   return planned;
 }
 
-/** Core supplies candidate placement. Only the admitted record owner can show final acceptance. */
-function listTerminalControlLeases(
+function ownerOf(lease: NanoHostExecutionAttemptRecord) {
+  return { attemptId: lease.attemptId, workspaceId: lease.workspaceId };
+}
+
+/** Native supplies the candidate tuples; the retained Core submission and phase still decide. */
+function listAdmittedWorkerControlLeases(
   coreDb: CoreDb,
-  owner: { readonly sqlite: Database.Database },
-  now: string
+  owner: { readonly sqlite: Database.Database }
 ): NanoHostExecutionAttemptRecord[] {
-  const table = coreDb.sqlite
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get('scheduler_execution_attempts');
-  if (!table) return [];
-
-  const rows = coreDb.sqlite
-    .prepare(
-      `SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
-         turn_id AS turnId, agent_session_id AS agentSessionId, input_ref AS packageSnapshotId,
-         phase, terminal_cause AS terminalCause
-       FROM scheduler_execution_attempts
-       WHERE phase IN ('closing', 'closed') AND binding_ref IS NOT NULL
-         AND worker_control_token_hash IS NOT NULL AND worker_inference_token_hash IS NOT NULL
-         AND deadline > ?
-       ORDER BY created_at ASC, attempt_id ASC`
-    )
-    .all(now) as Array<
-    Omit<WorkerControlLineage, 'requestId'> & {
-      attemptId: string;
-      phase: 'closing' | 'closed';
-      terminalCause: string | null;
+  const live: NanoHostExecutionAttemptRecord[] = [];
+  const terminal: NanoHostExecutionAttemptRecord[] = [];
+  for (const session of listWorkerBackendSessions(owner)) {
+    const original = readRetainedNanoHostSubmission(coreDb, session.attemptId);
+    if (!original || !readNanoHostWorkerRouteBinding(owner, original.lease.grant)) {
+      if (session.state === 'launching')
+        throw new Error('Native Worker Gateway restore lacks its original submission.');
+      continue;
     }
-  >;
-  if (rows.length === 0) return [];
-
-  const hasFinal = owner.sqlite.prepare(
-    `SELECT 1 FROM worker_control_records
-     WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND agent_session_id = ?
-       AND package_snapshot_id = ? AND operation = 'final_status' LIMIT 1`
-  );
-  return rows
-    .filter(
-      (lease) =>
-        (lease.phase === 'closing' &&
-          [
-            'turn-cancelled',
-            'raw-output-exhausted',
-            'raw-output-unavailable',
-            'observation_limit_reached',
-          ].includes(lease.terminalCause ?? '')) ||
-        hasFinal.get(
-          lease.workspaceId,
-          lease.threadId,
-          lease.turnId,
-          lease.agentSessionId,
-          lease.packageSnapshotId
-        )
-    )
-    .map((lease) => requireNanoHostExecutionAttempt(coreDb, lease.attemptId));
+    const { attempt } = readNanoHostRecoveryLease(owner.sqlite, original.lease);
+    (attempt.phase === 'open' ? live : terminal).push(attempt);
+  }
+  return [...live, ...terminal];
 }
 
 /**

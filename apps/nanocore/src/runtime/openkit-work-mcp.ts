@@ -51,6 +51,7 @@ import {
 } from '../storage/artifacts/file-payload.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import {
   OPENKIT_WORK_TOOL_DEFINITIONS,
   WorkReadPeerArgsSchema,
@@ -64,7 +65,7 @@ import { PendingRequestCommandError } from './pending-request-error.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
 import { preflightPendingRequest, type RaisePendingRequestInput } from './pending-requests.js';
 import { assertWorkerArtifactDigestProof } from './worker-artifact-credential-scan.js';
-import { WorkerControlGatewayError } from './worker-control-gateway.js';
+import { type WorkerControlGateway, WorkerControlGatewayError } from './worker-control-gateway.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import {
   createWorkerArtifactLiteralCheck,
@@ -125,6 +126,7 @@ export async function dispatchOpenkitWorkTool(
     readonly fileAdmission?: FileStorageAdmission;
     readonly signal?: AbortSignal;
     readonly requireAdmission?: () => void;
+    readonly afterWorkerControlAcknowledgement?: WorkerControlGateway['afterWorkerControlAcknowledgement'];
     readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
     readonly automationStore?: OperationInvocationDependencies['automationStore'];
     readonly turnStartServices?: OperationInvocationDependencies['turnStartServices'];
@@ -268,25 +270,39 @@ export async function dispatchOpenkitWorkTool(
     }
   }
   if (toolId === 'work.peer.list' || toolId === 'work.peer.read') {
-    const peers = input.coreDb.sqlite
-      .prepare(`
+    const readPeers = () =>
+      requireNanoHostObservation(
+        input.coreDb,
+        (sqlite) =>
+          sqlite
+            .prepare(`
       SELECT peer.agent_session_runtime_binding_id AS bindingId,
              peer.agent_session_id AS agentSessionId, peer.workspace_id AS workspaceId,
              peer.thread_id AS threadId, peer_harness.adapter_id AS runtime
       FROM agent_session_runtime_bindings caller
       JOIN harness_instance_records caller_harness ON caller_harness.harness_instance_id = caller.harness_instance_id
+      JOIN sandbox_runtime_records physical ON physical.sandbox_runtime_id = caller_harness.sandbox_runtime_id
+      JOIN nanohost_runtime_targets target ON target.target_id = physical.runtime_target_id
       JOIN harness_instance_records peer_harness ON peer_harness.sandbox_runtime_id = caller_harness.sandbox_runtime_id
       JOIN agent_session_runtime_bindings peer ON peer.harness_instance_id = peer_harness.harness_instance_id
-      WHERE caller.agent_session_id = ? AND peer.agent_session_id <> caller.agent_session_id
+      WHERE caller.workspace_id = ? AND caller.thread_id = ? AND caller.agent_session_id = ?
+        AND caller.current_turn_id = ? AND caller.lifecycle_state = 'active' AND caller.current_attempt_id IS NOT NULL
+        AND target.ready=1 AND target.fresh_empty=1 AND target.predecessor_fenced=1
+        AND target.physical_epoch=physical.origin_physical_epoch
+        AND peer.agent_session_id <> caller.agent_session_id
       ORDER BY peer.agent_session_runtime_binding_id
     `)
-      .all(scope.agentSessionId) as Array<{
-      bindingId: string;
-      agentSessionId: string;
-      workspaceId: string;
-      threadId: string;
-      runtime: string;
-    }>;
+            .all(scope.workspaceId, scope.threadId, scope.agentSessionId, scope.turnId) as Array<{
+            bindingId: string;
+            agentSessionId: string;
+            workspaceId: string;
+            threadId: string;
+            runtime: string;
+          }>
+      );
+    const peers = input.afterWorkerControlAcknowledgement
+      ? await input.afterWorkerControlAcknowledgement(readPeers, input.signal)
+      : readPeers();
     const handleFor = (bindingId: string) =>
       createHmac('sha256', peerHandleKey)
         .update(JSON.stringify([scope.turnId, scope.agentSessionId, bindingId]))
@@ -733,7 +749,7 @@ async function submitArtifact(
   };
   const replayResult = replay();
   if (replayResult) return replayResult;
-  const admit = () => {
+  const requireLive = () => {
     input.signal?.throwIfAborted();
     input.requireAdmission?.();
     const turn = store.getTurnMetadata(scope.workspaceId, scope.threadId, scope.turnId);
@@ -741,14 +757,19 @@ async function submitArtifact(
       turn.status !== 'running' ||
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== environmentPackage.agent.agentId ||
-      getWorkerControlAcceptedFinalStatus(coreDb, {
-        agentSessionId: scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-        requestId: scope.requestId ?? null,
-        threadId: scope.threadId,
-        turnId: scope.turnId,
-        workspaceId: scope.workspaceId,
-      })
+      requireNanoHostObservation(coreDb, (sqlite) =>
+        getWorkerControlAcceptedFinalStatus(
+          { sqlite },
+          {
+            agentSessionId: scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            requestId: scope.requestId ?? null,
+            threadId: scope.threadId,
+            turnId: scope.turnId,
+            workspaceId: scope.workspaceId,
+          }
+        )
+      )
     )
       throw new WorkerControlGatewayError(
         'turn_not_active',
@@ -756,13 +777,18 @@ async function submitArtifact(
         409
       );
   };
-  admit();
-  if (!input.captureArtifact || !input.fileAdmission)
+  const afterAcknowledgement = <Value>(read: () => Value) =>
+    input.afterWorkerControlAcknowledgement
+      ? input.afterWorkerControlAcknowledgement(read, input.signal)
+      : read();
+  await afterAcknowledgement(requireLive);
+  const fileAdmission = input.fileAdmission;
+  if (!input.captureArtifact || !fileAdmission)
     throw new OperationError('recovery_required', 'Artifact capture is unavailable.', 503);
   const recordedAt = new Date().toISOString();
   // Reserve the future Artifact stage before capture; transport separately reserves its source
   // against this same owner, so the peak includes both copies without reserving either twice.
-  const reservation = input.fileAdmission.reserve({
+  const reservation = fileAdmission.reserve({
     stagingBytes: BigInt(MAX_ARTIFACT_FILE_BYTES),
     extractionBytes: 0n,
     derivativeBytes: 0n,
@@ -782,7 +808,7 @@ async function submitArtifact(
       maxByteLength: MAX_ARTIFACT_FILE_BYTES + 1,
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    admit();
+    await afterAcknowledgement(requireLive);
     if (captured.byteLength > MAX_ARTIFACT_FILE_BYTES)
       throw new FileAdmissionError('file_too_large');
     reservation.reduceTo(BigInt(captured.byteLength) + 65_536n);
@@ -803,14 +829,16 @@ async function submitArtifact(
       evidence: checkValues,
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    const readContextTrace = () =>
+      readWorkerContextPackageTrace({
+        authorities: createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb }),
+        workspaceId: scope.workspaceId,
+        threadId: scope.threadId,
+        turnId: scope.turnId,
+        workspaceRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
+      });
     const contextPackageTrace = metadata.materialProposal
-      ? readWorkerContextPackageTrace({
-          authorities: createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb }),
-          workspaceId: scope.workspaceId,
-          threadId: scope.threadId,
-          turnId: scope.turnId,
-          workspaceRoot: resolveDataRootPath(workspaceDb.dataRoot, 'workspaces', scope.workspaceId),
-        })
+      ? await afterAcknowledgement(readContextTrace)
       : undefined;
     const prepared = prepareWorkerArtifact({
       store,
@@ -828,22 +856,25 @@ async function submitArtifact(
     const completedDuringCapture = replay();
     if (completedDuringCapture) response = completedDuringCapture;
     else {
+      const payload = staged;
       // Durable files precede one native Item/Review/receipt commit. Notifications follow its acknowledgement.
-      admit();
-      reservation.assertAvailable();
-      await store.createArtifact(prepared.artifact, staged, {
-        review: prepared.reviewInput,
-        fileAdmission: input.fileAdmission,
-        receipt: {
-          key: commandRequestKey('artifact.submit', metadata.requestId, commandScope),
-          command: 'artifact.submit',
-          requestId: metadata.requestId,
-          scope: commandScope,
-          inputHash,
-          responseKind: 'artifact',
-          createdAt: recordedAt,
-          expiresAt: commandRequestExpiresAt(recordedAt),
-        },
+      await afterAcknowledgement(() => {
+        requireLive();
+        reservation.assertAvailable();
+        return store.createArtifact(prepared.artifact, payload, {
+          review: prepared.reviewInput,
+          fileAdmission,
+          receipt: {
+            key: commandRequestKey('artifact.submit', metadata.requestId, commandScope),
+            command: 'artifact.submit',
+            requestId: metadata.requestId,
+            scope: commandScope,
+            inputHash,
+            responseKind: 'artifact',
+            createdAt: recordedAt,
+            expiresAt: commandRequestExpiresAt(recordedAt),
+          },
+        });
       });
       response = artifactResult(artifactId);
     }

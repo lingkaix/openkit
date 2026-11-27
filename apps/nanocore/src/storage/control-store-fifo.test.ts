@@ -623,9 +623,14 @@ it('prepares an exact native Review decision after its queued Artifact submissio
       scope: { kind: 'server' },
       knowledgeBaseId: allocateEntityId('kb'),
     });
+    const agentSetup = createTestAgentSetup();
+    const { admitTestNativeEnvironmentForRoot } = await import(
+      '../test-support/native-environment.js'
+    );
+    await admitTestNativeEnvironmentForRoot(coreDb, agentSetup.manifest);
     const environmentPackage = await resolveAgentEnvironmentPackage({
       coreDb,
-      agentSetup: createTestAgentSetup(),
+      agentSetup,
       agentSessionId: allocateEntityId('as'),
       triggerActor: lane.turn.triggerActor,
       backend: { kind: 'openshell' },

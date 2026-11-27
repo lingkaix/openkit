@@ -98,6 +98,7 @@ export const WORKSPACE_CAPTURE_MESSAGES = [
   'Workspace recovery requires its exact accepted capture receipt.',
   'Accepted Workspace capture contradicts its recorded original digest.',
   'Workspace capture source changed before publication.',
+  'Workspace capture final proof changed before publication.',
 ] as const;
 const refusal = { operation: z.literal('workspace-capture'), status: z.literal(409) };
 /** Closed failure semantics, never an arbitrary SQL diagnostic or local file path. */

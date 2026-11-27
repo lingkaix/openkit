@@ -67,6 +67,8 @@ When a change fails existing checks, the primary classifies each failure under t
 
 Verification scope is recomputed from the actual final diff. Run the lowest-sufficient focused checks while iterating; run broader package, repository, release, real-environment, or strict-effect checks when the changed surface or accepted boundary requires them. Preserve secrets, authorization, cleanup, external effects, and data-loss controls regardless of ordinary proportionality.
 
+When a change switches an owner or a process boundary, its first done line is one positive golden path on the real artifact, at the SHA of that change. Each later integrated fold keeps that path green. A gate summary shows four lists: files selected, files with a result, failed assertions, and groups that were deliberately not run. A group that was not run shows its issue, the last measured SHA and that result, and gets no coverage credit. A selected file with no result is a failure of the gate; this includes a suite that fails at import. A summary gives credit only for the boundary that the run exercised. A done line with no run ID on the named SHA is not valid. `scripts/gate-summary.mjs` builds this summary from the selected files and the actual Vitest JSON report.
+
 Findings outside the current outcome do not silently expand it. Record a finding with its evidence and likely owner; continue current work when safe. It becomes work only through user intent or an accepted owner. A defect within the current outcome is corrected directly or causes a reframe.
 
 ## Change Records And Retention

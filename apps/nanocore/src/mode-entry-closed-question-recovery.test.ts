@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import * as workMcpOwners from './runtime/openkit-work-mcp.js';
@@ -14,7 +14,10 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createTestCoreDb, createTestWorkspaceDb, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -24,6 +27,8 @@ const THREAD_ID = 'th_00000000-0000-7000-8000-000000000001';
 
 describe('direct Task boot recovery after a closed worker question', () => {
   it('completes a retained checkpoint whose worker question was answered while the Turn was open', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-closed-question-recovery-'));
     const coreDb = createTestCoreDb(dataRoot);
     ensureLocalUser(coreDb);
@@ -32,7 +37,9 @@ describe('direct Task boot recovery after a closed worker question', () => {
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     const workerSetup = createTestAgentSetup();
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, workerSetup.manifest);
     const app = createAppWithWorkspaceAuthority({
+      nanoHostStorage,
       agentManifests: [workerSetup.manifest],
       coreDb,
       dataRoot,

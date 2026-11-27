@@ -17,9 +17,13 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
-import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
+import {
+  type NanoHostEnvironmentRead,
+  resolvePublicNativeEnvironment,
+} from '../runtime/native-environment.js';
 import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import type { RuntimeConfigManager } from './runtime-config.js';
 import {
   type RuntimeConfigFileService,
@@ -29,6 +33,7 @@ import {
 /** Existing configuration/CAS/reload projection for administrator-managed native settings. */
 export function createAgentNativeEnvironmentService(input: {
   coreDb: CoreDb;
+  readNanoHost?: NanoHostEnvironmentRead;
   store: FsStore;
   manager: RuntimeConfigManager;
   filesForActor: (actor: Actor) => Pick<RuntimeConfigFileService, 'readFile' | 'updateFile'>;
@@ -52,35 +57,48 @@ export function createAgentNativeEnvironmentService(input: {
         400
       );
     const manifest = AuthoredAgentConfigSchema.parse(json);
-    const desired = resolvePublicNativeEnvironment(input.coreDb, manifest);
-    return { source, manifest, desired };
+    return { source, manifest };
   };
+  const observe = <Value>(query: (sqlite: CoreDb['sqlite']) => Value) =>
+    requireNanoHostObservation(input.coreDb, query, input.readNanoHost);
+  const resolveFromSnapshot = (
+    sqlite: CoreDb['sqlite'],
+    manifest: Parameters<typeof resolvePublicNativeEnvironment>[1]
+  ) =>
+    resolvePublicNativeEnvironment(input.coreDb, manifest, (query) => ({
+      state: 'ready',
+      value: query(sqlite),
+    }));
 
   return {
     /** Shows admitted defaults, authored intent, reload and audience-scoped native acknowledgement. */
     view(actor: Actor, fileId: string) {
-      const { source, manifest, desired } = read(actor, fileId);
-      const defaults = readAdmittedWorkerImageEnvironment(input.coreDb, desired.imageDigest)!;
+      const { source, manifest } = read(actor, fileId);
+      const { desired, defaults, rows } = observe((sqlite) => {
+        const desired = resolveFromSnapshot(sqlite, manifest);
+        const defaults = readAdmittedWorkerImageEnvironment({ sqlite }, desired.imageDigest)!;
+        const rows = sqlite
+          .prepare(`SELECT b.schema_version AS schemaVersion, h.schema_version AS harnessSchemaVersion, b.workspace_id AS workspaceId, b.thread_id AS threadId, b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState, h.lifecycle_state AS harnessState, s.lifecycle_state AS sandboxState, t.ready AS targetReady, t.physical_epoch AS physicalEpoch, s.origin_physical_epoch AS originEpoch,
+        b.native_environment_json AS environment, b.native_environment_applied AS applied FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id LEFT JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id LEFT JOIN nanohost_runtime_targets t ON t.target_id = s.runtime_target_id WHERE b.native_environment_json IS NOT NULL`)
+          .all() as {
+          schemaVersion: unknown;
+          harnessSchemaVersion: unknown;
+          workspaceId: string;
+          threadId: string;
+          lifecycleState: string;
+          cleanupState: string;
+          harnessState: string;
+          sandboxState: string | null;
+          targetReady: number | null;
+          physicalEpoch: string | null;
+          originEpoch: string | null;
+          environment: string;
+          applied: number;
+        }[];
+        return { desired, defaults, rows };
+      });
       const snapshot = input.manager.current();
       const reloaded = snapshot.agentManifests.find((agent) => agent.id === manifest.id);
-      const rows = input.coreDb.sqlite
-        .prepare(`SELECT b.schema_version AS schemaVersion, h.schema_version AS harnessSchemaVersion, b.workspace_id AS workspaceId, b.thread_id AS threadId, b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState, h.lifecycle_state AS harnessState, s.lifecycle_state AS sandboxState, t.ready AS targetReady, t.physical_epoch AS physicalEpoch, s.origin_physical_epoch AS originEpoch,
-        b.native_environment_json AS environment, b.native_environment_applied AS applied FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id LEFT JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id LEFT JOIN nanohost_runtime_targets t ON t.target_id = s.runtime_target_id WHERE b.native_environment_json IS NOT NULL`)
-        .all() as {
-        schemaVersion: unknown;
-        harnessSchemaVersion: unknown;
-        workspaceId: string;
-        threadId: string;
-        lifecycleState: string;
-        cleanupState: string;
-        harnessState: string;
-        sandboxState: string | null;
-        targetReady: number | null;
-        physicalEpoch: string | null;
-        originEpoch: string | null;
-        environment: string;
-        applied: number;
-      }[];
       const applied = rows.flatMap((row) => {
         if (
           !isWorkspaceOperationAuthorized(input.coreDb, actor, row.workspaceId, {
@@ -150,22 +168,25 @@ export function createAgentNativeEnvironmentService(input: {
     /** Writes the sole authored map through existing revision CAS, then invokes safe reload. */
     async update(actor: Actor, unsafeRequest: unknown) {
       const request = UpdateAgentNativeEnvironmentRequestSchema.parse(unsafeRequest);
-      const { source, manifest, desired } = read(actor, request.fileId);
-      if (
-        source.file.revision !== request.expectedRevision ||
-        desired.imageDigest !== request.imageDigest ||
-        desired.defaultsDigest !== request.defaultsDigest
-      )
-        throw new RuntimeConfigFileServiceError(
-          'revision_conflict',
-          'Agent configuration or image evidence changed.',
-          409
-        );
-      const next = AuthoredAgentConfigSchema.parse({
-        ...manifest,
-        runtime: { ...manifest.runtime, environment: request.environment },
+      const { source, manifest } = read(actor, request.fileId);
+      observe((sqlite) => {
+        const desired = resolveFromSnapshot(sqlite, manifest);
+        if (
+          source.file.revision !== request.expectedRevision ||
+          desired.imageDigest !== request.imageDigest ||
+          desired.defaultsDigest !== request.defaultsDigest
+        )
+          throw new RuntimeConfigFileServiceError(
+            'revision_conflict',
+            'Agent configuration or image evidence changed.',
+            409
+          );
+        const next = AuthoredAgentConfigSchema.parse({
+          ...manifest,
+          runtime: { ...manifest.runtime, environment: request.environment },
+        });
+        resolveFromSnapshot(sqlite, next);
       });
-      resolvePublicNativeEnvironment(input.coreDb, next);
       const content = applyEdits(
         source.content,
         modify(source.content, ['runtime', 'environment'], request.environment, {

@@ -11,7 +11,11 @@ import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
+import {
+  WorkerControlGateway,
+  WorkerControlGatewayError,
+  type WorkerControlTokenBindingResolver,
+} from '../runtime/worker-control-gateway.js';
 import {
   readWorkerRawOutput,
   WorkerRawOutputAuthorityError,
@@ -128,7 +132,11 @@ async function fixture(
   configured = true,
   requestKind?: 'turn' | 'prewarm' | 'compaction',
   nativeStop = true,
-  rawSource: 'complete' | 'controlled' = 'complete'
+  rawSource: 'complete' | 'controlled' = 'complete',
+  authority?: {
+    resolveTokenBinding: WorkerControlTokenBindingResolver;
+    afterWorkerControlAcknowledgement: WorkerControlGateway['afterWorkerControlAcknowledgement'];
+  }
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-inference-diagnostics-'));
   roots.push(dataRoot);
@@ -158,7 +166,12 @@ async function fixture(
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
-  const gateway = new WorkerControlGateway({ resolveTokenBinding: () => ({ status: 'accepted' }) });
+  const gateway = new WorkerControlGateway({
+    resolveTokenBinding: authority?.resolveTokenBinding ?? (() => ({ status: 'accepted' })),
+    ...(authority
+      ? { afterWorkerControlAcknowledgement: authority.afterWorkerControlAcknowledgement }
+      : {}),
+  });
   const token = 'B'.repeat(43);
   gateway.registerSession(environmentPackage, {
     sandboxBindingRef: 'diagnostics-binding',
@@ -582,6 +595,165 @@ it('measures stock source progression while Worker response consumption is pause
       }) + '\n'
     );
   }
+});
+
+it.each(['provider admission', 'stream delivery'] as const)(
+  'joins an outstanding serving acknowledgement before inference %s',
+  async (phase) => {
+    const acknowledged = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<void>();
+    let held = false;
+    const refusedRead = vi.fn();
+    const f = await fixture(true, undefined, true, 'complete', {
+      resolveTokenBinding() {
+        if (held) {
+          refusedRead();
+          throw new WorkerControlGatewayError(
+            'worker_observation_storage_unavailable',
+            'Worker observation storage is unavailable.',
+            503
+          );
+        }
+        return { status: 'accepted' };
+      },
+      async afterWorkerControlAcknowledgement(read) {
+        if (held) {
+          joined.resolve();
+          await acknowledged.promise;
+        }
+        return read();
+      },
+    });
+    const release = () => {
+      held = false;
+      acknowledged.resolve();
+    };
+    const encoder = new TextEncoder();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const emit = (content: string) =>
+      source.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+          })}\n\n`
+        )
+      );
+    const finish = () => {
+      source.enqueue(
+        encoder.encode(
+          'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        )
+      );
+      source.close();
+    };
+    f.dispatch.mockImplementation(
+      async (_provider, _request, context: LLMGatewayDispatchContext) => {
+        if (phase === 'provider admission') {
+          held = true;
+          await context.transport!.finalRequestAdmission!({
+            payload: { messages: [{ role: 'user', content: 'hello' }] },
+            contextWindowTokens: 400_000,
+            outputReserveTokens: 4_096,
+          });
+        }
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            source = controller;
+            emit('hello');
+            if (phase === 'provider admission') finish();
+          },
+        });
+      }
+    );
+
+    try {
+      const responsePromise = f.post(true, 'chat/completions');
+      const joinedFirst = (completion: Promise<unknown>) =>
+        Promise.race([joined.promise.then(() => true), completion.then(() => false)]);
+      if (phase === 'provider admission') {
+        expect(await joinedFirst(responsePromise)).toBe(true);
+        release();
+      }
+      const response = await responsePromise;
+      expect(response.status).toBe(200);
+      if (phase === 'stream delivery') {
+        held = true;
+        emit(' world');
+        finish();
+      }
+      const body = response.text();
+      if (phase === 'stream delivery') {
+        expect(await joinedFirst(body)).toBe(true);
+        release();
+      }
+      const result = await body;
+      expect(result).toContain('hello');
+      expect(result).toContain('data: [DONE]');
+      expect(result).not.toContain('worker_inference_stream_failed');
+      if (phase === 'stream delivery') expect(result).toContain(' world');
+      expect(refusedRead).not.toHaveBeenCalled();
+      expect(f.onRawOutputStop).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+  }
+);
+
+it('preserves a pre-provider storage refusal after stream preparation normalizes it', async () => {
+  let providerAdmission = false;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const f = await fixture(true, undefined, true, 'complete', {
+    resolveTokenBinding() {
+      if (providerAdmission)
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'private fixture text',
+          503
+        );
+      return { status: 'accepted' };
+    },
+    async afterWorkerControlAcknowledgement(read) {
+      return read();
+    },
+  });
+  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+    providerAdmission = true;
+    try {
+      await context.transport!.finalRequestAdmission!({
+        payload: { messages: [{ role: 'user', content: 'hello' }] },
+        contextWindowTokens: 400_000,
+        outputReserveTokens: 4_096,
+      });
+    } catch {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode('data: {"error":{"type":"provider_error"}}\n\n')
+          );
+          controller.close();
+        },
+      });
+    }
+    throw new Error('Expected the final authority check to refuse before provider access.');
+  });
+
+  const response = await f.post(true, 'chat/completions');
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({
+    error: {
+      code: 'worker_observation_storage_unavailable',
+      message: 'NanoHost Worker control storage is unavailable.',
+      type: 'service_unavailable',
+    },
+  });
+  expect(f.ledgerCalls()[0]).toMatchObject({
+    status: 'failed',
+    errorCode: 'worker_observation_storage_unavailable',
+  });
+  expect(warning).toHaveBeenCalledWith(
+    expect.stringContaining('"storageCode":"worker_observation_storage_unavailable"')
+  );
+  expect(f.onRawOutputStop).not.toHaveBeenCalled();
 });
 
 it('coalesces a pending same-call burst and releases only each immutable covered prefix', async () => {

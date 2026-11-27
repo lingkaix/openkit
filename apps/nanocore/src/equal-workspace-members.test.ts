@@ -14,6 +14,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
   createWorkspaceDeletionRequest,
@@ -129,12 +130,15 @@ it('admits member management and exact member deletion replay while preserving p
       },
       handler: async () => Response.json({ status: 'auth-ok' }),
     };
+    // The deletion absence proof reads the admitted NanoHost owner; the gate itself is unchanged.
+    const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
     const app = createApp({
       coreDb,
       dataRoot: root,
       mode: 'server',
       auth,
       store,
+      nanoHostStorage,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       releaseIdentity: { releaseTag: 'v0.1.0-test', sourceCommit: '1'.repeat(40) },
     });

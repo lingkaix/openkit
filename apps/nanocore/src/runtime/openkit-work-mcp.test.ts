@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import * as threadVisibility from '../auth/thread-visibility.js';
@@ -22,20 +23,21 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, serverStoragePath } from '../storage/db.js';
 import {
   publishImmutableProductJson,
   readImmutableProductJson,
 } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope, turnFilePayloadPath } from '../storage/workspace-file-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
@@ -45,12 +47,13 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   dispatchOpenkitWorkTool,
   OPENKIT_WORK_TOOL_DEFINITIONS,
   OPENKIT_WORK_TOOLS,
 } from './openkit-work-mcp.js';
-import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { writeWorkerControlAcceptedRecord } from './worker-control-records.js';
 import type { WorkerCredentialCheckValues } from './worker-credential-guard.js';
 import { readWorkerRawOutput } from './worker-raw-output.js';
 
@@ -121,8 +124,20 @@ async function submissionFixture(turnInputs: Buffer[] = []) {
         }
       : undefined
   );
+  const native = await openAdmittedTestNanoHost(coreDb);
+  const agentSetup = createTestAgentSetup();
+  const nativeFixture = new Database(serverStoragePath(dataRoot, 'nanohost'), {
+    fileMustExist: true,
+  });
+  try {
+    admitTestNativeEnvironment({ sqlite: nativeFixture }, agentSetup.manifest);
+  } finally {
+    nativeFixture.close();
+  }
   const environmentPackage = await resolveAgentEnvironmentPackage({
-    agentSetup: createTestAgentSetup(),
+    agentSetup,
+    readNanoHostEnvironment: native.value.owner.read,
+    captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
     triggerActor: turn.triggerActor,
     userId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -847,6 +862,17 @@ describe('submission authority and byte evidence', () => {
 });
 
 describe('submission seals and immutable exact output', () => {
+  it('holds Artifact capture while the admitted final-status owner is unavailable', async () => {
+    const fixture = await submissionFixture();
+    await shutdownControlStoreWorkerClient();
+    await expect(fixture.submit()).rejects.toMatchObject({
+      code: 'operation_storage_unavailable',
+      status: 503,
+    });
+    expect(fixture.captureArtifact).not.toHaveBeenCalled();
+    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+  });
+
   it('does not publish when accepted final status seals a still-running stored Turn', async () => {
     const fixture = await submissionFixture();
     const captured = await fixture.captureArtifact({
@@ -857,17 +883,27 @@ describe('submission seals and immutable exact output', () => {
     });
     fixture.captureArtifact.mockClear();
     fixture.captureArtifact.mockImplementation(async () => {
-      recordWorkerControlAcceptedRecord(fixture.coreDb, {
-        acceptedAt: '2026-10-05T00:00:01.000Z',
-        lineage: {
-          ...fixture.environmentPackage.scope,
-          packageSnapshotId: fixture.environmentPackage.snapshotId,
-        },
-        operation: 'final_status',
-        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-        recordKey: '1',
-        sequence: 1,
+      const sqlite = new Database(serverStoragePath(fixture.dataRoot, 'nanohost'), {
+        fileMustExist: true,
       });
+      try {
+        writeWorkerControlAcceptedRecord(
+          { sqlite },
+          {
+            acceptedAt: '2026-10-05T00:00:01.000Z',
+            lineage: {
+              ...fixture.environmentPackage.scope,
+              packageSnapshotId: fixture.environmentPackage.snapshotId,
+            },
+            operation: 'final_status',
+            record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+            recordKey: '1',
+            sequence: 1,
+          }
+        );
+      } finally {
+        sqlite.close();
+      }
       return captured;
     });
     await expect(fixture.submit()).rejects.toMatchObject({
@@ -986,6 +1022,7 @@ describe('submission publication and handled rollback', () => {
     fixture.workspaceDb.sqlite.exec(
       "CREATE TRIGGER refuse_submission_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='artifact.submit' BEGIN SELECT RAISE(ABORT, 'private receipt failure'); END"
     );
+    await openAdmittedTestNanoHost(fixture.coreDb);
     await expect(fixture.submit()).rejects.toMatchObject({
       code: 'constraint',
       commit: 'not-committed',
@@ -1013,6 +1050,7 @@ describe('submission publication and handled rollback', () => {
     ).toHaveLength(0);
     expect(fixture.store.getTurnEvents(fixture.turn.id)).toHaveLength(0);
     fixture.workspaceDb.sqlite.exec('DROP TRIGGER refuse_submission_receipt');
+    await openAdmittedTestNanoHost(fixture.coreDb);
     acknowledgedArtifactId(await fixture.submit('corrected-after-io'));
   });
 });

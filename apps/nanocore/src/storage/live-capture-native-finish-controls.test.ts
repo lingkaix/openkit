@@ -18,6 +18,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -279,6 +280,7 @@ async function fixture(holdFinish = false) {
   const store = await createDemoStore({ dataRoot, knowledge: [] }),
     core = openCoreDb(dataRoot);
   handles.push(core);
+  await openAdmittedTestNanoHost(core);
   const ownerId = ensureLocalUser(core),
     actor = { kind: 'local' as const, userId: ownerId };
   recordWorkspaceOwnerMembership({

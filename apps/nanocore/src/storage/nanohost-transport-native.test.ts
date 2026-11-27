@@ -13,37 +13,44 @@ import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import type { Actor } from '../auth/identity.js';
-import { createNanoHostOperationImplementations } from '../auth/nanohost-operations.js';
-import { admitNanoHostTransportConnection } from '../auth/nanohost-transport-admission.js';
+import {
+  createNanoHostOperationImplementations,
+  revokeAdmittedNanoHostInboundCredential,
+} from '../auth/nanohost-operations.js';
+import { admitNativeNanoHostTransportConnection } from '../auth/nanohost-transport-admission.js';
+import { NANOHOST_TRANSPORT_ADMIN_REFUSAL } from '../auth/nanohost-transport-codecs.js';
 import transportRevision from '../auth/nanohost-transport-revision.json' with { type: 'json' };
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
-import {
-  deliverNanoHostTransportTokenToNamedSlot,
-  readNanoHostCredentialSlotTokenId,
-} from '../auth/nanohost-transport-sink.js';
+import { readNanoHostCredentialSlotTokenId } from '../auth/nanohost-transport-sink.js';
 import {
   completeNanoHostTransportTokenCutover,
   createNanoHostTransportTokenRecord,
   getNanoHostTransportTokenRecord,
+  prepareNanoHostTransportWriter,
+  recordNanoHostTransportAudit,
   verifyNanoHostTransportTokenRecord,
 } from '../auth/nanohost-transport-token-store.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { createOperationEngine } from '../operation-invocation.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import {
-  getNanoHostRuntimeTarget,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import type { ControlWorkerReply } from './control-store-worker-protocol.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, serverStoragePath } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from './nanohost-transport-owner.js';
+import type { ControlRuntimeTargetInput } from './runtime-target-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -65,7 +72,8 @@ vi.mock('node:worker_threads', async (load) => {
         if (
           event === 'message' &&
           (message?.operation === 'nanohost-transport' ||
-            message?.operation === 'runtime-target') &&
+            message?.operation === 'runtime-target' ||
+            message?.operation === 'nanohost-owner') &&
           message.status === 'ok' &&
           gate &&
           Atomics.load(gate, 3) === 5 &&
@@ -93,13 +101,11 @@ vi.mock('node:worker_threads', async (load) => {
               Atomics.wait(gate, 1, 0);
           }
           parentPort.on('message', value => {
-            if (value.operation === 'nanohost-transport') Atomics.add(gate, 6, 1);
+            // Count credential stages: Core Audit and the Native owner tuple.
+            if (value.operation === 'nanohost-transport' ||
+                (value.operation === 'nanohost-owner' && value.mutation && value.mutation.kind === 'transport'))
+              Atomics.add(gate, 6, 1);
           });
-          const originalPost = parentPort.postMessage.bind(parentPort);
-          parentPort.postMessage = function(value, ...args) {
-            if (value.operation === 'open' && value.status === 'ok') hold(4, 0);
-            return originalPost(value, ...args);
-          };
           Database.prototype.exec = function(sql) {
             const ordinal = Atomics.load(gate, 2) + 1;
             if (/^BEGIN(?:\\s|$)/i.test(sql)) hold(3, ordinal);
@@ -146,27 +152,39 @@ const clock = new Date('2026-08-08T00:00:00.000Z');
 const expiresAt = '2999-01-01T00:00:00.000Z';
 
 /** Real Core owner with retained synthetic setup before Main mutation denial. */
-async function fixture(options: { enrolled?: boolean; open?: boolean; authority?: boolean } = {}) {
+async function fixture(
+  options: { enrolled?: boolean; authority?: boolean; useLayoutDeployment?: boolean } = {}
+) {
   const root = mkdtempSync(join(tmpdir(), 'nanohost-native-'));
   const db = openCoreDb(root);
   applyMigrations(db);
-  if (options.enrolled !== false)
-    db.sqlite
-      .prepare(
-        `INSERT INTO nanohost_integration_identities
-       (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`
-      )
-      .run(identityId, deploymentId, clock.toISOString());
+  const fixtureDeploymentId = options.useLayoutDeployment
+    ? readDataRootLayoutMarker(root).deploymentId
+    : deploymentId;
+  interception.gate = new SharedArrayBuffer(28);
+  const gate = new Int32Array(interception.gate);
   db.sqlite
     .prepare(`INSERT INTO users (id, display_name, email, email_verified, image, created_at, updated_at, kind, last_seen_at)
     VALUES (?, 'Native Administrator', ?, false, NULL, ?, ?, 'human', NULL)`)
-    .run(administratorId, administratorId + '@' + 'example.invalid', Date.now(), Date.now());
+    .run(administratorId, `${administratorId}@example.invalid`, Date.now(), Date.now());
   const admin = createOpenKitAccessTokenRecord(db, {
     ownerUserId: administratorId,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt,
   });
+  // Provision and admit the NanoHost file before the Main mutation denial below, so fixture setup of
+  // its Native rows is never counted as a Main write.
+  let storage = await openAdmittedTestNanoHost(db);
+  const nativePath = serverStoragePath(root, 'nanohost');
+  const raw = new Database(nativePath, { fileMustExist: true });
+  if (options.enrolled !== false)
+    raw
+      .prepare(
+        `INSERT INTO nanohost_integration_identities
+       (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`
+      )
+      .run(identityId, fixtureDeploymentId, clock.toISOString());
   const actor: Actor = {
     kind: 'token',
     userId: administratorId,
@@ -181,23 +199,74 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
   };
   const config = {
     identityId,
-    deploymentId,
+    deploymentId: fixtureDeploymentId,
     credentialRef: 'nanohost-transport:primary',
     credentialSlots: slots,
     bind: { host: '127.0.0.1', port: 4318 },
     rendezvousUrl: 'http://127.0.0.1',
   };
+  const client = getControlStoreWorkerClient();
+  const scope = nativeProductScope(root, { kind: 'server' });
+  const database = `core:${scope.path}`;
   const implementations = {
     ...createCredentialOperationImplementations({
       coreDb: db,
       mode: 'server',
       ...(options.authority === false ? {} : { nanoHostSessionAuthority: authority }),
+      listNanoHostTransportTokens: (signal) => storage.value.owner.listTransportTokens(signal),
+      revokeNanoHostTransportToken: (tokenId, context) =>
+        revokeAdmittedNanoHostInboundCredential(
+          {
+            storage,
+            ...(options.authority === false ? {} : { sessionAuthority: authority }),
+            commitRevoke: async ({ actor, expected }) => {
+              const result = await storage.value.owner.administerTransport({
+                kind: 'revoke',
+                tokenId: expected.tokenId,
+                actor,
+              });
+              if (result.kind !== 'record' || !result.record)
+                return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+              const record = result.record;
+              return {
+                state: 'ready',
+                value: {
+                  record,
+                  acknowledgeAudit: () =>
+                    recordNanoHostTransportAudit(db, {
+                      kind: 'lifecycle-audit',
+                      action: 'nanohost.transport.revoke',
+                      record,
+                      actorUserId: actor.userId,
+                    }),
+                },
+              };
+            },
+          },
+          tokenId,
+          context
+        ),
     }),
     ...createNanoHostOperationImplementations({
       coreDb: db,
       mode: 'server',
       nanoHostConfig: config,
       ...(options.authority === false ? {} : { sessionAuthority: authority }),
+      readNanoHostTarget: storage.value.owner.readRuntimeTarget,
+      afterNanoHostTransportAcknowledgement: (read, signal) =>
+        storage.value.owner.afterNanoHostTransportAcknowledgement(read, signal),
+      nanoHostEnrollment: { storage, commitEnroll: storage.value.enrollTransport },
+      // As in App: Core decides Audit, the admitted Native owner decides Token stages.
+      administratorTransport: {
+        storage,
+        async submit(input) {
+          if (input.kind === 'lifecycle-audit' || input.kind === 'decommission-audit')
+            return (await prepareNanoHostTransportWriter(db)).submit(input);
+          return 'actor' in input && input.actor
+            ? storage.value.owner.administerTransport(input)
+            : storage.value.owner.transport(input);
+        },
+      },
     }),
   };
   const invoke = createOperationEngine(implementations, { coreDb: db, dataRoot: root });
@@ -219,8 +288,6 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
   ) => track(invoke(id, value, { kind: 'public', actor: currentActor }));
   const connections: Array<{ client: ClientHttp2Session; server: Http2Server; physical: object }> =
     [];
-  interception.gate = new SharedArrayBuffer(28);
-  const gate = new Int32Array(interception.gate);
   const originalPrepare = Database.prototype.prepare;
   const originalExec = Database.prototype.exec;
   let mainWrites = 0;
@@ -253,9 +320,10 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
       while (pendingOperations.size > 0) await Promise.all([...pendingOperations]);
     },
     async closeConnections() {
-      db.sqlite.exec(
-        'DROP TRIGGER IF EXISTS native_failure; DROP TRIGGER IF EXISTS readiness_refusal;'
-      );
+      const drop =
+        'DROP TRIGGER IF EXISTS native_failure; DROP TRIGGER IF EXISTS readiness_refusal;';
+      db.sqlite.exec(drop);
+      if (raw.open) originalExec.call(raw, drop);
       try {
         await authority.closeAllPhysicalConnections();
       } catch (error) {
@@ -267,31 +335,21 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
           expect(cause).toBeInstanceOf(ControlStoreWorkerError);
           expect(cause).toMatchObject({ code: 'unavailable', commit: 'not-committed' });
         }
-      }
-      for (const connection of connections) {
-        connection.client.destroy();
-        (connection.physical as { destroy(): void }).destroy();
-        if (connection.server.listening)
-          await new Promise<void>((resolve) => connection.server.close(() => resolve()));
+      } finally {
+        for (const connection of connections) {
+          connection.client.destroy();
+          (connection.physical as { destroy(): void }).destroy();
+          if (connection.server.listening)
+            await new Promise<void>((resolve) => connection.server.close(() => resolve()));
+        }
       }
     },
     close() {
+      raw.close();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     },
   });
-  const client = getControlStoreWorkerClient();
-  const scope = nativeProductScope(root, { kind: 'server' });
-  if (options.open !== false)
-    await client.open({
-      database: `core:${scope.path}`,
-      path: scope.path,
-      create: false,
-      initialize: 'core',
-      dataRoot: root,
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
   return {
     db,
     gate,
@@ -304,7 +362,18 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
     track,
     client,
     config,
-    database: `core:${scope.path}`,
+    database,
+    /** The latest admitted NanoHost storage of this root (replaced by `reopen`). */
+    get storage() {
+      return storage;
+    },
+    /** Rejoins the persisted NanoHost owner after the fixture's previous worker generation stopped. */
+    async reopen() {
+      storage = await reopenAdmittedTestNanoHost(db);
+      return storage;
+    },
+    /** Durable Native rows through a fixture connection; it reads while a Native write is pending. */
+    nativeDb: { sqlite: raw },
     async physical() {
       let accept!: (value: object) => void;
       const accepted = new Promise<object>((resolve) => {
@@ -331,6 +400,8 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
       return physical;
     },
     fixtureSql: (sql: string): Database.Statement => originalPrepare.call(db.sqlite, sql),
+    // Un-spied statements on the NanoHost file: seeded and faulted rows are not Main product writes.
+    nativeSql: (sql: string): Database.Statement => originalPrepare.call(raw, sql),
     commits: () => Atomics.load(gate, 2),
   };
 }
@@ -342,28 +413,37 @@ function release(gate: Int32Array): void {
 }
 
 afterEach(async () => {
-  if (interception.gate) release(new Int32Array(interception.gate));
-  for (const f of fixtures) await f.joinOperations();
-  for (const f of fixtures) await f.closeConnections();
-  await shutdownControlStoreWorkerClient();
-  for (const worker of interception.workers.splice(0)) await worker.terminate();
-  vi.restoreAllMocks();
-  for (const f of fixtures.splice(0)) {
-    const writes = f.mainWrites();
-    f.close();
-    expect(writes).toBe(0);
+  try {
+    if (interception.gate) release(new Int32Array(interception.gate));
+    try {
+      for (const f of fixtures) await f.joinOperations();
+      for (const f of fixtures) await f.closeConnections();
+    } finally {
+      await shutdownControlStoreWorkerClient();
+    }
+  } finally {
+    // A failed case must still stop its threads and remove its Main mutation denial, or every later
+    // case inherits them.
+    for (const worker of interception.workers.splice(0)) await worker.terminate();
+    vi.restoreAllMocks();
+    const writes: number[] = [];
+    for (const f of fixtures.splice(0)) {
+      writes.push(f.mainWrites());
+      f.close();
+    }
+    interception.gate = undefined;
+    interception.lostReply = false;
+    for (const count of writes) expect(count).toBe(0);
   }
-  interception.gate = undefined;
-  interception.lostReply = false;
 });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-/** Arms actual SQL, open reply, or Main ACK delivery without a product callback. */
-function arm(f: Fixture, point: 1 | 2 | 3 | 4 | 5, ordinal = f.commits() + 1): void {
+/** Arms actual SQL or Main ACK delivery without a product callback. */
+function arm(f: Fixture, point: 1 | 2 | 3 | 5, ordinal = f.commits() + 1): void {
   Atomics.store(f.gate, 0, 0);
   Atomics.store(f.gate, 1, 0);
   Atomics.store(f.gate, 3, point);
-  Atomics.store(f.gate, 4, point === 4 ? 0 : ordinal);
+  Atomics.store(f.gate, 4, ordinal);
 }
 async function held<T>(f: Fixture, work: () => Promise<T>) {
   let settled = false;
@@ -385,22 +465,21 @@ async function held<T>(f: Fixture, work: () => Promise<T>) {
   expect(settled).toBe(false);
   return { result, settled: () => settled };
 }
-async function loseReply(): Promise<void> {
-  const worker = interception.workers.at(-1);
+async function loseReply(worker = interception.workers.at(-1)): Promise<void> {
   expect(worker).toBeDefined();
   interception.lostReply = true;
   await worker!.terminate();
 }
 function tokens(f: Fixture) {
-  return f.db.sqlite
-    .prepare(`SELECT token_id, owner_nanohost_identity_id, deployment_id, status,
+  return f
+    .nativeSql(`SELECT token_id, owner_nanohost_identity_id, deployment_id, status,
     issued_at, expires_at, predecessor_token_id, rotation_overlap_expires_at, revoked_at,
     last_used_at, last_used_channel, last_used_source FROM nanohost_transport_tokens ORDER BY token_id`)
     .all();
 }
 function identities(f: Fixture) {
-  return f.db.sqlite
-    .prepare(
+  return f
+    .nativeSql(
       'SELECT identity_id, deployment_id, status, created_at, decommissioned_at FROM nanohost_integration_identities ORDER BY identity_id'
     )
     .all();
@@ -409,10 +488,7 @@ function audits(f: Fixture): number {
   return f.db.sqlite.prepare('SELECT count(*) FROM audit_events').pluck().get() as number;
 }
 function count(f: Fixture): number {
-  return f.db.sqlite
-    .prepare('SELECT count(*) FROM nanohost_transport_tokens')
-    .pluck()
-    .get() as number;
+  return f.nativeSql('SELECT count(*) FROM nanohost_transport_tokens').pluck().get() as number;
 }
 function slotPresent(f: Fixture, slot: 'A' | 'B'): boolean {
   return existsSync(f.slots[slot].secretPath) && existsSync(f.slots[slot].companionPath);
@@ -426,12 +502,14 @@ function blockSlot(f: Fixture, slot: 'A' | 'B'): void {
 }
 function fault(f: Fixture, table: string, event: string, condition = ''): void {
   // Deliberate owning-table fault after successful real setup; never enters a product command.
-  f.fixtureSql(`CREATE TRIGGER native_failure BEFORE ${event} ON ${table} ${condition}
+  // The Audit table is Core's; every NanoHost table is in the admitted NanoHost file.
+  const create = table === 'audit_events' ? f.fixtureSql : f.nativeSql;
+  create(`CREATE TRIGGER native_failure BEFORE ${event} ON ${table} ${condition}
     BEGIN SELECT RAISE(ABORT, 'synthetic native stage refusal'); END`).run();
 }
 async function issue(f: Fixture) {
-  return await createNanoHostTransportTokenRecord(f.db, {
-    deploymentId,
+  return await createNanoHostTransportTokenRecord(f.storage.value, {
+    deploymentId: f.config.deploymentId,
     expiresAt,
     now: clock,
     ownerNanoHostIdentityId: identityId,
@@ -451,7 +529,7 @@ async function rotation(f: Fixture) {
 }
 async function admitted(f: Fixture, secret: string, physical?: object) {
   const connection = physical ?? (await f.physical());
-  const result = await admitNanoHostTransportConnection(f.db, f.authority, {
+  const result = await admitNativeNanoHostTransportConnection(f.storage.value, f.authority, {
     secret,
     physicalConnection: connection,
     transportRevision: String(transportRevision),
@@ -462,9 +540,9 @@ async function admitted(f: Fixture, secret: string, physical?: object) {
 }
 async function foreignAuthority(f: Fixture) {
   const foreignIdentity = 'integration_nanohost_foreign';
-  f.fixtureSql(`INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at)
+  f.nativeSql(`INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at)
     VALUES (?, 'deploy_foreign', 'active', ?)`).run(foreignIdentity, clock.toISOString());
-  const token = await createNanoHostTransportTokenRecord(f.db, {
+  const token = await createNanoHostTransportTokenRecord(f.storage.value, {
     deploymentId: 'deploy_foreign',
     expiresAt,
     ownerNanoHostIdentityId: foreignIdentity,
@@ -482,6 +560,30 @@ async function foreignAuthority(f: Fixture) {
   expect(f.authority.mayCarryWork(physical)).toBe(true);
   return { physical, token };
 }
+/** Commits the original exact readiness tuple on the admitted NanoHost owner. */
+async function upsertTarget(
+  f: Fixture,
+  input: Omit<Extract<ControlRuntimeTargetInput, { kind: 'ready' }>, 'kind'>
+) {
+  const outcome = await transitionAdmittedNanoHostRuntimeTarget(f.storage.value, {
+    kind: 'ready',
+    ...input,
+  });
+  if (outcome.state !== 'ready') throw new Error(`NanoHost RuntimeTarget: ${outcome.reason}`);
+  return outcome.value!;
+}
+/** Whether a message to the control-store worker is the original RuntimeTarget tuple of this kind. */
+function runtimeTargetPost(message: unknown, kind: 'allocate' | 'close'): boolean {
+  const request = message as {
+    operation?: string;
+    mutation?: { kind?: string; input?: { input?: { kind?: string } } };
+  };
+  return (
+    request.operation === 'nanohost-owner' &&
+    request.mutation?.kind === 'runtime-target' &&
+    request.mutation.input?.input?.kind === kind
+  );
+}
 async function failed(work: Promise<unknown>): Promise<void> {
   const outcome = await work.then(
     () => true,
@@ -498,11 +600,10 @@ describe('NanoHost native credential ownership', () => {
     const posted = vi.spyOn(interception.workers.at(-1)!, 'postMessage');
     const allocatePosts = () =>
       posted.mock.calls.filter(([message]) => {
-        const request = message as { operation?: string; input?: { kind?: string } };
-        return request.operation === 'runtime-target' && request.input?.kind === 'allocate';
+        return runtimeTargetPost(message, 'allocate');
       }).length;
     const admit = () =>
-      admitNanoHostTransportConnection(f.db, f.authority, {
+      admitNativeNanoHostTransportConnection(f.storage.value, f.authority, {
         secret: issued.secret,
         physicalConnection: physical,
         transportRevision: String(transportRevision),
@@ -512,13 +613,13 @@ describe('NanoHost native credential ownership', () => {
     const winner = await held(f, admit);
     expect(allocatePosts()).toBe(1);
     expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
-    expect(getNanoHostRuntimeTarget(f.db, identityId)?.connectionGeneration).toBe(1);
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.connectionGeneration).toBe(1);
     const loser = await f.track(admit());
     // NanoHost Runtime And Transport: a concurrent same-physical loser cannot consume high-water.
     expect(loser).toEqual({ ok: false, reason: 'rejected' });
     expect(allocatePosts()).toBe(1);
     expect(winner.settled()).toBe(false);
-    expect(getNanoHostRuntimeTarget(f.db, identityId)?.connectionGeneration).toBe(1);
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.connectionGeneration).toBe(1);
     release(f.gate);
     const accepted = await winner.result;
     expect(accepted).toMatchObject({
@@ -531,7 +632,7 @@ describe('NanoHost native credential ownership', () => {
       },
     });
     expect(f.authority.mayCarryWork(physical)).toBe(true);
-    const ready = await upsertNanoHostRuntimeTarget(f.db, {
+    const ready = await upsertTarget(f, {
       targetId: identityId,
       identityId,
       deploymentId,
@@ -547,7 +648,7 @@ describe('NanoHost native credential ownership', () => {
       ready: true,
       physicalEpoch: 'a'.repeat(64),
     });
-    expect(getNanoHostRuntimeTarget(f.db, identityId)).toEqual(ready);
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toEqual(ready);
     expect(allocatePosts()).toBe(1);
   });
 
@@ -558,7 +659,7 @@ describe('NanoHost native credential ownership', () => {
       const issued = await issue(f);
       const physical = await f.physical();
       const admit = (connection: object) =>
-        admitNanoHostTransportConnection(f.db, f.authority, {
+        admitNativeNanoHostTransportConnection(f.storage.value, f.authority, {
           secret: issued.secret,
           physicalConnection: connection,
           transportRevision: String(transportRevision),
@@ -567,26 +668,33 @@ describe('NanoHost native credential ownership', () => {
       if (kind === 'unknown') {
         arm(f, 5, f.commits() + 2);
         const pending = await held(f, () => admit(physical));
-        expect(getNanoHostRuntimeTarget(f.db, identityId)?.connectionGeneration).toBe(1);
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.connectionGeneration).toBe(1);
         expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
         await loseReply();
         const outcome = await pending.result;
-        expect(outcome.ok).toBe(false);
-        if (!outcome.ok) expect(outcome.error).toMatchObject({ commit: 'unknown' });
+        expect(outcome).toEqual({
+          ok: true,
+          value: { ok: false, reason: 'storage_unavailable' },
+        });
         release(f.gate);
         // The native writer owner requires explicit shutdown after host loss; this is no request replay.
         await shutdownControlStoreWorkerClient();
+        await f.reopen();
       } else {
-        await failed(f.track(admit(physical)));
-        expect(getNanoHostRuntimeTarget(f.db, identityId)).toBeNull();
-        f.fixtureSql('DROP TRIGGER native_failure').run();
+        expect(await f.track(admit(physical))).toEqual({
+          ok: false,
+          reason: 'storage_unavailable',
+        });
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
+        f.nativeSql('DROP TRIGGER native_failure').run();
       }
       expect(f.authority.connectionGeneration(physical)).toBeNull();
       expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
       expect(f.authority.mayCarryWork(physical)).toBe(false);
-      const beforeReplay = getNanoHostRuntimeTarget(f.db, identityId);
+      const beforeReplay = getNanoHostRuntimeTarget(f.nativeDb, identityId);
+      expect(beforeReplay?.connectionGeneration).toBe(kind === 'unknown' ? 1 : undefined);
       expect(await f.track(admit(physical))).toEqual({ ok: false, reason: 'rejected' });
-      expect(getNanoHostRuntimeTarget(f.db, identityId)).toEqual(beforeReplay);
+      expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toEqual(beforeReplay);
       const fresh = await f.physical();
       expect(fresh).not.toBe(physical);
       expect(await f.track(admit(fresh))).toMatchObject({
@@ -601,13 +709,14 @@ describe('NanoHost native credential ownership', () => {
   );
 
   it('joins the physical close native acknowledgement before shutting down its worker', async () => {
-    const f = await fixture();
+    // Epoch retirement uses the installed deployment, not a synthetic credential-only identity.
+    const f = await fixture({ useLayoutDeployment: true });
     const issued = await issue(f);
     const physical = await admitted(f, issued.secret);
-    await upsertNanoHostRuntimeTarget(f.db, {
+    await upsertTarget(f, {
       targetId: identityId,
       identityId,
-      deploymentId,
+      deploymentId: f.config.deploymentId,
       connectionGeneration: 1,
       predecessorFenced: true,
       ready: true,
@@ -621,7 +730,7 @@ describe('NanoHost native credential ownership', () => {
     );
     expect(f.authority.mayCarryWork(physical)).toBe(false);
     expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
-    expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
       connectionGeneration: 1,
       ready: false,
     });
@@ -629,10 +738,16 @@ describe('NanoHost native credential ownership', () => {
     const completions: string[] = [];
     void close.result.then(() => completions.push('close'));
     let stopped = false;
-    const shutdown = f.track(shutdownControlStoreWorkerClient()).then(() => {
-      stopped = true;
-      completions.push('shutdown');
-    });
+    // Match the process shutdown in index.ts: drain the authority's bound physical
+    // closes before handing shutdown to the writer. This must join the original close.
+    const shutdown = f
+      .track(
+        f.authority.closeAllPhysicalConnections().then(() => shutdownControlStoreWorkerClient())
+      )
+      .then(() => {
+        stopped = true;
+        completions.push('shutdown');
+      });
     // The accepted close producer must join before shutdown is posted, not merely before its reply.
     expect(
       posted.mock.calls.some(
@@ -653,7 +768,7 @@ describe('NanoHost native credential ownership', () => {
     await shutdown;
     expect(stopped).toBe(true);
     expect(completions).toEqual(['close', 'shutdown']);
-    expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
       connectionGeneration: 1,
       ready: false,
     });
@@ -661,13 +776,16 @@ describe('NanoHost native credential ownership', () => {
 
   it('issues NanoHost transport credentials with Main Core mutations denied', async () => {
     const f = await fixture({ enrolled: false });
-    expect(interception.workers).toHaveLength(1);
+    // The Core opening and the admitted NanoHost owner opening each run their own control-store writer.
+    expect(interception.workers).toHaveLength(2);
     const enrolled = await f.op('nanohost.enroll', { targetSlot: 'A', expiresAt });
     expect(f.commits()).toBe(2);
     expect(Atomics.load(f.gate, 5)).toBe(2);
-    expect(getNanoHostTransportTokenRecord(f.db, enrolled.record.tokenId)).toEqual(enrolled.record);
+    expect(getNanoHostTransportTokenRecord(f.nativeDb, enrolled.record.tokenId)).toEqual(
+      enrolled.record
+    );
     const oldSecret = slotSecret(f, 'A');
-    expect((await verifyNanoHostTransportTokenRecord(f.db, oldSecret))?.tokenId).toBe(
+    expect((await verifyNanoHostTransportTokenRecord(f.storage.value, oldSecret))?.tokenId).toBe(
       enrolled.record.tokenId
     );
     const rotated = await f.op('nanohost.token-rotate', {
@@ -682,16 +800,24 @@ describe('NanoHost native credential ownership', () => {
     expect(aborted.successor.status).toBe('revoked');
     expect(slotPresent(f, 'A')).toBe(true);
     expect(slotPresent(f, 'B')).toBe(false);
-    await completeNanoHostTransportTokenCutover(f.db, enrolled.record.tokenId, { now: clock });
-    expect((await verifyNanoHostTransportTokenRecord(f.db, oldSecret)) === null).toBe(true);
+    await completeNanoHostTransportTokenCutover(f.storage.value, enrolled.record.tokenId, {
+      now: clock,
+    });
+    expect((await verifyNanoHostTransportTokenRecord(f.storage.value, oldSecret)) === null).toBe(
+      true
+    );
     await f.op('credential.revoke', { kind: 'nanohost-transport', id: enrolled.record.tokenId });
     const next = await issueSlot(f);
     const foreign = await foreignAuthority(f);
     const decommissioned = await f.op('nanohost.decommission', {});
     expect(decommissioned.revokedTokenCount).toBe(1);
-    expect(getNanoHostTransportTokenRecord(f.db, next.record.tokenId)?.status).toBe('revoked');
+    expect(getNanoHostTransportTokenRecord(f.nativeDb, next.record.tokenId)?.status).toBe(
+      'revoked'
+    );
     expect(f.authority.mayCarryWork(foreign.physical)).toBe(true);
-    expect(getNanoHostTransportTokenRecord(f.db, foreign.token.tokenId)?.status).toBe('active');
+    expect(getNanoHostTransportTokenRecord(f.nativeDb, foreign.token.tokenId)?.status).toBe(
+      'active'
+    );
     expect(slotPresent(f, 'A')).toBe(false);
     expect(slotPresent(f, 'B')).toBe(false);
     expect(audits(f)).toBe(5);
@@ -754,7 +880,7 @@ describe('NanoHost native credential ownership', () => {
   it.each(['enroll', 'issue', 'verify', 'revoke', 'rotate', 'abort', 'decommission'] as const)(
     'holds %s success and its later effects behind the real FULL COMMIT',
     async (kind) => {
-      const f = await fixture({ enrolled: kind !== 'enroll' });
+      const f = await fixture({ enrolled: kind !== 'enroll', useLayoutDeployment: true });
       let action: () => Promise<unknown>;
       let live: object | undefined;
       let predecessor: string | undefined;
@@ -784,7 +910,7 @@ describe('NanoHost native credential ownership', () => {
         action =
           kind === 'verify'
             ? () =>
-                admitNanoHostTransportConnection(f.db, f.authority, {
+                admitNativeNanoHostTransportConnection(f.storage.value, f.authority, {
                   secret,
                   physicalConnection: live!,
                   transportRevision: String(transportRevision),
@@ -800,7 +926,7 @@ describe('NanoHost native credential ownership', () => {
       const discard = vi.spyOn(f.authority, 'discardPendingSuccessor');
       if (kind === 'decommission') {
         // Main row-6 owner remains separate. This real refusal occurs after process fencing.
-        f.fixtureSql(
+        f.nativeSql(
           `CREATE TRIGGER readiness_refusal BEFORE UPDATE ON nanohost_runtime_targets BEGIN SELECT RAISE(ABORT, 'synthetic readiness refusal'); END`
         ).run();
       }
@@ -813,7 +939,7 @@ describe('NanoHost native credential ownership', () => {
         expect(slotPresent(f, 'A')).toBe(true);
       }
       if (kind === 'issue') expect(slotPresent(f, 'A')).toBe(false);
-      if (kind === 'verify') expect(getNanoHostRuntimeTarget(f.db, identityId)).toBeNull();
+      if (kind === 'verify') expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
       if (kind === 'rotate') expect(slotPresent(f, 'B')).toBe(false);
       if (kind === 'revoke' || kind === 'decommission')
         expect(f.authority.mayCarryWork(live!)).toBe(true);
@@ -828,8 +954,8 @@ describe('NanoHost native credential ownership', () => {
       const outcome = await pending.result;
       expect(outcome.ok).toBe(kind !== 'abort' && kind !== 'decommission');
       if (kind === 'abort') {
-        expect(getNanoHostTransportTokenRecord(f.db, predecessor!)?.status).toBe('active');
-        expect(getNanoHostTransportTokenRecord(f.db, successor!)?.status).toBe('revoked');
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, predecessor!)?.status).toBe('active');
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, successor!)?.status).toBe('revoked');
         expect(f.authority.mayCarryWork(live!)).toBe(true);
         expect(discard).not.toHaveBeenCalled();
       }
@@ -852,6 +978,57 @@ describe('NanoHost native credential ownership', () => {
   ] as const)('rechecks %s after the actual native wait', async (scenario) => {
     const f = await fixture();
     const transport = await issue(f);
+    if (scenario === 'presented administrator' || scenario === 'derived disabled owner') {
+      // The split owner drains Core before its administrator recheck. Park a real Core
+      // Audit ACK, not the Native BEGIN (which occurs after this decision).
+      arm(f, 2);
+      const prior = await held(f, () =>
+        recordNanoHostTransportAudit(f.db, {
+          kind: 'lifecycle-audit',
+          action: 'nanohost.transport.issue',
+          record: transport.record,
+          actorUserId: administratorId,
+        })
+      );
+      const before = { tokens: tokens(f), audit: audits(f), posts: Atomics.load(f.gate, 6) };
+      const joining = Promise.withResolvers<void>();
+      const pause = f.client.pauseForDataRootBackup.bind(f.client);
+      const coreHold = vi.spyOn(f.client, 'pauseForDataRootBackup').mockImplementation((db) => {
+        const hold = pause(db);
+        if (db === f.database) joining.resolve();
+        return hold;
+      });
+      const currentActor: Actor =
+        scenario === 'derived disabled owner'
+          ? { kind: 'session', userId: administratorId, adminTokenId: f.admin.tokenId }
+          : f.actor;
+      const issuing = f
+        .op('nanohost.token-issue', { targetSlot: 'A', expiresAt }, currentActor)
+        .then(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error })
+        );
+      await Promise.race([joining.promise, issuing]);
+      expect(coreHold).toHaveBeenCalledWith(f.database);
+      expect(prior.settled()).toBe(false);
+      if (scenario === 'presented administrator')
+        f.fixtureSql("UPDATE openkit_access_tokens SET status = 'revoked' WHERE token_id = ?").run(
+          f.admin.tokenId
+        );
+      else f.fixtureSql("UPDATE users SET status = 'disabled' WHERE id = ?").run(administratorId);
+      release(f.gate);
+      expect(await prior.result).toMatchObject({ ok: true });
+      expect(await issuing).toMatchObject({
+        ok: false,
+        error: NANOHOST_TRANSPORT_ADMIN_REFUSAL,
+      });
+      expect(tokens(f)).toEqual(before.tokens);
+      expect(audits(f)).toBe(before.audit);
+      expect(Atomics.load(f.gate, 6)).toBe(before.posts);
+      expect(slotPresent(f, 'A')).toBe(false);
+      expect(slotPresent(f, 'B')).toBe(false);
+      return;
+    }
     let action: () => Promise<unknown>;
     let beforeAudit = audits(f);
     let predecessor: string | undefined;
@@ -863,34 +1040,25 @@ describe('NanoHost native credential ownership', () => {
       arm(f, 2);
     } else {
       action = scenario.startsWith('verification')
-        ? () => verifyNanoHostTransportTokenRecord(f.db, transport.secret)
-        : () =>
-            f.op(
-              'nanohost.token-issue',
-              { targetSlot: 'A', expiresAt },
-              scenario === 'derived disabled owner'
-                ? { kind: 'session', userId: administratorId, adminTokenId: f.admin.tokenId }
-                : f.actor
-            );
+        ? () => verifyNanoHostTransportTokenRecord(f.storage.value, transport.secret)
+        : () => f.op('nanohost.token-issue', { targetSlot: 'A', expiresAt });
       arm(f, 3);
     }
     const pending = await held(f, action);
-    if (scenario === 'presented administrator' || scenario === 'post-ACK rotation administrator')
+    if (scenario === 'post-ACK rotation administrator')
       f.fixtureSql("UPDATE openkit_access_tokens SET status = 'revoked' WHERE token_id = ?").run(
         f.admin.tokenId
       );
-    if (scenario === 'derived disabled owner')
-      f.fixtureSql("UPDATE users SET status = 'disabled' WHERE id = ?").run(administratorId);
     if (scenario === 'identity binding')
-      f.fixtureSql(
+      f.nativeSql(
         "UPDATE nanohost_integration_identities SET status = 'decommissioned' WHERE identity_id = ?"
       ).run(identityId);
     if (scenario === 'verification revocation')
-      f.fixtureSql(
-        "UPDATE nanohost_transport_tokens SET status = 'revoked' WHERE token_id = ?"
-      ).run(transport.tokenId);
+      f.nativeSql("UPDATE nanohost_transport_tokens SET status = 'revoked' WHERE token_id = ?").run(
+        transport.tokenId
+      );
     if (scenario === 'verification deadlines')
-      f.fixtureSql('UPDATE nanohost_transport_tokens SET expires_at = ? WHERE token_id = ?').run(
+      f.nativeSql('UPDATE nanohost_transport_tokens SET expires_at = ? WHERE token_id = ?').run(
         new Date(Date.now() - 1).toISOString(),
         transport.tokenId
       );
@@ -898,32 +1066,36 @@ describe('NanoHost native credential ownership', () => {
     const outcome = await pending.result;
     if (scenario.startsWith('verification')) {
       expect(outcome.ok && outcome.value === null).toBe(true);
-      expect(getNanoHostTransportTokenRecord(f.db, transport.tokenId)?.lastUsedAt).toBeNull();
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, transport.tokenId)?.lastUsedAt).toBeNull();
       if (scenario === 'verification deadlines') {
-        f.fixtureSql(
+        f.nativeSql(
           "UPDATE nanohost_transport_tokens SET expires_at = ?, status = 'rotated', rotation_overlap_expires_at = ? WHERE token_id = ?"
         ).run(expiresAt, expiresAt, transport.tokenId);
         arm(f, 3);
         const overlap = await held(f, () =>
-          verifyNanoHostTransportTokenRecord(f.db, transport.secret)
+          verifyNanoHostTransportTokenRecord(f.storage.value, transport.secret)
         );
-        f.fixtureSql(
+        f.nativeSql(
           'UPDATE nanohost_transport_tokens SET rotation_overlap_expires_at = ? WHERE token_id = ?'
         ).run(new Date(Date.now() - 1).toISOString(), transport.tokenId);
         release(f.gate);
         const expiredOverlap = await overlap.result;
         expect(expiredOverlap.ok && expiredOverlap.value === null).toBe(true);
-        expect(getNanoHostTransportTokenRecord(f.db, transport.tokenId)?.lastUsedAt).toBeNull();
+        expect(
+          getNanoHostTransportTokenRecord(f.nativeDb, transport.tokenId)?.lastUsedAt
+        ).toBeNull();
       }
     } else {
       expect(outcome.ok).toBe(false);
       expect(audits(f)).toBe(beforeAudit);
       expect(slotPresent(f, 'B')).toBe(false);
       if (predecessor) {
-        expect(getNanoHostTransportTokenRecord(f.db, predecessor)?.status).toBe('active');
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, predecessor)?.status).toBe('active');
         expect(
-          f.db.sqlite
-            .prepare('SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
+          f
+            .nativeSql(
+              'SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?'
+            )
             .pluck()
             .get(predecessor)
         ).toBe('revoked');
@@ -976,7 +1148,7 @@ describe('NanoHost native credential ownership', () => {
       }
       arm(f, scenario === 'already admitted connection' ? 5 : 2);
       const pending = await held(f, () =>
-        admitNanoHostTransportConnection(f.db, authority, {
+        admitNativeNanoHostTransportConnection(f.storage.value, authority, {
           secret: token.secret,
           physicalConnection: physical,
           transportRevision:
@@ -986,13 +1158,13 @@ describe('NanoHost native credential ownership', () => {
           source: 'first-admission',
         })
       );
-      expect(getNanoHostTransportTokenRecord(f.db, token.tokenId)?.lastUsedAt).not.toBeNull();
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedAt).not.toBeNull();
       if (scenario === 'revoked Token')
-        f.fixtureSql(
+        f.nativeSql(
           "UPDATE nanohost_transport_tokens SET status = 'revoked' WHERE token_id = ?"
         ).run(token.tokenId);
       if (scenario === 'decommissioned identity')
-        f.fixtureSql(
+        f.nativeSql(
           "UPDATE nanohost_integration_identities SET status = 'decommissioned' WHERE identity_id = ?"
         ).run(identityId);
       if (scenario === 'closed physical connection') {
@@ -1001,11 +1173,11 @@ describe('NanoHost native credential ownership', () => {
         await closed;
       }
       if (scenario === 'already admitted connection') {
-        expect(getNanoHostTransportTokenRecord(f.db, token.tokenId)?.lastUsedSource).toBe(
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource).toBe(
           'first-admission'
         );
-        expect(getNanoHostRuntimeTarget(f.db, identityId)).toBeNull();
-        const second = await admitNanoHostTransportConnection(f.db, authority, {
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
+        const second = await admitNativeNanoHostTransportConnection(f.storage.value, authority, {
           secret: token.secret,
           physicalConnection: physical,
           transportRevision: String(transportRevision),
@@ -1018,10 +1190,10 @@ describe('NanoHost native credential ownership', () => {
           mayCarryWork: true,
         });
         expect(pending.settled()).toBe(false);
-        expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
           connectionGeneration: 1,
         });
-        expect(getNanoHostTransportTokenRecord(f.db, token.tokenId)?.lastUsedSource).toBe(
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource).toBe(
           'second-admission'
         );
       }
@@ -1031,20 +1203,20 @@ describe('NanoHost native credential ownership', () => {
       expect(outcome.ok && !(outcome.value as { ok: boolean }).ok).toBe(true);
       if (scenario === 'already admitted connection') {
         expect(outcome.ok && outcome.value).toMatchObject({ ok: false, reason: 'rejected' });
-        expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
           connectionGeneration: 1,
         });
         expect(authority.authoritativeGeneration(identityId)).toBe(1);
         expect(authority.mayCarryWork(physical)).toBe(true);
-        expect(getNanoHostTransportTokenRecord(f.db, token.tokenId)?.lastUsedSource).toBe(
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, token.tokenId)?.lastUsedSource).toBe(
           'second-admission'
         );
       } else if (scenario === 'restart-required authority')
-        expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
           connectionGeneration: 1,
           ready: false,
         });
-      else expect(getNanoHostRuntimeTarget(f.db, identityId)).toBeNull();
+      else expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toBeNull();
       expect(authority.connectionGeneration(physical)).toBe(
         scenario === 'already admitted connection' ? 1 : null
       );
@@ -1075,7 +1247,9 @@ describe('NanoHost native credential ownership', () => {
       expect(slotPresent(f, 'A')).toBe(kind !== 'issue');
       expect(slotPresent(f, 'B')).toBe(false);
       if (first)
-        expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('rotated');
+        expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
+          'rotated'
+        );
     }
   );
 
@@ -1101,9 +1275,9 @@ describe('NanoHost native credential ownership', () => {
       ]);
       expect(slotPresent(f, 'A')).toBe(kind === 'lifecycle');
       if (kind === 'lifecycle')
-        expect(
-          f.db.sqlite.prepare('SELECT status FROM nanohost_transport_tokens').pluck().get()
-        ).toBe('active');
+        expect(f.nativeSql('SELECT status FROM nanohost_transport_tokens').pluck().get()).toBe(
+          'active'
+        );
       if (live) expect(f.authority.mayCarryWork(live)).toBe(false);
     }
   );
@@ -1112,19 +1286,19 @@ describe('NanoHost native credential ownership', () => {
     const f = await fixture();
     arm(f, 2);
     const pending = await held(f, () => issue(f));
-    const row = f.db.sqlite
-      .prepare('SELECT token_id FROM nanohost_transport_tokens')
+    const row = f
+      .nativeSql('SELECT token_id FROM nanohost_transport_tokens')
       .pluck()
       .get() as string;
-    const committed = getNanoHostTransportTokenRecord(f.db, row)!;
-    f.fixtureSql(
+    const committed = getNanoHostTransportTokenRecord(f.nativeDb, row)!;
+    f.nativeSql(
       "UPDATE nanohost_transport_tokens SET status = 'revoked', last_used_source = 'later-observation' WHERE token_id = ?"
     ).run(row);
     release(f.gate);
     const outcome = await pending.result;
     expect(outcome.ok).toBe(true);
     if (outcome.ok) expect(outcome.value.record).toEqual(committed);
-    expect(getNanoHostTransportTokenRecord(f.db, row)?.status).toBe('revoked');
+    expect(getNanoHostTransportTokenRecord(f.nativeDb, row)?.status).toBe('revoked');
   });
 
   it('refuses a malformed closed family shape before native mutation or Main fallback', async () => {
@@ -1138,19 +1312,28 @@ describe('NanoHost native credential ownership', () => {
     expect(count(f)).toBe(0);
   });
 
-  it('clears only its enrollment slot when the real open ACK is lost before credential submission', async () => {
-    const f = await fixture({ enrolled: false, open: false });
-    arm(f, 4);
+  it('clears only its enrollment slot after the admitted credential transaction rolls back', async () => {
+    const f = await fixture({ enrolled: false });
+    fault(f, 'nanohost_transport_tokens', 'INSERT');
+    // The owner is already open. Hold the original enrollment just before its SQL runs,
+    // then refuse the later Token insert inside the real identity-and-Token transaction.
+    arm(f, 3);
     const pending = await held(f, () => f.op('nanohost.enroll', { targetSlot: 'A', expiresAt }));
     expect(slotPresent(f, 'A')).toBe(true);
-    expect(Atomics.load(f.gate, 6)).toBe(0);
-    await loseReply();
-    expect((await pending.result).ok).toBe(false);
-    expect(Atomics.load(f.gate, 6)).toBe(0);
     expect(count(f)).toBe(0);
     expect(identities(f)).toEqual([]);
     expect(audits(f)).toBe(0);
-    expect(slotPresent(f, 'A')).toBe(false);
+    release(f.gate);
+    expect(await pending.result).toMatchObject({
+      ok: false,
+      error: { code: 'nanohost_enroll_failed', status: 400 },
+    });
+    expect(count(f)).toBe(0);
+    expect(identities(f)).toEqual([]);
+    expect(audits(f)).toBe(0);
+    expect(existsSync(f.slots.A.secretPath)).toBe(false);
+    expect(existsSync(f.slots.A.companionPath)).toBe(false);
+    expect(slotPresent(f, 'B')).toBe(false);
   });
 
   it('keeps live authority and readiness when revocation definitely rolls back', async () => {
@@ -1159,7 +1342,7 @@ describe('NanoHost native credential ownership', () => {
     const live = await admitted(f, slotSecret(f, 'A'));
     const before = {
       tokens: tokens(f),
-      target: getNanoHostRuntimeTarget(f.db, identityId),
+      target: getNanoHostRuntimeTarget(f.nativeDb, identityId),
       audit: audits(f),
     };
     fault(f, 'nanohost_transport_tokens', 'UPDATE');
@@ -1168,7 +1351,7 @@ describe('NanoHost native credential ownership', () => {
     );
     expect(tokens(f)).toEqual(before.tokens);
     expect(f.authority.mayCarryWork(live)).toBe(true);
-    expect(getNanoHostRuntimeTarget(f.db, identityId)).toEqual(before.target);
+    expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toEqual(before.target);
     expect(audits(f)).toBe(before.audit);
     await expect(
       f.op('credential.revoke', { kind: 'nanohost-transport', id: allocateEntityId('nhtok') })
@@ -1196,7 +1379,9 @@ describe('NanoHost native credential ownership', () => {
           ? f.op('credential.revoke', { kind: 'nanohost-transport', id: first.record.tokenId })
           : f.op('nanohost.decommission', {})
       );
-      expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('revoked');
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
+        'revoked'
+      );
       expect(f.authority.mayCarryWork(live)).toBe(true);
       await loseReply();
       expect((await pending.result).ok).toBe(false);
@@ -1219,12 +1404,14 @@ describe('NanoHost native credential ownership', () => {
       }
       expect(f.authority.mayCarryWork(live)).toBe(false);
       expect(f.authority.mayCarryWork(foreign.physical)).toBe(true);
-      expect(getNanoHostTransportTokenRecord(f.db, foreign.token.tokenId)?.status).toBe('active');
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, foreign.token.tokenId)?.status).toBe(
+        'active'
+      );
       expect(slotPresent(f, 'A')).toBe(true);
       expect(audits(f)).toBe(beforeAudit);
       if (kind === 'decommission') {
         expect(slotPresent(f, 'B')).toBe(true);
-        expect(getNanoHostRuntimeTarget(f.db, identityId)?.ready).toBe(false);
+        expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.ready).toBe(false);
       }
       // The real unavailable native close must remain a joined failure, including after
       // destroy emits close. The event adapter reports it instead of leaking rejection.
@@ -1263,9 +1450,9 @@ describe('NanoHost native credential ownership', () => {
       else release(f.gate);
       expect((await pending.result).ok).toBe(false);
       expect(count(f)).toBe(1);
-      expect(
-        f.db.sqlite.prepare('SELECT status FROM nanohost_transport_tokens').pluck().get()
-      ).toBe(kind === 'refused' ? 'active' : 'revoked');
+      expect(f.nativeSql('SELECT status FROM nanohost_transport_tokens').pluck().get()).toBe(
+        kind === 'refused' ? 'active' : 'revoked'
+      );
       expect(audits(f)).toBe(0);
       expect(Atomics.load(f.gate, 6)).toBe(2);
       expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
@@ -1301,12 +1488,12 @@ describe('NanoHost native credential ownership', () => {
       if (kind === 'unknown') await loseReply();
       else release(f.gate);
       expect((await pending.result).ok).toBe(false);
-      expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe(
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
         kind === 'refused' ? 'rotated' : 'active'
       );
       expect(
-        f.db.sqlite
-          .prepare('SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
+        f
+          .nativeSql('SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
           .pluck()
           .get(first.record.tokenId)
       ).toBe(kind === 'refused' ? 'active' : 'revoked');
@@ -1321,165 +1508,221 @@ describe('NanoHost native credential ownership', () => {
   );
 
   it('keeps an explicitly revoked predecessor revoked when a late sink failure aborts rotation', async () => {
-    const f = await fixture();
+    const f = await fixture({ useLayoutDeployment: true });
     const first = await issueSlot(f);
     const oldSecret = slotSecret(f, 'A');
     const live = await admitted(f, oldSecret);
     const beforeAudit = audits(f);
     blockSlot(f, 'B');
-    arm(f, 5);
-    const pending = await held(f, () =>
-      f.op('nanohost.token-rotate', {
+    const releaseDelivery = Promise.withResolvers<void>();
+    const acknowledged = Promise.withResolvers<void>();
+    const owner = f.storage.value.owner;
+    const administer = owner.administerTransport.bind(owner);
+    vi.spyOn(owner, 'administerTransport').mockImplementation(async (input) => {
+      const original = await administer(input);
+      if (input.kind === 'rotate') {
+        // Core authority is released after the genuine rotation ACK; pause only the
+        // handler's delivery continuation, not the owner that must admit the revoke.
+        acknowledged.resolve();
+        await releaseDelivery.promise;
+      }
+      return original;
+    });
+    let settled = false;
+    const pending = f
+      .op('nanohost.token-rotate', {
         tokenId: first.record.tokenId,
         overlapSeconds: 3600,
       })
-    );
-    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('rotated');
-    const successorId = f.db.sqlite
-      .prepare('SELECT token_id FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
-      .pluck()
-      .get(first.record.tokenId) as string;
-    expect(getNanoHostTransportTokenRecord(f.db, successorId)?.status).toBe('active');
-    const revoked = await f.op('credential.revoke', {
-      kind: 'nanohost-transport',
-      id: first.record.tokenId,
-    });
-    expect(revoked.status).toBe('revoked');
-    const revokedAt = getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.revokedAt;
-    expect(revokedAt).not.toBeNull();
-    expect(pending.settled()).toBe(false);
-    expect(f.authority.mayCarryWork(live)).toBe(false);
-    expect(audits(f)).toBe(beforeAudit + 1);
-    release(f.gate);
-    const outcome = await pending.result;
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok)
-      expect(outcome.error).toMatchObject({
-        code: 'nanohost_transport_rotate_failed',
-        status: 400,
-      });
-    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('revoked');
-    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.revokedAt).toBe(revokedAt);
-    expect(getNanoHostTransportTokenRecord(f.db, successorId)?.status).toBe('revoked');
-    expect(
-      f.db.sqlite
-        .prepare(
-          "SELECT count(*) FROM nanohost_transport_tokens WHERE status IN ('active', 'rotated')"
-        )
-        .pluck()
-        .get()
-    ).toBe(0);
-    expect(await verifyNanoHostTransportTokenRecord(f.db, oldSecret)).toBeNull();
-    expect(f.authority.mayCarryWork(live)).toBe(false);
-    expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
-    expect(getNanoHostRuntimeTarget(f.db, identityId)?.ready).toBe(false);
-    expect(
-      f.db.sqlite
-        .prepare(
-          "SELECT action, outcome FROM audit_events WHERE action = 'nanohost.transport.revoke'"
-        )
-        .all()
-    ).toEqual([{ action: 'nanohost.transport.revoke', outcome: 'succeeded' }]);
-    const failedAudits = f.db.sqlite
-      .prepare(
-        "SELECT action, outcome, error_code, summary FROM audit_events WHERE action = 'nanohost.transport.rotate'"
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error })
       )
-      .all() as Array<{ action: string; outcome: string; error_code: string; summary: string }>;
-    expect(failedAudits).toHaveLength(1);
-    expect(failedAudits[0]).toMatchObject({
-      action: 'nanohost.transport.rotate',
-      outcome: 'failed',
-      error_code: 'nanohost_transport_rotate_failed',
-    });
-    expect(failedAudits[0]!.summary).toContain(first.record.tokenId);
-    expect(failedAudits[0]!.summary).toContain(successorId);
-    expect(failedAudits[0]!.summary.match(/\brevoked\b/gu)).toHaveLength(2);
-    expect(JSON.stringify(failedAudits).includes(oldSecret)).toBe(false);
-    for (const sink of Object.values(f.slots)) {
-      expect(JSON.stringify(failedAudits).includes(sink.secretPath)).toBe(false);
-      expect(JSON.stringify(failedAudits).includes(sink.companionPath)).toBe(false);
-    }
-    expect(
-      f.db.sqlite
-        .prepare(
-          "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.rotate' AND outcome = 'succeeded'"
-        )
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      expect(await Promise.race([acknowledged.promise.then(() => 'ack'), pending])).toBe('ack');
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
+        'rotated'
+      );
+      const successorId = f
+        .nativeSql('SELECT token_id FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
         .pluck()
-        .get()
-    ).toBe(0);
-    expect(audits(f)).toBe(beforeAudit + 2);
+        .get(first.record.tokenId) as string;
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, successorId)?.status).toBe('active');
+      const revoked = await f.op('credential.revoke', {
+        kind: 'nanohost-transport',
+        id: first.record.tokenId,
+      });
+      expect(revoked.status).toBe('revoked');
+      const revokedAt = getNanoHostTransportTokenRecord(
+        f.nativeDb,
+        first.record.tokenId
+      )?.revokedAt;
+      expect(revokedAt).not.toBeNull();
+      expect(settled).toBe(false);
+      expect(f.authority.mayCarryWork(live)).toBe(false);
+      expect(audits(f)).toBe(beforeAudit + 1);
+      releaseDelivery.resolve();
+      const outcome = await pending;
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok)
+        expect(outcome.error).toMatchObject({
+          code: 'nanohost_transport_rotate_failed',
+          status: 400,
+        });
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
+        'revoked'
+      );
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.revokedAt).toBe(
+        revokedAt
+      );
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, successorId)?.status).toBe('revoked');
+      expect(
+        f
+          .nativeSql(
+            "SELECT count(*) FROM nanohost_transport_tokens WHERE status IN ('active', 'rotated')"
+          )
+          .pluck()
+          .get()
+      ).toBe(0);
+      expect(await verifyNanoHostTransportTokenRecord(f.storage.value, oldSecret)).toBeNull();
+      expect(f.authority.mayCarryWork(live)).toBe(false);
+      expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
+      expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.ready).toBe(false);
+      expect(
+        f.db.sqlite
+          .prepare(
+            "SELECT action, outcome FROM audit_events WHERE action = 'nanohost.transport.revoke'"
+          )
+          .all()
+      ).toEqual([{ action: 'nanohost.transport.revoke', outcome: 'succeeded' }]);
+      const failedAudits = f.db.sqlite
+        .prepare(
+          "SELECT action, outcome, error_code, summary FROM audit_events WHERE action = 'nanohost.transport.rotate'"
+        )
+        .all() as Array<{ action: string; outcome: string; error_code: string; summary: string }>;
+      expect(failedAudits).toHaveLength(1);
+      expect(failedAudits[0]).toMatchObject({
+        action: 'nanohost.transport.rotate',
+        outcome: 'failed',
+        error_code: 'nanohost_transport_rotate_failed',
+      });
+      expect(failedAudits[0]!.summary).toContain(first.record.tokenId);
+      expect(failedAudits[0]!.summary).toContain(successorId);
+      expect(failedAudits[0]!.summary.match(/\brevoked\b/gu)).toHaveLength(2);
+      expect(JSON.stringify(failedAudits).includes(oldSecret)).toBe(false);
+      for (const sink of Object.values(f.slots)) {
+        expect(JSON.stringify(failedAudits).includes(sink.secretPath)).toBe(false);
+        expect(JSON.stringify(failedAudits).includes(sink.companionPath)).toBe(false);
+      }
+      expect(
+        f.db.sqlite
+          .prepare(
+            "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.rotate' AND outcome = 'succeeded'"
+          )
+          .pluck()
+          .get()
+      ).toBe(0);
+      expect(audits(f)).toBe(beforeAudit + 2);
+    } finally {
+      releaseDelivery.resolve();
+    }
   });
 
-  it('preserves a fresh enrollment slot while an earlier decommission ACK is pending', async () => {
-    const f = await fixture();
+  it('preserves a fresh enrollment slot while earlier decommission cleanup is pending', async () => {
+    const f = await fixture({ useLayoutDeployment: true });
     const original = await issueSlot(f);
     const live = await admitted(f, slotSecret(f, 'A'));
     const beforeAudit = audits(f);
     expect(slotPresent(f, 'B')).toBe(false);
-    arm(f, 2);
-    const decommission = await held(f, () => f.op('nanohost.decommission', {}));
-    expect(getNanoHostTransportTokenRecord(f.db, original.record.tokenId)?.status).toBe('revoked');
-    expect(identities(f)).toMatchObject([{ status: 'decommissioned' }]);
-    expect(slotPresent(f, 'A')).toBe(true);
     expect(f.authority.mayCarryWork(live)).toBe(true);
-    const posted = vi.spyOn(interception.workers.at(-1)!, 'postMessage');
-    let enrollmentSettled = false;
-    const enrollment = f.op('nanohost.enroll', { targetSlot: 'B', expiresAt }).then(
-      (value) => {
-        enrollmentSettled = true;
-        return { ok: true as const, value };
-      },
-      (error) => {
-        enrollmentSettled = true;
-        return { ok: false as const, error };
+    const finishing = Promise.withResolvers<void>();
+    const acknowledged = Promise.withResolvers<void>();
+    const owner = f.storage.value.owner;
+    const transition = owner.transitionRuntimeTarget.bind(owner);
+    vi.spyOn(owner, 'transitionRuntimeTarget').mockImplementation(async (kernel, input) => {
+      const original = await transition(kernel, input);
+      if (input.input.kind === 'close' && original.state === 'ready') {
+        // Enrollment itself joins any outstanding owner ACK. Hold the old handler
+        // after its real fence, before it may clear slots, not the Native owner.
+        acknowledged.resolve();
+        await finishing.promise;
       }
-    );
-    const enrollmentPosted = () =>
-      posted.mock.calls.some(([value]) => {
-        const request = value as { operation?: string; input?: { kind?: string } };
-        return request.operation === 'nanohost-transport' && request.input?.kind === 'enroll';
+      return original;
+    });
+    let decommissionSettled = false;
+    const decommission = f
+      .op('nanohost.decommission', {})
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error })
+      )
+      .finally(() => {
+        decommissionSettled = true;
       });
-    while (!enrollmentPosted() && !enrollmentSettled) await nextTurn();
-    expect(enrollmentPosted()).toBe(true);
-    expect(enrollmentSettled).toBe(false);
-    expect(decommission.settled()).toBe(false);
-    expect(slotPresent(f, 'B')).toBe(true);
-    const freshId = readNanoHostCredentialSlotTokenId(f.slots.B)!;
-    const freshSecret = readFileSync(f.slots.B.secretPath);
-    const freshCompanion = readFileSync(f.slots.B.companionPath);
-    expect(freshId).not.toBe(original.record.tokenId);
-    expect(getNanoHostTransportTokenRecord(f.db, freshId)).toBeNull();
-    release(f.gate);
-    const staleOutcome = await decommission.result;
-    const freshOutcome = await enrollment;
-    expect(staleOutcome.ok).toBe(false);
-    expect(freshOutcome.ok).toBe(true);
-    if (freshOutcome.ok) expect(freshOutcome.value.record.tokenId).toBe(freshId);
-    expect(slotPresent(f, 'A')).toBe(false);
-    expect(slotPresent(f, 'B')).toBe(true);
-    expect(readFileSync(f.slots.B.secretPath).equals(freshSecret)).toBe(true);
-    expect(readFileSync(f.slots.B.companionPath).equals(freshCompanion)).toBe(true);
-    expect(getNanoHostTransportTokenRecord(f.db, original.record.tokenId)?.status).toBe('revoked');
-    expect(getNanoHostTransportTokenRecord(f.db, freshId)?.status).toBe('active');
-    expect(identities(f)).toMatchObject([{ status: 'active' }]);
-    expect(f.authority.mayCarryWork(live)).toBe(false);
-    expect(
-      f.db.sqlite
-        .prepare(
-          "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.decommission'"
-        )
-        .pluck()
-        .get()
-    ).toBe(0);
-    expect(
-      f.db.sqlite
-        .prepare(
-          "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.enroll' AND outcome = 'succeeded'"
-        )
-        .pluck()
-        .get()
-    ).toBe(1);
-    expect(audits(f)).toBe(beforeAudit + 1);
+    try {
+      expect(await Promise.race([acknowledged.promise.then(() => 'ack'), decommission])).toBe(
+        'ack'
+      );
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, original.record.tokenId)?.status).toBe(
+        'revoked'
+      );
+      expect(identities(f)).toMatchObject([{ status: 'decommissioned' }]);
+      expect(slotPresent(f, 'A')).toBe(true);
+      expect(f.authority.mayCarryWork(live)).toBe(false);
+      arm(f, 1);
+      const enrollment = await held(f, () =>
+        f.op('nanohost.enroll', { targetSlot: 'B', expiresAt })
+      );
+      expect(enrollment.settled()).toBe(false);
+      expect(decommissionSettled).toBe(false);
+      expect(slotPresent(f, 'B')).toBe(true);
+      const freshId = readNanoHostCredentialSlotTokenId(f.slots.B)!;
+      const freshSecret = readFileSync(f.slots.B.secretPath);
+      const freshCompanion = readFileSync(f.slots.B.companionPath);
+      expect(freshId).not.toBe(original.record.tokenId);
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, freshId)).toBeNull();
+      release(f.gate);
+      const freshOutcome = await enrollment.result;
+      expect(freshOutcome).toMatchObject({ ok: true, value: { record: { tokenId: freshId } } });
+      expect(decommissionSettled).toBe(false);
+      finishing.resolve();
+      expect(await decommission).toMatchObject({
+        ok: false,
+        error: { message: 'NanoHost credential slot changed before decommission cleanup.' },
+      });
+      expect(slotPresent(f, 'A')).toBe(false);
+      expect(slotPresent(f, 'B')).toBe(true);
+      expect(readFileSync(f.slots.B.secretPath).equals(freshSecret)).toBe(true);
+      expect(readFileSync(f.slots.B.companionPath).equals(freshCompanion)).toBe(true);
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, original.record.tokenId)?.status).toBe(
+        'revoked'
+      );
+      expect(getNanoHostTransportTokenRecord(f.nativeDb, freshId)?.status).toBe('active');
+      expect(identities(f)).toMatchObject([{ status: 'active' }]);
+      expect(f.authority.mayCarryWork(live)).toBe(false);
+      expect(
+        f.db.sqlite
+          .prepare(
+            "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.decommission'"
+          )
+          .pluck()
+          .get()
+      ).toBe(0);
+      expect(
+        f.db.sqlite
+          .prepare(
+            "SELECT count(*) FROM audit_events WHERE action = 'nanohost.transport.enroll' AND outcome = 'succeeded'"
+          )
+          .pluck()
+          .get()
+      ).toBe(1);
+      expect(audits(f)).toBe(beforeAudit + 1);
+    } finally {
+      finishing.resolve();
+    }
   });
 
   it('keeps the acknowledged rotation when its real optional session-authority branch is absent', async () => {
@@ -1491,10 +1734,12 @@ describe('NanoHost native credential ownership', () => {
       f.op('nanohost.token-rotate', { tokenId: first.record.tokenId, overlapSeconds: 3600 })
     );
     expect(count(f)).toBe(2);
-    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('rotated');
+    expect(getNanoHostTransportTokenRecord(f.nativeDb, first.record.tokenId)?.status).toBe(
+      'rotated'
+    );
     expect(
-      f.db.sqlite
-        .prepare('SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
+      f
+        .nativeSql('SELECT status FROM nanohost_transport_tokens WHERE predecessor_token_id = ?')
         .pluck()
         .get(first.record.tokenId)
     ).toBe('active');
@@ -1507,17 +1752,36 @@ describe('NanoHost native credential ownership', () => {
   it.each(['enroll', 'decommission'] as const)(
     'does not undo %s when its later Audit commit ACK is lost',
     async (kind) => {
-      const f = await fixture({ enrolled: kind === 'decommission' });
+      const f = await fixture({ enrolled: kind === 'decommission', useLayoutDeployment: true });
       let live: object | undefined;
       if (kind === 'decommission') {
         await rotation(f);
         live = await admitted(f, slotSecret(f, 'A'));
       }
       const before = { audit: audits(f), commits: f.commits() };
-      // Decommission now awaits its original physical-close write on the native owner too.
-      // Hold the later Audit itself, after that separate close stage, rather than an ordinal on Main.
+      const auditOwners: NativeWorker[] = [];
+      for (const worker of interception.workers) {
+        const post = worker.postMessage.bind(worker);
+        vi.spyOn(worker, 'postMessage').mockImplementation((value, transfers) => {
+          const message = value as {
+            operation?: string;
+            input?: { kind?: string; action?: string };
+          };
+          if (
+            message.operation === 'nanohost-transport' &&
+            (kind === 'decommission'
+              ? message.input?.kind === 'decommission-audit'
+              : message.input?.kind === 'lifecycle-audit' &&
+                message.input.action === 'nanohost.transport.enroll')
+          ) {
+            auditOwners.push(worker);
+            arm(f, 2);
+          }
+          return post(value, transfers);
+        });
+      }
+      // Arm only when the exact Core Audit is posted, after any Native physical close.
       const coveringCommits = kind === 'decommission' ? 3 : 2;
-      arm(f, 2, before.commits + coveringCommits);
       const pending = await held(f, async () =>
         kind === 'enroll'
           ? f.op('nanohost.enroll', { targetSlot: 'A', expiresAt })
@@ -1526,7 +1790,8 @@ describe('NanoHost native credential ownership', () => {
       expect(audits(f)).toBe(before.audit + 1);
       expect(slotPresent(f, 'A')).toBe(kind === 'enroll');
       if (live) expect(f.authority.mayCarryWork(live)).toBe(false);
-      await loseReply();
+      expect(auditOwners).toHaveLength(1);
+      await loseReply(auditOwners[0]);
       expect((await pending.result).ok).toBe(false);
       expect(f.commits()).toBe(before.commits + coveringCommits);
       expect(identities(f)).toMatchObject([
@@ -1545,14 +1810,14 @@ it('joins an allocated admission and its physical-close producer before native s
   const posted = vi.spyOn(interception.workers.at(-1)!, 'postMessage');
   arm(f, 5, f.commits() + 2);
   const admission = await held(f, () =>
-    admitNanoHostTransportConnection(f.db, f.authority, {
+    admitNativeNanoHostTransportConnection(f.storage.value, f.authority, {
       secret: issued.secret,
       physicalConnection: physical,
       transportRevision: String(transportRevision),
     })
   );
   // The actual allocation committed, but Main has not received its reply or bound the connection.
-  expect(getNanoHostRuntimeTarget(f.db, identityId)?.connectionGeneration).toBe(1);
+  expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)?.connectionGeneration).toBe(1);
   (physical as import('node:http2').Http2Session).destroy();
   const shutdown = f.track(shutdownControlStoreWorkerClient());
   release(f.gate);
@@ -1561,17 +1826,13 @@ it('joins an allocated admission and its physical-close producer before native s
     value: { ok: false, reason: 'rejected' },
   });
   await shutdown;
-  const commands = posted.mock.calls.map(
-    ([message]) => message as { operation?: string; input?: { kind?: string } }
-  );
-  const closeIndex = commands.findIndex(
-    (value) => value.operation === 'runtime-target' && value.input?.kind === 'close'
-  );
+  const commands = posted.mock.calls.map(([message]) => message as { operation?: string });
+  const closeIndex = commands.findIndex((value) => runtimeTargetPost(value, 'close'));
   const shutdownIndex = commands.findIndex((value) => value.operation === 'shutdown');
   expect(closeIndex).toBeGreaterThanOrEqual(0);
   expect(shutdownIndex).toBeGreaterThan(closeIndex);
   expect(f.authority.authoritativeGeneration(identityId)).toBeNull();
-  expect(getNanoHostRuntimeTarget(f.db, identityId)).toMatchObject({
+  expect(getNanoHostRuntimeTarget(f.nativeDb, identityId)).toMatchObject({
     connectionGeneration: 1,
     ready: false,
   });

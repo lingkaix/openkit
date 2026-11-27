@@ -61,6 +61,7 @@ const digest = (body: string | Buffer) =>
 const cleanup: Array<() => void> = [];
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) close();
 });
@@ -219,6 +220,7 @@ const request = {
 describe('synthetic Skill Artifact/catalog component', () => {
   // Main takes 29.4 s alone (version stack: 28.1 s); allow headroom for sequential Turns under load.
   it('runs the synthetic native Task, Artifact, human promotion and later pinned-use loop', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-native-'));
     cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
     const coreDb = openCoreDb(dataRoot);
@@ -273,10 +275,16 @@ describe('synthetic Skill Artifact/catalog component', () => {
       join(dataRoot, 'config/gateway.jsonc'),
       JSON.stringify(createTestGatewayConfig())
     );
+    const { admitTestNativeEnvironmentForRoot } = await import(
+      '../test-support/native-environment.js'
+    );
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, producerSetup.manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, useSetup.manifest);
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     const executeTurn = executor.startTurn.bind(executor);
     const app = createApp({
+      nanoHostStorage,
       fileAdmission,
       coreDb,
       dataRoot,

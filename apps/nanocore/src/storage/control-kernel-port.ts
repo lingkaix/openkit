@@ -1,6 +1,8 @@
 import type { AuditEvent, WorkOwner } from '@openkit/protocol';
 import type { ExecutionBackendCorrelation } from '../runtime/execution-backend.js';
 import type { ExecutionJournalRef, ExecutionStepRef } from '../runtime/execution-step-journal.js';
+import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
+import type { WorkerBackendSessionRecord } from '../runtime/worker-backend-session-records.js';
 import type {
   ChannelInboundEnvelope,
   ChannelInboundKey,
@@ -20,6 +22,31 @@ import type {
   StorageResult,
   StorageStatus,
 } from './storage-owner.js';
+
+/** Observations from one admitted NanoHost owner. A ready null requires complete readable history. */
+export interface NanoHostCoreReads {
+  readTarget(targetId: string): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
+  readBackendSession(
+    key: { readonly attemptId: string } | { readonly packageSnapshotId: string }
+  ): StorageResult<'nanohost', WorkerBackendSessionRecord | null>;
+  readResident(bindingRef: string): StorageResult<
+    'nanohost',
+    {
+      readonly binding: string;
+      readonly origin: string;
+      readonly target: string;
+      readonly drain: string;
+      readonly refusalDrained: boolean;
+    } | null
+  >;
+  listDrainingResidents(
+    after: string | null,
+    limit: number
+  ): StorageResult<
+    'nanohost',
+    { readonly bindings: readonly string[]; readonly next: string | null }
+  >;
+}
 
 /** A4 resolves original committed bytes at the work owner and verifies the digest. */
 export interface WorkInputRef {

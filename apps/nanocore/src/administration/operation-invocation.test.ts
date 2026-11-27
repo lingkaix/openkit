@@ -14,11 +14,14 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { FsStore } from '../lib/store.js';
 import * as invocation from '../operation-composition.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createNanoHostCoreReads } from '../storage/nanohost-core-reads.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
   type AdministrationEnvironmentTools,
@@ -117,11 +120,16 @@ describe('real administration assembly through invocation', () => {
         identityId: 'integration_primary',
         deploymentId: testEntityId('dep', 'deploy_primary'),
       };
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        ...target,
-        targetId: target.identityId,
-        observedAt: '2026-10-02T00:00:00.000Z',
-      });
+      const storage = await openAdmittedTestNanoHost(coreDb);
+      const readNanoHostTarget = createNanoHostCoreReads(storage.value.owner).readTarget;
+      await expect(
+        transitionAdmittedNanoHostRuntimeTarget(storage.value, {
+          ...target,
+          kind: 'allocate',
+          targetId: target.identityId,
+          observedAt: '2026-10-02T00:00:00.000Z',
+        })
+      ).resolves.toMatchObject({ state: 'ready', value: { connectionGeneration: 1 } });
       const actor = {
         kind: 'token' as const,
         tokenScope: 'server-admin' as const,
@@ -147,7 +155,8 @@ describe('real administration assembly through invocation', () => {
         environmentTools: unaffected.slice(4) as unknown as AdministrationEnvironmentTools,
         runtimeTargetTool: createAdministrationNanoHostRuntimeTargetTool({
           coreDb,
-          createOperationInvocation: invocation.createOperationInvocation,
+          createOperationInvocation: (dependencies) =>
+            invocation.createOperationInvocation({ ...dependencies, readNanoHostTarget }),
           mode: 'server',
           nanoHostConfig: target,
           actor,
@@ -211,7 +220,7 @@ describe('real administration assembly through invocation', () => {
       });
     } finally {
       entered.mockRestore();
-      coreDb.sqlite.close();
+      await disposeTestStore(coreDb.dataRoot, coreDb);
     }
   });
 });

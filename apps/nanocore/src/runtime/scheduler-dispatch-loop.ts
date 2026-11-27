@@ -51,7 +51,7 @@ import {
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
-  markSchedulerExecutionAttemptClosing,
+  ExecutionAttemptRefusal,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempts.js';
@@ -76,7 +76,11 @@ import {
   WorkerGovernanceCapacityUnavailableError,
   WorkerInputRecoveryRequiredError,
 } from './worker-governance-backend.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+import {
+  acceptedWorkerFinalCloseoutHold,
+  requireWorkerFailureClose,
+  terminalizeGovernedWorkerTurn,
+} from './worker-turn-failure.js';
 
 /** Current composition and the exact selected admission; no placement or native proof policy lives here. */
 export interface RunSchedulerDispatchLoopInput
@@ -190,13 +194,21 @@ export async function runSchedulerDispatchLoop(
     return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
   const startedTurns: SchedulerDispatchLoopStartedTurn[] = [];
   const unpublishedQueueEntryIds = new Set<string>();
+  // Admissions whose placement an unresolved writer holds stay queued in FIFO order for this pass.
+  const heldQueueEntryIds = new Set<string>();
+  // A deferred admission keeps its FIFO priority for its placement. Every later claim in this pass
+  // sends the deferred admissions to its own Core transaction. That transaction refuses the later
+  // claim when a deferred admission shares a scope with it and is now eligible, so no release can
+  // commit between that decision and the claim. A deferred admission that is still held does not
+  // stop a later claim.
+  const deferredQueueEntryIds: string[] = [];
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
     if (input.agentWorkPaused?.())
       return { startedTurns, terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
-      unpublishedQueueEntryIds
+      new Set([...unpublishedQueueEntryIds, ...heldQueueEntryIds])
     );
     if (!entry)
       return {
@@ -284,7 +296,7 @@ export async function runSchedulerDispatchLoop(
         };
       });
       const promise = withTurnDispatchTelemetry(entry.turnId, () =>
-        dispatchSchedulerAdmission(input, entry, acknowledgeSubmission)
+        dispatchSchedulerAdmission(input, entry, acknowledgeSubmission, deferredQueueEntryIds)
       );
       claims.set(entry.queueEntryId, promise);
       const releaseDispatch = release;
@@ -303,6 +315,17 @@ export async function runSchedulerDispatchLoop(
           )
         );
       startedTurns.push(...result.startedTurns);
+      if (
+        result.terminalResult.status === 'queued' &&
+        result.terminalResult.reason === 'thread-busy'
+      ) {
+        // The Core claim refused a held placement. Keep the admission queued and select the next
+        // eligible entry; the release wake or a later pass dispatches it in FIFO order.
+        heldQueueEntryIds.add(entry.queueEntryId);
+        deferredQueueEntryIds.push(entry.queueEntryId);
+        count--;
+        continue;
+      }
       if (
         result.terminalResult.status === 'queued' &&
         result.terminalResult.reason === 'recovery-required'
@@ -487,7 +510,8 @@ function currentSchedulerDispatchAuthority(
 async function dispatchSchedulerAdmission(
   input: RunSchedulerDispatchLoopInput,
   entry: CoreSchedulerQueueEntry,
-  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void
+  acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void,
+  deferredQueueEntryIds: readonly string[]
 ): Promise<SchedulerDispatchLoopResult> {
   input.onDispatchAttribution?.(entry.queueEntryId);
   const responsibleUserId =
@@ -510,20 +534,30 @@ async function dispatchSchedulerAdmission(
     input.store.getTurnById(entry.turnId).status === 'running'
       ? readReleasedSandboxRefusalPredecessor(input.coreDb, entry)
       : null;
-  const attempt = await createSchedulerExecutionAttempt(input.coreDb, {
-    entry,
-    attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
-    preparationInput: {
-      admission: entry,
-      configVersion: input.configVersion ?? null,
-      manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
-      workspaceConfig,
-      userConfig,
-      workspaceDataSourceCatalog,
-      workspaceMcpServerCatalog,
-    },
-    ...(input.now ? { now: input.now } : {}),
-  });
+  let attempt: SchedulerExecutionAttemptRecord;
+  try {
+    attempt = await createSchedulerExecutionAttempt(input.coreDb, {
+      entry,
+      attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
+      preparationInput: {
+        admission: entry,
+        configVersion: input.configVersion ?? null,
+        manifest: input.agentManifests.find((manifest) => manifest.id === entry.requestedAgentId),
+        workspaceConfig,
+        userConfig,
+        workspaceDataSourceCatalog,
+        workspaceMcpServerCatalog,
+      },
+      deferredQueueEntryIds,
+      ...(input.now ? { now: input.now } : {}),
+    });
+  } catch (error) {
+    // Only the deciding claim's held-placement refusal defers. That claim committed nothing.
+    // Every other refusal keeps its own answer.
+    if (error instanceof ExecutionAttemptRefusal && error.reason === 'placement-held')
+      return { startedTurns: [], terminalResult: { status: 'queued', reason: 'thread-busy' } };
+    throw error;
+  }
   const expiration = Promise.withResolvers<never>();
   const expirationKey = JSON.stringify([input.coreDb.dataRoot, attempt.attemptId]);
   preparationExpirations.set(expirationKey, expiration.reject);
@@ -694,6 +728,9 @@ async function dispatchSchedulerAdmission(
       terminalResult: { status: 'queued', reason: 'max-dispatches' },
     };
   } catch (error) {
+    const finalIntake = { coreDb: input.coreDb, attemptId: attempt.attemptId };
+    const hold = acceptedWorkerFinalCloseoutHold(error, finalIntake);
+    if (hold) throw hold;
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
     if (current.terminalCause === 'sandbox-release-refusal')
       return {
@@ -728,17 +765,12 @@ async function dispatchSchedulerAdmission(
       });
       return { startedTurns: [], terminalResult: { status: 'queued', reason: 'backend-busy' } };
     }
-    if (current.operationId === null)
-      await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
-        attemptId: attempt.attemptId,
-        noOutstandingEffects: true,
-        cause: 'turn-start-failed',
-      });
-    else
-      await markSchedulerExecutionAttemptClosing(input.coreDb, {
-        attemptId: attempt.attemptId,
-        cause: 'preparation-or-execution-failed',
-      });
+    await requireWorkerFailureClose(
+      input.coreDb,
+      attempt.attemptId,
+      'preparation-or-execution-failed',
+      error
+    );
     const turn = input.store.getTurnById(entry.turnId);
     if (turn.status === 'pending' || turn.status === 'running')
       await terminalizeGovernedWorkerTurn({

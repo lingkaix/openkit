@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { replaceRecoveryJournalProof } from '../test-support/recovery-journal.js';
@@ -38,8 +39,10 @@ beforeAll(async () => {
     workspaceId: DEMO_WORKSPACE_ID,
     ownerUserId: owner,
   });
-  sourceCore.sqlite.close();
+  // Stopped capture inspects existing NanoHost history; initialize the empty owner before stopping.
+  await openAdmittedTestNanoHost(sourceCore);
   await shutdownControlStoreWorkerClient();
+  sourceCore.sqlite.close();
   const releaseIdentityPath = join(root, 'release.json');
   writeFileSync(
     releaseIdentityPath,

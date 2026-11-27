@@ -14,7 +14,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
@@ -246,7 +246,7 @@ describe('scheduler dispatch service', () => {
         },
       },
     ];
-    admitTestNativeEnvironment(coreDb, manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, manifest);
     const gatewayConfig = createTestGatewayConfig();
     const providerRegistry = new ProviderRegistry([
       {

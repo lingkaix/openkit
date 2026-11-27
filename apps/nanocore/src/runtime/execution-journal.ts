@@ -22,6 +22,7 @@ import type {
   ExecutionGrant,
   ExecutionProofIntent,
   ExecutionProofReceipt,
+  NanoHostCoreReads,
   RepairCallInspection,
   RepairCallIntent,
   RepairCallOutcome,
@@ -46,23 +47,26 @@ import {
   storageReceipt,
   storageRequestId,
 } from '../storage/storage-owner.js';
-import type {
-  EndedExecutionStep,
-  ExecutionInvocation,
-  ExecutionJournalAnyValue,
-  ExecutionJournalExecution,
-  ExecutionJournalIntent,
-  ExecutionJournalRef,
-  ExecutionJournalSettlement,
-  ExecutionJournalSpan,
-  ExecutionStepControl,
-  ExecutionStepJournalReader,
-  ExecutionStepRef,
+import {
+  type EndedExecutionStep,
+  type ExecutionInvocation,
+  type ExecutionJournalAnyValue,
+  type ExecutionJournalExecution,
+  type ExecutionJournalIntent,
+  type ExecutionJournalRef,
+  type ExecutionJournalSettlement,
+  type ExecutionJournalSpan,
+  type ExecutionStepControl,
+  type ExecutionStepJournalReader,
+  type ExecutionStepRef,
+  type SchedulerPreparationClaim,
+  SchedulerPreparationClaimSchema,
 } from './execution-step-journal.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
+import { NanoHostCleanupFencePendingError } from './nanohost-runtime-target-records.js';
 import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
@@ -86,81 +90,29 @@ export const CORE_REPAIR_EXECUTION_DEFINITION = 'core-repair/v1';
 /** The Core control half of a durable scheduler attempt and its independent input obligations. */
 export const CORE_SCHEDULER_EXECUTION_DEFINITION = 'core-scheduler-attempt/v1';
 
+/** Local lifecycle receipts are independent of the backend grant's trace and writer scopes. */
+export const CORE_SCHEDULER_LIFECYCLE_DEFINITION = 'core-scheduler-lifecycle/v1';
+
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
   readonly ref: ExecutionStepRef;
   readonly revision: number;
 }
 
-/** Finds the exact retained refusal which revoked this attempt before it could submit. */
-export function readSandboxReleaseRefusalFence(
-  db: CoreDb,
-  bindingRef: string,
-  targetId: string,
-  physicalEpoch: string,
-  attemptId?: string
-): ExecutionCandidate | null {
-  const requestId = commandInputHash([
-    CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
-    targetId,
-    physicalEpoch,
-    bindingRef,
-  ]);
-  const execution = {
-    owner: { kind: 'server' as const },
-    executionId: `sandbox-release-refusal:${requestId}`,
-  };
-  if (
-    !db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(execution.executionId)
-  )
-    return null;
-  const ref = { execution, stepId: 'fence' };
-  const root = readRoot(db, execution);
-  const fence = readExecutionJournalInvocation(db, ref);
-  if (
-    root.definitionVersion !== CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION ||
-    root.workId !== bindingRef ||
-    root.fingerprint !== requestId ||
-    fence.carriage.operation !== 'sandbox.release-refusal' ||
-    fence.carriage.requestId !== requestId ||
-    fence.carriage.bindingRef !== bindingRef ||
-    fence.control.attemptId === null ||
-    (attemptId !== undefined && fence.control.attemptId !== attemptId) ||
-    fence.control.target?.targetId !== targetId ||
-    fence.control.target.allocationRef !== bindingRef ||
-    !isDeepStrictEqual(fence.control.physicalFenceRefs, [physicalEpoch]) ||
-    !db.sqlite
-      .prepare(`SELECT 1 FROM scheduler_execution_attempts
-      WHERE attempt_id = ? AND phase = 'closing' AND deadline IS NULL
-        AND terminal_cause = 'sandbox-release-refusal'`)
-      .get(fence.control.attemptId)
-  )
-    return null;
-  return { ref, revision: root.revision };
-}
-
-/** Pages current draining residents, then addresses their exact originals, including CLOSED roots. */
+/** Resolves exact original journal entries for the admitted NanoHost resident page. */
 export function listExecutionCandidates(
   db: CoreDb,
-  after: string | null = null
+  after: string | null,
+  nanoHost: Pick<NanoHostCoreReads, 'listDrainingResidents'>
 ): { readonly candidates: readonly ExecutionCandidate[]; readonly next: string | null } {
-  // Residents disappear at release; retained execution history must not become periodic work.
   const limit = 128;
-  const rows = (
-    after === null
-      ? db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding, runtime_target_id AS targetId,
-            origin_physical_epoch AS physicalEpoch FROM sandbox_runtime_records
-        WHERE drain_state = 'draining' ORDER BY sandbox_binding_ref LIMIT ?`)
-          .all(limit)
-      : db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding, runtime_target_id AS targetId,
-            origin_physical_epoch AS physicalEpoch FROM sandbox_runtime_records
-        WHERE drain_state = 'draining' AND sandbox_binding_ref > ?
-        ORDER BY sandbox_binding_ref LIMIT ?`)
-          .all(after, limit)
-  ) as { binding: string; targetId: string; physicalEpoch: string }[];
-  // Match the Core partial expression index exactly; no backend-history or creator-only lookup.
+  const page = nanoHost.listDrainingResidents(after, limit);
+  if (
+    page.state !== 'ready' ||
+    page.value.bindings.length > limit ||
+    (page.value.next !== null && page.value.next === after)
+  )
+    throw new NanoHostCleanupFencePendingError();
   const originals = db.sqlite.prepare(`SELECT s.execution_id AS executionId,
     s.step_id AS stepId, r.revision FROM control_execution_steps s
     JOIN control_executions r ON r.id = s.execution_id
@@ -170,7 +122,7 @@ export function listExecutionCandidates(
       AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
     ORDER BY s.execution_id, s.step_id`);
   return {
-    candidates: rows.flatMap(({ binding, targetId, physicalEpoch }) => {
+    candidates: page.value.bindings.flatMap((binding) => {
       const candidates: ExecutionCandidate[] = (
         originals.all(binding) as { executionId: string; stepId: string; revision: number }[]
       ).map((row) => ({
@@ -180,13 +132,32 @@ export function listExecutionCandidates(
         },
         revision: row.revision,
       }));
-      if (candidates.length === 0) {
-        const refusal = readSandboxReleaseRefusalFence(db, binding, targetId, physicalEpoch);
-        if (refusal) candidates.push(refusal);
-      }
-      return candidates;
+      if (candidates.length > 0) return candidates;
+      const refusal = db.sqlite
+        .prepare(`SELECT r.id AS executionId, r.revision
+        FROM control_executions r JOIN control_execution_steps s
+          ON s.execution_id = r.id AND s.step_id = 'fence'
+        JOIN scheduler_execution_attempts a
+          ON a.attempt_id = json_extract(s.control_json, '$.attemptId')
+        WHERE r.definition_version = ? AND r.work_id = ? AND r.phase = 'open'
+          AND a.phase = 'closing' AND a.deadline IS NULL
+          AND a.terminal_cause = 'sandbox-release-refusal' LIMIT 1`)
+        .get(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION, binding) as
+        | { executionId: string; revision: number }
+        | undefined;
+      return refusal
+        ? [
+            {
+              ref: {
+                execution: { owner: { kind: 'server' }, executionId: refusal.executionId },
+                stepId: 'fence',
+              },
+              revision: refusal.revision,
+            },
+          ]
+        : [];
     }),
-    next: rows.length === limit ? rows[rows.length - 1]!.binding : null,
+    next: page.value.next,
   };
 }
 
@@ -245,6 +216,16 @@ const workspaceStepKinds = new Set([
   'consume-receipt',
   'inspect-cleanup',
   'release',
+]);
+
+/** Open Worker results whose sibling steps cannot change their original authority. */
+const observedWorkspaceChildKinds = new Set([
+  'open-session',
+  'inspect-session',
+  'deliver-start',
+  'deliver-steer',
+  'collect',
+  'consume-receipt',
 ]);
 
 /** Containment uses only accepted control kinds and original authority references. */
@@ -405,6 +386,7 @@ const definition = z.enum([
   CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   CORE_REPAIR_EXECUTION_DEFINITION,
   CORE_SCHEDULER_EXECUTION_DEFINITION,
+  CORE_SCHEDULER_LIFECYCLE_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -469,6 +451,7 @@ const invocationSchema = z.object({
     requestId: text,
     sequence: count.nullable(),
     bindingRef: text.nullable(),
+    schedulerPreparation: SchedulerPreparationClaimSchema.optional(),
     kernelGrant: KernelGrantStepSchema.optional(),
     repairTerminal: z
       .strictObject({ version: z.literal(1), outcome: repairOutcomeSchema })
@@ -579,6 +562,14 @@ export function decodeExecutionJournalSettlement(inputJson: string): ExecutionJo
     .object({
       ref: stepRefSchema,
       expectedExecutionRevision: count.min(1),
+      observedChild: z
+        .strictObject({
+          control: controlSchema,
+          parent: invocationSchema.shape.parent,
+          carriage: invocationSchema.shape.carriage,
+          inspectedStep: stepRefSchema.nullable(),
+        })
+        .optional(),
       state: state.exclude(['intent']),
       outputRefs: z.array(text),
       span: spanSchema.refine((value) => value.endTimeUnixNano !== null),
@@ -656,7 +647,17 @@ export function applyControlExecutionJournal(
     return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent));
   }
   const settlement = input as ExecutionJournalSettlement;
-  const ended = settleExecutionJournalStep(db, settlement);
+  const ended = settleExecutionJournalStep(
+    db,
+    settlement.observedChild
+      ? observedWorkspaceChildSettlement(
+          db,
+          settlement,
+          settlement.observedChild,
+          record.agentSessionId
+        )
+      : settlement
+  );
   if (command.consumeIntentJson) {
     const consume = decodeExecutionJournalIntent(command.consumeIntentJson);
     if (
@@ -665,13 +666,164 @@ export function applyControlExecutionJournal(
       consume.control.kind !== 'consume-receipt' ||
       consume.control.operationId !== ended.control.operationId ||
       !isDeepStrictEqual(consume.inspectedStep, settlement.ref) ||
-      !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage)
+      !isDeepStrictEqual(consume.carriage, storedStep(db, settlement.ref).invocation.carriage) ||
+      (settlement.observedChild &&
+        !matchesObservedChildConsumption(ended.control, settlement.outputRefs[0], consume))
     )
       throw new Error('Receipt consumption conflicts with its original outcome.');
     // The existing request savepoint makes the observed outcome and ACK obligation indivisible.
     writeExecutionJournalIntent(db, consume);
   }
   return encodeExecutionJournalValue(ended);
+}
+
+/** Chooses only the revision again while the admitted Workspace writer owns the transaction. */
+function observedWorkspaceChildSettlement(
+  db: WorkspaceDb,
+  settlement: ExecutionJournalSettlement,
+  original: NonNullable<ExecutionJournalSettlement['observedChild']>,
+  agentSessionId: string
+): ExecutionJournalSettlement {
+  const stored = storedStep(db, settlement.ref);
+  const { root, row, control, invocation, span } = stored;
+  if (
+    row.state !== 'intent' ||
+    root.phase !== 'open' ||
+    settlement.nextPhase !== root.phase ||
+    settlement.terminalCause !== root.terminalCause ||
+    !isDeepStrictEqual(settlement.exclusionRefs, root.exclusionRefs) ||
+    settlement.expectedExecutionRevision > root.revision ||
+    (control.operationId !== null && !observedWorkspaceChildKinds.has(control.kind)) ||
+    control.attemptId === null ||
+    !isDeepStrictEqual(control.authorityRefs, [root.workId, agentSessionId, control.attemptId]) ||
+    !isDeepStrictEqual(control, original.control) ||
+    !isDeepStrictEqual(invocation.parent, original.parent) ||
+    !isDeepStrictEqual(invocation.carriage, original.carriage) ||
+    (original.inspectedStep !== null &&
+      !isDeepStrictEqual(original.inspectedStep.execution.owner, root.ref.owner)) ||
+    row.inspected_execution_id !== (original.inspectedStep?.execution.executionId ?? null) ||
+    row.inspected_step_id !== (original.inspectedStep?.stepId ?? null) ||
+    !isDeepStrictEqual({ ...settlement.span, endTimeUnixNano: null, status: span.status }, span) ||
+    (control.kind === 'consume-receipt' &&
+      !isDeepStrictEqual(settlement.outputRefs, control.inputRefs))
+  )
+    throw new Error('Observed Workspace child settlement conflicts with its original authority.');
+  if (control.operationId === null && !hasAcknowledgedHarnessWait(db, settlement, stored))
+    throw new Error('Observed Harness wait requires its original completed child and receipt.');
+  return { ...settlement, expectedExecutionRevision: root.revision };
+}
+
+/** Workspace wait carriers produced by queueAndWaitForHarnessOperation's successful branch. */
+const harnessWaitOperations = new Map<ExecutionStepControl['kind'], string>([
+  ['open-session', 'session.open'],
+  ['inspect-session', 'session.inspect'],
+  ['deliver-start', 'turn.start'],
+  ['deliver-steer', 'turn.steer'],
+  ['cancel', 'turn.interrupt'],
+  ['inspect-cleanup', 'session.close'],
+]);
+
+/** A wait can rebase only after the one original Harness command and its ACK are complete. */
+function hasAcknowledgedHarnessWait(
+  db: WorkspaceDb,
+  settlement: ExecutionJournalSettlement,
+  wait: ReturnType<typeof storedStep>
+): boolean {
+  const operation = harnessWaitOperations.get(wait.control.kind);
+  const { carriage, parent } = wait.invocation;
+  const [operationId] = settlement.outputRefs;
+  if (
+    settlement.state !== 'completed' ||
+    settlement.outputRefs.length !== 1 ||
+    !operation ||
+    carriage.operation !== `worker.${operation}.wait` ||
+    carriage.bindingRef === null ||
+    carriage.sequence !== null ||
+    parent !== null ||
+    wait.row.parent_step_id !== null ||
+    wait.row.inspected_step_id !== null
+  )
+    return false;
+
+  const execution = settlement.ref.execution;
+  const children = db.sqlite
+    .prepare(`SELECT step_id FROM control_execution_steps
+      WHERE execution_id = ? AND parent_step_id = ? LIMIT 2`)
+    .all(execution.executionId, settlement.ref.stepId) as { step_id: string }[];
+  if (children.length !== 1) return false;
+  const childRef = { execution, stepId: children[0]!.step_id };
+  const child = storedStep(db, childRef);
+  const childCarriage = child.invocation.carriage;
+  const [fingerprint] = child.control.outputRefs;
+  if (
+    child.row.state !== 'completed' ||
+    child.control.kind !== wait.control.kind ||
+    child.control.attemptId !== wait.control.attemptId ||
+    child.control.operationId !== operationId ||
+    childCarriage.operation !== operation ||
+    childCarriage.requestId !== operationId ||
+    childCarriage.sequence === null ||
+    childCarriage.bindingRef !== carriage.bindingRef ||
+    !isDeepStrictEqual(child.control.actor, wait.control.actor) ||
+    !isDeepStrictEqual(child.control.authorityRefs, wait.control.authorityRefs) ||
+    !isDeepStrictEqual(child.control.target, wait.control.target) ||
+    !isDeepStrictEqual(child.invocation.parent, {
+      ref: settlement.ref,
+      deadlineUnixNano: wait.control.deadlineUnixNano,
+    }) ||
+    child.span.parentSpanId !== wait.span.spanId ||
+    child.control.outputRefs.length !== 1 ||
+    fingerprint === undefined ||
+    !/^[a-f0-9]{64}$/.test(fingerprint)
+  )
+    return false;
+
+  const receipts = db.sqlite
+    .prepare(`SELECT step_id FROM control_execution_steps
+      WHERE inspected_execution_id = ? AND inspected_step_id = ? AND execution_id = ?
+      AND json_extract(control_json, '$.kind') = 'consume-receipt' LIMIT 2`)
+    .all(execution.executionId, childRef.stepId, execution.executionId) as { step_id: string }[];
+  if (receipts.length !== 1) return false;
+  const receipt = storedStep(db, { execution, stepId: receipts[0]!.step_id });
+  return (
+    receipt.row.state === 'completed' &&
+    isDeepStrictEqual(receipt.invocation.carriage, childCarriage) &&
+    matchesObservedChildConsumption(
+      child.control,
+      fingerprint,
+      {
+        control: receipt.control,
+        parent: receipt.invocation.parent,
+        parentStepId: receipt.row.parent_step_id,
+      },
+      [fingerprint]
+    )
+  );
+}
+
+/** A consume obligation must carry the same original result and authority in the same savepoint. */
+function matchesObservedChildConsumption(
+  control: ExecutionStepControl,
+  result: string | undefined,
+  consume: Pick<ExecutionJournalIntent, 'control' | 'parent' | 'parentStepId'>,
+  outputRefs: readonly string[] = []
+): boolean {
+  return (
+    control.operationId !== null &&
+    result !== undefined &&
+    consume.parent === null &&
+    consume.parentStepId === null &&
+    isDeepStrictEqual(consume.control, {
+      ...control,
+      kind: 'consume-receipt',
+      target: null,
+      invocationId: consume.control.invocationId,
+      inputRefs: [result],
+      outputRefs,
+      fingerprint: commandInputHash({ child: control.fingerprint, result }),
+      deadlineUnixNano: null,
+    })
+  );
 }
 
 /** Parses known fields while refusing unknown core versions, tags and malformed required content. */
@@ -710,7 +862,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
         value === CORE_CONTAINMENT_EXECUTION_DEFINITION ||
         value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
         value === CORE_REPAIR_EXECUTION_DEFINITION ||
-        value === CORE_SCHEDULER_EXECUTION_DEFINITION
+        value === CORE_SCHEDULER_EXECUTION_DEFINITION ||
+        value === CORE_SCHEDULER_LIFECYCLE_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -870,6 +1023,9 @@ function endedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef): EndedExecut
   };
 }
 
+/** Reads the exact completed or failed Workspace/Core occurrence on its current snapshot. */
+export { endedStep as readExecutionJournalEndedStep };
+
 /** Reads the original linked inspection projection on the deciding connection without an async boundary. */
 export function readExecutionJournalLinkedInspections(
   db: CoreDb | WorkspaceDb,
@@ -956,6 +1112,7 @@ export function writeExecutionJournalIntent(
   const span = spanSchema.parse(input.span);
   if (
     (admission.definitionVersion === CORE_REPAIR_EXECUTION_DEFINITION ||
+      admission.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
       input.carriage.kernelGrant ||
       input.carriage.kernelInput ||
       input.carriage.kernelEvidence ||
@@ -973,6 +1130,13 @@ export function writeExecutionJournalIntent(
         : control.kind !== 'observe' && control.kind !== 'consume-receipt'))
   )
     throw new Error('Input proof is outside its Core scheduler step.');
+  if (
+    input.carriage.schedulerPreparation &&
+    (admission.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+      control.kind !== 'admit' ||
+      input.stepId !== 'claim')
+  )
+    throw new Error('Attempt preparation is outside its original claim.');
   requireKernelExecutionCarriage(admission.definitionVersion, control, input.carriage);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);
@@ -1147,7 +1311,7 @@ const verifiedKernelRelease = Symbol('verified-core-scheduler-release');
 export function settleExecutionJournalStep(
   db: CoreDb | WorkspaceDb,
   input: ExecutionJournalSettlement,
-  releaseAuthority?: typeof verifiedKernelRelease
+  releaseAuthority?: typeof verifiedKernelRelease | typeof verifiedKernelStep
 ): EndedExecutionStep {
   requireWriter(db, input.ref.execution);
   const stored = storedStep(db, input.ref);
@@ -1175,6 +1339,11 @@ export function settleExecutionJournalStep(
   }
   const outputRefs = z.array(text).parse(input.outputRefs);
   const exclusionRefs = z.array(text).parse(input.exclusionRefs);
+  if (
+    stored.root.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION &&
+    releaseAuthority !== verifiedKernelStep
+  )
+    throw new Error('Attempt lifecycle requires its original native decision.');
   const scheduler = stored.root.definitionVersion === CORE_SCHEDULER_EXECUTION_DEFINITION;
   if (scheduler && stored.root.phase === 'closing' && input.nextPhase === 'open')
     throw new Error('A closing Core scheduler execution cannot reopen.');
@@ -1295,9 +1464,16 @@ export function settleExecutionJournalStep(
         .get(input.ref.execution.executionId)
     ).span_json
   );
+  // Preserve the local lifecycle step's observed clock even if wall time moved backward.
+  // Only the enclosing diagnostic span needs a nonnegative duration.
+  const rootEnd =
+    stored.root.definitionVersion === CORE_SCHEDULER_LIFECYCLE_DEFINITION &&
+    span.endTimeUnixNano < stored.root.span.startTimeUnixNano
+      ? stored.root.span.startTimeUnixNano
+      : span.endTimeUnixNano;
   const rootSpan =
     input.nextPhase === 'closed'
-      ? { ...retainedRootSpan, endTimeUnixNano: span.endTimeUnixNano, status: span.status }
+      ? { ...retainedRootSpan, endTimeUnixNano: rootEnd, status: span.status }
       : retainedRootSpan;
   const advanced = db.sqlite
     .prepare(
@@ -1313,6 +1489,127 @@ export function settleExecutionJournalStep(
     );
   if (advanced.changes !== 1) throw new Error('Execution revision conflicts.');
   return endedStep(db, input.ref);
+}
+
+/** Records the original local transition alongside its attempt CAS. */
+export function commitSchedulerAttemptLifecycleStepInDb(
+  db: CoreDb,
+  input: {
+    readonly attemptId: string;
+    readonly actor: ExecutionStepControl['actor'];
+    readonly turnId: string;
+    readonly admissionHash: string;
+    readonly operationId: string | null;
+    readonly timestamp: string;
+    readonly kind:
+      | 'admit'
+      | 'open-session'
+      | 'resolve-setup'
+      | 'deliver-start'
+      | 'observe'
+      | 'cancel'
+      | 'release';
+    readonly preparation?: SchedulerPreparationClaim;
+    readonly outputRefs?: readonly string[];
+    readonly closed?: boolean;
+  }
+): void {
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `scheduler-lifecycle:${input.attemptId}`,
+  };
+  requireWriter(db, execution);
+  const root = input.kind === 'admit' ? null : readRoot(db, execution);
+  const occurrence = input.kind === 'admit' ? 'claim' : String(root!.revision);
+  const invocationId = `${execution.executionId}:${occurrence}`;
+  const timestamp = BigInt(Date.parse(input.timestamp)) * 1_000_000n;
+  const trace = sha256Hex(execution.executionId);
+  const span: ExecutionJournalIntent['span'] = {
+    traceId: trace.slice(0, 32),
+    spanId: sha256Hex(invocationId).slice(0, 16),
+    flags: 0,
+    name: input.kind,
+    kind: 'INTERNAL',
+    startTimeUnixNano: timestamp,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: {
+      name: 'openkit.nanocore.runtime',
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
+    resource: { attributes: [], droppedAttributesCount: 0 },
+  };
+  if (root && (root.fingerprint !== input.admissionHash || root.workId !== input.turnId))
+    throw new Error('Attempt lifecycle conflicts with its original claim.');
+  const admitted = writeExecutionJournalIntent(
+    db,
+    {
+      execution: {
+        ref: execution,
+        workId: input.turnId,
+        definitionVersion: CORE_SCHEDULER_LIFECYCLE_DEFINITION,
+        fingerprint: input.admissionHash,
+        exclusionRefs: [],
+        span: root
+          ? { ...root.span, endTimeUnixNano: null }
+          : { ...span, spanId: trace.slice(32, 48) },
+      },
+      stepId: occurrence,
+      parentStepId: null,
+      parent: null,
+      inspectedStep: null,
+      carriage: {
+        operation: input.kind,
+        requestId: invocationId,
+        sequence: null,
+        bindingRef: null,
+        ...(input.preparation ? { schedulerPreparation: input.preparation } : {}),
+      },
+      control: {
+        definitionVersion: CORE_SCHEDULER_LIFECYCLE_DEFINITION,
+        kind: input.kind,
+        target: null,
+        workId: input.turnId,
+        operationId: input.operationId,
+        attemptId: input.attemptId,
+        invocationId,
+        actor: input.actor,
+        inputRefs: [],
+        outputRefs: [],
+        fingerprint: input.admissionHash,
+        permittingDecisionRef: null,
+        authorityRefs: [],
+        retryDeclarationRef: null,
+        retryPermitted: false,
+        deadlineUnixNano: null,
+        physicalFenceRefs: [],
+      },
+      span,
+    },
+    undefined,
+    verifiedKernelStep
+  );
+  settleExecutionJournalStep(
+    db,
+    {
+      ref: admitted.ref,
+      expectedExecutionRevision: readRoot(db, execution).revision,
+      state: 'completed',
+      outputRefs: input.outputRefs ?? [],
+      span: { ...span, endTimeUnixNano: timestamp, status: { code: 'OK' } },
+      nextPhase: input.closed ? 'closed' : 'open',
+      terminalCause: null,
+      exclusionRefs: [],
+    },
+    verifiedKernelStep
+  );
 }
 
 function requireKernelExecutionCarriage(
@@ -1492,6 +1789,28 @@ function sameKernelAttemptPlacement(left: ExecutionGrant, right: ExecutionGrant)
   );
 }
 
+/** Inspects the original scoped release on a Core reader without replaying the writer. */
+export function inspectKernelExecutionReleaseInDb(
+  db: CoreDb,
+  proposal: ExecutionJournalIntent,
+  grant: ExecutionGrant,
+  expectedRevision: number
+): StorageReceiptLookup<ExecutionStepRef> {
+  const ref = { execution: grant.execution, stepId: proposal.stepId };
+  if (
+    !db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
+      .get(ref.execution.executionId, ref.stepId)
+  )
+    return { state: 'absent' };
+  const original = storedStep(db, ref);
+  return original.row.state === 'completed' &&
+    original.control.kind === 'release' &&
+    original.control.fingerprint === kernelDecisionFingerprint([proposal, grant, expectedRevision])
+    ? { state: 'settled', receipt: ref }
+    : { state: 'conflict' };
+}
+
 /** Uses committed evidence from both owners to remove only the original proved holds. */
 export function releaseKernelExecutionScopesInDb(
   db: CoreDb,
@@ -1516,20 +1835,9 @@ export function releaseKernelExecutionScopesInDb(
     proposal.carriage.kernelEvidence !== undefined
   )
     return { state: 'conflict' };
+  const prior = inspectKernelExecutionReleaseInDb(db, proposal, grant, expectedRevision);
+  if (prior.state !== 'absent') return prior;
   const fingerprint = kernelDecisionFingerprint([proposal, grant, expectedRevision]);
-  const ref = { execution: root.ref, stepId: proposal.stepId };
-  if (
-    db.sqlite
-      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?')
-      .get(root.ref.executionId, proposal.stepId)
-  ) {
-    const original = storedStep(db, ref);
-    return original.row.state === 'completed' &&
-      original.control.kind === 'release' &&
-      original.control.fingerprint === fingerprint
-      ? { state: 'settled', receipt: ref }
-      : { state: 'conflict' };
-  }
   if (root.phase !== 'closing' || root.revision !== expectedRevision) return { state: 'conflict' };
   // Cancellation or acceptance cannot discharge the original input consumption obligation.
   const admitted = db.sqlite
@@ -1705,13 +2013,95 @@ export function readKernelSchedulerGrantInDb(
   return readRetainedKernelSchedulerGrant(db, execution, operationId)?.grant ?? null;
 }
 
+function executionClockAllowsOperation(
+  clock: ExecutionInvocation['clock'],
+  now: bigint,
+  expiry: bigint
+): boolean {
+  if (now < clock.admittedUnixNano || now >= expiry) return false;
+  if (clock.processWitness !== processWitness) return true;
+  const elapsed = process.hrtime.bigint() - clock.admittedMonotonicNano;
+  return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
+}
+
+interface SchedulerPreparationClock {
+  readonly operationId: string | null;
+  readonly actor: ExecutionStepControl['actor'];
+  readonly turnId: string;
+  readonly admissionHash: string;
+  readonly started: bigint;
+  readonly startupDeadline: bigint;
+}
+
+/** Uses the original claim and, once issued, the exact acknowledged lifecycle operation. */
+export function schedulerPreparationClockAllowsOperation(
+  db: CoreDb,
+  attemptId: string,
+  preparation: SchedulerPreparationClock,
+  now: bigint
+): boolean {
+  const execution: ExecutionJournalRef = {
+    owner: { kind: 'server' },
+    executionId: `scheduler-lifecycle:${attemptId}`,
+  };
+  const claim = storedStep(db, { execution, stepId: 'claim' });
+  if (
+    claim.root.definitionVersion !== CORE_SCHEDULER_LIFECYCLE_DEFINITION ||
+    claim.root.phase !== 'open' ||
+    claim.root.workId !== preparation.turnId ||
+    claim.root.fingerprint !== preparation.admissionHash ||
+    claim.control.kind !== 'admit' ||
+    claim.control.operationId !== null ||
+    !claim.invocation.carriage.schedulerPreparation ||
+    claim.span.startTimeUnixNano !== preparation.started
+  )
+    return false;
+
+  const latest = db.sqlite.prepare(`
+    SELECT step_id AS stepId FROM control_execution_steps
+    WHERE execution_id = ? AND json_extract(control_json, '$.kind') = ?
+    ORDER BY ordinal DESC LIMIT 1
+  `);
+  const intentRef = latest.get(execution.executionId, 'deliver-start') as
+    | { stepId: string }
+    | undefined;
+  const observationRef = latest.get(execution.executionId, 'observe') as
+    | { stepId: string }
+    | undefined;
+  const hasOriginalClock = ({ row, control, invocation }: typeof claim) =>
+    row.state === 'completed' &&
+    control.attemptId === attemptId &&
+    control.fingerprint === preparation.admissionHash &&
+    isDeepStrictEqual(control.actor, preparation.actor) &&
+    executionClockAllowsOperation(invocation.clock, now, preparation.startupDeadline);
+  if (preparation.operationId === null)
+    return !intentRef && !observationRef && hasOriginalClock(claim);
+  if (!intentRef || !observationRef) return false;
+  const intent = storedStep(db, { execution, stepId: intentRef.stepId });
+  const observation = storedStep(db, { execution, stepId: observationRef.stepId });
+  if (
+    intent.control.operationId !== preparation.operationId ||
+    observation.control.operationId !== preparation.operationId ||
+    !(claim.row.ordinal < intent.row.ordinal && intent.row.ordinal < observation.row.ordinal) ||
+    !(
+      preparation.started <= intent.span.startTimeUnixNano &&
+      intent.span.startTimeUnixNano <= observation.span.startTimeUnixNano &&
+      observation.span.startTimeUnixNano <= now
+    )
+  )
+    return false;
+
+  return [claim, intent, observation].every(hasOriginalClock);
+}
+
 /** Check the retained anchor for another effect without renewing its original deadline. */
 export function kernelSchedulerGrantClockAllowsOperation(
   db: CoreDb,
   execution: ExecutionJournalRef,
   submitted: boolean,
   now: bigint,
-  deadline: bigint
+  deadline: bigint,
+  preparation?: SchedulerPreparationClock & { readonly operationId: string }
 ): boolean {
   const first = db.sqlite
     .prepare(`
@@ -1720,20 +2110,23 @@ export function kernelSchedulerGrantClockAllowsOperation(
     ORDER BY ordinal LIMIT 1
   `)
     .get(execution.executionId, submitted ? 1 : 0) as { operationId: string } | undefined;
-  const original = first && readRetainedKernelSchedulerGrant(db, execution, first.operationId);
+  // NanoHost preparation effects can already be acknowledged in the generic lifecycle.
+  if (!first)
+    return (
+      !submitted &&
+      preparation !== undefined &&
+      schedulerPreparationClockAllowsOperation(db, execution.executionId, preparation, now)
+    );
+  const original = readRetainedKernelSchedulerGrant(db, execution, first.operationId);
   if (!original) return false;
   const { control, invocation } = storedStep(db, { execution, stepId: original.stepId });
-  const { clock } = invocation;
   const expiry =
     original.grant.deadline === null &&
     control.deadlineUnixNano !== null &&
     control.deadlineUnixNano < deadline
       ? control.deadlineUnixNano
       : deadline;
-  if (now < clock.admittedUnixNano || now >= expiry) return false;
-  if (clock.processWitness !== processWitness) return true;
-  const elapsed = process.hrtime.bigint() - clock.admittedMonotonicNano;
-  return elapsed >= 0n && clock.admittedUnixNano + elapsed < expiry;
+  return executionClockAllowsOperation(invocation.clock, now, expiry);
 }
 
 /** Retains one grant in the native transaction that decides access to the original operation. */

@@ -414,16 +414,6 @@ The control-store foundation in `src/storage/control-store.ts` provides synchron
 
 `v0.2.0` requires a fresh Data Root installation. Keep the predecessor image and its verified cold Data Root archive together for operator recovery.
 
-A deployment whose NanoHost runtime records predate physical Epoch witnesses requires a separate one-time stopped Core/Host cutover:
-
-```bash
-pnpm --filter @openkit/nanocore run physical-epoch:migrate -- \
-  --data-root /absolute/path/to/openkit-data \
-  --backup-root /absolute/path/to/openkit-pre-witness-backup
-```
-
-First prove the predecessor NanoHost effect domain fully stopped and preserve its Image Store and retained Worker volumes. The converter uses the existing cold-backup mechanism, refuses a running Core or repeat conversion, and atomically adds the current RuntimeTarget witness and immutable Sandbox/backend-session origins. Converted origins are `pre-witness`, never reusable live handles or defaults for normal writes; readiness starts cleared. Retain `server/migrations/physical-epoch-cutover.json` as evidence and the external backup for recovery. Deploy the matched Core and Host before normal startup; follow the [operator procedure](../../skills/openkit-ops/references/nanocore-operations.en.md#convert-a-pre-witness-deployment). Pending Tasks retain ordinary interrupted/unknown recovery rather than replay.
-
 If an existing authoritative Core, User, or Workspace SQLite database fails its boot integrity check, NanoCore stops before product admission, bootstrap credential issuance, or listener binding and leaves the original file unchanged. Derived indexes remain disposable and rebuildable.
 
 In local mode, NanoCore allocates one canonical User only on a fresh data root and uses the unique recorded local User on later boots. Missing or ambiguous local User authority on an initialized root stops boot. Local requests use that exact recorded identity and need no auth header. Local mode binds to `127.0.0.1` by default; set `OPENKIT_BIND_HOST` to override the HTTP bind host.

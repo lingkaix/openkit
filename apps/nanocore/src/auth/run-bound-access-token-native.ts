@@ -11,7 +11,6 @@ import {
   EXECUTION_ATTEMPT_BUDGET_MS,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import { resolveLiveNanoHostAttemptLease } from '../runtime/nanohost-attempt-records.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { ControlAccessTokenRunSubject } from '../storage/access-token-verification-codecs.js';
@@ -211,11 +210,19 @@ export function revokeRunBoundAccessTokensInDb(db: CoreDb, attemptId: string): v
     .run(now, attemptId);
 }
 
+type RunBoundNativeLiveness = (subject: ControlAccessTokenRunSubject, now: string) => boolean;
+
 /** Exact native source / immutable AEP / uniquely confirmed protected delivery, never a claimed presenter. */
-function confirmedSource(db: CoreDb, token: OpenKitAccessTokenRecord) {
+function confirmedSource(
+  db: CoreDb,
+  token: OpenKitAccessTokenRecord,
+  native?: RunBoundNativeLiveness
+) {
   const subject = token.runSubject;
+  const now = new Date().toISOString();
   if (
     !subject ||
+    !native ||
     token.status !== 'active' ||
     token.scope !== 'workspace' ||
     token.workspaceIds.length ||
@@ -224,7 +231,7 @@ function confirmedSource(db: CoreDb, token: OpenKitAccessTokenRecord) {
     token.issuerRef?.kind !== 'user' ||
     token.issuerRef.id !== subject.responsibleUserId ||
     !isCanonicalUserActive(db, subject.responsibleUserId) ||
-    token.expiresAt <= new Date().toISOString()
+    token.expiresAt <= now
   )
     return null;
   const plan = getVaultInjectionPlan(db, subject.planId);
@@ -236,11 +243,10 @@ function confirmedSource(db: CoreDb, token: OpenKitAccessTokenRecord) {
     source.grant.grantId !== subject.grantId ||
     source.reference.referenceId !== subject.referenceId ||
     source.reference.currentVersion !== subject.materialVersion ||
-    (source.grant.expiresAt !== null && source.grant.expiresAt <= new Date().toISOString()) ||
-    resolveLiveNanoHostAttemptLease(db, { attemptId: subject.attemptId, lineage: subject.lineage })
-      .status !== 'accepted'
+    (source.grant.expiresAt !== null && source.grant.expiresAt <= now)
   )
     return null;
+  if (!native(subject, now)) return null;
   const original = findNamedAgentEnvironmentPackageSnapshotAtDataRoot(
     db.dataRoot,
     subject.lineage.workspaceId,
@@ -293,9 +299,13 @@ function confirmedSource(db: CoreDb, token: OpenKitAccessTokenRecord) {
 }
 
 /** Called only after ordinary exact-secret/hash authentication; it never authorizes useful operations. */
-export function observeRunBoundAccessTokenInDb(db: CoreDb, token: OpenKitAccessTokenRecord): void {
+export function observeRunBoundAccessTokenInDb(
+  db: CoreDb,
+  token: OpenKitAccessTokenRecord,
+  native?: RunBoundNativeLiveness
+): void {
   assertControlProductWriter(db.sqlite);
-  const source = confirmedSource(db, token);
+  const source = confirmedSource(db, token, native);
   if (!source) {
     const subject = token.runSubject;
     if (!subject) return;
@@ -411,14 +421,15 @@ export function observeRunBoundAccessTokenInDb(db: CoreDb, token: OpenKitAccessT
 export function verifyRunBoundSensorInDb(
   db: CoreDb,
   row: unknown,
-  lineage: WorkerLineage
+  lineage: WorkerLineage,
+  native?: RunBoundNativeLiveness
 ): boolean {
   if (!row) return false;
   const event = auditEventFromRow(row);
   const tokenId =
     event.authentication?.credentialKind === 'token' ? event.authentication.credentialId : null;
   const token = tokenId ? getOpenKitAccessTokenRecord(db, tokenId) : null;
-  const source = token && confirmedSource(db, token);
+  const source = token && confirmedSource(db, token, native);
   return !!(
     source &&
     token?.runSubject &&

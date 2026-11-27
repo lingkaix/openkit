@@ -1119,7 +1119,7 @@ mod tests {
                         let projection = projection.clone();
                         let done_tx = done_tx.clone();
                         async move {
-                            let result = projection.forward(family, request, respond, "binding").await;
+                            let result = projection.forward(family, request, respond, "binding", "sandbox-binding").await;
                             done_tx.send(result).unwrap();
                         }
                     }).await

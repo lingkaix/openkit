@@ -134,7 +134,8 @@ async fn assert_native_tls_ready(fragment: bool) {
         },
     )
     .expect("exclusive fixture CA trust");
-    let (context, mut presentation) = super::tests::test_outer_credentials();
+    let (mut context, mut presentation) = super::tests::test_outer_credentials();
+    context.deployment_id = input["deploymentId"].as_str().unwrap().to_owned();
     if let CredentialPresentationOutcome::Presented { secret, .. } = &mut presentation {
         *secret = input["secret"].as_str().unwrap().to_owned();
     }
@@ -423,7 +424,8 @@ async fn assert_native_tls_verification_rejected(
 ) {
     let origin = format!("https://{host}:{}", input["port"].as_u64().unwrap());
     let transport = prepare_verified_session_transport(&origin, &trust).unwrap();
-    let (context, mut presentation) = super::tests::test_outer_credentials();
+    let (mut context, mut presentation) = super::tests::test_outer_credentials();
+    context.deployment_id = input["deploymentId"].as_str().unwrap().to_owned();
     if let CredentialPresentationOutcome::Presented { secret, .. } = &mut presentation {
         *secret = input["secret"].as_str().unwrap().to_owned();
     }

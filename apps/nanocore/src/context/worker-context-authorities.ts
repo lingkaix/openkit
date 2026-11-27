@@ -20,6 +20,7 @@ import {
   readSchedulerAdmissionPagesForWorkspace,
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { readNanoHostObservation } from '../storage/nanohost-observation-reader.js';
 import { verifyTurnFileInput } from '../storage/workspace-file-records.js';
 import {
   listWorkspaceInputSnapshots,
@@ -281,7 +282,11 @@ function workerContextAuthoritySteps(
         if (leases.length !== 1) {
           return null;
         }
-        const session = getWorkerBackendSession(coreDb, leases[0]!.attemptId);
+        const observed = readNanoHostObservation(coreDb.dataRoot, (sqlite) =>
+          getWorkerBackendSession({ sqlite }, leases[0]!.attemptId)
+        );
+        if (observed.state !== 'ready') return null;
+        const session = observed.value;
         if (
           !session ||
           session.workspaceId !== workspaceId ||

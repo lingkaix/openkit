@@ -13,13 +13,14 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import * as operationRoutes from '../operation-json-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { transitionTestNativeRuntimeTargetFields } from '../test-support/native-environment.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
-import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import * as sessionDispatch from './nanohost-session-dispatch.js';
 
 it('keeps the default App Login lifecycle uninstalled, unsupported and unavailable', async () => {
@@ -83,7 +84,7 @@ it('keeps the default App Login lifecycle uninstalled, unsupported and unavailab
       identityId: 'dormant-login',
       targetId: 'dormant-login',
     };
-    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const allocated = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -121,7 +122,7 @@ it('keeps the default App Login lifecycle uninstalled, unsupported and unavailab
     await dispatch.readiness(
       physicalConnection,
       Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-      { coreDb, ...target }
+      { coreDb, ...target, nativeStorage: (await openAdmittedTestNanoHost(coreDb)).value }
     );
     expect(authority.mayCarryWork(physicalConnection)).toBe(true);
     const unavailable = await post('/worker-control/harness/login');

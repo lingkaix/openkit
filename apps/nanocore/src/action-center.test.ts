@@ -7,6 +7,7 @@ import {
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -22,8 +23,15 @@ import {
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  serverStoragePath,
+  type WorkspaceDb,
+} from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { openAdmittedTestNanoHost } from './test-support/admitted-nanohost.js';
 import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -57,7 +65,8 @@ function createCoreDb(): CoreDb {
  */
 function createAuthorizedCoreApp(
   coreDb: CoreDb,
-  store: ReturnType<typeof createDemoStore>
+  store: ReturnType<typeof createDemoStore>,
+  nanoHostStorage?: Awaited<ReturnType<typeof openAdmittedTestNanoHost>>
 ): ReturnType<typeof createApp> {
   ensureLocalUser(coreDb);
   for (const workspace of store.listWorkspaces()) {
@@ -67,7 +76,11 @@ function createAuthorizedCoreApp(
       workspaceId: workspace.id,
     });
   }
-  return createAppWithWorkspaceAuthority({ coreDb, store });
+  return createAppWithWorkspaceAuthority({
+    coreDb,
+    store,
+    ...(nanoHostStorage ? { nanoHostStorage } : {}),
+  });
 }
 
 /** Installs one failed-health catalog summary after createApp wires the live projection. */
@@ -1578,8 +1591,12 @@ describe('action center app API', () => {
       }
     );
 
+    const nanoHostStorage = await openAdmittedTestNanoHost(coreDb);
+    const nativeDb = new Database(serverStoragePath(coreDb.dataRoot, 'nanohost'), {
+      fileMustExist: true,
+    });
     try {
-      coreDb.sqlite
+      nativeDb
         .prepare(
           `
           INSERT INTO worker_control_rejected_evidence (
@@ -1615,8 +1632,9 @@ describe('action center app API', () => {
           'Worker control request lineage does not match the active lease.',
           timestamp
         );
+      const app = createAuthorizedCoreApp(coreDb, store, nanoHostStorage);
       const queueEntryId = 'queue_action_center';
-      createSchedulerAdmissionEntry(coreDb, {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         queueEntryId,
@@ -1628,22 +1646,24 @@ describe('action center app API', () => {
         profileRef: 'agent_codex_host',
         now: () => timestamp,
       });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
-        )
-        .run(queueEntryId);
-      coreDb.sqlite
-        .prepare(`INSERT INTO scheduler_execution_attempts
-        (attempt_id, queue_entry_id, backend_id, workspace_id, thread_id, turn_id,
-         agent_session_id, input_ref, binding_ref, preparation_input_json, phase, disposition,
-         operation_id, terminal_cause, created_at, updated_at)
-        VALUES ('attempt_00000000-0000-7fc1-bf4d-d1a128657cd8', ?, 'nanohost', ?, ?, ?,
-          'as_00000000-0000-7f85-a231-397f40994baa', 'pkg_orphan', 'binding_action_center', '{}', 'closing', 'unknown',
-          'operation_action_center', 'native-liveness-expired', ?, ?)`)
-        .run(queueEntryId, DEMO_WORKSPACE_ID, thread.id, turn.id, timestamp, timestamp);
-
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const { recordTestExecutionAttempt } = await import('./test-support/execution-attempt.js');
+      const { markSchedulerExecutionAttemptClosing } = await import(
+        './runtime/execution-attempt-records.js'
+      );
+      const attempt = recordTestExecutionAttempt(coreDb, {
+        entry,
+        attemptId: 'attempt_00000000-0000-7fc1-bf4d-d1a128657cd8',
+        agentSessionId: 'as_00000000-0000-7f85-a231-397f40994baa',
+        inputRef: 'pkg_orphan',
+        bindingRef: 'binding_action_center',
+        operationId: 'operation_action_center',
+        now: () => timestamp,
+      });
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: attempt.attemptId,
+        cause: 'native-liveness-expired',
+        now: () => timestamp,
+      });
       const res = await app.request(
         ...operationRequest(
           'attention.list',
@@ -1689,7 +1709,17 @@ describe('action center app API', () => {
       });
       expect(JSON.stringify(orphan)).not.toContain('as_00000000-0000-7f85-a231-397f40994baa');
       expect(orphan?.source).not.toHaveProperty('agentSessionId');
+
+      await shutdownControlStoreWorkerClient();
+      const unavailable = await app.request(
+        ...operationRequest('attention.list', { workspaceId: DEMO_WORKSPACE_ID }, undefined)
+      );
+      expect(unavailable.status).toBe(200);
+      const remaining = ListHumanAttentionResponseSchema.parse(await unavailable.json()).items;
+      expect(remaining.find((row) => row.id === orphan!.id)).toEqual(orphan);
+      expect(remaining.some((row) => row.id === rejection!.id)).toBe(false);
     } finally {
+      nativeDb.close();
       coreDb.sqlite.close();
     }
   });

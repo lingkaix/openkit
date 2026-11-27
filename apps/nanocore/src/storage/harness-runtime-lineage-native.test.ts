@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import {
   appendNanoHostRuntimeCheckVersion,
@@ -8,11 +9,8 @@ import {
   initializeNanoHostRuntimeCheckVersions,
   openNanoHostAgentSessionBinding,
 } from '../runtime/nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
@@ -31,7 +29,7 @@ const identity = {
 type Initialize = Parameters<typeof initializeNanoHostRuntimeCheckVersions>[1];
 type Version = NonNullable<Initialize['versions']>[number];
 
-// This is an L2 composition of the real Harness facade, native writer, and retained Core reader.
+// This is an L2 composition of the real Harness facade, admitted Native writer, and retained Core Vault reader.
 // No Host command is delivered. A comparison entry precedes injection and is not a receipt.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
@@ -46,14 +44,20 @@ async function fixture() {
   const db = openCoreDb(root);
   handles.push(db);
   applyMigrations(db);
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
+  const nanoHost = openNanoHostTestOwner();
+  const target = await nanoHost.transition({
+    kind: 'allocate',
     deploymentId: 'lineage-deployment',
     identityId: 'lineage-target',
     targetId: 'lineage-target',
     observedAt: timestamp,
   });
-  await upsertNanoHostRuntimeTarget(db, {
-    ...target,
+  await nanoHost.transition({
+    kind: 'ready',
+    deploymentId: target!.deploymentId,
+    identityId: target!.identityId,
+    targetId: target!.targetId,
+    connectionGeneration: target!.connectionGeneration,
     freshEmpty: true,
     predecessorFenced: true,
     ready: true,
@@ -101,7 +105,7 @@ async function fixture() {
     backendCapabilityRequirement: 'runtime-env',
     now: () => timestamp,
   });
-  await createNanoHostHarnessRuntime(db, {
+  await createNanoHostHarnessRuntime(nanoHost.storage.owner, {
     maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: '0.153.4',
@@ -114,10 +118,10 @@ async function fixture() {
     sandboxCompatibilityKey: 'a'.repeat(64),
     sandboxIntegrationBindingRef: 'lineage-integration',
     sandboxRuntimeId: 'lineage-sandbox',
-    runtimeTargetId: target.targetId,
+    runtimeTargetId: target!.targetId,
     timestamp,
   });
-  await openNanoHostAgentSessionBinding(db, {
+  await openNanoHostAgentSessionBinding(nanoHost.storage.owner, {
     ...identity,
     agentSessionCompatibilityKey: 'b'.repeat(64),
     effectiveSetupGeneration: 1,
@@ -144,22 +148,23 @@ async function fixture() {
   // These identifiers describe pending stages. No completed injection receipt is fabricated.
   const replacement: Version = { ...file, receiptId: 'lineage-pending-replacement-receipt' };
   db.sqlite.pragma('query_only = ON');
-  return { db, root, file, env, replacement };
+  return { db, nanoHost, file, env, replacement };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /** Observes complete owner rows, including columns outside the permitted mutation. */
-function tuple(db: CoreDb) {
+function tuple({ db, nanoHost }: Fixture) {
+  const { sqlite } = nanoHost;
   return {
-    bindings: db.sqlite
+    bindings: sqlite
       .prepare(
         'SELECT * FROM agent_session_runtime_bindings ORDER BY agent_session_runtime_binding_id'
       )
       .all() as Record<string, unknown>[],
-    harness: db.sqlite
+    harness: sqlite
       .prepare('SELECT * FROM harness_instance_records ORDER BY harness_instance_id')
       .all(),
-    sandbox: db.sqlite
+    sandbox: sqlite
       .prepare('SELECT * FROM sandbox_runtime_records ORDER BY sandbox_runtime_id')
       .all(),
     references: db.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all(),
@@ -170,9 +175,9 @@ function tuple(db: CoreDb) {
 }
 
 /** Reads the exact stored value, including original whitespace and descriptive additions. */
-function retained(db: CoreDb): string | null {
+function retained({ nanoHost }: Fixture): string | null {
   return (
-    db.sqlite
+    nanoHost.sqlite
       .prepare(
         'SELECT runtime_env_check_versions_json AS value FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
       )
@@ -188,39 +193,29 @@ function withValue(before: ReturnType<typeof tuple>, value: string | null) {
   };
 }
 
-/** Stops the real native writer and reopens the exact same physical database without migration. */
+/** Reopens both admitted Native handles before reading back the exact rows. */
 async function coldTuple(f: Fixture) {
-  await shutdownControlStoreWorkerClient();
-  f.db.sqlite.close();
-  const reopened = openCoreDb(f.root);
-  handles.push(reopened);
-  reopened.sqlite.pragma('query_only = ON');
-  return tuple(reopened);
+  await f.nanoHost.reopen();
+  return tuple(f);
 }
 
-/** Installs retained-data or SQL fault evidence only while the native writer is stopped. */
-async function fault(f: Fixture, apply: () => void) {
-  await shutdownControlStoreWorkerClient();
-  f.db.sqlite.pragma('query_only = OFF');
-  try {
-    apply();
-  } finally {
-    f.db.sqlite.pragma('query_only = ON');
-  }
+/** Installs retained-data or SQL fault evidence in the fixture's isolated Native file. */
+function fault(f: Fixture, apply: (sqlite: Database.Database) => void) {
+  f.nanoHost.setup(apply);
 }
 
-it('initializes the exact original tuple through native Core while Main is query-only, then reopens it', async () => {
+it('initializes the exact original tuple through the Native owner while Main is read-only, then reopens it', async () => {
   const f = await fixture();
-  const before = tuple(f.db);
-  expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+  const before = tuple(f);
+  expect(f.nanoHost.sqlite.readonly).toBe(true);
   const versions = [f.env, f.file];
-  await initializeNanoHostRuntimeCheckVersions(f.db, {
+  await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
     ...identity,
-    expectedVersionsJson: retained(f.db),
+    expectedVersionsJson: retained(f),
     versions,
   });
   const expected = withValue(before, JSON.stringify(versions));
-  expect(tuple(f.db)).toEqual(expected);
+  expect(tuple(f)).toEqual(expected);
   // Core Vault forbids a receipt before a proven sink completion.
   expect(expected.receipts).toEqual([]);
   expect(await coldTuple(f)).toEqual(expected);
@@ -231,14 +226,14 @@ it.each([
   { label: 'empty array', versions: [] },
 ] as const)('retains the original $label initialization value', async ({ versions }) => {
   const f = await fixture();
-  const before = tuple(f.db);
-  await initializeNanoHostRuntimeCheckVersions(f.db, {
+  const before = tuple(f);
+  await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
     ...identity,
-    expectedVersionsJson: retained(f.db),
+    expectedVersionsJson: retained(f),
     versions: versions === null ? null : [],
   });
   const expected = withValue(before, versions === null ? null : '[]');
-  expect(tuple(f.db)).toEqual(expected);
+  expect(tuple(f)).toEqual(expected);
   expect(await coldTuple(f)).toEqual(expected);
 });
 
@@ -246,13 +241,13 @@ it.each(['initialize', 'append'] as const)(
   '%s refuses a stale exact value and each mismatched binding identity without row changes',
   async (stage) => {
     const f = await fixture();
-    await initializeNanoHostRuntimeCheckVersions(f.db, {
+    await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
       ...identity,
-      expectedVersionsJson: retained(f.db),
+      expectedVersionsJson: retained(f),
       versions: [f.file],
     });
-    const current = retained(f.db)!;
-    const before = tuple(f.db);
+    const current = retained(f)!;
+    const before = tuple(f);
     // Equivalent parsed JSON is still a stale expected string. No normalization can authorize the CAS.
     const mismatches = [
       { ...identity, expectedVersionsJson: ` ${current}` },
@@ -271,13 +266,19 @@ it.each(['initialize', 'append'] as const)(
     for (const input of mismatches) {
       const operation =
         stage === 'initialize'
-          ? initializeNanoHostRuntimeCheckVersions(f.db, { ...input, versions: [f.env] })
-          : appendNanoHostRuntimeCheckVersion(f.db, { ...input, version: f.replacement });
+          ? initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
+              ...input,
+              versions: [f.env],
+            })
+          : appendNanoHostRuntimeCheckVersion(f.nanoHost.storage.owner, {
+              ...input,
+              version: f.replacement,
+            });
       // Harness translates known domain refusals to Error(message); it exposes no commit property.
       await expect(operation).rejects.toThrow(
         'Original credential binding lineage is unavailable.'
       );
-      expect(tuple(f.db)).toEqual(before);
+      expect(tuple(f)).toEqual(before);
     }
     expect(await coldTuple(f)).toEqual(before);
   }
@@ -285,9 +286,9 @@ it.each(['initialize', 'append'] as const)(
 
 it('appends one replacement after every original entry and preserves descriptive retained additions', async () => {
   const f = await fixture();
-  await initializeNanoHostRuntimeCheckVersions(f.db, {
+  await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
     ...identity,
-    expectedVersionsJson: retained(f.db),
+    expectedVersionsJson: retained(f),
     versions: [f.env, f.file],
   });
   const original = [
@@ -299,25 +300,25 @@ it('appends one replacement after every original entry and preserves descriptive
   ];
   // Saved descriptive additions have no fresh authority. All known lineage fields came from owners.
   const raw = JSON.stringify(original, null, 2);
-  await fault(f, () => {
-    f.db.sqlite
+  fault(f, (sqlite) => {
+    sqlite
       .prepare(
         'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
       )
       .run(raw, identity.agentSessionRuntimeBindingId);
   });
-  const before = tuple(f.db);
-  await appendNanoHostRuntimeCheckVersion(f.db, {
+  const before = tuple(f);
+  await appendNanoHostRuntimeCheckVersion(f.nanoHost.storage.owner, {
     ...identity,
     expectedVersionsJson: raw,
     version: f.replacement,
   });
   const expectedValue = JSON.stringify([...original, f.replacement]);
-  expect(JSON.parse(retained(f.db)!)).toEqual([...original, f.replacement]);
+  expect(JSON.parse(retained(f)!)).toEqual([...original, f.replacement]);
   const expected = withValue(before, expectedValue);
-  expect(tuple(f.db)).toEqual(expected);
+  expect(tuple(f)).toEqual(expected);
   // Exact six-field records plus one target contain references only; no credential value is an input.
-  expect(Object.keys(JSON.parse(retained(f.db)!)[2]).sort()).toEqual(
+  expect(Object.keys(JSON.parse(retained(f)!)[2]).sort()).toEqual(
     ['grantId', 'materialVersion', 'planId', 'receiptId', 'targetPath', 'vaultReferenceId'].sort()
   );
   expect(expected.receipts).toEqual([]);
@@ -329,73 +330,73 @@ it.each(['initialize', 'append'] as const)(
   async (stage) => {
     const f = await fixture();
     if (stage === 'append')
-      await initializeNanoHostRuntimeCheckVersions(f.db, {
+      await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
         ...identity,
-        expectedVersionsJson: retained(f.db),
+        expectedVersionsJson: retained(f),
         versions: [f.file],
       });
-    const before = tuple(f.db);
-    const expectedVersionsJson = retained(f.db);
-    await fault(f, () =>
-      f.db.sqlite.exec(`CREATE TRIGGER fail_runtime_lineage
+    const before = tuple(f);
+    const expectedVersionsJson = retained(f);
+    fault(f, (sqlite) =>
+      sqlite.exec(`CREATE TRIGGER fail_runtime_lineage
     AFTER UPDATE OF runtime_env_check_versions_json ON agent_session_runtime_bindings
     BEGIN SELECT RAISE(ABORT, 'runtime lineage SQL fault'); END`)
     );
     const operation =
       stage === 'initialize'
-        ? initializeNanoHostRuntimeCheckVersions(f.db, {
+        ? initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
             ...identity,
             expectedVersionsJson,
             versions: [f.file],
           })
-        : appendNanoHostRuntimeCheckVersion(f.db, {
+        : appendNanoHostRuntimeCheckVersion(f.nanoHost.storage.owner, {
             ...identity,
             expectedVersionsJson: expectedVersionsJson!,
             version: f.replacement,
           });
     // This is a real SQLite error on the native writer, not a fabricated domain result or Host fault.
-    await expect(operation).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
-    expect(tuple(f.db)).toEqual(before);
+    await expect(operation).rejects.toMatchObject({ code: 'SQLITE_CONSTRAINT_TRIGGER' });
+    expect(tuple(f)).toEqual(before);
     expect(await coldTuple(f)).toEqual(before);
   }
 );
 
 it('refuses an unknown retained binding schema instead of rewriting its closed core', async () => {
   const f = await fixture();
-  await fault(f, () =>
-    f.db.sqlite
+  fault(f, (sqlite) =>
+    sqlite
       .prepare(
         'UPDATE agent_session_runtime_bindings SET schema_version = ? WHERE agent_session_runtime_binding_id = ?'
       )
       .run(999, identity.agentSessionRuntimeBindingId)
   );
-  const before = tuple(f.db);
+  const before = tuple(f);
   await expect(
-    initializeNanoHostRuntimeCheckVersions(f.db, {
+    initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
       ...identity,
-      expectedVersionsJson: retained(f.db),
+      expectedVersionsJson: retained(f),
       versions: [f.file],
     })
   ).rejects.toThrow();
-  expect(tuple(f.db)).toEqual(before);
+  expect(tuple(f)).toEqual(before);
   expect(await coldTuple(f)).toEqual(before);
 });
 
 it('rejects credential material and unknown command fields without retaining them', async () => {
   const f = await fixture();
-  const before = tuple(f.db);
+  const before = tuple(f);
   const attemptedMaterial = 'synthetic-credential-material-that-must-not-be-retained';
   const malformed = { ...f.file, credentialValue: attemptedMaterial };
   // The private command is authority-bearing and must refuse unknown fields (Contract Evolution).
   await expect(
-    initializeNanoHostRuntimeCheckVersions(f.db, {
+    initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
       ...identity,
-      expectedVersionsJson: retained(f.db),
+      expectedVersionsJson: retained(f),
       versions: [malformed],
     })
   ).rejects.toThrow();
-  expect(tuple(f.db)).toEqual(before);
-  expect(JSON.stringify(tuple(f.db))).not.toContain(attemptedMaterial);
+  expect(tuple(f)).toEqual(before);
+  expect(JSON.stringify(tuple(f))).not.toContain(attemptedMaterial);
   expect(await coldTuple(f)).toEqual(before);
 });
 
@@ -403,9 +404,9 @@ it.each(['missing target', 'two targets', 'invalid version'] as const)(
   'append refuses retained closed-core damage: %s',
   async (damage) => {
     const f = await fixture();
-    await initializeNanoHostRuntimeCheckVersions(f.db, {
+    await initializeNanoHostRuntimeCheckVersions(f.nanoHost.storage.owner, {
       ...identity,
-      expectedVersionsJson: retained(f.db),
+      expectedVersionsJson: retained(f),
       versions: [f.file],
     });
     const damaged = { ...f.file } as Record<string, unknown>;
@@ -413,22 +414,22 @@ it.each(['missing target', 'two targets', 'invalid version'] as const)(
     if (damage === 'two targets') damaged.targetEnvVarName = 'SYNTHETIC_SERVICE_TOKEN';
     if (damage === 'invalid version') damaged.materialVersion = 0;
     const raw = JSON.stringify([damaged]);
-    await fault(f, () =>
-      f.db.sqlite
+    fault(f, (sqlite) =>
+      sqlite
         .prepare(
           'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
         )
         .run(raw, identity.agentSessionRuntimeBindingId)
     );
-    const before = tuple(f.db);
+    const before = tuple(f);
     await expect(
-      appendNanoHostRuntimeCheckVersion(f.db, {
+      appendNanoHostRuntimeCheckVersion(f.nanoHost.storage.owner, {
         ...identity,
         expectedVersionsJson: raw,
         version: f.replacement,
       })
     ).rejects.toThrow('Original credential binding lineage is unavailable.');
-    expect(tuple(f.db)).toEqual(before);
+    expect(tuple(f)).toEqual(before);
     expect(await coldTuple(f)).toEqual(before);
   }
 );

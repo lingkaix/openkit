@@ -30,8 +30,11 @@ import {
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import { OperationError } from '../operation-error-core.js';
-import type { ControlProductOwner } from './control-store-product-records.js';
-import { getWorkspaceProductReadHandle } from './control-store-product-records.js';
+import {
+  type ControlProductOwner,
+  ControlProductPreconditionError,
+  getWorkspaceProductReadHandle,
+} from './control-store-product-records.js';
 import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
 import {
@@ -1725,13 +1728,12 @@ export function applyControlWorkObservation(
       : { ...candidate, workerSequence: input.workerSequence }
   );
   const candidateBytes = Buffer.byteLength(candidateText);
-  if (!existing && candidateBytes > NATIVE_OBSERVATION_BYTES)
-    throw new Error('Observation metadata exceeds the native bound');
+  if (!existing) assertControlObservationRecordBound(candidateText);
   if (
     candidate.type === 'turn.reap' &&
     (['pending', 'running'].includes(binding.turn.status) ||
       !binding.turn.completedAt ||
-      candidate.ts !== binding.turn.completedAt ||
+      candidate.ts !== reapCompletionClock(binding.turn.completedAt) ||
       candidate.id !== `turn.reap:${input.turnId}`)
   )
     throw new Error('turn.reap requires the native terminal Turn in the same transition');
@@ -1819,8 +1821,7 @@ export function applyControlWorkObservation(
   }
   // The caller's savepoint rolls back the manifest and both rows on any bound or SQL failure.
   const insert = (record: WorkObservationRecord, text: string): void => {
-    if (Buffer.byteLength(text) > NATIVE_OBSERVATION_BYTES)
-      throw new Error('Observation metadata exceeds the native bound');
+    assertControlObservationRecordBound(text);
     // Refuse an unknown required declaration even when the known-field parser would strip it.
     decodeControlObservation(
       {
@@ -1863,16 +1864,30 @@ export interface ControlTurnReapInput {
   readonly inferredBy: string;
 }
 
-/** Prepares ordinary terminal evidence from native authority, preserving the first snapshot despite late observations. */
-export function prepareControlTurnReap(
+/**
+ * Reads one Turn's reap dependency through its native owner: capture coverage, any retained reap,
+ * and the bounded observation prefix with its cutoff, each page with its own sequence, manifest and
+ * lineage checks. It writes nothing, so a Boot walk can prove a terminal's reap before its first
+ * write; the terminal transition still reads it again inside its own SQL transaction.
+ *
+ * @returns Undefined when the Turn retains no capture coverage and no observation.
+ * @throws When the retained coverage, reap identity or observation history refuses a reap.
+ */
+export function readControlTurnReapDependency(
   sqlite: Database.Database,
   owner: ControlProductOwner,
-  input: ControlTurnReapInput
-): ControlWorkObservationInput | null {
+  input: { readonly threadId: string; readonly turnId: string }
+):
+  | {
+      readonly binding: ReturnType<typeof readControlWorkObservationTurnBinding>;
+      readonly existing: WorkObservationRecord | undefined;
+      readonly unresolvedCalls: { corr: string; type: string; name: string | null; ts: string }[];
+      readonly lastObservedTs: string | null;
+      readonly truncation: ObservationTruncation | undefined;
+    }
+  | undefined {
   if (!sqlite.inTransaction)
-    throw new Error('Native reap preparation requires the owning SQL transaction');
-  z.string().min(1).parse(input.reason);
-  z.string().min(1).parse(input.inferredBy);
+    return sqlite.transaction(() => readControlTurnReapDependency(sqlite, owner, input))();
   const binding = readControlWorkObservationTurnBinding(sqlite, owner, input);
   if (!binding.coverage) {
     if (
@@ -1882,16 +1897,14 @@ export function prepareControlTurnReap(
         .get(input.turnId)
     )
       throw new Error('recovery_required: missing capture coverage for native observations');
-    return null;
+    return undefined;
   }
-  if (['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt)
-    throw new Error('turn.reap requires the native terminal Turn in the same transition');
   const id = `turn.reap:${input.turnId}`;
   const existing = readControlWorkObservation(sqlite, owner, { ...input, id });
   if (existing) {
     if (existing.type !== 'turn.reap')
       throw new Error('recovery_required: turn.reap identity conflict');
-    return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
+    return { binding, existing, unresolvedCalls: [], lastObservedTs: null, truncation: undefined };
   }
   const cutoff = binding.turn.observationCutoff;
   const prefix = foldObservationPrefix(sqlite, owner, input, cutoff?.retainedSequence);
@@ -1902,24 +1915,111 @@ export function prepareControlTurnReap(
   )
     throw new Error('recovery_required: inconsistent native observation cutoff boundary');
   return {
+    binding,
+    existing: undefined,
+    unresolvedCalls: [...prefix.calls.values()],
+    lastObservedTs: prefix.lastObservedTs,
+    truncation,
+  };
+}
+
+/**
+ * The observation owner's row bound on one serialized observation record. A row past it is the
+ * writer's definite local refusal, distinct from a shared writer, disk, busy or uncertain-commit
+ * failure; a Boot proof checks a terminal's serialized reap with it before its first write.
+ *
+ * @throws ControlProductPreconditionError past the bound.
+ */
+export function assertControlObservationRecordBound(text: string): void {
+  if (Buffer.byteLength(text) > NATIVE_OBSERVATION_BYTES)
+    throw new ControlProductPreconditionError();
+}
+
+/** Prepares ordinary terminal evidence from native authority, preserving the first snapshot despite late observations. */
+export function prepareControlTurnReap(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlTurnReapInput
+): ControlWorkObservationInput | null {
+  if (!sqlite.inTransaction)
+    throw new Error('Native reap preparation requires the owning SQL transaction');
+  z.string().min(1).parse(input.reason);
+  z.string().min(1).parse(input.inferredBy);
+  const dependency = readControlTurnReapDependency(sqlite, owner, input);
+  if (!dependency) return null;
+  const { binding, existing } = dependency;
+  if (['pending', 'running'].includes(binding.turn.status) || !binding.turn.completedAt)
+    throw new Error('turn.reap requires the native terminal Turn in the same transition');
+  if (existing)
+    return { threadId: input.threadId, turnId: input.turnId, observation: existing, bodies: [] };
+  return controlTurnReapObservation(input, dependency, String(binding.turn.completedAt));
+}
+
+/** Uses the millisecond UTC clock encoding reserved by the reap byte budget. */
+function reapCompletionClock(completedAt: string): string {
+  return new Date(completedAt).toISOString();
+}
+
+/** The new reap observation of one terminal Turn on its reap dependency. */
+function controlTurnReapObservation(
+  input: ControlTurnReapInput,
+  dependency: NonNullable<ReturnType<typeof readControlTurnReapDependency>>,
+  completedAt: string
+): ControlWorkObservationInput {
+  return {
     threadId: input.threadId,
     turnId: input.turnId,
     bodies: [],
     observation: {
-      id,
+      id: `turn.reap:${input.turnId}`,
       type: 'turn.reap',
-      ts: binding.turn.completedAt,
+      ts: reapCompletionClock(completedAt),
       obs: 'nanocore',
       ret: 'turn-evidence',
       payload: {
         reason: input.reason,
-        lastObservedTs: prefix.lastObservedTs,
-        unresolvedCalls: [...prefix.calls.values()],
+        lastObservedTs: dependency.lastObservedTs,
+        unresolvedCalls: dependency.unresolvedCalls,
         inferredBy: input.inferredBy,
-        ...(truncation ? { truncation } : {}),
+        ...(dependency.truncation ? { truncation: dependency.truncation } : {}),
       },
     },
   };
+}
+
+/**
+ * Proves, without writing, that the reap a terminal transition would append fits the observation
+ * owner's row bound: it reads the reap dependency, serializes the exact candidate row on the
+ * planned terminal clock, and checks it as the writer's insert does. A Boot walk runs it before
+ * its first write; the terminal transaction builds and checks the same row again.
+ *
+ * @throws ControlProductPreconditionError when the serialized reap exceeds the row bound.
+ */
+export function proveControlTurnReapBound(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  input: ControlTurnReapInput,
+  completedAt: string
+): void {
+  if (!sqlite.inTransaction) {
+    sqlite.transaction(() => proveControlTurnReapBound(sqlite, owner, input, completedAt))();
+    return;
+  }
+  const dependency = readControlTurnReapDependency(sqlite, owner, input);
+  if (!dependency || dependency.existing) return;
+  const parsed = ControlWorkObservationInputSchema.parse(
+    controlTurnReapObservation(input, dependency, completedAt)
+  );
+  const tail = sqlite
+    .prepare('SELECT COUNT(*) AS count FROM control_work_observations WHERE turn_id=?')
+    .get(input.turnId) as { count: number };
+  const candidate = controlObservationCandidate(
+    { ...parsed, observation: parsed.observation as unknown as WorkObservationDraft },
+    undefined,
+    tail.count + 1,
+    owner
+  );
+  assertControlObservationRecordBound(JSON.stringify(candidate));
 }
 
 /** Appends ordinary reap metadata inside the same terminal savepoint; never commits or performs restart-only repair. */

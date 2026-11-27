@@ -25,19 +25,27 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import {
+  OperationError,
+  WORKSPACE_ACCESS_DENIED,
+  WorkspaceCaptureAdmissionError,
+} from '../operation-error.js';
+import {
   commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import type { NanoHostEnvironmentRead } from '../runtime/native-environment.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
-import { admitWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
+import type { admitWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
 import {
   getWorkerStorageBinding,
   getWorkerStorageBindingForSandbox,
   type WorkerStorageContributor,
 } from '../runtime/worker-storage-bindings.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import type {
   DeriveWorkerEnvironmentAffectedStorageInput,
@@ -93,6 +101,7 @@ export type ReplaceWorkerEnvironmentResidentWork = (
 export interface CreateWorkerEnvironmentAffectedStorageDeriverInput {
   /** Core runtime and retained-storage authority. */
   readonly coreDb: CoreDb;
+  readonly readNanoHost?: NanoHostEnvironmentRead;
   /** Existing Workspace and Thread source owner. */
   readonly store: FsStore;
 }
@@ -101,7 +110,12 @@ export interface CreateWorkerEnvironmentAffectedStorageDeriverInput {
 export interface CreateWorkerEnvironmentActivationInput {
   /** Core runtime and retained-storage authority. */
   readonly coreDb: CoreDb;
+  readonly readNanoHost?: NanoHostEnvironmentRead;
   /** Fixed read-only exact-image observation at the confirmation boundary. */
+  readonly admitImageEnvironment?: (
+    identity: Parameters<typeof admitWorkerImageEnvironment>[1],
+    measurement: Parameters<typeof admitWorkerImageEnvironment>[2]
+  ) => Promise<unknown>;
   readonly runtimeEffects: Pick<WorkerEnvironmentRuntimeEffects, 'inspectImage'>;
 
   /** Supplies the existing current-user configuration file service. */
@@ -178,9 +192,24 @@ export function createWorkerEnvironmentActivation(
       const home = { threadId: candidate.threadId, workspaceId: candidate.workspaceId };
       requireCurrentCandidateAudiences(dependencies, context.actor, request);
 
+      let releaseHome: (() => void) | undefined;
       const response = await runIdempotentCommand({
         command: 'worker_environment.activate',
         execute: async (receipt) => {
+          // Capture must see the private Turn's producer before any awaited image work.
+          try {
+            releaseHome = dependencies.store.enterWorkspaceMutation(home.workspaceId);
+          } catch (error) {
+            const dataRoot = dependencies.store.getDataRoot();
+            if (
+              error instanceof OperationError &&
+              error.code === 'workspace_frozen' &&
+              dataRoot &&
+              getControlStoreWorkerClient().isWorkspaceCaptureActive(dataRoot, home.workspaceId)
+            )
+              throw new WorkspaceCaptureAdmissionError(home.workspaceId);
+            throw error;
+          }
           const turnIdentity = activationTurnIdentity(context.actor, home, request);
           requireNoPartialActivation(dependencies.store, home, turnIdentity, request);
           requireNoUnrelatedRunningTurn(dependencies.store, home, turnIdentity.turnId);
@@ -217,6 +246,9 @@ export function createWorkerEnvironmentActivation(
               'Exact image defaults confirmation is required.'
             );
           }
+          const admitImageEnvironment = dependencies.admitImageEnvironment;
+          if (!admitImageEnvironment)
+            throw unavailable('Worker environment activation deciding storage is unavailable.');
           const inspection = await dependencies.runtimeEffects.inspectImage({
             authorize: () => {
               dependencies.requireCurrentAdministrator(context.actor);
@@ -248,8 +280,7 @@ export function createWorkerEnvironmentActivation(
           );
           // Admission is written before configuration reload can resolve a package. The immutable
           // acquisition result remains unchanged; only this human-confirmed non-secret projection is added.
-          await admitWorkerImageEnvironment(
-            dependencies.coreDb,
+          await admitImageEnvironment(
             {
               authoredArtifactId: currentCandidate.authoredCandidate.artifactId,
               authoredArtifactVersion: 1,
@@ -401,7 +432,7 @@ export function createWorkerEnvironmentActivation(
           workspaceId: home.workspaceId,
         },
         store: dependencies.store,
-      });
+      }).finally(() => releaseHome?.());
       dependencies.requireCurrentAdministrator(context.actor);
       requireExactResolvedCandidate(dependencies, context.actor, request);
       requireCurrentCandidateAudiences(dependencies, context.actor, request);
@@ -418,9 +449,12 @@ function deriveResidentGroup(
 ): ResidentGroup {
   requireWorkspaceAuthority(dependencies.coreDb, actor, replaceNow.workspaceId);
   requireSourceThread(dependencies.store, replaceNow.workspaceId, replaceNow.threadId);
-  const selectedRows = dependencies.coreDb.sqlite
-    .prepare(
-      `SELECT b.thread_id AS threadId, b.current_turn_id AS turnId,
+  return requireNanoHostObservation(
+    dependencies.coreDb,
+    (sqlite) => {
+      const selectedRows = sqlite
+        .prepare(
+          `SELECT b.thread_id AS threadId, b.current_turn_id AS turnId,
               s.sandbox_runtime_id AS sandboxRuntimeId,
               s.sandbox_binding_ref AS sandboxBindingRef
        FROM agent_session_runtime_bindings b
@@ -428,109 +462,117 @@ function deriveResidentGroup(
        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
        WHERE b.workspace_id = ? AND b.thread_id = ?
          AND b.lifecycle_state NOT IN ('closed', 'failed')`
-    )
-    .all(replaceNow.workspaceId, replaceNow.threadId) as Array<{
-    readonly sandboxBindingRef: string;
-    readonly sandboxRuntimeId: string;
-    readonly threadId: string;
-    readonly turnId: string | null;
-  }>;
-  if (selectedRows.length !== 1) {
-    throw unavailable('The selected Thread has no unique resident Worker environment.');
-  }
-  const selected = selectedRows[0]!;
-  const memberRows = dependencies.coreDb.sqlite
-    .prepare(
-      `SELECT b.workspace_id AS workspaceId, b.thread_id AS threadId,
+        )
+        .all(replaceNow.workspaceId, replaceNow.threadId) as Array<{
+        readonly sandboxBindingRef: string;
+        readonly sandboxRuntimeId: string;
+        readonly threadId: string;
+        readonly turnId: string | null;
+      }>;
+      if (selectedRows.length !== 1) {
+        throw unavailable('The selected Thread has no unique resident Worker environment.');
+      }
+      const selected = selectedRows[0]!;
+      const memberRows = sqlite
+        .prepare(
+          `SELECT b.workspace_id AS workspaceId, b.thread_id AS threadId,
               b.current_turn_id AS turnId
        FROM agent_session_runtime_bindings b
        JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
        WHERE h.sandbox_runtime_id = ?
          AND b.lifecycle_state NOT IN ('closed', 'failed')
        ORDER BY b.thread_id, b.agent_session_runtime_binding_id`
-    )
-    .all(selected.sandboxRuntimeId) as Array<{
-    readonly threadId: string;
-    readonly turnId: string | null;
-    readonly workspaceId: string;
-  }>;
-  if (
-    memberRows.length === 0 ||
-    memberRows.some((member) => member.workspaceId !== replaceNow.workspaceId) ||
-    new Set(memberRows.map((member) => member.threadId)).size !== memberRows.length
-  ) {
-    throw unavailable('The resident Worker environment sharing group is inconsistent.');
-  }
-  for (const member of memberRows) {
-    requireSourceThread(dependencies.store, member.workspaceId, member.threadId);
-  }
-  const binding = getWorkerStorageBindingForSandbox(dependencies.coreDb, {
-    sandboxBindingRef: selected.sandboxBindingRef,
-  });
-  if (
-    !binding ||
-    binding.workspaceId !== replaceNow.workspaceId ||
-    !['attached', 'unknown'].includes(binding.state) ||
-    binding.currentSandboxBindingRef !== selected.sandboxBindingRef ||
-    binding.contributors.length === 0 ||
-    !binding.contributors.every((contributor) =>
-      contributorIsAuthorized(dependencies.store, actor, replaceNow.workspaceId, contributor)
-    ) ||
-    memberRows.some(
-      (member) =>
-        !binding.contributors.some(
-          (contributor) =>
-            contributor.workspaceId === member.workspaceId &&
-            contributor.threadId === member.threadId &&
-            contributor.responsibleUserId === actor.userId
         )
-    )
-  ) {
-    throw unavailable('The resident Worker environment source audience is unavailable.');
-  }
-  return {
-    affectedStorage: [{ expectedRevision: binding.revision, storageRef: binding.storageRef }],
-    members: memberRows.map(({ threadId, turnId }) => ({ threadId, turnId })),
-  };
+        .all(selected.sandboxRuntimeId) as Array<{
+        readonly threadId: string;
+        readonly turnId: string | null;
+        readonly workspaceId: string;
+      }>;
+      if (
+        memberRows.length === 0 ||
+        memberRows.some((member) => member.workspaceId !== replaceNow.workspaceId) ||
+        new Set(memberRows.map((member) => member.threadId)).size !== memberRows.length
+      ) {
+        throw unavailable('The resident Worker environment sharing group is inconsistent.');
+      }
+      for (const member of memberRows) {
+        requireSourceThread(dependencies.store, member.workspaceId, member.threadId);
+      }
+      const binding = getWorkerStorageBindingForSandbox(
+        { sqlite },
+        {
+          sandboxBindingRef: selected.sandboxBindingRef,
+        }
+      );
+      if (
+        !binding ||
+        binding.workspaceId !== replaceNow.workspaceId ||
+        !['attached', 'unknown'].includes(binding.state) ||
+        binding.currentSandboxBindingRef !== selected.sandboxBindingRef ||
+        binding.contributors.length === 0 ||
+        !binding.contributors.every((contributor) =>
+          contributorIsAuthorized(dependencies.store, actor, replaceNow.workspaceId, contributor)
+        ) ||
+        memberRows.some(
+          (member) =>
+            !binding.contributors.some(
+              (contributor) =>
+                contributor.workspaceId === member.workspaceId &&
+                contributor.threadId === member.threadId &&
+                contributor.responsibleUserId === actor.userId
+            )
+        )
+      ) {
+        throw unavailable('The resident Worker environment source audience is unavailable.');
+      }
+      return {
+        affectedStorage: [{ expectedRevision: binding.revision, storageRef: binding.storageRef }],
+        members: memberRows.map(({ threadId, turnId }) => ({ threadId, turnId })),
+      };
+    },
+    dependencies.readNanoHost
+  );
 }
 
 /** Rechecks current access to every source represented by the immutable candidate. */
 function requireCurrentCandidateAudiences(
-  dependencies: Pick<CreateWorkerEnvironmentActivationInput, 'coreDb' | 'store'>,
+  dependencies: Pick<CreateWorkerEnvironmentActivationInput, 'coreDb' | 'store' | 'readNanoHost'>,
   actor: Actor,
   request: ActivateWorkerEnvironmentRequest
 ): void {
-  if (!request.replaceNow) return;
-  requireWorkspaceAuthority(dependencies.coreDb, actor, request.replaceNow.workspaceId);
-  requireSourceThread(
-    dependencies.store,
-    request.replaceNow.workspaceId,
-    request.replaceNow.threadId
+  const replacement = request.replaceNow;
+  if (!replacement) return;
+  requireWorkspaceAuthority(dependencies.coreDb, actor, replacement.workspaceId);
+  requireSourceThread(dependencies.store, replacement.workspaceId, replacement.threadId);
+  if (!request.affectedStorage.length) return;
+  requireNanoHostObservation(
+    dependencies.coreDb,
+    (sqlite) => {
+      for (const affected of request.affectedStorage) {
+        const binding = getWorkerStorageBinding(
+          { sqlite },
+          {
+            storageRef: affected.storageRef,
+          }
+        );
+        if (
+          !binding ||
+          binding.workspaceId !== replacement.workspaceId ||
+          binding.state === 'purged' ||
+          binding.contributors.length === 0 ||
+          !binding.contributors.every((contributor) =>
+            contributorIsAuthorized(dependencies.store, actor, replacement.workspaceId, contributor)
+          )
+        ) {
+          throw new WorkerEnvironmentOperationError(
+            WORKSPACE_ACCESS_DENIED.code,
+            'Worker environment source access is unavailable.'
+          );
+        }
+      }
+    },
+    dependencies.readNanoHost
   );
-  for (const affected of request.affectedStorage) {
-    const binding = getWorkerStorageBinding(dependencies.coreDb, {
-      storageRef: affected.storageRef,
-    });
-    if (
-      !binding ||
-      binding.workspaceId !== request.replaceNow.workspaceId ||
-      binding.state === 'purged' ||
-      binding.contributors.length === 0 ||
-      !binding.contributors.every((contributor) =>
-        contributorIsAuthorized(
-          dependencies.store,
-          actor,
-          request.replaceNow!.workspaceId,
-          contributor
-        )
-      )
-    ) {
-      throw new WorkerEnvironmentOperationError(
-        'workspace_access_denied',
-        'Worker environment source access is unavailable.'
-      );
-    }
-  }
 }
 
 /** Requires current Workspace membership and policy for technical replacement. */

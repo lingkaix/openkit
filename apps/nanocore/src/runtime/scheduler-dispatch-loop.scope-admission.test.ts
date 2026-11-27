@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
@@ -16,6 +16,7 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { reopenAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -23,7 +24,7 @@ import {
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  admitTestNativeEnvironment,
+  admitTestNativeEnvironmentForRoot,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
@@ -42,6 +43,9 @@ const faults = [
   'missing input after claim',
 ] as const;
 it.each(faults)('holds %s and dispatches the healthy FIFO sibling', async (hold) => {
+  // The explicit simulator publishes its actual self-check final rather than a physical Harness result.
+  vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+  onTestFinished(() => vi.unstubAllEnvs());
   const dataRoot = mkdtempSync(join(tmpdir(), 'dispatch-scope-'));
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -53,7 +57,7 @@ it.each(faults)('holds %s and dispatches the healthy FIFO sibling', async (hold)
     for (const workspace of [bad, good])
       recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
     const manifest = createTestAgentSetup().manifest;
-    admitTestNativeEnvironment(coreDb, manifest);
+    await admitTestNativeEnvironmentForRoot(coreDb, manifest);
     await recordTestNativeRuntimeTarget(coreDb);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const starts = vi.spyOn(executor, 'startTurn');
@@ -144,6 +148,7 @@ it.each(faults)('holds %s and dispatches the healthy FIFO sibling', async (hold)
     } else if (hold !== 'missing input after claim') {
       await shutdownControlStoreWorkerClient();
       faultOriginalInput(hold === 'missing input');
+      await reopenAdmittedTestNanoHost(coreDb);
     }
     let deletedAfterClaim = false;
     const input = {

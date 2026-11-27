@@ -5,6 +5,7 @@ import {
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type Database from 'better-sqlite3';
 import type { CoreMode } from '../config/mode.js';
+import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import {
   type ControlRuntimeTargetInput,
   RuntimeTargetRefusal,
@@ -17,6 +18,22 @@ export class NanoHostCleanupFencePendingError extends Error {
     super('NanoHost unknown cleanup fence has no different fresh physical Epoch proof.');
   }
 }
+
+/**
+ * Expected hold while no current physical Epoch authorizes a NanoHost effect, for example before the
+ * original peer is readmitted after a Core restart. It is not a refusal and carries no terminal outcome.
+ */
+export class NanoHostPhysicalAuthorityUnavailableError extends Error {
+  public constructor() {
+    super('NanoHost current physical Epoch authority is unavailable.');
+  }
+}
+
+/**
+ * Expected hold when a queued NanoHost Harness operation outlives its result outage budget. A transport
+ * timeout proves neither execution nor non-execution, so it carries no terminal outcome (K8b).
+ */
+export class NanoHostHarnessOutageError extends Error {}
 
 /** Durable configured NanoHost target projection returned to scheduler consumers. */
 export interface NanoHostRuntimeTargetRecord {
@@ -381,11 +398,12 @@ export function getNanoHostRuntimeTarget(
 /**
  * Reads the startup-configured NanoHost RuntimeTarget as the redacted readiness observation shared by the canonical JSON operation and internal administration Tool.
  *
- * @param input Server-mode Core, startup NanoHost configuration, and storage handle for the shared observation.
+ * @param input Startup mode, configured identity, and selected NanoHost reader.
  * @returns Ready or unready status fields, or the configured observation's missing, configuration, storage or server-mode failure.
  */
 export function readConfiguredNanoHostRuntimeTargetStatus(input: {
   readonly coreDb: NanoHostRuntimeTargetDb | undefined;
+  readonly readNanoHostTarget?: NanoHostCoreReads['readTarget'];
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
 }): NanoHostRuntimeTargetStatusObservation {
@@ -397,14 +415,13 @@ export function readConfiguredNanoHostRuntimeTargetStatus(input: {
       message: 'NanoHost transport administration is only available in server mode.',
     };
   }
-  if (!input.coreDb) {
-    return {
-      ok: false,
-      code: 'nanohost_transport_storage_unavailable',
-      httpStatus: 503,
-      message: 'NanoHost transport token storage is unavailable.',
-    };
-  }
+  const unavailable = {
+    ok: false,
+    code: 'nanohost_transport_storage_unavailable',
+    httpStatus: 503,
+    message: 'NanoHost transport token storage is unavailable.',
+  } as const;
+  if (!input.readNanoHostTarget && !input.coreDb) return unavailable;
   if (!input.nanoHostConfig) {
     return {
       ok: false,
@@ -414,7 +431,11 @@ export function readConfiguredNanoHostRuntimeTargetStatus(input: {
     };
   }
 
-  const target = getNanoHostRuntimeTarget(input.coreDb, input.nanoHostConfig.identityId);
+  const observation = input.readNanoHostTarget?.(input.nanoHostConfig.identityId);
+  if (observation?.state === 'unavailable') return unavailable;
+  const target = observation
+    ? observation.value
+    : getNanoHostRuntimeTarget(input.coreDb!, input.nanoHostConfig.identityId);
   if (
     !target ||
     target.identityId !== input.nanoHostConfig.identityId ||

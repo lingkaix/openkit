@@ -19,15 +19,18 @@ import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordReaderSchema,
   WorkerCanonicalEventRecordSchema,
-  WorkerCanonicalTerminalEventDataSchema,
   type WorkerObservationData,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
-import { WorkerControlGatewayError } from '../operation-error.js';
+import { OperationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import type { StorageResult } from '../storage/storage-owner.js';
 import {
   appendWorkObservation,
   appendWorkObservationChunk,
@@ -38,7 +41,6 @@ import {
 } from '../storage/work-observations.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
-  type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './nanohost-attempt-records.js';
@@ -46,16 +48,26 @@ import {
   getWorkerBackendSession,
   workerBackendImageIdentity,
 } from './worker-backend-session-records.js';
+import {
+  type AcceptedWorkerFinalStatus,
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from './worker-control-final-receipt.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
-  WorkerControlFinalStatus,
   WorkerControlFinalStatusTokenBindingResolution,
   WorkerControlLineage,
   WorkerControlTokenBindingInput,
 } from './worker-control-gateway.js';
-import { workerControlEventReceipt } from './worker-control-gateway.js';
+import { WorkerControlGatewayError, workerControlEventReceipt } from './worker-control-gateway.js';
 import { matchesAcceptedWorkerControlSequence } from './worker-control-sequences.js';
+
+export {
+  type AcceptedWorkerFinalStatus,
+  getWorkerControlAcceptedFinalStatus,
+  hasPendingWorkerCancellationFinal,
+} from './worker-control-final-receipt.js';
 
 type WorkerControlReceiptDb = { readonly sqlite: Database.Database };
 
@@ -69,12 +81,6 @@ export interface WaitForWorkerControlFinalStatusInput {
   /** Complete worker-control lineage that the final status must match. */
   readonly lineage: WorkerControlLineage;
 }
-
-/** Durable final-status fields required by online and restart closeout. */
-export type AcceptedWorkerFinalStatus = Pick<
-  WorkerControlFinalStatus,
-  'acceptedAt' | 'diagnostics' | 'status' | 'stopReason'
->;
 
 /**
  * Validates one accepted worker status against the closed Core stop-reason mapping.
@@ -219,25 +225,28 @@ export async function recoverWorkerObservationSource(
   const content = metadata.event.data.content;
   if (content.state !== 'expected') throw new Error('Observation source has no admitted body');
   const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): boolean => {
-    const fingerprint = coreDb.sqlite
-      .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
+    const { fingerprint, row } = requireNanoHostObservation(coreDb, (sqlite) => {
+      const fingerprint = sqlite
+        .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
       WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND sequence=?`)
-      .get(record.lineage.agentSessionId, record.lineage.packageSnapshotId, record.sequence) as
-      | { fingerprint: string }
-      | undefined;
+        .get(record.lineage.agentSessionId, record.lineage.packageSnapshotId, record.sequence) as
+        | { fingerprint: string }
+        | undefined;
+      const row = sqlite
+        .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
+      FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
+        .get(
+          record.lineage.agentSessionId,
+          record.lineage.packageSnapshotId,
+          String(record.sequence)
+        ) as { schemaVersion: unknown; recordJson: string } | undefined;
+      return { fingerprint, row };
+    });
     if (
       fingerprint &&
       !isDeepStrictEqual(JSON.parse(fingerprint.fingerprint), workerControlEventReceipt(record))
     )
       throw new Error('recovery_required: observation source sequence conflict');
-    const row = coreDb.sqlite
-      .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
-      FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
-      .get(
-        record.lineage.agentSessionId,
-        record.lineage.packageSnapshotId,
-        String(record.sequence)
-      ) as { schemaVersion: unknown; recordJson: string } | undefined;
     if (
       (!row && required) ||
       (row &&
@@ -385,35 +394,63 @@ export function writeWorkerControlAcceptedRecord(
     );
 }
 
-/** Verifies original Core identity, then awaits native observation publication before any Core receipt. */
-function prepareWorkerControlObservation(
+/** Awaits the existing Workspace preparation for an already authenticated observation. */
+export function prepareWorkerControlObservation(
   coreDb: CoreDb,
-  event: WorkerCanonicalEventRecord
+  event: WorkerCanonicalEventRecord,
+  read?: Parameters<typeof requireNanoHostObservation>[2]
 ): Promise<void> {
   if (coreDb.sqlite.inTransaction)
     throw new Error('Observation preparation must precede the Core transaction');
-  const existing = coreDb.sqlite
-    .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
+  const readOwner = <Value>(query: (sqlite: Database.Database) => Value): Value => {
+    try {
+      return requireNanoHostObservation(coreDb, query, read);
+    } catch (error) {
+      if (read && error instanceof OperationError && error.code === 'operation_storage_unavailable')
+        throw new WorkerControlGatewayError(
+          'worker_observation_storage_unavailable',
+          'NanoHost Worker control storage is unavailable.',
+          503
+        );
+      throw error;
+    }
+  };
+  const receipt = workerControlEventReceipt(event);
+  const { existing, fingerprintMatches } = readOwner((sqlite) => ({
+    existing: sqlite
+      .prepare(`SELECT schema_version AS schemaVersion, record_json AS recordJson
     FROM worker_control_records WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND record_key=?`)
-    .get(event.lineage.agentSessionId, event.lineage.packageSnapshotId, String(event.sequence)) as
-    | { schemaVersion: unknown; recordJson: string }
-    | undefined;
+      .get(event.lineage.agentSessionId, event.lineage.packageSnapshotId, String(event.sequence)) as
+      | { schemaVersion: unknown; recordJson: string }
+      | undefined,
+    fingerprintMatches: matchesAcceptedWorkerControlSequence(
+      { sqlite },
+      {
+        lineage: event.lineage,
+        operation: 'event_append',
+        sequence: event.sequence,
+        fingerprint: canonicalJsonText(receipt),
+      }
+    ),
+  }));
   if (
-    existing &&
-    !readRetainedV1(existing, () =>
-      isDeepStrictEqual(JSON.parse(existing.recordJson), workerControlEventReceipt(event))
-    )
-  )
-    throw new Error('recovery_required: worker receipt identity conflict');
-  const replay =
-    existing !== undefined ||
-    matchesAcceptedWorkerControlSequence(coreDb, {
-      lineage: event.lineage,
-      operation: 'event_append',
-      sequence: event.sequence,
-      fingerprint: canonicalJsonText(workerControlEventReceipt(event)),
-    }) === true;
-  return recordWorkerObservation(coreDb, event, replay).catch((error: unknown) => {
+    fingerprintMatches === false ||
+    (existing &&
+      !readRetainedV1(existing, () => isDeepStrictEqual(JSON.parse(existing.recordJson), receipt)))
+  ) {
+    if (!read) throw new Error('recovery_required: worker receipt identity conflict');
+    throw new WorkerControlGatewayError(
+      'worker_control_sequence_conflict',
+      'Worker observation does not match the retained event sequence.',
+      409
+    );
+  }
+  return recordWorkerObservation(
+    coreDb,
+    event,
+    existing !== undefined || fingerprintMatches === true,
+    readOwner
+  ).catch((error: unknown) => {
     if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'observation') {
       const { code, message, status } = error.domain;
       throw new WorkerControlGatewayError(code, message, status);
@@ -426,7 +463,9 @@ function prepareWorkerControlObservation(
 async function recordWorkerObservation(
   coreDb: CoreDb,
   event: WorkerCanonicalEventRecord,
-  replay: boolean
+  replay: boolean,
+  readOwner: <Value>(query: (sqlite: Database.Database) => Value) => Value = (query) =>
+    requireNanoHostObservation(coreDb, query)
 ): Promise<void> {
   if (
     event.event.type !== 'observation.recorded' &&
@@ -458,21 +497,24 @@ async function recordWorkerObservation(
     if (native.imageDigest !== null) {
       // This owner binds physical NanoHost Epochs; backendKind names the logical backend.
       // Only its unique same-package physical binding can verify a Worker image claim.
-      const bindings = coreDb.sqlite
-        .prepare(
-          `SELECT attempt_id AS attemptId FROM worker_backend_sessions
+      const backend = readOwner((sqlite) => {
+        const bindings = sqlite
+          .prepare(
+            `SELECT attempt_id AS attemptId FROM worker_backend_sessions
            WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
              AND agent_session_id = ? AND package_snapshot_id = ? LIMIT 2`
-        )
-        .all(
-          lineage.workspaceId,
-          lineage.threadId,
-          lineage.turnId,
-          lineage.agentSessionId,
-          lineage.packageSnapshotId
-        ) as { attemptId: string }[];
-      const backend =
-        bindings.length === 1 ? getWorkerBackendSession(coreDb, bindings[0]!.attemptId) : null;
+          )
+          .all(
+            lineage.workspaceId,
+            lineage.threadId,
+            lineage.turnId,
+            lineage.agentSessionId,
+            lineage.packageSnapshotId
+          ) as { attemptId: string }[];
+        return bindings.length === 1
+          ? getWorkerBackendSession({ sqlite }, bindings[0]!.attemptId)
+          : null;
+      });
       const identity = backend ? workerBackendImageIdentity(backend.backendLineage) : null;
       const digest = identity?.match(/(?:^|@)(sha256:[a-f0-9]{64})$/)?.[1];
       // Without a bound digest the claim stays descriptive, never admission authority.
@@ -727,52 +769,6 @@ export function listWorkerControlAcceptedEvents(
   });
 }
 
-/** Reads the accepted final status for one exact worker lineage. */
-export function getWorkerControlAcceptedFinalStatus(
-  owner: WorkerControlReceiptDb,
-  lineage: WorkerControlLineage
-): AcceptedWorkerFinalStatus | null {
-  const row = owner.sqlite
-    .prepare(
-      `SELECT schema_version AS schemaVersion, record_json AS recordJson, accepted_at AS acceptedAt
-       FROM worker_control_records
-       WHERE workspace_id = ?
-         AND thread_id = ?
-         AND turn_id = ?
-         AND agent_session_id = ?
-         AND package_snapshot_id = ?
-         AND request_id IS ?
-         AND operation = 'final_status'
-       LIMIT 1`
-    )
-    .get(
-      lineage.workspaceId,
-      lineage.threadId,
-      lineage.turnId,
-      lineage.agentSessionId,
-      lineage.packageSnapshotId,
-      lineage.requestId ?? null
-    ) as
-    | { readonly schemaVersion: unknown; readonly acceptedAt: string; readonly recordJson: string }
-    | undefined;
-  if (!row) {
-    return null;
-  }
-  const raw = readRetainedV1(row, () => JSON.parse(row.recordJson)) as Record<string, unknown>;
-  // Reuse terminal admission's schema while leaving unrelated durable record fields alone.
-  const record = WorkerCanonicalTerminalEventDataSchema.parse({
-    ...(raw.diagnostics !== undefined ? { diagnostics: raw.diagnostics } : {}),
-    status: raw.status,
-    stopReason: raw.stopReason,
-  });
-  return {
-    acceptedAt: row.acceptedAt,
-    ...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
-    status: record.status,
-    stopReason: record.stopReason,
-  };
-}
-
 /**
  * Waits until one exact worker final status is durable or its lease can no longer complete.
  *
@@ -785,9 +781,57 @@ export function getWorkerControlAcceptedFinalStatus(
  */
 export async function waitForWorkerControlFinalStatus(
   coreDb: CoreDb,
-  input: WaitForWorkerControlFinalStatusInput
+  input: WaitForWorkerControlFinalStatusInput,
+  readNanoHost?: <Value>(
+    query: (sqlite: Database.Database) => Value
+  ) => StorageResult<'nanohost', Value> | { readonly state: 'pending' }
 ): Promise<AcceptedWorkerFinalStatus> {
   for (;;) {
+    if (readNanoHost) {
+      const original = readRetainedNanoHostSubmission(coreDb, input.attemptId);
+      const attempt = original?.lease.attempt;
+      if (
+        !original ||
+        !attempt ||
+        !sameWorkerControlLineage(input.lineage, {
+          workspaceId: attempt.workspaceId,
+          threadId: attempt.threadId,
+          turnId: attempt.turnId,
+          agentSessionId: attempt.agentSessionId,
+          packageSnapshotId: attempt.inputRef,
+          requestId: original.requestId,
+        })
+      )
+        throw new Error('Worker completion lease does not match the exact durable lineage.');
+      const result = readNanoHost((sqlite) => ({
+        accepted: getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage),
+        native: readNanoHostRecoveryLease(sqlite, original.lease).attempt,
+      }));
+      if (result.state === 'pending') {
+        const remaining = Date.parse(original.lease.grant.deadline) - Date.now();
+        if (remaining <= 0) throw new Error('Worker lease expired before durable final status.');
+        await delay(Math.min(WORKER_FINAL_STATUS_POLL_INTERVAL_MS, remaining));
+        continue;
+      }
+      if (result.state !== 'ready') throw new Error('NanoHost completion storage is unavailable.');
+      if (result.value.accepted) return result.value.accepted;
+      const now = new Date().toISOString();
+      if (
+        attempt.phase !== 'open' &&
+        attempt.terminalCause !== 'worker-final-status' &&
+        !hasPendingWorkerCancellationFinal(result.value.native, now)
+      ) {
+        const cause =
+          attempt.terminalCause === 'native-liveness-expired' ? ' (native-liveness-expired)' : '';
+        throw new Error(
+          `Worker lease became ${attempt.phase} before durable final status${cause}.`
+        );
+      }
+      if (original.lease.grant.deadline <= now)
+        throw new Error('Worker lease expired before durable final status.');
+      await delay(WORKER_FINAL_STATUS_POLL_INTERVAL_MS);
+      continue;
+    }
     const lease = coreDb.sqlite
       .prepare(
         `SELECT phase, deadline, terminal_cause AS terminalCause,
@@ -822,7 +866,9 @@ export async function waitForWorkerControlFinalStatus(
     if (!lease) {
       throw new Error('Worker completion lease does not match the exact durable lineage.');
     }
-    const accepted = getWorkerControlAcceptedFinalStatus(coreDb, input.lineage);
+    const accepted = requireNanoHostObservation(coreDb, (sqlite) =>
+      getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage)
+    );
     if (accepted) {
       return accepted;
     }
@@ -872,37 +918,6 @@ function sameWorkerControlLineage(
 }
 
 /**
- * Checks current cancellation and native authority for a first final without restoring effect authority.
- *
- * @param attempt Exact native attempt whose token and lineage are checked by the caller.
- * @param timestamp Current time for the unchanged submission and native liveness deadlines.
- * @returns Whether the cancellation-owned first-final opportunity remains available.
- */
-export function hasPendingWorkerCancellationFinal(
-  attempt: NanoHostExecutionAttemptRecord,
-  timestamp: string
-): boolean {
-  const workerDeadline = attempt.lastAcceptedHeartbeatAt
-    ? attempt.heartbeatDeadline
-    : attempt.startupDeadline;
-  const now = Date.parse(timestamp);
-  return (
-    attempt.phase === 'closing' &&
-    [
-      'turn-cancelled',
-      'raw-output-exhausted',
-      'raw-output-unavailable',
-      'observation_limit_reached',
-    ].includes(attempt.terminalCause ?? '') &&
-    attempt.recoveryState === null &&
-    attempt.fenceRef === null &&
-    Boolean(attempt.workerControlTokenHash) &&
-    Date.parse(attempt.deadline ?? '') > now &&
-    Date.parse(workerDeadline) > now
-  );
-}
-
-/**
  * Resolves live or cancellation-only first terminal evidence, or exact replay during release grace.
  *
  * @param coreDb Server-scope Core database.
@@ -934,28 +949,7 @@ export function resolveWorkerControlFinalStatusTokenBinding(
 
   const row = coreDb.sqlite
     .prepare(
-      `SELECT attempt_id AS attemptId, deadline AS expiresAt,
-              EXISTS (
-                SELECT 1 FROM worker_control_records
-                 WHERE worker_control_records.workspace_id = scheduler_execution_attempts.workspace_id
-                   AND worker_control_records.thread_id = scheduler_execution_attempts.thread_id
-                   AND worker_control_records.turn_id = scheduler_execution_attempts.turn_id
-                   AND worker_control_records.agent_session_id = scheduler_execution_attempts.agent_session_id
-                   AND worker_control_records.package_snapshot_id = scheduler_execution_attempts.input_ref
-                   AND worker_control_records.request_id IS ?
-                   AND worker_control_records.operation = 'final_status'
-              ) AS finalStatusRecorded,
-              (
-                SELECT schema_version FROM worker_control_records
-                 WHERE worker_control_records.workspace_id = scheduler_execution_attempts.workspace_id
-                   AND worker_control_records.thread_id = scheduler_execution_attempts.thread_id
-                   AND worker_control_records.turn_id = scheduler_execution_attempts.turn_id
-                   AND worker_control_records.agent_session_id = scheduler_execution_attempts.agent_session_id
-                   AND worker_control_records.package_snapshot_id = scheduler_execution_attempts.input_ref
-                   AND worker_control_records.request_id IS ?
-                   AND worker_control_records.operation = 'final_status'
-                 LIMIT 1
-              ) AS finalStatusSchemaVersion
+      `SELECT attempt_id AS attemptId, deadline AS expiresAt
          FROM scheduler_execution_attempts
         WHERE binding_ref = ?
           AND workspace_id = ?
@@ -966,8 +960,6 @@ export function resolveWorkerControlFinalStatusTokenBinding(
           AND phase IN ('closing', 'closed')`
     )
     .get(
-      input.lineage.requestId ?? null,
-      input.lineage.requestId ?? null,
       input.sandboxBindingRef,
       input.lineage.workspaceId,
       input.lineage.threadId,
@@ -978,8 +970,6 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     | {
         expiresAt: string | null;
         attemptId: string;
-        finalStatusRecorded: number;
-        finalStatusSchemaVersion: unknown;
       }
     | undefined;
 
@@ -994,11 +984,24 @@ export function resolveWorkerControlFinalStatusTokenBinding(
     return { reason: 'lineage-mismatch', status: 'rejected' };
   }
 
-  if (row.finalStatusRecorded)
-    return readRetainedV1(
-      { schemaVersion: row.finalStatusSchemaVersion },
-      () => ({ replayOnly: true, status: 'accepted' }) as const
-    );
+  const finalStatus = requireNanoHostObservation(
+    coreDb,
+    (sqlite) =>
+      sqlite
+        .prepare(`SELECT schema_version AS schemaVersion FROM worker_control_records
+        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND agent_session_id = ?
+          AND package_snapshot_id = ? AND request_id IS ? AND operation = 'final_status' LIMIT 1`)
+        .get(
+          input.lineage.workspaceId,
+          input.lineage.threadId,
+          input.lineage.turnId,
+          input.lineage.agentSessionId,
+          input.lineage.packageSnapshotId,
+          input.lineage.requestId ?? null
+        ) as { schemaVersion: unknown } | undefined
+  );
+  if (finalStatus)
+    return readRetainedV1(finalStatus, () => ({ replayOnly: true, status: 'accepted' }) as const);
   // The live resolver authenticated the token and binding before refusing effects; the first-final exception still requires current native authority.
   if (
     hasPendingWorkerCancellationFinal(

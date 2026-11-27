@@ -39,6 +39,10 @@ import {
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
 import {
+  bootWorkspaceWrite,
+  withinBootWorkspaceBoundary,
+} from './bootstrap/boot-workspace-walk.js';
+import {
   findWorkspaceConfig,
   type RuntimeConfigManager,
   type RuntimeConfigSnapshot,
@@ -1824,8 +1828,7 @@ async function recoverSessionlessTaskAdmission(input: {
         attempt.bindingRef !== null ||
         attempt.deadline !== null ||
         attempt.outcomeRef !== null ||
-        attempt.fenceRef !== null ||
-        !hasNanoHostAttemptPreEffectProof(input.coreDb, attempt.attemptId)))
+        attempt.fenceRef !== null))
   )
     throw directTaskModeRecoveryError(
       'The sessionless Task admission owner tuple requires recovery.'
@@ -1884,23 +1887,37 @@ async function recoverSessionlessTaskAdmission(input: {
       'The sessionless Task has no exact initiating command receipt.'
     );
 
-  // Null session alone is not absence proof: retained package, control or backend owners contradict it.
-  const executionOwner = input.coreDb.sqlite
-    .prepare(`
-    SELECT 1 FROM scheduler_execution_attempts WHERE turn_id = @turn AND (workspace_id <> @workspace OR thread_id <> @thread)
-    UNION ALL SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
-    UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
-    LIMIT 1`)
-    .get({
-      turn: input.turnId,
-      workspace: input.workspaceId,
-      thread: input.threadId,
-    });
+  // A sessionless Turn still needs independent Core, Native, and Workspace absence evidence.
+  const foreignExecution = input.coreDb.sqlite
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE turn_id = ? AND (workspace_id <> ? OR thread_id <> ?) LIMIT 1`)
+    .get(input.turnId, input.workspaceId, input.threadId);
+  const nativeExecution = getControlStoreWorkerClient().readAdmittedNanoHost(
+    input.coreDb.dataRoot,
+    (sqlite) =>
+      sqlite
+        .transaction(
+          () =>
+            (attempt !== undefined &&
+              !hasNanoHostAttemptPreEffectProof(input.coreDb, attempt.attemptId, { sqlite })) ||
+            Boolean(
+              sqlite
+                .prepare(`SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
+                UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
+                LIMIT 1`)
+                .get({ turn: input.turnId })
+            )
+        )
+        .deferred()
+  );
+  if (nativeExecution.state !== 'ready')
+    throw directTaskModeRecoveryError('The sessionless Task NanoHost evidence is unavailable.');
   if (
-    executionOwner ||
+    foreignExecution ||
+    nativeExecution.value ||
     listExportableAgentEnvironmentPackageSnapshots(input.workspaceDb, input.workspaceId).some(
       (record) => record.turnId === input.turnId
     )
@@ -2630,42 +2647,83 @@ function taskModeEvidenceForTurn(
 /** Closes orphaned command-owned Assistant Turns before boot opens product admission. */
 export async function recoverWorkspaceAssistantTurns(store: FsStore): Promise<void> {
   const dataRoot = store.getDataRoot();
-  for (const { id: workspaceId } of store.listWorkspaces()) {
+  // The census stays outside every Workspace boundary: an untrustworthy list stops Boot.
+  for (const workspaceId of store.listAdmittedWorkspaceIds()) {
     if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId))
       continue;
-    for (const thread of store.listThreads(workspaceId)) {
-      if (thread.entryPath !== 'conversation') continue;
-      const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
-      // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
-      if (
-        activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
-        activeTurn.agentSessionId ||
-        activeTurn.configVersion !== null ||
-        activeTurn.triggerSource
-      )
-        continue;
-      const cutoff =
-        dataRoot &&
-        readWorkspaceObservationCutoff(dataRoot, {
-          workspaceId,
-          threadId: thread.id,
-          turnId: activeTurn.id,
+    await withinBootWorkspaceBoundary(
+      { dataRoot, workspaceId, stage: 'assistant-turn-recovery' },
+      async () => {
+        store.getWorkspace(workspaceId);
+        // Every read precedes the first interruption, so a refused read leaves this Workspace unchanged.
+        const orphans: {
+          readonly threadId: string;
+          readonly turnId: string;
+          readonly error: {
+            readonly code: 'observation_limit_reached' | 'recovery_required';
+            readonly message: string;
+          };
+        }[] = [];
+        for (const thread of store.listThreads(workspaceId)) {
+          if (thread.entryPath !== 'conversation') continue;
+          const { activeTurn } = store.readThreadNavigationFacts(workspaceId, thread.id);
+          // Scheduled, Pending-outcome and governed Worker Turns have separate recovery owners.
+          if (
+            activeTurn?.agentId !== QUICK_CHAT_AGENT_ID ||
+            activeTurn.agentSessionId ||
+            activeTurn.configVersion !== null ||
+            activeTurn.triggerSource
+          )
+            continue;
+          const cutoff =
+            dataRoot &&
+            readWorkspaceObservationCutoff(dataRoot, {
+              workspaceId,
+              threadId: thread.id,
+              turnId: activeTurn.id,
+            });
+          orphans.push({
+            threadId: thread.id,
+            turnId: activeTurn.id,
+            error: cutoff
+              ? {
+                  code: 'observation_limit_reached',
+                  message: 'Work observation collection reached its limit.',
+                }
+              : {
+                  code: 'recovery_required',
+                  message:
+                    'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
+                },
+          });
+        }
+        const completedAt = new Date().toISOString();
+        const interruption = (orphan: (typeof orphans)[number]) => ({
+          status: 'interrupted' as const,
+          completedAt,
+          error: orphan.error,
         });
-      await store.completeTurn(activeTurn.id, {
-        status: 'interrupted',
-        completedAt: new Date().toISOString(),
-        error: cutoff
-          ? {
-              code: 'observation_limit_reached',
-              message: 'Work observation collection reached its limit.',
-            }
-          : {
-              code: 'recovery_required',
-              message:
-                'The Assistant run ended during Core restart. Inspect the retained Turn and submit a new request.',
-            },
-      });
-    }
+        // Every orphan's history, transcript, reap dependency and Task terminal fact prove its
+        // terminal write before the first one commits.
+        for (const orphan of orphans)
+          await store.proveWorkspaceTurnCompletion(
+            workspaceId,
+            orphan.threadId,
+            orphan.turnId,
+            interruption(orphan)
+          );
+        // The Turn's own Workspace and Thread name its owner; sibling Workspaces are never read.
+        for (const orphan of orphans)
+          await bootWorkspaceWrite(() =>
+            store.completeWorkspaceTurn(
+              workspaceId,
+              orphan.threadId,
+              orphan.turnId,
+              interruption(orphan)
+            )
+          );
+      }
+    );
   }
 }
 

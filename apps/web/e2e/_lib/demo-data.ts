@@ -1,11 +1,11 @@
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
 } from '../../../../tests/support/demo-data.mjs';
+import type { CoreDb } from '../../../nanocore/dist/storage/db.js';
+import type { AdmittedNanoHostTransportStorage } from '../../../nanocore/dist/storage/nanohost-transport-owner.js';
 import { seedSimulatorInferenceConfig } from './simulator-inference.js';
 
 /**
@@ -82,51 +82,86 @@ async function seedCommunicationOwner(dataRoot: string): Promise<void> {
   }
 }
 
+/** Releases the fixture process's database handles before boot, restart or cleanup. */
+async function withFixtureCore<Value>(
+  dataRoot: string,
+  use: (coreDb: CoreDb) => Value | Promise<Value>
+): Promise<Value> {
+  const [{ openCoreDb }, { shutdownControlStoreWorkerClient }] = await Promise.all([
+    import('../../../nanocore/dist/storage/db.js'),
+    import('../../../nanocore/dist/storage/control-store-worker-client.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    return await use(coreDb);
+  } finally {
+    coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+  }
+}
+
+/** Reads the existing NanoHost owner and releases its opening before returning. */
+export async function readFixtureNanoHost<Value>(
+  dataRoot: string,
+  use: (read: AdmittedNanoHostTransportStorage['owner']['read']) => Value
+): Promise<Value> {
+  const { reopenAdmittedTestNanoHost } = await import(
+    '../../../nanocore/dist/test-support/admitted-nanohost.js'
+  );
+  return withFixtureCore(dataRoot, async (coreDb) => {
+    const { value } = await reopenAdmittedTestNanoHost(coreDb);
+    return use(value.owner.read);
+  });
+}
+
 /**
- * Installs the isolated self-check scheduler RuntimeTarget used by SimulatedTurnExecutor.
- *
- * This is fixture-only synthetic Epoch authority: `physicalEpoch` is `'a'.repeat(64)`, identity is
- * `identity_local`, and no NanoHost observation or real-host connection is claimed. Production
- * backend-session guards stay unchanged. Mirrors `configureNativeRuntimeTarget` target setup in
- * `apps/nanocore/src/lib/simulator.test.ts`.
- *
+ * Installs the synthetic self-check scheduler RuntimeTarget on the admitted fixture owner.
  * Call after Core startup, which invalidates the previous physical generation.
- *
- * @param dataRoot Disposable NanoCore data root whose Core startup has completed.
- * @returns Resolves after the configured native backend's `target_local` is ready.
- * @throws When Core storage, layout marker, allocation, or readiness projection fails.
  */
 export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promise<void> {
   const [
-    { openCoreDb },
     { readDataRootLayoutMarker },
-    { allocateNanoHostRuntimeTargetConnectionGeneration, upsertNanoHostRuntimeTarget },
+    { transitionAdmittedNanoHostRuntimeTarget },
+    { openAdmittedTestNanoHost },
   ] = await Promise.all([
-    import('../../../nanocore/dist/storage/db.js'),
     import('../../../nanocore/dist/storage/fs-layout.js'),
-    import('../../../nanocore/dist/runtime/nanohost-runtime-target.js'),
+    import('../../../nanocore/dist/storage/nanohost-transport-owner.js'),
+    import('../../../nanocore/dist/test-support/admitted-nanohost.js'),
   ]);
-  const coreDb = openCoreDb(dataRoot);
-
-  try {
+  await withFixtureCore(dataRoot, async (coreDb) => {
+    const { value: storage } = await openAdmittedTestNanoHost(coreDb);
     const observedAt = new Date().toISOString();
-    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+    const allocated = await transitionAdmittedNanoHostRuntimeTarget(storage, {
+      kind: 'allocate',
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_local',
       observedAt,
       targetId: 'target_local',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
-      ...runtimeTarget,
+    if (allocated.state !== 'ready')
+      throw new Error(`Web e2e RuntimeTarget allocation: ${allocated.owner} ${allocated.reason}.`);
+    if (!allocated.value) throw new Error('Web e2e RuntimeTarget allocation returned no target.');
+    const { connectionGeneration, deploymentId, identityId, targetId } = allocated.value;
+    const ready = await transitionAdmittedNanoHostRuntimeTarget(storage, {
+      kind: 'ready',
+      connectionGeneration,
+      deploymentId,
+      identityId,
+      targetId,
       freshEmpty: true,
       observedAt,
-      physicalEpoch: 'a'.repeat(64),
+      // A restarted simulator represents a new empty process after the old Epoch is fenced.
+      physicalEpoch:
+        connectionGeneration === 1
+          ? 'a'.repeat(64)
+          : connectionGeneration.toString(16).padStart(64, '0'),
       predecessorFenced: true,
       ready: true,
     });
-  } finally {
-    coreDb.sqlite.close();
-  }
+    if (ready.state !== 'ready')
+      throw new Error(`Web e2e RuntimeTarget readiness: ${ready.owner} ${ready.reason}.`);
+    if (!ready.value) throw new Error('Web e2e RuntimeTarget readiness returned no target.');
+  });
 }
 
 /**
@@ -146,82 +181,47 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
   };
   const agentsRoot = join(dataRoot, 'config', 'agents');
   await mkdir(agentsRoot, { recursive: true });
-  await writeFile(
-    join(agentsRoot, 'codex.agent.jsonc'),
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        requiredFeatures: [],
-        id: 'agent_codex_host',
-        displayName: 'Codex Agent',
-        runtime: {
-          kind: 'codex',
-          adapter: 'codex',
-          version: 'test',
-          image: runtimeImage,
-          binaries: [
-            { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
-            { id: 'node', path: '/usr/local/bin/node' },
-            { id: 'codex', path: '/usr/local/bin/codex' },
-          ],
-        },
-        models: {
-          preferredLogicalModelId: 'reasoning',
-          allowedLogicalModelIds: ['reasoning'],
-        },
-        profiles: [{ id: 'default', instructionsRef: 'codex', skills: [] }],
-        defaultProfileId: 'default',
-        skills: [],
-        mcp: [],
-        sandbox: {
-          backend: {
-            allowedKinds: ['openshell'],
-            preferred: 'openshell',
-            requiredCapabilities: ['trusted-worker-inference-relay'],
-          },
-          credentialDeclarations: [],
-          filesystem: [],
-          network: [],
-        },
+  const manifest = {
+    schemaVersion: 1,
+    requiredFeatures: [],
+    id: 'agent_codex_host',
+    displayName: 'Codex Agent',
+    runtime: {
+      kind: 'codex',
+      adapter: 'codex',
+      version: 'test',
+      image: runtimeImage,
+      binaries: [
+        { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+        { id: 'node', path: '/usr/local/bin/node' },
+        { id: 'codex', path: '/usr/local/bin/codex' },
+      ],
+    },
+    models: {
+      preferredLogicalModelId: 'reasoning',
+      allowedLogicalModelIds: ['reasoning'],
+    },
+    profiles: [{ id: 'default', instructionsRef: 'codex', skills: [] }],
+    defaultProfileId: 'default',
+    skills: [],
+    mcp: [],
+    sandbox: {
+      backend: {
+        allowedKinds: ['openshell'],
+        preferred: 'openshell',
+        requiredCapabilities: ['trusted-worker-inference-relay'],
       },
-      null,
-      2
-    )}\n`
-  );
-  // Match the Worker MCP smoke's confirmed synthetic image seam; production admission remains enabled.
-  const [
-    { openCoreDb },
-    { commandInputHash },
-    { admitWorkerImageEnvironment, readWorkerImageSettlement, writeWorkerImageSettlement },
-  ] = await Promise.all([
-    import('../../../nanocore/dist/storage/db.js'),
-    import('../../../nanocore/dist/runtime/idempotent-command.js'),
-    import('../../../nanocore/dist/runtime/worker-image-settlements.js'),
+      credentialDeclarations: [],
+      filesystem: [],
+      network: [],
+    },
+  };
+  await writeFile(join(agentsRoot, 'codex.agent.jsonc'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const [{ AuthoredAgentConfigSchema }, { admitTestNativeEnvironmentForRoot }] = await Promise.all([
+    import('../../../nanocore/dist/agents/manifest.js'),
+    import('../../../nanocore/dist/test-support/native-environment.js'),
   ]);
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    const inputDigest = commandInputHash(runtimeImage);
-    const requestId = createHash('sha256').update(`web-e2e:${inputDigest}`).digest('hex');
-    const imageDigest = `sha256:${'a'.repeat(64)}`;
-    const prior = readWorkerImageSettlement(coreDb, requestId);
-    const candidate = {
-      authoredArtifactId: prior?.authoredArtifactId ?? allocateEntityId('ar'),
-      authoredArtifactVersion: 1 as const,
-      authoredContentDigest: inputDigest,
-      inputDigest,
-    };
-    await writeWorkerImageSettlement(coreDb, {
-      ...candidate,
-      requestId,
-      operation: 'image.acquire',
-      outcome: { kind: 'success', imageDigest },
-    });
-    await admitWorkerImageEnvironment(coreDb, candidate, {
-      imageDigest,
-      defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
-      values: {},
-    });
-  } finally {
-    coreDb.sqlite.close();
-  }
+  await withFixtureCore(dataRoot, (coreDb) =>
+    admitTestNativeEnvironmentForRoot(coreDb, AuthoredAgentConfigSchema.parse(manifest))
+  );
 }
