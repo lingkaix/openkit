@@ -30,7 +30,7 @@ export class ControlStorePressureTelemetry {
     private readonly path: string,
     private readonly scope: Scope,
     private readonly emit: (sample: Readonly<Record<string, unknown>>) => void = (sample) =>
-      console.info(JSON.stringify(sample))
+      console.error(JSON.stringify(sample))
   ) {
     writers.set(sqlite, this);
   }
