@@ -1067,7 +1067,13 @@ export function admitNanoHostWorkerFinalInDb(
       );
     let sequences: ReturnType<typeof inspectNanoHostWorkerFinalSequences>;
     try {
-      sequences = inspectNanoHostWorkerFinalSequences({ sqlite }, input.lineage, input.payload);
+      sequences = inspectNanoHostWorkerFinalSequences(
+        { sqlite },
+        input.lineage,
+        native.attempt.terminalCause === 'observation_limit_reached'
+          ? { ...input.payload, requireContinuous: true }
+          : input.payload
+      );
     } catch {
       throw new ControlProductPreconditionError();
     }

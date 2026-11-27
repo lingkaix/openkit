@@ -67,7 +67,11 @@ import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenan
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import type { ServerWorkCommandBinding } from '../storage/server-work-command.js';
-import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
+import {
+  ObservationCollectionStoppedError,
+  readAdmittedObservationCutoff,
+  readWorkObservationTurnBinding,
+} from '../storage/work-observations.js';
 import {
   executeGatewayPlan,
   type GatewayAttemptContext,
@@ -180,6 +184,8 @@ interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
   rawOutputFailureCode?: 'worker_raw_output_exhausted' | 'worker_raw_output_unavailable';
   /** Releases process-local inference cancellation ownership after the durable call settles. */
   onFinished?: () => void;
+  onCollectionStop?: ModelCaptureContext['onCollectionStop'];
+  observationStop?: ObservationCollectionStoppedError;
   /** Seals exact native observation before terminal status becomes visible. */
   beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => Promise<void>;
   /** Rechecks live authority after every storage wait and before Provider contact or disclosure. */
@@ -325,6 +331,7 @@ function captureForCall(
     attempt,
     capabilityCallId: call.call.id,
     runtimeOriginRef: lineage.runtimeOriginRef ?? null,
+    ...(call.onCollectionStop ? { onCollectionStop: call.onCollectionStop } : {}),
   };
 }
 
@@ -1243,6 +1250,8 @@ function isWorkerInferenceStorageRefusal(error: unknown): error is WorkerControl
  * @returns Sanitized worker-facing response.
  */
 function asWorkerInferenceError(error: unknown): Response {
+  if (error instanceof ObservationCollectionStoppedError)
+    return asWorkerInferenceError(new WorkerInferenceRouteError(error.code, error.message, 409));
   if (
     error instanceof WorkerRawOutputBudgetExceededError ||
     error instanceof WorkerRawOutputAuthorityError
@@ -1603,7 +1612,8 @@ function normalizeGatewayTerminalStream(
             ])
           : await pendingRead;
         if (result && !result.done) await options.durableCall?.assertAuthority?.();
-      } catch (error) {
+      } catch (caught) {
+        const error = options.durableCall?.observationStop ?? caught;
         if (terminal) {
           return;
         }
@@ -1821,6 +1831,8 @@ function createGatewayTerminalErrorSse(
 export function projectGatewayFailure(error: unknown, fallbackCode: string) {
   if (isWorkerInferenceStorageRefusal(error))
     return { type: 'service_unavailable', code: error.code };
+  if (error instanceof ObservationCollectionStoppedError)
+    return { type: 'invalid_request_error', code: error.code };
   if (error instanceof LogicalModelRoutesExhaustedError)
     return { type: error.type, code: error.code };
   const failure = (error as { failure?: PiAiFailure } | null)?.failure;
@@ -1926,6 +1938,7 @@ export function registerWorkerInferenceRoutes({
   resolveGatewayProvider,
   runtimeConfig,
   workerControlGateway,
+  onObservationStop,
   onRawOutputStop,
 }: {
   /** Hono application receiving the internal routes. */
@@ -1946,6 +1959,13 @@ export function registerWorkerInferenceRoutes({
   readonly workerControlGateway: WorkerControlGateway;
   readonly exposureAvailable?: () => boolean;
   /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
+  readonly onObservationStop?: (lineage: {
+    workspaceId: string;
+    threadId: string;
+    turnId: string;
+    agentSessionId: string;
+    packageSnapshotId: string;
+  }) => Promise<void>;
   readonly onRawOutputStop?: (
     scope: { workspaceId: string; threadId: string; turnId: string },
     reason: 'budget_exhausted' | 'error'
@@ -1966,7 +1986,7 @@ export function registerWorkerInferenceRoutes({
         string,
         {
           controller: AbortController;
-          call: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode'>;
+          call: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode' | 'observationStop'>;
           cover?: (force?: boolean) => Promise<void>;
         }
       >;
@@ -2072,7 +2092,7 @@ export function registerWorkerInferenceRoutes({
       activeRawCalls.set(rawKey, rawGroup);
       const rawController = new AbortController();
       const callId = allocateEntityId('cap');
-      const rawCall: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode'> = {};
+      const rawCall: Pick<DurableLlmGatewayCall, 'rawOutputFailureCode' | 'observationStop'> = {};
       // Native publication can be visible before its ACK resumes this request.
       rawGroup.calls.set(callId, { controller: rawController, call: rawCall });
       let durableCall: Awaited<ReturnType<typeof startWorkerInferenceCall>>;
@@ -2096,7 +2116,35 @@ export function registerWorkerInferenceRoutes({
         if (!rawGroup.calls.size) activeRawCalls.delete(rawKey);
         throw error;
       }
-      durableCall.assertAuthority = assertAuthority;
+      let collectionFailure: ObservationCollectionStoppedError | undefined;
+      durableCall.onCollectionStop = (error) => {
+        if (collectionFailure) return;
+        collectionFailure = error;
+        for (const entry of rawGroup.calls.values()) {
+          if (entry.controller.signal.aborted) continue;
+          entry.call.observationStop = error;
+          entry.controller.abort(error);
+        }
+        if (error.truncation)
+          void onObservationStop?.({
+            workspaceId: scope.workspaceId,
+            threadId: scope.threadId,
+            turnId: scope.turnId,
+            agentSessionId: scope.agentSessionId,
+            packageSnapshotId: environmentPackage.snapshotId,
+          }).catch(() => undefined);
+      };
+      const requireObservationAdmission = () => {
+        const cutoff = readAdmittedObservationCutoff(durableCall.workspaceDb, scope);
+        if (!cutoff) return;
+        const error = new ObservationCollectionStoppedError('closed', cutoff);
+        durableCall.onCollectionStop?.(error);
+        throw error;
+      };
+      durableCall.assertAuthority = () => {
+        requireObservationAdmission();
+        assertAuthority();
+      };
       const rawSignal = AbortSignal.any([c.req.raw.signal, rawController.signal]);
       durableCall.onFinished = () => {
         rawGroup.calls.delete(durableCall.call.id);
@@ -2441,6 +2489,7 @@ export function registerWorkerInferenceRoutes({
               rawObservers.push(rawObserver);
               durableCall.assertAuthority = async () => {
                 await execution.assertAuthority?.();
+                requireObservationAdmission();
                 await assertAuthority(rawSignal);
               };
               const dispatchContext: LLMGatewayDispatchContext = {
@@ -2677,12 +2726,17 @@ export function registerWorkerInferenceRoutes({
       } catch (error) {
         // The native stop signal can wrap the private authority failure as cancellation.
         // Preserve its durable cause instead of reporting a caller disconnect.
+        const cutoffFailure =
+          rawController.signal.reason instanceof ObservationCollectionStoppedError
+            ? rawController.signal.reason
+            : undefined;
         const failure =
-          !isWorkerInferenceStorageRefusal(error) && durableCall.rawOutputFailureCode
+          cutoffFailure ??
+          (!isWorkerInferenceStorageRefusal(error) && durableCall.rawOutputFailureCode
             ? durableCall.rawOutputFailureCode === 'worker_raw_output_exhausted'
               ? new WorkerRawOutputBudgetExceededError()
               : new WorkerRawOutputAuthorityError()
-            : error;
+            : error);
         if (!isGatewayCancellation(failure, c.req.raw.signal)) reportFailure(failure);
         const cancelled = await finishDurableLlmGatewayFailure(
           durableCall,
@@ -2701,6 +2755,7 @@ export function registerWorkerInferenceRoutes({
           (failure as { failure?: PiAiFailure } | null)?.failure ?? observedFailure;
         // Unavailable supply can end admitted compaction before a Provider attempt starts.
         if (
+          !cutoffFailure &&
           !durableCall.rawOutputFailureCode &&
           !isWorkerInferenceStorageRefusal(failure) &&
           runtimeHint?.requestKind === 'compaction' &&

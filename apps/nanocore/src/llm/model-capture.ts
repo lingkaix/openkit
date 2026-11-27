@@ -21,6 +21,7 @@ import {
   AssistantSkillAdmissionSchema,
   appendWorkObservation,
   type ControlWorkObservationPreparation,
+  ObservationCollectionStoppedError,
   readControlWorkObservationTurnBinding,
   readWorkObservationTurnBinding,
   requireRetainedObservation,
@@ -36,19 +37,25 @@ interface ServerCapture {
   readonly append: (input: ControlWorkObservationPreparation) => Promise<unknown>;
 }
 
-function appendCaptureObservation(
-  context: Pick<ModelCaptureContext, 'workspaceDb' | 'serverWork'>,
+async function appendCaptureObservation(
+  context: Pick<ModelCaptureContext, 'workspaceDb' | 'serverWork' | 'onCollectionStop'>,
   input: ControlWorkObservationPreparation
 ) {
-  if (context.workspaceDb.scope === 'workspace')
-    return appendWorkObservation(context.workspaceDb, input);
-  if (!context.serverWork) throw serverWorkUnavailable();
-  return context.serverWork.append(input);
+  try {
+    if (context.workspaceDb.scope === 'workspace')
+      return await appendWorkObservation(context.workspaceDb, input);
+    if (!context.serverWork) throw serverWorkUnavailable();
+    return await context.serverWork.append(input);
+  } catch (error) {
+    if (error instanceof ObservationCollectionStoppedError) context.onCollectionStop?.(error);
+    throw error;
+  }
 }
 
 /** Exact trusted entry-owned Turn and logical call; never populated from provider metadata alone. */
 export interface ModelCaptureContext<D extends WorkspaceDb | CoreDb = WorkspaceDb | CoreDb> {
   readonly workspaceDb: D;
+  readonly onCollectionStop?: (error: ObservationCollectionStoppedError) => void;
   readonly serverWork?: ServerCapture;
   readonly threadId: string;
   readonly turnId: string;
@@ -69,6 +76,7 @@ export class ModelCaptureError extends Error {
 
 /** Shared capture admission options; the Turn fixes the immutable storage owner. */
 interface TurnModelCaptureOptions {
+  readonly onCollectionStop?: (error: ObservationCollectionStoppedError) => void;
   readonly store: FsStore;
   /** Requires the producer's selected Skills tuple, including an explicit empty selection. */
   readonly requireAssistantSkillAdmission?: boolean;
@@ -183,6 +191,14 @@ export async function withTurnModelCapture<T>(
           threadId: turn.threadId,
           turnId: turn.id,
         });
+      if (binding.turn.observationCutoff) {
+        const error = new ObservationCollectionStoppedError(
+          'closed',
+          binding.turn.observationCutoff.summary
+        );
+        input.onCollectionStop?.(error);
+        throw error;
+      }
       if (!binding.coverage) {
         throw new ModelCaptureError();
       }
@@ -205,7 +221,11 @@ export async function withTurnModelCapture<T>(
         // Admission time and identity let the existing writer deduplicate exact re-entry and reject rebinding.
         await withServerWorkProducer(serverWork?.binding, () =>
           appendCaptureObservation(
-            { workspaceDb: captureDb, ...(serverWork ? { serverWork } : {}) },
+            {
+              workspaceDb: captureDb,
+              ...(serverWork ? { serverWork } : {}),
+              ...(input.onCollectionStop ? { onCollectionStop: input.onCollectionStop } : {}),
+            },
             {
               threadId: turn.threadId,
               turnId: turn.id,
@@ -234,11 +254,13 @@ export async function withTurnModelCapture<T>(
           )
         );
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ObservationCollectionStoppedError) throw error;
       throw new ModelCaptureError();
     }
     return await (run as (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>)({
       workspaceDb: captureDb,
+      ...(input.onCollectionStop ? { onCollectionStop: input.onCollectionStop } : {}),
       ...(serverWork ? { serverWork } : {}),
       threadId: turn.threadId,
       turnId: turn.id,
@@ -271,7 +293,8 @@ export class ModelCapture {
         context.serverWork?.read() ?? readWorkObservationTurnBinding(context.workspaceDb, context);
       if (!binding.coverage) throw new ModelCaptureError();
       this.enabled = binding.coverage.value === 'on';
-    } catch {
+    } catch (error) {
+      if (error instanceof ObservationCollectionStoppedError) throw error;
       throw new ModelCaptureError();
     }
   }
@@ -332,7 +355,8 @@ export class ModelCapture {
         },
         bodies: [],
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ObservationCollectionStoppedError) throw error;
       throw new ModelCaptureError();
     }
     await this.record('request', 'request', () => admittedModelRequest(request), {
@@ -499,7 +523,8 @@ export class ModelCapture {
         bodies,
         ...(defer ? { deferBodyPublication: true } : {}),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ObservationCollectionStoppedError) throw error;
       await this.gap(observation, 'capture-failed');
     }
   }
@@ -527,7 +552,8 @@ export class ModelCapture {
         },
         bodies: [],
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ObservationCollectionStoppedError) throw error;
       throw new ModelCaptureError();
     }
   }

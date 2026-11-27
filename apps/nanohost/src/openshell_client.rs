@@ -31,11 +31,16 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tower::service_fn;
 
+use crate::environment_provider::{
+    AbsenceProof, Absent, EnvironmentProvider, KeepAbsent, KeepPresent, LifecycleEffectError,
+    Present, ProviderInventory,
+};
 use crate::epoch_coordinator::{
     CreateCertaintyLossPoint, CreateUncertainty, EpochFault, MemberFailureSubject, WatchedTask,
     record_task_abort, record_task_return,
 };
 use crate::nanocore_session::OuterRouteProjection;
+use crate::openshell_address::{AddressError, BoundAddress, IncarnationRow, ProviderScope};
 use crate::openshell_release;
 use crate::persistent_volume::{PERSISTENT_VOLUME_ROOT, StorageMount};
 use crate::sandbox_bridge::{
@@ -313,30 +318,15 @@ impl LifecycleEffectRequest {
     }
 }
 
-/// Separates native absence after a failed create from an Epoch-invalidating fault.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LifecycleEffectError {
-    /// The existing fail-stop fault still owns the complete Epoch.
-    Epoch(EpochFault),
-    /// Native absence is proved; the coordinator exposes this only after credential and attachment cleanup.
-    CreateCleanupProved,
-}
-
-impl From<EpochFault> for LifecycleEffectError {
-    fn from(fault: EpochFault) -> Self {
-        Self::Epoch(fault)
-    }
-}
-
 /// Direct result of one existing OpenShell lifecycle owner.
 #[allow(dead_code)]
 pub enum LifecycleEffectResult {
     /// Failed creation after exact native Sandbox absence; coordinator cleanup is still required.
     SandboxCreateFailed,
     /// Exact created sandbox identity returned by OpenShell.
-    SandboxCreated(SandboxRef),
-    /// Definite sandbox deletion and terminal absence.
-    SandboxDeleted,
+    SandboxCreated(Box<SandboxRef>),
+    /// Exact Gateway deletion read-back. Physical proof is still pending.
+    SandboxDeleteObserved,
     /// Live fixed-target bridge and independent worker response monitor.
     BridgeOpened {
         /// Bridge retained for nested HTTP/2 serving.
@@ -440,6 +430,8 @@ pub struct NanoHostOpenShellClient {
     network_namespace: Option<Arc<OwnedFd>>,
     client: Option<OpenShellClient>,
     ready_timeout: Duration,
+    #[cfg(test)]
+    fixture_accepted_create: Option<mpsc::UnboundedSender<(String, String)>>,
 }
 
 #[allow(dead_code)]
@@ -499,6 +491,8 @@ impl NanoHostOpenShellClient {
             network_namespace: None,
             client: None,
             ready_timeout: READY_POLL_TIMEOUT,
+            #[cfg(test)]
+            fixture_accepted_create: None,
         }
     }
 
@@ -889,27 +883,13 @@ impl NanoHostOpenShellClient {
             ))
         };
         let client = self.connected()?;
-        let driver_config = storage_driver_config(storage_mounts)?;
-        let request = CreateSandboxRequest {
-            spec: Some(RawSandboxSpec {
-                environment: spec.environment,
-                template: spec.image.map(|image| SandboxTemplate {
-                    image,
-                    driver_config,
-                    ..SandboxTemplate::default()
-                }),
-                policy: Some(policy),
-                providers: spec.providers,
-                resource_requirements: spec.gpu.then_some(ResourceRequirements {
-                    gpu: Some(GpuResourceRequirements { count: None }),
-                }),
-                ..RawSandboxSpec::default()
-            }),
-            name: expected_name.clone(),
-            labels: spec.labels,
-            workspace_scope: Some(workspace_selector("default")),
-            ..Default::default()
-        };
+        let request = Self::sandbox_create_request(
+            spec,
+            policy,
+            storage_mounts,
+            expected_name.clone(),
+            "default",
+        )?;
         let response = client.raw_grpc().create_sandbox(request).await;
         let sandbox = match response {
             Ok(response) => response,
@@ -941,6 +921,10 @@ impl NanoHostOpenShellClient {
         }
         if expected_name != sandbox.name {
             return Err(EpochFault::IdentityMismatch.into());
+        }
+        #[cfg(test)]
+        if let Some(accepted) = &self.fixture_accepted_create {
+            let _ = accepted.send((sandbox.name.clone(), sandbox.id.clone()));
         }
         let deadline = tokio::time::Instant::now() + self.ready_timeout;
         let mut delay = READY_POLL_INITIAL_DELAY;
@@ -998,6 +982,37 @@ impl NanoHostOpenShellClient {
             // when compensating cleanup cannot prove the request has no effects.
             _ => unproved.into(),
         }
+    }
+
+    /// Shared native envelope for the retained and incarnation-scoped providers.
+    fn sandbox_create_request(
+        spec: SandboxSpec,
+        policy: SandboxPolicy,
+        storage_mounts: &[StorageMount],
+        name: String,
+        workspace: &str,
+    ) -> Result<CreateSandboxRequest, EpochFault> {
+        let driver_config = storage_driver_config(storage_mounts)?;
+        Ok(CreateSandboxRequest {
+            spec: Some(RawSandboxSpec {
+                environment: spec.environment,
+                template: spec.image.map(|image| SandboxTemplate {
+                    image,
+                    driver_config,
+                    ..SandboxTemplate::default()
+                }),
+                policy: Some(policy),
+                providers: spec.providers,
+                resource_requirements: spec.gpu.then_some(ResourceRequirements {
+                    gpu: Some(GpuResourceRequirements { count: None }),
+                }),
+                ..RawSandboxSpec::default()
+            }),
+            name,
+            labels: spec.labels,
+            workspace_scope: Some(workspace_selector(workspace)),
+            ..Default::default()
+        })
     }
 
     /// Gets one sandbox and verifies the returned name.
@@ -1329,15 +1344,24 @@ impl NanoHostOpenShellClient {
         }
         match request.kind {
             LifecycleEffectKind::CreateSandbox => {
-                let (spec, policy, storage_mounts) = create.ok_or(EpochFault::IdentityMismatch)?;
-                if spec.name.as_deref() != Some(request.sandbox_id()) {
+                let (template, envelope, attachment) =
+                    create.ok_or(EpochFault::IdentityMismatch)?;
+                if template.name.as_deref() != Some(request.sandbox_id()) {
                     return Err(EpochFault::IdentityMismatch);
                 }
                 let sandbox = match self
-                    .create_sandbox(spec, policy, request.request_id(), &storage_mounts)
+                    .keep_present(
+                        request.request_id(),
+                        KeepPresent::Provision {
+                            template,
+                            envelope,
+                            attachment,
+                        },
+                    )
                     .await
                 {
-                    Ok(sandbox) => sandbox,
+                    Ok(Present::Provisioned(sandbox)) => sandbox,
+                    Ok(Present::Carried { .. }) => return Err(EpochFault::IdentityMismatch),
                     Err(LifecycleEffectError::CreateCleanupProved) => {
                         return Ok(LifecycleEffectResult::SandboxCreateFailed);
                     }
@@ -1346,52 +1370,47 @@ impl NanoHostOpenShellClient {
                 request
                     .validate_result_identity(request.request_id(), &sandbox.name)
                     .map_err(|_| EpochFault::IdentityMismatch)?;
-                Ok(LifecycleEffectResult::SandboxCreated(sandbox))
+                Ok(LifecycleEffectResult::SandboxCreated(Box::new(sandbox)))
             }
             LifecycleEffectKind::DeleteSandbox => {
                 let (native_id, timeout) = deletion_target.ok_or(EpochFault::IdentityMismatch)?;
-                self.delete_sandbox(request.sandbox_id(), Some(native_id), timeout)
-                    .await?;
-                Ok(LifecycleEffectResult::SandboxDeleted)
+                let Absent::AwaitingPhysicalProof = self
+                    .keep_absent(KeepAbsent::Sandbox {
+                        name: request.sandbox_id(),
+                        expected_native_id: native_id,
+                        timeout,
+                    })
+                    .await?
+                else {
+                    return Err(EpochFault::IdentityMismatch);
+                };
+                Ok(LifecycleEffectResult::SandboxDeleteObserved)
             }
             LifecycleEffectKind::OpenBridge => {
-                let worker_bootstrap = worker_bootstrap.ok_or(EpochFault::IdentityMismatch)?;
-                let route_projection = route_projection.ok_or(EpochFault::IdentityMismatch)?;
-                let sandbox_id = worker_bootstrap.sandbox_id.clone();
-                let sandbox_integration_binding_ref =
-                    worker_bootstrap.sandbox_integration_binding_ref.clone();
-                let mut exec_monitor = self
-                    .exec_sandbox_worker_bootstrap(worker_bootstrap, request.sandbox_id())
-                    .await?;
-                let (bridge, route_monitor) = tokio::select! {
-                    bridge = self.open_sandbox_bridge(
-                        request.sandbox_id(),
-                        &sandbox_id,
-                        sandbox_integration_binding_ref,
-                        route_projection,
-                    ) => match bridge {
-                        Ok(bridge) => bridge,
-                        Err(fault) => {
-                            record_task_abort(MemberFailureSubject::HarnessResponse);
-                            exec_monitor.response.abort();
-                            return Err(fault);
-                        }
-                    },
-                    _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited(None)),
-                };
-                exec_monitor.bridge_route = Some(route_monitor);
-                let harness_ready = bridge.harness_ready();
-                if !harness_ready || !exec_monitor.is_live() {
-                    return Err(EpochFault::MemberExited(None));
+                let bootstrap = worker_bootstrap.ok_or(EpochFault::IdentityMismatch)?;
+                let routes = route_projection.ok_or(EpochFault::IdentityMismatch)?;
+                match self
+                    .keep_present(
+                        request.request_id(),
+                        KeepPresent::Carry((request.sandbox_id().to_owned(), bootstrap, routes)),
+                    )
+                    .await
+                {
+                    Ok(Present::Carried { bridge, monitor }) => {
+                        Ok(LifecycleEffectResult::BridgeOpened {
+                            bridge,
+                            exec_monitor: monitor,
+                        })
+                    }
+                    Err(LifecycleEffectError::Epoch(fault)) => Err(fault),
+                    _ => Err(EpochFault::IdentityMismatch),
                 }
-                Ok(LifecycleEffectResult::BridgeOpened {
-                    bridge,
-                    exec_monitor,
-                })
             }
             LifecycleEffectKind::CloseBridge => {
-                self.close_sandbox_bridge(bridge.ok_or(EpochFault::IdentityMismatch)?)
-                    .await?;
+                self.keep_absent(KeepAbsent::Carrier(
+                    bridge.ok_or(EpochFault::IdentityMismatch)?,
+                ))
+                .await?;
                 Ok(LifecycleEffectResult::BridgeClosed)
             }
         }
@@ -1820,8 +1839,272 @@ pub(crate) async fn dormant_provider_refresh_status(
         .collect()
 }
 
+// The current Host session has no admitted v1 incarnation-row projection.
+#[allow(dead_code)]
+impl NanoHostOpenShellClient {
+    /// Reads the original operation address only. A miss leaves delivery unknown.
+    pub(crate) async fn inspect_incarnation(
+        &self,
+        bound: &BoundAddress<'_, '_>,
+    ) -> Result<Option<SandboxRef>, AddressError> {
+        let client = self.connected().map_err(|_| AddressError::Unknown)?;
+        let observed = match client
+            .workspace(bound.scope().workspace)
+            .get_sandbox(bound.name())
+            .await
+        {
+            Err(openshell_sdk::SdkError::NotFound { .. }) => return Ok(None),
+            Err(_) => return Err(AddressError::Unknown),
+            Ok(observed) => observed,
+        };
+        bound.observe(
+            &observed.workspace,
+            &observed.name,
+            &observed.id,
+            &observed.labels,
+        )?;
+        Ok(Some(observed))
+    }
+
+    /// Submits the already-authorized original create once. Recovery calls inspect.
+    pub(crate) async fn create_incarnation(
+        &self,
+        bound: &BoundAddress<'_, '_>,
+        original_intent: &str,
+        mut spec: SandboxSpec,
+        policy: SandboxPolicy,
+        mounts: &[StorageMount],
+        deadline: tokio::time::Instant,
+    ) -> Result<SandboxRef, AddressError> {
+        bound.create_labels(original_intent, &mut spec.labels)?;
+        if spec.name.is_some() {
+            return Err(AddressError::Conflict);
+        }
+        let client = self.connected().map_err(|_| AddressError::Unknown)?;
+        let request = Self::sandbox_create_request(
+            spec,
+            policy,
+            mounts,
+            bound.name().to_owned(),
+            bound.scope().workspace,
+        )
+        .map_err(|_| AddressError::Conflict)?;
+        tokio::time::timeout_at(deadline, async {
+            let accepted_id = match client.raw_grpc().create_sandbox(request).await {
+                Ok(response) => {
+                    let meta = response
+                        .into_inner()
+                        .sandbox
+                        .and_then(|item| item.metadata)
+                        .ok_or(AddressError::Unknown)?;
+                    bound.observe(&meta.workspace, &meta.name, &meta.id, &meta.labels)?;
+                    meta.id
+                }
+                Err(status) if status.code() == tonic::Code::AlreadyExists => {
+                    self.inspect_incarnation(bound)
+                        .await?
+                        .ok_or(AddressError::Conflict)?
+                        .id
+                }
+                Err(_) => return Err(AddressError::Unknown),
+            };
+            loop {
+                let observed = self
+                    .inspect_incarnation(bound)
+                    .await?
+                    .ok_or(AddressError::Unknown)?;
+                if observed.id != accepted_id {
+                    return Err(AddressError::Conflict);
+                }
+                match observed.phase {
+                    SandboxPhase::Ready => return Ok(observed),
+                    SandboxPhase::Error | SandboxPhase::Deleting => {
+                        return Err(AddressError::Unknown);
+                    }
+                    _ => tokio::time::sleep(READY_POLL_INITIAL_DELAY).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| AddressError::Unknown)?
+    }
+
+    /// Validates complete stock inventory against the admitted incarnation map.
+    pub(crate) async fn inventory_incarnations(
+        &self,
+        scope: ProviderScope<'_>,
+        rows: &[IncarnationRow<'_>],
+        page_size: i32,
+    ) -> Result<ProviderInventory<SandboxRef>, AddressError> {
+        let client = self.connected().map_err(|_| AddressError::Unknown)?;
+        let observed = client
+            .workspace(scope.workspace)
+            .list_all_sandboxes(ListOptions {
+                page_size,
+                ..Default::default()
+            })
+            .await
+            .map_err(|_| AddressError::Unknown)?;
+        let mut names = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
+        for sandbox in &observed {
+            BoundAddress::observe_inventory(scope, rows, sandbox)?;
+            if !names.insert(&sandbox.name) || !ids.insert(&sandbox.id) {
+                return Err(AddressError::Conflict);
+            }
+        }
+        Ok(ProviderInventory {
+            observed,
+            absence: AbsenceProof::EpochRenewalOnly,
+        })
+    }
+
+    /// Dispatches name-addressed Delete under the caller's held row, then reads back absence.
+    /// Stock inventory cannot join all accepted work, so release requires epoch renewal.
+    pub(crate) async fn delete_incarnation(
+        &self,
+        bound: &BoundAddress<'_, '_>,
+        original_native_id: &str,
+        original_attachment_generation: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<Absent, AddressError> {
+        bound.check_delete(original_native_id, original_attachment_generation)?;
+        let client = self.connected().map_err(|_| AddressError::Unknown)?;
+        tokio::time::timeout_at(deadline, async {
+            if self.inspect_incarnation(bound).await?.is_none() {
+                return Ok(Absent::AwaitingPhysicalProof);
+            }
+            let scoped = client.workspace(bound.scope().workspace);
+            match scoped
+                .delete_sandbox(bound.name(), DeleteOptions::default())
+                .await
+            {
+                Ok(receipt)
+                    if matches!(
+                        receipt.outcome,
+                        DeletionOutcome::Completed | DeletionOutcome::Accepted
+                    ) && receipt.sandbox_id.as_deref() == Some(original_native_id) => {}
+                Ok(_) => return Err(AddressError::Conflict),
+                Err(openshell_sdk::SdkError::NotFound { .. }) => {}
+                Err(_) => return Err(AddressError::Unknown),
+            }
+            while self.inspect_incarnation(bound).await?.is_some() {
+                tokio::time::sleep(READY_POLL_INITIAL_DELAY).await;
+            }
+            Ok(Absent::AwaitingPhysicalProof)
+        })
+        .await
+        .map_err(|_| AddressError::Unknown)?
+    }
+}
+
+impl EnvironmentProvider for NanoHostOpenShellClient {
+    type Template = SandboxSpec;
+    type Envelope = SandboxPolicy;
+    type Attachment = Vec<StorageMount>;
+    type CarrierOrder = (String, WorkerBootstrapRequest, OuterRouteProjection);
+    type Sandbox = SandboxRef;
+    type Bridge = OpenSandboxBridge;
+    type Monitor = WorkerBootstrapMonitor;
+
+    async fn keep_present(
+        &self,
+        operation_id: &str,
+        order: KeepPresent<Self::Template, Self::Envelope, Self::Attachment, Self::CarrierOrder>,
+    ) -> Result<Present<Self::Sandbox, Self::Bridge, Self::Monitor>, LifecycleEffectError> {
+        match order {
+            KeepPresent::Provision {
+                template,
+                envelope,
+                attachment,
+            } => self
+                .create_sandbox(template, envelope, operation_id, &attachment)
+                .await
+                .map(Present::Provisioned),
+            KeepPresent::Carry((sandbox_name, worker_bootstrap, route_projection)) => {
+                let sandbox_id = worker_bootstrap.sandbox_id.clone();
+                let sandbox_integration_binding_ref =
+                    worker_bootstrap.sandbox_integration_binding_ref.clone();
+                let mut exec_monitor = self
+                    .exec_sandbox_worker_bootstrap(worker_bootstrap, &sandbox_name)
+                    .await?;
+                let (bridge, route_monitor) = tokio::select! {
+                    bridge = self.open_sandbox_bridge(
+                        &sandbox_name,
+                        &sandbox_id,
+                        sandbox_integration_binding_ref,
+                        route_projection,
+                    ) => match bridge {
+                        Ok(bridge) => bridge,
+                        Err(fault) => {
+                            record_task_abort(MemberFailureSubject::HarnessResponse);
+                            exec_monitor.response.abort();
+                            return Err(fault.into());
+                        }
+                    },
+                    _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited(None).into()),
+                };
+                exec_monitor.bridge_route = Some(route_monitor);
+                let harness_ready = bridge.harness_ready();
+                if !harness_ready || !exec_monitor.is_live() {
+                    return Err(EpochFault::MemberExited(None).into());
+                }
+                Ok(Present::Carried {
+                    bridge,
+                    monitor: exec_monitor,
+                })
+            }
+        }
+    }
+
+    async fn keep_absent(&self, order: KeepAbsent<'_, Self::Bridge>) -> Result<Absent, EpochFault> {
+        match order {
+            KeepAbsent::Carrier(bridge) => {
+                self.close_sandbox_bridge(bridge).await?;
+                Ok(Absent::CarrierClosed)
+            }
+            KeepAbsent::Sandbox {
+                name,
+                expected_native_id,
+                timeout,
+            } => {
+                self.delete_sandbox(name, Some(expected_native_id), timeout)
+                    .await?;
+                Ok(Absent::AwaitingPhysicalProof)
+            }
+        }
+    }
+
+    async fn report_inventory(&self) -> Result<ProviderInventory<SandboxRef>, EpochFault> {
+        let observed = self.list_sandboxes(ListOptions::default()).await?;
+        let mut names = std::collections::HashSet::new();
+        let mut ids = std::collections::HashSet::new();
+        if observed.iter().any(|sandbox| {
+            sandbox.name.is_empty()
+                || sandbox.id.is_empty()
+                || !names.insert(&sandbox.name)
+                || !ids.insert(&sandbox.id)
+        }) {
+            return Err(EpochFault::IdentityMismatch);
+        }
+        Ok(ProviderInventory {
+            observed,
+            absence: AbsenceProof::EpochRenewalOnly,
+        })
+    }
+}
+
 #[cfg(test)]
 impl NanoHostOpenShellClient {
+    /// Reports the actual accepted identity before readiness polling in the stock fixture.
+    pub(crate) fn fixture_track_accepted_create(
+        &mut self,
+    ) -> mpsc::UnboundedReceiver<(String, String)> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.fixture_accepted_create = Some(sender);
+        receiver
+    }
+
     /// Shortens only the test caller's accepted-Create readiness deadline.
     pub(crate) fn fixture_create_ready_timeout(&mut self, timeout: Duration) {
         self.ready_timeout = timeout;
@@ -2374,7 +2657,7 @@ pub(crate) mod tests {
     #[test]
     fn nhc_imp_5o_connects_only_through_one_namespace_entering_thread() {
         let production = include_str!("openshell_client.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .expect("OpenShell client production section")
             .0;
         let setns_declaration = production
@@ -2822,7 +3105,7 @@ pub(crate) mod tests {
     #[test]
     fn wp4_stock_bridge_orders_session_issue_forward_and_revocation_on_one_client() {
         let source = include_str!("openshell_client.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .expect("OpenShell client production section")
             .0;
         let bridge = source
@@ -3006,7 +3289,7 @@ pub(crate) mod tests {
             .split_once("async fn execute_lifecycle_effect")
             .expect("the additive lifecycle effect handler must exist")
             .1
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .expect("the handler remains production code")
             .0;
         for existing_owner in [
@@ -3020,11 +3303,13 @@ pub(crate) mod tests {
         }
         assert!(!handler.contains("exec_sandbox_interactive_worker_bootstrap("));
         let open_bridge = handler
-            .split_once("LifecycleEffectKind::OpenBridge => {")
-            .expect("closed OpenBridge lifecycle branch")
+            .split_once(
+                "KeepPresent::Carry((sandbox_name, worker_bootstrap, route_projection)) => {",
+            )
+            .expect("closed carrier branch")
             .1
-            .split_once("LifecycleEffectKind::CloseBridge => {")
-            .expect("end of OpenBridge lifecycle branch")
+            .split_once("async fn keep_absent")
+            .expect("end of keep present")
             .0;
         let mutable_monitor = open_bridge
             .find("let mut exec_monitor =")
@@ -3045,7 +3330,7 @@ pub(crate) mod tests {
             .split_once("_ = &mut exec_monitor.response")
             .expect("value-free bootstrap monitor completion arm")
             .1;
-        assert!(monitor_arm.contains("return Err(EpochFault::MemberExited(None))"));
+        assert!(monitor_arm.contains("return Err(EpochFault::MemberExited(None).into())"));
         for forbidden in [
             ".await",
             "sleep(",
@@ -3066,7 +3351,7 @@ pub(crate) mod tests {
             .find("exec_monitor.is_live()")
             .expect("existing post-race monitor liveness proof");
         let retained = open_bridge
-            .rfind("exec_monitor,")
+            .rfind("monitor: exec_monitor,")
             .expect("same bootstrap monitor retained on bridge success");
         assert!(
             mutable_monitor < select
@@ -3079,7 +3364,7 @@ pub(crate) mod tests {
         assert_eq!(open_bridge.matches("tokio::select!").count(), 1);
         assert_eq!(open_bridge.matches("exec_monitor.is_live()").count(), 1);
         let production = source
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .expect("OpenShell client production section")
             .0;
         let create_owner = production
@@ -3094,11 +3379,13 @@ pub(crate) mod tests {
             "sandbox create must require the AEP-derived pinned policy"
         );
         let raw_request = create_owner
-            .find("CreateSandboxRequest")
+            .find("Self::sandbox_create_request(")
             .expect("pinned raw create request");
-        let policy = create_owner
-            .find("policy: Some(policy)")
-            .expect("AEP policy must enter the pinned proto spec");
+        let builder = create_owner
+            .split_once("fn sandbox_create_request(")
+            .expect("shared native request builder")
+            .1;
+        assert!(builder.contains("policy: Some(policy)"));
         let raw_create = create_owner
             .find(".create_sandbox(request)")
             .expect("raw create request dispatch");
@@ -3124,8 +3411,7 @@ pub(crate) mod tests {
             .find("return observation.map_err")
             .expect("only the identity-matched ready sandbox may return");
         assert!(
-            raw_request < policy
-                && policy < raw_create
+            raw_request < raw_create
                 && raw_create < create_request_unproved
                 && create_request_unproved < create_response_invalid
                 && create_response_invalid < accepted_identity

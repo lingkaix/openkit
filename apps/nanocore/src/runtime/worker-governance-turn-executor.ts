@@ -114,7 +114,10 @@ import {
 } from '../storage/nanohost-recovery-native.js';
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
-import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
+import {
+  readWorkObservationTurnBinding,
+  readWorkspaceObservationCutoff,
+} from '../storage/work-observations.js';
 import {
   AgentSessionRetainedStorageSchema,
   isCurrentAgentSessionStatus,
@@ -4987,28 +4990,61 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     const scope = { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId };
+    if (context.stopReason === 'observation_limit_reached') {
+      const source = context.observationLineage;
+      if (
+        context.command ||
+        !source ||
+        source.workspaceId !== scope.workspaceId ||
+        source.threadId !== scope.threadId ||
+        source.agentSessionId !== agentSession.id ||
+        source.packageSnapshotId !== agentSession.environmentPackageSnapshotId ||
+        !readWorkspaceObservationCutoff(this.coreDb!.dataRoot, {
+          ...scope,
+          agentSessionId: agentSession.id,
+        })
+      )
+        throw new Error('The live Worker observation cutoff is unavailable.');
+    }
     const attempts = listSchedulerExecutionAttemptsForTurn(this.coreDb!, scope);
     const attempt = attempts.find((candidate) => candidate.phase !== 'closed');
     if (
       context.stopReason &&
       attempt?.phase === 'closing' &&
-      ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-        attempt.terminalCause ?? ''
-      )
+      [
+        'turn-cancelled',
+        'raw-output-exhausted',
+        'raw-output-unavailable',
+        'observation_limit_reached',
+      ].includes(attempt.terminalCause ?? '')
     )
       return;
     if (!attempt || attempt.phase !== 'open')
       throw new Error('Turn cancellation is already owned or has no live attempt.');
+    if (
+      context.stopReason === 'observation_limit_reached' &&
+      (attempt.agentSessionId !== agentSession.id ||
+        attempt.inputRef !== agentSession.environmentPackageSnapshotId ||
+        !attempt.operationId)
+    )
+      throw new Error('Observation stop has no submitted Worker lineage.');
     const closing = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
       attemptId: attempt.attemptId,
       cause:
-        context.stopReason === 'budget_exhausted'
-          ? 'raw-output-exhausted'
-          : context.stopReason === 'error'
-            ? 'raw-output-unavailable'
-            : 'turn-cancelled',
+        context.stopReason === 'observation_limit_reached'
+          ? 'observation_limit_reached'
+          : context.stopReason === 'budget_exhausted'
+            ? 'raw-output-exhausted'
+            : context.stopReason === 'error'
+              ? 'raw-output-unavailable'
+              : 'turn-cancelled',
       ...(this.now ? { now: this.now } : {}),
     });
+    if (
+      context.stopReason === 'observation_limit_reached' &&
+      closing.terminalCause !== 'observation_limit_reached'
+    )
+      return;
     if (context.command) {
       if (context.command.receipt.command !== 'turn.interrupt')
         throw new Error('Worker interruption requires its original interrupt command.');
@@ -6205,10 +6241,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionId,
         agentSessionRetained,
         completedAt: this.currentTime(),
-        errorCode: 'worker_governance_turn_cancelled',
-        message: cancellationWon
-          ? 'Worker execution was interrupted.'
-          : 'Worker reported an aborted terminal status.',
+        errorCode:
+          terminalCause === 'observation_limit_reached'
+            ? 'observation_limit_reached'
+            : 'worker_governance_turn_cancelled',
+        message:
+          terminalCause === 'observation_limit_reached'
+            ? 'Worker execution reached its observation collection limit.'
+            : cancellationWon
+              ? 'Worker execution was interrupted.'
+              : 'Worker reported an aborted terminal status.',
         outcome: turnStatusForCanonicalWorkerStopReason(stopReason),
         requestId,
         store,
@@ -6413,17 +6455,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     primaryError: unknown = error,
     agentSessionRetained = false
   ): Promise<void> {
-    const cancellationWon =
-      this.coreDb &&
-      agentSessionId !== null &&
-      listSchedulerExecutionAttemptsForTurn(this.coreDb, {
-        workspaceId: workspaceIdForOwner(turnScope.owner),
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-      }).some(
-        (attempt) =>
-          attempt.agentSessionId === agentSessionId && attempt.terminalCause === 'turn-cancelled'
-      );
+    const attempts =
+      this.coreDb && agentSessionId !== null
+        ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
+            workspaceId: workspaceIdForOwner(turnScope.owner),
+            threadId: turnScope.threadId,
+            turnId: turnScope.id,
+          }).filter((attempt) => attempt.agentSessionId === agentSessionId)
+        : [];
+    const cancellationWon = attempts.some((attempt) => attempt.terminalCause === 'turn-cancelled');
+    const observationStopped =
+      !cancellationWon && attempts.at(-1)?.terminalCause === 'observation_limit_reached';
+    const interrupted = cancellationWon || observationStopped;
     const explanation = GitFailureExplanationSchema.safeParse(
       primaryError instanceof Error && 'explanation' in primaryError
         ? primaryError.explanation
@@ -6438,19 +6481,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             publication: await this.readTerminalPublication(
               store,
               turnScope.id,
-              cancellationWon ? 'interrupted' : 'failed'
+              interrupted ? 'interrupted' : 'failed'
             ),
           }
         : {}),
       completedAt: this.currentTime(),
-      errorCode: cancellationWon
-        ? 'worker_governance_turn_cancelled'
-        : error === primaryError && primaryError instanceof WorkerReleaseIncompatibleError
-          ? 'worker_release_incompatible'
-          : 'worker_governance_turn_failed',
-      ...(!cancellationWon && explanation.success ? { explanation: explanation.data } : {}),
-      message: cancellationWon ? 'Worker execution was interrupted.' : message,
-      outcome: cancellationWon ? 'interrupted' : 'failed',
+      errorCode: observationStopped
+        ? 'observation_limit_reached'
+        : cancellationWon
+          ? 'worker_governance_turn_cancelled'
+          : error === primaryError && primaryError instanceof WorkerReleaseIncompatibleError
+            ? 'worker_release_incompatible'
+            : 'worker_governance_turn_failed',
+      ...(!interrupted && explanation.success ? { explanation: explanation.data } : {}),
+      message: observationStopped
+        ? 'Work observation collection reached its limit.'
+        : cancellationWon
+          ? 'Worker execution was interrupted.'
+          : message,
+      outcome: interrupted ? 'interrupted' : 'failed',
       requestId,
       store,
       turnId: turnScope.id,

@@ -105,10 +105,17 @@ function applyAdmittedNanoHostWorkerFinalStatus(
   }
 
   return sqlite.transaction(() =>
-    settleNanoHostWorkerFinalRecords(sqlite, input.lineage, payload, {
-      replayOnly,
-      cancellationOnly: !replayOnly && decision.kind === 'cancellation-decided',
-    })
+    settleNanoHostWorkerFinalRecords(
+      sqlite,
+      input.lineage,
+      native.attempt.terminalCause === 'observation_limit_reached'
+        ? { ...payload, requireContinuous: true }
+        : payload,
+      {
+        replayOnly,
+        cancellationOnly: !replayOnly && decision.kind === 'cancellation-decided',
+      }
+    )
   )();
 }
 
@@ -166,9 +173,11 @@ export function applyControlWorkerFinalStatus(
   );
   const hash = db.sqlite
     .prepare(
-      'SELECT worker_control_token_hash AS tokenHash FROM scheduler_execution_attempts WHERE binding_ref = ?'
+      'SELECT worker_control_token_hash AS tokenHash, terminal_cause AS terminalCause FROM scheduler_execution_attempts WHERE binding_ref = ?'
     )
-    .get(input.sandboxBindingRef) as { tokenHash: string | null } | undefined;
+    .get(input.sandboxBindingRef) as
+    | { tokenHash: string | null; terminalCause: string | null }
+    | undefined;
   if (
     !hash?.tokenHash ||
     !/^[0-9a-f]{64}$/.test(hash.tokenHash) ||
@@ -178,7 +187,14 @@ export function applyControlWorkerFinalStatus(
   const binding = { lineage: input.lineage, sandboxBindingRef: input.sandboxBindingRef };
   const resolution = resolveWorkerControlFinalStatusTokenBinding(db, binding);
   if (resolution.status === 'rejected') refuseBinding(resolution.reason);
-  const result = settleNanoHostWorkerFinalRecords(db.sqlite, input.lineage, payload, resolution);
+  const result = settleNanoHostWorkerFinalRecords(
+    db.sqlite,
+    input.lineage,
+    hash.terminalCause === 'observation_limit_reached'
+      ? { ...payload, requireContinuous: true }
+      : payload,
+    resolution
+  );
   if (!resolution.replayOnly) {
     const live = resolveNanoHostAttemptTokenBinding(db, binding);
     if (live.status === 'accepted')

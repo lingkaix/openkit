@@ -243,6 +243,53 @@ describe('WorkerControlClient', () => {
     expect(requests).toHaveLength(1);
   });
 
+  it('accepts only an omission ACK bound to the exact observation sequence', async () => {
+    const acknowledgement = {
+      accepted: false,
+      diagnostics: [{ code: 'observation_limit_reached', message: 'Observation omitted.' }],
+      nextExpectedSequence: 4,
+      schemaVersion: 2,
+    };
+    const { fetch } = createFetchFixture([
+      { body: acknowledgement },
+      { body: { ...acknowledgement, nextExpectedSequence: 5 } },
+      { body: acknowledgement },
+    ]);
+    const client = new WorkerControlClient({
+      fetch,
+      lineage,
+      token: 'token_control_1',
+      baseUrl: '/worker-control',
+    });
+    const observation: WorkerCanonicalEventRecord = {
+      kind: 'event',
+      lineage,
+      schemaVersion: 1,
+      sequence: 3,
+      event: {
+        type: 'observation.recorded',
+        data: {
+          observationId: 'obs_omitted',
+          sourceRef: 'source_test',
+          sourceSequence: 0,
+          observedAt: '2026-10-21T00:00:00.000Z',
+          fact: { kind: 'origin', runtimeOriginRef: null, phase: 'completed' },
+          content: { state: 'not-applicable' },
+        },
+      },
+    };
+    await expect(client.appendEvent(observation)).resolves.toEqual(acknowledgement);
+    await expect(client.appendEvent(observation)).rejects.toMatchObject({
+      code: 'worker_control_not_accepted',
+    });
+    await expect(
+      client.appendEvent({
+        ...observation,
+        event: { type: 'worker.heartbeat', data: { status: 'running' } },
+      })
+    ).rejects.toMatchObject({ code: 'worker_control_not_accepted' });
+  });
+
   it('posts final status as a canonical control envelope', async () => {
     const { fetch, requests } = createFetchFixture([
       { body: { accepted: true, diagnostics: [], nextExpectedSequence: 5, schemaVersion: 2 } },

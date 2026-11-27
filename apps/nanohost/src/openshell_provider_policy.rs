@@ -52,7 +52,6 @@ fn policy_document(policy: &SandboxPolicy) -> Result<Value, ProviderRefusal> {
                     || *binary
                         != (openshell_sdk::raw::proto::NetworkBinary {
                             path: binary.path.clone(),
-                            ..Default::default()
                         })
                 {
                     return Err(invalid);

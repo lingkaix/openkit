@@ -44,6 +44,7 @@ import {
 } from './fs-layout.js';
 
 import { applyMigrations } from './migrate.js';
+import { malformedPredecessorKeyBytes } from './test-support/data-root-admission.js';
 
 const DEPLOYMENT_ID_PATTERN =
   /^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -446,6 +447,85 @@ describe('ensureLayout', () => {
     expect(readFileSync(markerPath, 'utf8')).toBe(originalBytes);
     expect(existsSync(join(root, 'workspaces'))).toBe(false);
   });
+
+  it.each(['malformed JSON', 'a self-predecessor', 'malformed UTF-8'])(
+    'refuses a layout marker with %s before creating layout directories',
+    async (problem) => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+      onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+      const server = join(root, 'server');
+      mkdirSync(server);
+      const markerPath = join(server, 'layout.json');
+      const deploymentId = 'dep_00000000-0000-7000-8000-000000000001';
+      const marker = { schemaVersion: 1, layoutVersion: 1, deploymentId } as const;
+      let originalBytes: Buffer;
+      if (problem === 'malformed JSON') {
+        originalBytes = Buffer.from('{"fixture-only-marker":');
+      } else if (problem === 'malformed UTF-8') {
+        originalBytes = malformedPredecessorKeyBytes({
+          ...marker,
+          predecessorDeploymentId: 'dep_00000000-0000-7000-8000-000000000002',
+        });
+      } else {
+        originalBytes = Buffer.from(
+          JSON.stringify({ ...marker, predecessorDeploymentId: deploymentId })
+        );
+      }
+      writeFileSync(markerPath, originalBytes);
+
+      expect(() => ensureLayout(root)).toThrow(
+        expect.objectContaining({ code: 'data_root_layout_unsupported' })
+      );
+      expect(readFileSync(markerPath)).toEqual(originalBytes);
+      expect(readdirSync(root)).toEqual(['server']);
+      expect(readdirSync(server)).toEqual(['layout.json']);
+    }
+  );
+
+  it('accepts a valid replacement character in an additive layout marker field', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const server = join(root, 'server');
+    mkdirSync(server);
+    const markerPath = join(server, 'layout.json');
+    const marker = {
+      schemaVersion: 1,
+      layoutVersion: 1,
+      deploymentId: 'dep_00000000-0000-7000-8000-000000000001',
+      predecessorDeploymentId: 'dep_00000000-0000-7000-8000-000000000002',
+      additional: '\uFFFD',
+    };
+    const bytes = Buffer.from(JSON.stringify(marker));
+    writeFileSync(markerPath, bytes);
+
+    ensureLayout(root);
+
+    expect(readDataRootLayoutMarker(root)).toMatchObject({
+      deploymentId: marker.deploymentId,
+      predecessorDeploymentId: marker.predecessorDeploymentId,
+    });
+    expect(readFileSync(markerPath)).toEqual(bytes);
+  });
+
+  it('preserves the missing layout marker read error', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    expect(() => readDataRootLayoutMarker(root)).toThrow(
+      expect.objectContaining({ code: 'ENOENT' })
+    );
+  });
+
+  it.runIf(process.platform === 'linux')(
+    'preserves the layout marker directory read error',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+      onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+      mkdirSync(join(root, 'server', 'layout.json'), { recursive: true });
+      expect(() => readDataRootLayoutMarker(root)).toThrow(
+        expect.objectContaining({ code: 'EISDIR' })
+      );
+    }
+  );
 
   it('fails closed on an incompatible data-root layout marker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));

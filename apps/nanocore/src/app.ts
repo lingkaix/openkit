@@ -257,8 +257,12 @@ import {
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
-import { prepareWorkerControlObservation } from './runtime/worker-control-records.js';
+import {
+  getWorkerControlAcceptedFinalStatus,
+  prepareWorkerControlObservation,
+} from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
+import { matchesAcceptedWorkerControlSequence } from './runtime/worker-control-sequences.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
 import {
   WorkerImageSettlementConflict,
@@ -334,6 +338,10 @@ import {
   readStagedServerWork,
 } from './storage/server-work-intents.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
+import {
+  readAdmittedObservationCutoff,
+  readWorkspaceObservationCutoff,
+} from './storage/work-observations.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { requireCompleteBackendWorkspaceHandleHandoff } from './storage/workspace-handoff-read.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
@@ -663,7 +671,10 @@ export interface CreateAppOptions {
 export function createDefaultWorkerControlGateway(
   coreDb?: CoreDb,
   onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
-  nanoHostStorage?: NanoHostAppStorage
+  nanoHostStorage?: NanoHostAppStorage,
+  onObservationStop?: NonNullable<
+    ConstructorParameters<typeof WorkerControlGateway>[0]
+  >['onObservationStop']
 ): WorkerControlGateway {
   if (!coreDb) return new WorkerControlGateway();
   if (
@@ -691,6 +702,14 @@ export function createDefaultWorkerControlGateway(
     afterWorkerControlAcknowledgement: (read, signal) =>
       withWorkerControlAcknowledgement(owner, read, signal),
     ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
+    ...(onObservationStop ? { onObservationStop } : {}),
+    readObservationOmission(input) {
+      const retained = owner.read((sqlite) =>
+        matchesAcceptedWorkerControlSequence({ sqlite }, input)
+      );
+      if (retained.state !== 'ready') return requireWorkerControlStorage();
+      return retained.value === true;
+    },
     resolveFinalStatusTokenBinding(input) {
       const binding = owner.read((sqlite) =>
         resolveAdmittedNanoHostFinalBinding(coreDb, sqlite, input)
@@ -703,8 +722,13 @@ export function createDefaultWorkerControlGateway(
       withWorkerControlAcknowledgement(owner, () =>
         prepareWorkerControlObservation(coreDb, record, owner.read)
       ),
-    publishControlOperation: ({ payload, fingerprint, ...coordinates }) =>
+    publishControlOperation: ({ payload, fingerprint, omitObservation, ...coordinates }) =>
       publishObservation(async () => {
+        if (
+          omitObservation &&
+          (payload.operation !== 'event_append' || payload.record.event.type !== 'observation.recorded')
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
         const accepted = await owner.workerControlRecord({
           ...coordinates,
           payload: {
@@ -712,10 +736,14 @@ export function createDefaultWorkerControlGateway(
             operation: payload.operation,
             sequence: payload.sequence,
             fingerprint,
+            ...(payload.operation === 'event_append' &&
+            (omitObservation || readWorkspaceObservationCutoff(coreDb.dataRoot, coordinates.lineage))
+              ? { requireContinuous: true }
+              : {}),
           },
         });
         if (accepted.kind !== 'sequence') return requireWorkerControlStorage();
-        if (!accepted.duplicate || payload.operation === 'event_append')
+        if (!omitObservation && (!accepted.duplicate || payload.operation === 'event_append'))
           await owner.workerControlRecord({ ...coordinates, payload });
         const { duplicate, nextExpectedSequence } = accepted;
         if (
@@ -741,6 +769,22 @@ export function createDefaultWorkerControlGateway(
     publishFinalStatus: async (input) => {
       const workspace = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
+        if (readAdmittedObservationCutoff(workspace, input.lineage)) {
+          const prior = owner.read((sqlite) =>
+            getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage)
+          );
+          if (prior.state !== 'ready') return requireWorkerControlStorage();
+          if (
+            !prior.value &&
+            !['cancelled', 'interrupted'].includes(input.payload.terminalData.status)
+          )
+            throw new WorkerControlGatewayError(
+              'observation_limit_reached',
+              'The Turn must settle its observation-limit interruption.',
+              409
+            );
+          input = { ...input, payload: { ...input.payload, requireContinuous: true } };
+        }
         assertWorkerRawOutputFinalStatus(
           workspace,
           input.lineage,
@@ -1359,9 +1403,26 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   const automationStore =
     options.automationStore ?? (options.coreDb ? new AutomationStore(options.coreDb) : undefined);
+  const requestObservationStop = (lineage: {
+    workspaceId: string;
+    threadId: string;
+    turnId: string;
+    agentSessionId: string;
+    packageSnapshotId: string;
+  }): Promise<void> =>
+    turnExecutor.interruptTurn(sharedStore, lineage.turnId, {
+      requestId: null,
+      stopReason: 'observation_limit_reached',
+      observationLineage: lineage,
+    });
   const workerControlGateway =
     options.workerControlGateway ??
-    createDefaultWorkerControlGateway(options.coreDb, undefined, nanoHostStorage);
+    createDefaultWorkerControlGateway(
+      options.coreDb,
+      undefined,
+      nanoHostStorage,
+      requestObservationStop
+    );
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   /** Joins the unique Gateway owner without treating missing cleanup as success. */
@@ -2532,6 +2593,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerWorkerInferenceRoutes({
     exposureAvailable: () =>
       operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
+    onObservationStop: requestObservationStop,
     onRawOutputStop: (scope, reason) =>
       turnExecutor.interruptTurn(sharedStore, scope.turnId, {
         requestId: null,

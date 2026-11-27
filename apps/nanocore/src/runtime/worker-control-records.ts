@@ -25,6 +25,7 @@ import {
 import type Database from 'better-sqlite3';
 import { OperationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 import { readNanoHostRecoveryLease } from '../storage/nanohost-recovery-native.js';
@@ -33,6 +34,7 @@ import type { StorageResult } from '../storage/storage-owner.js';
 import {
   appendWorkObservation,
   appendWorkObservationChunk,
+  ObservationCollectionStoppedError,
   readWorkObservations,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
@@ -115,7 +117,7 @@ export function canonicalStopReasonForAcceptedWorkerFinalStatus(
   if (!compatible) {
     throw new Error('Accepted worker final status has no canonical Core StopReason.');
   }
-  return terminalCause === 'turn-cancelled'
+  return terminalCause === 'turn-cancelled' || terminalCause === 'observation_limit_reached'
     ? 'aborted'
     : terminalCause === 'raw-output-exhausted'
       ? 'budget_exhausted'
@@ -222,7 +224,7 @@ export async function recoverWorkerObservationSource(
     throw new Error('recovery_required: observation source lineage mismatch');
   const content = metadata.event.data.content;
   if (content.state !== 'expected') throw new Error('Observation source has no admitted body');
-  const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): void => {
+  const checkReceipt = (record: WorkerCanonicalEventRecord, required = false): boolean => {
     const { fingerprint, row } = requireNanoHostObservation(coreDb, (sqlite) => {
       const fingerprint = sqlite
         .prepare(`SELECT fingerprint FROM worker_control_sequence_fingerprints
@@ -253,13 +255,14 @@ export async function recoverWorkerObservationSource(
         ))
     )
       throw new Error('recovery_required: original observation acceptance missing or conflicting');
+    return !!(row || fingerprint);
   };
   checkReceipt(metadata, true);
   const source = await open(
     input.sourcePath,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
   );
-  const chunks: WorkerCanonicalEventRecord[] = [];
+  const chunks: { record: WorkerCanonicalEventRecord; replay: boolean }[] = [];
   try {
     const stat = await source.stat();
     if (!stat.isFile() || stat.size < 1 || stat.size > WORKER_OBSERVATION_SOURCE_MAX_BYTES)
@@ -299,10 +302,10 @@ export async function recoverWorkerObservationSource(
           bytes + decoded.length > content.bytes
         )
           throw new Error('Observation source chunk coordinates conflict');
-        checkReceipt(record);
+        const replay = checkReceipt(record);
         hash.update(decoded);
         bytes += decoded.length;
-        chunks.push(record);
+        chunks.push({ record, replay });
       }
     }
     if (
@@ -315,9 +318,9 @@ export async function recoverWorkerObservationSource(
     await source.close();
   }
   // Source collection restores evidence only. It never fills stale live sequences or receipts.
-  for (const chunk of chunks) {
+  for (const { record, replay } of chunks) {
     input.assertPublicationAuthority();
-    await recordWorkerObservation(coreDb, chunk, false);
+    await recordWorkerObservation(coreDb, record, replay);
   }
 }
 
@@ -440,7 +443,18 @@ export function prepareWorkerControlObservation(
       409
     );
   }
-  return recordWorkerObservation(coreDb, event, existing !== undefined, readOwner);
+  return recordWorkerObservation(
+    coreDb,
+    event,
+    existing !== undefined || fingerprintMatches === true,
+    readOwner
+  ).catch((error: unknown) => {
+    if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'observation') {
+      const { code, message, status } = error.domain;
+      throw new WorkerControlGatewayError(code, message, status);
+    }
+    throw error;
+  });
 }
 
 /** Retains one observation under verified outer lineage before a sanitized control receipt can be acknowledged. */
@@ -648,6 +662,8 @@ async function recordWorkerObservation(
       await appendWorkObservation(workspaceDb, {
         ...owner,
         observation,
+        workerSequence: event.sequence,
+        originalWorkerReplay: replay,
         bodies:
           data.content.state === 'expected' && data.content.bytes === 0
             ? [
@@ -665,7 +681,11 @@ async function recordWorkerObservation(
     if (binding.coverage.value !== 'on')
       throw new Error('Observation content is not admitted by this Turn');
     const initial = readWorkObservations(workspaceDb, owner).find((row) => row.id === id);
-    if (!initial) throw new Error('Observation content arrived without durable metadata');
+    if (!initial) {
+      const cutoff = binding.turn.observationCutoff?.summary;
+      if (cutoff) throw new ObservationCollectionStoppedError('closed', cutoff);
+      throw new Error('Observation content arrived without durable metadata');
+    }
     const declaration = WorkerObservationDataSchema.parse(initial.payload);
     admitNative(declaration);
     if (declaration.content.state !== 'expected')
@@ -685,6 +705,7 @@ async function recordWorkerObservation(
           byteLength: bytes.byteLength,
           chunkIndex: chunk.chunkIndex,
           byteOffset: chunk.byteOffset,
+          workerSequence: event.sequence,
           replay,
         },
       },
@@ -851,9 +872,12 @@ export async function waitForWorkerControlFinalStatus(
     }
     const cancelled =
       lease.phase === 'closing' &&
-      ['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'].includes(
-        lease.terminalCause ?? ''
-      ) &&
+      [
+        'turn-cancelled',
+        'raw-output-exhausted',
+        'raw-output-unavailable',
+        'observation_limit_reached',
+      ].includes(lease.terminalCause ?? '') &&
       lease.recoveryState === null &&
       lease.workerDeadline !== null &&
       lease.workerDeadline > new Date().toISOString();

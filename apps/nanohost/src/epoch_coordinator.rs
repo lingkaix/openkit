@@ -20,7 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openshell_sdk::raw::proto::SandboxPolicy;
-use openshell_sdk::{ListOptions, SandboxRef, SandboxSpec};
+use openshell_sdk::{SandboxRef, SandboxSpec};
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::{Context, KeyValue};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,7 @@ use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 use tokio::time::sleep;
 
+use crate::environment_provider::{EnvironmentProvider, LifecycleEffectError};
 use crate::epoch_evidence::{
     EXPORT_TIMEOUT, EpochEvidenceWriter, EpochInvalidationTrigger, REBUILD_FENCE_STARTED_PATH,
     record_fence_started_at,
@@ -40,8 +41,8 @@ use crate::image_acquisition::{
 use crate::image_store::{ImageStore, StoreError};
 use crate::nanocore_session::OuterRouteProjection;
 use crate::openshell_client::{
-    HarnessTaskHandles, LifecycleEffectError, LifecycleEffectKind, LifecycleEffectRequest,
-    LifecycleEffectResult, NanoHostOpenShellClient, WorkerBootstrapMonitor, WorkerBootstrapRequest,
+    HarnessTaskHandles, LifecycleEffectKind, LifecycleEffectRequest, LifecycleEffectResult,
+    NanoHostOpenShellClient, WorkerBootstrapMonitor, WorkerBootstrapRequest,
 };
 use crate::openshell_release;
 use crate::persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageMount};
@@ -1116,7 +1117,7 @@ impl DockerImageBackend {
     }
 
     /// Reads independent physical absence on the one-slot private daemon.
-    fn prove_empty_containers(&self, deadline: Instant) -> Result<(), EpochFault> {
+    pub(crate) fn prove_empty_containers(&self, deadline: Instant) -> Result<(), EpochFault> {
         let mut command = self.command();
         command.args(["container", "ls", "--all", "--quiet"]);
         let output = run_image_metadata_command(command, deadline)
@@ -2067,11 +2068,7 @@ fn observe_fresh_writer_renewal(
 ) -> Result<WriterAbsenceProof<'static>, EpochFault> {
     tokio::task::block_in_place(|| {
         runtime.block_on(await_gateway_health(startup_deadline, async {
-            if !client
-                .list_sandboxes(ListOptions::default())
-                .await?
-                .is_empty()
-            {
+            if !client.report_inventory().await?.observed.is_empty() {
                 return Err(EpochFault::PartialStart);
             }
             Ok(())
@@ -2746,8 +2743,7 @@ impl EpochCoordinator {
             ))
         });
         self.settle(deletion)?;
-        self.remove_credentials_after_absence()?;
-        self.release_deleted_sandbox_attachment(&sandbox.name)?;
+        self.complete_sandbox_cleanup(&sandbox.name)?;
         self.current_sandbox = None;
         Ok(())
     }
@@ -2775,8 +2771,7 @@ impl EpochCoordinator {
         match result {
             Err(LifecycleEffectError::CreateCleanupProved) => {
                 let name = self.settle(name.as_deref().ok_or(EpochFault::IdentityMismatch))?;
-                self.remove_credentials_after_absence()?;
-                self.release_deleted_sandbox_attachment(name)?;
+                self.complete_sandbox_cleanup(name)?;
                 Err(LifecycleEffectError::CreateCleanupProved)
             }
             Err(LifecycleEffectError::Epoch(fault)) => self.settle(Err(fault)).map_err(Into::into),
@@ -2796,19 +2791,6 @@ impl EpochCoordinator {
         self.settle(result)
     }
 
-    /// Lists sandboxes and invalidates the epoch on transport or identity failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns the fail-stop lifecycle fault after terminating all members.
-    #[allow(dead_code)]
-    pub fn list_sandboxes(&mut self, options: ListOptions) -> Result<Vec<SandboxRef>, EpochFault> {
-        let result = tokio::task::block_in_place(|| {
-            self.runtime.block_on(self.client.list_sandboxes(options))
-        });
-        self.settle(result)
-    }
-
     /// Settles one definite native Sandbox deletion before releasing retained state.
     ///
     /// Exact Sandbox absence is the fallback fence when the optional Harness-lifetime
@@ -2825,18 +2807,18 @@ impl EpochCoordinator {
         if let Some(exec_monitor) = self.worker_bootstrap_monitor.take() {
             exec_monitor.discard_after_sandbox_deletion();
         }
-        self.remove_credentials_after_absence()?;
-        self.release_deleted_sandbox_attachment(name)?;
+        self.complete_sandbox_cleanup(name)?;
         self.current_sandbox = None;
         Ok(())
     }
 
-    /// A settled original lifecycle operation also needs independent writer absence.
-    fn release_deleted_sandbox_attachment(&mut self, name: &str) -> Result<(), EpochFault> {
+    /// Keep credentials and the retained writer held until the private daemon is empty.
+    fn complete_sandbox_cleanup(&mut self, name: &str) -> Result<(), EpochFault> {
         let physical = self
             .image_backend
             .prove_empty_containers(Instant::now() + Duration::from_secs(2));
         self.settle(physical)?;
+        self.remove_credentials_after_absence()?;
         let released = self
             .persistent_volumes
             .release_writer(&WriterAbsenceProof(Some(name)));
@@ -3031,8 +3013,7 @@ impl EpochCoordinator {
                     ))
                 });
                 self.settle(deletion)?;
-                self.release_deleted_sandbox_attachment(&sandbox.name)?;
-                self.remove_credentials_after_absence()?;
+                self.complete_sandbox_cleanup(&sandbox.name)?;
                 self.current_sandbox = None;
                 self.worker_bootstrap_monitor = None;
                 return self.settle(Err(fault)).map_err(Into::into);
@@ -3043,11 +3024,11 @@ impl EpochCoordinator {
         let state = match result {
             LifecycleEffectResult::SandboxCreateFailed => {
                 // Native absence alone cannot release credential sources or retained writers.
-                self.remove_credentials_after_absence()?;
-                self.release_deleted_sandbox_attachment(request.sandbox_id())?;
+                self.complete_sandbox_cleanup(request.sandbox_id())?;
                 return Err(LifecycleEffectError::CreateCleanupProved);
             }
             LifecycleEffectResult::SandboxCreated(sandbox) => {
+                let sandbox = *sandbox;
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
                     return self
                         .settle(Err(EpochFault::IdentityMismatch))
@@ -3071,7 +3052,7 @@ impl EpochCoordinator {
                 }
                 sandbox.name
             }
-            LifecycleEffectResult::SandboxDeleted => {
+            LifecycleEffectResult::SandboxDeleteObserved => {
                 self.settle_definite_sandbox_deletion(request.sandbox_id())?;
                 "deleted".to_string()
             }
@@ -6412,6 +6393,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_delete_readback_with_residual_container_keeps_the_writer_held() {
+        let root =
+            std::env::temp_dir().join(format!("nanohost-residual-delete-{}", std::process::id()));
+        let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root);
+        coordinator.fixture_invalidation_reports(&root);
+        coordinator.fixture_settle_named_sandbox = true;
+        coordinator.fixture_image_probe("/usr/bin/echo".into());
+
+        assert_eq!(
+            coordinator.settle_definite_sandbox_deletion("sandbox-one"),
+            Err(EpochFault::DeleteOutcomeUncertain)
+        );
+        assert!(root.join("fence-started").exists());
+        drop(coordinator);
+        let reopened = crate::persistent_volume::tests::test_store(&root.join("volumes"));
+        assert_eq!(reopened.inspect("storage-one", 1)["state"], "attached");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn contains_digest_kills_a_stalled_probe_and_keeps_stderr() {
         let root = std::env::temp_dir().join(format!(
@@ -7187,7 +7188,7 @@ mod tests {
             .unwrap();
             // The lifecycle boundary removes the only fixture observation source.
             std::fs::remove_file(fixture.root.join("inspect.json")).unwrap();
-            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleteObserved)
         };
         let (result, summary) = super::sandbox_delete_with_observation(
             deletion,
@@ -7197,7 +7198,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleteObserved)
         ));
         assert_eq!(
             std::fs::read_to_string(fixture.root.join("events")).unwrap(),
@@ -7702,7 +7703,7 @@ mod tests {
             .expect("end of lifecycle effect owner")
             .0;
         let sandbox_deleted = lifecycle
-            .split_once("LifecycleEffectResult::SandboxDeleted =>")
+            .split_once("LifecycleEffectResult::SandboxDeleteObserved =>")
             .expect("sandbox deletion owner")
             .1
             .split_once("LifecycleEffectResult::BridgeOpened")
@@ -7889,7 +7890,7 @@ mod tests {
             .split_once("LifecycleEffectResult::SandboxCreated(sandbox)")
             .expect("sandbox create result owner")
             .1
-            .split_once("LifecycleEffectResult::SandboxDeleted")
+            .split_once("LifecycleEffectResult::SandboxDeleteObserved")
             .expect("end of sandbox create result owner")
             .0;
         assert!(created.contains("current_sandbox.replace("));
@@ -7903,7 +7904,7 @@ mod tests {
             "bridge mismatch and failure cleanup must delete by public sandbox name"
         );
         let deleted = lifecycle
-            .split_once("LifecycleEffectResult::SandboxDeleted")
+            .split_once("LifecycleEffectResult::SandboxDeleteObserved")
             .expect("sandbox delete result owner")
             .1
             .split_once("LifecycleEffectResult::BridgeOpened")
@@ -8081,7 +8082,7 @@ mod tests {
         assert!(bridge_open.contains("open_sandbox_bridge"));
         assert!(bridge_open.contains("harness_ready"));
         let client_source = include_str!("openshell_client.rs")
-            .split_once("#[cfg(test)]")
+            .split_once("\n#[cfg(test)]\nimpl NanoHostOpenShellClient {")
             .expect("OpenShell client production section")
             .0;
         for monitor_rule in ["monitor_exit", "clean_response"] {
@@ -8091,11 +8092,13 @@ mod tests {
             );
         }
         let client_bridge_open = client_source
-            .split_once("LifecycleEffectKind::OpenBridge => {")
-            .expect("client bridge-open owner")
+            .split_once(
+                "KeepPresent::Carry((sandbox_name, worker_bootstrap, route_projection)) => {",
+            )
+            .expect("provider bridge-open owner")
             .1
-            .split_once("LifecycleEffectKind::CloseBridge")
-            .expect("end of client bridge-open owner")
+            .split_once("async fn keep_absent")
+            .expect("end of provider bridge-open owner")
             .0;
         let retained_object_id = client_bridge_open
             .find("worker_bootstrap.sandbox_id.clone()")

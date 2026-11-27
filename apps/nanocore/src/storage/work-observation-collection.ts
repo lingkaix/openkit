@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { OperationError } from '../operation-error-core.js';
 import type { WorkObservationRecord } from './work-observations.js';
 
 export const WORK_OBSERVATION_TRUNCATION_FEATURE = 'openkit.work-observations.truncation.v1';
@@ -36,10 +37,30 @@ export const ObservationOmissionResultSchema = z.discriminatedUnion('disposition
 /** The original crossing identity and the retained SQL boundary are private to the deciding owner. */
 export const ObservationCutoffSchema = z.strictObject({
   observationId: z.string().min(1).max(512),
+  workerSequence: z.int().nonnegative().optional(),
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   retainedSequence: z.int().nonnegative(),
   summary: ObservationTruncationSchema,
 });
+
+/** A position conflict is independent of whether collection has sealed. */
+export const OBSERVATION_POSITION_CONFLICT = {
+  operation: 'observation',
+  code: 'worker_control_sequence_conflict',
+  message: 'Worker observation cannot claim another event position.',
+  status: 409,
+} as const;
+
+/** A legacy owner record without a position needs independent proof of the original Core event. */
+export function assertWorkObservationPosition(
+  retained: unknown,
+  sequence: number,
+  confirmedLegacyReplay: boolean | undefined
+): void {
+  if (retained === sequence || (retained === undefined && confirmedLegacyReplay)) return;
+  const { code, message, status } = OBSERVATION_POSITION_CONFLICT;
+  throw new OperationError(code, message, status);
+}
 
 export const ObservationCounterSchema = z.strictObject({
   sequence: z.int().nonnegative(),

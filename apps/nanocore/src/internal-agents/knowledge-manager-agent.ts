@@ -18,6 +18,7 @@ import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { ObservationCollectionStoppedError } from '../storage/work-observations.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
@@ -245,7 +246,7 @@ async function runBoundedKnowledgeManagerAgent(
     return await executeKnowledgeManagerAgent(
       dependencies,
       { ...input, signal: AbortSignal.any([input.signal, controller.signal]) },
-      controller.signal
+      controller
     );
   } finally {
     runs.delete(input.turn.id);
@@ -257,9 +258,10 @@ async function runBoundedKnowledgeManagerAgent(
 async function executeKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: AnyKnowledgeManagerAgentRun,
-  interruptSignal: AbortSignal
+  controller: AbortController
 ): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
+  const interruptSignal = controller.signal;
   const turn = runTurn(store, input);
   if (turn.agentId !== 'knowledge-manager' || turn.agentSessionId || turn.status !== 'running')
     throw new Error('Knowledge Manager Turn is not admitted.');
@@ -332,12 +334,14 @@ async function executeKnowledgeManagerAgent(
             turn: store.getServerTurnById(turn.id),
             coreDb: input.coreDb,
             environment: { systemPrompt, tools },
+            onCollectionStop: (error) => controller.abort(error),
           }
         : {
             store,
             turn: store.getTurnById(turn.id),
             workspaceDb: input.workspaceDb,
             environment: { systemPrompt, tools },
+            onCollectionStop: (error) => controller.abort(error),
           },
       async (capture) => {
         const ordinary = createInternalAgentGatewayProvider({
@@ -494,18 +498,24 @@ async function executeKnowledgeManagerAgent(
           }
         : undefined;
     if (!isSealedTurnTerminal(runTurn(store, input).status)) {
+      const collectionStop =
+        input.signal.reason instanceof ObservationCollectionStoppedError
+          ? input.signal.reason
+          : undefined;
       const terminal = {
-        status: input.signal.aborted ? 'cancelled' : 'failed',
+        status: collectionStop ? 'interrupted' : input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
-        error: timeout ??
-          internalContextFailure(error) ?? {
-            code:
-              error instanceof InternalAgentProviderError && error.code === 'provider_call_failed'
-                ? error.code
-                : 'knowledge_manager_failed',
-            message:
-              'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
-          },
+        error: collectionStop
+          ? { code: collectionStop.code, message: collectionStop.message }
+          : (timeout ??
+            internalContextFailure(error) ?? {
+              code:
+                error instanceof InternalAgentProviderError && error.code === 'provider_call_failed'
+                  ? error.code
+                  : 'knowledge_manager_failed',
+              message:
+                'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
+            }),
       } as const;
       await updateRunTurn(
         store,

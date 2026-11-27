@@ -86,6 +86,7 @@ export function workerFinalSequenceInputs(
   payload: {
     readonly sequence: number;
     readonly terminalData: WorkerCanonicalTerminalEventDataInput;
+    readonly requireContinuous?: true | undefined;
   }
 ) {
   const { sequence, terminalData } = payload;
@@ -103,6 +104,7 @@ export function workerFinalSequenceInputs(
       operation: 'event_append' as const,
       sequence,
       fingerprint: canonicalJsonText(event),
+      ...(payload.requireContinuous ? { requireContinuous: true as const } : {}),
     },
   };
 }
@@ -148,7 +150,47 @@ function inspectWorkerControlSequence(
     };
   }
 
+  if (
+    input.operation === 'event_append' &&
+    input.requireContinuous &&
+    hasObservationAtAnotherPosition(owner, input)
+  )
+    return {
+      code: 'worker_control_sequence_conflict',
+      status: 'conflict',
+      message: 'Worker observation already owns another event position.',
+    };
+
   const highest = highestAcceptedSequence(owner, input);
+  if (
+    input.operation === 'event_append' &&
+    (input.requireContinuous === true ||
+      (input.sequence > (highest ?? -1) + 1 &&
+        owner.sqlite
+          .prepare(`
+        SELECT 1 FROM worker_control_sequence_fingerprints
+        WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND CASE WHEN json_valid(fingerprint) THEN json_extract(fingerprint,'$.observationOmitted') END = 1
+        LIMIT 1
+      `)
+          .get(input.lineage.agentSessionId, input.lineage.packageSnapshotId))) &&
+    (
+      owner.sqlite
+        .prepare(`
+      SELECT COUNT(*) AS count FROM worker_control_sequence_fingerprints
+      WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append'
+        AND sequence >= 0 AND sequence < ?
+    `)
+        .get(input.lineage.agentSessionId, input.lineage.packageSnapshotId, input.sequence) as {
+        count: number;
+      }
+    ).count !== input.sequence
+  )
+    return {
+      code: 'worker_control_sequence_conflict',
+      status: 'conflict',
+      message: 'Uninspected Worker event positions prevent observation omission or final status.',
+    };
 
   if (highest !== null && input.sequence < highest) {
     return {
@@ -157,7 +199,6 @@ function inspectWorkerControlSequence(
       status: 'stale',
     };
   }
-
   return {
     duplicate: false,
     nextExpectedSequence: input.sequence + 1,
@@ -194,6 +235,44 @@ export function matchesAcceptedWorkerControlSequence(
   } catch {
     return false;
   }
+}
+
+/**
+ * The sealed stream can finish original body handoffs. An earlier accepted metadata or chunk
+ * fingerprint keeps its position, including when its descriptive receipt never committed.
+ */
+function hasObservationAtAnotherPosition(
+  owner: WorkerControlSequenceDb,
+  input: WorkerControlSequenceRecorderInput
+): boolean {
+  const fingerprint = JSON.parse(input.fingerprint) as {
+    event?: { type?: string; data?: { observationId?: string; chunkIndex?: number } };
+  } | null;
+  const event = fingerprint?.event;
+  if (
+    !event?.data?.observationId ||
+    (event.type !== 'observation.recorded' && event.type !== 'observation.content.chunk')
+  )
+    return false;
+  return Boolean(
+    owner.sqlite
+      .prepare(`
+    SELECT 1 FROM worker_control_sequence_fingerprints
+    WHERE agent_session_id=? AND package_snapshot_id=? AND operation='event_append' AND sequence<>?
+      AND CASE WHEN json_valid(fingerprint) THEN json_extract(fingerprint,'$.event.type') END = ?
+      AND CASE WHEN json_valid(fingerprint) THEN json_extract(fingerprint,'$.event.data.observationId') END = ?
+      AND CASE WHEN json_valid(fingerprint) THEN json_extract(fingerprint,'$.event.data.chunkIndex') END IS ?
+    LIMIT 1
+  `)
+      .get(
+        input.lineage.agentSessionId,
+        input.lineage.packageSnapshotId,
+        input.sequence,
+        event.type,
+        event.data.observationId,
+        event.data.chunkIndex ?? null
+      )
+  );
 }
 
 /**

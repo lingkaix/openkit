@@ -429,7 +429,6 @@ fn parse_native_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'sta
                             .get("path")
                             .ok_or("sandbox network policy binary invalid")?,
                     )?,
-                    ..NetworkBinary::default()
                 })
             })
             .collect::<Result<Vec<_>, &'static str>>()?;

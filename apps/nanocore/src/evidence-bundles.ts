@@ -27,6 +27,7 @@ import {
 } from '@openkit/storage';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { assertWorkObservationPosition } from './storage/work-observation-collection.js';
 import type { ServerWorkObservationDb } from './storage/work-observations.js';
 import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 
@@ -343,6 +344,8 @@ export function stageWorkObservationChunk(
     readonly chunkCount: number;
     readonly chunkIndex: number;
     readonly byteOffset: number;
+    readonly workerSequence?: number | undefined;
+    readonly originalWorkerReplay?: boolean | undefined;
     readonly bytes: Uint8Array;
   }
 ):
@@ -366,13 +369,26 @@ export function stageWorkObservationChunk(
   )
     throw new Error('Invalid observation content chunk coordinates');
   const prior = workBodyRecord(workspaceDb, input);
-  if (prior?.importStatus === 'expired') return { state: 'expired' };
+  if (prior?.importStatus === 'expired') {
+    if (input.workerSequence !== undefined)
+      assertWorkObservationPosition(undefined, input.workerSequence, input.originalWorkerReplay);
+    return { state: 'expired' };
+  }
+  const assertPosition = (saved: { workerSequence?: number | undefined }) => {
+    if (input.workerSequence !== undefined)
+      assertWorkObservationPosition(
+        saved.workerSequence,
+        input.workerSequence,
+        input.originalWorkerReplay
+      );
+  };
   if (prior?.importStatus === 'promoted') {
     const descriptor = JSON.parse(
       readCanonicalTextFile(
         join(workBodyRoot(workspaceDb, input.bundleId, false), `chunk-${input.chunkIndex}.json`)
       )
-    ) as { byteOffset: number; bytes: number; sha256: string };
+    ) as { byteOffset: number; bytes: number; sha256: string; workerSequence?: number };
+    assertPosition(descriptor);
     if (
       descriptor.byteOffset !== input.byteOffset ||
       descriptor.bytes !== input.bytes.byteLength ||
@@ -392,19 +408,32 @@ export function stageWorkObservationChunk(
   }
   const root = workBodyRoot(workspaceDb, input.bundleId, true);
   const path = join(root, `chunk-${input.chunkIndex}`);
-  const descriptor = JSON.stringify({
+  const descriptor = {
     byteOffset: input.byteOffset,
     bytes: input.bytes.byteLength,
     sha256: createHash('sha256').update(input.bytes).digest('hex'),
-  });
-  if (existsSync(`${path}.json`) && readCanonicalTextFile(`${path}.json`) !== descriptor)
-    throw new Error('recovery_required: observation chunk conflict');
-  if (existsSync(path)) {
-    if (!readCanonicalFile(path).equals(Buffer.from(input.bytes)))
-      throw new Error('recovery_required: observation chunk bytes conflict');
+    workerSequence: input.workerSequence,
+  };
+  const descriptorPath = `${path}.json`;
+  const hasDescriptor = existsSync(`${path}.json`);
+  const hasBytes = existsSync(path);
+  if (hasDescriptor) {
+    const saved = JSON.parse(readCanonicalTextFile(descriptorPath)) as typeof descriptor;
+    assertPosition(saved);
+    if (
+      saved.byteOffset !== descriptor.byteOffset ||
+      saved.bytes !== descriptor.bytes ||
+      saved.sha256 !== descriptor.sha256
+    )
+      throw new Error('recovery_required: observation chunk conflict');
+  } else if (hasBytes) {
+    assertPosition({});
   }
-  writeFileAtomic(path, input.bytes);
-  writeFileAtomic(`${path}.json`, descriptor);
+  if (hasBytes && !readCanonicalFile(path).equals(Buffer.from(input.bytes)))
+    throw new Error('recovery_required: observation chunk bytes conflict');
+  // Commit the position first. A crash may leave an incomplete body, but cannot rekey it.
+  if (!hasDescriptor) writeFileAtomic(descriptorPath, JSON.stringify(descriptor));
+  if (!hasBytes) writeFileAtomic(path, input.bytes);
   recordWorkBody(workspaceDb, input, false);
   const chunks: Buffer[] = [];
   let offset = 0;
@@ -416,7 +445,13 @@ export function stageWorkObservationChunk(
       bytes: number;
       sha256: string;
     };
-    const bytes = readCanonicalFile(chunkPath);
+    let bytes: Buffer;
+    try {
+      bytes = readCanonicalFile(chunkPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'staged' };
+      throw error;
+    }
     if (
       saved.byteOffset !== offset ||
       saved.bytes !== bytes.length ||

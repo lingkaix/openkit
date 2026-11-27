@@ -4,6 +4,7 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { readWorkspaceObservationCutoff } from '../storage/work-observations.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithoutEffects,
@@ -28,6 +29,7 @@ export interface PreAnchorRecoveryContext {
   readonly turnId: string;
   readonly agentSessionId: string | null;
   readonly packageSnapshotId: string | null;
+  readonly terminalCause?: string | null;
 }
 /** Generic restart dependencies contain no native liveness or placement policy. */
 export interface RunSchedulerRestartRecoveryInput {
@@ -55,13 +57,15 @@ export async function runSchedulerRestartRecovery(
       if (attempt.backendId !== input.executionBackend.id)
         throw new Error('Retained attempt names an unavailable backend.');
       if (attempt.operationId !== null) continue;
-      await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+      const closed = await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
         attemptId: attempt.attemptId,
         noOutstandingEffects: true,
-        cause: 'restart-before-effects',
+        cause: readWorkspaceObservationCutoff(coreDb.dataRoot, attempt)
+          ? 'observation_limit_reached'
+          : 'restart-before-effects',
         ...(input.now ? { now: input.now } : {}),
       });
-      await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
+      await input.projectRecoveredTurn({ ...closed, packageSnapshotId: attempt.inputRef });
       preparationFailedAttemptIds.push(attempt.attemptId);
     } catch {
       // Proved no-effect closure remains valid if publication fails; maintenance retries it.
@@ -95,6 +99,27 @@ export function schedulerRestartRecoveryOutcome(
   };
 }
 
+/** Checks the reply against the request before the writer checks the current retained operation. */
+async function observeRecoveryOperation(
+  coreDb: CoreDb,
+  backend: ExecutionBackendPort,
+  method: 'inspect' | 'cancel',
+  attempt: SchedulerExecutionAttemptRecord
+): Promise<void> {
+  const request = schedulerExecutionCorrelation(attempt);
+  const observation = await backend[method](request);
+  if (
+    !observation ||
+    observation.attemptId !== request.attemptId ||
+    observation.backendId !== request.backendId ||
+    observation.bindingRef !== request.bindingRef ||
+    observation.inputRef !== request.inputRef ||
+    observation.operationId !== request.operationId
+  )
+    return;
+  await acceptSchedulerExecutionObservation(coreDb, observation);
+}
+
 /** After listen, inspect the original operation and revoke expired authority without replay. */
 export async function runSchedulerRecoveryMaintenance(
   coreDb: CoreDb,
@@ -118,26 +143,30 @@ export async function runSchedulerRecoveryMaintenance(
         attempt.deadline === null &&
         Date.parse(timestamp) - Date.parse(attempt.createdAt) >= EXECUTION_ATTEMPT_BUDGET_MS;
       const executionExpired = attempt.deadline !== null && attempt.deadline <= timestamp;
+      const cutoff =
+        attempt.phase === 'open' && readWorkspaceObservationCutoff(coreDb.dataRoot, attempt);
       let current = attempt;
-      if (attempt.phase === 'open' && (revoked || executionExpired || preparationExpired)) {
-        const preparationFence = preparationExpired && !revoked;
+      if (
+        attempt.phase === 'open' &&
+        (cutoff || revoked || executionExpired || preparationExpired)
+      ) {
+        const preparationFence = preparationExpired && !revoked && !cutoff;
         current = await markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: attempt.attemptId,
-          cause: revoked
-            ? 'authority-revoked'
-            : preparationFence
-              ? 'preparation-deadline'
-              : 'execution-deadline',
+          cause: cutoff
+            ? 'observation_limit_reached'
+            : revoked
+              ? 'authority-revoked'
+              : preparationFence
+                ? 'preparation-deadline'
+                : 'execution-deadline',
           ...(preparationFence ? { requireUnsubmitted: true } : {}),
           ...(input.now ? { now: input.now } : {}),
         });
         // The native submission intent might have won while the expiry check awaited the writer.
         if (preparationFence && current.terminalCause !== 'preparation-deadline') continue;
         if (current.operationId)
-          await acceptSchedulerExecutionObservation(
-            coreDb,
-            await input.executionBackend.cancel(schedulerExecutionCorrelation(current))
-          );
+          await observeRecoveryOperation(coreDb, input.executionBackend, 'cancel', current);
         else if (!preparationFence) {
           await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
             attemptId: current.attemptId,
@@ -149,10 +178,7 @@ export async function runSchedulerRecoveryMaintenance(
         }
       }
       if (current.operationId)
-        await acceptSchedulerExecutionObservation(
-          coreDb,
-          await input.executionBackend.inspect(schedulerExecutionCorrelation(current))
-        );
+        await observeRecoveryOperation(coreDb, input.executionBackend, 'inspect', current);
       else if (current.phase === 'closing' && current.terminalCause === 'preparation-deadline')
         await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
           attemptId: current.attemptId,
@@ -171,7 +197,7 @@ export async function runSchedulerRecoveryMaintenance(
     .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId, thread_id AS threadId,
       turn_id AS turnId, agent_session_id AS agentSessionId FROM scheduler_execution_attempts
     WHERE phase = 'closed' AND disposition = 'not_accepted' AND operation_id IS NULL
-      AND terminal_cause IN ('restart-before-effects', 'authority-revoked', 'execution-deadline', 'preparation-deadline')
+      AND terminal_cause IN ('restart-before-effects', 'authority-revoked', 'execution-deadline', 'preparation-deadline', 'observation_limit_reached')
     ORDER BY rowid`)
     .all() as Array<
     Pick<
