@@ -7,12 +7,15 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { allocateEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import type { ControlAdmission } from './control-store-admission-codecs.js';
-import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import {
+  getWorkspaceProductReadHandle,
+  openControlStoreProductReadHandle,
+} from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -50,6 +53,31 @@ async function fixture() {
   const scope = nativeProductScope(root, { kind: 'workspace', workspaceId: workspace.id });
   return { root, store, workspace, thread, turn, item, scope };
 }
+
+it('reuses exact Workspace statements without revalidating a live owner or retaining stale Item rows', async () => {
+  const f = await fixture();
+  const owner = { kind: 'workspace', workspaceId: f.workspace.id } as const;
+  const { sqlite } = getWorkspaceProductReadHandle(f.scope.path, owner);
+  const preparing = vi.spyOn(sqlite, 'prepare');
+  const read = () => {
+    const borrowed = openControlStoreProductReadHandle(f.scope.path, owner, sqlite);
+    try {
+      return borrowed.threadItem(f.thread.id, f.item.id);
+    } finally {
+      borrowed.close();
+    }
+  };
+  try {
+    expect(read()).toBeUndefined();
+    await f.store.createItem(f.item);
+    expect(read()?.id).toBe(f.item.id);
+    const statements = preparing.mock.calls.map(([sql]) => sql);
+    expect(statements.filter((sql) => sql.includes('JOIN control_turns t ON'))).toHaveLength(1);
+    expect(statements.some((sql) => sql.includes('sqlite_master'))).toBe(false);
+  } finally {
+    preparing.mockRestore();
+  }
+});
 
 /** Reads the committed owner cut, including receipts, without interpreting body storage layout. */
 function cut(f: Awaited<ReturnType<typeof fixture>>) {

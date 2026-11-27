@@ -9,7 +9,11 @@ import { allocateEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import type { FsStore } from '../lib/store.js';
-import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
+import {
+  type AdmittedOperationContext,
+  type FamilyImplementations,
+  publicOperationActor,
+} from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { TurnExecutor } from '../runtime/types.js';
@@ -38,12 +42,8 @@ import { auditAuthenticationFromActor } from './audit-attribution.js';
 import { commitBetterAuthStage } from './better-auth-adapter.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
 import type { Actor } from './identity.js';
-import { revokeNanoHostInboundCredential } from './nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
-import {
-  listNanoHostTransportTokenRecords,
-  type NanoHostTransportTokenRecord,
-} from './nanohost-transport-token-store.js';
+import type { NanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
 import { isCurrentDeploymentAdministrator } from './operation-authorizer.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
@@ -188,14 +188,7 @@ export interface InboundCredentialOwners {
   readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 
-type BindingSelection = Parameters<CommunicationCredentials['unbind']>[0];
 type TransportTokens = StorageResult<'nanohost', readonly NanoHostTransportTokenRecord[]>;
-
-interface CredentialStorage {
-  readBinding(db: CoreDb, userId: string): ReturnType<CommunicationCredentials['readBinding']>;
-  unbind(db: CoreDb, input: BindingSelection): ReturnType<CommunicationCredentials['unbind']>;
-  transportTokens(db: CoreDb): TransportTokens;
-}
 
 const unavailableCommunication = {
   state: 'unavailable',
@@ -203,41 +196,27 @@ const unavailableCommunication = {
   reason: 'missing',
 } as const;
 
-/** Keeps the independent credential owners available before the Communication adapter is selected. */
-export function createCredentialOperationImplementations(owners: InboundCredentialOwners) {
-  return createCredentialOperations(owners, {
-    readBinding: () => unavailableCommunication,
-    unbind: async () => unavailableCommunication,
-    transportTokens: (db) => ({ state: 'ready', value: listNanoHostTransportTokenRecords(db) }),
-  });
-}
+const unavailableNanoHost = {
+  state: 'unavailable',
+  owner: 'nanohost',
+  reason: 'missing',
+} as const;
 
-/** Composition entry for the cutover. The live App can supply it after both owner adapters land. */
+/** Joins the human credential family to independently admitted storage owners. */
 export function createCommunicationCredentialOperationImplementations(
   owners: InboundCredentialOwners & {
     readonly communicationCredentials?: CommunicationCredentials;
-    readonly listNanoHostTransportTokens?: () => TransportTokens;
+    readonly listNanoHostTransportTokens?: (
+      signal?: AbortSignal
+    ) => TransportTokens | Promise<TransportTokens>;
+    readonly revokeNanoHostTransportToken?: (
+      tokenId: string,
+      context: AdmittedOperationContext
+    ) => Promise<void>;
   }
 ) {
-  return createCredentialOperations(owners, {
-    readBinding: (_db, userId) =>
-      owners.communicationCredentials?.readBinding(userId) ?? unavailableCommunication,
-    unbind: async (_db, input) =>
-      owners.communicationCredentials?.unbind(input) ?? unavailableCommunication,
-    transportTokens: () =>
-      owners.listNanoHostTransportTokens?.() ?? {
-        state: 'unavailable',
-        owner: 'nanohost',
-        reason: 'missing',
-      },
-  });
-}
-
-/** Joins the human credential family to one selected set of storage owners. */
-function createCredentialOperations(
-  owners: InboundCredentialOwners,
-  credentialStorage: CredentialStorage
-) {
+  const readBinding = (userId: string) =>
+    owners.communicationCredentials?.readBinding(userId) ?? unavailableCommunication;
   const { coreDb, mode } = owners;
   const storage = () => {
     if (!coreDb)
@@ -266,9 +245,19 @@ function createCredentialOperations(
       return admission && responsibleUserIdForActor(admission.triggerActor) === userId;
     }) ?? [];
   return {
-    'credential.list': (_input, context) => {
+    'credential.list': async (_input, context) => {
       const actor = publicOperationActor(context);
       const db = storage();
+      let transportTokens: TransportTokens = unavailableNanoHost;
+      if (
+        owners.listNanoHostTransportTokens &&
+        owners.mode === 'server' &&
+        isCurrentDeploymentAdministrator(db, actor)
+      ) {
+        transportTokens = await owners.listNanoHostTransportTokens(context.signal);
+        context.signal?.throwIfAborted();
+        await context.recheckAdmission?.();
+      }
       const administrator = owners.mode === 'server' && isCurrentDeploymentAdministrator(db, actor);
       const items: InboundCredentialRecord[] = listOpenKitAccessTokenRecords(db)
         .filter((record) => administrator || record.ownerUserId === actor.userId)
@@ -292,7 +281,7 @@ function createCredentialOperations(
           status: session.expiresAt > Date.now() ? 'active' : 'expired',
           current: actor.kind === 'session' && actor.sessionId === session.id,
         });
-      const binding = credentialStorage.readBinding(db, actor.userId);
+      const binding = readBinding(actor.userId);
       if (binding.state === 'ready' && binding.value)
         items.push({
           kind: 'discord-pairing',
@@ -317,7 +306,6 @@ function createCredentialOperations(
         });
       }
       if (administrator) {
-        const transportTokens = credentialStorage.transportTokens(db);
         if (transportTokens.state === 'ready')
           for (const record of transportTokens.value)
             items.push({ kind: 'nanohost-transport', id: record.tokenId, record });
@@ -357,27 +345,26 @@ function createCredentialOperations(
           return { status: 'revoked' as const };
         }
         case 'discord-pairing': {
-          const binding = credentialStorage.readBinding(db, actor.userId);
+          const binding = readBinding(actor.userId);
           if (binding.state !== 'ready') throw communicationUnavailable();
           if (binding.value?.revision !== input.id) throw missing();
-          const result = await credentialStorage.unbind(db, { actor, bindingRevision: input.id });
-          if (result.state !== 'ready') throw communicationUnavailable();
+          const result = await owners.communicationCredentials?.unbind({
+            actor,
+            bindingRevision: input.id,
+          });
+          if (result?.state !== 'ready') throw communicationUnavailable();
           return { status: 'revoked' as const };
         }
         case 'nanohost-transport': {
           if (owners.mode !== 'server' || !isCurrentDeploymentAdministrator(db, actor))
             throw missing();
-          await revokeNanoHostInboundCredential(
-            {
-              coreDb: db,
-              mode: owners.mode,
-              ...(owners.nanoHostSessionAuthority
-                ? { sessionAuthority: owners.nanoHostSessionAuthority }
-                : {}),
-            },
-            input.id,
-            context
-          );
+          if (!owners.revokeNanoHostTransportToken)
+            throw new OperationError(
+              'nanohost_transport_storage_unavailable',
+              'NanoHost transport administration is unavailable.',
+              503
+            );
+          await owners.revokeNanoHostTransportToken(input.id, context);
           return { status: 'revoked' as const };
         }
         case 'worker-run': {
@@ -573,3 +560,7 @@ function createCredentialOperations(
     typeof ACCESS_TOKEN_OPERATION_DEFINITIONS & typeof INBOUND_CREDENTIAL_OPERATION_DEFINITIONS
   >;
 }
+
+/** Composes the ordinary credential operations when optional owners are held. */
+export const createCredentialOperationImplementations =
+  createCommunicationCredentialOperationImplementations;

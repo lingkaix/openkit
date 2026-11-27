@@ -187,7 +187,7 @@ export function recordWorkerBackendTeardownEvidence(
     | undefined;
   const stopReason = 'completed';
   const record = RuntimeEvidenceRecordSchema.parse({
-    id: createRuntimeEvidenceId(`worker-backend-teardown:${input.packageSnapshotId}`),
+    id: workerBackendTeardownEvidenceId(input.packageSnapshotId),
     workspaceId: input.workspaceId,
     threadId: input.threadId,
     turnId: input.turnId,
@@ -421,6 +421,11 @@ export function importWorkspaceRuntimeEvidence(
 
 function createRuntimeEvidenceId(checkpointId: string): string {
   return `rte_${createHash('sha256').update(checkpointId).digest('hex').slice(0, 24)}`;
+}
+
+/** Names the single teardown record for the original package. */
+export function workerBackendTeardownEvidenceId(packageSnapshotId: string): string {
+  return createRuntimeEvidenceId(`worker-backend-teardown:${packageSnapshotId}`);
 }
 
 /**

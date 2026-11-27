@@ -15,6 +15,7 @@ import { setImmediate } from 'node:timers';
 import type { Worker, WorkerOptions } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
@@ -380,6 +381,7 @@ async function exercise(fault: boolean) {
     start(() => cpSync(producerRoot, dataRoot, { recursive: true }));
     const store = start(() => createTestStore({ dataRoot }));
     core = start(() => openCoreDb(dataRoot));
+    await start(() => openAdmittedTestNanoHost(core!));
     workspace = start(() => openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID));
     await start(() => openTestNativeWorkspace(workspace!));
     start(() => {

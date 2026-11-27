@@ -14,9 +14,16 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { controlStoreFor } from '../storage/control-store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -62,7 +69,8 @@ vi.mock('node:worker_threads', async (load) => {
           Database.prototype.exec=function(sql){
             register(this);
             const result=exec.call(this,sql);
-            if(/^COMMIT$/i.test(sql) && Atomics.compareExchange(state,0,1,0)===1){
+            if(/^COMMIT$/i.test(sql) && Atomics.load(state,6)>0 && Atomics.load(state,7)>0 &&
+                Atomics.compareExchange(state,0,1,0)===1){
               Atomics.store(state,1,1);
               Atomics.wait(state,2,0,10000);
               Atomics.store(state,3,1);
@@ -164,6 +172,8 @@ async function fixture() {
     },
     remove: async () => {},
   }));
+  // Artifact publication checks the live Turn's final evidence through the real NanoHost observation port.
+  await openAdmittedTestNanoHost(coreDb);
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   // Observe, without replacing, the existing owner promises so a broken detached write cannot
   // escape the test or continue after its private database is removed.
@@ -216,6 +226,7 @@ async function fixture() {
     await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    await reopenAdmittedTestNanoHost(coreDb);
     store = new FsStore({ dataRoot });
     creations = vi.spyOn(store, 'createArtifact');
   };
@@ -295,7 +306,16 @@ it('keeps competing submissions on one native writer while its real commit ackno
   const f = await fixture();
   const firstId = randomUUID();
   const secondId = randomUUID();
-  Atomics.store(f.state, 0, 1);
+  const publicationEntered = Promise.withResolvers<void>();
+  const owner = getControlStoreWorkerClient();
+  const review = owner.review.bind(owner);
+  const publication = vi.spyOn(owner, 'review').mockImplementation((database, input) => {
+    if (input.mode === 'submit' && input.receipt.requestId === firstId) {
+      Atomics.store(f.state, 0, 1);
+      publicationEntered.resolve();
+    }
+    return review(database, input);
+  });
   let firstSettled = false;
   let secondSettled = false;
   const first = Promise.allSettled([f.submit(firstId)]).then((result) => {
@@ -304,6 +324,13 @@ it('keeps competing submissions on one native writer while its real commit ackno
   });
   let second: typeof first | undefined;
   try {
+    // Start the COMMIT observation at publication entry, not during upstream capture/validation.
+    await Promise.race([
+      publicationEntered.promise,
+      first.then(() => {
+        throw new Error('The first Artifact left before its publication owner entered.');
+      }),
+    ]);
     await vi.waitFor(() => expect(Atomics.load(f.state, 1)).toBe(1));
     second = Promise.allSettled([f.submit(secondId)]).then((result) => {
       secondSettled = true;
@@ -329,6 +356,7 @@ it('keeps competing submissions on one native writer while its real commit ackno
     await first;
     await second;
     await f.drain();
+    publication.mockRestore();
   }
   expect((await first)[0]!.status).toBe('fulfilled');
   expect((await second!)[0]!.status).toBe('fulfilled');

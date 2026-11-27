@@ -19,6 +19,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, openTestNativeWorkspace } from '../test-support/store.js';
@@ -93,6 +94,7 @@ describe('retained capture exclusion rejoin', () => {
     const store = await createDemoStore({ dataRoot });
     const coreDb = createTestCoreDb(dataRoot);
     handles.push(coreDb);
+    await openAdmittedTestNanoHost(coreDb);
     const workspaceId = DEMO_WORKSPACE_ID;
     const userId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
@@ -362,6 +364,7 @@ describe('retained capture exclusion rejoin', () => {
     await createDemoStore({ dataRoot });
     const core = createTestCoreDb(dataRoot);
     handles.push(core);
+    await openAdmittedTestNanoHost(core);
     const workspaceId = DEMO_WORKSPACE_ID;
     recordWorkspaceOwnerMembership({
       coreDb: core,

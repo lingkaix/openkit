@@ -1,6 +1,4 @@
 import { isDeepStrictEqual } from 'node:util';
-import { RequestIdSchema } from '@openkit/protocol';
-import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-native.js';
 import { approveMcpDefinitionInDb } from '../runtime/mcp-tool-schema-snapshots.js';
@@ -23,64 +21,32 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { applyControlAdmission } from './control-store-admission.js';
-import { ControlAdmissionSchema } from './control-store-admission-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import {
-  CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductEntry,
   ControlProductEntrySchema,
-  ControlProductMutationSchema,
+  ControlProductPreconditionError,
 } from './control-store-product-records.js';
 import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlTerminal,
-  ControlTerminalTransitionSchema,
+  assertArchiveMutation,
   type PreparedControlEntry,
   type PreparedControlTerminal,
   prepareControlEntries,
   prepareRetainedControlEntries,
   readPreparedControlEntry,
 } from './control-store-products.js';
+import {
+  type ControlPendingTransition,
+  ControlPendingTransitionSchema,
+} from './control-store-publication-codecs.js';
 import type { WorkspaceDb } from './db.js';
 import { prepareWorkspaceQueueInputBatch } from './workspace-queue-inputs.js';
 
-/** Original Pending command receipts; no separate execution or settlement ledger. */
-export const ControlPendingReceiptSchema = z
-  .object({
-    key: z.string().min(1),
-    command: z.enum(['approval.respond', 'user_input.answer', 'pending_request.withdraw']),
-    requestId: RequestIdSchema,
-    scope: z.record(z.string(), z.string()),
-    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    responseKind: z.enum(['approval', 'pending_request']),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-/** Complete native Pending publication packet; all immutable bytes are synchronized before SQL. */
-export const ControlPendingTransitionSchema = z
-  .object({
-    input: z.lazy(() => ControlPendingCommandInputSchema),
-    terminal: z.lazy(() => ControlTerminalTransitionSchema).optional(),
-    admission: z.lazy(() => ControlAdmissionSchema).optional(),
-    products: z.lazy(() =>
-      z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries)
-    ),
-    entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
-    receipt: z
-      .object({
-        original: ControlPendingReceiptSchema,
-        input: z.unknown(),
-        responseId: z.string().min(1),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-/** Closed Pending body and existing dependent local projections. */
-export type ControlPendingTransition = z.infer<typeof ControlPendingTransitionSchema>;
+export type { ControlPendingTransition } from './control-store-publication-codecs.js';
 
 /** Prepares only immutable Item proof outside SQL; retained descriptors never become new writes. The optional verified entries are the existing terminal owner's native-local preparation, including its terminal event. */
 export async function prepareControlPendingCommands(
@@ -164,6 +130,9 @@ export async function prepareControlPendingCommands(
         )
         .all(db.workspaceId, command.turnId) as { request_id: string }[];
       for (const row of rows) requestIds.add(row.request_id);
+      // An earlier group of the same grouped decision freezes these rows on this Turn first.
+      for (const requestId of newDirectories?.frozen?.get(command.turnId) ?? [])
+        requestIds.add(requestId);
     }
   }
   for (const requestId of requestIds) {
@@ -186,7 +155,10 @@ export async function prepareControlPendingCommands(
     ] as const)
       ids.add(pendingRequestItemId(requestId, role));
   }
-  return { ...(await prepareRetainedPendingItems(db, mount, prepared, ids)), workerInputs };
+  return {
+    ...(await prepareRetainedPendingItems(db, mount, prepared, ids, newDirectories?.planned)),
+    workerInputs,
+  };
 }
 
 /** Prepares the current canonical Item context after earlier queued transitions commit, before archive SQL. */
@@ -211,7 +183,8 @@ async function prepareRetainedPendingItems(
   db: WorkspaceDb,
   mount: ControlProductContentMount | undefined,
   prepared: readonly PreparedControlEntry[],
-  ids: Iterable<string>
+  ids: Iterable<string>,
+  planned?: ReadonlyMap<string, PreparedControlEntry>
 ): Promise<PreparedControlPendingCommand> {
   const supplied = new Set(
     prepared.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
@@ -219,6 +192,17 @@ async function prepareRetainedPendingItems(
   const dependencies: PreparedControlPendingCommand['dependencies'][number][] = [];
   for (const id of ids) {
     if (supplied.has(id)) continue;
+    // An earlier group of the same grouped decision writes this Item; the deciding body reads the
+    // row that group produced against its exact entry.
+    const earlier = planned?.get(id);
+    if (earlier) {
+      dependencies.push({
+        entry: earlier,
+        revision: earlier.input.expectedRevision + 1,
+        contentJson: JSON.stringify(earlier.input.content),
+      });
+      continue;
+    }
     const row = db.sqlite
       .prepare(
         "SELECT schema_version,turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
@@ -332,6 +316,54 @@ function pendingReceipt(db: WorkspaceDb, transition: ControlPendingTransition) {
   return { original, responseId, replayed: false };
 }
 
+/** Permits only the public archive command's owned receipt and matching command Audit. */
+function assertArchiveAdmission(
+  input: Extract<ControlPendingCommandInput, { action: 'closeout' }>,
+  admission: NonNullable<ControlPendingTransition['admission']>
+): void {
+  const { receipt, audit } = admission;
+  const { workspaceId, threadId } = input;
+  const { requestId } = receipt;
+  const scope = { workspaceId, threadId };
+  if (
+    receipt.command !== 'thread.archive' ||
+    receipt.key !== commandRequestKey(receipt.command, requestId, scope) ||
+    receipt.inputHash !== commandInputHash({ requestId, ...scope }) ||
+    !isDeepStrictEqual(receipt.scope, scope) ||
+    !isDeepStrictEqual(receipt.response, { kind: 'thread', id: threadId }) ||
+    receipt.expiresAt <= receipt.createdAt ||
+    audit.workspaceId !== workspaceId ||
+    audit.threadId !== threadId ||
+    audit.requestId !== requestId ||
+    input.actor.kind !== 'user' ||
+    !isDeepStrictEqual(audit.actor, input.actor) ||
+    audit.category !== 'command' ||
+    audit.action !== 'thread.archive' ||
+    audit.resource !== `thread:${threadId}` ||
+    audit.outcome !== 'succeeded' ||
+    audit.severity !== 'info' ||
+    audit.summary !== 'Thread archived.' ||
+    audit.createdAt !== receipt.createdAt ||
+    audit.occurredAt !== receipt.createdAt ||
+    [
+      audit.turnId,
+      audit.itemId,
+      audit.capabilityCallId,
+      audit.permissionDecisionId,
+      audit.vaultGrantId,
+      audit.subject,
+      audit.agentId,
+      audit.agentSessionId,
+      audit.resourceRevision,
+      audit.errorCode,
+    ].some((value) => value != null) ||
+    audit.notebookAdmission ||
+    audit.policyInvocation ||
+    audit.policyWriteOutcome
+  )
+    throw new ControlProductPreconditionError();
+}
+
 /** Applies Pending rows, their prepared product entries and original receipt in one native savepoint. */
 export function applyControlPendingTransition(
   db: WorkspaceDb,
@@ -360,18 +392,26 @@ export function applyControlPendingTransition(
         400
       );
     const input = transition.input;
-    if (
-      input.action === 'closeout' &&
-      (transition.admission?.receipt.command === 'thread.archive' ||
-        transition.terminal.products.some(
-          ({ kind, record }) =>
-            kind === 'thread' && record.id === input.threadId && record.status === 'archived'
-        )) &&
-      db.sqlite
-        .prepare("SELECT 1 FROM control_turns WHERE thread_id=? AND status IN('pending','running')")
-        .get(input.threadId)
-    )
-      assertControlPendingArchive(db, input.threadId, prepared);
+    if (input.action === 'closeout') {
+      const archive = [
+        ...transition.terminal.products,
+        ...(transition.admission?.products ?? []),
+      ].find(
+        ({ kind, record }) =>
+          kind === 'thread' && record.id === input.threadId && record.status === 'archived'
+      );
+      if (
+        (archive || transition.admission?.receipt.command === 'thread.archive') &&
+        db.sqlite
+          .prepare(
+            "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN('pending','running')"
+          )
+          .get(input.threadId)
+      )
+        assertControlPendingArchive(db, input.threadId, prepared);
+      if (archive) assertArchiveMutation(db, archive, input.now);
+      if (transition.admission) assertArchiveAdmission(input, transition.admission);
+    }
     applyControlTerminal(db, transition.terminal, terminal);
     result = {
       requestIds: transition.input.expected?.map((source) => source.requestId) ?? [],

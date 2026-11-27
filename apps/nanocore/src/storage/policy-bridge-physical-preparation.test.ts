@@ -20,24 +20,23 @@ import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js'
 import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
 import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { currentAdmittedTestNanoHostOwner } from '../test-support/admitted-nanohost.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from '../test-support/native-environment.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { createTestCoreDb, createTestStore, createTestWorkspaceDb } from '../test-support/store.js';
 import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
@@ -467,7 +466,7 @@ async function fixture() {
     ]),
     setup.logicalModels.allowed.map((model) => model.id)
   );
-  admitTestNativeEnvironment(core, setup.manifest);
+  await admitTestNativeEnvironmentForRoot(core, setup.manifest);
   const pkg = await resolveAgentEnvironmentPackage({
     coreDb: core,
     agentSetup: setup,
@@ -487,14 +486,14 @@ async function fixture() {
     createdAt: timestamp,
   });
   expect(pkg.llm.mode).toBe('harness');
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+  const target = await transitionTestNativeRuntimeTargetFields('allocate', core, {
     deploymentId: 'policy-bridge',
     identityId: 'policy-bridge',
     targetId: 'policy-bridge',
     observedAt: timestamp,
   });
   const physicalEpoch = 'e'.repeat(64);
-  await upsertNanoHostRuntimeTarget(core, {
+  await transitionTestNativeRuntimeTargetFields('ready', core, {
     ...target,
     ready: true,
     freshEmpty: true,
@@ -505,7 +504,10 @@ async function fixture() {
   const harnessInstanceId = `harness:${randomUUID()}`;
   const bindingId = `binding:${randomUUID()}`;
   const integrationRef = `integration:${randomUUID()}`;
-  await createNanoHostHarnessRuntime(core, {
+  // Harness records live in the admitted NanoHost file; the fixture writes through its owner, as production does.
+  const nanoHost = currentAdmittedTestNanoHostOwner(core);
+  if (!nanoHost) throw new Error('The policy bridge fixture has no admitted NanoHost owner.');
+  await createNanoHostHarnessRuntime(nanoHost, {
     maxActiveTurns: 1,
     adapterId: 'codex',
     adapterVersion: 'test',
@@ -521,7 +523,7 @@ async function fixture() {
     runtimeTargetId: target.targetId,
     timestamp,
   });
-  await openNanoHostAgentSessionBinding(core, {
+  await openNanoHostAgentSessionBinding(nanoHost, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId,
     agentSessionRuntimeBindingId: bindingId,
@@ -554,14 +556,18 @@ async function fixture() {
     operation: 'turn.start',
     timestamp,
   });
-  await queueNanoHostHarnessOperation(core, {
-    body,
-    prepared,
-    harnessInstanceId,
-    operation: 'turn.start',
-    timestamp,
-  });
-  const dispatched = await dispatchNanoHostHarnessOperation(core, {
+  await queueNanoHostHarnessOperation(
+    core,
+    {
+      body,
+      prepared,
+      harnessInstanceId,
+      operation: 'turn.start',
+      timestamp,
+    },
+    nanoHost.harnessTurnLifecycle
+  );
+  const dispatched = await nanoHost.harnessTurnLifecycle.dispatch({
     sandboxIntegrationBindingRef: integrationRef,
     now,
   });

@@ -354,6 +354,8 @@ pub struct WorkerBootstrapRequest {
     pub request_id: String,
     /// Static non-secret Harness binding retained only by NanoHost bridge context.
     pub sandbox_integration_binding_ref: String,
+    /// Exact Sandbox binding kept with the live bridge, outside the Sandbox.
+    pub sandbox_binding_ref: String,
 }
 
 impl WorkerBootstrapRequest {
@@ -375,7 +377,9 @@ impl WorkerBootstrapRequest {
                 && !value.contains(['\r', '\n', '\0'])
                 && !value.chars().any(char::is_control)
         });
-        if !lineage_valid {
+        if !lineage_valid
+            || !crate::nanocore_session::valid_sandbox_bridge_binding(&self.sandbox_binding_ref)
+        {
             return Err(EpochFault::IdentityMismatch);
         }
         Ok(())
@@ -1121,6 +1125,7 @@ impl NanoHostOpenShellClient {
         sandbox_name: &str,
         sandbox_id: &str,
         sandbox_integration_binding_ref: String,
+        sandbox_binding_ref: String,
         route_projection: OuterRouteProjection,
     ) -> Result<(OpenSandboxBridge, WatchedTask<Result<(), h2::Error>>), EpochFault> {
         let client = self.connected()?;
@@ -1208,6 +1213,7 @@ impl NanoHostOpenShellClient {
             let (harness_ready, mut harness_ready_rx) = mpsc::channel(1);
             let projection = route_projection.clone();
             let route_sandbox_integration_binding_ref = sandbox_integration_binding_ref.clone();
+            let route_sandbox_binding_ref = sandbox_binding_ref.clone();
             let mut route_server = AbortOnDropJoin::new(tokio::spawn(async move {
                 let admission_binding_ref = route_sandbox_integration_binding_ref.clone();
                 let result = serve_sandbox_http2(
@@ -1218,9 +1224,16 @@ impl NanoHostOpenShellClient {
                         let harness_ready = harness_ready.clone();
                         let sandbox_integration_binding_ref =
                             route_sandbox_integration_binding_ref.clone();
+                        let sandbox_binding_ref = route_sandbox_binding_ref.clone();
                         async move {
                             if let Ok(true) = projection
-                                .forward(family, request, respond, &sandbox_integration_binding_ref)
+                                .forward(
+                                    family,
+                                    request,
+                                    respond,
+                                    &sandbox_integration_binding_ref,
+                                    &sandbox_binding_ref,
+                                )
                                 .await
                             {
                                 let _ = harness_ready.try_send(());
@@ -1565,6 +1578,7 @@ impl NanoHostOpenShellClient {
             sandbox_id: _,
             request_id,
             sandbox_integration_binding_ref: _,
+            sandbox_binding_ref: _,
         } = request;
         let _request_id = request_id;
         let events = self
@@ -2025,6 +2039,7 @@ impl EnvironmentProvider for NanoHostOpenShellClient {
                 let sandbox_id = worker_bootstrap.sandbox_id.clone();
                 let sandbox_integration_binding_ref =
                     worker_bootstrap.sandbox_integration_binding_ref.clone();
+                let sandbox_binding_ref = worker_bootstrap.sandbox_binding_ref.clone();
                 let mut exec_monitor = self
                     .exec_sandbox_worker_bootstrap(worker_bootstrap, &sandbox_name)
                     .await?;
@@ -2033,6 +2048,7 @@ impl EnvironmentProvider for NanoHostOpenShellClient {
                         &sandbox_name,
                         &sandbox_id,
                         sandbox_integration_binding_ref,
+                        sandbox_binding_ref,
                         route_projection,
                     ) => match bridge {
                         Ok(bridge) => bridge,

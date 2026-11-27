@@ -1,17 +1,20 @@
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import {
   deliverNanoHostTransportTokenToNamedSlot,
   type NanoHostCredentialSinkPaths,
 } from './nanohost-transport-sink.js';
+import { createOpenKitAccessTokenSecret } from './nanohost-transport-token.js';
 import {
-  createNanoHostTransportTokenRecord,
+  enrollNanoHostTransportIdentity,
   revokeNanoHostTransportTokenRecord,
   verifyNanoHostTransportTokenRecord,
 } from './nanohost-transport-token-store.js';
@@ -75,19 +78,15 @@ describe('NanoHost transport named safe-sink delivery', () => {
     try {
       applyMigrations(coreDb);
       writeFileSync(blocked, 'not-a-directory');
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO nanohost_integration_identities (
-            identity_id, deployment_id, status, created_at
-          ) VALUES ('integration_nanohost_primary', 'deploy_primary', 'active', ?)`
-        )
-        .run('2026-08-08T00:00:00.000Z');
-      const issued = await createNanoHostTransportTokenRecord(coreDb, {
+      const nativeStorage = await openAdmittedTestNanoHost(coreDb);
+      const issued = await enrollNanoHostTransportIdentity(nativeStorage.value, {
         deploymentId: 'deploy_primary',
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: 'integration_nanohost_primary',
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+        secret: createOpenKitAccessTokenSecret(),
+        tokenId: allocateEntityId('nhtok'),
       });
 
       expect(() =>
@@ -107,12 +106,12 @@ describe('NanoHost transport named safe-sink delivery', () => {
         })
       ).toThrow();
 
-      await revokeNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
+      await revokeNanoHostTransportTokenRecord(nativeStorage.value, issued.tokenId, {
         now: new Date('2026-08-08T00:00:01.000Z'),
       });
 
       expect(
-        await verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
+        await verifyNanoHostTransportTokenRecord(nativeStorage.value, issued.secret, {
           now: new Date('2026-08-08T00:00:02.000Z'),
         })
       ).toBeNull();

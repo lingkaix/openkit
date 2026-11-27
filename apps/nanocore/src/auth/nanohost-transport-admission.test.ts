@@ -1,22 +1,25 @@
 import { once } from 'node:events';
-import { mkdtempSync } from 'node:fs';
 import { connect, createServer } from 'node:http2';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
+import { openNanoHostTestOwner } from '../test-support/nanohost-owner.js';
+import { createOpenKitAccessTokenSecret, hashOpenKitAccessTokenSecret } from './access-token.js';
 import type { AuthVariables } from './middleware.js';
 import {
-  admitNanoHostTransportConnection,
+  admitNativeNanoHostTransportConnection,
   registerNanoHostTransportAdmissionRoutes,
 } from './nanohost-transport-admission.js';
+import { fenceNanoHostTransportAuthority } from './nanohost-transport-lifecycle.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
-import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
-import { createNanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from './nanohost-transport-session.js';
+import { revokeNanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
 
 /**
  * WP-2b R2 red: production NanoHost transport admission consumes token verify
@@ -30,11 +33,11 @@ import { createNanoHostTransportTokenRecord } from './nanohost-transport-token-s
 /**
  * Issues one active NanoHost transport Token for admission fixtures.
  *
- * @param coreDb Core database handles.
+ * @param nanoHost Admitted fixture owner.
  * @returns Issued secret plus identity and deployment ids.
  */
 async function issueTransportToken(
-  coreDb: CoreDb,
+  nanoHost: ReturnType<typeof openNanoHostTestOwner>,
   clock = new Date('2026-08-08T00:00:00.000Z')
 ): Promise<{
   deploymentId: string;
@@ -43,31 +46,150 @@ async function issueTransportToken(
 }> {
   const identityId = 'integration_nanohost_primary';
   const deploymentId = 'deploy_primary';
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO nanohost_integration_identities (
-        identity_id, deployment_id, status, created_at
-      ) VALUES (?, ?, 'active', ?)`
-    )
-    .run(identityId, deploymentId, '2026-08-08T00:00:00.000Z');
-  const issued = await createNanoHostTransportTokenRecord(coreDb, {
-    deploymentId,
-    expiresAt: new Date(clock.getTime() + 31 * 24 * 60 * 60 * 1000).toISOString(),
-    now: clock,
-    ownerNanoHostIdentityId: identityId,
-    responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+  const secret = createOpenKitAccessTokenSecret();
+  await nanoHost.storage.owner.transport({
+    kind: 'enroll',
+    record: {
+      tokenId: allocateEntityId('nhtok'),
+      tokenHash: hashOpenKitAccessTokenSecret(secret),
+      deploymentId,
+      expiresAt: new Date(clock.getTime() + 31 * 24 * 60 * 60 * 1000).toISOString(),
+      now: clock,
+      ownerNanoHostIdentityId: identityId,
+      responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+    },
   });
-  return { deploymentId, identityId, secret: issued.secret };
+  return { deploymentId, identityId, secret };
 }
 
 describe('NanoHost transport production admission', () => {
-  it('requires the shared transport revision before allocation and accepts a matching native admission', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admit-reader-')));
-    applyMigrations(coreDb);
-    const token = await issueTransportToken(coreDb, new Date());
+  it('reports an unavailable admitted owner without verifying a token or allocating a generation', async () => {
+    const unavailable = {
+      state: 'unavailable',
+      owner: 'nanohost',
+      reason: 'recovery-required',
+    } as const;
+    const owner = {
+      read: vi.fn(() => unavailable),
+      transport: vi.fn(),
+      harnessLifecycle: vi.fn(),
+      transitionRuntimeTarget: vi.fn(),
+    };
+    const kernel = {
+      reserveHolderIntent: vi.fn(),
+      fenceNanoHostEpoch: vi.fn(),
+      inspectNanoHostEpochFence: vi.fn(),
+    };
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostTransportAdmissionRoutes({
+      app,
+      coreDb: undefined,
+      nativeStorage: { state: 'ready', value: { owner, kernel } },
+      sessionAuthority: createNanoHostTransportSessionAuthority(),
+    });
+    const response = await app.request('/api/nanohost/transport/session/admit', {
+      method: 'POST',
+      headers: { authorization: 'Bearer okt_fixture', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'nanohost_transport_storage_unavailable',
+    });
+    expect(owner.read).toHaveBeenCalledOnce();
+    expect(owner.transport).not.toHaveBeenCalled();
+    expect(owner.transitionRuntimeTarget).not.toHaveBeenCalled();
+  });
+
+  it('closes only the original allocated generation when its acknowledged Token recheck is refused', async () => {
+    const nanoHost = openNanoHostTestOwner();
+    const now = new Date('2026-08-08T00:00:00.000Z');
+    const token = await issueTransportToken(nanoHost, now);
+    const authority = createNanoHostTransportSessionAuthority();
+    const originalOwner = nanoHost.storage.owner;
+    const recheckStarted = Promise.withResolvers<void>();
+    const acknowledgement = Promise.withResolvers<void>();
+    let allocated = false;
+    const transition = vi.fn<typeof originalOwner.transitionRuntimeTarget>(
+      async (kernel, original) => {
+        const result = await originalOwner.transitionRuntimeTarget(kernel, original);
+        allocated = original.input.kind === 'allocate' && result.state === 'ready';
+        return result;
+      }
+    );
+    const storage = {
+      ...nanoHost.storage,
+      owner: {
+        ...originalOwner,
+        transitionRuntimeTarget: transition,
+        async afterWorkerControlAcknowledgement<Value>(read: () => Value, signal?: AbortSignal) {
+          if (allocated && signal) {
+            recheckStarted.resolve();
+            await acknowledgement.promise;
+          }
+          return read();
+        },
+      },
+    };
+    const requestSignal = new AbortController().signal;
+    const admission =
+      Promise.withResolvers<Awaited<ReturnType<typeof admitNativeNanoHostTransportConnection>>>();
+    const server = createServer((request, response) => {
+      void admitNativeNanoHostTransportConnection(storage, authority, {
+        now,
+        physicalConnection: readNanoHostPhysicalConnectionContext(request),
+        secret: token.secret,
+        signal: requestSignal,
+        transportRevision: String(transportRevision),
+      }).then((result) => {
+        admission.resolve(result);
+        response.end();
+      }, admission.reject);
+    });
+    let client: ReturnType<typeof connect> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connect(`http://127.0.0.1:${address.port}`);
+      const stream = client.request({ ':path': '/' });
+      stream.resume();
+      await Promise.race([recheckStarted.promise, admission.promise]);
+      expect(transition.mock.calls.map(([, original]) => original.input.kind)).toEqual([
+        'allocate',
+      ]);
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+      acknowledgement.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      await expect(admission.promise).resolves.toEqual({
+        ok: false,
+        reason: 'storage_unavailable',
+      });
+      expect(transition.mock.calls.map(([, original]) => original.input)).toMatchObject([
+        { kind: 'allocate', targetId: token.identityId },
+        { kind: 'close', targetId: token.identityId, closedGeneration: 1 },
+      ]);
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+    } finally {
+      acknowledgement.resolve();
+      await authority.closeAllPhysicalConnections();
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      await shutdownControlStoreWorkerClient();
+    }
+  });
+
+  it('requires the shared transport revision before allocation and accepts a matching native admission, then refuses its revoked Token after reopen', async () => {
+    const nanoHost = openNanoHostTestOwner();
+    const token = await issueTransportToken(nanoHost, new Date());
     const authority = createNanoHostTransportSessionAuthority();
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostTransportAdmissionRoutes({ app, coreDb, sessionAuthority: authority });
+    registerNanoHostTransportAdmissionRoutes({
+      app,
+      nativeStorage: { state: 'ready', value: nanoHost.storage },
+      sessionAuthority: authority,
+    });
     const server = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -139,7 +261,7 @@ describe('NanoHost transport production admission', () => {
         const refused = await post({}, revision);
         expect(refused.status).toBe(409);
         expect(refused.body).toMatchObject({ code: 'nanohost_protocol_mismatch' });
-        expect(getNanoHostRuntimeTarget(coreDb, token.identityId)).toBeNull();
+        expect(getNanoHostRuntimeTarget(nanoHost, token.identityId)).toBeNull();
         expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
       }
       const accepted = await post({
@@ -158,30 +280,54 @@ describe('NanoHost transport production admission', () => {
         mayCarryWork: true,
       });
       expect(accepted.body).not.toHaveProperty('note');
-      const stored = getNanoHostRuntimeTarget(coreDb, token.identityId);
+      const stored = getNanoHostRuntimeTarget(nanoHost, token.identityId);
       expect(stored).toMatchObject({ identityId: token.identityId, connectionGeneration: 1 });
       expect(JSON.stringify(stored)).not.toContain('ignored');
       expect(JSON.stringify(stored)).not.toContain('body-cannot-select');
+
+      const tokenId = accepted.body.tokenId;
+      if (typeof tokenId !== 'string') throw new Error('Expected the original transport Token ID.');
+      const revokedAt = new Date();
+      await expect(
+        revokeNanoHostTransportTokenRecord(nanoHost.storage, tokenId, { now: revokedAt })
+      ).resolves.toMatchObject({ tokenId, status: 'revoked' });
+      await fenceNanoHostTransportAuthority(
+        nanoHost.storage,
+        authority,
+        token.identityId,
+        revokedAt.toISOString()
+      );
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+      await authority.closeAllPhysicalConnections();
+      client.destroy();
+      await nanoHost.reopen();
+
+      client = connect(`http://127.0.0.1:${address.port}`);
+      const stale = await post({});
+      expect(stale.status).toBe(401);
+      expect(stale.body).toMatchObject({ code: 'nanohost_transport_admission_unauthorized' });
+      expect(authority.authoritativeGeneration(token.identityId)).toBeNull();
+      expect(getNanoHostRuntimeTarget(nanoHost, token.identityId)).toMatchObject({
+        connectionGeneration: 1,
+        ready: false,
+      });
     } finally {
       await authority.closeAllPhysicalConnections();
       client?.destroy();
       server.close();
       await once(server, 'close');
       await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
     }
   });
 
   it('rejects unauthenticated or missing native connection context before allocation', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-admit-bad-'));
-    const coreDb = openCoreDb(dataRoot);
+    const nanoHost = openNanoHostTestOwner();
 
     try {
-      applyMigrations(coreDb);
-      const { secret } = await issueTransportToken(coreDb);
+      const { secret } = await issueTransportToken(nanoHost);
       const authority = createNanoHostTransportSessionAuthority();
 
-      const denied = await admitNanoHostTransportConnection(coreDb, authority, {
+      const denied = await admitNativeNanoHostTransportConnection(nanoHost.storage, authority, {
         transportRevision: String(transportRevision),
         physicalConnection: null as never,
         secret: 'okt_FAKE_e430',
@@ -191,20 +337,23 @@ describe('NanoHost transport production admission', () => {
 
       expect(denied).toEqual({ ok: false, reason: 'unauthorized' });
       expect(authority.authoritativeGeneration('integration_nanohost_primary')).toBeNull();
-      expect(getNanoHostRuntimeTarget(coreDb, 'runtime-target-primary')).toBeNull();
+      expect(getNanoHostRuntimeTarget(nanoHost, 'runtime-target-primary')).toBeNull();
 
-      const missingContext = await admitNanoHostTransportConnection(coreDb, authority, {
-        transportRevision: String(transportRevision),
-        physicalConnection: null as never,
-        secret,
-        targetId: 'runtime-target-primary',
-        now: new Date('2026-08-08T00:01:00.000Z'),
-      });
+      const missingContext = await admitNativeNanoHostTransportConnection(
+        nanoHost.storage,
+        authority,
+        {
+          transportRevision: String(transportRevision),
+          physicalConnection: null as never,
+          secret,
+          targetId: 'runtime-target-primary',
+          now: new Date('2026-08-08T00:01:00.000Z'),
+        }
+      );
       expect(missingContext).toEqual({ ok: false, reason: 'missing_connection_context' });
-      expect(getNanoHostRuntimeTarget(coreDb, 'runtime-target-primary')).toBeNull();
+      expect(getNanoHostRuntimeTarget(nanoHost, 'runtime-target-primary')).toBeNull();
     } finally {
       await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
     }
   });
 });

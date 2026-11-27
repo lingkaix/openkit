@@ -17,7 +17,6 @@ import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.j
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -31,7 +30,7 @@ import {
 } from '../test-support/control-native-transport.js';
 import { createRetainedDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
@@ -272,7 +271,6 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
     failedThread.id
   )[0]!;
   const sessionId = failedTurn.agentSessionId!;
-  admitTestNativeEnvironment(coreDb, setup.manifest);
   const sourceIds = Array.from({ length: repositoryCount }, (_, index) => `repository-${index}`);
   const commit = 'a'.repeat(40);
   const sourceCatalog = parseWorkspaceDataSourceCatalog({

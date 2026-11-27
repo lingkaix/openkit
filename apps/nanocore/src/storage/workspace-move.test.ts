@@ -26,6 +26,7 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact } from '../test-support/recovery-journal.js';
@@ -130,6 +131,7 @@ async function fixture() {
     (workspace_id,user_id,status,invitation_id,joined_at,removed_at,revision,created_at,updated_at)
     VALUES (?,?,'active',NULL,?,NULL,1,?,?)`)
     .run(workspaceId, sourceMember, now, now, now);
+  await openAdmittedTestNanoHost(sourceCore);
   sourceCore.sqlite.close();
   const mappedThread = await store.createThread(
     workspaceId,
@@ -244,6 +246,8 @@ async function fixture() {
   ensureLocalUser(target);
   const targetOwner = account(target);
   const targetMember = account(target);
+  await openAdmittedTestNanoHost(target);
+  await shutdownControlStoreWorkerClient();
   target.sqlite.close();
   const requestId = randomUUID();
   const argv = [

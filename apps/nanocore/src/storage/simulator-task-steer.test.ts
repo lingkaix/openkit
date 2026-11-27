@@ -15,7 +15,10 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -25,10 +28,12 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 /** Holds the real scheduler-launched simulator after native delivery proof, without replacing steer or seeding private state. */
 async function fixture() {
+  vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
   const root = mkdtempSync(join(tmpdir(), 'simulator-real-task-steer-'));
   const coreDb = createTestCoreDb(root);
   const actor = { kind: 'user', id: ensureLocalUser(coreDb) } as const;
@@ -52,6 +57,7 @@ async function fixture() {
   const store = await createDemoStore({ dataRoot: root });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: actor.id });
   const setup = createTestAgentSetup();
+  await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
   const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Real simulator live input');
   const fileAdmission = new FileStorageAdmission(root, () => 1_000_000n);
   const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });

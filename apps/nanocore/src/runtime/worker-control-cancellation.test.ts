@@ -5,19 +5,35 @@ import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { bindBootNanoHostAttemptRecovery } from '../bootstrap/nanohost-recovery.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  NanoHostWorkerRecoveryState,
+  readNanoHostPhysicalCleanupReceipt,
+} from '../storage/nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import { transitionAdmittedNanoHostRuntimeTarget } from '../storage/nanohost-transport-owner.js';
+import { resolveAdmittedNanoHostFinalBinding } from '../storage/nanohost-worker-binding.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
+import {
+  currentAdmittedTestNanoHostOwner,
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestQueueEntry } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -29,33 +45,25 @@ import {
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import {
-  bindNanoHostAttemptRouteTokenHashes,
-  requireNanoHostExecutionAttempt,
-} from './nanohost-attempt-records.js';
-import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  fenceNanoHostRuntimeTargetAfterRestart,
-  upsertNanoHostRuntimeTarget,
-} from './nanohost-runtime-target.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
   getWorkerBackendSession,
-  markWorkerBackendSessionLaunching,
-  markWorkerBackendWorkspaceHandoffComplete,
-  recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
-  workerBackendLineageFromRuntimeImage,
-} from './worker-backend-sessions.js';
-import { hashWorkerRouteToken, type WorkerControlLineage } from './worker-control-gateway.js';
+} from './worker-backend-session-records.js';
+import {
+  hashWorkerRouteToken,
+  WorkerControlGatewayError,
+  type WorkerControlLineage,
+} from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   getWorkerControlAcceptedFinalStatus,
-  resolveWorkerControlFinalStatusTokenBinding,
 } from './worker-control-records.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
@@ -73,7 +81,12 @@ async function createFixture() {
   vi.setSystemTime(new Date(now));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-control-cancellation-'));
   let coreDb = openCoreDb(dataRoot);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+  });
   applyMigrations(coreDb);
+  const nativeStorage = await openAdmittedTestNanoHost(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
@@ -132,23 +145,36 @@ async function createFixture() {
     text: 'Cancel one exact worker Turn',
     workspaceId: workspaceIdForOwner(turn.owner),
   });
-  recordTestExecutionAttempt(coreDb, {
+  const { deploymentId } = readDataRootLayoutMarker(dataRoot);
+  submitTestNanoHostWorkerLease(
+    coreDb,
     entry,
-    attemptId: ATTEMPT_ID,
-    agentSessionId: environmentPackage.scope.agentSessionId,
-    inputRef: environmentPackage.snapshotId,
-    bindingRef: BINDING,
-    sessionCompatibilityKey: 'sha256:cancellation',
-    operationId: 'submit_cancellation',
-    now: () => now,
-  });
-  bindNanoHostAttemptRouteTokenHashes(coreDb, {
-    attemptId: ATTEMPT_ID,
-    now: () => now,
-    sandboxBindingRef: BINDING,
-    workerCapabilityTokenHash: hashWorkerRouteToken(CAPABILITY_TOKEN),
-    workerControlTokenHash: hashWorkerRouteToken(CONTROL_TOKEN),
-    workerInferenceTokenHash: hashWorkerRouteToken(INFERENCE_TOKEN),
+    BINDING,
+    {
+      agentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      workerCapabilityTokenHash: hashWorkerRouteToken(CAPABILITY_TOKEN),
+      workerControlTokenHash: hashWorkerRouteToken(CONTROL_TOKEN),
+      workerInferenceTokenHash: hashWorkerRouteToken(INFERENCE_TOKEN),
+    },
+    { attemptId: ATTEMPT_ID, placementDeploymentId: deploymentId }
+  );
+  const { image } = environmentPackage.runtime;
+  if (image.kind !== 'reference')
+    throw new Error('Cancellation fixture expects a reference image.');
+  mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+    sqlite.prepare('UPDATE nanohost_runtime_targets SET deployment_id = ?').run(deploymentId);
+    // The launched placement carries this package's image lineage, as Native materialization writes it.
+    sqlite
+      .prepare(
+        'UPDATE worker_backend_sessions SET deployment_id = ?, backend_lineage_json = ?, backend_session_id = ? WHERE attempt_id = ?'
+      )
+      .run(
+        deploymentId,
+        JSON.stringify({ imageRef: image.ref }),
+        'nh-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb',
+        ATTEMPT_ID
+      );
   });
   const lineage: WorkerControlLineage = {
     agentSessionId: environmentPackage.scope.agentSessionId,
@@ -158,7 +184,7 @@ async function createFixture() {
     turnId: turn.id,
     workspaceId: workspaceIdForOwner(turn.owner),
   };
-  let gateway = createDefaultWorkerControlGateway(coreDb);
+  let gateway = createDefaultWorkerControlGateway(coreDb, undefined, nativeStorage);
   return {
     get coreDb() {
       return coreDb;
@@ -174,16 +200,54 @@ async function createFixture() {
     restart() {
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      gateway = createDefaultWorkerControlGateway(coreDb);
+      gateway = createDefaultWorkerControlGateway(coreDb, undefined, nativeStorage);
     },
     /** Repeats index.ts startup order with both real recovery owners and the durable backend. */
     async restartThroughStartup(input: RunNanoHostAttemptRecoveryInput) {
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      await fenceNanoHostRuntimeTargetAfterRestart(coreDb, new Date().toISOString());
-      gateway = createDefaultWorkerControlGateway(coreDb);
+      const fenced = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'restart',
+        observedAt: new Date().toISOString(),
+      });
+      if (fenced.state !== 'ready') throw new Error(`Fixture restart: ${fenced.reason}`);
+      gateway = createDefaultWorkerControlGateway(coreDb, undefined, nativeStorage);
       await runSchedulerRestartRecovery(coreDb, input);
       await classifyNanoHostAttemptsAfterRestart(coreDb, input);
+    },
+    /**
+     * The NanoHost reconnect after the restart: a new connection generation reports the same target
+     * fenced, ready and fresh-empty with a new physical Epoch, which recovery requires before cleanup.
+     */
+    async reconnectFreshTarget(physicalEpoch = 'b'.repeat(64)) {
+      const { runtimeTargetId } = launchedBackend(this as Fixture);
+      const target = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+        getNanoHostRuntimeTarget({ sqlite }, runtimeTargetId)
+      );
+      if (!target) throw new Error('Fixture RuntimeTarget is absent.');
+      const configured = {
+        targetId: target.targetId,
+        identityId: target.identityId,
+        deploymentId: target.deploymentId,
+        observedAt: new Date().toISOString(),
+      };
+      const allocated = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'allocate',
+        ...configured,
+      });
+      if (allocated.state !== 'ready' || !allocated.value)
+        throw new Error('Fixture reconnect was not allocated.');
+      const ready = await transitionAdmittedNanoHostRuntimeTarget(nativeStorage.value, {
+        kind: 'ready',
+        ...configured,
+        connectionGeneration: allocated.value.connectionGeneration,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch,
+      });
+      if (ready.state !== 'ready' || !ready.value?.ready)
+        throw new Error('Fixture reconnect is not ready.');
     },
     /** Transfers the exact attempt to cancellation without asserting cleanup. */
     close(cause = 'turn-cancelled') {
@@ -198,10 +262,12 @@ async function createFixture() {
         admissions: coreDb.sqlite
           .prepare('SELECT * FROM scheduler_admission_entries ORDER BY rowid')
           .all(),
-        records: coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all(),
-        sequences: coreDb.sqlite
-          .prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid')
-          .all(),
+        ...readAdmittedTestNanoHost(coreDb, (sqlite) => ({
+          records: sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all(),
+          sequences: sqlite
+            .prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid')
+            .all(),
+        })),
       };
     },
     /** Reads canonical files and cleanup records afresh rather than using cached projections. */
@@ -213,9 +279,9 @@ async function createFixture() {
           cleanupHandles: currentWorkspaceDb.sqlite
             .prepare('SELECT * FROM backend_workspace_handles ORDER BY rowid')
             .all(),
-          backends: coreDb.sqlite
-            .prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid')
-            .all(),
+          backends: readAdmittedTestNanoHost(coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM worker_backend_sessions ORDER BY rowid').all()
+          ),
           attempt: requireSchedulerExecutionAttempt(coreDb, ATTEMPT_ID),
         };
       } finally {
@@ -228,55 +294,15 @@ async function createFixture() {
   };
 }
 
-type Fixture = ReturnType<typeof createFixture>;
+type Fixture = Awaited<ReturnType<typeof createFixture>>;
 
-/** Establishes exact admitted physical lineage through the existing backend record producers. */
-async function recordLaunchedBackend(fixture: Fixture) {
-  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(fixture.coreDb, {
-    deploymentId: 'deployment-cancellation',
-    identityId: 'identity-cancellation',
-    observedAt: fixture.now,
-    targetId: 'runtime-target-cancellation',
-  });
-  await upsertNanoHostRuntimeTarget(fixture.coreDb, {
-    ...target,
-    freshEmpty: true,
-    observedAt: fixture.now,
-    physicalEpoch: 'a'.repeat(64),
-    predecessorFenced: true,
-    ready: true,
-  });
-  await recordWorkerBackendSessionMaterializing(fixture.coreDb, {
-    backendLineage: workerBackendLineageFromRuntimeImage(fixture.environmentPackage.runtime.image),
-    backendVersion: '0.0.99',
-    identity: {
-      agentSessionId: fixture.lineage.agentSessionId,
-      backendKind: fixture.environmentPackage.backend.preferred,
-      backendSessionId: 'nh-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb',
-      deploymentId: target.deploymentId,
-      packageSnapshotId: fixture.lineage.packageSnapshotId,
-      runtimeTargetId: target.targetId,
-      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${fixture.lineage.packageSnapshotId}`,
-      transientProviderInstanceId: null,
-    },
-    lineage: fixture.lineage,
-    now: () => fixture.now,
-    sandboxBindingRef: BINDING,
-  });
-  await transitionWorkerBackendSessionState(fixture.coreDb, {
-    attemptId: ATTEMPT_ID,
-    fromState: 'materializing',
-    toState: 'materialized',
-    now: () => fixture.now,
-  });
-  await markWorkerBackendWorkspaceHandoffComplete(fixture.coreDb, {
-    attemptId: ATTEMPT_ID,
-    now: () => fixture.now,
-  });
-  return await markWorkerBackendSessionLaunching(fixture.coreDb, {
-    attemptId: ATTEMPT_ID,
-    now: () => fixture.now,
-  });
+/** Reads the exact launched physical placement seeded with the submitted route lease. */
+function launchedBackend(fixture: Fixture) {
+  const backend = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, ATTEMPT_ID)
+  );
+  if (!backend) throw new Error('Fixture backend session is absent.');
+  return backend;
 }
 
 /** Supplies only effect ports; an unexpected callback cannot fabricate authority or cleanup success. */
@@ -306,6 +332,119 @@ function recoveryPorts() {
   return { input, cleanupBackendSession, prepareBackendCleanup };
 }
 
+/** Mounts the production Boot writers and configured physical cleanup owner on the fixture. */
+function bootRecovery(fixture: Fixture, ports: ReturnType<typeof recoveryPorts>) {
+  const owner = currentAdmittedTestNanoHostOwner(fixture.coreDb);
+  if (!owner) throw new Error('Fixture has no admitted Boot recovery.');
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    env: {},
+    coreDb: fixture.coreDb,
+    store: fixture.store,
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    nanoHostRecovery: {
+      owner: { state: 'ready', value: owner },
+      releaseTerminalScopes: owner.releaseTerminalScopes,
+      commitCloseout: owner.classifyRecovery,
+    },
+  });
+  const atContact: string[] = [];
+  const physical = vi.fn<typeof runtime.cleanupClaimedBackendSession>((identity, carriage) => {
+    atContact.push(launchedBackend(fixture).state);
+    return runtime.cleanupClaimedBackendSession(identity, carriage);
+  });
+  const recovery = bindBootNanoHostAttemptRecovery(
+    owner,
+    { coreDb: fixture.coreDb, reconcileAcceptedFinalStatus: runtime.reconcileAcceptedFinalStatus },
+    {
+      isTurnExecutionActive: runtime.isTurnExecutionActive,
+      cleanupClaimedBackendSession: physical,
+      restoreClaimedCleanupResult: runtime.restoreClaimedCleanupResult,
+      inspectIdleCleanup: async () => null,
+      commitPhysicalTransition: (mutation, authorize) =>
+        owner.classifyRecovery(mutation, authorize ? { authorize } : undefined),
+      commitOrphanAudit: owner.commitOrphanAudit,
+      commitOrphanRetirement: (mutation, audit) => owner.classifyRecovery({ ...mutation, audit }),
+    }
+  );
+  const cleanup = vi.spyOn(recovery, 'claimCleanup');
+  const input = {
+    ...ports.input,
+    firstClaimedCleanupOperation: runtime.firstClaimedCleanupOperation,
+    isTurnExecutionActive: runtime.isTurnExecutionActive,
+    admittedNanoHostRecovery: { state: 'ready', value: recovery },
+  } satisfies RunNanoHostAttemptRecoveryInput;
+  return { input, cleanup, physical, atContact };
+}
+
+/** Reads each deciding error in a maintenance pass without ignoring its rejection. */
+async function maintenanceFailures(fixture: Fixture, input: RunNanoHostAttemptRecoveryInput) {
+  const failure = await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, input).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure).toMatchObject({ message: 'Native attempt recovery failed.' });
+  return (failure as AggregateError).errors.map((error: Error) => error.message);
+}
+
+/** Reads a receipt through the original lease and current admitted target. */
+function physicalCleanupReceipt(fixture: Fixture) {
+  const lease = readRetainedNanoHostSubmission(fixture.coreDb, ATTEMPT_ID)?.lease;
+  if (!lease) throw new Error('Fixture original lease is absent.');
+  return readAdmittedTestNanoHost(fixture.coreDb, (sqlite) => {
+    const session = getWorkerBackendSession({ sqlite }, ATTEMPT_ID)!;
+    const target = getNanoHostRuntimeTarget({ sqlite }, session.runtimeTargetId)!;
+    return readNanoHostPhysicalCleanupReceipt(sqlite, lease, target);
+  });
+}
+
+/** Proves the original identity settled once and both passes preserve the same receipt. */
+async function expectFirstCleanup(
+  fixture: Fixture,
+  boot: ReturnType<typeof bootRecovery>,
+  backend: ReturnType<typeof launchedBackend>
+) {
+  const first = await maintenanceFailures(fixture, boot.input);
+  expect(boot.cleanup).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      session: backend,
+      lease: readRetainedNanoHostSubmission(fixture.coreDb, ATTEMPT_ID)?.lease,
+    })
+  );
+  const { identity, target } = boot.cleanup.mock.calls[0]![0];
+  expect(identity).toEqual({
+    agentSessionId: backend.agentSessionId,
+    backendKind: backend.backendKind,
+    backendSessionId: backend.backendSessionId,
+    deploymentId: backend.deploymentId,
+    packageSnapshotId: backend.packageSnapshotId,
+    runtimeTargetId: backend.runtimeTargetId,
+    stagingDirectoryRef: backend.stagingDirectoryRef,
+    transientProviderInstanceId: backend.transientProviderInstanceId,
+  });
+  expect(boot.physical).toHaveBeenCalledExactlyOnceWith(
+    identity,
+    expect.objectContaining({ target })
+  );
+  expect(boot.atContact).toEqual(['cleanup-pending']);
+  const receipt = physicalCleanupReceipt(fixture);
+  expect(receipt).toMatchObject({
+    cleanup: {
+      connectionGeneration: target.connectionGeneration,
+      physicalEpoch: target.physicalEpoch,
+      observedAt: expect.any(String),
+    },
+  });
+  await expect(boot.cleanup.mock.results[0]?.value).resolves.toMatchObject({
+    state: 'ready',
+    value: { observedAt: receipt?.observedAt },
+  });
+  expect(first).toEqual(['Backend effect is unavailable in this in-process test.']);
+  expect(await maintenanceFailures(fixture, boot.input)).toEqual(first);
+  expect(boot.physical).toHaveBeenCalledTimes(1);
+  expect(physicalCleanupReceipt(fixture)).toEqual(receipt);
+}
+
 /** Composes the real HTTP parsers and bearer selection with the current durable gateway. */
 function workerControlHttp(fixture: Fixture) {
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -319,12 +458,22 @@ function workerControlHttp(fixture: Fixture) {
 
 /** Observes every pre-existing bound without introducing a cancellation grace deadline. */
 function nativeDeadlines(fixture: Fixture) {
-  const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+  const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+  const proof = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    NanoHostWorkerRecoveryState.parse(
+      JSON.parse(
+        sqlite
+          .prepare('SELECT worker_recovery_json FROM worker_backend_sessions WHERE attempt_id = ?')
+          .pluck()
+          .get(ATTEMPT_ID) as string
+      )
+    )
+  );
   return {
     deadline: attempt.deadline,
-    startupDeadline: attempt.startupDeadline,
-    heartbeatDeadline: attempt.heartbeatDeadline,
-    recoveryDeadline: attempt.recoveryDeadline,
+    startupDeadline: proof.startupDeadline,
+    heartbeatDeadline: proof.heartbeatDeadline,
+    recoveryDeadline: proof.recoveryDeadline,
   };
 }
 
@@ -361,7 +510,7 @@ function expectRefusal(fixture: Fixture, operation: () => unknown) {
   const before = fixture.durableState();
   const product = fixture.productState();
   const snapshot = fixture.gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId);
-  expect(operation).toThrow();
+  expect(operation).toThrow(WorkerControlGatewayError);
   expect(fixture.durableState()).toEqual(before);
   expect(fixture.productState()).toEqual(product);
   expect(fixture.gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)).toEqual(snapshot);
@@ -379,7 +528,7 @@ async function expectAsyncRefusal(fixture: Fixture, operation: () => Promise<unk
 }
 
 /** Checks that each credential family has lost ordinary effect authority. */
-function expectOrdinaryEffectsRefused(fixture: Fixture) {
+async function expectOrdinaryEffectsRefused(fixture: Fixture) {
   for (const [tokenFamily, token] of [
     ['worker-control', CONTROL_TOKEN],
     ['inference', INFERENCE_TOKEN],
@@ -389,7 +538,7 @@ function expectOrdinaryEffectsRefused(fixture: Fixture) {
       fixture.gateway.authenticatePackageToken(`Bearer ${token}`, { tokenFamily })
     );
   }
-  expectRefusal(fixture, () =>
+  await expectAsyncRefusal(fixture, async () =>
     fixture.gateway.appendEvent({
       authorization: `Bearer ${CONTROL_TOKEN}`,
       lineage: fixture.lineage,
@@ -404,9 +553,9 @@ function expectOneFinal(
   status: 'cancelled' | 'interrupted',
   diagnostics?: Readonly<Record<string, string>>
 ) {
-  const rows = fixture.coreDb.sqlite
-    .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
-    .all();
+  const rows = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    sqlite.prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'").all()
+  );
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({
     workspace_id: fixture.lineage.workspaceId,
@@ -426,12 +575,16 @@ function expectOneFinal(
     status,
     stopReason: 'aborted',
   });
-  const accepted = getWorkerControlAcceptedFinalStatus(fixture.coreDb, fixture.lineage);
+  const accepted = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    getWorkerControlAcceptedFinalStatus({ sqlite }, fixture.lineage)
+  );
   expect(accepted).toMatchObject({ status, stopReason: 'aborted', acceptedAt: fixture.now });
   expect(canonicalStopReasonForAcceptedWorkerFinalStatus(accepted!)).toBe('aborted');
-  const events = fixture.coreDb.sqlite
-    .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'event_append'")
-    .all() as Array<{ record_json: string }>;
+  const events = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+    sqlite
+      .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'event_append'")
+      .all()
+  ) as Array<{ record_json: string }>;
   expect(events).toHaveLength(1);
   expect(JSON.parse(events[0]!.record_json)).toMatchObject({
     lineage: fixture.lineage,
@@ -456,14 +609,16 @@ describe('Core cancellation-only final admission', () => {
           fenceRef: null,
           outcomeRef: null,
         });
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         expect(
-          resolveWorkerControlFinalStatusTokenBinding(fixture.coreDb, {
-            lineage: fixture.lineage,
-            sandboxBindingRef: BINDING,
-            token: CONTROL_TOKEN,
-            tokenFamily: 'worker-control',
-          })
+          readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            resolveAdmittedNanoHostFinalBinding(fixture.coreDb, sqlite, {
+              lineage: fixture.lineage,
+              sandboxBindingRef: BINDING,
+              token: CONTROL_TOKEN,
+              tokenFamily: 'worker-control',
+            })
+          )
         ).toMatchObject({ status: 'accepted' });
         expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
           accepted: true,
@@ -477,7 +632,7 @@ describe('Core cancellation-only final admission', () => {
           nextExpectedSequence: 9,
         });
         expect(fixture.durableState()).toEqual(accepted);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus({ ...finalInput(fixture, status), sequence: 9 })
         );
@@ -497,7 +652,7 @@ describe('Core cancellation-only final admission', () => {
     const fixture = await createFixture();
     try {
       fixture.close();
-      expectRefusal(fixture, () =>
+      await expectAsyncRefusal(fixture, async () =>
         fixture.gateway.recordHeartbeat({
           authorization: `Bearer ${CONTROL_TOKEN}`,
           lineage: fixture.lineage,
@@ -523,7 +678,7 @@ describe('Core cancellation-only final admission', () => {
       const fixture = await createFixture();
       try {
         fixture.close(cause);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         const before = fixture.durableState();
         fixture.restart();
         expect(fixture.durableState()).toEqual(before);
@@ -576,7 +731,7 @@ describe('Core cancellation-only final admission', () => {
       });
       expect(fixture.durableState()).toEqual(closed);
       expectOneFinal(fixture, 'cancelled');
-      expectOrdinaryEffectsRefused(fixture);
+      await expectOrdinaryEffectsRefused(fixture);
       await expectAsyncRefusal(fixture, () =>
         fixture.gateway.recordFinalStatus({ ...finalInput(fixture), stopReason: 'error' })
       );
@@ -754,7 +909,7 @@ describe('Core cancellation-only final admission', () => {
         const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
         vi.setSystemTime(new Date(attempt.deadline!));
         if (restart) fixture.restart();
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
@@ -780,7 +935,7 @@ describe('Core cancellation-only final admission', () => {
           });
         }
         fixture.close();
-        const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+        const attempt = nativeDeadlines(fixture);
         vi.setSystemTime(
           new Date(kind === 'startup' ? attempt.startupDeadline : attempt.heartbeatDeadline)
         );
@@ -798,11 +953,13 @@ describe('Core cancellation-only final admission', () => {
     try {
       fixture.close();
       // Inject the adapter's existing stale classification; no recovery owner is replaced.
-      fixture.coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ?"
-        )
-        .run(ATTEMPT_ID);
+      mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        sqlite
+          .prepare(
+            "UPDATE worker_backend_sessions SET worker_recovery_json = json_set(worker_recovery_json, '$.recoveryState', 'needs-evidence') WHERE attempt_id = ?"
+          )
+          .run(ATTEMPT_ID)
+      );
       await expectAsyncRefusal(fixture, () =>
         fixture.gateway.recordFinalStatus(finalInput(fixture))
       );
@@ -827,9 +984,11 @@ describe('Core cancellation-only final admission', () => {
         accepted: true,
       });
       expect(
-        fixture.coreDb.sqlite
-          .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
-          .all()
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare("SELECT * FROM worker_control_records WHERE operation = 'final_status'")
+            .all()
+        )
       ).toHaveLength(1);
     } finally {
       fixture.dispose();
@@ -842,7 +1001,7 @@ describe('Core cancellation-only final admission', () => {
       const fixture = await createFixture();
       const ports = recoveryPorts();
       try {
-        const backend = await recordLaunchedBackend(fixture);
+        const backend = launchedBackend(fixture);
         expect(backend).toMatchObject({
           state: 'launching',
           workspaceHandoffState: 'complete',
@@ -862,13 +1021,33 @@ describe('Core cancellation-only final admission', () => {
         await fixture.restartThroughStartup(ports.input);
         if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, async () =>
+          fixture.gateway.recordHeartbeat({
+            authorization: `Bearer ${CONTROL_TOKEN}`,
+            lineage: fixture.lineage,
+            operation: 'heartbeat',
+            schemaVersion: 2,
+            sequence: 2,
+            body: { status: 'running' },
+          })
+        );
         expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
           accepted: true,
         });
         expectOneFinal(fixture, 'cancelled');
+        const accepted = fixture.durableState();
+        fixture.restart();
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+          accepted: true,
+        });
+        expect(fixture.durableState()).toEqual(accepted);
         expect(fixture.productState().canonical).toEqual(canonical);
-        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toEqual(backend);
+        expect(
+          readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, ATTEMPT_ID)
+          )
+        ).toEqual(backend);
         expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
         expect(ports.input.executionBackend.submit).not.toHaveBeenCalled();
         expect(ports.input.executionBackend.cancel).not.toHaveBeenCalled();
@@ -884,13 +1063,85 @@ describe('Core cancellation-only final admission', () => {
     }
   );
 
+  it('requires the exact acknowledged closed target for a record-only cancellation final', async () => {
+    const fixture = await createFixture();
+    try {
+      const backend = launchedBackend(fixture);
+      fixture.close();
+      await fixture.restartThroughStartup(recoveryPorts().input);
+      const resolve = (now = fixture.now) =>
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          resolveAdmittedNanoHostFinalBinding(
+            fixture.coreDb,
+            sqlite,
+            {
+              lineage: fixture.lineage,
+              sandboxBindingRef: BINDING,
+              token: CONTROL_TOKEN,
+              tokenFamily: 'worker-control',
+            },
+            now
+          )
+        );
+      const accepted = { status: 'accepted', replayOnly: false, cancellationOnly: true };
+      const rejected = { status: 'rejected', reason: 'attempt-not-live' };
+      expect(resolve()).toEqual(accepted);
+      const state = readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+        sqlite
+          .prepare('SELECT vault_epoch_fence_json FROM nanohost_runtime_targets WHERE target_id=?')
+          .pluck()
+          .get(backend.runtimeTargetId)
+      );
+      expect(typeof state).toBe('string');
+      const setFence = (value: unknown) =>
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE nanohost_runtime_targets SET vault_epoch_fence_json=? WHERE target_id=?'
+            )
+            .run(value, backend.runtimeTargetId)
+        );
+      setFence(null);
+      expect(resolve()).toEqual(rejected);
+      const unacknowledged = JSON.parse(state as string);
+      delete unacknowledged.lastTransition;
+      setFence(JSON.stringify(unacknowledged));
+      expect(resolve()).toEqual(rejected);
+      setFence(state);
+
+      const setOriginEpoch = (value: string) =>
+        mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          sqlite
+            .prepare(
+              'UPDATE worker_backend_sessions SET origin_physical_epoch=? WHERE attempt_id=?'
+            )
+            .run(value, backend.attemptId)
+        );
+      setOriginEpoch('b'.repeat(64));
+      expect(resolve()).toEqual(rejected);
+      setOriginEpoch(backend.originPhysicalEpoch);
+      expect(resolve()).toEqual(accepted);
+      expect(resolve(nativeDeadlines(fixture).startupDeadline)).toEqual(rejected);
+      await expectAsyncRefusal(fixture, () =>
+        fixture.gateway.recordFinalStatus({
+          ...finalInput(fixture),
+          status: 'completed',
+          stopReason: 'completed',
+        })
+      );
+      expect(fixture.durableState().records).toEqual([]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it.each(['startup', 'heartbeat', 'absolute'] as const)(
     'refuses the real-backend first final and retains cleanup at the original %s deadline',
     async (kind) => {
       const fixture = await createFixture();
       const ports = recoveryPorts();
       try {
-        const backend = await recordLaunchedBackend(fixture);
+        const backend = launchedBackend(fixture);
         if (kind === 'heartbeat')
           await fixture.gateway.recordHeartbeat({
             authorization: `Bearer ${CONTROL_TOKEN}`,
@@ -913,28 +1164,15 @@ describe('Core cancellation-only final admission', () => {
           )
         );
         await fixture.restartThroughStartup(ports.input);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-        ).rejects.toThrow('Native attempt recovery failed');
-        expect(ports.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({
-            agentSessionId: backend.agentSessionId,
-            backendSessionId: backend.backendSessionId,
-            packageSnapshotId: backend.packageSnapshotId,
-            runtimeTargetId: backend.runtimeTargetId,
-            deploymentId: backend.deploymentId,
-          })
-        );
+        await fixture.reconnectFreshTarget();
+        const boot = bootRecovery(fixture, ports);
+        await expectFirstCleanup(fixture, boot, backend);
+        expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
-        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-          state: 'cleanup-failed',
-          workspaceHandoffState: 'complete',
-          physicalCleanedAt: null,
-        });
         expect(fixture.productState().canonical).toEqual(canonical);
         expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
           phase: 'closing',
@@ -959,27 +1197,36 @@ describe('Core cancellation-only final admission', () => {
       const fixture = await createFixture();
       const ports = recoveryPorts();
       try {
-        await recordLaunchedBackend(fixture);
+        const backend = launchedBackend(fixture);
         fixture.close(contradiction === 'non-cancellation' ? 'execution-failed' : 'turn-cancelled');
         if (contradiction === 'cleanup-pending')
-          await transitionWorkerBackendSessionState(fixture.coreDb, {
-            attemptId: ATTEMPT_ID,
-            fromState: 'launching',
-            toState: 'cleanup-pending',
-            now: () => fixture.now,
-          });
+          mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            transitionWorkerBackendSessionState(
+              { sqlite },
+              {
+                attemptId: ATTEMPT_ID,
+                fromState: 'launching',
+                toState: 'cleanup-pending',
+                now: () => fixture.now,
+              }
+            )
+          );
         if (contradiction === 'handoff-pending')
-          fixture.coreDb.sqlite
-            .prepare(
-              "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
-            )
-            .run(ATTEMPT_ID);
+          mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
+              )
+              .run(ATTEMPT_ID)
+          );
         if (contradiction === 'needs-evidence')
-          fixture.coreDb.sqlite
-            .prepare(
-              "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ?"
-            )
-            .run(ATTEMPT_ID);
+          mutateAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                "UPDATE worker_backend_sessions SET worker_recovery_json = json_set(worker_recovery_json, '$.recoveryState', 'needs-evidence') WHERE attempt_id = ?"
+              )
+              .run(ATTEMPT_ID)
+          );
         if (contradiction === 'fenced')
           acceptSchedulerExecutionObservation(fixture.coreDb, {
             ...schedulerExecutionCorrelation(
@@ -993,19 +1240,32 @@ describe('Core cancellation-only final admission', () => {
         const deadlines = nativeDeadlines(fixture);
         const canonical = fixture.productState().canonical;
         await fixture.restartThroughStartup(ports.input);
-        expectOrdinaryEffectsRefused(fixture);
+        await expectOrdinaryEffectsRefused(fixture);
         await expectAsyncRefusal(fixture, () =>
           fixture.gateway.recordFinalStatus(finalInput(fixture))
         );
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-        ).rejects.toThrow('Native attempt recovery failed');
-        expect(ports.cleanupBackendSession).toHaveBeenCalledTimes(1);
-        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-          state: 'cleanup-failed',
-          workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
-          physicalCleanedAt: null,
-        });
+        await fixture.reconnectFreshTarget();
+        const boot = bootRecovery(fixture, ports);
+        if (contradiction === 'cleanup-pending' || contradiction === 'fenced') {
+          expect(await maintenanceFailures(fixture, boot.input)).toEqual([
+            'NanoHost recovery has no exact physical cleanup acknowledgement.',
+          ]);
+          expect(boot.cleanup).toHaveBeenCalledTimes(contradiction === 'fenced' ? 1 : 0);
+          expect(boot.physical).not.toHaveBeenCalled();
+          expect(launchedBackend(fixture)).toMatchObject({
+            state: contradiction === 'fenced' ? 'launching' : 'cleanup-pending',
+            workspaceHandoffState: 'complete',
+            physicalCleanedAt: null,
+          });
+          expect(physicalCleanupReceipt(fixture)).toBeNull();
+        } else {
+          const claimed = {
+            ...backend,
+            workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
+          } as const;
+          await expectFirstCleanup(fixture, boot, claimed);
+        }
+        expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
         expect(nativeDeadlines(fixture)).toEqual(deadlines);
         expect(fixture.productState().canonical).toEqual(canonical);
       } finally {
@@ -1013,6 +1273,44 @@ describe('Core cancellation-only final admission', () => {
       }
     }
   );
+
+  it('keeps a failed first cleanup claimed and never resends it', async () => {
+    const fixture = await createFixture();
+    const ports = recoveryPorts();
+    try {
+      const backend = launchedBackend(fixture);
+      fixture.close();
+      const deadlines = nativeDeadlines(fixture);
+      vi.setSystemTime(new Date(deadlines.deadline!));
+      await fixture.restartThroughStartup(ports.input);
+      await fixture.reconnectFreshTarget(backend.originPhysicalEpoch);
+      const boot = bootRecovery(fixture, ports);
+      boot.physical.mockRejectedValueOnce(new Error('Injected physical cleanup failure.'));
+      expect(await maintenanceFailures(fixture, boot.input)).toEqual([
+        'Injected physical cleanup failure.',
+      ]);
+      expect(boot.physical).toHaveBeenCalledTimes(1);
+      const failed = launchedBackend(fixture);
+      expect(failed).toMatchObject({ state: 'cleanup-failed', physicalCleanedAt: null });
+      expect(physicalCleanupReceipt(fixture)).toBeNull();
+      for (let pass = 0; pass < 2; pass += 1) {
+        expect(await maintenanceFailures(fixture, boot.input)).toEqual([
+          'NanoHost recovery has no exact physical cleanup acknowledgement.',
+        ]);
+      }
+      expect(boot.physical).toHaveBeenCalledTimes(1);
+      expect(launchedBackend(fixture)).toEqual(failed);
+      expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(nativeDeadlines(fixture)).toEqual(deadlines);
+      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'turn-cancelled',
+        fenceRef: null,
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
 
   it('accepts the P03 cancellation envelope after HTTP append refusal and preserves incomplete evidence through exact replay', async () => {
     const fixture = await createFixture();
@@ -1052,7 +1350,11 @@ describe('Core cancellation-only final admission', () => {
         schemaVersion: 2,
       });
       expectOneFinal(fixture, 'interrupted', diagnostics);
-      expect(getWorkerControlAcceptedFinalStatus(fixture.coreDb, lineage)).toMatchObject({
+      expect(
+        readAdmittedTestNanoHost(fixture.coreDb, (sqlite) =>
+          getWorkerControlAcceptedFinalStatus({ sqlite }, lineage)
+        )
+      ).toMatchObject({
         diagnostics,
       });
       expect(fixture.productState()).toEqual(product);

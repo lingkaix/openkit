@@ -1,14 +1,10 @@
-import { randomUUID } from 'node:crypto';
 // openkit-test-platform: posix
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { prepareTestAppOptions } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -70,7 +66,14 @@ async function fixture() {
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Credential inventory boundary');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: owner.userId });
-  const app = createApp({ mode: 'server', coreDb, dataRoot, store, auth });
+  const app = createApp({
+    mode: 'server',
+    coreDb,
+    dataRoot,
+    store,
+    auth,
+    nanoHostStorage: { state: 'unavailable', owner: 'nanohost', reason: 'disabled' },
+  });
   const request = (id: string, input: Record<string, unknown>, user = owner) =>
     app.request(`/api/app/operations/${id}`, {
       method: 'POST',
@@ -268,81 +271,34 @@ describe('E11 unified inbound credential management', () => {
     }
   );
 
-  it('lists an actual native Worker run without route material and ends it through the original interruption owner', async () => {
+  it('keeps Worker-run credential actions held while the Gateway writer is unavailable', async () => {
     const f = await fixture();
-    const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store);
-    onTestFinished(async () => {
-      await native.restore();
+    const app = createApp({
+      mode: 'server',
+      coreDb: f.coreDb,
+      store: f.store,
+      dataRoot: f.dataRoot,
+      auth: f.auth,
+      agentManifests: [],
+      openKitConfig: {},
     });
-    const setup = createTestAgentSetup({
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
-    const app = createApp(
-      prepareTestAppOptions({
-        mode: 'server',
-        coreDb: f.coreDb,
-        store: f.store,
-        dataRoot: f.dataRoot,
-        auth: f.auth,
-        fileAdmission: native.fileAdmission,
-        workerControlGateway: native.workerControlGateway,
-        turnExecutor: native.executor,
-        agentManifests: [setup.manifest],
-        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
-      })
-    );
-    const thread = await f.store.createThread(f.workspace.id, 'Own run cancellation');
-    const requestId = randomUUID();
-    const response = await app.request(
-      ...operationRequest(
-        'task.start',
-        {
-          workspaceId: f.workspace.id,
-          threadId: thread.id,
-          requestId,
-          input: 'Keep running until explicitly cancelled.',
-        },
-        { headers: { cookie: f.owner.cookie, 'x-openkit-request-id': requestId } }
-      )
-    );
-    expect(response.status, await response.clone().text()).toBe(202);
-    const accepted = await response.json();
-    const execution = native.executionFor(accepted.turn.id);
-    await execution.launched.promise;
-    const request = (operation: string, input: unknown, cookie = f.owner.cookie) =>
+    const invoke = (operation: string, input: unknown, cookie = f.owner.cookie) =>
       app.request(`/api/app/operations/${operation}`, {
         method: 'POST',
         headers: { cookie, 'content-type': 'application/json' },
         body: JSON.stringify(input),
       });
-    const inventory = await request('credential.list', {});
-    expect(inventory.status).toBe(200);
-    const text = await inventory.text();
-    expect(text).not.toContain(execution.workerControlToken);
-    expect(text).not.toContain('TokenHash');
-    expect(JSON.parse(text).items).toContainEqual(
-      expect.objectContaining({ kind: 'worker-run', id: accepted.turn.id, status: 'open' })
+    const result = await invoke('credential.list', {});
+    expect(result.status).toBe(200);
+    const inventory = await result.json();
+    expect(inventory.items.some(({ kind }: { kind: string }) => kind === 'worker-run')).toBe(false);
+    const id = 'tu_00000000-0000-7000-8000-000000000001';
+    for (const cookie of [f.owner.cookie, f.other.cookie]) {
+      const refused = await invoke('credential.revoke', { kind: 'worker-run', id }, cookie);
+      expect(refused.status).toBe(404);
+    }
+    expect(f.store.listCommandRequests().some(({ command }) => command === 'turn.interrupt')).toBe(
+      false
     );
-    expect(
-      (
-        await request(
-          'credential.revoke',
-          { kind: 'worker-run', id: accepted.turn.id },
-          f.other.cookie
-        )
-      ).status
-    ).toBe(404);
-    const revoked = await request('credential.revoke', {
-      kind: 'worker-run',
-      id: accepted.turn.id,
-    });
-    expect(revoked.status, await revoked.clone().text()).toBe(200);
-    expect(['ending', 'revoked']).toContain((await revoked.json()).status);
-    await execution.execution;
-    await vi.waitFor(() => expect(native.workerControlGateway.listCredentialRuns()).toEqual([]));
-    expect(f.store.getTurnById(accepted.turn.id).status).toBe('interrupted');
-    expect(
-      f.store.listCommandRequests().filter((row) => row.command === 'turn.interrupt')
-    ).toHaveLength(1);
-  }, 30_000);
+  });
 });

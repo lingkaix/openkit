@@ -10,7 +10,15 @@ export interface ScopeAdmissionFailure {
   readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index' | 'retired';
   /** First unsupported canonical feature identifier; excludes arbitrary record or parser content. */
   readonly requiredFeature?: string;
+  /** Boot Workspace walk that observed the failure; absent for ordinary scope admission. */
+  readonly stage?: BootWorkspaceWalkStage;
 }
+
+/** Boot steps that walk Workspaces and attribute a local failure to its Workspace. */
+export type BootWorkspaceWalkStage =
+  | 'assistant-turn-recovery'
+  | 'pending-request-recovery'
+  | 'mcp-item-backfill';
 
 // Boot and ordinary callers share refusal until restart or exact-target recovery revalidates authority.
 const scopeFailures = new Map<string, Map<string, ScopeAdmissionFailure>>();
@@ -25,6 +33,22 @@ export function refuseScope(dataRoot: string, failure: ScopeAdmissionFailure): v
   }
   const key = `${failure.scope}:${failure.id}:${failure.check === 'index' ? 'index' : 'authority'}`;
   if (failure.check === 'retired' || !failures.has(key)) failures.set(key, failure);
+}
+
+/**
+ * Names the Boot walk on a refusal its scoped owner recorded during that walk.
+ * Retained recovery and retirement diagnoses keep their exact owner record.
+ */
+export function attributeBootWalkStage(
+  dataRoot: string,
+  workspaceId: string,
+  stage: BootWorkspaceWalkStage
+): void {
+  const failures = scopeFailures.get(resolve(dataRoot));
+  const key = `workspace:${workspaceId}:authority`;
+  const current = failures?.get(key);
+  if (current && !current.stage && current.check !== 'recovery' && current.check !== 'retired')
+    failures!.set(key, { ...current, stage });
 }
 
 /** Returns bounded, owner-authored diagnoses for the existing authorized readiness projection. */
@@ -43,9 +67,11 @@ export function settleWorkspaceRecoveryScope(input: {
   const { failure } = input;
   const failures = scopeFailures.get(resolve(input.dataRoot));
   const key = `workspace:${failure.id}:authority`;
+  // A Boot walk hold survives lifecycle settlement; only that walk's revalidation on restart clears it.
   if (
     failure.scope !== 'workspace' ||
     failure.check !== 'recovery' ||
+    failure.stage !== undefined ||
     failures?.get(key) !== failure
   )
     throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
@@ -106,7 +132,7 @@ export function withScopeAdmissionReadiness(
       )
       .map((failure) => ({
         code: failure.check === 'index' ? 'storage.index-unavailable' : 'storage.scope-quarantined',
-        message: `storage: ${failure.scope} ${failure.id}; check=${failure.check}; stage=scope-admission.${failure.requiredFeature ? ` requiredFeature=${failure.requiredFeature}.` : ''}`,
+        message: `storage: ${failure.scope} ${failure.id}; check=${failure.check}; stage=${failure.stage ?? 'scope-admission'}.${failure.requiredFeature ? ` requiredFeature=${failure.requiredFeature}.` : ''}`,
         blocks: [`${failure.scope}:${failure.id}${failure.check === 'index' ? ':index' : ''}`],
       }));
     if (reasons.length > 0)

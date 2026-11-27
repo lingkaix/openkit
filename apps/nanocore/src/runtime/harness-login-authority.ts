@@ -1,10 +1,17 @@
 import { isDeepStrictEqual } from 'node:util';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { readRetainedV1 } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { bindWorkspaceSqlite, type CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
+import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
+import {
+  inspectNanoHostWorkerBinding,
+  nanoHostWorkerBindingLiveness,
+} from '../storage/nanohost-worker-binding.js';
 import {
   HarnessLoginContextSchema,
   HarnessLoginNativeEffectSchema,
@@ -12,7 +19,6 @@ import {
 } from '../storage/vault-native-codecs.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { resolveLiveNanoHostAttemptLease } from './nanohost-attempt-records.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
@@ -222,24 +228,38 @@ export async function authenticateHarnessLoginRequest(input: {
 export function requireHarnessLoginBinding(
   coreDb: CoreDb,
   input: HarnessLoginContext,
-  now: string
+  now: string,
+  native?: { readonly sqlite: Database.Database }
 ): string {
-  const row = coreDb.sqlite
+  const inspect = (sqlite: Database.Database) =>
+    readHarnessLoginBinding(coreDb, sqlite, input, now);
+  const binding = native ? inspect(native.sqlite) : requireNanoHostObservation(coreDb, inspect);
+  if (!binding) throw new Error('Native Login consumer binding is unavailable.');
+  return binding;
+}
+
+function readHarnessLoginBinding(
+  coreDb: CoreDb,
+  sqlite: Database.Database,
+  input: HarnessLoginContext,
+  now: string
+): string | null {
+  const row = sqlite
     .prepare(`SELECT b.schema_version AS schemaVersion,
-    h.schema_version AS harnessVersion,
-    b.agent_session_id AS agentSessionId, b.workspace_id AS workspaceId, b.thread_id AS threadId,
-    b.lifecycle_state AS bindingState, b.current_turn_id AS turnId, b.current_attempt_id AS leaseId,
-    b.next_turn_sequence AS nextSequence, b.cleanup_state AS bindingCleanup,
-    h.lifecycle_state AS harnessState, h.drain_state AS harnessDrain,
-    h.operation_state AS operationState, h.operation, h.command_body_json AS command,
-    s.sandbox_integration_binding_ref AS integrationRef,
-    s.runtime_target_id AS targetId, s.origin_physical_epoch AS physicalEpoch,
-    s.lifecycle_state AS sandboxState, s.health_state AS sandboxHealth,
-    s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
-    FROM agent_session_runtime_bindings b
-    JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
-    JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
-    WHERE b.agent_session_runtime_binding_id=?`)
+  h.schema_version AS harnessVersion,
+  b.agent_session_id AS agentSessionId, b.workspace_id AS workspaceId, b.thread_id AS threadId,
+  b.lifecycle_state AS bindingState, b.current_turn_id AS turnId, b.current_attempt_id AS leaseId,
+  b.next_turn_sequence AS nextSequence, b.cleanup_state AS bindingCleanup,
+  h.lifecycle_state AS harnessState, h.drain_state AS harnessDrain,
+  h.operation_state AS operationState, h.operation, h.command_body_json AS command,
+  s.sandbox_integration_binding_ref AS integrationRef,
+  s.runtime_target_id AS targetId, s.origin_physical_epoch AS physicalEpoch,
+  s.lifecycle_state AS sandboxState, s.health_state AS sandboxHealth,
+  s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
+  FROM agent_session_runtime_bindings b
+  JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+  JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+  WHERE b.agent_session_runtime_binding_id=?`)
     .get(input.agentSessionRuntimeBindingId) as
     | {
         schemaVersion: number;
@@ -266,23 +286,10 @@ export function requireHarnessLoginBinding(
         sandboxCleanup: string;
       }
     | undefined;
-  const refuse = (): never => {
-    throw new Error('Native Login consumer binding is unavailable.');
-  };
-  if (!row) return refuse();
+  if (!row) return null;
   for (const schemaVersion of [row.schemaVersion, row.harnessVersion])
     readRetainedV1({ schemaVersion }, () => null);
-  // The resident Sandbox may outlive its creating attempt. The exact command or active
-  // binding below must name this lease, whose route reference belongs to the current Turn.
-  const resolution = resolveLiveNanoHostAttemptLease(coreDb, {
-    attemptId: input.leaseId,
-    lineage: input,
-    now: () => now,
-  });
-  if (resolution.status !== 'accepted' || resolution.attempt.attemptId !== input.leaseId)
-    return refuse();
-  const attempt = resolution.attempt;
-  const target = getNanoHostRuntimeTarget(coreDb, row.targetId);
+  const target = getNanoHostRuntimeTarget({ sqlite }, row.targetId);
   if (
     row.agentSessionId !== input.agentSessionId ||
     row.workspaceId !== input.workspaceId ||
@@ -300,42 +307,54 @@ export function requireHarnessLoginBinding(
     !target.predecessorFenced ||
     !target.freshEmpty ||
     target.physicalEpoch !== input.physicalEpoch ||
-    target.connectionGeneration !== input.connectionGeneration ||
-    attempt.phase !== 'open' ||
-    attempt.agentSessionId !== input.agentSessionId ||
-    attempt.inputRef !== input.packageSnapshotId ||
-    (attempt.deadline !== null && attempt.deadline <= now)
+    target.connectionGeneration !== input.connectionGeneration
   )
-    return refuse();
-  if (
+    return null;
+  const active =
     row.bindingState === 'active' &&
     row.turnId === input.turnId &&
     row.leaseId === input.leaseId &&
-    row.nextSequence === input.turnSequence + 1
-  )
-    return row.integrationRef;
+    row.nextSequence === input.turnSequence + 1;
+  if (!active) {
+    if (
+      !['open', 'opening'].includes(row.bindingState) ||
+      row.operation !== 'turn.start' ||
+      row.operationState !== 'dispatched' ||
+      row.nextSequence !== input.turnSequence ||
+      row.turnId !== null ||
+      row.leaseId !== null ||
+      !row.command
+    )
+      return null;
+    const command: unknown = JSON.parse(row.command);
+    if (!command || typeof command !== 'object' || Array.isArray(command)) return null;
+    for (const [key, expected] of Object.entries({
+      agentSessionId: input.agentSessionId,
+      agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      leaseId: input.leaseId,
+      packageSnapshotId: input.packageSnapshotId,
+      turnSequence: input.turnSequence,
+    }))
+      if (Reflect.get(command, key) !== expected) return null;
+  }
+
+  // A resident Sandbox may outlive its origin attempt. Use the current consumer's grant after
+  // the command or binding check, then inspect that grant on this same admitted Native reader.
+  const original = readRetainedNanoHostSubmission(coreDb, input.leaseId);
+  if (!original?.lease.grant.bindingRef) return null;
+  const native = inspectNanoHostWorkerBinding(sqlite, original, {
+    sandboxBindingRef: original.lease.grant.bindingRef,
+    lineage: { ...input, requestId: original.requestId },
+  });
   if (
-    !['open', 'opening'].includes(row.bindingState) ||
-    row.operation !== 'turn.start' ||
-    row.operationState !== 'dispatched' ||
-    row.nextSequence !== input.turnSequence ||
-    row.turnId !== null ||
-    row.leaseId !== null ||
-    !row.command
+    native.status !== 'accepted' ||
+    native.session.runtimeTargetId !== row.targetId ||
+    native.session.originPhysicalEpoch !== row.physicalEpoch ||
+    nanoHostWorkerBindingLiveness(native, now).status !== 'accepted'
   )
-    return refuse();
-  const command: unknown = JSON.parse(row.command);
-  if (!command || typeof command !== 'object' || Array.isArray(command)) return refuse();
-  for (const [key, expected] of Object.entries({
-    agentSessionId: input.agentSessionId,
-    agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    leaseId: input.leaseId,
-    packageSnapshotId: input.packageSnapshotId,
-    turnSequence: input.turnSequence,
-  }))
-    if (Reflect.get(command, key) !== expected) return refuse();
+    return null;
   return row.integrationRef;
 }

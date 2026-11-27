@@ -35,6 +35,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSpan } from '../runtime/execution-step-journal.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
@@ -148,6 +149,7 @@ async function buildFixture() {
   const dataRoot = join(root, 'source');
   const store = await createDemoStore({ dataRoot });
   const core = openCoreDb(dataRoot);
+  await openAdmittedTestNanoHost(core);
   const ownerId = ensureLocalUser(core);
   const actor = { kind: 'user' as const, id: ownerId };
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: ownerId });
@@ -436,6 +438,7 @@ describe('borrowed lifecycle capture freeze', () => {
   it('keeps the caller freeze through the cut, seal and real Worker exit until caller release', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
+    await openAdmittedTestNanoHost(coreDb);
     const owner = getControlStoreWorkerClient().tryFreezeWorkspace(
       coreDb.dataRoot,
       workspaceId,
@@ -532,6 +535,7 @@ describe('borrowed lifecycle capture freeze', () => {
   it('preserves caller ownership on a post-cut refusal and refuses foreign or released owners', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
+    await openAdmittedTestNanoHost(coreDb);
     const owner = getControlStoreWorkerClient().tryFreezeWorkspace(
       coreDb.dataRoot,
       workspaceId,

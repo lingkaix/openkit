@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { lstatSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
@@ -25,14 +25,18 @@ import {
 import { PolicyInterception } from '../policy/interception.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as dispatch from '../runtime/scheduler-dispatch-loop.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { serverStoragePath } from '../storage/db.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
-import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { admitTestNativeEnvironmentForRoot } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
@@ -118,7 +122,7 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
       policyInterception: () => interception,
       vaultBackend: () => vault.backend(),
     });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     // The existing scheduler ID factory allocates only an identity; all preparation,
     // authority, package binding, delivery and receipt work remains with real owners.
     const run = dispatch.runSchedulerDispatchLoop;
@@ -127,6 +131,7 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
     );
     const manager = createRuntimeConfigManager({ dataRoot, initialSnapshot: readRuntimeConfig() });
     const app = createAppWithLocalIdentity({
+      nanoHostStorage,
       coreDb,
       store,
       fileAdmission: native.fileAdmission,
@@ -251,6 +256,11 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
     );
     expect(wrong.status).toBe(401);
     expect(runFacts()).toEqual(priorFacts);
+    const ownerFile = lstatSync(serverStoragePath(dataRoot, 'nanohost'));
+    const sender = getControlStoreWorkerClient() as unknown as {
+      request(frame: { operation: string; nanoHostPeer?: unknown }): Promise<unknown>;
+    };
+    const requests = vi.spyOn(sender, 'request');
     const refused = await app.request(
       ...operationRequest(
         'workspace.list',
@@ -258,6 +268,17 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
         { method: 'GET', headers: { authorization: `Bearer ${material}` } }
       )
     );
+    expect(
+      requests.mock.calls.flatMap(([frame]) =>
+        frame.operation === 'access-token-verification' ? [frame.nanoHostPeer] : []
+      )
+    ).toEqual([
+      {
+        openingRequestId: expect.any(Number),
+        ownerIdentity: `${ownerFile.dev}:${ownerFile.ino}`,
+      },
+    ]);
+    requests.mockRestore();
     expect(refused.status).toBe(401);
     const refusedBody = await refused.clone().text();
     expect(refusedBody.includes(material), 'Plaintext escaped into the bearer refusal.').toBe(

@@ -114,6 +114,8 @@ export const ControlNanoHostTransportInputSchema = z.discriminatedUnion('kind', 
       ]),
       record: NanoHostTransportTokenRecordSchema,
       actorUserId: z.string().nullable(),
+      /** The redacted predecessor that the Native abort stage read in its own savepoint. */
+      predecessor: NanoHostTransportTokenRecordSchema.optional(),
     })
     .strict(),
   z

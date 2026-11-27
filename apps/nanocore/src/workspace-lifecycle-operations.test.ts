@@ -34,6 +34,10 @@ import { WORKSPACE_BACKUP_POLICY } from './storage/workspace-backup.js';
 import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
 import { readRecoveryExecution } from './storage/workspace-recovery-journal.js';
 import {
+  openAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from './test-support/admitted-nanohost.js';
+import {
   createAppWithLocalIdentity as createApp,
   createTestSessionActor,
 } from './test-support/app.js';
@@ -186,6 +190,7 @@ async function fixture(
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lifecycle-cutover-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  await openAdmittedTestNanoHost(coreDb);
   ensureLocalUser(coreDb);
   const now = Date.now();
   for (const id of ['member', 'target'])
@@ -855,6 +860,7 @@ it('continues the original committed recovery after serving activation fails wit
     // Recompose the real App from retained owners; this is not a cold-process restart claim.
     // Drain the old process-local native owner before installing the reconstructed gate.
     await shutdownControlStoreWorkerClient();
+    await reopenAdmittedTestNanoHost(f.coreDb);
     restoreWorkspaceRecoveryAdmission(f.coreDb);
     // Bootstrap must not reopen a placed target whose exact byte seal still owns activation.
     expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(

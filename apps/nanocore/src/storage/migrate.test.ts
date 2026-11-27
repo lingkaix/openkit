@@ -26,6 +26,7 @@ import {
   applyMigrations,
   applyNativeScopeMigrations,
   applyScopedMigrations,
+  applyServerOwnerJournal,
   listAppliedMigrationIds,
   listAppliedNativeMigrationIds,
   type StorageMigrationScope,
@@ -34,19 +35,12 @@ import {
 const CORE_TABLES = [
   '__drizzle_migrations',
   'account',
-  'agent_session_runtime_binding_image_digests',
-  'agent_session_runtime_bindings',
   'audit_events',
   'control_execution_steps',
   'control_executions',
-  'harness_instance_records',
   'idempotency_requests',
-  'nanohost_integration_identities',
-  'nanohost_runtime_targets',
-  'nanohost_transport_tokens',
   'openkit_access_tokens',
   'permission_decisions',
-  'sandbox_runtime_records',
   'scheduler_admission_entries',
   'scheduler_execution_attempts',
   'recurring_schedules',
@@ -61,13 +55,6 @@ const CORE_TABLES = [
   'vault_references',
   'vault_use_records',
   'verification',
-  'worker_backend_sessions',
-  'worker_control_records',
-  'worker_control_rejected_evidence',
-  'worker_control_sequence_fingerprints',
-  'worker_image_settlements',
-  'worker_storage_bindings',
-  'worker_storage_contributors',
   'workspace_invitations',
   'workspace_members',
   'workspace_registry',
@@ -311,7 +298,6 @@ describe('database setup', () => {
           pk: 0,
         });
       }
-      expect(listColumnNames(coreDb, 'sandbox_runtime_records')).not.toContain('pinned_goal_id');
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const moved of [
         'capability_calls',
@@ -373,33 +359,6 @@ describe('database setup', () => {
         'expires_at',
         'schema_version',
       ]);
-      expect(listColumnNames(coreDb, 'worker_storage_bindings')).toEqual([
-        'storage_ref',
-        'runtime_target_id',
-        'deployment_id',
-        'workspace_id',
-        'scope_digest',
-        'layout_digest',
-        'layout_family',
-        'layout_version',
-        'platform_os',
-        'platform_architecture',
-        'owner_uid',
-        'owner_gid',
-        'working_directory',
-        'targets_json',
-        'revision',
-        'attachment_generation',
-        'state',
-        'current_agent_session_id',
-        'current_thread_id',
-        'current_work_slot_ref',
-        'current_sandbox_binding_ref',
-        'created_at',
-        'updated_at',
-        'purged_at',
-        'schema_version',
-      ]);
       expect(listColumnNames(coreDb, 'workspace_registry')).toEqual([
         'workspace_id',
         'owner_user_id',
@@ -453,11 +412,70 @@ describe('database setup', () => {
         'principal_ref_json',
         'run_subject_json',
       ]);
-      /**
-       * S-2b-1 Unit 2: durable NanoHost transport Token metadata projection.
-       * Covered by the current Core setup.
-       */
-      expect(listColumnNames(coreDb, 'nanohost_transport_tokens')).toEqual([
+      const attemptColumns = listColumnNames(coreDb, 'scheduler_execution_attempts');
+      expect(attemptColumns).toEqual(expect.arrayContaining(['attempt_id', 'turn_id', 'phase']));
+      expect(attemptColumns).not.toEqual(
+        expect.arrayContaining(['worker_control_token', 'worker_inference_token'])
+      );
+      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).toEqual(
+        expect.arrayContaining([
+          'queue_entry_id',
+          'request_id',
+          'trigger_actor_json',
+          'server_admin_token_id',
+          'workspace_id',
+          'thread_id',
+          'turn_id',
+          'input_id',
+          'input_digest',
+          'worker_storage_choice_json',
+          'requested_agent_id',
+          'status',
+        ])
+      );
+      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).not.toContain('turn_input');
+      expect(listTableNames(coreDb)).not.toContain('workspace_repository_resources');
+      expect(coreDbPath(dataRoot)).toMatch(/server\/db\/core\.sqlite$/);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps the moved columns and backend projection on the shipped NanoHost journal', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      applyServerOwnerJournal(sqlite, 'nanohost', () => new Database(':memory:'));
+      expect(listColumnNames({ sqlite }, 'sandbox_runtime_records')).not.toContain(
+        'pinned_goal_id'
+      );
+      expect(listColumnNames({ sqlite }, 'worker_storage_bindings')).toEqual([
+        'storage_ref',
+        'runtime_target_id',
+        'deployment_id',
+        'workspace_id',
+        'scope_digest',
+        'layout_digest',
+        'layout_family',
+        'layout_version',
+        'platform_os',
+        'platform_architecture',
+        'owner_uid',
+        'owner_gid',
+        'working_directory',
+        'targets_json',
+        'revision',
+        'attachment_generation',
+        'state',
+        'current_agent_session_id',
+        'current_thread_id',
+        'current_work_slot_ref',
+        'current_sandbox_binding_ref',
+        'created_at',
+        'updated_at',
+        'purged_at',
+        'schema_version',
+      ]);
+      expect(listColumnNames({ sqlite }, 'nanohost_transport_tokens')).toEqual([
         'token_id',
         'token_hash',
         'owner_nanohost_identity_id',
@@ -475,14 +493,14 @@ describe('database setup', () => {
         'last_used_channel',
         'last_used_source',
       ]);
-      expect(listColumnNames(coreDb, 'nanohost_integration_identities')).toEqual([
+      expect(listColumnNames({ sqlite }, 'nanohost_integration_identities')).toEqual([
         'identity_id',
         'deployment_id',
         'status',
         'created_at',
         'decommissioned_at',
       ]);
-      expect(listColumnNames(coreDb, 'nanohost_runtime_targets')).toEqual([
+      expect(listColumnNames({ sqlite }, 'nanohost_runtime_targets')).toEqual([
         'target_id',
         'identity_id',
         'deployment_id',
@@ -494,8 +512,9 @@ describe('database setup', () => {
         'observed_at',
         'slot_count',
         'last_fresh_ready_at',
+        'vault_epoch_fence_json',
       ]);
-      expect(listColumnNames(coreDb, 'sandbox_runtime_records')).toEqual([
+      expect(listColumnNames({ sqlite }, 'sandbox_runtime_records')).toEqual([
         'sandbox_runtime_id',
         'runtime_target_id',
         'origin_physical_epoch',
@@ -514,7 +533,7 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
       ]);
-      expect(listColumnNames(coreDb, 'harness_instance_records')).toEqual([
+      expect(listColumnNames({ sqlite }, 'harness_instance_records')).toEqual([
         'harness_instance_id',
         'sandbox_runtime_id',
         'harness_binding_ref',
@@ -543,7 +562,7 @@ describe('database setup', () => {
         'updated_at',
         'schema_version',
       ]);
-      expect(listColumnNames(coreDb, 'agent_session_runtime_bindings')).toEqual([
+      expect(listColumnNames({ sqlite }, 'agent_session_runtime_bindings')).toEqual([
         'agent_session_runtime_binding_id',
         'harness_instance_id',
         'agent_session_id',
@@ -568,34 +587,12 @@ describe('database setup', () => {
         'runtime_env_check_versions_json',
         'schema_version',
       ]);
-      expect(listColumnNames(coreDb, 'agent_session_runtime_binding_image_digests')).toEqual([
+      expect(listColumnNames({ sqlite }, 'agent_session_runtime_binding_image_digests')).toEqual([
         'agent_session_runtime_binding_id',
         'image_digest',
         'copied_at',
       ]);
-      const attemptColumns = listColumnNames(coreDb, 'scheduler_execution_attempts');
-      expect(attemptColumns).toEqual(expect.arrayContaining(['attempt_id', 'turn_id', 'phase']));
-      expect(attemptColumns).not.toEqual(
-        expect.arrayContaining(['worker_control_token', 'worker_inference_token'])
-      );
-      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).toEqual(
-        expect.arrayContaining([
-          'queue_entry_id',
-          'request_id',
-          'trigger_actor_json',
-          'server_admin_token_id',
-          'workspace_id',
-          'thread_id',
-          'turn_id',
-          'input_id',
-          'input_digest',
-          'worker_storage_choice_json',
-          'requested_agent_id',
-          'status',
-        ])
-      );
-      expect(listColumnNames(coreDb, 'scheduler_admission_entries')).not.toContain('turn_input');
-      expect(listColumnNames(coreDb, 'worker_backend_sessions')).toEqual([
+      expect(listColumnNames({ sqlite }, 'worker_backend_sessions')).toEqual([
         'attempt_id',
         'workspace_id',
         'thread_id',
@@ -606,10 +603,7 @@ describe('database setup', () => {
         'deployment_id',
         'backend_version',
         'worker_image',
-        'cell_target_id',
         'placement',
-        'gateway_name',
-        'gateway_endpoint',
         'backend_session_id',
         'staging_directory_ref',
         'transient_provider_instance_id',
@@ -622,9 +616,11 @@ describe('database setup', () => {
         'origin_physical_epoch',
         'backend_lineage_json',
         'sandbox_binding_ref',
+        'worker_route_binding_json',
+        'worker_recovery_json',
         'schema_version',
       ]);
-      const backendProjectionColumns = coreDb.sqlite
+      const backendProjectionColumns = sqlite
         .prepare('PRAGMA table_info(worker_backend_sessions)')
         .all() as Array<{ name: string; notnull: 0 | 1 }>;
       expect(
@@ -636,19 +632,13 @@ describe('database setup', () => {
                 'backend_lineage_json',
                 'sandbox_binding_ref',
                 'worker_image',
-                'cell_target_id',
                 'placement',
-                'gateway_name',
-                'gateway_endpoint',
               ].includes(name)
             )
             .map(({ name, notnull }) => [name, notnull === 0])
         )
       ).toEqual({
         backend_lineage_json: true,
-        cell_target_id: true,
-        gateway_endpoint: true,
-        gateway_name: true,
         placement: true,
         runtime_target_id: true,
         sandbox_binding_ref: true,
@@ -657,19 +647,19 @@ describe('database setup', () => {
       expect(
         backendProjectionColumns.find(({ name }) => name === 'origin_physical_epoch')?.notnull
       ).toBe(1);
-      coreDb.sqlite
+      sqlite
         .prepare(
           `INSERT INTO worker_backend_sessions (
              attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
              package_snapshot_id, backend_kind, deployment_id, backend_version,
-             worker_image, cell_target_id, placement, gateway_name, gateway_endpoint,
+             worker_image, placement,
              backend_session_id, origin_physical_epoch, staging_directory_ref, transient_provider_instance_id,
              workspace_handoff_state, state, created_at, updated_at
            ) VALUES (
              'lease-setup-writer', 'ws-setup-writer', 'thread-setup-writer',
              'turn-setup-writer', 'session-setup-writer', 'aepsnap-setup-writer',
              'openshell', 'deployment-setup-writer', '0.0.80',
-             'openkit/worker:test', 'cell-setup-writer', 'local', 'openshell', NULL,
+             'openkit/worker:test', 'local',
              'sandbox-setup-writer', ?, 'server/runtime/setup-writer', NULL,
              'pending', 'materializing',
              '2026-08-10T00:00:00.000Z', '2026-08-10T00:00:00.000Z'
@@ -677,7 +667,7 @@ describe('database setup', () => {
         )
         .run('a'.repeat(64));
       expect(
-        coreDb.sqlite
+        sqlite
           .prepare(
             `SELECT runtime_target_id AS runtimeTargetId,
                     backend_lineage_json AS backendLineageJson,
@@ -691,10 +681,8 @@ describe('database setup', () => {
         runtimeTargetId: null,
         sandboxBindingRef: null,
       });
-      expect(listTableNames(coreDb)).not.toContain('workspace_repository_resources');
-      expect(coreDbPath(dataRoot)).toMatch(/server\/db\/core\.sqlite$/);
     } finally {
-      coreDb.sqlite.close();
+      sqlite.close();
     }
   });
 
@@ -1100,8 +1088,6 @@ describe('database setup', () => {
       .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
       // The populated Light App fixture verifies real native format migration and snapshot restore.
       .filter((path) => !path.endsWith(`generative-kernel${sep}snapshots.test.ts`))
-      .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.ts`))
-      .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.test.ts`))
       // The canonical User reader fixture uses a private physical-database marker.
       .filter((path) => path !== join(sourceRoot, 'storage', 'db.test.ts'))
       // These exact tests inject SQL faults into private databases; they own no production schema.

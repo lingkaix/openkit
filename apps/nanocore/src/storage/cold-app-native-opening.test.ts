@@ -28,6 +28,7 @@ import {
   getRecord,
   updateLightAppSchema,
 } from '../generative-kernel/commands.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
@@ -1221,6 +1222,7 @@ it('keeps a stopped Workspace fully capturable after a genuine App inspection Wo
   // Match the mature stopped-capture fixture's real canonical account and membership prerequisites.
   const coreDb = openCoreDb(f.root);
   try {
+    await openAdmittedTestNanoHost(coreDb);
     const ownerId = ensureLocalUser(coreDb);
     expect(ownerId).toBe(FIXTURE_LOCAL_USER_ID);
     recordWorkspaceOwnerMembership({

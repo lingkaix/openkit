@@ -28,6 +28,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import type { NanoHostEnvironmentRead } from '../runtime/native-environment.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   getWorkerStorageBinding,
@@ -37,9 +38,12 @@ import {
   settleWorkerStoragePurge,
   type WorkerStorageBinding,
   type WorkerStorageContributor,
+  type WriteNanoHostStoragePurge,
+  type WriteNanoHostStorageTransition,
 } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { requireNanoHostObservation } from '../storage/nanohost-observation.js';
 
 /** Current user and target Workspace supplied to one in-process environment operation. */
 export interface WorkerEnvironmentOperationContext {
@@ -97,6 +101,15 @@ export interface WorkerEnvironmentOperations {
 export interface CreateWorkerEnvironmentOperationsInput {
   /** Core storage and membership authority. */
   readonly coreDb: CoreDb;
+  readonly readNanoHost?: NanoHostEnvironmentRead;
+  readonly purgeDecisions?: {
+    readonly markPending: (
+      input: Parameters<typeof markWorkerStoragePurgePending>[1]
+    ) => Promise<WorkerStorageBinding>;
+    readonly settle: (
+      input: Parameters<typeof settleWorkerStoragePurge>[1]
+    ) => Promise<WorkerStorageBinding>;
+  };
   /** Existing host effect adapter. */
   readonly runtimeEffects: WorkerEnvironmentRuntimeEffects;
   /** Existing Thread owner used for current source-audience proof. */
@@ -105,20 +118,49 @@ export interface CreateWorkerEnvironmentOperationsInput {
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
 }
 
+/** Joins purge to the admitted owner: the reservation rechecks Core in its commit, then the outcome settles. */
+export function admittedWorkerStoragePurgeDecisions(
+  coreDb: CoreDb,
+  owner: {
+    readonly reserveStoragePurge: WriteNanoHostStoragePurge;
+    readonly workerStorageBinding: WriteNanoHostStorageTransition;
+  }
+): NonNullable<CreateWorkerEnvironmentOperationsInput['purgeDecisions']> {
+  return {
+    markPending: (input) => markWorkerStoragePurgePending(coreDb, input, owner.reserveStoragePurge),
+    settle: (input) => settleWorkerStoragePurge(coreDb, input, owner.workerStorageBinding),
+  };
+}
+
 /** Creates the shared bounded Worker environment operation owner. */
 export function createWorkerEnvironmentOperations(
   dependencies: CreateWorkerEnvironmentOperationsInput
 ): WorkerEnvironmentOperations {
   const inflightCommands =
     dependencies.inflightCommands ?? new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
+  const observe = <Value>(query: (sqlite: CoreDb['sqlite']) => Value) =>
+    requireNanoHostObservation(dependencies.coreDb, query, dependencies.readNanoHost);
+  const readBinding = (
+    workspaceId: string,
+    storageRef: string,
+    authorizeContributor: (contributor: WorkerStorageContributor) => boolean
+  ) =>
+    observe((sqlite) =>
+      requireAuthorizedBinding({ sqlite }, workspaceId, storageRef, authorizeContributor)
+    );
   return {
     list(context, input) {
       requireOperationAuthority(dependencies.coreDb, context, false);
       const authorizeContributor = contributorAuthorizer(dependencies.store, context);
-      const items = listWorkerStorageBindings(dependencies.coreDb, {
-        authorizeContributor,
-        workspaceId: context.workspaceId,
-      });
+      const items = observe((sqlite) =>
+        listWorkerStorageBindings(
+          { sqlite },
+          {
+            authorizeContributor,
+            workspaceId: context.workspaceId,
+          }
+        )
+      );
       const start = input.after
         ? items.findIndex((binding) => binding.storageRef === input.after) + 1
         : 0;
@@ -137,30 +179,33 @@ export function createWorkerEnvironmentOperations(
       requireOperationAuthority(dependencies.coreDb, context, false);
       requireThread(dependencies.store, context.workspaceId, input.threadId, context.actor.userId);
       const authorizeContributor = contributorAuthorizer(dependencies.store, context);
-      const binding = requireAuthorizedBinding(
-        dependencies.coreDb,
-        context.workspaceId,
-        input.storageRef,
-        authorizeContributor
-      );
-      if (binding.layoutDigest !== input.layoutDigest) {
-        throw new WorkerEnvironmentOperationError(
-          'invalid_request',
-          'Worker environment layout does not match the requested layout.'
+      const selected = observe((sqlite) => {
+        const owner = { sqlite };
+        const binding = requireAuthorizedBinding(
+          owner,
+          context.workspaceId,
+          input.storageRef,
+          authorizeContributor
         );
-      }
-      const selected = selectWorkerStorageBinding(dependencies.coreDb, {
-        adjudicatedThreadIds: input.adjudicatedThreadIds,
-        authorizeContributor,
-        expectedRevision: input.expectedRevision,
-        goalId: input.goalId,
-        layout: binding.layout,
-        purpose: input.purpose,
-        responsibleUserId: context.actor.userId,
-        storageRef: input.storageRef,
-        taskId: input.taskId,
-        threadId: input.threadId,
-        workspaceId: context.workspaceId,
+        if (binding.layoutDigest !== input.layoutDigest) {
+          throw new WorkerEnvironmentOperationError(
+            'invalid_request',
+            'Worker environment layout does not match the requested layout.'
+          );
+        }
+        return selectWorkerStorageBinding(owner, {
+          adjudicatedThreadIds: input.adjudicatedThreadIds,
+          authorizeContributor,
+          expectedRevision: input.expectedRevision,
+          goalId: input.goalId,
+          layout: binding.layout,
+          purpose: input.purpose,
+          responsibleUserId: context.actor.userId,
+          storageRef: input.storageRef,
+          taskId: input.taskId,
+          threadId: input.threadId,
+          workspaceId: context.workspaceId,
+        });
       });
       return SelectWorkerEnvironmentResponseSchema.parse({ selected: projectBinding(selected) });
     },
@@ -170,8 +215,7 @@ export function createWorkerEnvironmentOperations(
       // The Host observation yields; current authority and the complete source audience must still hold.
       const readCurrentBinding = () => {
         requireOperationAuthority(dependencies.coreDb, context, false);
-        return requireAuthorizedBinding(
-          dependencies.coreDb,
+        return readBinding(
           context.workspaceId,
           storageRef,
           contributorAuthorizer(dependencies.store, context)
@@ -222,13 +266,18 @@ export function createWorkerEnvironmentOperations(
       const response = await runIdempotentCommand({
         command: 'worker_environment.purge',
         execute: async (receipt) => {
-          const binding = requireAuthorizedBinding(
-            dependencies.coreDb,
+          const binding = readBinding(
             context.workspaceId,
             input.storageRef,
             contributorAuthorizer(dependencies.store, context)
           );
-          const pending = await markWorkerStoragePurgePending(dependencies.coreDb, {
+          if (!dependencies.purgeDecisions)
+            throw new WorkerEnvironmentOperationError(
+              'unavailable',
+              'Worker environment purge deciding storage is unavailable.'
+            );
+          const { markPending, settle } = dependencies.purgeDecisions;
+          const pending = await markPending({
             authorizePurge: () => hasOperationAuthority(dependencies.coreDb, context, true),
             expectedRevision: input.expectedRevision,
             hasSurvivingReferences: () => hasSurvivingWork(dependencies, binding),
@@ -239,9 +288,9 @@ export function createWorkerEnvironmentOperations(
             const result = await dependencies.runtimeEffects.purgeStorage({
               authorize: () => {
                 if (!hasOperationAuthority(dependencies.coreDb, context, true)) return false;
-                const current = getWorkerStorageBinding(dependencies.coreDb, {
-                  storageRef: pending.storageRef,
-                });
+                const current = observe((sqlite) =>
+                  getWorkerStorageBinding({ sqlite }, { storageRef: pending.storageRef })
+                );
                 return (
                   current?.state === 'purge-pending' &&
                   current.revision === pending.revision &&
@@ -256,7 +305,7 @@ export function createWorkerEnvironmentOperations(
           } catch {
             outcome = 'unknown';
           }
-          const settled = await settleWorkerStoragePurge(dependencies.coreDb, {
+          const settled = await settle({
             expectedRevision: pending.revision,
             outcome,
             storageRef: pending.storageRef,
@@ -286,9 +335,8 @@ export function createWorkerEnvironmentOperations(
               'Worker environment purge receipt is inconsistent.'
             );
           }
-          const binding = getWorkerStorageBinding(dependencies.coreDb, {
-            storageRef: record.response.id,
-          });
+          const storageRef = record.response.id;
+          const binding = observe((sqlite) => getWorkerStorageBinding({ sqlite }, { storageRef }));
           if (!binding || binding.workspaceId !== context.workspaceId) {
             throw new WorkerEnvironmentOperationError(
               'unavailable',
@@ -324,8 +372,7 @@ export function createWorkerEnvironmentOperations(
       });
       requireOperationAuthority(dependencies.coreDb, context, true);
       if (response.environment !== null)
-        requireAuthorizedBinding(
-          dependencies.coreDb,
+        readBinding(
           context.workspaceId,
           response.storageRef,
           contributorAuthorizer(dependencies.store, context)
@@ -418,12 +465,12 @@ function contributorAuthorizer(
 
 /** Reads one binding only after complete current audience admission. */
 function requireAuthorizedBinding(
-  coreDb: CoreDb,
+  owner: Pick<CoreDb, 'sqlite'>,
   workspaceId: string,
   storageRef: string,
   authorizeContributor: (contributor: WorkerStorageContributor) => boolean
 ): WorkerStorageBinding {
-  const binding = getWorkerStorageBinding(coreDb, { storageRef });
+  const binding = getWorkerStorageBinding(owner, { storageRef });
   if (
     !binding ||
     binding.workspaceId !== workspaceId ||

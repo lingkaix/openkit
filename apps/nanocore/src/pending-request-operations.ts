@@ -34,7 +34,7 @@ import {
   readPendingRequest,
   readPendingRequestLineage,
 } from './runtime/pending-requests.js';
-import { ControlPendingReceiptSchema } from './storage/control-store-pending.js';
+import { ControlPendingReceiptSchema } from './storage/control-store-publication-codecs.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Executes one captured approval call inside the approval response. */

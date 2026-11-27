@@ -349,3 +349,20 @@ test('appends Intent revisions and rewrites the working checkpoint', () => {
     'a recorded Intent Revision must not be modified or deleted'
   );
 });
+
+test('binds a boundary switch to a golden path and a four-list gate summary', () => {
+  const gate = paragraphWith(contract, ['owner or a process boundary', 'gate summary']);
+
+  assert.notEqual(gate, '', 'missing the first-runnable-fold gate rule');
+  for (const marker of [
+    'one positive golden path on the real artifact, at the SHA of that change',
+    'Each later integrated fold keeps that path green',
+    'files selected, files with a result, failed assertions, and groups that were deliberately not run',
+    'its issue, the last measured SHA and that result, and gets no coverage credit',
+    'A selected file with no result is a failure of the gate; this includes a suite that fails at import',
+    'credit only for the boundary that the run exercised',
+    'A done line with no run ID on the named SHA is not valid',
+    '`scripts/gate-summary.mjs`',
+  ])
+    assert.ok(gate.includes(marker), `missing gate boundary: ${marker}`);
+});

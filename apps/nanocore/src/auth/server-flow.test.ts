@@ -11,10 +11,6 @@ import type {
   ExecutionBackendCorrelation,
   ExecutionReleaseProof,
 } from '../runtime/execution-backend.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from '../runtime/nanohost-runtime-target.js';
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnStartRuntimeContext } from '../runtime/types.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -26,8 +22,11 @@ import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-st
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
-
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
 
@@ -68,6 +67,7 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
   public readonly startedTurnIds: string[] = [];
 
   private nextStart = Promise.withResolvers<void>();
+  public readonly firstCloseout = Promise.withResolvers<void>();
   private releaseStart: (() => void) | null = null;
   private readonly startGate = new Promise<void>((resolve) => {
     this.releaseStart = resolve;
@@ -108,6 +108,7 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
   public override async release(
     input: ExecutionBackendCorrelation & { readonly proof: ExecutionReleaseProof }
   ) {
+    this.firstCloseout.resolve();
     await this.startGate;
     return super.release(input);
   }
@@ -541,16 +542,18 @@ describe('server auth flow', () => {
   });
 
   it('keeps concurrent idempotency collapse scoped to each server-mode user', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
+    onTestFinished(() => vi.unstubAllEnvs());
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-inflight-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_server_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_server_fixture',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),
@@ -584,12 +587,14 @@ describe('server auth flow', () => {
       const dispatch = vi.spyOn(dispatcher, 'runSchedulerDispatchLoop');
       onTestFinished(() => dispatch.mockRestore());
       const manifest = createTestAgentSetup().manifest;
+      const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, manifest);
       const app = createApp({
         agentManifests: [manifest],
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
         mode: 'server',
+        nanoHostStorage,
         providerRegistry: new ProviderRegistry([
           {
             displayName: 'Agent OpenRouter',
@@ -645,6 +650,9 @@ describe('server auth flow', () => {
       );
 
       await executor.waitForStartCount(1);
+      // Keep the first original closeout held, but finish its short Native publication
+      // before the second request reads shared environment evidence.
+      await executor.firstCloseout.promise;
 
       const secondRequest = app.request(
         ...operationRequest(

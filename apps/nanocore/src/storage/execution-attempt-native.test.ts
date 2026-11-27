@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { afterEach, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
@@ -15,7 +16,6 @@ import {
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
-  markNanoHostAttemptNeedsEvidence,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
 } from '../runtime/execution-attempts.js';
@@ -24,7 +24,9 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { submitTestNanoHostWorkerLease } from '../test-support/nanohost-worker-lease.js';
 import { schedulerFixtureInput } from '../test-support/scheduler-admissions.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -34,6 +36,8 @@ import {
 } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
+import { readNanoHostRecoveryLease } from './nanohost-recovery-native.js';
+import { readRetainedNanoHostSubmission } from './nanohost-submitted-lease.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const roots: string[] = [];
@@ -153,13 +157,34 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
     preparationInput,
     now: () => '2026-11-01T00:00:00.000Z',
   });
-  expect(attempt.preparationInputJson).toBe(JSON.stringify(preparationInput));
+  const claim = db.sqlite
+    .prepare(`SELECT json_extract(invocation_json, '$.carriage.schedulerPreparation')
+    FROM control_execution_steps WHERE execution_id=? AND step_id='claim'`)
+    .pluck()
+    .get(`scheduler-lifecycle:${attempt.attemptId}`) as string;
+  expect(JSON.parse(claim)).toMatchObject({
+    queueEntryId: entry.queueEntryId,
+    admissionHash: entry.inputHash,
+    inputDigest: entry.inputRef.digest,
+    preparationDigest: sha256Hex(JSON.stringify(preparationInput)),
+  });
+  expect(attempt.preparationInputJson).not.toContain('retainedContext');
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('admitted');
-  await bindSchedulerExecutionAttemptSession(db, {
+  const binding = {
     attemptId: attempt.attemptId,
     agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+  };
+  const firstBinding = await bindSchedulerExecutionAttemptSession(db, {
+    ...binding,
     now: () => '2026-11-01T00:00:01.000Z',
   });
+  await shutdownControlStoreWorkerClient();
+  expect(
+    await bindSchedulerExecutionAttemptSession(db, {
+      ...binding,
+      now: () => '2026-11-01T00:00:01.500Z',
+    })
+  ).toEqual(firstBinding);
   await finalizeSchedulerExecutionAttemptInput(db, {
     attemptId: attempt.attemptId,
     inputRef: 'input-owner-1',
@@ -217,6 +242,13 @@ it('owns the accepted execution attempt lifecycle while the Main Core handle is 
       now: () => '2026-11-01T00:00:06.000Z',
     })
   ).toEqual(closed);
+  await expect(
+    closeSchedulerExecutionAttemptWithFence(db, {
+      correlation,
+      proof: releaseProof,
+      fenceRef: 'changed-fence',
+    })
+  ).rejects.toThrow('Attempt release has unresolved handoff or fencing proof.');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get()).toEqual(
     beforeReplay
   );
@@ -261,6 +293,36 @@ it('closes a proved no-effect attempt and requeues its original admission exactl
   }).toEqual(beforeReplay);
 });
 
+it('closes a proved no-effect attempt when the wall clock moves backward', async () => {
+  const { db, entry } = fixture('13');
+  const claimedAt = '2026-11-01T00:01:00.000Z';
+  const closedAt = '2026-11-01T00:00:59.000Z';
+  const attempt = await createSchedulerExecutionAttempt(db, {
+    entry,
+    preparationInput: { admission: entry },
+    now: () => claimedAt,
+  });
+  const closed = await closeSchedulerExecutionAttemptWithoutEffects(db, {
+    attemptId: attempt.attemptId,
+    noOutstandingEffects: true,
+    cause: 'turn-start-failed',
+    now: () => closedAt,
+  });
+  expect(closed).toMatchObject({
+    phase: 'closed',
+    disposition: 'not_accepted',
+    terminalCause: 'turn-start-failed',
+    updatedAt: closedAt,
+  });
+  const terminalSpan = db.sqlite
+    .prepare(
+      "SELECT json_extract(span_json, '$.endTimeUnixNano') FROM control_executions WHERE id = ?"
+    )
+    .pluck()
+    .get(`scheduler-lifecycle:${attempt.attemptId}`);
+  expect(terminalSpan).toBe(String(BigInt(Date.parse(claimedAt)) * 1_000_000n));
+});
+
 it('rolls back the new attempt when admission acquisition fails inside the worker transaction', async () => {
   const { db, entry } = fixture('3');
   db.sqlite.pragma('query_only = OFF');
@@ -282,6 +344,11 @@ it('rolls back the new attempt when admission acquisition fails inside the worke
   });
   expect(requireSchedulerAdmissionEntry(db, entry.queueEntryId).status).toBe('queued');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all()).toEqual([]);
+  expect(
+    db.sqlite
+      .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id = ?')
+      .get('scheduler-lifecycle:attempt_00000000-0000-7000-8000-000000000003')
+  ).toBeUndefined();
 });
 
 it('commits one attempt when two claims race and the winner loses its acknowledgement', async () => {
@@ -447,7 +514,11 @@ it('commits exact NanoHost preparation without moving the first startup deadline
   const first = requireNanoHostExecutionAttempt(db, attempt.attemptId);
   // Worker Runtime Communication Model: startup is 25 minutes from acquisition.
   expect(first).toMatchObject({
-    ...preparation,
+    attemptId: preparation.attemptId,
+    agentSessionId: preparation.agentSessionId,
+    inputRef: preparation.inputRef,
+    bindingRef: preparation.bindingRef,
+    sessionCompatibilityKey: null,
     startupDeadline: '2026-11-01T00:25:00.000Z',
     deadline: null,
     phase: 'open',
@@ -493,35 +564,62 @@ it('refuses conflicting NanoHost preparation without changing any retained attem
   }
 });
 
-it('projects NanoHost needs-evidence only after the separate closing acknowledgement', async () => {
-  const { db, entry } = fixture('8');
-  const attempt = await createSchedulerExecutionAttempt(db, {
-    entry,
-    attemptId: 'attempt_00000000-0000-7000-8000-000000000008',
-    preparationInput: { admission: entry },
-  });
-  await bindNanoHostAttemptPreparation(db, {
-    attemptId: attempt.attemptId,
+it('projects admitted NanoHost needs-evidence only after the separate closing acknowledgement', async () => {
+  const { db, entry, root } = fixture('8');
+  const storage = await openAdmittedTestNanoHost(db);
+  const originalCore = openCoreDb(root);
+  const registration = {
     agentSessionId: 'as_00000000-0000-7000-8000-000000000008',
-    inputRef: 'input-native-8',
-    bindingRef: 'binding-native-8',
-    sessionCompatibilityKey: 'compatibility-native-8',
+    packageSnapshotId: 'input-native-8',
+    workerControlTokenHash: 'a'.repeat(64),
+    workerInferenceTokenHash: 'b'.repeat(64),
+    workerCapabilityTokenHash: 'c'.repeat(64),
+  };
+  let attemptId: string;
+  try {
+    attemptId = submitTestNanoHostWorkerLease(
+      originalCore,
+      entry,
+      'binding-native-8',
+      registration
+    ).attemptId;
+  } finally {
+    originalCore.sqlite.close();
+  }
+  const owner = storage.value.owner;
+  const markNeedsEvidence = () => {
+    const original = readRetainedNanoHostSubmission(db, attemptId)!;
+    const observed = owner.read((sqlite) => readNanoHostRecoveryLease(sqlite, original.lease));
+    if (observed.state !== 'ready') throw new Error('Expected the admitted NanoHost observation.');
+    return owner.classifyRecovery({
+      kind: 'needs-evidence',
+      lease: original.lease,
+      expectedSession: observed.value.session,
+      expectedRecovery: observed.value.proof,
+      observedAt: new Date().toISOString(),
+    });
+  };
+  const open = requireNanoHostExecutionAttempt(db, attemptId);
+  expect(open).toMatchObject({
+    phase: 'open',
+    sessionCompatibilityKey: 'shared-mcp-fixture',
+    workerControlTokenHash: registration.workerControlTokenHash,
+    workerInferenceTokenHash: registration.workerInferenceTokenHash,
+    workerCapabilityTokenHash: registration.workerCapabilityTokenHash,
+    recoveryState: null,
   });
-  const open = requireNanoHostExecutionAttempt(db, attempt.attemptId);
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual(open);
-  await markSchedulerExecutionAttemptClosing(db, {
-    attemptId: attempt.attemptId,
-    cause: 'restart-native-recovery',
-  });
-  const closing = requireNanoHostExecutionAttempt(db, attempt.attemptId);
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual({
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'unavailable' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual(open);
+  await markSchedulerExecutionAttemptClosing(db, { attemptId, cause: 'restart-native-recovery' });
+  const closing = requireNanoHostExecutionAttempt(db, attemptId);
+  expect(closing).toMatchObject({ phase: 'closing', recoveryState: null });
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'ready' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual({
     ...closing,
     recoveryState: 'needs-evidence',
   });
-  await markNanoHostAttemptNeedsEvidence(db, attempt.attemptId);
-  expect(requireNanoHostExecutionAttempt(db, attempt.attemptId)).toEqual({
+  expect(await markNeedsEvidence()).toMatchObject({ state: 'ready' });
+  expect(requireNanoHostExecutionAttempt(db, attemptId)).toEqual({
     ...closing,
     recoveryState: 'needs-evidence',
   });

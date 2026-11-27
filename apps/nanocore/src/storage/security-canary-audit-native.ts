@@ -2,10 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { findNamedAgentEnvironmentPackageSnapshotAtDataRoot } from '../runtime/aep-snapshot-ledger.js';
-import {
-  listRestorableNanoHostExecutionAttempts,
-  resolveLiveNanoHostAttemptLease,
-} from '../runtime/nanohost-attempt-records.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import {
   classifySecurityCanaryRequest,
   createSecurityCanaryMcpSupply,
@@ -19,7 +16,10 @@ import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
   SECURITY_CANARY_AUDIT_FACT,
+  type SecurityCanaryAuditObservation,
 } from './standalone-audit-codecs.js';
+
+type CanaryLineage = NonNullable<ControlStandaloneAuditInput['canaryLineage']>;
 
 /**
  * Original immutable AEP evidence is read through its file owner, without opening
@@ -29,44 +29,38 @@ import {
  */
 export function prepareSecurityCanaryAuditInDb(
   coreDb: CoreDb,
-  input: ControlStandaloneAuditInput
+  input: ControlStandaloneAuditInput,
+  readCurrentObservation?: (lineage: CanaryLineage) => SecurityCanaryAuditObservation | null
 ): 'new' | 'existing' | 'inactive' | 'excess' {
   const refuse = (): never => {
     throw new ControlProductPreconditionError();
   };
-  const lineage = input.canaryLineage;
+  const { canaryLineage: lineage, canaryObservation } = input;
   if (
     coreDb.scope !== 'core' ||
+    coreDb.sqlite.readonly ||
     !coreDb.sqlite.inTransaction ||
     input.stage !== 'security.canary' ||
-    !lineage
+    !lineage ||
+    !canaryObservation ||
+    !readCurrentObservation
   )
     return refuse();
 
-  // Claimed ids are only selectors. Resolve the existing retained owner and exact
-  // live lease before reading the original package named by that actual attempt.
-  const attempts = listRestorableNanoHostExecutionAttempts(coreDb).filter(
-    (attempt) =>
-      attempt.inputRef === lineage.packageSnapshotId &&
-      attempt.workspaceId === lineage.workspaceId &&
-      attempt.threadId === lineage.threadId &&
-      attempt.turnId === lineage.turnId &&
-      attempt.agentSessionId === lineage.agentSessionId
+  const currentObservation = readCurrentObservation(lineage);
+  if (!currentObservation || !isDeepStrictEqual(currentObservation, canaryObservation))
+    return refuse();
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(
+    coreDb,
+    currentObservation.attemptId
   );
-  if (attempts.length !== 1) return refuse();
-  const live = resolveLiveNanoHostAttemptLease(coreDb, {
-    attemptId: attempts[0]!.attemptId,
-    lineage,
-  });
-  if (live.status !== 'accepted') return refuse();
-  const nativeWorkspaceId = live.attempt.workspaceId;
-  if (!nativeWorkspaceId) return refuse();
+  if (admission.status !== 'admitted') return refuse();
 
   const original = findNamedAgentEnvironmentPackageSnapshotAtDataRoot(
     coreDb.dataRoot,
-    nativeWorkspaceId,
-    live.attempt.agentSessionId,
-    live.attempt.inputRef
+    lineage.workspaceId,
+    lineage.agentSessionId,
+    lineage.packageSnapshotId
   )?.snapshot;
   if (!original) return refuse();
   const scope = original.scope;
@@ -76,7 +70,8 @@ export function prepareSecurityCanaryAuditInDb(
     scope.threadId !== lineage.threadId ||
     scope.turnId !== lineage.turnId ||
     scope.agentSessionId !== lineage.agentSessionId ||
-    (scope.requestId ?? null) !== (lineage.requestId ?? null)
+    (scope.requestId ?? null) !== (lineage.requestId ?? null) ||
+    !isDeepStrictEqual(scope.triggerActor, admission.triggerActor)
   )
     return refuse();
   const originalAgentActor = {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { ContentReferenceSchema } from '@openkit/protocol';
 import {
   ensureCanonicalDirectoryAsync,
   LocalStorage,
@@ -15,6 +16,7 @@ import {
   type ControlProductEntry,
   ControlProductEntrySchema,
   type ControlProductOwner,
+  ControlProductPreconditionError,
   inlineControlContentBytes,
 } from './control-store-product-records.js';
 import {
@@ -29,6 +31,22 @@ export {
   type ImmutableContentHandoff,
   publishImmutableContent,
 } from './immutable-content-publish.js';
+
+export const PENDING_PLAN_TEMPORARY_NAME =
+  /^\.[a-f0-9]{64}\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/;
+
+/** Identifies the private directory the request can release even before decoding its plan. */
+export function pendingPlanStagePath(root: string, temporary: string): string {
+  if (!PENDING_PLAN_TEMPORARY_NAME.test(temporary)) throw new ControlProductPreconditionError();
+  return join(root, `${temporary}.pending`);
+}
+
+/** Name shape reserved for grouped plan staging and abandoned-stage cleanup at Boot. */
+export function isPendingPlanStageName(name: string): boolean {
+  return (
+    name.endsWith('.pending') && PENDING_PLAN_TEMPORARY_NAME.test(name.slice(0, -'.pending'.length))
+  );
+}
 
 /** Publishes one bounded retained product body through the existing Storage stage owner. */
 async function withStagedProductJson<T>(
@@ -129,16 +147,27 @@ export async function prepareRetainedProductJson(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  value: unknown
+  value: unknown,
+  privateRoot?: string,
+  ownBody?: (path: string) => void
 ): Promise<Pick<ControlProductEntry, 'content' | 'publication'>> {
   const body = JSON.stringify(value);
   const bytes = Buffer.from(body, 'utf8');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.inlineBytes)
-    return prepareProductFile(mount, owner, stagingRoot, bytes);
+    return prepareProductFile(mount, owner, stagingRoot, bytes, privateRoot, ownBody);
   if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
     throw new Error(
       'Canonical product publication requires the admitted native work-byte binding.'
     );
+  return inlineProductJsonContent(owner, body, bytes);
+}
+
+/** The inline descriptor of one retained JSON body within the inline bound. */
+function inlineProductJsonContent(
+  owner: ControlProductOwner,
+  body: string,
+  bytes: Buffer
+): Pick<ControlProductEntry, 'content'> {
   return {
     content: {
       reference: {
@@ -153,12 +182,53 @@ export async function prepareRetainedProductJson(
   };
 }
 
+/**
+ * The descriptor `prepareRetainedProductJson` gives one retained JSON body, computed in memory for a
+ * proof that bounds a planned packet; nothing is staged or written. A body within the inline bound
+ * gets the same inline descriptor. A larger body gets the native immutable-file reference its staged
+ * publication derives from the digest (a JSON body never sniffs as a binary media type) and a
+ * temporary publication name of the same length as the one the preparation draws.
+ */
+export function plannedRetainedProductJson(
+  mount: ControlProductContentMount,
+  owner: ControlProductOwner,
+  value: unknown
+): Pick<ControlProductEntry, 'content' | 'publication'> {
+  const body = JSON.stringify(value);
+  const bytes = Buffer.from(body, 'utf8');
+  if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
+    throw new Error(
+      'Canonical product publication requires the admitted native work-byte binding.'
+    );
+  if (bytes.length <= CONTROL_PRODUCT_LIMITS.inlineBytes)
+    return inlineProductJsonContent(owner, body, bytes);
+  if (bytes.length > CONTROL_PRODUCT_LIMITS.immutableBodyBytes)
+    throw new Error('Control product body exceeds its byte limit.');
+  const hex = createHash('sha256').update(bytes).digest('hex');
+  return {
+    content: {
+      reference: ContentReferenceSchema.parse({
+        knowledgeBaseId: null,
+        contentDigest: `sha256:${hex}`,
+        locator: { ownerScope: owner, mount: mount.mount, path: `sha256/${hex}` },
+        range: null,
+        availability: 'available',
+      }),
+      byteLength: bytes.length,
+      mediaType: 'application/octet-stream',
+    },
+    publication: { temporary: `.${hex}.${'00000000-0000-4000-8000-000000000000'}.tmp` },
+  };
+}
+
 /** Keeps the existing file publication for large bodies and explicit immutable-file owners. */
-async function prepareProductFile(
+export async function prepareProductFile(
   mount: ControlProductContentMount,
   owner: ControlProductOwner,
   stagingRoot: string,
-  bytes: Buffer
+  bytes: Buffer,
+  privateRoot = mount.root,
+  ownBody?: (path: string) => void
 ): Promise<{ content: StorageContent; publication: { temporary: string } }> {
   for (const path of [dirname(mount.root), dirname(stagingRoot)])
     if ((await realpath(path)) !== resolve(path))
@@ -173,22 +243,30 @@ async function prepareProductFile(
     (await realpath(mount.root)) !== resolve(mount.root)
   )
     throw new Error('Native publication mount must not traverse a link.');
-  return withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
-    const content = immutableStageContent(input);
-    const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
-    const path = join(mount.root, temporary);
-    const file = await open(path, 'wx', 0o600);
-    try {
-      await copyImmutableStage(input, file, content);
-      await file.chmod(0o444);
-    } catch (error) {
-      await unlink(path);
-      throw error;
-    } finally {
-      await file.close();
-    }
-    return { content, publication: { temporary } };
-  });
+  let discardDestination: (() => Promise<void>) | undefined;
+  try {
+    return await withStagedProductJson(mount, owner, stagingRoot, bytes, async (input) => {
+      const content = immutableStageContent(input);
+      const temporary = `.${content.reference.contentDigest.slice('sha256:'.length)}.${randomUUID()}.tmp`;
+      const path = join(privateRoot, temporary);
+      const file = await open(path, 'wx', 0o600);
+      discardDestination = async () => {
+        await unlink(path);
+      };
+      try {
+        ownBody?.(path);
+        await copyImmutableStage(input, file, content);
+        await file.chmod(0o444);
+      } finally {
+        await file.close();
+      }
+      return { content, publication: { temporary } };
+    });
+  } catch (error) {
+    // The destination is still ours if its close or the scratch discard refuses.
+    await discardDestination?.();
+    throw error;
+  }
 }
 
 /** Reads verified exact inline or immutable-file bytes under the owning scope, never a file-record fallback. */

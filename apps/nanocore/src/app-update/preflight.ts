@@ -3,6 +3,10 @@ import type { OperationInvocationDependencies } from '../operation-composition.j
 import { OperationError } from '../operation-error.js';
 import { listOpenSchedulerExecutionAttempts } from '../runtime/execution-attempt-records.js';
 import { listQueuedSchedulerAdmissionEntries } from '../scheduler-records.js';
+import {
+  getControlStoreWorkerClient,
+  readAdmittedNanoHostAttempt,
+} from '../storage/control-store-worker-client.js';
 
 /** Projects current owners synchronously without yielding between the overlapping count reads. */
 export function observeAppUpdatePreflight(
@@ -18,14 +22,16 @@ export function observeAppUpdatePreflight(
     );
   const workspaces = store.listWorkspaces();
   const attempts = listOpenSchedulerExecutionAttempts(coreDb);
-  const heldAttemptIds = new Set(
-    (
-      coreDb.sqlite
-        .prepare(`SELECT attempt_id AS attemptId FROM scheduler_execution_attempts
-      WHERE backend_id = 'nanohost' AND phase = 'closing' AND recovery_state = 'needs-evidence'`)
-        .all() as Array<{ readonly attemptId: string }>
-    ).map((row) => row.attemptId)
-  );
+  const heldAttemptIds = new Set<string>();
+  const writer = getControlStoreWorkerClient();
+  for (const attempt of attempts) {
+    if (attempt.backendId !== 'nanohost' || attempt.phase !== 'closing') continue;
+    const evidence = writer.readAdmittedNanoHost(coreDb.dataRoot, (sqlite) =>
+      sqlite.transaction(() => readAdmittedNanoHostAttempt(coreDb, sqlite, attempt))()
+    );
+    if (evidence.state === 'ready' && evidence.value.proof.recoveryState === 'needs-evidence')
+      heldAttemptIds.add(attempt.attemptId);
+  }
   const heldTurnIds = new Set(
     attempts
       .filter((attempt) => heldAttemptIds.has(attempt.attemptId))

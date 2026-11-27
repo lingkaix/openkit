@@ -19,10 +19,6 @@ import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { listSchedulerExecutionAttemptsForTurn } from './runtime/execution-attempt-records.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
 import { readScheduledAdmissionText } from './runtime/scheduler-dispatch-input.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -42,6 +38,10 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  transitionTestNativeRuntimeTargetFields,
+} from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -961,6 +961,7 @@ describe('Core artifact routes', () => {
   });
 
   it('starts one exact redo and fails closed for replay and missing-receipt owner gaps', async () => {
+    vi.stubEnv('OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR', '1');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-redo-'));
     const setup = createTestAgentSetup();
     const agentsRoot = join(dataRoot, 'config', 'agents');
@@ -985,13 +986,13 @@ describe('Core artifact routes', () => {
     );
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await transitionTestNativeRuntimeTargetFields('allocate', coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_artifact_redo_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_artifact_redo_fixture',
     });
-    await upsertNanoHostRuntimeTarget(coreDb, {
+    await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),
@@ -999,6 +1000,7 @@ describe('Core artifact routes', () => {
       predecessorFenced: true,
       ready: true,
     });
+    await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
     const store = await createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -1306,4 +1308,5 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  vi.unstubAllEnvs();
 });

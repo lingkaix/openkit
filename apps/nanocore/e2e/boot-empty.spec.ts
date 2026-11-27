@@ -45,6 +45,9 @@ describe('nanocore e2e local boot', () => {
     expect(
       existsSync(join(harness.dataRoot, 'server', 'services', 'server-work', 'state.sqlite'))
     ).toBe(true);
+    expect(
+      existsSync(join(harness.dataRoot, 'server', 'extensions', 'nanohost', 'state.sqlite'))
+    ).toBe(true);
 
     const listed = await postJson(`${harness.baseUrl}/api/app/operations/workspace.list`, {});
     expect(listed.status).toBe(200);

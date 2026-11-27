@@ -8,6 +8,7 @@ import { workerInputWithKnowledgeOverview } from '../context/worker-overview-inp
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestKey, FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
+import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   ControlStoreWorkerError,
@@ -16,22 +17,34 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+  seedAdmittedTestNanoHost,
+  testWorkerExecutorNanoHostJoins,
+} from '../test-support/admitted-nanohost.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  admitTestNativeEnvironmentForRoot,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempt-records.js';
 import { createNanoHostHarnessRuntime } from './nanohost-harness.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
-import {
-  getWorkerBackendSession,
-  transitionWorkerBackendSessionState,
-} from './worker-backend-sessions.js';
+import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { getWorkerCheckpoint, listExportableWorkerCheckpoints } from './worker-checkpoints.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
@@ -145,19 +158,23 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     collectTranscript: async () => ({ itemsJsonl: '' }),
     collectWorkspaceChanges: async () => [],
   };
+  const setup = createTestAgentSetup({
+    requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
+  });
+  const nanoHostStorage = await admitTestNativeEnvironmentForRoot(coreDb, setup.manifest);
+  // The App factory binds these admitted joins; the injected executor takes the same ones.
   const executor = new WorkerGovernanceTurnExecutor({
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
-  });
-  const setup = createTestAgentSetup({
-    requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
+    ...testWorkerExecutorNanoHostJoins(nanoHostStorage),
   });
   const app = createApp({
     coreDb,
     dataRoot,
     store,
     turnExecutor: executor,
+    nanoHostStorage,
     agentManifests: [setup.manifest],
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
   });
@@ -183,7 +200,26 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   expect(accepted.status, await accepted.clone().text()).toBe(202);
   const body = await accepted.json();
   const turnId = body.turn.id as string;
-  await materialized.promise;
+  const refusedBeforeMaterialization = Promise.withResolvers<never>();
+  const observe = () => {
+    const current = store.getTurnById(turnId);
+    if (['failed', 'interrupted', 'cancelled'].includes(current.status))
+      refusedBeforeMaterialization.reject(
+        new Error(
+          `Turn ended before the fixture materializer ran: ${JSON.stringify(current.error)}`
+        )
+      );
+  };
+  const unsubscribe = store.addTurnListener(turnId, observe);
+  try {
+    observe();
+    await Promise.race([materialized.promise, refusedBeforeMaterialization.promise]);
+  } catch (error) {
+    fail.resolve();
+    throw error;
+  } finally {
+    unsubscribe();
+  }
   const publicationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   // This late journal write follows all local terminal products inside the same native transaction.
   const removeRefusal = refuseNativeWrite(
@@ -257,22 +293,32 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     outcomeRef: null,
     fenceRef: null,
   });
-  const anchor = getWorkerBackendSession(coreDb, attempt.attemptId)!;
+  const anchor = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+    getWorkerBackendSession({ sqlite }, attempt.attemptId)
+  )!;
   for (const state of ['cleanup-pending', 'physical-cleaned', 'cleaned'] as const) {
-    const current = getWorkerBackendSession(coreDb, attempt.attemptId)!;
+    const current = readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempt.attemptId)
+    )!;
     if (current.state !== state)
-      await transitionWorkerBackendSessionState(coreDb, {
+      await nanoHostStorage.value.owner.backendSession({
+        kind: 'transition',
         attemptId: attempt.attemptId,
         fromState: current.state,
         toState: state,
       });
   }
-  expect(getWorkerBackendSession(coreDb, attempt.attemptId)!.workspaceHandoffState).toBe('pending');
+  expect(
+    readAdmittedTestNanoHost(coreDb, (sqlite) =>
+      getWorkerBackendSession({ sqlite }, attempt.attemptId)
+    )!.workspaceHandoffState
+  ).toBe('pending');
   expect(store.getTurnById(turnId).status).toBe('running');
   expect(store.getAgentSession(attempt.agentSessionId!).status).toBe('created');
   await shutdownControlStoreWorkerClient();
   coreDb.sqlite.close();
   coreDb = openCoreDb(dataRoot);
+  const reopened = await reopenAdmittedTestNanoHost(coreDb);
   store = new FsStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   const checkpoint = getWorkerCheckpoint(
@@ -304,6 +350,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
+    ...testWorkerExecutorNanoHostJoins(reopened),
   });
   const restartedApp = createApp({
     coreDb,
@@ -469,24 +516,37 @@ describe('checkpoint-owned never-submitted failed start', () => {
   it('settles with an earlier proved busy refusal at the same creation timestamp', async () => {
     const f = await failedStart('conversation', true);
     try {
-      const row = f.coreDb.sqlite
-        .prepare('SELECT rowid, * FROM scheduler_execution_attempts WHERE attempt_id = ?')
-        .get(f.attempt.attemptId) as Record<string, unknown>;
-      row.rowid = Number(row.rowid) - 1;
-      row.attempt_id = testEntityId('attempt', 'earlier-busy-attempt');
-      row.terminal_cause = 'backend-busy';
-      row.agent_session_id = null;
-      row.input_ref = null;
-      row.binding_ref = null;
-      f.coreDb.sqlite
-        .prepare(
-          `INSERT INTO scheduler_execution_attempts (${Object.keys(row).join(',')}) VALUES (${Object.keys(
-            row
-          )
-            .map(() => '?')
-            .join(',')})`
-        )
-        .run(...Object.values(row));
+      const sql = f.coreDb.sqlite;
+      const earlierId = testEntityId('attempt', 'earlier-busy-attempt');
+      const admission = requireSchedulerAdmissionEntry(f.coreDb, f.attempt.queueEntryId);
+      // Reproduce the earlier no-effect history with the real claim and no-effect owners.
+      // Only chronology is seeded; restore the original admission in the same transaction.
+      sql
+        .transaction(() => {
+          const status = sql.prepare(
+            'UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?'
+          );
+          status.run('queued', admission.queueEntryId);
+          createSchedulerExecutionAttempt(f.coreDb, {
+            entry: admission,
+            attemptId: earlierId,
+            preparationInput: { admission },
+            now: () => f.attempt.createdAt,
+          });
+          closeSchedulerExecutionAttemptWithoutEffects(f.coreDb, {
+            attemptId: earlierId,
+            cause: 'backend-busy',
+            noOutstandingEffects: true,
+            now: () => f.attempt.createdAt,
+          });
+          status.run(admission.status, admission.queueEntryId);
+          sql
+            .prepare(`UPDATE scheduler_execution_attempts SET rowid = (
+          SELECT rowid - 1 FROM scheduler_execution_attempts WHERE attempt_id = ?
+        ) WHERE attempt_id = ?`)
+            .run(f.attempt.attemptId, earlierId);
+        })
+        .immediate();
       expect((f.pkg.snapshot.extensions.openkit as { turnInput: string }).turnInput).toBe(
         workerInputWithKnowledgeOverview(
           f.store.getTurnById(f.turnId).items.find((item) => item.type === 'user-message')!.text,
@@ -537,7 +597,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
         });
         const owners = JSON.stringify({
           attempt: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
-          anchor: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all(),
+          anchor: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite.prepare('SELECT * FROM worker_backend_sessions').all()
+          ),
           package: readFileSync(
             join(
               dirname(dirname(f.workspaceDb.sqlite.name)),
@@ -581,7 +643,9 @@ describe('checkpoint-owned never-submitted failed start', () => {
         expect(
           JSON.stringify({
             attempt: f.coreDb.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').all(),
-            anchor: f.coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all(),
+            anchor: readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+              sqlite.prepare('SELECT * FROM worker_backend_sessions').all()
+            ),
             package: readFileSync(
               join(
                 dirname(dirname(f.workspaceDb.sqlite.name)),
@@ -903,16 +967,8 @@ describe('checkpoint-owned never-submitted failed start', () => {
           reconnecting: ['phase', 'open'],
           unknown: ['disposition', 'unknown'],
           closing: ['phase', 'closing'],
-          heartbeat: ['last_accepted_heartbeat_at', '2026-10-09T00:00:00.000Z'],
-          sequence: ['last_worker_sequence', 1],
-          process: ['worker_process_key_hash', 'a'.repeat(64)],
-          'control-token': ['worker_control_token_hash', 'a'.repeat(64)],
-          'inference-token': ['worker_inference_token_hash', 'a'.repeat(64)],
-          'capability-token': ['worker_capability_token_hash', 'a'.repeat(64)],
           operation: ['operation_id', 'original-operation'],
           deadline: ['deadline', '2026-10-09T00:00:00.000Z'],
-          outcome: ['outcome_ref', 'unproved'],
-          fence: ['fence_ref', 'unproved'],
         };
         const column = columns[gap];
         if (column)
@@ -921,12 +977,84 @@ describe('checkpoint-owned never-submitted failed start', () => {
               `UPDATE scheduler_execution_attempts SET ${column[0]} = ? WHERE attempt_id = ?`
             )
             .run(column[1], attemptId);
-        if (gap === 'reconnecting')
-          sql
-            .prepare(
-              "UPDATE scheduler_execution_attempts SET recovery_state = 'awaiting-reconnect' WHERE attempt_id = ?"
-            )
-            .run(attemptId);
+        if (gap === 'fence' || gap === 'outcome') {
+          const executionId = `scheduler-lifecycle:${attemptId}`;
+          if (gap === 'fence') {
+            // Model corrupt retained release bytes, not a live write that bypasses settle-once.
+            const release = sql
+              .prepare(`SELECT * FROM control_execution_steps
+              WHERE execution_id = ? AND state = 'completed'
+                AND json_extract(control_json, '$.kind') = 'release'`)
+              .get(executionId) as Record<string, unknown> & {
+              step_id: string;
+              control_json: string;
+            };
+            sql
+              .transaction(() => {
+                sql
+                  .prepare(
+                    'DELETE FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
+                  )
+                  .run(executionId, release.step_id);
+                const control = JSON.parse(release.control_json);
+                release.control_json = JSON.stringify({
+                  ...control,
+                  outputRefs: [...control.outputRefs, 'fence:unproved'],
+                });
+                sql
+                  .prepare(`INSERT INTO control_execution_steps (${Object.keys(release).join(',')})
+                VALUES (${Object.keys(release)
+                  .map(() => '?')
+                  .join(',')})`)
+                  .run(...Object.values(release));
+              })
+              .immediate();
+          } else {
+            // Inject a contradictory observation without replacing the original claim or release.
+            expect(
+              sql
+                .prepare(`INSERT INTO control_execution_steps
+              (execution_id, step_id, schema_version, ordinal, parent_step_id, state,
+               invocation_id, control_json, invocation_json, span_json)
+              SELECT execution_id, 'unproved-outcome', schema_version, ordinal + 1,
+                parent_step_id, state, 'unproved-outcome',
+                json_set(control_json, '$.kind', 'observe', '$.invocationId', 'unproved-outcome',
+                         '$.outputRefs', json_array('outcome:unproved')),
+                invocation_json, span_json
+              FROM control_execution_steps WHERE execution_id = ? AND state = 'completed'
+                AND json_extract(control_json, '$.kind') = 'release'`)
+                .run(executionId).changes
+            ).toBe(1);
+          }
+          expect(requireSchedulerExecutionAttempt(f.coreDb, attemptId)).toMatchObject({
+            [gap === 'fence' ? 'fenceRef' : 'outcomeRef']: 'unproved',
+          });
+        }
+        const livenessFaults: Partial<Record<typeof gap, [string, string | number]>> = {
+          heartbeat: ['lastAcceptedHeartbeatAt', '2026-10-09T00:00:00.000Z'],
+          sequence: ['lastWorkerSequence', 1],
+          process: ['workerProcessKeyHash', 'a'.repeat(64)],
+          reconnecting: ['recoveryState', 'awaiting-reconnect'],
+        };
+        const routeFaults: Partial<Record<typeof gap, string>> = {
+          'control-token': 'control',
+          'inference-token': 'inference',
+          'capability-token': 'capability',
+        };
+        const liveness = livenessFaults[gap];
+        const route = routeFaults[gap];
+        // The existing cleaned anchor carries any contradictory evidence for this never-submitted attempt.
+        if (liveness || route)
+          mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            const field = liveness ? 'worker_recovery_json' : 'worker_route_binding_json';
+            const [key, value] = liveness ?? [route, 'a'.repeat(64)];
+            const change = sqlite
+              .prepare(`UPDATE worker_backend_sessions
+                SET ${field} = json_set(COALESCE(${field}, '{"version":1}'), ?, ?)
+                WHERE attempt_id = ?`)
+              .run(`$.${key}`, value, attemptId);
+            if (change.changes !== 1) throw new Error('Fixture requires its exact Native anchor.');
+          });
         if (gap === 'later' || gap === 'later-busy-equal-time') {
           const row = sql
             .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
@@ -949,8 +1077,11 @@ describe('checkpoint-owned never-submitted failed start', () => {
             .run(...Object.values(row));
         }
         if (gap === 'binding') {
-          const anchor = getWorkerBackendSession(f.coreDb, attemptId)!;
-          await createNanoHostHarnessRuntime(f.coreDb, {
+          const anchor = readAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            getWorkerBackendSession({ sqlite }, attemptId)
+          )!;
+          const { value: nativeStorage } = await openAdmittedTestNanoHost(f.coreDb);
+          await createNanoHostHarnessRuntime(nativeStorage.owner, {
             adapterId: 'codex',
             adapterVersion: 'test',
             harnessBindingRef: 'harness-binding',
@@ -965,17 +1096,19 @@ describe('checkpoint-owned never-submitted failed start', () => {
             runtimeTargetId: anchor.runtimeTargetId,
             timestamp: f.attempt.createdAt,
           });
-          sql
-            .prepare(`INSERT INTO agent_session_runtime_bindings
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(`INSERT INTO agent_session_runtime_bindings
         (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id, agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
         VALUES ('pending-binding', 'harness', ?, 'ws_00000000-0000-7000-8000-000000000001', ?, 'key', 1, 'pending', 'open', 1, 'clean', ?, ?, ?)`)
-            .run(
-              f.attempt.agentSessionId,
-              f.checkpoint.threadId,
-              f.attempt.createdAt,
-              f.attempt.createdAt,
-              `sha256:${'a'.repeat(64)}`
-            );
+              .run(
+                f.attempt.agentSessionId,
+                f.checkpoint.threadId,
+                f.attempt.createdAt,
+                f.attempt.createdAt,
+                `sha256:${'a'.repeat(64)}`
+              );
+          });
         }
         if (gap === 'native-handle')
           await f.store.updateAgentSession(f.attempt.agentSessionId!, {
@@ -1074,18 +1207,20 @@ describe('checkpoint-owned never-submitted failed start', () => {
           );
         }
         if (gap === 'accepted-final')
-          sql
-            .prepare(
-              `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
-            )
-            .run(
-              f.checkpoint.threadId,
-              f.turnId,
-              f.attempt.agentSessionId,
-              f.attempt.inputRef,
-              f.checkpoint.requestId,
-              f.attempt.createdAt
-            );
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                `INSERT INTO worker_control_records (workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, record_json, accepted_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', ?, ?, ?, ?, ?, 'final_status', 'original-final', '{}', ?)`
+              )
+              .run(
+                f.checkpoint.threadId,
+                f.turnId,
+                f.attempt.agentSessionId,
+                f.attempt.inputRef,
+                f.checkpoint.requestId,
+                f.attempt.createdAt
+              );
+          });
         if (gap === 'gate-receipt') {
           await shutdownControlStoreWorkerClient();
           // Stopped private-history fault only; the real native admission must already own the original receipt.
@@ -1115,17 +1250,21 @@ describe('checkpoint-owned never-submitted failed start', () => {
           ).toBe(1);
         }
         if (gap === 'unclean-anchor')
-          sql
-            .prepare(
-              "UPDATE worker_backend_sessions SET state = 'cleanup-failed' WHERE attempt_id = ?"
-            )
-            .run(attemptId);
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                "UPDATE worker_backend_sessions SET state = 'cleanup-failed' WHERE attempt_id = ?"
+              )
+              .run(attemptId);
+          });
         if (gap === 'missing-physical-proof')
-          sql
-            .prepare(
-              'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
-            )
-            .run(attemptId);
+          await seedAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+            sqlite
+              .prepare(
+                'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
+              )
+              .run(attemptId);
+          });
         if (gap === 'missing-result-item')
           vi.spyOn(f.store, 'getTurnById').mockImplementation((id) => {
             const turn = f.store.getTurn(

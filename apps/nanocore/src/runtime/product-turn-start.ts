@@ -38,6 +38,7 @@ import {
   WorkspaceQueueInputRefSchema,
 } from '../storage/control-store-admission-codecs.js';
 import { frameControlScalarText } from '../storage/control-store-input.js';
+import type { ControlStorePublicationGuard } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import {
@@ -112,6 +113,11 @@ interface StartProductTurnInput
   readonly externalAdmission?: z.infer<typeof ExternalSourceSchema>;
   /** Rechecks current readonly source facts after native open while the source admission remains held. */
   readonly validateAdmissionSource?: () => void;
+  /**
+   * The Core scheduler writer's own posting record for this admission. It is set only once the
+   * post began, so a refusal while it is unset proves that nothing was submitted.
+   */
+  readonly schedulerPublicationGuard?: ControlStorePublicationGuard;
   /** Observes only the already FULL-acknowledged original admission; never writes Core. */
   readonly onAdmissionCommitted?: (
     entry: CoreSchedulerQueueEntry,
@@ -420,7 +426,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
         requireAvailableThread();
         if (input.fileInputs?.length) input.assertFileInputAdmission?.();
         return request;
-      }
+      },
+      input.schedulerPublicationGuard
     );
     if (result.kind !== 'queue') throw new Error('Scheduler publication returned another family.');
     input.onAdmissionCommitted?.(result.entry, result.external);
@@ -476,9 +483,11 @@ export async function startProductTurn(input: StartProductTurnInput) {
   // This listener observes the existing product owner; it grants neither execution nor recovery.
   // Durable admission/checkpoint classification remains usable without this HTTP invocation.
   let unsubscribe: () => void = () => {};
+  // The admitted Workspace and Thread name this Turn; sibling Workspaces are never read.
+  const workspaceId = workspaceIdForOwner(turn.owner);
   const completion = new Promise<import('./orchestrator.js').TurnHandle>((resolve, reject) => {
     const observe = () => {
-      const current = input.store.getTurnById(turnId);
+      const current = input.store.getTurn(workspaceId, turn.threadId, turnId);
       if (!['completed', 'failed', 'interrupted', 'cancelled'].includes(current.status)) return;
       const invocation = getSchedulerPreparationClaims(input.coreDb!).get(queueEntryId);
       if (invocation) {
@@ -495,7 +504,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       // A restarted or cancelled invocation has no live owner to join. Its canonical
       // terminal event and closed attempt must already establish the lifecycle result.
       const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb!, {
-        workspaceId: workspaceIdForOwner(turn.owner),
+        workspaceId,
         threadId: turn.threadId,
         turnId,
       });
@@ -515,7 +524,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
         agentSetupDiagnostics: setup.diagnostics,
       });
     };
-    unsubscribe = input.store.addTurnListener(turnId, observe);
+    unsubscribe = input.store.addWorkspaceTurnListener(workspaceId, turn.threadId, turnId, observe);
     observe();
   });
   // Observe rejection even if admission publication is still awaiting its caller; the original completion promise still rejects for its lifecycle owner.

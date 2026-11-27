@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { canonicalJsonText } from '@openkit/protocol';
 import { z } from 'zod';
 import { commandInputHash } from '../storage/control-store-input.js';
-import { CoreJournalRefusal } from '../storage/core-journal-codecs.js';
+import {
+  type ControlCoreIdleHarnessConsumptionInput,
+  type CoreIdleHarnessConsumptionEvidence,
+  CoreJournalRefusal,
+} from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
-  type CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   type CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
@@ -15,6 +20,7 @@ import {
   writeExecutionJournalIntent,
 } from './execution-journal.js';
 import type {
+  ExecutionInvocation,
   ExecutionInvocationCarriage,
   ExecutionJournalExecution,
   ExecutionJournalIntent,
@@ -141,7 +147,7 @@ function coreConsumptionExecutionId({
 }
 
 /** Reads validated Core progress without changing the original receiver result. */
-export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
+export function inspectCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey) {
   const executionId = coreConsumptionExecutionId(key);
   if (!db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(executionId))
     return null;
@@ -149,8 +155,11 @@ export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKe
   const root = readExecutionJournalRoot(db, execution);
   const step = readExecutionJournalInvocation(db, { execution, stepId: 'consume' });
   const consumer = step.control.authorityRefs[0];
+  const acknowledged = root.span.endTimeUnixNano;
   if (
     !consumer ||
+    acknowledged === null ||
+    acknowledged % 1_000_000n !== 0n ||
     root.definitionVersion !== CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
     root.workId !== key.operationId ||
     root.phase !== 'closed' ||
@@ -170,7 +179,14 @@ export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKe
     })
   )
     throw new Error('NanoHost Harness retained consumer acknowledgement conflicts.');
-  return consumer;
+  return {
+    consumer,
+    acknowledgedAt: new Date(Number(acknowledged / 1_000_000n)).toISOString(),
+  };
+}
+
+export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
+  return inspectCoreHarnessConsumption(db, key)?.consumer ?? null;
 }
 
 /** Commits local consumption inside the native Harness transaction, after its exact authority checks. */
@@ -218,6 +234,60 @@ export function recordCoreHarnessConsumption(
     terminalCause: null,
     exclusionRefs: [],
   });
+}
+
+/** Acknowledges the exact idle result on Core while the Native predecessor remains pinned. */
+export function recordCoreIdleHarnessConsumptionInDb(
+  db: CoreDb,
+  input: ControlCoreIdleHarnessConsumptionInput,
+  readOriginal: (
+    expected: CoreIdleHarnessConsumptionEvidence
+  ) => CoreIdleHarnessConsumptionEvidence | null
+) {
+  if (!db.sqlite.inTransaction || db.sqlite.readonly)
+    throw new CoreJournalRefusal('Idle Harness consumption requires the Core writer transaction.');
+  const { key, consumer, observedAt } = input;
+  const occupied = db.sqlite
+    .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE agent_session_id=? AND (schema_version IS NOT 1 OR phase IS NOT 'closed') LIMIT 1`)
+    .get(consumer.agentSessionId);
+  if (occupied) throw new CoreJournalRefusal('Idle Harness consumption has a live Core attempt.');
+  const expected = { key, consumer };
+  if (!isDeepStrictEqual(readOriginal(expected), expected))
+    throw new CoreJournalRefusal('Idle Harness consumption has no exact Native predecessor.');
+
+  const original = inspectCoreHarnessConsumption(db, key);
+  const serialized = canonicalJsonText(consumer);
+  if (original) {
+    if (original.consumer !== serialized)
+      throw new CoreJournalRefusal('Idle Harness consumer acknowledgement replay conflicts.');
+    return { state: 'inspect-original', receipt: { key, ...original } } as const;
+  }
+  const now = new Date(observedAt ?? Date.now()).toISOString();
+  recordCoreHarnessConsumption(db, key, serialized, now);
+  return {
+    state: 'applied',
+    receipt: { key, consumer: serialized, acknowledgedAt: now },
+  } as const;
+}
+
+/** Proves the exact linked consumption of the original physical effect result. */
+export function hasCoreIdleCleanupConsumption(db: CoreDb, original: ExecutionInvocation): boolean {
+  if (
+    original.control.outputRefs.length !== 1 ||
+    !/^sha256:[0-9a-f]{64}$/.test(original.control.outputRefs[0]!)
+  )
+    return false;
+  return readExecutionJournalLinkedInspections(db, original.ref).some(
+    ({ inspection }) =>
+      inspection.state === 'completed' &&
+      inspection.control.kind === 'consume-receipt' &&
+      inspection.ref.execution.executionId === original.ref.execution.executionId &&
+      inspection.ref.stepId === `${original.ref.stepId}:consume` &&
+      inspection.control.operationId === original.carriage.requestId &&
+      isDeepStrictEqual(inspection.control.inputRefs, original.control.outputRefs) &&
+      isDeepStrictEqual(inspection.control.outputRefs, original.control.outputRefs)
+  );
 }
 
 /** Settles the existing complete idle outcome plus linked consumption tuple on the deciding Core connection. */
@@ -397,4 +467,110 @@ export function abandonCoreImageJournal(
       ? [`native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`]
       : [],
   });
+}
+
+/** One exact predecessor occurrence shared by Core admission and its Native consumer. */
+export function sandboxReleaseRefusalExecutionId(
+  targetId: string,
+  physicalEpoch: string,
+  bindingRef: string
+): string {
+  return `sandbox-release-refusal:${commandInputHash([
+    CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+    targetId,
+    physicalEpoch,
+    bindingRef,
+  ])}`;
+}
+
+/** Presence fences the exact binding even if a corrupted order cannot authorize its drain. */
+export function isSandboxReleaseRefusalFenced(db: CoreDb, executionId: string): boolean {
+  return (
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(executionId) !== undefined
+  );
+}
+
+/** A successor must never consume a root ID alone. Recompute the identity from the complete intent. */
+export function readSandboxReleaseRefusalOrder(db: CoreDb, executionId: string) {
+  if (!isSandboxReleaseRefusalFenced(db, executionId)) return null;
+  const execution = { owner: { kind: 'server' as const }, executionId };
+  const root = readExecutionJournalRoot(db, execution);
+  const step = readExecutionJournalInvocation(db, { execution, stepId: 'fence' });
+  const { control, carriage } = step;
+  const targetId = control.target?.targetId;
+  const physicalEpoch = control.physicalFenceRefs[0];
+  const runtimeId = control.authorityRefs[0];
+  const bindingRef = carriage.bindingRef;
+  const requestId = executionId.slice('sandbox-release-refusal:'.length);
+  if (
+    !targetId ||
+    !physicalEpoch ||
+    !runtimeId ||
+    !bindingRef ||
+    sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, bindingRef) !== executionId ||
+    root.phase !== 'open' ||
+    root.definitionVersion !== CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION ||
+    root.fingerprint !== requestId ||
+    root.workId !== bindingRef ||
+    step.state !== 'intent' ||
+    control.kind !== 'fence' ||
+    control.definitionVersion !== root.definitionVersion ||
+    control.target?.backendKind !== 'openshell' ||
+    control.target.allocationRef !== bindingRef ||
+    control.workId !== bindingRef ||
+    control.operationId !== requestId ||
+    control.fingerprint !== requestId ||
+    control.invocationId !== `${executionId}:fence` ||
+    control.authorityRefs.length !== 1 ||
+    control.physicalFenceRefs.length !== 1 ||
+    carriage.operation !== 'sandbox.release-refusal' ||
+    carriage.requestId !== requestId ||
+    carriage.sequence !== null
+  )
+    throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
+  return {
+    executionId,
+    targetId,
+    physicalEpoch,
+    bindingRef,
+    runtimeId,
+    attemptId: control.attemptId,
+    revision: root.revision,
+  };
+}
+
+/** Finds the original release-refused attempt by its retained Core decision. */
+export function readSandboxReleaseRefusalFence(
+  db: CoreDb,
+  bindingRef: string,
+  targetId: string,
+  physicalEpoch: string,
+  attemptId?: string
+) {
+  const executionId = sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, bindingRef);
+  const order = readSandboxReleaseRefusalOrder(db, executionId);
+  if (
+    !order?.attemptId ||
+    (attemptId !== undefined && order.attemptId !== attemptId) ||
+    !db.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts
+        WHERE attempt_id = ? AND phase = 'closing' AND deadline IS NULL
+          AND terminal_cause = 'sandbox-release-refusal'`)
+      .get(order.attemptId)
+  )
+    return null;
+  return {
+    ref: { execution: { owner: { kind: 'server' as const }, executionId }, stepId: 'fence' },
+    revision: order.revision,
+  };
+}
+
+/** Boot uses the durable intent itself when the original Worker cannot retry the handoff. */
+export function listSandboxReleaseRefusalOrders(db: CoreDb): string[] {
+  return db.sqlite
+    .prepare(
+      "SELECT id FROM control_executions WHERE definition_version=? AND phase='open' ORDER BY id"
+    )
+    .pluck()
+    .all(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION) as string[];
 }

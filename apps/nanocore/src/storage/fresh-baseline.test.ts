@@ -1,13 +1,16 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestServerWork } from '../test-support/server-work-store.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import type { ControlStoreProductReadHandle } from './control-store-product-records.js';
 import { type CoreDb, openCoreReadDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
+import { applyNativeScopeMigrations } from './migrate.js';
 import { SECURITY_TRIGGER_OWNER } from './security-trigger-port.js';
 
 const journalTags = {
@@ -15,10 +18,183 @@ const journalTags = {
   workspace: ['0000_baseline'],
   user: ['0000_baseline'],
   app: ['0000_baseline'],
+  'extensions/nanohost': ['0000_baseline'],
 } as const;
 
+// Signed owner partition from Appendix A. Keep this independent of the shipped DDL.
+const k8Tables = {
+  core: [
+    'account',
+    'audit_events',
+    'control_execution_steps',
+    'control_executions',
+    'idempotency_requests',
+    'openkit_access_tokens',
+    'permission_decisions',
+    'recurring_expired_ranges',
+    'recurring_occurrences',
+    'recurring_schedules',
+    'scheduler_admission_entries',
+    'scheduler_execution_attempts',
+    'server_settings',
+    'session',
+    'users',
+    'vault_grants',
+    'vault_injection_plans',
+    'vault_injection_receipts',
+    'vault_references',
+    'vault_use_records',
+    'verification',
+    'workspace_invitations',
+    'workspace_members',
+    'workspace_registry',
+  ],
+  'extensions/nanohost': [
+    'agent_session_runtime_binding_image_digests',
+    'agent_session_runtime_bindings',
+    'harness_instance_records',
+    'nanohost_integration_identities',
+    'nanohost_runtime_targets',
+    'nanohost_transport_tokens',
+    'sandbox_runtime_records',
+    'worker_backend_sessions',
+    'worker_control_records',
+    'worker_control_rejected_evidence',
+    'worker_control_sequence_fingerprints',
+    'worker_image_settlements',
+    'worker_storage_bindings',
+    'worker_storage_contributors',
+  ],
+} as const;
+
+function compactSchemaSql(sql: string): string {
+  return sql
+    .replace(/[`"]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*([(),])\s*/g, '$1')
+    .trim();
+}
+
+function expectK8AttemptSchema(sqlite: Database.Database): void {
+  const columns = [
+    ['attempt_id', 'TEXT', 1, null, 1],
+    ['queue_entry_id', 'TEXT', 1, null, 0],
+    ['workspace_id', 'TEXT', 1, null, 0],
+    ['thread_id', 'TEXT', 1, null, 0],
+    ['turn_id', 'TEXT', 1, null, 0],
+    ['agent_session_id', 'TEXT', 0, null, 0],
+    ['input_ref', 'TEXT', 0, null, 0],
+    ['binding_ref', 'TEXT', 0, null, 0],
+    ['phase', 'TEXT', 1, null, 0],
+    ['disposition', 'TEXT', 1, null, 0],
+    ['operation_id', 'TEXT', 0, null, 0],
+    ['deadline', 'TEXT', 0, null, 0],
+    ['terminal_cause', 'TEXT', 0, null, 0],
+    ['created_at', 'TEXT', 1, null, 0],
+    ['schema_version', 'INTEGER', 1, '1', 0],
+  ];
+  expect(
+    sqlite
+      .prepare(`SELECT name,upper(type),"notnull",dflt_value,pk,hidden
+      FROM pragma_table_xinfo('scheduler_execution_attempts') ORDER BY cid`)
+      .raw()
+      .all(),
+    'K8 attempt columns'
+  ).toEqual(columns.map((column) => [...column, 0]));
+
+  const admissionScope = ['queue_entry_id', 'workspace_id', 'thread_id', 'turn_id'];
+  expect(
+    sqlite
+      .prepare(`SELECT id,seq,"table","from","to",on_update,on_delete,match
+      FROM pragma_foreign_key_list('scheduler_execution_attempts') ORDER BY id,seq`)
+      .raw()
+      .all()
+  ).toEqual(
+    admissionScope.map((name, seq) => [
+      0,
+      seq,
+      'scheduler_admission_entries',
+      name,
+      name,
+      'NO ACTION',
+      'NO ACTION',
+      'NONE',
+    ])
+  );
+  const attemptSql = sqlite
+    .prepare(`SELECT sql FROM sqlite_schema
+    WHERE type='table' AND name='scheduler_execution_attempts'`)
+    .pluck()
+    .get() as string;
+  const compactAttempt = compactSchemaSql(attemptSql);
+  expect(compactAttempt.match(/CHECK\(/g)).toHaveLength(2);
+  expect(compactAttempt.match(/CHECK\([^()]*\([^()]*\)\)/g)).toEqual([
+    "CHECK(phase IN('open','closing','closed'))",
+    "CHECK(disposition IN('not_accepted','accepted','unknown'))",
+  ]);
+  expect(
+    sqlite
+      .prepare(`SELECT origin,"unique",partial FROM pragma_index_list('scheduler_execution_attempts')
+        WHERE origin <> 'c'`)
+      .raw()
+      .all()
+  ).toEqual([['pk', 1, 0]]);
+  const indexSql = sqlite
+    .prepare(`SELECT sql FROM sqlite_schema
+    WHERE type='index' AND tbl_name='scheduler_execution_attempts' AND sql IS NOT NULL
+    ORDER BY name`)
+    .pluck()
+    .all() as string[];
+  expect(indexSql.map(compactSchemaSql)).toEqual([
+    'CREATE INDEX scheduler_execution_attempts_deadline_idx ON scheduler_execution_attempts(phase,deadline)',
+    'CREATE INDEX scheduler_execution_attempts_lineage_idx ON scheduler_execution_attempts(workspace_id,thread_id,turn_id,agent_session_id,input_ref)',
+    "CREATE UNIQUE INDEX scheduler_execution_attempts_live_session_idx ON scheduler_execution_attempts(agent_session_id)WHERE phase <> 'closed' AND agent_session_id IS NOT NULL",
+    "CREATE UNIQUE INDEX scheduler_execution_attempts_live_thread_idx ON scheduler_execution_attempts(workspace_id,thread_id)WHERE phase <> 'closed'",
+    "CREATE UNIQUE INDEX scheduler_execution_attempts_live_turn_idx ON scheduler_execution_attempts(turn_id)WHERE phase <> 'closed'",
+    'CREATE INDEX scheduler_execution_attempts_queue_idx ON scheduler_execution_attempts(queue_entry_id)',
+  ]);
+  const admissionIndexes = sqlite
+    .prepare(`SELECT sql FROM sqlite_schema WHERE type='index'
+    AND name IN ('scheduler_admission_entries_attempt_scope_idx', 'scheduler_admission_entries_non_terminal_turn_idx')
+    ORDER BY name`)
+    .pluck()
+    .all() as string[];
+  expect(admissionIndexes.map(compactSchemaSql)).toEqual([
+    'CREATE UNIQUE INDEX scheduler_admission_entries_attempt_scope_idx ON scheduler_admission_entries(queue_entry_id,workspace_id,thread_id,turn_id)',
+    "CREATE UNIQUE INDEX scheduler_admission_entries_non_terminal_turn_idx ON scheduler_admission_entries(turn_id)WHERE status IN('queued','admitted')",
+  ]);
+}
+
+describe('K8 exact Core and NanoHost schema', () => {
+  it.each(['core', 'extensions/nanohost'] as const)('applies the signed %s journal', (scope) => {
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.pragma('foreign_keys = ON');
+      applyNativeScopeMigrations(sqlite, scope);
+      expect(
+        sqlite
+          .prepare(`SELECT name FROM sqlite_schema WHERE type='table'
+        AND name NOT GLOB 'sqlite_*' AND name <> '__drizzle_migrations' ORDER BY name`)
+          .pluck()
+          .all()
+      ).toEqual(k8Tables[scope]);
+      const baseline = readFileSync(
+        new URL(`../../drizzle/${scope}/0000_baseline.sql`, import.meta.url)
+      );
+      expect(sqlite.prepare('SELECT created_at,hash FROM __drizzle_migrations').all()).toEqual([
+        { created_at: 1794664200000, hash: createHash('sha256').update(baseline).digest('hex') },
+      ]);
+      expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+      expect(sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
+      if (scope === 'core') expectK8AttemptSchema(sqlite);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
 describe('fresh Core and Workspace setup', () => {
-  it.each(['core', 'workspace', 'user', 'app'] as const)(
+  it.each(['core', 'workspace', 'user', 'app', 'extensions/nanohost'] as const)(
     'packages the complete native journal and SQL for %s',
     (scope) => {
       const folder = new URL(`../../drizzle/${scope}/`, import.meta.url);

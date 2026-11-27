@@ -324,45 +324,79 @@ test('resolves an exact output, hides a private source, and toasts within the ca
     await page.unroute('**/api/app/operations/conversation.navigation');
     await page.setViewportSize({ width: 1280, height: 800 });
     const tall = tallTimeline(workspaceId, thread.id);
+    const short = { ...tall, runs: tall.runs.slice(0, 2) };
+    let timelineResponse = tall;
     await page.route('**/api/app/operations/thread.timeline', async (route) => {
-      await route.fulfill({ json: tall });
+      await route.fulfill({ json: timelineResponse });
     });
-    await page.goto(`${stack.webUrl}/chat/${workspaceId}/${thread.id}`);
-    await expect(page.locator('[data-timeline-entry]').nth(10)).toBeVisible({ timeout: 20_000 });
+    // The synthetic messages do not exist in Core. Supply only their read-only
+    // receipt window so a late invalid-input banner cannot change scroll geometry.
+    const fixtureItemIds = new Set(
+      tall.runs.flatMap((run) => run.narrative.map((item) => item.id))
+    );
+    await page.route('**/api/app/operations/thread.read-state', async (route) => {
+      const input = route.request().postDataJSON() as {
+        workspaceId?: string;
+        threadId?: string;
+        itemIds?: string[];
+      } | null;
+      if (
+        input?.workspaceId !== workspaceId ||
+        input.threadId !== thread.id ||
+        !input.itemIds?.length ||
+        !input.itemIds.every((id) => fixtureItemIds.has(id))
+      ) {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        json: { scope: 'window', readItemIds: input.itemIds, unreadItemIds: [] },
+      });
+    });
+    const entries = page.locator('[data-timeline-entry]');
+    const scroller = page.locator('[data-timeline-scroll]');
+    await page.goto(`${stack.webUrl}/w/${workspaceId}/t/${thread.id}`);
+    await expect(entries).toHaveCount(tall.runs.length, { timeout: 20_000 });
     await page.getByRole('button', { name: 'All activity' }).click();
     await expect(page.locator('[data-timeline-lens="full"]')).toBeVisible();
-    const savedTop = await page.locator('[data-timeline-scroll]').evaluate((node) => {
-      const scroller = node as HTMLElement;
-      const target = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 240);
-      scroller.scrollTop = target;
-      scroller.dispatchEvent(new Event('scroll'));
-      return scroller.scrollTop;
+    await page.evaluate(async () => {
+      await document.fonts.ready;
     });
-    expect(savedTop).toBeGreaterThan(40);
+    const requestedTop = await scroller.evaluate((node) => {
+      const scrollport = node as HTMLElement;
+      scrollport.scrollTop = Math.max(0, scrollport.scrollHeight - scrollport.clientHeight - 240);
+      scrollport.dispatchEvent(new Event('scroll'));
+      return scrollport.scrollTop;
+    });
+    expect(requestedTop).toBeGreaterThan(40);
+    await page.screenshot({ path: join(shotsDir, 'desktop-scrolled-thread.png'), fullPage: false });
+    // Capture what will actually be restored, not the pre-screenshot geometry. Scroll
+    // anchoring can move the visible offset while chrome settles and history follows it.
+    let savedTop = -1;
     await expect
-      .poll(async () =>
-        page.evaluate(() => {
+      .poll(async () => {
+        savedTop = await scroller.evaluate((node) => {
+          const scrollport = node as HTMLElement;
           const state = window.history.state as {
             usr?: { timeline?: { scrollTop?: number } };
           } | null;
-          return state?.usr?.timeline?.scrollTop ?? -1;
-        })
-      )
+          const top = state?.usr?.timeline?.scrollTop;
+          return typeof top === 'number' && top === scrollport.scrollTop ? top : -1;
+        });
+        return savedTop;
+      })
       .toBeGreaterThan(40);
-    await page.screenshot({ path: join(shotsDir, 'desktop-scrolled-thread.png'), fullPage: false });
-    // The first history read is only the top runs. A later read fills the thread.
-    // Restoring against the short page must not stick once the saved range exists.
-    const short = { ...tall, runs: tall.runs.slice(0, 2) };
-    let releaseTall = false;
-    await page.unroute('**/api/app/operations/thread.timeline');
-    await page.route('**/api/app/operations/thread.timeline', async (route) => {
-      await route.fulfill({ json: releaseTall ? tall : short });
-    });
+    // Don't expose the short page to the outgoing document. The returning timeline
+    // must restore against a genuinely too-short first read before the full read arrives.
     await page.goto(`${stack.webUrl}/artifacts?workspaceId=${workspaceId}`);
+    timelineResponse = short;
     await page.goBack();
     await expect(page.locator('[data-timeline-lens="full"]')).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('[data-timeline-entry]').first()).toBeVisible();
-    releaseTall = true;
+    await expect(entries).toHaveCount(short.runs.length);
+    expect(await scroller.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeLessThan(
+      savedTop
+    );
+    timelineResponse = tall;
     await page.evaluate(() => {
       const setVisibility = (state: 'hidden' | 'visible') => {
         Object.defineProperty(document, 'visibilityState', {
@@ -378,15 +412,11 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       setVisibility('hidden');
       setVisibility('visible');
     });
-    await expect
-      .poll(async () => page.locator('[data-timeline-entry]').count(), { timeout: 20_000 })
-      .toBeGreaterThan(10);
+    await expect(entries).toHaveCount(tall.runs.length, { timeout: 20_000 });
     await expect
       .poll(
         async () => {
-          const top = await page
-            .locator('[data-timeline-scroll]')
-            .evaluate((node) => (node as HTMLElement).scrollTop);
+          const top = await scroller.evaluate((node) => (node as HTMLElement).scrollTop);
           return Math.abs(top - savedTop);
         },
         { timeout: 20_000 }

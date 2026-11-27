@@ -14,7 +14,6 @@
     "start": "UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16} node dist/index.js",
     "operator": "tsx src/openkit-operator.ts",
     "data-root:restore": "tsx scripts/restore-data-root.ts",
-    "physical-epoch:migrate": "tsx scripts/migrate-physical-epochs.ts",
     "task-checkpoint:clean": "tsx scripts/clean-cancelled-admission-task-checkpoints.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "openapi:validate": "tsx scripts/validate-openapi.ts",

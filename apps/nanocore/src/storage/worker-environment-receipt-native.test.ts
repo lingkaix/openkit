@@ -12,13 +12,28 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from '../runtime/nanohost-session-dispatch.js';
-import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
+import {
+  activateWorkerStorageAttachment,
+  createWorkerStorageBinding,
+  getWorkerStorageBinding,
+  releaseWorkerStorageAttachment,
+  reserveWorkerStorageAttachment,
+} from '../runtime/worker-storage-binding-records.js';
 import * as bindings from '../runtime/worker-storage-bindings.js';
+import {
+  mutateAdmittedTestNanoHost,
+  readAdmittedTestNanoHost,
+  reopenAdmittedTestNanoHost,
+} from '../test-support/admitted-nanohost.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import {
+  openTestNativeImagePeer,
+  recordTestNativeRuntimeTarget,
+  seedTestNativeImageSettlement,
+} from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
@@ -256,7 +271,7 @@ async function fixture(kind: Kind) {
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        await writeWorkerImageSettlement(coreDb, {
+        await seedTestNativeImageSettlement(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,
@@ -276,11 +291,15 @@ async function fixture(kind: Kind) {
       throw new Error('Unexpected semantic route.');
     },
   };
+  // Image settlements and storage attachments are retained by the admitted NanoHost owner; the injected
+  // peer is a connected ready target, so its image results settle there.
+  let nanoHostStorage = await openTestNativeImagePeer(coreDb);
   const makeApp = (selectedStore: FsStore) =>
     createAppWithLocalIdentity({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       dataRoot,
+      nanoHostStorage,
       mode: 'local',
       llmGatewayDispatcher: {
         createResponses: async () => {
@@ -350,30 +369,39 @@ async function fixture(kind: Kind) {
   let binding: bindings.WorkerStorageBinding | undefined;
   if (kind === 'purge') {
     const target = await recordTestNativeRuntimeTarget(coreDb);
-    const reserved = await bindings.createAndReserveWorkerStorageAttachment(coreDb, {
+    const seed = {
       agentSessionId: testEntityId('as', randomUUID()),
-      authorizeContributor: () => true,
       deploymentId: target.deploymentId,
       layout: { ...imageInspection.storageLayout, platform: imageInspection.platform },
-      purpose: 'work',
+      purpose: 'work' as const,
       responsibleUserId: userId,
       runtimeTargetId: target.targetId,
       threadId: thread.id,
       workspaceId: home.id,
-    });
-    const attached = await bindings.activateWorkerStorageAttachment(coreDb, {
-      attachmentGeneration: reserved.attachmentGeneration,
-      expectedRevision: reserved.revision,
-      sandboxBindingRef: 'receipt_fixture_binding',
-      storageRef: reserved.storageRef,
-      targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-    });
-    binding = await bindings.releaseWorkerStorageAttachment(coreDb, {
-      attachmentGeneration: attached.attachmentGeneration,
-      cleanupProved: true,
-      expectedRevision: attached.revision,
-      sandboxBindingRef: 'receipt_fixture_binding',
-      storageRef: attached.storageRef,
+    };
+    binding = mutateAdmittedTestNanoHost(coreDb, (sqlite) => {
+      const owner = { sqlite };
+      const created = createWorkerStorageBinding(owner, seed);
+      const reserved = reserveWorkerStorageAttachment(owner, {
+        ...seed,
+        authorizeContributor: () => true,
+        expectedRevision: created.revision,
+        storageRef: created.storageRef,
+      });
+      const attached = activateWorkerStorageAttachment(owner, {
+        attachmentGeneration: reserved.attachmentGeneration,
+        expectedRevision: reserved.revision,
+        sandboxBindingRef: 'receipt_fixture_binding',
+        storageRef: reserved.storageRef,
+        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      return releaseWorkerStorageAttachment(owner, {
+        attachmentGeneration: attached.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: attached.revision,
+        sandboxBindingRef: 'receipt_fixture_binding',
+        storageRef: attached.storageRef,
+      });
     });
   }
   const requestId = randomUUID();
@@ -419,7 +447,9 @@ async function fixture(kind: Kind) {
     configuration: readFileSync(configPath, 'utf8'),
     foreignReceipt: foreignRows(),
     binding: binding
-      ? bindings.getWorkerStorageBinding(coreDb, { storageRef: binding.storageRef })
+      ? readAdmittedTestNanoHost(coreDb, (sqlite) =>
+          getWorkerStorageBinding({ sqlite }, { storageRef: binding.storageRef })
+        )
       : null,
   });
   const queryOnly = () => {
@@ -435,6 +465,7 @@ async function fixture(kind: Kind) {
     );
   const cold = async () => {
     await shutdownControlStoreWorkerClient();
+    nanoHostStorage = await reopenAdmittedTestNanoHost(coreDb);
     const reopened = new FsStore({ dataRoot });
     return { store: reopened, app: makeApp(reopened) };
   };

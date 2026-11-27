@@ -25,6 +25,7 @@ import {
 } from '../generative-kernel/commands.js';
 import { createRemainingKernelOperationImplementations } from '../generative-operations.js';
 import { createOperationEngine } from '../operation-invocation.js';
+import { openAdmittedTestNanoHost } from '../test-support/admitted-nanohost.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import {
   createTestCoreDb,
@@ -581,6 +582,7 @@ async function exercise(mode: Mode) {
     const otherIdentity = identity(otherPath);
     const store = start(() => createTestStore({ dataRoot }));
     core = start(() => openCoreDb(dataRoot));
+    await start(() => openAdmittedTestNanoHost(core!));
     workspace = start(() => openWorkspaceDb(dataRoot, workspaceId));
     await start(() => openTestNativeWorkspace(workspace!));
     start(() => workspace!.sqlite.close());

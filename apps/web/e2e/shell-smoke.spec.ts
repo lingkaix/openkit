@@ -185,8 +185,11 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
 
   await page.setViewportSize({ width: 600, height: 600 });
-  await page.goto(stack.webUrl);
+  // The root redirects after Assistant discovery, which also closes an open drawer.
+  // This case tests user-controlled dismissal, so begin on the non-redirecting destination.
+  await page.goto(`${stack.webUrl}/needs-you`);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Needs you', exact: true })).toBeVisible();
   const phoneDestinations = page.getByRole('navigation').getByRole('button');
   await expect(phoneDestinations).toHaveCount(5);
   await expect(
@@ -208,9 +211,11 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
   await page.setViewportSize({ width: 600, height: 600 });
 
-  const more = page.getByRole('button', { name: 'More', exact: true });
+  const more = page
+    .getByRole('navigation', { name: 'Sections' })
+    .getByRole('button', { name: 'More', exact: true });
   await more.click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog', { name: 'More', exact: true });
   await expect(dialog).toBeVisible();
   await expect(
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
@@ -220,11 +225,14 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   await expect(more).toBeFocused();
 
   await more.click();
-  await page.getByRole('button', { name: 'Close navigation' }).click();
+  await expect(dialog).toBeVisible();
+  const close = () => dialog.getByRole('button', { name: 'Close navigation', exact: true });
+  await close().click({ trial: true });
+  await close().click();
   await expect(dialog).toBeHidden();
 
   await more.click();
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
 

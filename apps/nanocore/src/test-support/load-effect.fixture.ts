@@ -141,6 +141,7 @@ export async function createMeasurementEffectFixture(input: {
     runtimeConfig: () => runtime,
     workerMcpGateway: gateway,
     workerControlGateway: {
+      afterWorkerControlAcknowledgement: async <Value>(read: () => Value) => read(),
       authenticatePackageToken: (authorization: string) => {
         const admitted = packages.get(authorization);
         demand(admitted, 'unknown synthetic outside package identity');

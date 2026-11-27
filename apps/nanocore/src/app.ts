@@ -28,6 +28,8 @@ import {
   isSealedTurnTerminal,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
+import { NativeEnvironmentRecordSchema } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -57,6 +59,10 @@ import {
   type BetterAuthServer,
   createAuthMiddleware,
 } from './auth/middleware.js';
+import {
+  type NanoHostAdministratorRevoke,
+  revokeAdmittedNanoHostInboundCredential,
+} from './auth/nanohost-operations.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
 import { fenceNanoHostTransportAuthority } from './auth/nanohost-transport-lifecycle.js';
 import {
@@ -64,11 +70,17 @@ import {
   type NanoHostTransportSessionAuthority,
 } from './auth/nanohost-transport-session.js';
 import {
+  listNanoHostTransportTokenRecords,
+  prepareNanoHostTransportWriter,
+  recordNanoHostTransportAudit,
+} from './auth/nanohost-transport-token-store.js';
+import {
   authorizeWorkspace,
   currentWorkspaceAuthority,
   DeploymentAdminRequiredError,
   evaluateOwnedUserOperation,
   evaluateProductAuthorization,
+  isCurrentDeploymentAdministrator,
   isCurrentServerPolicyAuthor,
   isUsablePresentedCredential,
   isWorkspaceOperationAuthorized,
@@ -76,7 +88,11 @@ import {
   requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import { createBootReadinessSnapshot, scopeAdmissionFailures } from './bootstrap/readiness.js';
+import {
+  createBootReadinessSnapshot,
+  isScopeAdmitted,
+  scopeAdmissionFailures,
+} from './bootstrap/readiness.js';
 import { restoreWorkspaceRetirementAdmission } from './bootstrap/workspace-recovery.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import {
@@ -149,6 +165,7 @@ import type {
   OperationInvocationDependencies,
 } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
+import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import {
   registerOperationJsonRoutes,
@@ -181,11 +198,14 @@ import {
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
+import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
   evaluateCapturedPendingCall,
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
+import { publishCoreJournal } from './runtime/core-journal-owner.js';
+import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempt-records.js';
 import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
 import { advanceGoalForThread } from './runtime/goal-native.js';
@@ -199,12 +219,16 @@ import type {
   IdempotentCommandReceipt,
   InflightIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import { resolveNanoHostAttemptTokenBinding } from './runtime/nanohost-attempt-records.js';
+import {
+  hasQueuedNanoHostHarnessOperation,
+  inspectNanoHostIdleCloseConsumption,
+} from './runtime/nanohost-harness-records.js';
 import {
   createProductionNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
   registerNanoHostSessionEffectRoutes,
   registerNanoHostSessionSemanticRoutes,
+  type SettleNanoHostPreparedImage,
 } from './runtime/nanohost-session-dispatch.js';
 import {
   assertAgentManifestSupportsModel,
@@ -226,11 +250,8 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
-import {
-  publishWorkerControlFinalStatus,
-  publishWorkerControlHeartbeat,
-  publishWorkerControlOperation,
-} from './runtime/worker-control-final-status.js';
+import { getWorkerBackendSession } from './runtime/worker-backend-session-records.js';
+import { readWorkerControlDuplicateReceipt } from './runtime/worker-control-final-status.js';
 import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
@@ -238,16 +259,16 @@ import {
 } from './runtime/worker-control-gateway.js';
 import { rebuildWorkerControlGatewaySessions } from './runtime/worker-control-rebuild.js';
 import {
-  createWorkerControlAcceptedRecordRecorder,
   getWorkerControlAcceptedFinalStatus,
-  resolveWorkerControlFinalStatusTokenBinding,
+  prepareWorkerControlObservation,
 } from './runtime/worker-control-records.js';
 import { registerWorkerControlRoutes } from './runtime/worker-control-routes.js';
-import {
-  createWorkerControlSequenceRecorder,
-  matchesAcceptedWorkerControlSequence,
-} from './runtime/worker-control-sequences.js';
+import { matchesAcceptedWorkerControlSequence } from './runtime/worker-control-sequences.js';
 import { createWorkerEnvironmentRuntimeEffects } from './runtime/worker-environment-runtime-effects.js';
+import {
+  WorkerImageSettlementConflict,
+  WorkerImageSettlementDeferred,
+} from './runtime/worker-image-settlements-records.js';
 import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
@@ -275,13 +296,35 @@ import {
 import { verifyOrdinaryServerGatewayAuthority } from './storage/control-store-server-work-authority.js';
 import {
   type CommunicationOwnerBinding,
+  type ControlStorePublicationGuard,
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  type NanoHostOwnerBinding,
+  readAdmittedNanoHostAttempt,
 } from './storage/control-store-worker-client.js';
-import { readContainmentEvidenceHandoff } from './storage/core-journal-native.js';
+import {
+  captureSecurityCanaryAuditObservation,
+  inspectCoreNanoHostRecoveryRelease,
+  inspectCoreNanoHostTerminalRelease,
+  nanoHostTerminalReleaseWorkspaceStep,
+  readContainmentEvidenceHandoff,
+  readCoreImageAcquisitionRef,
+} from './storage/core-journal-native.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
+import {
+  inspectNanoHostRuntimeTargetTransition,
+  prepareNanoHostRuntimeTargetTransition,
+  readNanoHostEpochInvalidation,
+  readPendingNanoHostEpochRetirement,
+} from './storage/nanohost-epoch-invalidation-native.js';
+import type { AdmittedNanoHostTransportStorage } from './storage/nanohost-transport-owner.js';
+import {
+  resolveAdmittedNanoHostFinalBinding,
+  resolveAdmittedNanoHostWorkerBinding,
+} from './storage/nanohost-worker-binding.js';
 import { readServerCallUsageIds } from './storage/server-work-call.js';
 import {
   type ServerWorkCommandBinding,
@@ -298,8 +341,12 @@ import {
   readStagedServerWork,
 } from './storage/server-work-intents.js';
 import type { StorageResult, StorageUnavailable } from './storage/storage-owner.js';
-import { readAdmittedObservationCutoff } from './storage/work-observations.js';
+import {
+  readAdmittedObservationCutoff,
+  readWorkspaceObservationCutoff,
+} from './storage/work-observations.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
+import { requireCompleteBackendWorkspaceHandleHandoff } from './storage/workspace-handoff-read.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
@@ -311,7 +358,11 @@ import {
   createWorkerEnvironmentActivation,
   createWorkerEnvironmentAffectedStorageDeriver,
 } from './worker-environments/worker-environment-activation.js';
-import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
+import {
+  admittedWorkerStoragePurgeDecisions,
+  createWorkerEnvironmentOperations,
+  WorkerEnvironmentOperationError,
+} from './worker-environments/worker-environment-operations.js';
 import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
 import {
   checkMcpDefinitionReviewIntent,
@@ -506,6 +557,15 @@ function workerCoordinatorCandidates(
     });
 }
 
+type NanoHostAppStorage = StorageResult<
+  'nanohost',
+  AdmittedNanoHostTransportStorage & {
+    readonly dataRoot: string;
+    readonly enrollTransport?: import('./auth/nanohost-operations.js').NanoHostAdministratorEnroll;
+    readonly owner: NanoHostOwnerBinding;
+  }
+>;
+
 /**
  * Construction options for the Hono app.
  */
@@ -583,6 +643,11 @@ export interface CreateAppOptions {
    * creates the SSH transport; absence of that config disables the capability.
    */
   appUpdateHostTransport?: AppUpdateHostTransport | null;
+  /** The single acknowledged Native selection shared by boot, App and private transport. */
+  nanoHostStorage?: NanoHostAppStorage;
+  /** Boot admits public enrollment through the acknowledged Core and Native writers. */
+  enableNanoHostEnrollment?: boolean;
+
   /** Optional dispatcher bound to the same process-local NanoHost session authority. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch;
   /** Shared Data Root capacity owner, also used by the boot-created file dispatcher. */
@@ -602,33 +667,120 @@ export interface CreateAppOptions {
  * Creates the default worker-control gateway for one app instance.
  *
  * @param coreDb Optional server-scope database used for durable execution attempt binding checks.
- * @param onFinalStatusCommitted Optional restart-only closeout observer.
+ * @param onFinalStatusCommitted Optional closeout observer after both owners acknowledge the final.
+ * @param nanoHostStorage Acknowledged owner shared with boot and the Worker runtime.
  * @returns Worker-control gateway.
  */
 export function createDefaultWorkerControlGateway(
   coreDb?: CoreDb,
   onFinalStatusCommitted?: WorkerControlFinalStatusAcceptedHook,
+  nanoHostStorage?: NanoHostAppStorage,
   onObservationStop?: NonNullable<
     ConstructorParameters<typeof WorkerControlGateway>[0]
   >['onObservationStop']
 ): WorkerControlGateway {
-  if (!coreDb) {
-    return new WorkerControlGateway();
-  }
-
+  if (!coreDb) return new WorkerControlGateway();
+  if (
+    nanoHostStorage?.state !== 'ready' ||
+    nanoHostStorage.value.dataRoot !== resolve(coreDb.dataRoot)
+  )
+    return new HeldWorkerControlGateway();
+  const { owner } = nanoHostStorage.value;
+  const publishObservation = async <Value>(publish: () => Promise<Value>): Promise<Value> => {
+    try {
+      return await publish();
+    } catch (error) {
+      if (!(error instanceof ControlStoreWorkerError)) throw error;
+      const domain = error.domain;
+      if (
+        domain?.operation === 'worker-control-record' ||
+        domain?.operation === 'worker-control-heartbeat' ||
+        domain?.operation === 'worker-control-final-status'
+      )
+        throw new WorkerControlGatewayError(domain.code, domain.message, domain.status);
+      return requireWorkerControlStorage();
+    }
+  };
   const gateway = new WorkerControlGateway({
-    acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    afterWorkerControlAcknowledgement: (read, signal) =>
+      withWorkerControlAcknowledgement(owner, read, signal),
+    ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
     ...(onObservationStop ? { onObservationStop } : {}),
-    readObservationOmission: (input) =>
-      matchesAcceptedWorkerControlSequence(coreDb, input) === true,
-    publishHeartbeat: (input) => publishWorkerControlHeartbeat(coreDb, input),
-    publishControlOperation: (input) => publishWorkerControlOperation(coreDb, input),
+    readObservationOmission(input) {
+      const retained = owner.read((sqlite) =>
+        matchesAcceptedWorkerControlSequence({ sqlite }, input)
+      );
+      if (retained.state !== 'ready') return requireWorkerControlStorage();
+      return retained.value === true;
+    },
+    resolveFinalStatusTokenBinding(input) {
+      const binding = owner.read((sqlite) =>
+        resolveAdmittedNanoHostFinalBinding(coreDb, sqlite, input)
+      );
+      if (binding.state !== 'ready') return requireWorkerControlStorage();
+      return binding.value;
+    },
+    publishHeartbeat: (input) => publishObservation(() => owner.workerControlHeartbeat(input)),
+    prepareObservation: (record) =>
+      withWorkerControlAcknowledgement(owner, () =>
+        prepareWorkerControlObservation(coreDb, record, owner.read)
+      ),
+    publishControlOperation: ({ payload, fingerprint, omitObservation, ...coordinates }) =>
+      publishObservation(async () => {
+        if (
+          omitObservation &&
+          (payload.operation !== 'event_append' ||
+            payload.record.event.type !== 'observation.recorded')
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const accepted = await owner.workerControlRecord({
+          ...coordinates,
+          payload: {
+            kind: 'sequence',
+            operation: payload.operation,
+            sequence: payload.sequence,
+            fingerprint,
+            ...(payload.operation === 'event_append' &&
+            (omitObservation ||
+              readWorkspaceObservationCutoff(coreDb.dataRoot, coordinates.lineage))
+              ? { requireContinuous: true }
+              : {}),
+          },
+        });
+        if (accepted.kind !== 'sequence') return requireWorkerControlStorage();
+        if (!omitObservation && (!accepted.duplicate || payload.operation === 'event_append'))
+          await owner.workerControlRecord({ ...coordinates, payload });
+        const { duplicate, nextExpectedSequence } = accepted;
+        if (
+          duplicate &&
+          (payload.operation === 'artifact_notice' || payload.operation === 'supply_refresh_ack')
+        ) {
+          const { operation, recordKey } = payload;
+          const receipt = await withWorkerControlAcknowledgement(owner, () =>
+            owner.read((sqlite) =>
+              readWorkerControlDuplicateReceipt(
+                { sqlite },
+                coordinates.lineage,
+                operation,
+                recordKey
+              )
+            )
+          );
+          if (receipt.state !== 'ready') return requireWorkerControlStorage();
+          if (receipt.value) return { duplicate, nextExpectedSequence, record: receipt.value };
+        }
+        return { duplicate, nextExpectedSequence };
+      }),
     publishFinalStatus: async (input) => {
-      const rawDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
+      const workspace = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
-        if (readAdmittedObservationCutoff(rawDb, input.lineage)) {
+        if (readAdmittedObservationCutoff(workspace, input.lineage)) {
+          const prior = owner.read((sqlite) =>
+            getWorkerControlAcceptedFinalStatus({ sqlite }, input.lineage)
+          );
+          if (prior.state !== 'ready') return requireWorkerControlStorage();
           if (
-            !getWorkerControlAcceptedFinalStatus(coreDb, input.lineage) &&
+            !prior.value &&
             !['cancelled', 'interrupted'].includes(input.payload.terminalData.status)
           )
             throw new WorkerControlGatewayError(
@@ -639,7 +791,7 @@ export function createDefaultWorkerControlGateway(
           input = { ...input, payload: { ...input.payload, requireContinuous: true } };
         }
         assertWorkerRawOutputFinalStatus(
-          rawDb,
+          workspace,
           input.lineage,
           input.payload.terminalData.status === 'completed'
         );
@@ -655,53 +807,216 @@ export function createDefaultWorkerControlGateway(
           );
         throw error;
       } finally {
-        rawDb.sqlite.close();
+        workspace.sqlite.close();
       }
-      return publishWorkerControlFinalStatus(coreDb, input);
+      return publishObservation(() => owner.workerControlFinalStatus(input));
     },
-    ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
-    resolveFinalStatusTokenBinding: (input) =>
-      resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
-    resolveTokenBinding: (input) => {
-      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
-      if (
-        resolution.status === 'accepted' &&
-        (!resolution.attempt.workerControlTokenHash ||
-          !resolution.attempt.workerInferenceTokenHash ||
-          !resolution.attempt.workerCapabilityTokenHash)
-      ) {
-        return { status: 'rejected', reason: 'binding-not-found' };
-      }
-      return resolution;
+    resolveTokenBinding(input) {
+      const binding = owner.read((sqlite) =>
+        resolveAdmittedNanoHostWorkerBinding(coreDb, sqlite, input)
+      );
+      if (binding.state !== 'ready') return requireWorkerControlStorage();
+      return binding.value;
     },
-    sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });
-
-  try {
-    rebuildWorkerControlGatewaySessions(coreDb, gateway);
-  } catch {
-    // One lease whose owner cannot be restored must not stop every Workspace from booting.
-    return new HeldWorkerControlGateway();
-  }
-  return gateway;
+  const hydration = rebuildWorkerControlGatewaySessions(coreDb, gateway, owner.read);
+  return hydration.state === 'ready' ? gateway : new HeldWorkerControlGateway();
 }
 
-/**
- * Serves nothing while the Worker Control restore plan is held: every old route token is
- * unauthorized and no new Session can register. Healthy Workspaces still boot and serve.
- */
+// Route-token registration is local. Publishing a Worker observation still needs its deciding writer.
+const heldWorkerControlPublications = {
+  resolveFinalStatusTokenBinding: requireWorkerControlStorage,
+  publishHeartbeat: requireWorkerControlStorage,
+  publishControlOperation: requireWorkerControlStorage,
+  publishFinalStatus: requireWorkerControlStorage,
+};
+
+/** Holds registration and all Worker operations when the admitted owner is unavailable. */
 class HeldWorkerControlGateway extends WorkerControlGateway {
-  public override restoreHeld(): boolean {
+  constructor() {
+    super({
+      ...heldWorkerControlPublications,
+      resolveTokenBinding: requireWorkerControlStorage,
+    });
+  }
+
+  override restoreHeld(): boolean {
     return true;
   }
 
-  public override registerSession(): never {
-    throw new WorkerControlGatewayError(
-      'worker_observation_storage_unavailable',
-      'Worker Control restore is held.',
-      503
-    );
+  override registerSession(): never {
+    return requireWorkerControlStorage();
   }
+}
+
+function requireWorkerControlStorage(): never {
+  throw new WorkerControlGatewayError(
+    'worker_observation_storage_unavailable',
+    'NanoHost Worker control storage is unavailable.',
+    503
+  );
+}
+
+/** Maps a bounded owner wait to the same closed Worker storage refusal as an unreadable owner. */
+async function withWorkerControlAcknowledgement<Value>(
+  owner: NanoHostOwnerBinding,
+  read: () => Value | Promise<Value>,
+  signal?: AbortSignal
+): Promise<Value> {
+  try {
+    return await owner.afterWorkerControlAcknowledgement(read, signal);
+  } catch (error) {
+    if (error instanceof ControlStoreWorkerError) return requireWorkerControlStorage();
+    throw error;
+  }
+}
+
+/** Joins the acknowledged Native owner to the existing Core decision worker. */
+export async function prepareNanoHostOwner(
+  coreDb: CoreDb,
+  gate: Parameters<ReturnType<typeof getControlStoreWorkerClient>['bindNanoHostOwner']>[2]
+): Promise<NanoHostAppStorage> {
+  const writer = getControlStoreWorkerClient();
+  const owner = await writer.bindNanoHostOwner(
+    coreDb.dataRoot,
+    {
+      captureCanaryAuditObservation: captureSecurityCanaryAuditObservation,
+      isEnrollmentAdministrator: isCurrentDeploymentAdministrator,
+      terminalRelease: {
+        inspect: inspectCoreNanoHostTerminalRelease,
+        inspectRecovery: inspectCoreNanoHostRecoveryRelease,
+        projectStep: nanoHostTerminalReleaseWorkspaceStep,
+      },
+      getWorkerBackendSession,
+      hasQueuedNanoHostHarnessOperation,
+      inspectIdleHarnessClose: (native, input) =>
+        inspectNanoHostIdleCloseConsumption(coreDb, input, native) !== null,
+      inspectNanoHostRuntimeTargetTransition,
+      listNanoHostTransportTokenRecords,
+      prepareNanoHostRuntimeTargetTransition,
+      readNanoHostEpochInvalidation,
+      readPendingNanoHostEpochRetirement,
+    },
+    {
+      // Activation has already rechecked its Administrator and exact candidate audiences.
+      verifyImagePublication: (input) => input.kind === 'environment',
+      // Only transitions after the caller's own decision: proved cleanup, an uncertain-contact
+      // fence, or the outcome of a purge that the Core-checked reservation already holds. Attempt-bound
+      // reservations and activations stay on `writeStorageAttachment`.
+      verifyStorageBinding: (input) =>
+        (input.kind === 'release' && input.cleanupProved) ||
+        input.kind === 'mark-unknown' ||
+        input.kind === 'purge-settle',
+      verifyWorkspaceHandoff(session) {
+        let workspace: WorkspaceDb | undefined;
+        try {
+          workspace = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
+          const record = findNamedAgentEnvironmentPackageSnapshot(
+            workspace,
+            session.workspaceId,
+            session.agentSessionId,
+            session.packageSnapshotId
+          );
+          const pkg = record?.snapshot;
+          if (pkg?.scope.turnId !== session.turnId || pkg.scope.threadId !== session.threadId)
+            return false;
+          requireCompleteBackendWorkspaceHandleHandoff(workspace, pkg, {
+            backendKind: session.backendKind,
+            backendVersion: session.backendVersion,
+            workerSessionId: session.backendSessionId,
+          });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          workspace?.sqlite.close();
+        }
+      },
+      ...gate,
+    }
+  );
+  return owner.state === 'ready'
+    ? {
+        state: 'ready',
+        value: {
+          dataRoot: resolve(coreDb.dataRoot),
+          owner: owner.value,
+          enrollTransport: owner.value.enrollTransport,
+          kernel: writer.nanoHostEpochKernel(coreDb),
+        },
+      }
+    : owner;
+}
+
+/** Publishes the original image result only after its exact Core acquisition decision. */
+export async function settlePreparedNanoHostImage(
+  coreDb: CoreDb | undefined,
+  storage: NanoHostAppStorage,
+  { settlement, target, originalExecution }: Parameters<SettleNanoHostPreparedImage>[0]
+): Promise<void> {
+  if (!coreDb || storage.state !== 'ready' || storage.value.dataRoot !== resolve(coreDb.dataRoot))
+    throw new WorkerImageSettlementDeferred();
+  const { owner } = storage.value;
+  try {
+    let acquisitionDecisionDigest: string | undefined;
+    if (settlement.operation === 'image.acquire') {
+      const ref = originalExecution ?? readCoreImageAcquisitionRef(coreDb, settlement.requestId);
+      if (!ref || ref.execution.owner.kind !== 'server') throw new WorkerImageSettlementDeferred();
+      const decision = await publishCoreJournal(coreDb, {
+        kind: 'image-result',
+        ref: {
+          execution: { owner: { kind: 'server' }, executionId: ref.execution.executionId },
+          stepId: ref.stepId,
+        },
+        settlement: { ...settlement, operation: 'image.acquire' },
+        target,
+      });
+      if (!decision) throw new WorkerImageSettlementDeferred();
+      acquisitionDecisionDigest = decision;
+    }
+    await owner.settlePreparedImage({
+      settlement,
+      target,
+      ...(acquisitionDecisionDigest === undefined ? {} : { acquisitionDecisionDigest }),
+    });
+  } catch (error) {
+    if (error instanceof WorkerImageSettlementConflict) throw error;
+    throw new WorkerImageSettlementDeferred();
+  }
+}
+
+/** Captures the exact Native restart windows from the same selection used by Worker routes. */
+export function readNanoHostRestartCensus(
+  coreDb: CoreDb,
+  storage: NanoHostAppStorage,
+  observedAt = new Date().toISOString()
+) {
+  if (storage.state !== 'ready') return storage;
+  return storage.value.owner.read((sqlite) =>
+    sqlite.transaction(() =>
+      listOpenSchedulerExecutionAttempts(coreDb).flatMap((attempt) => {
+        if (
+          attempt.backendId !== 'nanohost' ||
+          attempt.phase !== 'open' ||
+          !attempt.deadline ||
+          attempt.deadline <= observedAt ||
+          !isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)
+        )
+          return [];
+        const { lease, proof, session } = readAdmittedNanoHostAttempt(coreDb, sqlite, attempt);
+        if (
+          proof.recoveryState !== 'awaiting-reconnect' ||
+          !proof.recoveryDeadline ||
+          proof.recoveryDeadline <= observedAt ||
+          session.state !== 'launching' ||
+          session.workspaceHandoffState !== 'complete' ||
+          session.physicalCleanedAt !== null
+        )
+          return [];
+        return [lease];
+      })
+    )()
+  );
 }
 
 /** Input used to create the default process vault backend for an app instance. */
@@ -849,6 +1164,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     )
   )
     throw new Error('Application Workspace mutations must use their native scope owner.');
+  if (
+    options.nanoHostStorage?.state === 'ready' &&
+    (!mutationDataRoot || resolve(mutationDataRoot) !== options.nanoHostStorage.value.dataRoot)
+  )
+    throw new Error('NanoHost App reads must use the application Data Root.');
+  const missingNanoHostStorage = {
+    state: 'unavailable',
+    owner: 'nanohost',
+    reason: 'missing',
+  } as const;
+  const nanoHostStorage = options.nanoHostStorage ?? missingNanoHostStorage;
+  const readNanoHostEnvironment: AdmittedNanoHostTransportStorage['owner']['read'] =
+    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.owner.read : () => nanoHostStorage;
   if (options.automationStore && options.automationStore.coreDb !== options.coreDb)
     throw new Error(
       'Recurring schedules require the application Core database and Workspace mutation fence.'
@@ -1095,7 +1423,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     });
   const workerControlGateway =
     options.workerControlGateway ??
-    createDefaultWorkerControlGateway(options.coreDb, undefined, requestObservationStop);
+    createDefaultWorkerControlGateway(
+      options.coreDb,
+      undefined,
+      nanoHostStorage,
+      requestObservationStop
+    );
   const workerMcpGateway =
     options.workerMcpGateway ?? createDefaultWorkerMcpGateway(options.coreDb);
   /** Joins the unique Gateway owner without treating missing cleanup as success. */
@@ -1120,16 +1453,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const nanoHostRestartRequired = runtimeConfigManager.bindNanoHostTransportFence(async () => {
     const identityId = startupOpenKitConfig.nanohost?.identityId;
     if (!identityId) return;
-    if (options.coreDb) {
+    if (nanoHostStorage.state === 'ready')
       await fenceNanoHostTransportAuthority(
-        options.coreDb,
+        nanoHostStorage.value,
         nanohostTransportSessionAuthority,
         identityId,
         new Date().toISOString()
       );
-    } else {
-      nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
-    }
+    else nanohostTransportSessionAuthority.fenceAuthoritative(identityId);
   });
   const admitNanoHostSession = nanohostTransportSessionAuthority.admit.bind(
     nanohostTransportSessionAuthority
@@ -1206,7 +1537,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.nanoHostSessionDispatch ??
     createProductionNanoHostSessionDispatch({
       fileAdmission,
+      nativeStorage: nanoHostStorage,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      settlePreparedImage: (input) =>
+        settlePreparedNanoHostImage(options.coreDb, nanoHostStorage, input),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
   const releaseIdentity = options.releaseIdentity ?? {
@@ -1220,6 +1554,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerEnvironmentOperations = options.coreDb
     ? createWorkerEnvironmentOperations({
         coreDb: options.coreDb,
+        readNanoHost: readNanoHostEnvironment,
+        ...(nanoHostStorage.state === 'ready'
+          ? {
+              purgeDecisions: admittedWorkerStoragePurgeDecisions(
+                options.coreDb,
+                nanoHostStorage.value.owner
+              ),
+            }
+          : {}),
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,
         store: sharedStore,
@@ -1257,6 +1600,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         },
         deriveAffectedStorage: createWorkerEnvironmentAffectedStorageDeriver({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
           store: sharedStore,
         }),
       })
@@ -1265,6 +1609,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.coreDb && workerEnvironmentPreparation
       ? createWorkerEnvironmentActivation({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
+          ...(nanoHostStorage.state === 'ready'
+            ? {
+                admitImageEnvironment: (candidate, measurement) =>
+                  nanoHostStorage.value.owner.workerImage({
+                    kind: 'environment',
+                    candidate,
+                    environment: NativeEnvironmentRecordSchema.parse(measurement),
+                  }),
+              }
+            : {}),
           store: sharedStore,
           preparation: workerEnvironmentPreparation,
           runtimeEffects: workerEnvironmentRuntimeEffects,
@@ -1278,10 +1633,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             const { actor, replaceNow, affectedStorage, residentMembers, requestId, target } =
               input;
             const coreDb = options.coreDb!;
+            const readResidentBinding = (storageRef: string) => {
+              const read =
+                nanoHostStorage.state === 'ready'
+                  ? nanoHostStorage.value.owner.read((sqlite) =>
+                      getWorkerStorageBinding({ sqlite }, { storageRef })
+                    )
+                  : nanoHostStorage;
+              if (read.state !== 'ready')
+                throw new WorkerEnvironmentOperationError(
+                  'recovery_required',
+                  'NanoHost resident storage requires recovery.'
+                );
+              return read.value;
+            };
             const requireAuthority = () => {
               workerEnvironmentPreparation.readResolved({ actor }, input.resolvedCandidate);
               for (const ref of affectedStorage) {
-                const binding = getWorkerStorageBinding(coreDb, { storageRef: ref.storageRef });
+                const binding = readResidentBinding(ref.storageRef);
                 if (
                   !binding ||
                   !binding.contributors.every(
@@ -1309,7 +1678,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             if (affectedStorage.length !== 1)
               throw new Error('Resident storage group is unavailable.');
             const expected = affectedStorage[0]!;
-            const before = getWorkerStorageBinding(coreDb, { storageRef: expected.storageRef });
+            const before = readResidentBinding(expected.storageRef);
             if (!before || before.revision !== expected.expectedRevision)
               throw new Error('Worker storage changed.');
             for (const member of residentMembers) {
@@ -1340,7 +1709,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               await markSchedulerAttemptForTerminalTurn(coreDb, terminal);
             }
             requireAuthority();
-            const released = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            const released = readResidentBinding(before.storageRef);
             if (
               !released ||
               released.scopeDigest !== before.scopeDigest ||
@@ -1390,26 +1759,37 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               }).catch(reject);
             });
             requireAuthority();
-            const after = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
+            const after = readResidentBinding(before.storageRef);
             const image = workerEnvironmentPreparation.readResolved(
               { actor },
               input.resolvedCandidate
             ).resolved.image;
-            const sandbox = after?.currentSandboxBindingRef
-              ? (coreDb.sqlite
-                  .prepare(
-                    'SELECT image_digest AS imageDigest, health_state AS health, cleanup_state AS cleanup FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+            const sandboxBindingRef = after?.currentSandboxBindingRef;
+            const sandbox =
+              sandboxBindingRef && nanoHostStorage.state === 'ready'
+                ? nanoHostStorage.value.owner.read(
+                    (sqlite) =>
+                      sqlite
+                        .prepare(
+                          'SELECT image_digest AS imageDigest, health_state AS health, cleanup_state AS cleanup FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?'
+                        )
+                        .get(sandboxBindingRef) as
+                        | { imageDigest: string; health: string; cleanup: string }
+                        | undefined
                   )
-                  .get(after.currentSandboxBindingRef) as
-                  | { imageDigest: string; health: string; cleanup: string }
-                  | undefined)
-              : undefined;
+                : undefined;
+            if (sandbox?.state === 'unavailable')
+              throw new WorkerEnvironmentOperationError(
+                'recovery_required',
+                'NanoHost replacement evidence requires recovery.'
+              );
+            const placement = sandbox?.value;
             const disposition =
               after?.state === 'attached' &&
               after.attachmentGeneration > before.attachmentGeneration &&
-              sandbox?.imageDigest === image.digest &&
-              sandbox.health === 'ready' &&
-              sandbox.cleanup === 'clean'
+              placement?.imageDigest === image.digest &&
+              placement.health === 'ready' &&
+              placement.cleanup === 'clean'
                 ? ('reattached' as const)
                 : after?.state === 'idle' && after.currentSandboxBindingRef === null
                   ? ('fenced' as const)
@@ -1437,6 +1817,26 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
+          nanoHostRecovery: {
+            owner:
+              nanoHostStorage.state === 'ready'
+                ? { state: 'ready', value: nanoHostStorage.value.owner }
+                : nanoHostStorage,
+            ...(nanoHostStorage.state === 'ready'
+              ? {
+                  admitSubmission: nanoHostStorage.value.owner.firstSubmission,
+                  harnessTurnLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle,
+                  idleSandbox: {
+                    writeIdleHarnessDrain: nanoHostStorage.value.owner.writeIdleHarnessDrain,
+                    releaseStorage: nanoHostStorage.value.owner.releaseIdleSandboxStorage,
+                  },
+                  readWorkerCompletion: nanoHostStorage.value.owner.readWorkerCompletion,
+                  releaseTerminalScopes: nanoHostStorage.value.owner.releaseTerminalScopes,
+                  writeStorageAttachment: nanoHostStorage.value.owner.writeStorageAttachment,
+                  commitCloseout: nanoHostStorage.value.owner.classifyRecovery,
+                }
+              : {}),
+          },
           workerControlGateway,
         }));
   const turnExecutor =
@@ -2264,8 +2664,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerNanoHostSessionSemanticRoutes({
     app,
     releaseIdentity,
+    nativeStorage: nanoHostStorage,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     dispatch: nanoHostSessionDispatch,
+    ...(nanoHostStorage.state === 'ready'
+      ? { nativeHarnessLifecycle: nanoHostStorage.value.owner.harnessTurnLifecycle }
+      : {}),
     ...(configuredWorkerRuntime
       ? {
           harnessCommandDispatched: configuredWorkerRuntime.acceptNanoHostHarnessCommand,
@@ -2284,12 +2688,120 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   let channelServices: ChannelServices | undefined;
   const communicationStorage = options.communicationStorage;
-  let communicationCredentialBinding: CommunicationCredentialBinding | undefined =
-    communicationStorage
-      ? communicationStorage.listNanoHostTransportTokens
-        ? { listNanoHostTransportTokens: communicationStorage.listNanoHostTransportTokens }
-        : {}
+  const readNanoHostTarget =
+    nanoHostStorage.state === 'ready'
+      ? nanoHostStorage.value.owner.readRuntimeTarget
+      : () => nanoHostStorage;
+  const afterNanoHostTransportAcknowledgement:
+    | NanoHostOwnerBinding['afterNanoHostTransportAcknowledgement']
+    | undefined =
+    nanoHostStorage.state === 'ready'
+      ? async (read, signal) => {
+          try {
+            return await nanoHostStorage.value.owner.afterNanoHostTransportAcknowledgement(
+              read,
+              signal
+            );
+          } catch (error) {
+            if (error instanceof ControlStoreWorkerError)
+              throw new OperationError(
+                'nanohost_transport_storage_unavailable',
+                'NanoHost transport token storage is unavailable.',
+                503
+              );
+            throw error;
+          }
+        }
       : undefined;
+  const enrollmentWriter =
+    nanoHostStorage.state === 'ready' ? nanoHostStorage.value.enrollTransport : undefined;
+  const nanoHostEnrollment: import('./operation-composition.js').OperationInvocationDependencies['nanoHostEnrollment'] =
+    options.enableNanoHostEnrollment && enrollmentWriter
+      ? {
+          storage: nanoHostStorage,
+          commitEnroll: (input) => {
+            const config = startupOpenKitConfig.nanohost;
+            if (
+              input.record.deploymentId !== config?.deploymentId ||
+              input.record.ownerNanoHostIdentityId !== config.identityId
+            )
+              throw new ControlStoreWorkerError('precondition', 'not-committed');
+            return enrollmentWriter(input);
+          },
+        }
+      : undefined;
+  // The same acknowledged pair decides every later Token stage: Native Token rows, Core Audit.
+  const nanoHostAdministration =
+    options.enableNanoHostEnrollment && nanoHostStorage.state === 'ready' && options.coreDb
+      ? { storage: nanoHostStorage, owner: nanoHostStorage.value.owner, coreDb: options.coreDb }
+      : undefined;
+  const nanoHostAdministratorTransport: import('./operation-composition.js').OperationInvocationDependencies['nanoHostAdministratorTransport'] =
+    nanoHostAdministration && {
+      storage: nanoHostAdministration.storage,
+      submit: async (input) => {
+        if (input.kind === 'lifecycle-audit' || input.kind === 'decommission-audit')
+          return (await prepareNanoHostTransportWriter(nanoHostAdministration.coreDb)).submit(
+            input
+          );
+        return 'actor' in input && input.actor
+          ? nanoHostAdministration.owner.administerTransport(input)
+          : nanoHostAdministration.owner.transport(input);
+      },
+    };
+  const commitNanoHostTransportRevoke: NanoHostAdministratorRevoke | undefined =
+    nanoHostAdministration &&
+    (async ({ actor, expected }) => {
+      const result = await nanoHostAdministration.owner.administerTransport({
+        kind: 'revoke',
+        tokenId: expected.tokenId,
+        actor,
+      });
+      if (result.kind !== 'record' || !result.record)
+        return { state: 'unavailable', owner: 'nanohost', reason: 'recovery-required' };
+      const record = result.record;
+      return {
+        state: 'ready',
+        value: {
+          record,
+          acknowledgeAudit: () =>
+            recordNanoHostTransportAudit(nanoHostAdministration.coreDb, {
+              kind: 'lifecycle-audit',
+              action: 'nanohost.transport.revoke',
+              record,
+              actorUserId: actor.userId,
+            }),
+        },
+      };
+    });
+  const nanoHostCleanupOwner =
+    nanoHostStorage.state === 'ready'
+      ? { state: 'ready' as const, value: nanoHostStorage.value.owner }
+      : nanoHostStorage;
+  let communicationCredentialBinding: CommunicationCredentialBinding = {
+    listNanoHostTransportTokens: (signal) => {
+      if (nanoHostStorage.state === 'ready')
+        return nanoHostStorage.value.owner.listTransportTokens(signal);
+      return (
+        (options.nanoHostStorage
+          ? undefined
+          : communicationStorage?.listNanoHostTransportTokens?.()) ?? nanoHostStorage
+      );
+    },
+    ...(nanoHostAdministration && commitNanoHostTransportRevoke
+      ? {
+          revokeNanoHostTransportToken: (tokenId: string, context: AdmittedOperationContext) =>
+            revokeAdmittedNanoHostInboundCredential(
+              {
+                storage: nanoHostAdministration.storage,
+                sessionAuthority: nanohostTransportSessionAuthority,
+                commitRevoke: commitNanoHostTransportRevoke,
+              },
+              tokenId,
+              context
+            ),
+        }
+      : {}),
+  };
   registerDiscordInteractionRoutes({
     app,
     config: startupOpenKitConfig.channels?.discord,
@@ -2348,6 +2860,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerNanoHostTransportAdmissionRoutes({
     app,
     coreDb: options.coreDb,
+    nativeStorage: nanoHostStorage,
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     sessionAuthority: nanohostTransportSessionAuthority,
   });
@@ -2450,6 +2963,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nativeEnvironment: options.coreDb
       ? createAgentNativeEnvironmentService({
           coreDb: options.coreDb,
+          readNanoHost: readNanoHostEnvironment,
           store: sharedStore,
           manager: runtimeConfigManager,
           onReloadApplied: onRuntimeConfigReloadApplied,
@@ -2725,9 +3239,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   const pendingWorkerDelivery = {
-    async startTurn(store: FsStore, turnId: string) {
-      const turn = store.getTurnById(turnId);
-      if (!turn.agentId) throw new Error('Outcome Turn has no worker Agent.');
+    /**
+     * Proves one frozen outcome Turn on its admitted Workspace and Thread. It submits nothing,
+     * so a failure here proves that no submission happened.
+     */
+    prepareTurn(
+      store: FsStore,
+      turnId: string,
+      scope: { readonly workspaceId: string; readonly threadId: string }
+    ): ((posting?: ControlStorePublicationGuard) => Promise<void>) | undefined {
+      // The admitting Workspace and Thread name the outcome Turn; sibling Workspaces are not read.
+      const turn = store.getTurn(scope.workspaceId, scope.threadId, turnId);
+      const agentId = turn.agentId;
+      if (!agentId) throw new Error('Outcome Turn has no worker Agent.');
       // An existing queued admission belongs to the scheduler dispatch loop after restart.
       if (
         options.coreDb?.sqlite
@@ -2736,64 +3260,74 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           )
           .get(turn.id)
       )
-        return;
-      const workspaceId = workspaceIdForOwner(turn.owner);
-      const identity = createHash('sha256')
-        .update(JSON.stringify([workspaceId, turn.threadId, turn.id]))
-        .digest('hex');
-      const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
+        return undefined;
+      return async (posting) => {
+        const workspaceId = workspaceIdForOwner(turn.owner);
+        // Same bytes as the former local JSON framing: these are well-formed ID strings.
+        const identity = sha256CanonicalJson([workspaceId, turn.threadId, turn.id]);
+        const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
-      const admitted = Promise.withResolvers<void>();
-      const execution = startProductTurn({
-        agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
-        ...setupProviderSupply,
-        input: {
-          input: PENDING_WORKER_TRIGGER_INPUT,
-          requestId,
-          workspaceId,
-          threadId: turn.threadId,
-        },
-        frozenOutcomeBatch: true,
-        requestedAgentId: turn.agentId,
-        reservedTurnId: turn.id,
-        onTurnCreated: () => admitted.resolve(),
-        providerCredentialResolver,
-        snapshot: runtimeConfig(),
-        store,
-        triggerActor: turn.triggerActor,
-        turnExecutor,
-        workerPlacement,
-        ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      })
-        .catch(async (error: unknown) => {
-          // Only this refused outcome attempt retires its still-queued scheduler ownership.
-          if (
-            options.coreDb &&
-            error instanceof TurnStartValidationError &&
-            error.code !== 'recovery_required'
-          ) {
-            const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
-              workspaceId,
-              statuses: ['queued'],
-            }).find(
-              (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
-            );
-            if (entry)
-              await cancelOwnedQueuedAdmission(options.coreDb, {
-                queueEntryId: entry.queueEntryId,
-                workspaceId,
-              });
-          }
-          throw error;
+        const admitted = Promise.withResolvers<void>();
+        const execution = startProductTurn({
+          agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
+          ...setupProviderSupply,
+          input: {
+            input: PENDING_WORKER_TRIGGER_INPUT,
+            requestId,
+            workspaceId,
+            threadId: turn.threadId,
+          },
+          frozenOutcomeBatch: true,
+          requestedAgentId: agentId,
+          reservedTurnId: turn.id,
+          // The Core scheduler writer records here when its post began.
+          ...(posting ? { schedulerPublicationGuard: posting } : {}),
+          onTurnCreated: () => admitted.resolve(),
+          providerCredentialResolver,
+          snapshot: runtimeConfig(),
+          store,
+          triggerActor: turn.triggerActor,
+          turnExecutor,
+          workerPlacement,
+          ...(options.coreDb ? { coreDb: options.coreDb } : {}),
         })
-        .then((handle) => markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn));
-      // The native producer owns the original durable admission ACK, not future Worker completion.
-      // Keep the real execution/terminal bookkeeping observed under its existing Worker owner.
-      void execution.catch((error: unknown) => {
-        admitted.reject(error);
-        console.error(`Pending outcome Worker ${turn.id} failed.`, error);
-      });
-      await admitted.promise;
+          .catch(async (error: unknown) => {
+            // Only this refused outcome attempt retires its still-queued scheduler ownership.
+            if (
+              options.coreDb &&
+              error instanceof TurnStartValidationError &&
+              error.code !== 'recovery_required'
+            ) {
+              const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
+                workspaceId,
+                statuses: ['queued'],
+              }).find(
+                (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
+              );
+              if (entry)
+                await cancelOwnedQueuedAdmission(options.coreDb, {
+                  queueEntryId: entry.queueEntryId,
+                  workspaceId,
+                });
+            }
+            throw error;
+          })
+          .then((handle) => markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn));
+        // The native producer owns the original durable admission ACK, not future Worker completion.
+        // Keep the real execution/terminal bookkeeping observed under its existing Worker owner.
+        void execution.catch((error: unknown) => {
+          admitted.reject(error);
+          console.error(`Pending outcome Worker ${turn.id} failed.`, error);
+        });
+        await admitted.promise;
+      };
+    },
+    async startTurn(
+      store: FsStore,
+      turnId: string,
+      scope: { readonly workspaceId: string; readonly threadId: string }
+    ) {
+      await pendingWorkerDelivery.prepareTurn(store, turnId, scope)?.();
     },
   };
 
@@ -3102,6 +3636,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
+    readNanoHostTarget,
+    ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
+    ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
+    ...(nanoHostAdministratorTransport ? { nanoHostAdministratorTransport } : {}),
+    nanoHostCleanupOwner,
   });
 
   registerRemoteMcpRoutes({
@@ -3170,6 +3709,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
+    readNanoHostTarget,
+    ...(afterNanoHostTransportAcknowledgement ? { afterNanoHostTransportAcknowledgement } : {}),
+    ...(nanoHostEnrollment ? { nanoHostEnrollment } : {}),
+    ...(nanoHostAdministratorTransport ? { nanoHostAdministratorTransport } : {}),
+    nanoHostCleanupOwner,
   });
 
   registerTurnEventRoutes({
