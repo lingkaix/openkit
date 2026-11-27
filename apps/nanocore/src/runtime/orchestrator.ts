@@ -59,6 +59,8 @@ export interface StartTurnInput
   commandReceipt?: IdempotentCommandReceipt;
   /** Exact durable execution attempt for the accepted pending Turn. */
   attemptId?: string;
+  /** Continues the exact Scheduler-owned Turn after acknowledged predecessor release. */
+  continueRunningWorkerTurn?: true;
   /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
   agentSessionId?: string;
   /** Optional dependencies for tests and future orchestration expansion. */
@@ -358,7 +360,16 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         .listThreadTurns(input.workspaceId, input.threadId)
         .find((candidate) => candidate.id === input.turnId)
     : undefined;
-  if (existing && (existing.status !== 'pending' || existing.agentId !== selectedAgent.id))
+  const continuing =
+    input.continueRunningWorkerTurn === true &&
+    existing?.status === 'running' &&
+    input.attemptId !== undefined &&
+    existing.agentSessionId !== null &&
+    existing.agentSessionId === input.agentSessionId;
+  if (
+    existing &&
+    ((!continuing && existing.status !== 'pending') || existing.agentId !== selectedAgent.id)
+  )
     throw new TurnStartValidationError(
       'recovery_required',
       'The reserved outcome Turn contradicts worker admission.',
@@ -382,9 +393,10 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }
     ));
-  if (existing) await input.store.updateTurn(turn.id, { status: 'running' });
+  if (existing && !continuing) await input.store.updateTurn(turn.id, { status: 'running' });
   let agentSetupRecordId: string | null = null;
-  if (agentSetupResult.setup && input.agentSetupLedger) {
+  if (continuing) agentSetupRecordId = `ras_${turn.id}`;
+  else if (agentSetupResult.setup && input.agentSetupLedger) {
     const workspaceDb = input.agentSetupLedger.openWorkspaceDb();
     try {
       agentSetupRecordId = (

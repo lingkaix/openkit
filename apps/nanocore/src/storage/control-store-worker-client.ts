@@ -6377,6 +6377,8 @@ class ControlStoreWorkerClient {
       let workspaceId: string | undefined;
       if (input.kind === 'containment-intent') workspaceId = input.lineage.workspaceId;
       else if (input.kind === 'idle-intent') workspaceId = input.package.workspaceId;
+      else if (input.kind === 'sandbox-release-refusal-handoff')
+        workspaceId = input.workspaceFence.workspaceId;
       else if (
         input.kind !== 'containment-inspect' &&
         input.kind !== 'image-intent' &&

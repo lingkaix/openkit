@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
+import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-binding-records.js';
 import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-read.js';
 import {
   acceptWorkspaceCapture,
@@ -8,12 +12,15 @@ import {
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
 import { readProduct } from './control-store-product-records.js';
-import type { WorkspaceDb } from './db.js';
+import { openCoreReadDb, type WorkspaceDb } from './db.js';
 import type {
   ControlWorkspaceCapture,
   ControlWorkspaceCaptureResult,
 } from './workspace-capture-codecs.js';
-import { ControlWorkspaceCaptureResultSchema } from './workspace-capture-codecs.js';
+import {
+  ControlWorkspaceCaptureResultSchema,
+  WorkspaceCaptureAnchorSchema,
+} from './workspace-capture-codecs.js';
 import { AgentSessionRecordSchema } from './workspace-file-records.js';
 import {
   completeWorkspaceCaptureRecovery,
@@ -58,12 +65,57 @@ function requireIdleCaptureAttachment(
   if (
     !original ||
     original.storageRef !== input.identity.storageRef ||
-    original.workSlotRef !== input.identity.workSlot ||
-    original.attachmentGeneration !== input.identity.attachmentGeneration
+    original.workSlotRef !== input.identity.workSlot
   )
     throw new WorkspaceCaptureRecoveryRequired(
       'Idle capture lacks its original attachment generation.'
     );
+  const core = openCoreReadDb(db.dataRoot);
+  try {
+    const current = core.sqlite
+      .transaction(() => {
+        const anchor = getWorkerBackendSession(core, input.anchor.attemptId);
+        if (
+          !anchor ||
+          !isDeepStrictEqual(WorkspaceCaptureAnchorSchema.strip().parse(anchor), input.anchor)
+        )
+          return false;
+        const attempt = requireSchedulerExecutionAttempt(core, anchor.attemptId);
+        const target = getNanoHostRuntimeTarget(core, anchor.runtimeTargetId);
+        const hold = getWorkerStorageBindingForSandbox(core, {
+          sandboxBindingRef: anchor.sandboxBindingRef,
+        });
+        return (
+          attempt.phase === 'closed' &&
+          attempt.inputRef === anchor.packageSnapshotId &&
+          attempt.bindingRef === anchor.sandboxBindingRef &&
+          attempt.agentSessionId === anchor.agentSessionId &&
+          target?.deploymentId === anchor.deploymentId &&
+          target.physicalEpoch === anchor.originPhysicalEpoch &&
+          target.ready &&
+          hold?.state === 'attached' &&
+          hold.storageRef === input.identity.storageRef &&
+          hold.scopeDigest === input.identity.scopeDigest &&
+          hold.workspaceId === db.workspaceId &&
+          hold.runtimeTargetId === anchor.runtimeTargetId &&
+          hold.deploymentId === anchor.deploymentId &&
+          hold.attachmentGeneration === input.identity.attachmentGeneration &&
+          hold.contributors.some(
+            (contributor) =>
+              contributor.threadId === anchor.threadId &&
+              contributor.workSlotRef === input.identity.workSlot &&
+              contributor.attachmentGeneration === hold.attachmentGeneration
+          )
+        );
+      })
+      .deferred();
+    if (!current)
+      throw new WorkspaceCaptureRecoveryRequired(
+        'Idle capture lacks its original attachment generation.'
+      );
+  } finally {
+    core.sqlite.close();
+  }
   if (
     listWorkspaceReconciliationRecords(db, input.identity.workspaceId).some(
       (record) => record.id === `wrr_capture_${input.identity.collectionId}`

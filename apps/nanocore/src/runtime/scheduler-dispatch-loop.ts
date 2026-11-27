@@ -46,6 +46,7 @@ import {
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import { readReleasedSandboxRefusalPredecessor } from './execution-attempt-records.js';
 import {
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithoutEffects,
@@ -329,19 +330,25 @@ function schedulerEntryPublicationComplete(
   entry: CoreSchedulerQueueEntry,
   turnInput: string
 ): boolean {
+  try {
+    const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
+    if (turn.agentId !== entry.requestedAgentId) return false;
+    if (turn.status === 'running')
+      return (
+        readReleasedSandboxRefusalPredecessor(input.coreDb, entry)?.agentSessionId ===
+        turn.agentSessionId
+      );
+    if (turn.status !== 'pending') return false;
+  } catch (error) {
+    if (error instanceof StoreRecordNotFoundError) return false;
+    throw error;
+  }
   if (isRecurringQueueEntry(input.coreDb, entry.queueEntryId)) {
     return recurringTurnPublicationIssue(input.coreDb, input.store, entry) === null;
   }
   const eventAdmission = findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId);
   if (eventAdmission)
     return externalTriggerTurnPublicationComplete(input.coreDb, input.store, eventAdmission);
-  try {
-    const turn = input.store.getTurn(entry.workspaceId, entry.threadId, entry.turnId);
-    if (turn.status !== 'pending' || turn.agentId !== entry.requestedAgentId) return false;
-  } catch (error) {
-    if (error instanceof StoreRecordNotFoundError) return false;
-    throw error;
-  }
   const workspaceDb = openWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
   try {
     const receipts = workspaceDb.sqlite
@@ -499,6 +506,10 @@ async function dispatchSchedulerAdmission(
   const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
     (candidate) => candidate.workspaceId === entry.workspaceId
   )?.catalog;
+  const predecessor =
+    input.store.getTurnById(entry.turnId).status === 'running'
+      ? readReleasedSandboxRefusalPredecessor(input.coreDb, entry)
+      : null;
   const attempt = await createSchedulerExecutionAttempt(input.coreDb, {
     entry,
     attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
@@ -624,6 +635,7 @@ async function dispatchSchedulerAdmission(
         });
       },
       attemptId: attempt.attemptId,
+      ...(predecessor ? { continueRunningWorkerTurn: true } : {}),
       agentSessionId: prepared.agentSessionId,
       agentId: entry.requestedAgentId,
       agentManifests: input.agentManifests,
@@ -662,13 +674,19 @@ async function dispatchSchedulerAdmission(
       configVersion: input.configVersion ?? null,
       ...(input.dependencies ? { dependencies: input.dependencies } : {}),
     });
+    const dispatchedAttempt = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+    if (dispatchedAttempt.terminalCause === 'sandbox-release-refusal')
+      return {
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'recovery-required' },
+      };
     return {
       startedTurns: [
         {
           dispatch: {
             status: 'dispatched',
             entry: current,
-            attempt: requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId),
+            attempt: dispatchedAttempt,
           },
           handle,
         },
@@ -677,6 +695,11 @@ async function dispatchSchedulerAdmission(
     };
   } catch (error) {
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+    if (current.terminalCause === 'sandbox-release-refusal')
+      return {
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'recovery-required' },
+      };
     // Recovery owns the expired attempt and its original Turn after the persisted fence.
     if (current.terminalCause === 'preparation-deadline') throw error;
     if (
@@ -721,6 +744,7 @@ async function dispatchSchedulerAdmission(
       await terminalizeGovernedWorkerTurn({
         store: input.store,
         turnId: turn.id,
+        attemptId: current.attemptId,
         agentSessionId: current.agentSessionId,
         requestId: entry.requestId,
         outcome: 'failed',

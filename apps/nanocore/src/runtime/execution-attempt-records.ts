@@ -66,6 +66,37 @@ export function requireSchedulerExecutionAttempt(
   );
 }
 
+/** Reads the exact released predecessor of the sole next attempt for this admission. */
+export function readReleasedSandboxRefusalPredecessor(
+  db: CoreDb,
+  entry: Pick<CoreSchedulerQueueEntry, 'queueEntryId' | 'workspaceId' | 'threadId' | 'turnId'>,
+  successorAttemptId?: string
+): SchedulerExecutionAttemptRecord | null {
+  const attempts = listSchedulerExecutionAttemptsForTurn(db, entry);
+  const predecessor = attempts.find(
+    (attempt) =>
+      attempt.queueEntryId === entry.queueEntryId &&
+      attempt.phase === 'closed' &&
+      attempt.terminalCause === 'sandbox-release-refusal' &&
+      attempt.deadline === null &&
+      attempt.fenceRef?.startsWith('sandbox-release-refusal:') &&
+      attempt.inputRef !== null &&
+      attempt.bindingRef !== null &&
+      attempt.agentSessionId !== null
+  );
+  if (!predecessor) return null;
+  const later = attempts.slice(attempts.indexOf(predecessor) + 1);
+  if (
+    successorAttemptId === undefined
+      ? later.length !== 0
+      : later.length !== 1 ||
+        later[0]?.attemptId !== successorAttemptId ||
+        later[0].queueEntryId !== entry.queueEntryId
+  )
+    return null;
+  return predecessor;
+}
+
 /** Lists exact Turn attempts in creation order; closed history cannot grant new authority. */
 export function listSchedulerExecutionAttemptsForTurn(
   coreDb: CoreDb,

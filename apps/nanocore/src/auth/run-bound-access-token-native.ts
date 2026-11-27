@@ -69,11 +69,11 @@ function originalSupply(db: CoreDb, plan: VaultInjectionPlanRecord) {
     .all(grant.targetAgentSessionId) as { id: string }[];
   if (rows.length !== 1) return null;
   const attempt = requireSchedulerExecutionAttempt(db, rows[0]!.id);
-  const packageSnapshotId = `aepsnap_${attempt.turnId}_${attempt.agentSessionId}`;
+  const packageSnapshotId =
+    attempt.inputRef ?? `aepsnap_${attempt.turnId}_${attempt.agentSessionId}`;
   if (
     plan.packageSnapshotId !== packageSnapshotId ||
-    plan.planId !== `plan_${packageSnapshotId}_${DECLARATION_ID}` ||
-    (attempt.inputRef !== null && attempt.inputRef !== packageSnapshotId)
+    plan.planId !== `plan_${packageSnapshotId}_${DECLARATION_ID}`
   )
     return null;
   const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);

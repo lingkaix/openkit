@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
 import { readProduct } from '../storage/control-store-product-records.js';
@@ -27,6 +28,7 @@ import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
 } from './worker-backend-session-records.js';
+import { getWorkerStorageBindingForSandbox } from './worker-storage-binding-records.js';
 import { workerStorageScopeDigest } from './worker-storage-bindings.js';
 import { listWorkspaceReconciliationRecords } from './workspace-reconciliation-read.js';
 import {
@@ -58,7 +60,9 @@ function originalCaptureIdentity(
   anchor: WorkerBackendSessionRecord,
   retained: AgentEnvironmentPackage,
   store?: FsStore
-): Omit<WorkspaceCollectionIdentity, 'collectionId'> {
+): Omit<WorkspaceCollectionIdentity, 'collectionId' | 'attachmentGeneration'> & {
+  historicalGeneration: number | undefined;
+} {
   // Callers supply the exact snapshot and anchor from their validated owning readers.
   if (
     retained.snapshotId !== anchor.packageSnapshotId ||
@@ -89,9 +93,7 @@ function originalCaptureIdentity(
     session.threadId !== anchor.threadId ||
     session.agentId !== retained.agent.agentId ||
     !original ||
-    original.workSlotRef !== slot ||
-    !Number.isSafeInteger(original.attachmentGeneration) ||
-    (original.attachmentGeneration ?? 0) <= 0
+    original.workSlotRef !== slot
   )
     throw new Error('Workspace capture original AgentSession attachment is unavailable.');
   return {
@@ -102,7 +104,7 @@ function originalCaptureIdentity(
     packageSnapshotId: anchor.packageSnapshotId,
     storageRef: original.storageRef,
     workSlot: original.workSlotRef,
-    attachmentGeneration: original.attachmentGeneration!,
+    historicalGeneration: original.attachmentGeneration,
     scopeDigest: workerStorageScopeDigest(anchor.workspaceId),
     sandboxId: nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId),
   };
@@ -146,7 +148,7 @@ export async function hasPendingWorkspaceCapture(
     throw new Error('Workspace capture recovery scope conflicts.');
   const hash = createHash('sha256').update(anchor.packageSnapshotId).digest('hex');
   const records = listWorkspaceReconciliationRecords(db, db.workspaceId);
-  let original: Omit<WorkspaceCollectionIdentity, 'collectionId'> | undefined;
+  let original: ReturnType<typeof originalCaptureIdentity> | undefined;
   let fullOwner: WorkerBackendSessionRecord | undefined =
     'backendLineage' in anchor ? anchor : undefined;
   let blocked = false;
@@ -195,7 +197,51 @@ export async function hasPendingWorkspaceCapture(
       ).snapshot;
       original = originalCaptureIdentity(db, fullOwner!, environmentPackage, store);
     }
-    const identity = WorkspaceCollectionIdentitySchema.parse({ ...original, collectionId });
+    const { historicalGeneration, ...lineage } = original;
+    const expected = { ...lineage, collectionId };
+    const retained = db.sqlite
+      .prepare(
+        'SELECT schema_version AS schemaVersion, identity_json AS identity FROM workspace_snapshot_collections WHERE workspace_id=? AND storage_ref=? AND work_slot=? AND collection_id=?'
+      )
+      .get(expected.workspaceId, expected.storageRef, expected.workSlot, collectionId) as
+      | { schemaVersion: unknown; identity: string }
+      | undefined;
+    const recorded = prior
+      ? WorkspaceCollectionIdentitySchema.parse(prior.backendHandleSummary.identity)
+      : retained
+        ? readRetainedV1(retained, () =>
+            WorkspaceCollectionIdentitySchema.parse(JSON.parse(retained.identity))
+          )
+        : undefined;
+    let attachmentGeneration = recorded?.attachmentGeneration;
+    if (recorded) {
+      const { attachmentGeneration: _generation, ...coordinates } = recorded;
+      if (!isDeepStrictEqual(coordinates, expected))
+        throw new Error('Workspace capture retained original identity conflicts.');
+    } else {
+      const hold = getWorkerStorageBindingForSandbox(coreDb, owner);
+      if (hold) {
+        if (
+          hold.storageRef !== expected.storageRef ||
+          hold.scopeDigest !== expected.scopeDigest ||
+          hold.workspaceId !== expected.workspaceId ||
+          hold.runtimeTargetId !== owner.runtimeTargetId ||
+          hold.deploymentId !== owner.deploymentId ||
+          !hold.contributors.some(
+            (contributor) =>
+              contributor.threadId === owner.threadId &&
+              contributor.workSlotRef === expected.workSlot &&
+              contributor.attachmentGeneration === hold.attachmentGeneration
+          )
+        )
+          throw new Error('Workspace capture original writer is unavailable or changed.');
+        attachmentGeneration = hold.attachmentGeneration;
+      } else {
+        // Older raw-only records are still addressable by their original recorded lineage.
+        attachmentGeneration = historicalGeneration;
+      }
+    }
+    const identity = WorkspaceCollectionIdentitySchema.parse({ ...expected, attachmentGeneration });
     const source = await readRawWorkspaceCapture(db.dataRoot, identity);
     const receipt = readWorkspaceCollection(db, identity);
     if (

@@ -120,6 +120,19 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('sandbox-release-refusal-handoff'),
+      ref: stepRef,
+      workspaceFence: z
+        .object({
+          workspaceId: WorkspaceIdSchema,
+          executionId: text,
+          stepId: text,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('idle-intent'),
       intentJson: text,
       processWitness: text,

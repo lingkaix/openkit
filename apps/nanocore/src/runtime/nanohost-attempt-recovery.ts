@@ -95,6 +95,7 @@ export async function classifyNanoHostAttemptsAfterRestart(
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (!attempt.operationId) continue;
+    if (attempt.terminalCause === 'sandbox-release-refusal') continue;
     try {
       if (attempt.backendId !== input.executionBackend.id)
         throw new Error('Retained attempt names an unavailable backend.');
@@ -159,6 +160,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (attempt.backendId !== input.executionBackend.id) continue;
+    if (attempt.terminalCause === 'sandbox-release-refusal') continue;
     try {
       let session = getWorkerBackendSession(coreDb, attempt.attemptId);
       if (!session || !attempt.agentSessionId || !attempt.inputRef) continue;
@@ -220,6 +222,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         cause: livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
         now,
       });
+      if (closing.terminalCause === 'sandbox-release-refusal') continue;
       // Revoke stale native authority before deferring to a live completion waiter. Its phase
       // observation wakes that owner; the guard prevents a second physical cleanup takeover.
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;

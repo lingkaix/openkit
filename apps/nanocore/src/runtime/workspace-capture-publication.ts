@@ -43,7 +43,7 @@ export async function claimIdleWorkspaceCapture(
 ): Promise<void> {
   await publish(db, {
     action: 'claim',
-    anchor: WorkspaceCaptureAnchorSchema.parse(anchor),
+    anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
     identity,
   });
 }
@@ -70,7 +70,7 @@ export async function publishWorkspaceCapture(
     identity,
     result,
     source,
-    idleAnchor: idleAnchor ? WorkspaceCaptureAnchorSchema.parse(idleAnchor) : null,
+    idleAnchor: idleAnchor ? WorkspaceCaptureAnchorSchema.strip().parse(idleAnchor) : null,
   });
   const reply = await publish(db, value);
   if (reply.kind !== 'receipt') throw new Error('Workspace capture reply kind conflicts.');
@@ -96,7 +96,7 @@ export async function publishWorkspaceCaptureRecovery(
 ): Promise<WorkspaceReconciliationRecord> {
   const reply = await publish(db, {
     action: 'recover',
-    anchor: WorkspaceCaptureAnchorSchema.parse(anchor),
+    anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
     identity,
     source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
   });
@@ -113,7 +113,7 @@ export async function publishWorkspaceCaptureCompletion(
 ): Promise<WorkspaceReconciliationRecord> {
   const reply = await publish(db, {
     action: 'complete',
-    anchor: WorkspaceCaptureAnchorSchema.parse(anchor),
+    anchor: WorkspaceCaptureAnchorSchema.strip().parse(anchor),
     identity,
     source: source ? RawWorkspaceCaptureV1Schema.parse(source) : null,
   });

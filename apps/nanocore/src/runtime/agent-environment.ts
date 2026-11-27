@@ -180,6 +180,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   agentSetup: ResolvedAgentSetup;
   /** AgentSession id that the package will govern. */
   agentSessionId: string;
+  /** Exact preparation snapshot for an ordered same-Turn successor. */
+  packageSnapshotId?: string;
   /** Container backend target for the package. */
   backend?: ResolveAgentEnvironmentBackendInput;
   /** Reads current public-route authority from the active configuration snapshot. */
@@ -533,7 +535,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         workspaceCatalog: input.workspaceMcpServerCatalog ?? { schemaVersion: 1, servers: [] },
       })
     : input.workspaceMcpServerCatalog;
-  const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
+  const snapshotId = input.packageSnapshotId ?? `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const physical = physicalThreadAccess(input, agent.agentId, responsibleUserId);
   const publicGrants = physical.network
     ? sandboxAccess.network.filter(
@@ -558,7 +560,7 @@ function resolveOpenShellAgentEnvironmentPackage(
             {
               ...lineage,
               agentSessionId: input.agentSessionId,
-              packageSnapshotId: `aepsnap_${input.turn.id}_${input.agentSessionId}`,
+              packageSnapshotId: snapshotId,
             },
             'runtime.launch',
             true

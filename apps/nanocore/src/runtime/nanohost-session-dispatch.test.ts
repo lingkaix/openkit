@@ -3303,6 +3303,78 @@ async function privateLoginDispatchFixture(
   }
 }
 
+it.each(['sandbox.create', 'sandbox.delete'] as const)(
+  'recovers the exact accepted %s result after dispatcher recreation without redispatching',
+  async (kind) => {
+    const f = await privateLoginDispatchFixture();
+    const producer = new AbortController();
+    const reference = {
+      sandboxId: 'release-refusal-sandbox',
+      requestId: '6'.repeat(64),
+    };
+    const result = {
+      sandboxId: reference.sandboxId,
+      state: kind === 'sandbox.create' ? 'created' : 'deleted',
+    };
+    try {
+      const original = f.dispatch
+        .effect({
+          kind,
+          requestId: reference.requestId,
+          signal: producer.signal,
+          input:
+            kind === 'sandbox.delete'
+              ? { sandboxId: reference.sandboxId }
+              : {
+                  backendSessionId: 'backend-recycle-successor',
+                  imageDigest: `sha256:${'a'.repeat(64)}`,
+                  leaseId: 'lease-recycle-successor',
+                  packageSnapshotId: 'aep-recycle-successor',
+                  sandboxId: reference.sandboxId,
+                  policyIntent: { additionalFilesystemGrants: [], additionalNetworkEndpoints: [] },
+                },
+        })
+        .catch((error: unknown) => error);
+      await expect(f.dispatch.poll(f.physical(), kind)).resolves.toMatchObject(reference);
+      producer.abort(new Error('Original Core producer ended before reading the result.'));
+      await expect(original).resolves.toBeInstanceOf(Error);
+
+      const restarted = createFixtureDispatch({ coreDb: f.coreDb, sessionAuthority: f.authority });
+      await restarted.readiness?.(
+        f.physical(),
+        new TextEncoder().encode(JSON.stringify({ physicalEpoch: f.epoch })),
+        { ...f.target, coreDb: f.coreDb }
+      );
+      const consume = vi.fn(async () => {});
+      const newExpectation = {
+        kind,
+        requestId: reference.requestId,
+        originPhysicalEpoch: f.epoch,
+        consumeResult: consume,
+      };
+      const stale = restarted.expectResultOnly!([
+        { ...newExpectation, originPhysicalEpoch: 'b'.repeat(64) },
+      ]);
+      await expect(
+        restarted.result(f.physical(), kind, { ...result, requestId: reference.requestId })
+      ).rejects.toThrow(/different physical Epoch/);
+      expect(consume).not.toHaveBeenCalled();
+      await expect(restarted.poll(f.physical(), kind)).resolves.toBeNull();
+      await expect(stale).rejects.toThrow(/origin physical Epoch/);
+
+      const retained = restarted.expectResultOnly!([newExpectation]);
+      await expect(restarted.poll(f.physical(), kind)).resolves.toBeNull();
+      await restarted.result(f.physical(), kind, { ...result, requestId: reference.requestId });
+      await expect(retained).resolves.toEqual({ kind, result });
+      expect(consume).toHaveBeenCalledExactlyOnceWith(result);
+      await expect(restarted.poll(f.physical(), kind)).resolves.toBeNull();
+    } finally {
+      producer.abort();
+      await f.close();
+    }
+  }
+);
+
 describe('private native Login dispatch plumbing, not Core permission', () => {
   const path = '/worker-control/harness/login';
 

@@ -91,11 +91,18 @@ import { ItemDeltaProtocolError } from '../lib/item-delta-validation.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
+  readReleasedSandboxRefusalPredecessor,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
+import {
   applyControlExecutionJournal,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSettlement,
+  readExecutionJournalInvocation,
   readExecutionJournalRoot,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from '../runtime/execution-journal.js';
+import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import {
   advanceGoalRevision,
@@ -287,6 +294,7 @@ import {
   type CoreDb,
   inspectServerOwnerFile,
   openAdmittedWorkspaceReadDb,
+  openCoreReadDb,
   openSupportedScopeReadOnlySqlite,
   serverStoragePath,
   type WorkspaceDb,
@@ -1468,6 +1476,62 @@ function apply(
   });
 }
 
+/** Additional root obligations require the exact Core release and native Workspace predecessor fence. */
+function requireOriginalWorkspaceTurnOwner(
+  db: WorkspaceDb,
+  intent: ExecutionJournalIntent,
+  agentSessionId: string
+): void {
+  const { control, carriage, execution } = intent;
+  if (
+    execution.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    !['materialize', 'terminal-publication', 'release'].includes(control.kind) ||
+    carriage.operation !== `worker.${control.kind}`
+  )
+    return;
+  const existing = db.sqlite
+    .prepare(`SELECT step_id AS id FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(invocation_json,'$.carriage.operation')=?
+    AND json_extract(control_json,'$.attemptId') IS NOT ?`)
+    .all(execution.ref.executionId, carriage.operation, control.attemptId) as { id: string }[];
+  if (existing.length === 0) return;
+  if (existing.length !== 1 || !control.attemptId)
+    throw new Error('Workspace successor conflicts with its original obligations.');
+  const core = openCoreReadDb(db.dataRoot);
+  try {
+    const attempt = requireSchedulerExecutionAttempt(core, control.attemptId);
+    const prior = readReleasedSandboxRefusalPredecessor(core, attempt, attempt.attemptId);
+    const steps = db.sqlite
+      .prepare(`SELECT step_id AS id FROM control_execution_steps
+      WHERE execution_id=? AND json_extract(control_json,'$.attemptId')=?
+      AND json_extract(invocation_json,'$.carriage.operation') IN ('worker.terminal-publication','worker.release')`)
+      .all(execution.ref.executionId, prior?.attemptId ?? null) as { id: string }[];
+    const proofs = steps.map(({ id }) =>
+      readExecutionJournalInvocation(db, { execution: execution.ref, stepId: id })
+    );
+    if (
+      !prior ||
+      attempt.phase !== 'open' ||
+      attempt.turnId !== execution.workId ||
+      attempt.workspaceId !== db.workspaceId ||
+      attempt.agentSessionId !== agentSessionId ||
+      prior.agentSessionId !== agentSessionId ||
+      !attempt.inputRef ||
+      !control.inputRefs.includes(attempt.inputRef) ||
+      carriage.bindingRef !== attempt.bindingRef ||
+      proofs.length !== 2 ||
+      !proofs.some(
+        (proof) => proof.control.kind === 'terminal-publication' && proof.state === 'cancelled'
+      ) ||
+      !proofs.some((proof) => proof.control.kind === 'release' && proof.state === 'completed') ||
+      proofs.some((proof) => !isDeepStrictEqual(proof.control.outputRefs, [prior.fenceRef]))
+    )
+      throw new Error('Workspace successor lacks the original native release and terminal fence.');
+  } finally {
+    core.sqlite.close();
+  }
+}
+
 /** Uses the exact current Core opening for receipt inspection and authority. */
 function requireCurrentKernelOpening(owner: OwnedDatabase, openingRequestId: number): CoreDb {
   const db = owner.scopeDb;
@@ -1809,6 +1873,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else if (request.input.kind === 'sandbox-release-refusal') {
         lanes.add(`runtime-target:${request.input.target.targetId}`);
+      } else if (request.input.kind === 'sandbox-release-refusal-handoff') {
+        lanes.add(request.input.ref.execution.executionId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
       break;
     case 'server-work-owner': {
@@ -2896,7 +2962,11 @@ function flush(owner: OwnedDatabase): void {
             }
             for (const inputJson of request.transition.journalIntents ?? []) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-              applyControlExecutionJournal(owner.scopeDb, { kind: 'intent', inputJson });
+              applyControlExecutionJournal(
+                owner.scopeDb,
+                { kind: 'intent', inputJson },
+                requireOriginalWorkspaceTurnOwner
+              );
             }
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -2942,7 +3012,11 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'journal') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            const resultJson = applyControlExecutionJournal(owner.scopeDb, request.input);
+            const resultJson = applyControlExecutionJournal(
+              owner.scopeDb,
+              request.input,
+              requireOriginalWorkspaceTurnOwner
+            );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,

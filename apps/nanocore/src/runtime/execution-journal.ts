@@ -37,6 +37,7 @@ import {
   KernelInputStepSchema,
   SelectedKernelInputSchema,
 } from '../storage/control-kernel-proof-codecs.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import {
@@ -91,6 +92,53 @@ export interface ExecutionCandidate {
   readonly revision: number;
 }
 
+/** Finds the exact retained refusal which revoked this attempt before it could submit. */
+export function readSandboxReleaseRefusalFence(
+  db: CoreDb,
+  bindingRef: string,
+  targetId: string,
+  physicalEpoch: string,
+  attemptId?: string
+): ExecutionCandidate | null {
+  const requestId = commandInputHash([
+    CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+    targetId,
+    physicalEpoch,
+    bindingRef,
+  ]);
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `sandbox-release-refusal:${requestId}`,
+  };
+  if (
+    !db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(execution.executionId)
+  )
+    return null;
+  const ref = { execution, stepId: 'fence' };
+  const root = readRoot(db, execution);
+  const fence = readExecutionJournalInvocation(db, ref);
+  if (
+    root.definitionVersion !== CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION ||
+    root.workId !== bindingRef ||
+    root.fingerprint !== requestId ||
+    fence.carriage.operation !== 'sandbox.release-refusal' ||
+    fence.carriage.requestId !== requestId ||
+    fence.carriage.bindingRef !== bindingRef ||
+    fence.control.attemptId === null ||
+    (attemptId !== undefined && fence.control.attemptId !== attemptId) ||
+    fence.control.target?.targetId !== targetId ||
+    fence.control.target.allocationRef !== bindingRef ||
+    !isDeepStrictEqual(fence.control.physicalFenceRefs, [physicalEpoch]) ||
+    !db.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts
+      WHERE attempt_id = ? AND phase = 'closing' AND deadline IS NULL
+        AND terminal_cause = 'sandbox-release-refusal'`)
+      .get(fence.control.attemptId)
+  )
+    return null;
+  return { ref, revision: root.revision };
+}
+
 /** Pages current draining residents, then addresses their exact originals, including CLOSED roots. */
 export function listExecutionCandidates(
   db: CoreDb,
@@ -101,15 +149,17 @@ export function listExecutionCandidates(
   const rows = (
     after === null
       ? db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
+          .prepare(`SELECT sandbox_binding_ref AS binding, runtime_target_id AS targetId,
+            origin_physical_epoch AS physicalEpoch FROM sandbox_runtime_records
         WHERE drain_state = 'draining' ORDER BY sandbox_binding_ref LIMIT ?`)
           .all(limit)
       : db.sqlite
-          .prepare(`SELECT sandbox_binding_ref AS binding FROM sandbox_runtime_records
+          .prepare(`SELECT sandbox_binding_ref AS binding, runtime_target_id AS targetId,
+            origin_physical_epoch AS physicalEpoch FROM sandbox_runtime_records
         WHERE drain_state = 'draining' AND sandbox_binding_ref > ?
         ORDER BY sandbox_binding_ref LIMIT ?`)
           .all(after, limit)
-  ) as { binding: string }[];
+  ) as { binding: string; targetId: string; physicalEpoch: string }[];
   // Match the Core partial expression index exactly; no backend-history or creator-only lookup.
   const originals = db.sqlite.prepare(`SELECT s.execution_id AS executionId,
     s.step_id AS stepId, r.revision FROM control_execution_steps s
@@ -120,17 +170,22 @@ export function listExecutionCandidates(
       AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
     ORDER BY s.execution_id, s.step_id`);
   return {
-    candidates: rows.flatMap(({ binding }) =>
-      (originals.all(binding) as { executionId: string; stepId: string; revision: number }[]).map(
-        (row) => ({
-          ref: {
-            execution: { owner: { kind: 'server' }, executionId: row.executionId },
-            stepId: row.stepId,
-          },
-          revision: row.revision,
-        })
-      )
-    ),
+    candidates: rows.flatMap(({ binding, targetId, physicalEpoch }) => {
+      const candidates: ExecutionCandidate[] = (
+        originals.all(binding) as { executionId: string; stepId: string; revision: number }[]
+      ).map((row) => ({
+        ref: {
+          execution: { owner: { kind: 'server' }, executionId: row.executionId },
+          stepId: row.stepId,
+        },
+        revision: row.revision,
+      }));
+      if (candidates.length === 0) {
+        const refusal = readSandboxReleaseRefusalFence(db, binding, targetId, physicalEpoch);
+        if (refusal) candidates.push(refusal);
+      }
+      return candidates;
+    }),
     next: rows.length === limit ? rows[rows.length - 1]!.binding : null,
   };
 }
@@ -566,7 +621,8 @@ export function decodeEndedExecutionStep(value: string): EndedExecutionStep {
 /** Applies one existing Workspace journal mutation on the admitted writer, with exact Turn lineage. */
 export function applyControlExecutionJournal(
   db: WorkspaceDb,
-  value: ControlExecutionJournalInput
+  value: ControlExecutionJournalInput,
+  verifyIntent: (db: WorkspaceDb, intent: ExecutionJournalIntent, agentSessionId: string) => void
 ): string {
   if (isMainThread || !db.sqlite.inTransaction)
     throw new Error('Workspace execution mutations require the native writer transaction.');
@@ -594,10 +650,11 @@ export function applyControlExecutionJournal(
     .all(workId) as { id: string }[];
   if (roots.some((root) => root.id !== ref.executionId))
     throw new Error('Workspace execution root conflicts.');
-  if (command.kind === 'intent')
-    return encodeExecutionJournalValue(
-      writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
-    );
+  if (command.kind === 'intent') {
+    const intent = input as ExecutionJournalIntent;
+    verifyIntent(db, intent, record.agentSessionId);
+    return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent));
+  }
   const settlement = input as ExecutionJournalSettlement;
   const ended = settleExecutionJournalStep(db, settlement);
   if (command.consumeIntentJson) {
@@ -1164,6 +1221,23 @@ export function settleExecutionJournalStep(
         )
         .all(input.ref.execution.executionId) as { step_id: string }[]
     ).every((unknown) => {
+      const original = storedStep(db, { execution: input.ref.execution, stepId: unknown.step_id });
+      let originalReleaseRefs = outputRefs;
+      if (
+        stored.root.definitionVersion === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION &&
+        original.control.attemptId !== stored.control.attemptId
+      ) {
+        const prior = db.sqlite
+          .prepare(`SELECT step_id AS id FROM control_execution_steps
+          WHERE execution_id=? AND json_extract(control_json,'$.attemptId')=?
+            AND json_extract(invocation_json,'$.carriage.operation')='worker.release'
+            AND state='completed'`)
+          .all(input.ref.execution.executionId, original.control.attemptId) as { id: string }[];
+        if (prior.length !== 1) return false;
+        const release = storedStep(db, { execution: input.ref.execution, stepId: prior[0]!.id });
+        if (release.control.outputRefs.length !== 1) return false;
+        originalReleaseRefs = [...release.control.outputRefs];
+      }
       const proofs = db.sqlite
         .prepare(
           "SELECT step_id FROM control_execution_steps WHERE execution_id = ? AND inspected_execution_id = ? AND inspected_step_id = ? AND state = 'completed'"
@@ -1175,7 +1249,8 @@ export function settleExecutionJournalStep(
         const observed = storedStep(db, { execution: input.ref.execution, stepId: proof.step_id });
         return (
           observed.control.kind === 'inspect-cleanup' &&
-          isDeepStrictEqual(observed.control.outputRefs, outputRefs)
+          observed.control.attemptId === original.control.attemptId &&
+          isDeepStrictEqual(observed.control.outputRefs, originalReleaseRefs)
         );
       });
     });
