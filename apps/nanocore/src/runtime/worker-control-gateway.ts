@@ -1457,6 +1457,14 @@ export class WorkerControlGateway {
       );
     }
 
+    const matchesOmission = () =>
+      record.event.type === 'observation.recorded' &&
+      this.readObservationOmission?.({
+        lineage: record.lineage,
+        operation: 'event_append',
+        sequence: record.sequence,
+        fingerprint: observationOmissionFingerprint(record),
+      }) === true;
     if (live instanceof WorkerControlGatewayError) {
       if (record.event.type !== 'observation.recorded') throw live;
       const { state: replayState, token } = this.requireFinalStatusSession(input);
@@ -1466,20 +1474,16 @@ export class WorkerControlGateway {
         tokenFamily: 'worker-control',
         sandboxBindingRef: this.requireSandboxBindingRef(replayState),
       });
-      if (
-        binding?.status !== 'accepted' ||
-        !this.readObservationOmission?.({
-          lineage: record.lineage,
-          operation: 'event_append',
-          sequence: record.sequence,
-          fingerprint: observationOmissionFingerprint(record),
-        })
-      )
-        throw live;
+      if (binding?.status !== 'accepted' || !matchesOmission()) throw live;
       input.onAuthenticated?.({ ...replayState.lineage });
       return observationOmissionAck(record.sequence);
     }
 
+    // The retained omission acknowledges the original position even before the stop wakes Core.
+    if (matchesOmission()) {
+      input.recheckAdmission?.();
+      return observationOmissionAck(record.sequence);
+    }
     const state = live;
 
     if (this.publishControlOperation) {
