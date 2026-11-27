@@ -6,7 +6,11 @@ import {
   computeCurrentReadiness,
   createBootReadinessSnapshot,
   createShutdownReadinessSnapshot,
+  isScopeAdmitted,
   refuseScope,
+  scopeAdmissionFailures,
+  settleWorkspaceRecoveryScope,
+  withScopeAdmissionReadiness,
 } from './readiness.js';
 
 describe('boot readiness computation', () => {
@@ -226,5 +230,60 @@ describe('current subsystem readiness', () => {
     expect(duringShutdown.subsystems.scheduler.reasons).toEqual(
       shutdown.subsystems.scheduler.reasons
     );
+  });
+});
+
+describe('Workspace recovery readiness', () => {
+  it('requires the current recovery diagnosis and preserves independent failures', () => {
+    const dataRoot = `recovery-readiness-${randomUUID()}`;
+    const original = { scope: 'workspace', id: 'recovering', check: 'recovery' } as const;
+    const current = { ...original };
+    refuseScope(dataRoot, original);
+    settleWorkspaceRecoveryScope({ dataRoot, failure: original });
+    refuseScope(dataRoot, current);
+    refuseScope(dataRoot, { scope: 'workspace', id: 'sibling', check: 'database' });
+    refuseScope(dataRoot, { scope: 'workspace', id: current.id, check: 'index' });
+
+    for (const failure of [original, { ...current }]) {
+      expect(() => settleWorkspaceRecoveryScope({ dataRoot, failure })).toThrow(
+        expect.objectContaining({ code: 'recovery_required', status: 409 })
+      );
+      expect(isScopeAdmitted(dataRoot, 'workspace', current.id)).toBe(false);
+    }
+    settleWorkspaceRecoveryScope({ dataRoot, failure: current });
+
+    const readiness = computeCurrentReadiness({
+      snapshot: computeBootReadinessSnapshot({ bootId: 'boot_recovery' }),
+      dataRoot,
+      vaultHealth: 'available',
+      llmGatewayAvailable: true,
+    });
+    expect(isScopeAdmitted(dataRoot, 'workspace', current.id)).toBe(true);
+    expect(isScopeAdmitted(dataRoot, 'workspace', 'sibling')).toBe(false);
+    expect(readiness.acceptingProductWork).toBe(true);
+    expect(readiness.subsystems.storage).toMatchObject({
+      state: 'degraded',
+      reasons: [{ code: 'storage.scope-quarantined', blocks: ['workspace:sibling'] }],
+    });
+    expect(readiness.subsystems.knowledgeIndex).toMatchObject({
+      state: 'degraded',
+      reasons: [{ code: 'storage.index-unavailable', blocks: ['workspace:recovering:index'] }],
+    });
+  });
+
+  it('rejects recovery evidence superseded by durable Workspace retirement', () => {
+    const dataRoot = `retirement-readiness-${randomUUID()}`;
+    const failure = { scope: 'workspace', id: 'retiring', check: 'recovery' } as const;
+    const retired = { ...failure, check: 'retired' } as const;
+    refuseScope(dataRoot, failure);
+    refuseScope(dataRoot, retired);
+
+    expect(() => settleWorkspaceRecoveryScope({ dataRoot, failure })).toThrow(
+      expect.objectContaining({ code: 'recovery_required', status: 409 })
+    );
+    expect(scopeAdmissionFailures(dataRoot)).toEqual([retired]);
+    expect(isScopeAdmitted(dataRoot, 'workspace', failure.id)).toBe(false);
+    const snapshot = computeBootReadinessSnapshot({ bootId: 'boot_retirement' });
+    expect(withScopeAdmissionReadiness(snapshot, dataRoot)).toBe(snapshot);
   });
 });
