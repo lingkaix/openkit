@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import { nanoHostSandboxId } from '../runtime/nanohost-capture-anchors.js';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-binding-records.js';
@@ -82,7 +83,40 @@ function requireIdleCaptureAttachment(
     );
   const attempt = requireSchedulerExecutionAttempt(proof.core, anchor.attemptId);
   const target = getNanoHostRuntimeTarget({ sqlite: proof.native }, anchor.runtimeTargetId);
-  const hold = getWorkerStorageBindingForSandbox({ sqlite: proof.native }, anchor);
+  // A later attempt on a reused AgentSession keeps its own binding ref.
+  // The live Harness identifies the resident. Its origin was admitted before any reuse.
+  const resident = proof.native
+    .prepare(
+      `SELECT s.sandbox_binding_ref AS bindingRef, s.sandbox_compatibility_key AS compatibilityKey
+       FROM agent_session_runtime_bindings b
+       JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+       JOIN worker_backend_sessions origin ON origin.sandbox_binding_ref=s.sandbox_binding_ref
+         AND origin.runtime_target_id=s.runtime_target_id
+         AND origin.origin_physical_epoch=s.origin_physical_epoch
+       JOIN worker_backend_sessions captured ON captured.attempt_id=?
+       WHERE b.agent_session_id=? AND b.workspace_id=? AND b.thread_id=?
+         AND s.runtime_target_id=? AND s.origin_physical_epoch=?
+         AND origin.rowid<=captured.rowid`
+    )
+    .get(
+      anchor.attemptId,
+      anchor.agentSessionId,
+      anchor.workspaceId,
+      anchor.threadId,
+      anchor.runtimeTargetId,
+      anchor.originPhysicalEpoch
+    ) as { bindingRef: string; compatibilityKey: string } | undefined;
+  if (!resident || nanoHostSandboxId(resident.compatibilityKey) !== input.identity.sandboxId)
+    throw new WorkspaceCaptureRecoveryRequired(
+      'Idle capture lacks its original attachment generation.'
+    );
+  const hold = getWorkerStorageBindingForSandbox(
+    { sqlite: proof.native },
+    {
+      sandboxBindingRef: resident.bindingRef,
+    }
+  );
   if (
     attempt.phase !== 'closed' ||
     attempt.inputRef !== anchor.packageSnapshotId ||
