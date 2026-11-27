@@ -1733,7 +1733,7 @@ export function applyControlWorkObservation(
     candidate.type === 'turn.reap' &&
     (['pending', 'running'].includes(binding.turn.status) ||
       !binding.turn.completedAt ||
-      candidate.ts !== binding.turn.completedAt ||
+      candidate.ts !== reapCompletionClock(binding.turn.completedAt) ||
       candidate.id !== `turn.reap:${input.turnId}`)
   )
     throw new Error('turn.reap requires the native terminal Turn in the same transition');
@@ -1955,6 +1955,11 @@ export function prepareControlTurnReap(
   return controlTurnReapObservation(input, dependency, String(binding.turn.completedAt));
 }
 
+/** Uses the millisecond UTC clock encoding reserved by the reap byte budget. */
+function reapCompletionClock(completedAt: string): string {
+  return new Date(completedAt).toISOString();
+}
+
 /** The new reap observation of one terminal Turn on its reap dependency. */
 function controlTurnReapObservation(
   input: ControlTurnReapInput,
@@ -1968,7 +1973,7 @@ function controlTurnReapObservation(
     observation: {
       id: `turn.reap:${input.turnId}`,
       type: 'turn.reap',
-      ts: completedAt,
+      ts: reapCompletionClock(completedAt),
       obs: 'nanocore',
       ret: 'turn-evidence',
       payload: {

@@ -824,6 +824,35 @@ describe('native terminal recovery observations', () => {
     expect(() => parsePortableWorkObservations(jsonl, f.owner.turnId)).toThrow(/truncation/);
   });
 
+  it('reaps an exactly fitting call prefix with a long valid completion clock', async () => {
+    const f = await fixture();
+    const request = model(randomUUID(), 'request');
+    const call = { corr: request.corr!, type: request.type, name: null, ts: request.ts };
+    const corr = call.corr + 'x'.repeat(61_440 - Buffer.byteLength(JSON.stringify([call])));
+    const unresolvedCalls = [{ ...call, corr }];
+    expect(Buffer.byteLength(JSON.stringify(unresolvedCalls))).toBe(61_440);
+    await observe(f, { ...request, corr });
+    const original = observationBytes(f);
+    expect(original).toHaveLength(1);
+
+    const longClock = `2026-09-29T00:01:00.${'0'.repeat(5_000)}Z`;
+    await expect(
+      f.store.completeTurn(f.owner.turnId, { status: 'interrupted', completedAt: longClock })
+    ).resolves.toMatchObject({ status: 'interrupted', completedAt: longClock });
+    expect(f.store.getTurnById(f.owner.turnId)).toMatchObject({
+      status: 'interrupted',
+      completedAt: longClock,
+    });
+
+    const bytes = observationBytes(f);
+    expect(bytes).toHaveLength(2);
+    expect(bytes.slice(0, 1)).toEqual(original);
+    const reaps = readWorkObservations(f.db, f.owner).filter((row) => row.type === 'turn.reap');
+    expect(reaps).toHaveLength(1);
+    expect(reaps[0]).toMatchObject({ ts: completedAt, payload: { unresolvedCalls } });
+    expect(Buffer.byteLength(JSON.stringify(reaps[0]))).toBeLessThanOrEqual(65_536);
+  });
+
   it('seals a Turn whose admitted metadata already fills its ordinary byte limit', async () => {
     const f = await fixture();
     await observe(f, model(randomUUID(), 'x'.repeat(60_000)));
