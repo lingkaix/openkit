@@ -298,6 +298,43 @@ describe('Worker Shim contract', () => {
     expect(await shim.keyedTurnInput({ ...next, operationId: 'authorized-next' })).toBe('accepted');
   });
 
+  it('keeps an unsignalled interrupt unknown when a previous Turn used the same request ID', async () => {
+    const shim = fake(session.sandboxIncarnationId);
+    await shim.start(start);
+    await shim.keyedTurnInput(input);
+    const first = {
+      workerId: input.workerId,
+      turnId: input.turnId,
+      attemptId: input.attemptId,
+      requestId: 'reused-interrupt',
+    };
+    const acceptedInput = receipt('input', input, 'accepted');
+    await expectPoll(shim, desired(1, { interrupts: [first] }), {
+      ...runningReport,
+      receipts: [acceptedInput],
+    });
+    shim.observeInterruptSettlement(first);
+
+    const next = { ...input, turnId: 'turn-2', attemptId: 'attempt-2', operationId: 'operation-2' };
+    expect(await shim.keyedTurnInput(next)).toBe('accepted');
+    expect(await shim.stop(start.workerId)).toBe('stopping');
+    const later = { ...first, turnId: next.turnId, attemptId: next.attemptId };
+    const stopping: WorkerShimInventory = {
+      ...runningReport,
+      workers: [{ ...runningWorker, state: 'stopping' }],
+      receipts: [acceptedInput, receipt('input', next, 'accepted')],
+      interrupts: [{ ...first, disposition: 'cancelled' }],
+    };
+    await expectPoll(shim, desired(2, { interrupts: [later] }), stopping);
+
+    shim.observeInterruptSettlement(later);
+    await expectPoll(shim, desired(3), {
+      ...stopping,
+      interrupts: [...stopping.interrupts, { ...later, disposition: 'unknown' }],
+    });
+    expect(shim.interrupted).toEqual([first.requestId]);
+  });
+
   it('blocks fresh action before reconciling a committed cutoff and keeps inactive settlement unknown', async () => {
     const shim = fake(session.sandboxIncarnationId);
     const interrupt = {
