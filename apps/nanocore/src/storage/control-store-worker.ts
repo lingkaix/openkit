@@ -330,7 +330,10 @@ import {
 } from './execution-attempt-native.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
-import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
+import {
+  applyControlHarnessLifecycle,
+  applySandboxReleaseRefusalDrain,
+} from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import {
   applyAppMigrations,
@@ -2058,6 +2061,11 @@ function applyNanoHostOwnerMutation(
         kind: mutation.kind,
         value: applyControlHarnessLifecycle({ sqlite }, mutation.input, { coreDb }),
       }));
+    case 'sandbox-release-refusal-drain':
+      return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => {
+        applySandboxReleaseRefusalDrain({ sqlite }, coreDb, mutation.executionId);
+        return { kind: mutation.kind, value: null };
+      });
     case 'harness-idle-sandbox':
       return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => {
         const value = applyControlHarnessLifecycle({ sqlite }, mutation.input, {
@@ -2268,6 +2276,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       } else if (request.input.kind === 'image-abandon' || request.input.kind === 'image-result') {
         if (!owner.scopeDb) throw new ControlProductPreconditionError();
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
+      } else if (request.input.kind === 'sandbox-release-refusal') {
+        lanes.add(`runtime-target:${request.input.target.targetId}`);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
       break;
     case 'server-work-owner': {
@@ -3687,7 +3697,10 @@ function flush(owner: OwnedDatabase): void {
                         }
                       },
                     });
-                    if (request.input.kind === 'idle-intent') {
+                    if (
+                      request.input.kind === 'idle-intent' ||
+                      request.input.kind === 'sandbox-release-refusal'
+                    ) {
                       return sqlite
                         .transaction(() =>
                           applyControlCoreJournal(

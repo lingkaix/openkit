@@ -24,10 +24,13 @@ import { applyNanoHostWorkerSubmission } from '../storage/nanohost-recovery-nati
 import { readRetainedNanoHostSubmission } from '../storage/nanohost-submitted-lease.js';
 import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
 import {
+  isSandboxReleaseRefusalFenced,
   readCoreHarnessConsumption,
   recordCoreHarnessConsumption,
+  sandboxReleaseRefusalExecutionId,
 } from './core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import { CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION } from './execution-journal.js';
 import { requireHarnessLoginBinding } from './harness-login-authority.js';
 import type { HarnessLoginReplacementRead } from './harness-login-selection.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
@@ -1315,6 +1318,8 @@ export function queueNanoHostHarnessOperation(
 
   try {
     const harness = requireHarness(owner, input.harnessInstanceId);
+    if (isHarnessReleaseRefusalFenced(coreDb, owner, input.harnessInstanceId))
+      throw new Error('NanoHost Harness is not accepting new work.');
     if (!['idle', 'settled'].includes(harness.operation_state)) {
       throw new Error('NanoHost Harness already has an unsettled operation.');
     }
@@ -1388,12 +1393,14 @@ function selectNanoHostHarnessDispatch(
 ): {
   readonly targetId: string;
   readonly physicalEpoch: string;
+  readonly bindingRef: string;
   readonly queuedHarnessId: string | null;
 } {
   requireIdentity(sandboxIntegrationBindingRef, 'Sandbox Integration binding');
   const selected = owner.sqlite
     .prepare(
       `SELECT s.runtime_target_id AS targetId, s.origin_physical_epoch AS physicalEpoch,
+              s.sandbox_binding_ref AS bindingRef,
               (SELECT h.harness_instance_id FROM harness_instance_records h
                WHERE h.sandbox_runtime_id = s.sandbox_runtime_id AND h.operation_state = 'queued'
                ORDER BY h.updated_at, h.harness_instance_id LIMIT 1) AS queuedHarnessId
@@ -1403,6 +1410,7 @@ function selectNanoHostHarnessDispatch(
     | {
         readonly targetId: string;
         readonly physicalEpoch: string;
+        readonly bindingRef: string;
         readonly queuedHarnessId: string | null;
       }
     | undefined;
@@ -1424,7 +1432,17 @@ export function dispatchNanoHostHarnessOperation(
   const owner = admitted?.owner ?? coreDb;
   try {
     const integration = selectNanoHostHarnessDispatch(owner, input.sandboxIntegrationBindingRef);
-    if (integration.queuedHarnessId === null) {
+    if (
+      integration.queuedHarnessId === null ||
+      isSandboxReleaseRefusalFenced(
+        coreDb,
+        sandboxReleaseRefusalExecutionId(
+          integration.targetId,
+          integration.physicalEpoch,
+          integration.bindingRef
+        )
+      )
+    ) {
       return null;
     }
     const harness = requireHarnessForIntegration(
@@ -3061,4 +3079,27 @@ function requireRouteToken(value: string): string {
     throw new Error('NanoHost Harness route token is invalid.');
   }
   return value;
+}
+
+/** Reads the exact Native predecessor identity used by the Core fence. */
+export function isHarnessReleaseRefusalFenced(
+  core: CoreDb,
+  owner: NanoHostHarnessDb,
+  harnessInstanceId: string
+): boolean {
+  const row = owner.sqlite
+    .prepare(`SELECT s.runtime_target_id AS targetId,
+    s.origin_physical_epoch AS physicalEpoch, s.sandbox_binding_ref AS bindingRef
+    FROM sandbox_runtime_records s JOIN harness_instance_records h
+      ON h.sandbox_runtime_id=s.sandbox_runtime_id WHERE h.harness_instance_id=?`)
+    .get(harnessInstanceId) as
+    | { targetId: string; physicalEpoch: string; bindingRef: string }
+    | undefined;
+  return (
+    row !== undefined &&
+    isSandboxReleaseRefusalFenced(
+      core,
+      sandboxReleaseRefusalExecutionId(row.targetId, row.physicalEpoch, row.bindingRef)
+    )
+  );
 }

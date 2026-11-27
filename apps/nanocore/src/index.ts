@@ -528,6 +528,7 @@ const bootResult = await runBootPhases({
             ? provisioned
             : await prepareNanoHostOwner(recoveryCoreDb, { enabled: () => true });
         if (nanoHostStorage.state === 'ready') {
+          await nanoHostStorage.value.owner.releaseRefusal.reconcile();
           const restart = await transitionAdmittedNanoHostRuntimeTarget(nanoHostStorage.value, {
             kind: 'restart',
             observedAt: new Date().toISOString(),

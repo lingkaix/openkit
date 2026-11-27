@@ -12,7 +12,12 @@ afterEach(() => {
 });
 
 import { ensureLayout } from '../storage/fs-layout.js';
-import { acquireDataRootLock, DataRootLockError, dataRootLockPath } from './lock.js';
+import {
+  acquireDataRootLock,
+  DataRootLockError,
+  dataRootLockPath,
+  retainDataRootLock,
+} from './lock.js';
 
 /** Creates an isolated data root for lock tests. */
 function createDataRoot(): string {
@@ -141,6 +146,56 @@ describe('data-root instance lock', () => {
       });
     } finally {
       next.release();
+    }
+  });
+
+  it('keeps a releasing Data Root fenced until both existing retains settle', () => {
+    const dataRoot = createDataRoot();
+    const lock = acquireDataRootLock(dataRoot, { bootId: 'boot_original' });
+    const releaseFirst = retainDataRootLock(lock, dataRoot);
+    const releaseLast = retainDataRootLock(lock, dataRoot);
+    const acquireSuccessor = () =>
+      acquireDataRootLock(dataRoot, { bootId: 'boot_successor' }).release();
+
+    try {
+      expect(releaseFirst).toBeTypeOf('function');
+      expect(releaseLast).toBeTypeOf('function');
+      lock.release();
+
+      const releaseLate = retainDataRootLock(lock, dataRoot);
+      try {
+        expect(releaseLate).toBeNull();
+      } finally {
+        releaseLate?.();
+      }
+      expect(acquireSuccessor).toThrow(DataRootLockError);
+
+      releaseFirst?.();
+      releaseFirst?.();
+      expect(acquireSuccessor).toThrow(DataRootLockError);
+      expect(existsSync(lock.path)).toBe(true);
+
+      releaseLast?.();
+      expect(existsSync(lock.path)).toBe(false);
+      expect(acquireSuccessor).not.toThrow();
+    } finally {
+      releaseFirst?.();
+      releaseLast?.();
+      lock.release();
+    }
+  });
+
+  it('refuses to retain a Data Root lock for a different root', () => {
+    const dataRoot = createDataRoot();
+    const otherRoot = createDataRoot();
+    const lock = acquireDataRootLock(dataRoot, { bootId: 'boot_original' });
+    const releaseOther = retainDataRootLock(lock, otherRoot);
+
+    try {
+      expect(releaseOther).toBeNull();
+    } finally {
+      releaseOther?.();
+      lock.release();
     }
   });
 

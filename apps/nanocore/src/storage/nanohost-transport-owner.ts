@@ -7,6 +7,7 @@ import type {
 } from '../auth/nanohost-transport-codecs.js';
 import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import type { ControlCoreJournalInput } from './core-journal-codecs.js';
 import type { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from './nanohost-epoch-invalidation.js';
 import {
@@ -18,6 +19,17 @@ import type {
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
 import type { StorageResult } from './storage-owner.js';
+
+export interface NanoHostReleaseRefusal {
+  record(
+    input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>
+  ): Promise<void>;
+  reconcile(): Promise<readonly string[]>;
+  withCarriage<Value>(
+    integrationBindingRef: string,
+    handoff: (fenced: boolean) => Value
+  ): Promise<Value>;
+}
 
 /** The private A2 binding keeps all transport reads on its acknowledged NanoHost generation. */
 export interface AdmittedNanoHostTransportStorage {
@@ -31,6 +43,7 @@ export interface AdmittedNanoHostTransportStorage {
     readRuntimeTarget?(
       targetId: string
     ): StorageResult<'nanohost', NanoHostRuntimeTargetRecord | null>;
+    readonly releaseRefusal?: NanoHostReleaseRefusal;
     transport(input: ControlNanoHostTransportInput): Promise<ControlNanoHostTransportResult>;
     harnessLifecycle(
       input: z.output<typeof ControlHarnessLifecycleInputSchema.nanoHostLocal>

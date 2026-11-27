@@ -371,6 +371,8 @@ export interface CreateNanoHostSessionDispatchInput {
   readonly effectHandler?: (request: NanoHostSessionEffectRequest) => Promise<unknown>;
   /** Optional semantic-route handler used by the shared outer session. */
   readonly routeHandler?: (request: NanoHostSessionRouteRequest) => Promise<unknown>;
+  /** Held until the retirement, cold-wake and maintenance-hold consumers are composed. */
+  readonly orderReleaseRefusalRecycle?: true;
   readonly sessionAuthority: NanoHostTransportSessionAuthority;
 }
 
@@ -487,6 +489,12 @@ export interface NanoHostSessionDispatch {
   ): Promise<void>;
   /** Dispatches one existing semantic route on the current generation. */
   route(physicalConnection: object, request: NanoHostSessionRouteRequest): Promise<unknown>;
+  /** Awaits the Core fence and original recycle order on the authenticated Sandbox binding. */
+  assertHarnessHandoff?(physicalConnection: object): void;
+  recordSandboxReleaseRefusal?(
+    physicalConnection: object,
+    integrationBindingRef: string
+  ): Promise<void>;
 }
 
 /** One process-local pending effect owned by the dispatcher. */
@@ -717,6 +725,37 @@ export function createNanoHostSessionDispatch(
   }
 
   return {
+    ...(input.orderReleaseRefusalRecycle
+      ? {
+          async recordSandboxReleaseRefusal(
+            physicalConnection: object,
+            integrationBindingRef: string
+          ) {
+            const readiness = readyPhysicalConnections.get(physicalConnection);
+            if (!readiness) throw new Error('Sandbox release refusal has no Host readiness.');
+            assertCurrentCarriage(physicalConnection, readiness);
+            const { nativeStorage, identityId, deploymentId, targetId } = readiness.runtimeTarget;
+            const owner = nativeStorage?.owner.releaseRefusal;
+            if (!owner) throw new Error('Sandbox release refusal has no admitted Native owner.');
+            await owner.record({
+              kind: 'sandbox-release-refusal',
+              integrationBindingRef,
+              target: {
+                identityId,
+                deploymentId,
+                targetId,
+                connectionGeneration: readiness.connectionGeneration,
+                physicalEpoch: readiness.physicalEpoch,
+              },
+            });
+          },
+        }
+      : {}),
+    assertHarnessHandoff(physicalConnection) {
+      const readiness = readyPhysicalConnections.get(physicalConnection);
+      if (!readiness) throw effectTransportError(409, 'NanoHost Harness readiness is unavailable.');
+      assertCurrentCarriage(physicalConnection, readiness);
+    },
     supportsHarnessLogin: () => harnessLoginHandler !== undefined,
     bindHarnessLogin(handler) {
       if (harnessLoginHandler || typeof handler !== 'function')
@@ -1506,7 +1545,12 @@ export function createNanoHostSessionDispatch(
         physicalEpoch,
         runtimeTarget,
       };
-      if (native) requireCurrentReadiness(acceptedReadiness);
+      if (native) {
+        requireCurrentReadiness(acceptedReadiness);
+        await native.owner.releaseRefusal?.reconcile();
+        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+        requireCurrentReadiness(acceptedReadiness);
+      }
       readyPhysicalConnections.set(physicalConnection, acceptedReadiness);
       currentReadiness = acceptedReadiness;
     },
@@ -2510,11 +2554,30 @@ export function registerNanoHostSessionSemanticRoutes(
           if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
-          requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
+          const recordRefusal = input.dispatch.recordSandboxReleaseRefusal;
+          try {
+            requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
+          } catch (error) {
+            if (recordRefusal && error instanceof WorkerReleaseIncompatibleError) {
+              try {
+                await recordRefusal(physicalConnection, sandboxIntegrationBindingRef);
+              } catch {
+                throw effectTransportError(503, 'NanoHost Sandbox release refusal is unavailable.');
+              }
+            }
+            throw error;
+          }
           if (input.nativeStorage && !nativeHarness)
             throw effectTransportError(503, 'NanoHost Harness deciding storage is unavailable.');
-          const incoming = (context.env as { incoming?: import('node:http2').Http2ServerRequest })
-            ?.incoming;
+          const adapter = context.env as {
+            incoming?: import('node:http2').Http2ServerRequest;
+            outgoing?: import('node:http2').Http2ServerResponse;
+          };
+          const { incoming, outgoing } = adapter;
+          const refusal =
+            input.nativeStorage?.state === 'ready'
+              ? input.nativeStorage.value.owner.releaseRefusal
+              : undefined;
           const cancelled = () =>
             request.signal.aborted ||
             incoming?.aborted ||
@@ -2548,6 +2611,12 @@ export function registerNanoHostSessionSemanticRoutes(
           }
           await checkHarnessCarriage();
           if (cancelled()) return context.body(null, 204);
+          if (
+            delivery &&
+            refusal &&
+            (await refusal.withCarriage(sandboxIntegrationBindingRef, (fenced) => fenced))
+          )
+            return context.body(null, 204);
           const dispatchStarted = performance.now();
           let command =
             delivery?.command ??
@@ -2578,81 +2647,93 @@ export function registerNanoHostSessionSemanticRoutes(
           if (cancelled() || !(await pendingDelivery(command, request.signal)))
             return context.body(null, 204);
           await checkHarnessCarriage();
-          if (cancelled() || (delivery && deliveries.get(command.harnessInstanceId) !== delivery))
-            return context.body(null, 204);
-          const wire = JSON.stringify(command);
-          if (delivery && delivery.wire !== wire)
-            throw new Error('NanoHost Harness repeated carriage changed its exact command.');
-          const encodedAt = performance.now();
-          if (!delivery && progress?.get(command.harnessInstanceId) === command.sequence) {
-            const selected = command;
-            const releaseTimer = setTimeout(() => {
-              const current = deliveries.get(selected.harnessInstanceId);
-              if (current?.command.operationId === selected.operationId) releaseDelivery(current);
-            }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
-            releaseTimer.unref();
-            delivery = {
-              command,
-              wire,
-              integrationBindingRef: sandboxIntegrationBindingRef,
-              releaseTimer,
-              carriage: 0,
-            };
-            deliveries.set(command.harnessInstanceId, delivery);
-          }
-          if (delivery?.proofTimer) clearTimeout(delivery.proofTimer);
-          if (delivery) {
-            delete delivery.proofTimer;
-            delete delivery.proofExpiresAt;
-          }
-          const selectedDelivery = delivery;
-          const carriage = delivery ? ++delivery.carriage : 0;
-          const selected = command;
-          try {
-            console.error(
-              JSON.stringify({
-                event: 'worker.harness.dispatched',
-                harnessInstanceId: command.harnessInstanceId,
-                operationId: command.operationId,
-                operation: command.operation,
-                sequence: command.sequence,
-                bodyBytes: Buffer.byteLength(wire),
-                redelivered: carriage > 1,
-                dispatchMs: Math.round(committedAt - dispatchStarted),
-                bindingMs: Math.round(boundAt - committedAt),
-                encodingMs: Math.round(encodedAt - boundAt),
-                at: new Date().toISOString(),
-              })
-            );
-          } catch {
-            /* Diagnostic sink failure has no execution authority. */
-          }
-          observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
-            if (!selectedDelivery) {
-              void failDelivery(selected);
-              return;
+          const handed = command;
+          const handoff = (fenced: boolean): Response => {
+            if (fenced) return context.body(null, 204);
+            if (cancelled() || (delivery && deliveries.get(handed.harnessInstanceId) !== delivery))
+              return context.body(null, 204);
+            if (refusal) input.dispatch.assertHarnessHandoff?.(physicalConnection);
+            const wire = JSON.stringify(handed);
+            if (delivery && delivery.wire !== wire)
+              throw new Error('NanoHost Harness repeated carriage changed its exact handed.');
+            const encodedAt = performance.now();
+            if (!delivery && progress?.get(handed.harnessInstanceId) === handed.sequence) {
+              const selected = handed;
+              const releaseTimer = setTimeout(() => {
+                const current = deliveries.get(selected.harnessInstanceId);
+                if (current?.command.operationId === selected.operationId) releaseDelivery(current);
+              }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
+              releaseTimer.unref();
+              delivery = {
+                command: handed,
+                wire,
+                integrationBindingRef: sandboxIntegrationBindingRef,
+                releaseTimer,
+                carriage: 0,
+              };
+              deliveries.set(handed.harnessInstanceId, delivery);
             }
-            const isCurrentCarriage = () =>
-              deliveries.get(selected.harnessInstanceId) === selectedDelivery &&
-              selectedDelivery.carriage === carriage;
-            if (!isCurrentCarriage() || selectedDelivery.proofExpiresAt !== undefined) return;
-            selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
-            selectedDelivery.proofTimer = setTimeout(
-              () => void failDelivery(selected),
-              HARNESS_DELIVERY_PROOF_MS
-            );
-            selectedDelivery.proofTimer.unref();
-            void pendingDelivery(selected).then(
-              (pending) => {
-                if (!pending && isCurrentCarriage()) releaseDelivery(selectedDelivery);
-              },
-              () => {
-                // An exact refusal still settles the live waiter through its existing owner.
-                if (isCurrentCarriage()) void failDelivery(selected);
+            if (delivery?.proofTimer) clearTimeout(delivery.proofTimer);
+            if (delivery) {
+              delete delivery.proofTimer;
+              delete delivery.proofExpiresAt;
+            }
+            const selectedDelivery = delivery;
+            const carriage = delivery ? ++delivery.carriage : 0;
+            const selected = handed;
+            try {
+              console.error(
+                JSON.stringify({
+                  event: 'worker.harness.dispatched',
+                  harnessInstanceId: handed.harnessInstanceId,
+                  operationId: handed.operationId,
+                  operation: handed.operation,
+                  sequence: handed.sequence,
+                  bodyBytes: Buffer.byteLength(wire),
+                  redelivered: carriage > 1,
+                  dispatchMs: Math.round(committedAt - dispatchStarted),
+                  bindingMs: Math.round(boundAt - committedAt),
+                  encodingMs: Math.round(encodedAt - boundAt),
+                  at: new Date().toISOString(),
+                })
+              );
+            } catch {
+              /* Diagnostic sink failure has no execution authority. */
+            }
+            observeHarnessResponse(context, handed, { receivedAt, committedAt }, () => {
+              if (!selectedDelivery) {
+                void failDelivery(selected);
+                return;
               }
-            );
-          });
-          return context.body(wire, 200, { 'content-type': 'application/json' });
+              const isCurrentCarriage = () =>
+                deliveries.get(selected.harnessInstanceId) === selectedDelivery &&
+                selectedDelivery.carriage === carriage;
+              if (!isCurrentCarriage() || selectedDelivery.proofExpiresAt !== undefined) return;
+              selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
+              selectedDelivery.proofTimer = setTimeout(
+                () => void failDelivery(selected),
+                HARNESS_DELIVERY_PROOF_MS
+              );
+              selectedDelivery.proofTimer.unref();
+              void pendingDelivery(selected).then(
+                (pending) => {
+                  if (!pending && isCurrentCarriage()) releaseDelivery(selectedDelivery);
+                },
+                () => {
+                  // An exact refusal still settles the live waiter through its existing owner.
+                  if (isCurrentCarriage()) void failDelivery(selected);
+                }
+              );
+            });
+            if (!refusal || !outgoing)
+              return context.body(wire, 200, { 'content-type': 'application/json' });
+            outgoing.writeHead(200, { 'content-type': 'application/json' });
+            outgoing.end(wire);
+            return RESPONSE_ALREADY_SENT;
+          };
+          return refusal
+            ? await refusal.withCarriage(sandboxIntegrationBindingRef, handoff)
+            : handoff(false);
         }
         const result = HarnessResultEnvelopeReaderSchema.parse(value);
         if (input.nativeStorage && !nativeHarness)
