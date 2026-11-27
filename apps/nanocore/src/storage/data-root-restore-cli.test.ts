@@ -4,7 +4,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -90,6 +92,37 @@ describe('data-root restore operator cli', () => {
       )
     ).rejects.toThrow('Refusing to restore while NanoCore appears to be running');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a dangling NanoCore lock entry before creating restore staging',
+    async () => {
+      const { backupRoot, dataRoot, seal } = restoreFixture();
+      seal('drb_0190f4c8-0000-7000-8000-000000000010');
+      const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
+      const currentPath = join(dataRoot, 'current.txt');
+      const stagingParent = join(dirname(dataRoot), 'staging');
+      mkdirSync(dirname(lockPath), { recursive: true });
+      symlinkSync('missing-holder', lockPath);
+      writeFileSync(currentPath, 'current bytes\n');
+
+      await expect(
+        runDataRootRestoreCli(
+          [
+            '--backup-root',
+            backupRoot,
+            '--data-root',
+            dataRoot,
+            '--staging-root',
+            join(stagingParent, 'restore'),
+          ],
+          () => {}
+        )
+      ).rejects.toThrow('Refusing to restore while NanoCore appears to be running');
+      expect(existsSync(stagingParent)).toBe(false);
+      expect(readlinkSync(lockPath)).toBe('missing-holder');
+      expect(readFileSync(currentPath, 'utf8')).toBe('current bytes\n');
+    }
+  );
 
   it('restores one verified backup and prints a redacted summary', async () => {
     const { backupRoot, dataRoot, seal } = restoreFixture();

@@ -48,6 +48,7 @@ export function startSchedulerAttemptMaintenanceService(
     throw new Error('Attempt maintenance interval must be positive.');
   let stopped = false;
   let active: Promise<void> | null = null;
+  let timerObserving = false;
   const runOnce = (): Promise<void> => {
     if (stopped) return Promise.resolve();
     if (active) return active;
@@ -77,12 +78,18 @@ export function startSchedulerAttemptMaintenanceService(
     active = operation;
     void operation
       .finally(() => {
-        if (active === operation) active = null;
+        if (active === operation) {
+          active = null;
+          timerObserving = false;
+        }
       })
       .catch(() => {});
     return operation;
   };
   const tick = () => {
+    // A tick can join a direct pass, but only one tick owns its failure report.
+    if (stopped || timerObserving) return;
+    timerObserving = true;
     void runOnce().catch((error) => {
       // The native owner already identified this held attempt; the next ordinary tick still retries it.
       if (error instanceof SchedulerAttemptMaintenanceFailure && error.expectedFenceOnly) return;

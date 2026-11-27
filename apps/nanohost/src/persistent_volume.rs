@@ -396,6 +396,7 @@ impl PersistentVolumeStore {
             || metadata.attachment.as_ref().is_some_and(|attachment| {
                 attachment.generation != request.attachment_generation
                     || attachment.sandbox_id != sandbox_id
+                    || metadata.layout_digest != request.layout_digest
             })
         {
             return Err("persistent storage identity conflict");
@@ -3209,6 +3210,97 @@ pub(crate) mod tests {
         );
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir(root).unwrap();
+    }
+
+    fn assert_reconnect_refuses_layout_change(change_target: bool) {
+        let root = temporary_root();
+        let store = test_store(&root);
+        let (association, volume) = stored_association(&store, "storage-one", "sandbox-one", 3);
+        let mut metadata = store.read_metadata(&association).unwrap();
+        let former_target = StorageTargetBinding {
+            target: "/former-workspace".into(),
+            volume_ref: "former-volume".into(),
+        };
+        let former_volume = store.volume_path(&association, &former_target.volume_ref);
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&former_volume)
+            .unwrap();
+        metadata.targets.insert(
+            0,
+            StoredTarget {
+                extensions: serde_json::Map::new(),
+                target: former_target.target.clone(),
+                volume_ref: former_target.volume_ref.clone(),
+                initialized: true,
+            },
+        );
+        store.write_metadata(&association, &metadata).unwrap();
+        let path = association.join(METADATA_NAME);
+        let original_metadata = fs::read(&path).unwrap();
+        fs::write(volume.join("retained.txt"), b"current work").unwrap();
+        fs::write(former_volume.join("retained.txt"), b"former work").unwrap();
+        drop(store);
+
+        let mut reopened = test_store(&root);
+        let layout = stored_layout();
+        let request = StorageAttachmentRequest {
+            storage_ref: metadata.storage_ref,
+            scope_digest: metadata.scope_digest,
+            attachment_generation: 3,
+            layout_digest: layout.layout_digest(),
+            targets: vec![StorageTargetBinding {
+                target: "/workspace".into(),
+                volume_ref: "storage-one-volume".into(),
+            }],
+        };
+        let mounts = reopened.attach("sandbox-one", &request, &layout).unwrap();
+        assert_eq!(mounts[0].source, volume);
+
+        let mut changed_layout = layout;
+        let mut changed_request = request;
+        let expected_volume = if change_target {
+            changed_layout.targets = vec![former_target.target.clone()];
+            changed_request.targets = vec![former_target];
+            &former_volume
+        } else {
+            changed_layout.working_directory = "/workspace".into();
+            &volume
+        };
+        changed_request.layout_digest = changed_layout.layout_digest();
+        assert_eq!(
+            reopened.attach("sandbox-one", &changed_request, &changed_layout),
+            Err("persistent storage identity conflict")
+        );
+        assert_eq!(fs::read(&path).unwrap(), original_metadata);
+
+        reopened
+            .release_writer(&crate::epoch_coordinator::WriterAbsenceProof::fixture(
+                Some("sandbox-one"),
+            ))
+            .unwrap();
+        changed_request.attachment_generation = 4;
+        let successor = reopened.attach("sandbox-next", &changed_request, &changed_layout);
+        assert_eq!(&successor.unwrap()[0].source, expected_volume);
+        assert_eq!(
+            fs::read(volume.join("retained.txt")).unwrap(),
+            b"current work"
+        );
+        assert_eq!(
+            fs::read(former_volume.join("retained.txt")).unwrap(),
+            b"former work"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_reconnect_refuses_changed_working_directory() {
+        assert_reconnect_refuses_layout_change(false);
+    }
+
+    #[test]
+    fn live_reconnect_refuses_a_different_retained_target() {
+        assert_reconnect_refuses_layout_change(true);
     }
 
     #[test]

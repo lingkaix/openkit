@@ -907,12 +907,14 @@ const nanoHostHarnessTurnInput = ControlHarnessLifecycleInputSchema.refine(
         | 'operation.queue'
         | 'operation.dispatch'
         | 'operation.settle'
+        | 'session-binding.open'
         | 'harness.claim-idle-capture-drain';
     }
   > =>
     input.kind === 'operation.queue' ||
     input.kind === 'operation.dispatch' ||
     input.kind === 'operation.settle' ||
+    input.kind === 'session-binding.open' ||
     input.kind === 'harness.claim-idle-capture-drain'
 );
 
@@ -950,6 +952,11 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('harness-turn-lifecycle'),
     input: nanoHostHarnessTurnInput,
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+  z.strictObject({
+    kind: z.literal('sandbox-release-refusal-drain'),
+    executionId: z.string().regex(/^sandbox-release-refusal:sha256:[a-f0-9]{64}$/),
     coreIdentity: z.string().regex(/^\d+:\d+$/),
   }),
   z.strictObject({
@@ -1012,6 +1019,11 @@ export type NanoHostOwnerMutation =
       readonly coreIdentity: string;
     }
   | {
+      readonly kind: 'sandbox-release-refusal-drain';
+      readonly executionId: string;
+      readonly coreIdentity: string;
+    }
+  | {
       readonly kind: 'harness-idle-sandbox';
       readonly input: z.output<typeof nanoHostIdleSandboxInput>;
       readonly coreIdentity: string;
@@ -1067,6 +1079,7 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('harness-turn-lifecycle'),
     value: ControlHarnessLifecycleResultSchema,
   }),
+  z.strictObject({ kind: z.literal('sandbox-release-refusal-drain'), value: z.null() }),
   z.strictObject({ kind: z.literal('harness-idle-sandbox'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('prepared-image-result'), value: z.null() }),

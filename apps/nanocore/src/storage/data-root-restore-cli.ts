@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 
+import { dataRootLockPath } from '../bootstrap/lock.js';
 import { restoreDataRootBackup } from './data-root-backup.js';
-import { resolveDataRootPath } from './fs-layout.js';
 
 /** Parsed arguments for the stopped-server data-root restore CLI. */
 export interface DataRootRestoreCliArgs {
@@ -56,9 +56,9 @@ export async function runDataRootRestoreCli(
   write: (line: string) => void = (line) => process.stdout.write(line)
 ): Promise<DataRootRestoreCliSummary> {
   const args = parseDataRootRestoreArgs(argv);
-  const lockPath = resolveDataRootPath(args.dataRoot, 'server', 'runtime', 'nanocore.lock');
+  const lockPath = dataRootLockPath(args.dataRoot);
 
-  if (existsSync(lockPath)) {
+  if (lstatSync(lockPath, { throwIfNoEntry: false })) {
     throw new Error(`Refusing to restore while NanoCore appears to be running: ${lockPath}`);
   }
 

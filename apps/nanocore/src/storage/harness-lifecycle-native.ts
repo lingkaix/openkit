@@ -1,5 +1,6 @@
 import { readRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
+import { readSandboxReleaseRefusalOrder } from '../runtime/core-journal-records.js';
 import { nonClosedSandboxAttempts } from '../runtime/idle-cleanup-records.js';
 import {
   nanoHostSandboxId,
@@ -113,6 +114,11 @@ export function applyControlHarnessLifecycle(
         records.fenceNanoHostSandboxRuntime(owner, presentControlFacts(input));
         return null;
       case 'session-binding.open':
+        if (
+          admitted &&
+          records.isHarnessReleaseRefusalFenced(admitted.coreDb, owner, input.harnessInstanceId)
+        )
+          throw new Error('NanoHost Harness is not accepting new work.');
         records.openNanoHostAgentSessionBinding(owner, presentControlFacts(input));
         return null;
       case 'measured-identity.copy':
@@ -512,4 +518,57 @@ function publishRuntimeCheckVersion(
       input.expectedVersionsJson
     );
   if (changed.changes !== 1) throw new Error('Credential replacement lineage changed.');
+}
+
+/** Finishes the exact Core order inside the Native writer. The parent alone is not proof. */
+export function applySandboxReleaseRefusalDrain(
+  owner: { readonly sqlite: Database.Database },
+  core: CoreDb,
+  executionId: string
+): void {
+  assertControlProductWriter(owner.sqlite);
+  owner.sqlite
+    .transaction(() => {
+      const refuse = (): never => {
+        throw new ControlProductPreconditionError();
+      };
+      const order = readSandboxReleaseRefusalOrder(core, executionId) ?? refuse();
+      const target = getNanoHostRuntimeTarget(owner, order.targetId);
+      if (
+        !target?.ready ||
+        !target.predecessorFenced ||
+        !target.freshEmpty ||
+        target.physicalEpoch !== order.physicalEpoch
+      )
+        refuse();
+      const parent = owner.sqlite.prepare(`SELECT lifecycle_state AS lifecycle,
+      health_state AS health, drain_state AS drain, cleanup_state AS cleanup
+      FROM sandbox_runtime_records WHERE sandbox_runtime_id=? AND sandbox_binding_ref=?
+        AND runtime_target_id=? AND origin_physical_epoch=?`);
+      const read = () =>
+        parent.get(order.runtimeId, order.bindingRef, order.targetId, order.physicalEpoch) as
+          | { lifecycle: string; health: string; drain: string; cleanup: string }
+          | undefined;
+      const resident = read();
+      if (
+        !resident ||
+        resident.lifecycle !== 'open' ||
+        resident.health !== 'ready' ||
+        resident.cleanup !== 'clean'
+      )
+        refuse();
+      const incomplete = () =>
+        owner.sqlite
+          .prepare(`SELECT 1 FROM harness_instance_records
+      WHERE sandbox_runtime_id=? AND (lifecycle_state <> 'failed' OR drain_state <> 'draining')
+      LIMIT 1`)
+          .get(order.runtimeId) !== undefined;
+      if (resident?.drain === 'draining' && !incomplete()) return;
+      records.drainNanoHostSandboxAdmission(owner, {
+        sandboxBindingRef: order.bindingRef,
+        originPhysicalEpoch: order.physicalEpoch,
+      });
+      if (read()?.drain !== 'draining' || incomplete()) refuse();
+    })
+    .immediate();
 }

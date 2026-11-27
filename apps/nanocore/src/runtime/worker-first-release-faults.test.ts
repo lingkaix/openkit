@@ -1,9 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
@@ -35,6 +37,8 @@ import {
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
+  mutateAdmittedTestNanoHost,
+  openAdmittedTestNanoHost,
   readAdmittedTestNanoHost,
   testNanoHostRecoveryJoins,
 } from '../test-support/admitted-nanohost.js';
@@ -231,11 +235,14 @@ async function faultFixture({
   alignFixtureWall = false,
   heartbeatClock,
   schedulerFault,
+  orderReleaseRefusalRecycle = false,
 }: {
   alignFixtureWall?: boolean;
   heartbeatClock?: () => string;
   schedulerFault?: Promise<never>;
+  orderReleaseRefusalRecycle?: boolean;
 } = {}) {
+  if (orderReleaseRefusalRecycle) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-first-release-fault-'));
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
@@ -310,6 +317,7 @@ async function faultFixture({
   const app = new Hono<{ Variables: AuthVariables }>();
   registerWorkerControlRoutes({ app, coreDb, workerControlGateway: gateway });
   const dispatchedCommands: { operationId: string; operation: string; sequence: number }[] = [];
+  let beforeHarnessCarriage: (() => Promise<void>) | undefined;
   registerNanoHostSessionSemanticRoutes({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     app,
@@ -321,6 +329,7 @@ async function faultFixture({
       coreDb,
       nativeStorage: nanoHostStorage,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      ...(orderReleaseRefusalRecycle ? { orderReleaseRefusalRecycle: true } : {}),
       sessionAuthority: authority,
     }),
     harnessCommandDispatched: async (command) => {
@@ -340,6 +349,11 @@ async function faultFixture({
           operation: accepted.operation,
           sequence: accepted.sequence,
         });
+      if (beforeHarnessCarriage) {
+        const wait = beforeHarnessCarriage;
+        beforeHarnessCarriage = undefined;
+        await wait();
+      }
       return accepted;
     },
     harnessResultSettled: runtime.acceptNanoHostHarnessResult,
@@ -347,6 +361,7 @@ async function faultFixture({
   });
   let admitted = false;
   let dropNextPoll = false;
+  let droppedStatus = 200;
   let resetNextPoll = false;
   let finishNextPoll = false;
   let finishedResetStream: import('node:http2').ClientHttp2Stream | undefined;
@@ -409,14 +424,16 @@ async function faultFixture({
       }
       // Capture only the actual committed wire body. The finished case uses unmodified native end().
       response.end = ((body: string) => {
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(droppedStatus);
         droppedWire = body;
-        droppedCommand = JSON.parse(body) as NanoHostHarnessCommand;
-        expect(dispatchedCommands).toContainEqual({
-          operationId: droppedCommand.operationId,
-          operation: droppedCommand.operation,
-          sequence: droppedCommand.sequence,
-        });
+        if (droppedStatus === 200) {
+          droppedCommand = JSON.parse(body) as NanoHostHarnessCommand;
+          expect(dispatchedCommands).toContainEqual({
+            operationId: droppedCommand.operationId,
+            operation: droppedCommand.operation,
+            sequence: droppedCommand.sequence,
+          });
+        }
         if (finishBeforeReset) {
           // The peer cancels after commit, before Core can process RST. Native end() still finishes the local write.
           finishedResetStream!.close(constants.NGHTTP2_CANCEL);
@@ -435,9 +452,17 @@ async function faultFixture({
   const client = connect(`http://127.0.0.1:${address.port}`);
 
   /** Posts on the real authenticated native H2 route; a reset without headers is the injected lost response. */
-  const post = async (path: string, body: unknown, signal?: AbortSignal) => {
-    const integration = effects.find((effect) => effect.kind === 'bridge.open')?.input
-      .sandboxIntegrationBindingRef;
+  const post = async (
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+    integrationOverride?: string | null
+  ) => {
+    const integration =
+      integrationOverride === undefined
+        ? effects.find((effect) => effect.kind === 'bridge.open')?.input
+            .sandboxIntegrationBindingRef
+        : integrationOverride;
     const resetFinishedResponse = finishNextPoll && path === '/worker-control/harness/poll';
     const stream = client.request({
       ':method': 'POST',
@@ -691,6 +716,13 @@ async function faultFixture({
     store,
     requestId,
     schedulerClaim: () => originalClaim!,
+    nativeOwner: nanoHostStorage.value.owner,
+    integration: () => {
+      const value = effects.find((effect) => effect.kind === 'bridge.open')?.input
+        .sandboxIntegrationBindingRef;
+      if (typeof value !== 'string') throw new Error('Fixture Integration binding is missing.');
+      return value;
+    },
     turnExecutor: runtime.turnExecutor,
     interrupt: (turnId: string) => runtime.turnExecutor.interruptTurn!(store, turnId),
     retireEpoch: async () => {
@@ -736,8 +768,15 @@ async function faultFixture({
     },
     close,
     isSettled: () => settled,
-    loseNextPoll: (reset = false, finished = false) => {
+    holdNextHarnessCarriage: (entered: () => void, release: Promise<void>) => {
+      beforeHarnessCarriage = () => {
+        entered();
+        return release;
+      };
+    },
+    loseNextPoll: (reset = false, finished = false, status = 200) => {
       dropNextPoll = true;
+      droppedStatus = status;
       resetNextPoll = reset;
       finishNextPoll = finished;
       if (finished)
@@ -2562,4 +2601,579 @@ it('refuses incompatible bound polls before readiness or session material, then 
     await f.running.catch(() => undefined);
     await f.close();
   }
+});
+
+const releaseRefusalPoll = '/worker-control/harness/poll';
+const mismatchedBuild = {
+  schemaVersion: 2,
+  releaseIdentity: { sourceCommit: 'b'.repeat(40), releaseTag: null },
+};
+
+function reopenReleaseRefusal(coreDb: ReturnType<typeof openCoreDb>) {
+  const observed = execFileSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '--eval',
+      `import Database from 'better-sqlite3';
+         import { openCoreReadDb, serverStoragePath } from ${JSON.stringify(new URL('../storage/db.ts', import.meta.url).href)};
+         import { readExecutionJournalInvocation, readExecutionJournalRoot } from ${JSON.stringify(
+           new URL('./execution-journal.ts', import.meta.url).href
+         )};
+         const db = openCoreReadDb(process.argv[1]);
+         const native = new Database(serverStoragePath(process.argv[1], 'nanohost'), {
+           readonly: true, fileMustExist: true,
+         });
+         try {
+           const rows = db.sqlite.prepare(\`
+             SELECT id FROM control_executions
+             WHERE definition_version = 'core-sandbox-release-refusal/v1'
+           \`).all();
+           console.log(JSON.stringify(rows.map(({ id }) => {
+             const execution = { owner: { kind: 'server' }, executionId: id };
+             const root = readExecutionJournalRoot(db, execution);
+             const step = readExecutionJournalInvocation(db, { execution, stepId: 'fence' });
+             const binding = step.carriage.bindingRef;
+             const resident = native.prepare(
+               'SELECT drain_state AS drain FROM sandbox_runtime_records WHERE sandbox_binding_ref=?'
+             ).get(binding);
+             return { binding, state: step.state, phase: root.phase, drain: resident?.drain };
+           })));
+         } finally { native.close(); db.sqlite.close(); }`,
+      coreDb.dataRoot,
+    ],
+    {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      encoding: 'utf8',
+      timeout: 15_000,
+    }
+  );
+  return JSON.parse(observed);
+}
+
+/** End the fixture's original result budget after the refusal observations. */
+async function closeReleaseRefusalFixture(f: Awaited<ReturnType<typeof faultFixture>>) {
+  await vi.advanceTimersByTimeAsync(harnessRecords.NANO_HOST_HARNESS_RESULT_BUDGET_MS);
+  await f.close();
+}
+
+it('records one bound release refusal and leaves a foreign Sandbox untouched', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  try {
+    await f.waitQueued('session.open');
+    const binding = onNative(f.coreDb, (owner) =>
+      getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+    )!.sandboxBindingRef;
+    mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(`INSERT INTO sandbox_runtime_records (
+      sandbox_runtime_id, runtime_target_id, origin_physical_epoch,
+      sandbox_binding_ref, sandbox_integration_binding_ref, sandbox_compatibility_key,
+      image_digest, environment_class, max_open_sessions, max_harnesses, max_active_turns,
+      lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
+    ) SELECT 'other-sandbox', runtime_target_id, ?,
+      'other-binding', 'other-integration', sandbox_compatibility_key, image_digest,
+      environment_class, max_open_sessions, max_harnesses, max_active_turns,
+      lifecycle_state, health_state, drain_state, cleanup_state, created_at, updated_at
+      FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`)
+        .run('c'.repeat(64), binding)
+    );
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild, undefined, null)).status).toBe(409);
+    expect(
+      (await f.post(releaseRefusalPoll, mismatchedBuild, undefined, 'other-integration')).status
+    ).toBe(503);
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([]);
+
+    const refused = await f.post(releaseRefusalPoll, mismatchedBuild);
+    expect(refused.status).toBe(409);
+    expect(JSON.parse(refused.body)).toMatchObject({ code: 'worker_release_incompatible' });
+    expect(f.dispatchedCommands).toEqual([]);
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+      { binding, state: 'intent', phase: 'open', drain: 'draining' },
+    ]);
+    const integration = f.effects.find((effect) => effect.kind === 'bridge.open')?.input
+      .sandboxIntegrationBindingRef;
+    if (typeof integration !== 'string') throw new Error('Fixture Integration binding is missing.');
+    await expect(
+      f.nativeOwner.harnessTurnLifecycle.dispatch({ sandboxIntegrationBindingRef: integration })
+    ).resolves.toBeNull();
+    expect(
+      onNative(f.coreDb, ({ sqlite }) =>
+        sqlite
+          .prepare(`SELECT drain_state FROM sandbox_runtime_records
+      WHERE sandbox_runtime_id = 'other-sandbox'`)
+          .get()
+      )
+    ).toEqual({ drain_state: 'accepting' });
+    expect(f.effects.filter(({ kind }) => kind === 'sandbox.delete')).toEqual([]);
+  } finally {
+    mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(`DELETE FROM sandbox_runtime_records
+      WHERE sandbox_runtime_id = 'other-sandbox'`)
+        .run()
+    );
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('deduplicates racing bound refusals and fences a compatible poll already in carriage', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let compatible: ReturnType<typeof f.poll> | undefined;
+  try {
+    await f.waitQueued('session.open');
+    f.holdNextHarnessCarriage(entered.resolve, release.promise);
+    compatible = f.poll();
+    await entered.promise;
+    const refusals = await Promise.all([
+      f.post(releaseRefusalPoll, mismatchedBuild),
+      f.post(releaseRefusalPoll, mismatchedBuild),
+    ]);
+    for (const refused of refusals) {
+      expect(refused.status).toBe(409);
+      expect(JSON.parse(refused.body)).toMatchObject({ code: 'worker_release_incompatible' });
+    }
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+    expect(reopenReleaseRefusal(f.coreDb)).toHaveLength(1);
+    release.resolve();
+    const crossed = await compatible;
+    expect(crossed.status).toBe(204);
+    expect(crossed.body).toBe('');
+    expect(await f.poll()).toEqual({ status: 204, body: '' });
+  } finally {
+    release.resolve();
+    await compatible?.catch(() => undefined);
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('reopens the bound release refusal only after its full Core commit if the 409 reply is lost', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  try {
+    await f.waitQueued('session.open');
+    const binding = onNative(f.coreDb, (owner) =>
+      getWorkerBackendSession(owner, testEntityId('attempt', 'fault-lease'))
+    )!.sandboxBindingRef;
+    f.coreDb.sqlite.exec(`CREATE TRIGGER test_refusal_precommit BEFORE INSERT ON control_execution_steps
+      WHEN json_extract(NEW.invocation_json, '$.carriage.operation') = 'sandbox.release-refusal'
+      BEGIN SELECT RAISE(ABORT, 'test refusal before commit'); END`);
+    try {
+      expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(503);
+      expect(reopenReleaseRefusal(f.coreDb)).toEqual([]);
+      expect(
+        onNative(f.coreDb, ({ sqlite }) =>
+          sqlite
+            .prepare(`SELECT drain_state FROM sandbox_runtime_records
+        WHERE sandbox_binding_ref = ?`)
+            .get(binding)
+        )
+      ).toEqual({ drain_state: 'accepting' });
+      expect(f.dispatchedCommands).toEqual([]);
+      expect(f.effects.filter(({ kind }) => kind === 'sandbox.delete')).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.exec('DROP TRIGGER test_refusal_precommit');
+    }
+
+    f.loseNextPoll(false, false, 409);
+    expect(await f.post(releaseRefusalPoll, mismatchedBuild)).toEqual({
+      status: undefined,
+      body: '',
+    });
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+      { binding, state: 'intent', phase: 'open', drain: 'draining' },
+    ]);
+    expect(f.dispatchedCommands).toEqual([]);
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+    expect(reopenReleaseRefusal(f.coreDb)).toHaveLength(1);
+  } finally {
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('fences cached redelivery after a Core-only release refusal and preserves its first send', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let redelivery: ReturnType<typeof f.poll> | undefined;
+  try {
+    await f.waitQueued('session.open');
+    const progress = onNative(f.coreDb, ({ sqlite }) => sqlite.prepare(`
+      SELECT h.harness_instance_id AS harnessInstanceId, h.operation_sequence AS nextSequence
+      FROM harness_instance_records h JOIN sandbox_runtime_records s USING (sandbox_runtime_id)
+      WHERE s.sandbox_integration_binding_ref=? AND h.operation_state='queued'
+    `).all(f.integration()) as { harnessInstanceId: string; nextSequence: number }[]);
+    expect(progress).toHaveLength(1);
+    const first = await f.poll(progress);
+    expect(first.status).toBe(200);
+    expect(JSON.parse(first.body)).toMatchObject({ operation: 'session.open' });
+    f.holdNextHarnessCarriage(entered.resolve, release.promise);
+    redelivery = f.poll(progress);
+    await Promise.race([
+      entered.promise,
+      redelivery.then(() => { throw new Error('Cached redelivery missed the handoff barrier.'); }),
+    ]);
+    const cut = cutRefusalRequest(nativeRefusalPost, async () => {
+      throw new Error('Stopped after Core and before Native drain.');
+    });
+    try {
+      expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(503);
+      expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+        { binding: expect.any(String), state: 'intent', phase: 'open', drain: 'accepting' },
+      ]);
+      release.resolve();
+      expect(await redelivery).toEqual({ status: 204, body: '' });
+      expect(f.dispatchedCommands).toHaveLength(1);
+    } finally {
+      cut.mockRestore();
+    }
+  } finally {
+    release.resolve();
+    await redelivery?.catch(() => undefined);
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+type RefusalTestRequest = {
+  operation: string;
+  input?: { kind?: string };
+  mutation?: { kind: string };
+};
+
+/** Cuts receipt delivery without substituting the deciding worker. */
+function cutRefusalRequest(
+  match: (request: RefusalTestRequest) => boolean,
+  cut: (post: () => Promise<unknown>) => Promise<unknown>
+) {
+  const client = getControlStoreWorkerClient() as unknown as {
+    request(request: RefusalTestRequest, ...args: unknown[]): Promise<unknown>;
+  };
+  const request = client.request.bind(client);
+  const spy = vi.spyOn(client, 'request').mockImplementation((input, ...args) => {
+    const post = () => request(input, ...args);
+    return match(input) ? cut(post) : post();
+  });
+  return spy;
+}
+
+const coreRefusalPost = (request: RefusalTestRequest) =>
+  request.operation === 'core-journal' && request.input?.kind === 'sandbox-release-refusal';
+const nativeRefusalPost = (request: RefusalTestRequest) =>
+  request.operation === 'nanohost-owner' &&
+  request.mutation?.kind === 'sandbox-release-refusal-drain';
+
+function releaseRefusalNativeState(f: { coreDb: CoreDb; integration(): string }) {
+  return onNative(f.coreDb, ({ sqlite }) =>
+    sqlite
+      .prepare(`SELECT s.drain_state AS drain,
+    h.drain_state AS harnessDrain, h.lifecycle_state AS harnessLife
+    FROM sandbox_runtime_records s JOIN harness_instance_records h USING (sandbox_runtime_id)
+    WHERE s.sandbox_integration_binding_ref=? ORDER BY h.harness_instance_id`)
+      .all(f.integration())
+  );
+}
+
+function refuseNativeDrain(f: Awaited<ReturnType<typeof faultFixture>>) {
+  mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+    sqlite.exec(`
+    CREATE TRIGGER release_refusal_cut BEFORE UPDATE OF drain_state ON harness_instance_records
+    WHEN NEW.drain_state='draining' AND NEW.lifecycle_state='failed'
+    BEGIN SELECT RAISE(ABORT, 'Native refused Harness drain'); END
+  `)
+  );
+  return () =>
+    mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite.exec('DROP TRIGGER release_refusal_cut')
+    );
+}
+
+async function bootRefusalFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-release-refusal-boot-'));
+  const coreDb = openCoreDb(root);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  const {
+    value: { owner },
+  } = await openAdmittedTestNanoHost(coreDb);
+  const target = {
+    targetId: 'refusal-boot-host',
+    deploymentId: 'refusal-deployment',
+    identityId: 'refusal-boot-host',
+    physicalEpoch: DIGEST,
+    connectionGeneration: 1,
+  };
+  await transitionTestNativeRuntimeTargetFields('allocate', coreDb, { ...target, observedAt: NOW });
+  await transitionTestNativeRuntimeTargetFields('ready', coreDb, {
+    ...target,
+    observedAt: NOW,
+    predecessorFenced: true,
+    ready: true,
+    freshEmpty: true,
+  });
+  const createRuntime = (key: string) =>
+    harnessRecords.createNanoHostHarnessRuntime(owner, {
+      adapterId: 'codex',
+      adapterVersion: 'fixture',
+      harnessBindingRef: `harness-binding-${key}`,
+      harnessCompatibilityKey: DIGEST,
+      harnessInstanceId: `harness-${key}`,
+      imageDigest: `sha256:${DIGEST}`,
+      originPhysicalEpoch: DIGEST,
+      runtimeTargetId: target.targetId,
+      sandboxBindingRef: `sandbox-binding-${key}`,
+      sandboxCompatibilityKey: DIGEST,
+      sandboxIntegrationBindingRef: `integration-${key}`,
+      sandboxRuntimeId: `sandbox-${key}`,
+      timestamp: NOW,
+    });
+  await createRuntime('original');
+  await createRuntime('sibling');
+  const integration = () => 'integration-original';
+  const record = () =>
+    owner.releaseRefusal.record({
+      kind: 'sandbox-release-refusal',
+      target,
+      integrationBindingRef: integration(),
+    });
+  const reopen = async () => {
+    await shutdownControlStoreWorkerClient();
+    const storage = await openAdmittedTestNanoHost(coreDb);
+    return storage.value.owner;
+  };
+  return { coreDb, owner, integration, record, reopen };
+}
+
+it('resumes a Core-only release refusal on admitted Boot without another poll', async () => {
+  const f = await bootRefusalFixture();
+  const before = releaseRefusalNativeState(f);
+  const cut = cutRefusalRequest(coreRefusalPost, async (post) => {
+    await post();
+    throw new Error('Core refusal committed but its reply was lost.');
+  });
+  try {
+    await expect(f.record()).rejects.toThrow('reply was lost');
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+      { binding: 'sandbox-binding-original', state: 'intent', phase: 'open', drain: 'accepting' },
+    ]);
+    expect(releaseRefusalNativeState(f)).toEqual(before);
+  } finally {
+    cut.mockRestore();
+  }
+  const owner = await f.reopen();
+  expect(await owner.releaseRefusal.reconcile()).toHaveLength(1);
+  expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+    { binding: 'sandbox-binding-original', state: 'intent', phase: 'open', drain: 'draining' },
+  ]);
+  expect(releaseRefusalNativeState(f)).toEqual(
+    before.map(() => ({ drain: 'draining', harnessDrain: 'draining', harnessLife: 'failed' }))
+  );
+});
+
+it.each([false, true])(
+  'keeps release refusal at 503 when the Native child rolls back (parent already drained: %s)',
+  async (parentDrained) => {
+    const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+    try {
+      await f.waitQueued('session.open');
+      const restore = refuseNativeDrain(f);
+      try {
+        expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(503);
+        if (parentDrained) {
+          mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+            sqlite
+              .prepare(
+                "UPDATE sandbox_runtime_records SET drain_state='draining' WHERE sandbox_integration_binding_ref=?"
+              )
+              .run(f.integration())
+          );
+        }
+        expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(503);
+        expect(await f.nativeOwner.releaseRefusal.reconcile()).toEqual([]);
+        expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+          {
+            binding: expect.any(String),
+            state: 'intent',
+            phase: 'open',
+            drain: parentDrained ? 'draining' : 'accepting',
+          },
+        ]);
+        expect(
+          releaseRefusalNativeState(f).every(
+            (row) => (row as { harnessDrain: string }).harnessDrain === 'accepting'
+          )
+        ).toBe(true);
+        expect(await f.poll()).toEqual({ status: 204, body: '' });
+        if (!parentDrained) {
+          const { harnessInstanceId, workspaceId } = onNative(f.coreDb, ({ sqlite }) =>
+            sqlite.prepare(`SELECT h.harness_instance_id AS harnessInstanceId, b.workspace_id AS workspaceId
+              FROM harness_instance_records h JOIN agent_session_runtime_bindings b USING (harness_instance_id)
+              JOIN sandbox_runtime_records s USING (sandbox_runtime_id)
+              WHERE s.sandbox_integration_binding_ref=?`).get(f.integration()) as {
+                harnessInstanceId: string;
+                workspaceId: string;
+              }
+          );
+          const nextSession = testEntityId('as', 'release-refusal-next-session');
+          await expect(f.nativeOwner.harnessLifecycle({
+            kind: 'session-binding.open',
+            harnessInstanceId,
+            workspaceId,
+            threadId: testEntityId('th', 'release-refusal-next-thread'),
+            agentSessionId: nextSession,
+            agentSessionRuntimeBindingId: 'release-refusal-next-binding',
+            agentSessionCompatibilityKey: DIGEST,
+            effectiveSetupGeneration: 1,
+            timestamp: new Date().toISOString(),
+          })).rejects.toThrow('not accepting new work');
+          expect(onNative(f.coreDb, ({ sqlite }) =>
+            sqlite.prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id=?')
+              .get(nextSession)
+          )).toBeUndefined();
+        }
+      } finally {
+        restore();
+      }
+      expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+      expect(releaseRefusalNativeState(f)).toEqual([
+        { drain: 'draining', harnessDrain: 'draining', harnessLife: 'failed' },
+      ]);
+      expect(f.effects.filter(({ kind }) => kind === 'sandbox.delete')).toEqual([]);
+    } finally {
+      await closeReleaseRefusalFixture(f);
+    }
+  }
+);
+
+it('rejoins the same release refusal after the Native drain ACK is lost', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  try {
+    await f.waitQueued('session.open');
+    const cut = cutRefusalRequest(nativeRefusalPost, async (post) => {
+      await post();
+      throw new Error('Native refusal drain committed but its reply was lost.');
+    });
+    try {
+      expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(503);
+      expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+        { binding: expect.any(String), state: 'intent', phase: 'open', drain: 'draining' },
+      ]);
+    } finally {
+      cut.mockRestore();
+    }
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+    expect(reopenReleaseRefusal(f.coreDb)).toHaveLength(1);
+    expect(f.effects.filter(({ kind }) => kind === 'sandbox.delete')).toEqual([]);
+  } finally {
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('lets an ordinary drain dispatch without assigning it a release refusal', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  try {
+    await f.waitQueued('session.open');
+    mutateAdmittedTestNanoHost(f.coreDb, (sqlite) =>
+      sqlite
+        .prepare(
+          "UPDATE sandbox_runtime_records SET drain_state='draining' WHERE sandbox_integration_binding_ref=?"
+        )
+        .run(f.integration())
+    );
+    expect(
+      await f.nativeOwner.harnessTurnLifecycle.dispatch({
+        sandboxIntegrationBindingRef: f.integration(),
+      })
+    ).toMatchObject({ operation: 'session.open' });
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([]);
+  } finally {
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('holds compatible carriage while an original Core refusal post is unresolved', async () => {
+  const f = await faultFixture({ orderReleaseRefusalRecycle: true });
+  const begun = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const abort = new AbortController();
+  let pending: ReturnType<typeof f.post> | undefined;
+  const cut = cutRefusalRequest(coreRefusalPost, async (post) => {
+    begun.resolve();
+    await resume.promise;
+    return post();
+  });
+  try {
+    await f.waitQueued('session.open');
+    pending = f.post(releaseRefusalPoll, mismatchedBuild, abort.signal);
+    await begun.promise;
+    abort.abort(new Error('Caller stopped waiting for its original refusal'));
+    await expect(pending).rejects.toThrow('Caller stopped waiting');
+    expect(reopenReleaseRefusal(f.coreDb)).toEqual([]);
+    expect(await f.poll()).toEqual({ status: 204, body: '' });
+    expect(f.dispatchedCommands).toEqual([]);
+    resume.resolve();
+    cut.mockRestore();
+    expect((await f.post(releaseRefusalPoll, mismatchedBuild)).status).toBe(409);
+    expect(reopenReleaseRefusal(f.coreDb)).toHaveLength(1);
+  } finally {
+    resume.resolve();
+    cut.mockRestore();
+    await pending?.catch(() => undefined);
+    await closeReleaseRefusalFixture(f);
+  }
+});
+
+it('keeps the original release refusal held when its resident has disappeared', async () => {
+  const f = await bootRefusalFixture();
+  const cut = cutRefusalRequest(nativeRefusalPost, async () => {
+    throw new Error('Stopped before posting Native drain.');
+  });
+  try {
+    await expect(f.record()).rejects.toThrow('Stopped before posting Native drain');
+  } finally {
+    cut.mockRestore();
+  }
+  mutateAdmittedTestNanoHost(f.coreDb, (sqlite) => {
+    sqlite
+      .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref=?')
+      .run(f.integration());
+  });
+  const owner = await f.reopen();
+  expect(await owner.releaseRefusal.reconcile()).toEqual([]);
+  expect(reopenReleaseRefusal(f.coreDb)).toEqual([
+    { binding: 'sandbox-binding-original', state: 'intent', phase: 'open' },
+  ]);
+  expect(releaseRefusalNativeState({ ...f, integration: () => 'integration-sibling' })).toEqual([
+    { drain: 'accepting', harnessDrain: 'accepting', harnessLife: 'open' },
+  ]);
+});
+
+it('does not drain from a conflicting release refusal step under the original root', async () => {
+  const f = await bootRefusalFixture();
+  const cut = cutRefusalRequest(nativeRefusalPost, async () => {
+    throw new Error('Stopped before posting Native drain.');
+  });
+  try {
+    await expect(f.record()).rejects.toThrow('Stopped before posting Native drain');
+  } finally {
+    cut.mockRestore();
+  }
+  f.coreDb.sqlite.exec(`
+    DROP TRIGGER control_execution_steps_settle_once;
+    UPDATE control_execution_steps
+    SET invocation_json = json_replace(invocation_json, '$.carriage.operation', 'sandbox.other')
+    WHERE step_id='fence'
+      AND json_extract(invocation_json, '$.carriage.operation')='sandbox.release-refusal';
+  `);
+  const owner = await f.reopen();
+  expect(await owner.releaseRefusal.reconcile()).toEqual([]);
+  expect(releaseRefusalNativeState(f)).toEqual([
+    { drain: 'accepting', harnessDrain: 'accepting', harnessLife: 'open' },
+  ]);
 });

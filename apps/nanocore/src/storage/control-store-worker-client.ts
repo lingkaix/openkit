@@ -174,6 +174,11 @@ import {
   restoreControlCapabilityFailure,
 } from '../operation-error.js';
 import {
+  isSandboxReleaseRefusalFenced,
+  listSandboxReleaseRefusalOrders,
+  sandboxReleaseRefusalExecutionId,
+} from '../runtime/core-journal-records.js';
+import {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
 } from '../runtime/execution-attempt-records.js';
@@ -746,6 +751,7 @@ export interface NanoHostOwnerBinding
     input: Extract<NanoHostOwnerMutation, { kind: 'harness-lifecycle' }>['input']
   ): Promise<void>;
   readonly harnessTurnLifecycle: AdmittedNanoHostHarnessTurnLifecycle;
+  readonly releaseRefusal: import('./nanohost-transport-owner.js').NanoHostReleaseRefusal;
   readonly writeIdleHarnessDrain: WriteNanoHostIdleSandboxLifecycle;
   readonly releaseIdleSandboxStorage: WriteNanoHostStorageRelease;
   releaseTerminalScopes(attemptId: string, fenceRef: string): Promise<void>;
@@ -3436,6 +3442,7 @@ class ControlStoreWorkerClient {
           mutation.kind === 'backend-session' ||
           mutation.kind === 'harness-lifecycle' ||
           mutation.kind === 'harness-turn-lifecycle' ||
+          mutation.kind === 'sandbox-release-refusal-drain' ||
           mutation.kind === 'harness-idle-sandbox' ||
           mutation.kind === 'recovery-classification' ||
           mutation.kind === 'worker-image' ||
@@ -4009,6 +4016,76 @@ class ControlStoreWorkerClient {
             (await write({ kind: 'harness-turn-lifecycle', input: original, coreIdentity })).value
         );
       };
+      const readRefusalCore = <Value>(identity: string, read: (db: CoreDb) => Value): Value => {
+        const reader = openCoreReadDb(root);
+        try {
+          if (readPhysicalDatabaseIdentity(reader.sqlite.name).identity !== identity)
+            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+          return read(reader);
+        } finally {
+          reader.sqlite.close();
+        }
+      };
+
+      const finishReleaseRefusal = (executionId: string) =>
+        withCoreHold(async (coreIdentity) => {
+          await write({ kind: 'sandbox-release-refusal-drain', executionId, coreIdentity });
+        });
+      const releaseRefusal: NanoHostOwnerBinding['releaseRefusal'] = {
+        record: async (input) => {
+          const original = structuredClone(input);
+          const executionId = await withNativeReadForCore(async (core, _, ownerIdentity) => {
+            const reply = await this.request({
+              operation: 'core-journal',
+              database: core.command.database,
+              input: original,
+              nanoHostOwnerIdentity: ownerIdentity,
+            });
+            if (reply.operation !== 'core-journal' || !reply.result)
+              throw new ControlStoreWorkerError('integrity', 'unknown');
+            return reply.result;
+          });
+          await finishReleaseRefusal(executionId);
+        },
+        reconcile: async () => {
+          const orders = await withCoreHold(async (identity) =>
+            readRefusalCore(identity, listSandboxReleaseRefusalOrders)
+          );
+          const completed: string[] = [];
+          for (const executionId of orders) {
+            try {
+              await finishReleaseRefusal(executionId);
+              completed.push(executionId);
+            } catch (error) {
+              if (!(error instanceof ControlStoreWorkerError)) throw error;
+              // An unresolved order continues fencing only its original binding.
+            }
+          }
+          return completed;
+        },
+        withCarriage: (integrationBindingRef, handoff) =>
+          withCoreHold(async (identity) => {
+            const resident = readCurrent(
+              (sqlite) =>
+                sqlite
+                  .prepare(`SELECT runtime_target_id AS targetId, origin_physical_epoch AS epoch,
+                sandbox_binding_ref AS bindingRef FROM sandbox_runtime_records
+                WHERE sandbox_integration_binding_ref=?`)
+                  .get(integrationBindingRef) as
+                  | { targetId: string; epoch: string; bindingRef: string }
+                  | undefined
+            );
+            if (!resident) return handoff(true);
+            const executionId = sandboxReleaseRefusalExecutionId(
+              resident.targetId,
+              resident.epoch,
+              resident.bindingRef
+            );
+            return readRefusalCore(identity, (db) =>
+              handoff(isSandboxReleaseRefusalFenced(db, executionId))
+            );
+          }),
+      };
       const writeStorageAttachment: WriteNanoHostStorageAttachment = (input, authority) => {
         const original = structuredClone(input);
         const { attemptId, verifyBeforePost } = authority;
@@ -4244,6 +4321,7 @@ class ControlStoreWorkerClient {
           readRuntimeTarget,
           firstSubmission,
           harnessTurnLifecycle,
+          releaseRefusal,
           writeIdleHarnessDrain: async (input, authority) => {
             const original = structuredClone(input);
             const placement = structuredClone(authority);
@@ -4290,7 +4368,8 @@ class ControlStoreWorkerClient {
           },
           workerControlFinalStatus,
           harnessLifecycle: async (input) => {
-            await write({ kind: 'harness-lifecycle', input });
+            if (input.kind === 'session-binding.open') await writeHarnessTurn(input);
+            else await write({ kind: 'harness-lifecycle', input });
           },
           workerImage: async (input) => {
             await write({ kind: 'worker-image', input });
@@ -7869,6 +7948,7 @@ class ControlStoreWorkerClient {
         input.kind !== 'image-intent' &&
         input.kind !== 'image-result' &&
         input.kind !== 'image-abandon' &&
+        input.kind !== 'sandbox-release-refusal' &&
         opening?.command.dataRoot
       ) {
         // These references address immutable originals, not caller-selected effect scopes.

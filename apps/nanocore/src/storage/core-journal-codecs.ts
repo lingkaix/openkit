@@ -312,6 +312,21 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('image-abandon'), ref: stepRef, accepted: z.boolean() }).strict(),
   z
     .object({
+      kind: z.literal('sandbox-release-refusal'),
+      integrationBindingRef: text.max(512),
+      target: z
+        .object({
+          targetId: text,
+          identityId: text,
+          deploymentId: text,
+          connectionGeneration: z.number().int().positive().safe(),
+          physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/u),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('idle-intent'),
       intentJson: text,
       processWitness: text,

@@ -11,6 +11,7 @@ import {
 import type { CoreDb } from '../storage/db.js';
 import {
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+  CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
   type CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
@@ -31,12 +32,13 @@ import type {
 export function localCoreJournalIntent(input: {
   definitionVersion:
     | typeof CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
+    | typeof CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION
     | typeof CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION;
   executionId: string;
   stepId: string;
   workId: string;
   fingerprint: string;
-  kind: 'admit' | 'consume-receipt' | 'inspect-cleanup';
+  kind: 'admit' | 'consume-receipt' | 'fence' | 'inspect-cleanup';
   actorId: string;
   inputRefs: readonly string[];
   authorityRefs: readonly string[];
@@ -465,4 +467,76 @@ export function abandonCoreImageJournal(
       ? [`native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`]
       : [],
   });
+}
+
+/** One exact predecessor occurrence shared by Core admission and its Native consumer. */
+export function sandboxReleaseRefusalExecutionId(
+  targetId: string,
+  physicalEpoch: string,
+  bindingRef: string
+): string {
+  return `sandbox-release-refusal:${commandInputHash([
+    CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION,
+    targetId,
+    physicalEpoch,
+    bindingRef,
+  ])}`;
+}
+
+/** Presence fences the exact binding even if a corrupted order cannot authorize its drain. */
+export function isSandboxReleaseRefusalFenced(db: CoreDb, executionId: string): boolean {
+  return (
+    db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id=?').get(executionId) !== undefined
+  );
+}
+
+/** A successor must never consume a root ID alone. Recompute the identity from the complete intent. */
+export function readSandboxReleaseRefusalOrder(db: CoreDb, executionId: string) {
+  if (!isSandboxReleaseRefusalFenced(db, executionId)) return null;
+  const execution = { owner: { kind: 'server' as const }, executionId };
+  const root = readExecutionJournalRoot(db, execution);
+  const step = readExecutionJournalInvocation(db, { execution, stepId: 'fence' });
+  const { control, carriage } = step;
+  const targetId = control.target?.targetId;
+  const physicalEpoch = control.physicalFenceRefs[0];
+  const runtimeId = control.authorityRefs[0];
+  const bindingRef = carriage.bindingRef;
+  const requestId = executionId.slice('sandbox-release-refusal:'.length);
+  if (
+    !targetId ||
+    !physicalEpoch ||
+    !runtimeId ||
+    !bindingRef ||
+    sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, bindingRef) !== executionId ||
+    root.phase !== 'open' ||
+    root.definitionVersion !== CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION ||
+    root.fingerprint !== requestId ||
+    root.workId !== bindingRef ||
+    step.state !== 'intent' ||
+    control.kind !== 'fence' ||
+    control.definitionVersion !== root.definitionVersion ||
+    control.target?.backendKind !== 'openshell' ||
+    control.target.allocationRef !== bindingRef ||
+    control.workId !== bindingRef ||
+    control.operationId !== requestId ||
+    control.fingerprint !== requestId ||
+    control.invocationId !== `${executionId}:fence` ||
+    control.authorityRefs.length !== 1 ||
+    control.physicalFenceRefs.length !== 1 ||
+    carriage.operation !== 'sandbox.release-refusal' ||
+    carriage.requestId !== requestId ||
+    carriage.sequence !== null
+  )
+    throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
+  return { executionId, targetId, physicalEpoch, bindingRef, runtimeId };
+}
+
+/** Boot uses the durable intent itself when the original Worker cannot retry the handoff. */
+export function listSandboxReleaseRefusalOrders(db: CoreDb): string[] {
+  return db.sqlite
+    .prepare(
+      "SELECT id FROM control_executions WHERE definition_version=? AND phase='open' ORDER BY id"
+    )
+    .pluck()
+    .all(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION) as string[];
 }

@@ -79,6 +79,38 @@ it('removes cancelled queued starts without launching and leaves the current sta
   expect(launch).not.toHaveBeenCalled();
 });
 
+it('returns the handed-off slot without launching an interrupted queued Turn', async () => {
+  const admission = new NativeStartupAdmission(1);
+  const firstEntered = gate();
+  const firstAccepted = gate();
+  const held = admission.run(() => {
+    firstEntered.resolve();
+    return firstAccepted.promise;
+  });
+  await firstEntered.promise;
+
+  const controller = new AbortController();
+  const reason = new Error('Turn interrupted during startup handoff');
+  const interruptedStart = vi.fn(async () => 'interrupted start');
+  const nextStart = vi.fn(async () => 'next start');
+  const interrupted = admission.run(interruptedStart, controller.signal);
+  const next = admission.run(nextStart);
+  const results = Promise.allSettled([interrupted, next]);
+
+  firstAccepted.resolve();
+  // The prior start returns its slot before this continuation. The dequeued start resumes after it.
+  await Promise.resolve();
+  controller.abort(reason);
+
+  await held;
+  const [interruptedResult, nextResult] = await results;
+  expect(interruptedResult.status).toBe('rejected');
+  if (interruptedResult.status === 'rejected') expect(interruptedResult.reason).toBe(reason);
+  expect(interruptedStart).not.toHaveBeenCalled();
+  expect(nextResult).toEqual({ status: 'fulfilled', value: 'next start' });
+  expect(nextStart).toHaveBeenCalledOnce();
+});
+
 it('leaves the queue without launching when the enclosing Turn deadline cancels it', async () => {
   vi.useFakeTimers();
   const admission = new NativeStartupAdmission(1);
