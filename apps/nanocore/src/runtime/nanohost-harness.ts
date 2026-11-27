@@ -203,11 +203,12 @@ export async function dispatchNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: Parameters<typeof Records.dispatchNanoHostHarnessOperation>[1]
 ): Promise<Records.NanoHostHarnessCommand | null> {
-  const { sandboxIntegrationBindingRef, now } = input;
+  const { sandboxIntegrationBindingRef, sandboxBindingRef, now } = input;
   const { client, database } = await harnessWriter(coreDb);
   return (await client.harnessLifecycle(database, {
     kind: 'operation.dispatch',
     sandboxIntegrationBindingRef,
+    ...(sandboxBindingRef === undefined ? {} : { sandboxBindingRef }),
     ...(now ? { observedAt: now() } : {}),
   })) as Records.NanoHostHarnessCommand | null;
 }

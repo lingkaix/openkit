@@ -5537,6 +5537,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const result = session.sharedHarness.sandbox.bridgeOpen
       ? { accepted: true, integrationReady: true, state: 'open' }
       : await this.effect(session.identity, session.attemptId, 'bridge.open', {
+          sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
           sandboxIntegrationBindingRef: session.sharedHarness.sandbox.sandboxIntegrationBindingRef,
         });
     if (result.accepted !== true || result.integrationReady !== true || result.state !== 'open') {

@@ -91,6 +91,7 @@ const ENTRY_KIND_HEADER: &str = "x-openkit-entry-kind";
 const EXECUTABLE_HEADER: &str = "x-openkit-executable";
 const SHA256_HEADER: &str = "x-openkit-sha256";
 const BYTE_LENGTH_HEADER: &str = "x-openkit-byte-length";
+const SANDBOX_BINDING_HEADER: &str = "x-openkit-sandbox-binding";
 const SANDBOX_INTEGRATION_BINDING_HEADER: &str = "x-openkit-integration-binding";
 const HARNESS_POLL_PATH: &str = "/worker-control/harness/poll";
 const HARNESS_RESULT_PATH: &str = "/worker-control/harness/result";
@@ -152,6 +153,7 @@ impl OuterRouteProjection {
         request: Request<h2::RecvStream>,
         mut respond: SendResponse<Bytes>,
         sandbox_integration_binding_ref: &str,
+        sandbox_binding_ref: &str,
     ) -> Result<bool, &'static str> {
         // Closed labels and stream identity only: never log URI queries, headers or bodies.
         let route = match request.uri().path() {
@@ -201,12 +203,13 @@ impl OuterRouteProjection {
             return Err("sandbox route path rejected");
         }
         let private_harness_route = path == HARNESS_POLL_PATH || path == HARNESS_RESULT_PATH;
-        if private_harness_route
-            && (request.headers().contains_key(http::header::AUTHORIZATION)
-                || request
-                    .headers()
-                    .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
-                || request.headers().contains_key("x-openkit-harness-binding"))
+        if request.headers().contains_key(SANDBOX_BINDING_HEADER)
+            || (private_harness_route
+                && (request.headers().contains_key(http::header::AUTHORIZATION)
+                    || request
+                        .headers()
+                        .contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+                    || request.headers().contains_key("x-openkit-harness-binding")))
         {
             send_nested_status(&mut respond, StatusCode::BAD_REQUEST)?;
             return Err("sandbox Harness route supplied a forbidden header");
@@ -251,6 +254,11 @@ impl OuterRouteProjection {
             let binding = http::HeaderValue::from_str(sandbox_integration_binding_ref)
                 .map_err(|_| "Harness binding header invalid")?;
             builder = builder.header(SANDBOX_INTEGRATION_BINDING_HEADER, binding);
+        }
+        if path == HARNESS_POLL_PATH {
+            let binding = http::HeaderValue::from_str(sandbox_binding_ref)
+                .map_err(|_| "Sandbox bridge binding header invalid")?;
+            builder = builder.header(SANDBOX_BINDING_HEADER, binding);
         }
         let outer_request = builder
             .body(())
@@ -388,12 +396,22 @@ fn send_nested_status(
         .map_err(|_| "nested route response failed")
 }
 
+/// With no whitespace or comma, a private binding survives header parsing byte-for-byte.
+pub(crate) fn valid_sandbox_bridge_binding(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 512
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b',')
+}
+
 /// Recognizes the known Integration-scoped poll eligible for the readiness latch.
 fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     if method != Method::POST
         || path != HARNESS_POLL_PATH
         || headers.contains_key(http::header::AUTHORIZATION)
         || headers.contains_key(SANDBOX_INTEGRATION_BINDING_HEADER)
+        || headers.contains_key(SANDBOX_BINDING_HEADER)
         || headers.contains_key("x-openkit-harness-binding")
     {
         return false;
@@ -2272,7 +2290,9 @@ async fn poll_effect_command_once(
                 "requestId",
                 "sandboxId",
             ],
-            RuntimeEffectKind::OpenBridge => &["requestId", "sandboxIntegrationBindingRef"],
+            RuntimeEffectKind::OpenBridge => {
+                &["requestId", "sandboxBindingRef", "sandboxIntegrationBindingRef"]
+            }
             RuntimeEffectKind::AcquireImage => &[
                 "backendSessionId",
                 "imageReference",
@@ -2325,7 +2345,11 @@ async fn poll_effect_command_once(
             return Err(terminal("effect command contains forbidden field"));
         }
         if kind == RuntimeEffectKind::OpenBridge
-            && (object.len() != 2
+            && (object.len() != 3
+                || !object
+                    .get("sandboxBindingRef")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(valid_sandbox_bridge_binding)
                 || !object
                     .get("sandboxIntegrationBindingRef")
                     .and_then(serde_json::Value::as_str)
@@ -3599,7 +3623,11 @@ mod tests {
                 .enumerate()
                 .find(|(_, (path, _, _))| path.rsplit('/').next() == Some(operation))
                 .unwrap();
-            for extra in [false, true] {
+            let bridge = *kind == RuntimeEffectKind::OpenBridge;
+            for (extra, legacy_bridge) in [(false, false), (true, false), (false, true)] {
+                if legacy_bridge && !bridge {
+                    continue;
+                }
                 let mut command = fixture["command"].clone();
                 let dockerfile = fixture["input"]["dockerfile"]
                     .as_str()
@@ -3611,6 +3639,9 @@ mod tests {
                         .as_object_mut()
                         .unwrap()
                         .insert("futureAuthority".into(), serde_json::json!(true));
+                }
+                if legacy_bridge {
+                    command.as_object_mut().unwrap().remove("sandboxBindingRef");
                 }
                 let (client_io, server_io) = tokio::io::duplex(65536);
                 let raw_import = *kind == RuntimeEffectKind::ImportReference && !extra;
@@ -3696,10 +3727,10 @@ mod tests {
                     std::env::temp_dir().as_path(),
                 )
                 .await;
-                if extra && !additive_collect {
+                if legacy_bridge || (extra && !additive_collect) {
                     assert!(
                         result.is_err(),
-                        "{operation} admitted an unknown authority field"
+                        "{operation} admitted changed authority fields (extra={extra}, legacy={legacy_bridge})"
                     );
                 } else {
                     assert!(
@@ -3776,6 +3807,7 @@ mod tests {
                                     "sandboxIntegrationBindingRef",
                                 )
                                 .to_string(),
+                                sandbox_binding_ref: text("sandboxBindingRef").to_string(),
                             }
                             .validate()
                             .unwrap();
@@ -4798,7 +4830,7 @@ mod tests {
                     let result_tx = result_tx.clone();
                     tokio::spawn(async move {
                         let result = projection
-                            .forward(RouteFamily::Capabilities, request, respond, "binding")
+                            .forward(RouteFamily::Capabilities, request, respond, "binding", "sandbox-binding")
                             .await;
                         result_tx.send(result).expect("forward result");
                     });
@@ -4890,7 +4922,7 @@ mod tests {
                         let done_tx = done_tx.clone();
                         tokio::spawn(async move {
                             let family = crate::sandbox_bridge::route_family(request.uri().path()).unwrap();
-                            let result = projection.forward(family, request, respond, "binding").await;
+                            let result = projection.forward(family, request, respond, "binding", "sandbox-binding").await;
                             done_tx.send(result).unwrap();
                         });
                     }
@@ -4992,6 +5024,7 @@ mod tests {
                     tokio::spawn(async move {
                         let result = projection.forward(
                             RouteFamily::WorkerControl, request, respond, "trusted-bridge-binding",
+                            "trusted-sandbox-binding",
                         ).await;
                         done_tx.send(result).unwrap();
                     });
@@ -5021,6 +5054,13 @@ mod tests {
                             && headers.get_all("x-openkit-integration-binding").iter().count() == 1
                             && headers.get("x-openkit-integration-binding")
                                 .is_some_and(|value| value == "trusted-bridge-binding")
+                            && (if route == HARNESS_POLL_PATH {
+                                headers.get_all(SANDBOX_BINDING_HEADER).iter().count() == 1
+                                    && headers.get(SANDBOX_BINDING_HEADER)
+                                        .is_some_and(|value| value == "trusted-sandbox-binding")
+                            } else {
+                                !headers.contains_key(SANDBOX_BINDING_HEADER)
+                            })
                             && headers.get("x-fixture-metadata")
                                 .is_some_and(|value| value == "preserved")
                             && !headers.contains_key("x-openkit-harness-binding")
@@ -5031,7 +5071,7 @@ mod tests {
                     }
                 }
                 for header in ["authorization", "x-openkit-integration-binding",
-                    "x-openkit-harness-binding"] {
+                    "x-openkit-harness-binding", SANDBOX_BINDING_HEADER] {
                     let request = Request::builder().method(Method::POST)
                         .uri(format!("{route}?proof=sec2a"))
                         .header("content-type", "application/json")
@@ -5096,6 +5136,7 @@ mod tests {
                     request,
                     respond,
                     "harness-binding",
+                    "sandbox-binding",
                 )
                 .await
         });

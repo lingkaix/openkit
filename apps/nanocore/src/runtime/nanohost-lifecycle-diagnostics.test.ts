@@ -399,6 +399,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
             ':path': path,
             'content-type': 'application/json',
             'x-openkit-integration-binding': 'diag-integration',
+            ...(path.endsWith('/poll') ? { 'x-openkit-sandbox-binding': 'diag-turn-binding' } : {}),
           });
           const abort = () => stream.close(constants.NGHTTP2_CANCEL);
           signal?.addEventListener('abort', abort, { once: true });

@@ -2336,6 +2336,7 @@ function recordSandboxReleaseRefusal(
     throw new CoreJournalRefusal('Sandbox release refusal has no admitted Native peer.');
   const target = getNanoHostRuntimeTarget({ sqlite: native }, input.target.targetId);
   const { targetId, physicalEpoch } = input.target;
+  const { sandboxBindingRef } = input;
   if (
     !target?.predecessorFenced ||
     !target.ready ||
@@ -2346,16 +2347,18 @@ function recordSandboxReleaseRefusal(
     target.physicalEpoch !== physicalEpoch
   )
     throw new CoreJournalRefusal('Sandbox release refusal has no current Host authority.');
+  const executionId = sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, sandboxBindingRef);
+  if (readSandboxReleaseRefusalOrder(db, executionId)) return executionId;
+
   const sandbox = native
-    .prepare(`SELECT sandbox_runtime_id AS id, sandbox_binding_ref AS binding,
+    .prepare(`SELECT sandbox_runtime_id AS id,
         lifecycle_state AS lifecycle, health_state AS health, drain_state AS drain,
         cleanup_state AS cleanup
       FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?
-        AND runtime_target_id = ? AND origin_physical_epoch = ?`)
-    .get(input.integrationBindingRef, targetId, physicalEpoch) as
+        AND runtime_target_id = ? AND origin_physical_epoch = ? AND sandbox_binding_ref = ?`)
+    .get(input.integrationBindingRef, targetId, physicalEpoch, sandboxBindingRef) as
     | {
         id: string;
-        binding: string;
         lifecycle: string;
         health: string;
         drain: string;
@@ -2366,15 +2369,8 @@ function recordSandboxReleaseRefusal(
     throw new CoreJournalRefusal('Sandbox release refusal has no exact current binding.');
 
   const definition = CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION;
-  const executionId = sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, sandbox.binding);
   const requestId = executionId.slice('sandbox-release-refusal:'.length);
   const stepId = 'fence';
-  const existing = readSandboxReleaseRefusalOrder(db, executionId);
-  if (existing) {
-    if (existing.runtimeId !== sandbox.id)
-      throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
-    return executionId;
-  }
   if (
     sandbox.lifecycle !== 'open' ||
     sandbox.health !== 'ready' ||
@@ -2387,7 +2383,7 @@ function recordSandboxReleaseRefusal(
     definitionVersion: definition,
     executionId,
     stepId,
-    workId: sandbox.binding,
+    workId: sandboxBindingRef,
     fingerprint: requestId,
     kind: 'fence',
     actorId: 'nanohost-release-refusal',
@@ -2397,7 +2393,7 @@ function recordSandboxReleaseRefusal(
       operation: 'sandbox.release-refusal',
       requestId,
       sequence: null,
-      bindingRef: sandbox.binding,
+      bindingRef: sandboxBindingRef,
     },
     timestamp: new Date().toISOString(),
   });
@@ -2405,7 +2401,7 @@ function recordSandboxReleaseRefusal(
     ...intent,
     control: {
       ...intent.control,
-      target: { backendKind: 'openshell', targetId, allocationRef: sandbox.binding },
+      target: { backendKind: 'openshell', targetId, allocationRef: sandboxBindingRef },
       physicalFenceRefs: [physicalEpoch],
     },
   });

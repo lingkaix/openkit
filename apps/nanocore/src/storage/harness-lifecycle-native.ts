@@ -85,6 +85,9 @@ export function applyControlHarnessLifecycle(
               admitted.coreDb,
               {
                 sandboxIntegrationBindingRef: input.sandboxIntegrationBindingRef,
+                ...(input.sandboxBindingRef === undefined
+                  ? {}
+                  : { sandboxBindingRef: input.sandboxBindingRef }),
                 ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
               },
               { owner }
@@ -167,6 +170,9 @@ export function applyControlHarnessLifecycle(
       case 'operation.dispatch':
         return records.dispatchNanoHostHarnessOperation(owner, {
           sandboxIntegrationBindingRef: input.sandboxIntegrationBindingRef,
+          ...(input.sandboxBindingRef === undefined
+            ? {}
+            : { sandboxBindingRef: input.sandboxBindingRef }),
           ...(input.observedAt === undefined ? {} : { now: () => input.observedAt! }),
         });
       case 'operation.settle':

@@ -597,6 +597,7 @@ fn execute_effect_command(
                 sandbox_id: sandbox_id.clone(),
                 request_id: command.request_id.clone(),
                 sandbox_integration_binding_ref,
+                sandbox_binding_ref: string("sandboxBindingRef")?.to_string(),
             };
             let state = coordinator
                 .execute_lifecycle_effect(&request, None, None, Vec::new(), Some(bootstrap))
@@ -3075,6 +3076,7 @@ mod tests {
                             request,
                             respond,
                             "binding",
+                            "sandbox-binding",
                         )
                         .await;
                 });

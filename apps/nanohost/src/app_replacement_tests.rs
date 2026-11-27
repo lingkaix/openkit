@@ -169,6 +169,7 @@ async fn idle_harness_poll_during_app_shutdown_preserves_nanohost_epoch() {
                         request,
                         respond,
                         BINDING,
+                        "sandbox-binding",
                     )
                     .await
             });
