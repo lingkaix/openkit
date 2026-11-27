@@ -48,6 +48,10 @@ function sameTurn(left: WorkerShimTurn, right: WorkerShimTurn): boolean {
   );
 }
 
+function sameInterrupt(left: WorkerShimInterrupt, right: WorkerShimInterrupt): boolean {
+  return sameTurn(left, right) && left.requestId === right.requestId && left.cause === right.cause;
+}
+
 function sameStart(left: WorkerShimStart, right: WorkerShimStart): boolean {
   return (
     left.adapterId === right.adapterId &&
@@ -71,13 +75,12 @@ export class FakeWorkerShim implements WorkerShimPort {
   readonly started: string[] = [];
   /** Independent count of native input and steer contacts, by operation ID. */
   readonly contacted: string[] = [];
-  /** Independent count of native interrupt contacts, by original request. */
-  readonly interrupted: string[] = [];
 
   #worker?: FakeWorker;
   readonly #stopped = new Set<string>();
   readonly #operations = new Map<string, FakeOperation>();
   readonly #interrupts: WorkerShimInterruptReceipt[] = [];
+  readonly #interruptContacts: WorkerShimInterrupt[] = [];
   #generation = 0;
   #revision = -1;
 
@@ -86,6 +89,11 @@ export class FakeWorkerShim implements WorkerShimPort {
     readonly sandboxIncarnationId: string,
     private readonly options: FakeWorkerShimOptions = {}
   ) {}
+
+  /** Records the request ID of each native interrupt contact. */
+  get interrupted(): readonly string[] {
+    return this.#interruptContacts.map(({ requestId }) => requestId);
+  }
 
   /** Repeated current start observes the original Worker. A stopped ID cannot start again. */
   async start(start: WorkerShimStart): Promise<WorkerShimDisposition> {
@@ -221,7 +229,7 @@ export class FakeWorkerShim implements WorkerShimPort {
       worker.state === 'running' &&
       sameTurn(worker.activeTurn, interrupt)
     ) {
-      this.interrupted.push(interrupt.requestId);
+      this.#interruptContacts.push({ ...interrupt });
     }
     this.#interrupts.push({ ...interrupt, disposition: 'unknown' });
   }
@@ -231,13 +239,14 @@ export class FakeWorkerShim implements WorkerShimPort {
     const worker = this.#workerFor(interrupt.workerId);
     if (!worker?.activeTurn || !sameTurn(worker.activeTurn, interrupt)) return;
     const index = this.#interrupts.findIndex(
-      (receipt) =>
-        receipt.disposition === 'unknown' &&
-        sameTurn(receipt, interrupt) &&
-        receipt.requestId === interrupt.requestId &&
-        receipt.cause === interrupt.cause
+      (receipt) => receipt.disposition === 'unknown' && sameInterrupt(receipt, interrupt)
     );
-    if (index === -1 || !this.interrupted.includes(interrupt.requestId)) return;
+    if (
+      index === -1 ||
+      !this.#interruptContacts.some((contact) => sameInterrupt(contact, interrupt))
+    ) {
+      return;
+    }
     this.#interrupts[index] = { ...interrupt, disposition: 'cancelled' };
     delete worker.activeTurn;
   }
