@@ -46,6 +46,102 @@ const UNKNOWN_CODES = new Set(['delivery_unknown', 'recovery_required', 'unknown
 
 const PROVIDER_CODES = new Set(['provider_unavailable', 'quota_exhausted', 'rate_limited']);
 
+const HTTP_MONTHS: Record<string, number> = {
+  Jan: 0,
+  Feb: 1,
+  Mar: 2,
+  Apr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Aug: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dec: 11,
+};
+const HTTP_MONTH_PATTERN = Object.keys(HTTP_MONTHS).join('|');
+const RFC850_DATE = new RegExp(
+  `^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\\d{2})-(${HTTP_MONTH_PATTERN})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) GMT$`
+);
+const ASCTIME_DATE = new RegExp(
+  `^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (${HTTP_MONTH_PATTERN}) ( \\d|\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) (\\d{4})$`
+);
+
+/** Returns null for an invalid date and undefined when neither grammar matches. */
+function obsoleteHttpDateMs(value: string, now: number): number | null | undefined {
+  const rfc850 = RFC850_DATE.exec(value);
+  if (rfc850) {
+    const current = new Date(now);
+    const currentYear = current.getUTCFullYear();
+    const year = Math.floor(currentYear / 100) * 100 + Number(rfc850[3]);
+    const parts = [
+      rfc850[2],
+      Number(rfc850[1]),
+      Number(rfc850[4]),
+      Number(rfc850[5]),
+      Number(rfc850[6]),
+    ] as const;
+    const date = httpUtcMs(year, ...parts);
+    if (date == null) return null;
+    const fiftyYearsAhead = Date.UTC(
+      currentYear + 50,
+      current.getUTCMonth(),
+      current.getUTCDate(),
+      current.getUTCHours(),
+      current.getUTCMinutes(),
+      current.getUTCSeconds(),
+      current.getUTCMilliseconds()
+    );
+    const fiftyYearsAgo = Date.UTC(
+      currentYear - 50,
+      current.getUTCMonth(),
+      current.getUTCDate(),
+      current.getUTCHours(),
+      current.getUTCMinutes(),
+      current.getUTCSeconds(),
+      current.getUTCMilliseconds()
+    );
+    if (date > fiftyYearsAhead) return httpUtcMs(year - 100, ...parts);
+    if (date < fiftyYearsAgo) return httpUtcMs(year + 100, ...parts);
+    return date;
+  }
+  const asctime = ASCTIME_DATE.exec(value);
+  if (!asctime) return undefined;
+  return httpUtcMs(
+    Number(asctime[6]),
+    asctime[1],
+    Number(asctime[2]),
+    Number(asctime[3]),
+    Number(asctime[4]),
+    Number(asctime[5])
+  );
+}
+
+function httpUtcMs(
+  year: number,
+  monthName: string | undefined,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number
+): number | null {
+  const month = monthName ? HTTP_MONTHS[monthName] : undefined;
+  if (month == null || hour > 23 || minute > 59 || second > 60) return null;
+  const minuteMs = Date.UTC(year, month, day, hour, minute, 0);
+  const exact = new Date(minuteMs);
+  if (
+    exact.getUTCFullYear() !== year ||
+    exact.getUTCMonth() !== month ||
+    exact.getUTCDate() !== day ||
+    exact.getUTCHours() !== hour ||
+    exact.getUTCMinutes() !== minute
+  ) {
+    return null;
+  }
+  return minuteMs + second * 1000;
+}
+
 /** Clock time of the last successful load, as the banner names it. */
 export function formatLoadedTime(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString(undefined, {
@@ -68,7 +164,8 @@ export function backoffDelayMs(attempt: number, random = Math.random()): number 
 }
 
 /**
- * Retry delay from an error body.
+ * Retry delay from an error body. The obsolete HTTP-date forms are explicit because
+ * Date.parse reads asctime in local time. RFC 9110 requires recipients to accept both.
  * // TB6: HTTP Retry-After is not on ApiCallError, so only details.retryAfter is honored.
  */
 export function readRetryAfterSeconds(error: unknown, now = Date.now()): number {
@@ -80,8 +177,11 @@ export function readRetryAfterSeconds(error: unknown, now = Date.now()): number 
       if (value.trim() !== '' && Number.isFinite(asNumber) && asNumber >= 0) {
         return Math.ceil(asNumber);
       }
-      const date = Date.parse(value);
-      if (Number.isFinite(date)) return Math.max(0, Math.ceil((date - now) / 1000));
+      const obsoleteDate = obsoleteHttpDateMs(value, now);
+      const date = obsoleteDate === undefined ? Date.parse(value) : obsoleteDate;
+      if (date !== null && Number.isFinite(date)) {
+        return Math.max(0, Math.ceil((date - now) / 1000));
+      }
     }
   }
   return 20;

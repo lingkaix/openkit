@@ -18,7 +18,7 @@ import { advanceAccountGeneration } from '../../account/generation';
 import { useSendTurn, useThreadItems } from '../data';
 import { ItemView } from '../ItemView';
 import { ThreadStream } from '../ThreadStream';
-import { classifyRunError, freshnessCopy } from './degraded';
+import { classifyRunError, freshnessCopy, readRetryAfterSeconds } from './degraded';
 import { SendFailure, SendPending } from './SendState';
 
 const APPROVAL = ItemSchema.parse({
@@ -44,6 +44,8 @@ function setOnline(online: boolean) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   setOnline(true);
   act(() => {
     toastQueue.clear();
@@ -114,6 +116,67 @@ describe('connection states', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
     expect(screen.getByText('paused')).toBeInTheDocument();
+  });
+});
+
+describe('readRetryAfterSeconds', () => {
+  const now = Date.UTC(1994, 10, 6, 8, 49, 0);
+  const errorWithRetryAfter = (retryAfter: string) =>
+    new ApiCallError(503, 'busy', { details: { retryAfter } });
+  const withoutNativeObsoleteDateParsing = () => {
+    vi.spyOn(Date, 'parse').mockReturnValue(Number.NaN);
+  };
+
+  it('accepts the obsolete RFC 850 HTTP-date form in UTC', () => {
+    withoutNativeObsoleteDateParsing();
+    expect(readRetryAfterSeconds(errorWithRetryAfter('Sunday, 06-Nov-94 08:49:37 GMT'), now)).toBe(
+      37
+    );
+  });
+
+  it('keeps an RFC 850 date that crosses a century boundary', () => {
+    withoutNativeObsoleteDateParsing();
+    const current = Date.UTC(1999, 11, 31, 23, 59, 59);
+    expect(
+      readRetryAfterSeconds(errorWithRetryAfter('Saturday, 01-Jan-00 00:00:00 GMT'), current)
+    ).toBe(1);
+  });
+
+  it('reads an RFC 850 date more than fifty years ahead in the matching past century', () => {
+    withoutNativeObsoleteDateParsing();
+    const current = Date.UTC(2026, 10, 27, 0, 0, 0);
+    expect(
+      readRetryAfterSeconds(errorWithRetryAfter('Saturday, 28-Nov-76 00:00:37 GMT'), current)
+    ).toBe(0);
+  });
+
+  it('accepts the asctime HTTP-date form in UTC', () => {
+    withoutNativeObsoleteDateParsing();
+    vi.stubEnv('TZ', 'Australia/Sydney');
+    expect(readRetryAfterSeconds(errorWithRetryAfter('Sun Nov  6 08:49:37 1994'), now)).toBe(37);
+  });
+
+  it('uses the default wait for an invalid asctime calendar date', () => {
+    withoutNativeObsoleteDateParsing();
+    const current = Date.UTC(2026, 10, 27, 0, 0, 0);
+    expect(readRetryAfterSeconds(errorWithRetryAfter('Mon Nov 32 00:00:00 2026'), current)).toBe(
+      20
+    );
+  });
+
+  it.each(['Mon Nov 31 00:00:00 2026', 'Monday, 31-Nov-26 00:00:00 GMT'])(
+    'uses the default wait for the invalid calendar date %s',
+    (retryAfter) => {
+      const current = Date.UTC(2026, 10, 27);
+      expect(readRetryAfterSeconds(errorWithRetryAfter(retryAfter), current)).toBe(20);
+    }
+  );
+
+  it('uses the date-based wait for November 30', () => {
+    const current = Date.UTC(2026, 10, 27);
+    expect(readRetryAfterSeconds(errorWithRetryAfter('Mon Nov 30 00:00:00 2026'), current)).toBe(
+      259200
+    );
   });
 });
 
