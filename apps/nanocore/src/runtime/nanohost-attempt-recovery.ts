@@ -246,6 +246,7 @@ export async function classifyNanoHostAttemptsAfterRestart(
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (!attempt.operationId || attempt.backendId !== input.executionBackend.id) continue;
+    if (attempt.terminalCause === 'sandbox-release-refusal') continue;
     try {
       if (recovery?.state !== 'ready') {
         failedAttemptIds.push(attempt.attemptId);
@@ -329,6 +330,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (attempt.backendId !== input.executionBackend.id) continue;
+    if (attempt.terminalCause === 'sandbox-release-refusal') continue;
     try {
       if (!attempt.operationId) continue;
       const observation = observeAdmittedAttempt(coreDb, recovery, attempt.attemptId);

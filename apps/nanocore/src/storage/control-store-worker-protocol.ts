@@ -229,6 +229,8 @@ import {
   ControlNanoHostFirstSubmissionResultSchema,
   type ControlNanoHostTerminalReleaseInput,
   ControlNanoHostTerminalReleaseInputSchema,
+  ControlSandboxReleaseRefusalHandoffSchema,
+  SandboxReleaseRefusalAttachmentSchema,
 } from './core-journal-codecs.js';
 import {
   type ControlEvaluationCandidate,
@@ -963,6 +965,13 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
     coreIdentity: z.string().regex(/^\d+:\d+$/),
   }),
   z.strictObject({
+    kind: z.literal('sandbox-release-refusal-detach'),
+    input: ControlSandboxReleaseRefusalHandoffSchema,
+    attachment: SandboxReleaseRefusalAttachmentSchema.nullable(),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    workspaceIdentity: z.string().regex(/^\d+:\d+$/),
+  }),
+  z.strictObject({
     kind: z.literal('harness-idle-sandbox'),
     input: nanoHostIdleSandboxInput,
     coreIdentity: z.string().regex(/^\d+:\d+$/),
@@ -984,6 +993,10 @@ const nanoHostOwnerMutationSchema = z.discriminatedUnion('kind', [
       (input) =>
         input.kind === 'handoff' || (input.kind === 'transition' && input.toState !== 'launching')
     ),
+    coreIdentity: z
+      .string()
+      .regex(/^\d+:\d+$/)
+      .optional(),
   }),
   z.strictObject({
     kind: z.literal('backend-session-materialize'),
@@ -1027,6 +1040,13 @@ export type NanoHostOwnerMutation =
       readonly coreIdentity: string;
     }
   | {
+      readonly kind: 'sandbox-release-refusal-detach';
+      readonly input: z.output<typeof ControlSandboxReleaseRefusalHandoffSchema>;
+      readonly attachment: z.output<typeof SandboxReleaseRefusalAttachmentSchema> | null;
+      readonly coreIdentity: string;
+      readonly workspaceIdentity: string;
+    }
+  | {
       readonly kind: 'harness-idle-sandbox';
       readonly input: z.output<typeof nanoHostIdleSandboxInput>;
       readonly coreIdentity: string;
@@ -1037,7 +1057,11 @@ export type NanoHostOwnerMutation =
       readonly kind: 'prepared-image-result';
       readonly input: z.infer<typeof nanoHostPreparedImageResult>;
     }
-  | { readonly kind: 'backend-session'; readonly input: NanoHostLocalBackendSessionInput }
+  | {
+      readonly kind: 'backend-session';
+      readonly input: NanoHostLocalBackendSessionInput;
+      readonly coreIdentity?: string;
+    }
   | {
       readonly kind: 'backend-session-materialize';
       readonly input: Extract<ControlBackendSessionInput, { kind: 'materializing' }>;
@@ -1083,6 +1107,7 @@ const nanoHostOwnerResultSchema = z.discriminatedUnion('kind', [
     value: ControlHarnessLifecycleResultSchema,
   }),
   z.strictObject({ kind: z.literal('sandbox-release-refusal-drain'), value: z.null() }),
+  z.strictObject({ kind: z.literal('sandbox-release-refusal-detach'), value: z.null() }),
   z.strictObject({ kind: z.literal('harness-idle-sandbox'), value: z.null() }),
   z.strictObject({ kind: z.literal('worker-image'), value: z.null() }),
   z.strictObject({ kind: z.literal('prepared-image-result'), value: z.null() }),
@@ -1134,9 +1159,13 @@ const nanoHostRecoveryClose = z.strictObject({
 });
 
 /** K8b: a capture publication may carry the accepted-final commitment it consumes, with both pinned peers. */
-const nanoHostFinalGuard = z.strictObject({
+const nanoHostProofPeers = z.strictObject({
   coreIdentity: z.string().regex(/^\d+:\d+$/),
   nanoHostIdentity: z.string().regex(/^\d+:\d+$/),
+});
+export type NanoHostProofPeers = z.infer<typeof nanoHostProofPeers>;
+
+const nanoHostFinalGuard = nanoHostProofPeers.extend({
   attemptId: z.string().min(1).max(256),
   commitmentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
@@ -1718,6 +1747,7 @@ export type ControlWorkerCommand =
           readonly operation: 'core-journal';
           readonly input: ControlCoreJournalInput | ControlCoreImageResult;
           readonly nanoHostOwnerIdentity?: string;
+          readonly workspaceOwnerIdentity?: string;
         }
       | { readonly operation: 'worker-image'; readonly input: ControlWorkerImageInput }
       | { readonly operation: 'runtime-target'; readonly input: ControlRuntimeTargetInput }
@@ -1735,11 +1765,16 @@ export type ControlWorkerCommand =
           readonly input: ControlWorkspaceStageReview;
         }
       | { readonly operation: 'private-workspace'; readonly input: ControlPrivateWorkspaceInput }
-      | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
+      | {
+          readonly operation: 'workspace-baseline';
+          readonly input: ControlWorkspaceBaseline;
+          readonly nanoHostPeers?: NanoHostProofPeers;
+        }
       | {
           readonly operation: 'workspace-capture';
           readonly input: ControlWorkspaceCapture;
           readonly nanoHostFinalGuard?: NanoHostFinalGuard;
+          readonly nanoHostPeers?: NanoHostProofPeers;
         }
       | { readonly operation: 'workspace-takeover'; readonly input: ControlWorkspaceTakeover }
       | {
@@ -3613,10 +3648,17 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   }
   if (value.operation === 'core-journal')
     return (
-      exactFields(value, [...scoped, 'input'], ['nanoHostOwnerIdentity']) &&
+      exactFields(
+        value,
+        [...scoped, 'input'],
+        ['nanoHostOwnerIdentity', 'workspaceOwnerIdentity']
+      ) &&
       (value.nanoHostOwnerIdentity === undefined ||
         (typeof value.nanoHostOwnerIdentity === 'string' &&
           /^\d+:\d+$/.test(value.nanoHostOwnerIdentity))) &&
+      (value.workspaceOwnerIdentity === undefined ||
+        (typeof value.workspaceOwnerIdentity === 'string' &&
+          /^\d+:\d+$/.test(value.workspaceOwnerIdentity))) &&
       (ControlCoreJournalInputSchema.safeParse(value.input).success ||
         ControlCoreImageResultSchema.safeParse(value.input).success) &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
@@ -3735,15 +3777,19 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'workspace-capture')
     return (
-      exactFields(value, [...scoped, 'input'], ['nanoHostFinalGuard']) &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostFinalGuard', 'nanoHostPeers']) &&
       (value.nanoHostFinalGuard === undefined ||
         nanoHostFinalGuard.safeParse(value.nanoHostFinalGuard).success) &&
+      (value.nanoHostPeers === undefined ||
+        nanoHostProofPeers.safeParse(value.nanoHostPeers).success) &&
       ControlWorkspaceCaptureSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-baseline')
     return (
-      exactFields(value, [...scoped, 'input']) &&
+      exactFields(value, [...scoped, 'input'], ['nanoHostPeers']) &&
+      (value.nanoHostPeers === undefined ||
+        nanoHostProofPeers.safeParse(value.nanoHostPeers).success) &&
       ControlWorkspaceBaselineSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );

@@ -21,6 +21,7 @@ import {
 } from './execution-attempts.js';
 import {
   createExecutionStepJournalReader,
+  decodeExecutionJournalSpan,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from './execution-journal.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
@@ -126,6 +127,8 @@ export interface TerminalizeGovernedWorkerTurnInput {
   readonly store: FsStore;
   /** Existing native terminal facts supplied by the execution owner; omission creates no proof. */
   readonly publication?: TerminalTurnPublication;
+  /** Exact attempt of a live or recovered publication, when the caller owns one. */
+  readonly attemptId?: string;
   /** Original interruption command committed with this first terminal tuple. */
   readonly command?: TerminalTurnPublication['command'];
   /** Governed worker turn id. */
@@ -527,7 +530,8 @@ function isGovernedWorkerTerminalCode(errorCode: string): boolean {
 export async function workerTurnTerminalPublication(
   workspaceDb: WorkspaceDb,
   turnId: string,
-  outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
+  outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed',
+  attemptId?: string
 ): Promise<TerminalTurnPublication> {
   const roots = workspaceDb.sqlite
     .prepare('SELECT id FROM control_executions WHERE work_id=?')
@@ -546,16 +550,28 @@ export async function workerTurnTerminalPublication(
   )
     throw new Error('Worker terminal journal definition or lineage conflicts.');
   const obligations = workspaceDb.sqlite
-    .prepare(
-      "SELECT step_id,json_extract(control_json,'$.kind') AS kind FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind') IN ('terminal-publication','release')"
-    )
-    .all(ref.executionId) as { step_id: string; kind: string }[];
-  const terminal = obligations.filter((step) => step.kind === 'terminal-publication');
-  const release = obligations.filter((step) => step.kind === 'release');
+    .prepare(`SELECT step_id AS id, state, json_extract(control_json,'$.kind') AS kind,
+      json_extract(control_json,'$.attemptId') AS attemptId FROM control_execution_steps
+      WHERE execution_id=? AND json_extract(control_json,'$.kind') IN ('terminal-publication','release')`)
+    .all(ref.executionId) as {
+    id: string;
+    kind: string;
+    state: string;
+    attemptId: string | null;
+  }[];
+  const terminals = obligations.filter((step) => step.kind === 'terminal-publication');
+  const terminal = terminals.filter((step) =>
+    attemptId === undefined
+      ? terminals.length === 1 || step.state !== 'cancelled'
+      : step.attemptId === attemptId
+  );
+  const release = obligations.filter(
+    (step) => step.kind === 'release' && step.attemptId === terminal[0]?.attemptId
+  );
   if (terminal.length !== 1 || release.length !== 1)
     throw new Error('Worker terminal journal requires original terminal and release obligations.');
-  await reader.readInvocation({ execution: ref, stepId: terminal[0]!.step_id });
-  await reader.readInvocation({ execution: ref, stepId: release[0]!.step_id });
+  await reader.readInvocation({ execution: ref, stepId: terminal[0]!.id });
+  await reader.readInvocation({ execution: ref, stepId: release[0]!.id });
   const evidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId).filter(
     (record) => record.turnId === turnId
   );
@@ -564,12 +580,80 @@ export async function workerTurnTerminalPublication(
   return {
     execution: {
       executionId: ref.executionId,
-      terminalStepId: terminal[0]!.step_id,
-      cleanupStepId: release[0]!.step_id,
+      terminalStepId: terminal[0]!.id,
+      cleanupStepId: release[0]!.id,
       expectedRevision: root.revision,
     },
     evidence: evidence.map((record) => writeRetainedV1(record)),
   };
+}
+
+/** Revokes the exact predecessor's terminal obligation while keeping its single Workspace root open. */
+export async function fenceWorkerTurnTerminalPublication(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  input: { readonly turnId: string; readonly attemptId: string; readonly refusalRef: string }
+) {
+  const publication = await workerTurnTerminalPublication(
+    workspaceDb,
+    input.turnId,
+    'failed',
+    input.attemptId
+  );
+  const projection = publication.execution!;
+  const owner = { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId };
+  const execution = { owner, executionId: projection.executionId };
+  const reader = createExecutionStepJournalReader(workspaceDb, owner);
+  const root = await reader.readExecution(execution);
+  const terminal = await reader.readInvocation({
+    execution,
+    stepId: projection.terminalStepId,
+  });
+  const release = await reader.readInvocation({
+    execution,
+    stepId: projection.cleanupStepId,
+  });
+  const fence = {
+    workspaceId: workspaceDb.workspaceId,
+    executionId: execution.executionId,
+    stepId: terminal.ref.stepId,
+  };
+  if (
+    root.phase !== 'open' ||
+    terminal.control.attemptId !== input.attemptId ||
+    release.control.attemptId !== input.attemptId ||
+    release.state !== 'intent'
+  )
+    throw new Error('Sandbox release refusal no longer owns the original Workspace Turn.');
+  if (
+    terminal.state === 'cancelled' &&
+    terminal.control.outputRefs.length === 1 &&
+    terminal.control.outputRefs[0] === input.refusalRef
+  )
+    return fence;
+  if (terminal.state !== 'intent' || root.revision !== projection.expectedRevision)
+    throw new Error('Sandbox release refusal lost the Workspace terminal publication race.');
+  const row = workspaceDb.sqlite
+    .prepare(
+      'SELECT span_json AS span FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
+    )
+    .get(execution.executionId, terminal.ref.stepId) as { span: string };
+  const span = decodeExecutionJournalSpan(JSON.parse(row.span));
+  await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
+    ref: terminal.ref,
+    expectedExecutionRevision: root.revision,
+    state: 'cancelled',
+    outputRefs: [input.refusalRef],
+    span: {
+      ...span,
+      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+      status: { code: 'ERROR' },
+    },
+    nextPhase: root.phase,
+    terminalCause: root.terminalCause,
+    exclusionRefs: root.exclusionRefs,
+  });
+  return fence;
 }
 
 /** Resolves native facts only when the existing terminal owner must write; no-op reads stay no-ops. */
@@ -585,7 +669,8 @@ async function readTerminalPublication(
     return await workerTurnTerminalPublication(
       workspaceDb,
       input.turnId,
-      turn.status === 'completed' ? 'completed' : input.outcome
+      turn.status === 'completed' ? 'completed' : input.outcome,
+      input.attemptId
     );
   } finally {
     workspaceDb.sqlite.close();

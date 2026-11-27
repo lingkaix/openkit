@@ -176,6 +176,7 @@ import {
 import {
   isSandboxReleaseRefusalFenced,
   listSandboxReleaseRefusalOrders,
+  readSandboxReleaseRefusalOrder,
   sandboxReleaseRefusalExecutionId,
 } from '../runtime/core-journal-records.js';
 import {
@@ -324,6 +325,7 @@ import {
   type NanoHostLocalWorkerStorageInput,
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
+  type NanoHostProofPeers,
   type ServerOwnerDescriptor,
   type ServerWorkKernelInput,
   type ServerWorkOwnerMutation,
@@ -3443,6 +3445,7 @@ class ControlStoreWorkerClient {
           mutation.kind === 'harness-lifecycle' ||
           mutation.kind === 'harness-turn-lifecycle' ||
           mutation.kind === 'sandbox-release-refusal-drain' ||
+          mutation.kind === 'sandbox-release-refusal-detach' ||
           mutation.kind === 'harness-idle-sandbox' ||
           mutation.kind === 'recovery-classification' ||
           mutation.kind === 'worker-image' ||
@@ -4047,6 +4050,50 @@ class ControlStoreWorkerClient {
           });
           await finishReleaseRefusal(executionId);
         },
+        handoff: async (input, attachment) => {
+          const original = structuredClone(input);
+          const expected = structuredClone(attachment);
+          const attemptId = await withCoreHold(async (coreIdentity) => {
+            const attemptId = readRefusalCore(
+              coreIdentity,
+              (db) =>
+                readSandboxReleaseRefusalOrder(db, original.ref.execution.executionId)?.attemptId
+            );
+            if (!attemptId)
+              throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+            await withWorkspaceForAttempt(attemptId, async (workspaceIdentity) => {
+              await write({
+                kind: 'sandbox-release-refusal-detach',
+                input: original,
+                attachment: expected,
+                coreIdentity,
+                workspaceIdentity,
+              });
+            });
+            return attemptId;
+          });
+          await withNativeReadForCore((core, _, nanoHostOwnerIdentity) =>
+            withWorkspaceForAttempt(attemptId, async (workspaceOwnerIdentity) => {
+              try {
+                const reply = await this.request({
+                  operation: 'core-journal',
+                  database: core.command.database,
+                  input: original,
+                  nanoHostOwnerIdentity,
+                  workspaceOwnerIdentity,
+                });
+                if (reply.operation !== 'core-journal' || reply.result !== null)
+                  throw new ControlStoreWorkerError('integrity', 'unknown');
+              } catch (error) {
+                if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+                  this.fail(core.host);
+                throw error;
+              } finally {
+                if (core.host.failed) await core.host.exited.promise;
+              }
+            })
+          );
+        },
         reconcile: async () => {
           const orders = await withCoreHold(async (identity) =>
             readRefusalCore(identity, listSandboxReleaseRefusalOrders)
@@ -4253,6 +4300,12 @@ class ControlStoreWorkerClient {
           );
         }
         if (original.kind === 'transition') {
+          if (original.toState === 'cleaned') {
+            return withCoreHold(
+              async (coreIdentity) =>
+                (await write({ kind: 'backend-session', input: original, coreIdentity })).value
+            );
+          }
           return (await write({ kind: 'backend-session', input: original })).value;
         }
         return withCoreHold(
@@ -4381,7 +4434,14 @@ class ControlStoreWorkerClient {
           settlePreparedImage: async (input) => {
             await write({ kind: 'prepared-image-result', input });
           },
-          backendSession: async (input) => (await write({ kind: 'backend-session', input })).value,
+          backendSession: async (input) => {
+            if (input.kind === 'transition' && input.toState === 'cleaned')
+              return withCoreHold(
+                async (coreIdentity) =>
+                  (await write({ kind: 'backend-session', input, coreIdentity })).value
+              );
+            return (await write({ kind: 'backend-session', input })).value;
+          },
           closeRecovery: async ({
             lease,
             session,
@@ -7957,6 +8017,8 @@ class ControlStoreWorkerClient {
       let workspaceId: string | undefined;
       if (input.kind === 'containment-intent') workspaceId = input.lineage.workspaceId;
       else if (input.kind === 'idle-intent') workspaceId = input.package.workspaceId;
+      else if (input.kind === 'sandbox-release-refusal-handoff')
+        workspaceId = input.workspaceFence.workspaceId;
       else if (
         input.kind !== 'containment-inspect' &&
         input.kind !== 'image-intent' &&
@@ -8219,6 +8281,38 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Keeps both proof owners pinned until the original Workspace writer acknowledges or exits. */
+  private async postWorkspaceWithNanoHostProof<Value>(
+    database: string,
+    dataRoot: string | undefined,
+    post: (pins: NanoHostProofPeers) => Promise<Value>
+  ): Promise<Value> {
+    const hold =
+      dataRoot &&
+      this.openings.get(`server-owner:${serverStoragePath(dataRoot, 'nanohost')}`)
+        ?.withNanoHostProofHold;
+    if (!hold) throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+    return hold(async (pins) => {
+      const workspace = this.openings.get(database);
+      if (
+        !workspace?.acknowledged ||
+        workspace.command.dataRoot !== dataRoot ||
+        workspace.host.failed ||
+        workspace.retirement
+      )
+        throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
+      try {
+        return await post(pins);
+      } catch (error) {
+        if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+          this.fail(workspace.host);
+        throw error;
+      } finally {
+        if (workspace.host.failed) await workspace.host.exited.promise;
+      }
+    });
+  }
+
   /**
    * Acknowledges only the exact original capture/recovery tuple; unknown replies remain unknown.
    * With `guard`, the Workspace commit rechecks that accepted-final commitment in the pinned Core and
@@ -8234,37 +8328,25 @@ class ControlStoreWorkerClient {
     }
   ): Promise<ControlWorkspaceCaptureResult> {
     try {
-      const post = (nanoHostFinalGuard?: NanoHostFinalGuard) =>
+      const post = (nanoHostFinalGuard?: NanoHostFinalGuard, nanoHostPeers?: NanoHostProofPeers) =>
         this.request({
           operation: 'workspace-capture',
           database,
           input,
           ...(nanoHostFinalGuard ? { nanoHostFinalGuard } : {}),
+          ...(nanoHostPeers ? { nanoHostPeers } : {}),
         });
       let reply: Success;
       if (guard) {
-        const hold = this.openings.get(
-          `server-owner:${serverStoragePath(guard.dataRoot, 'nanohost')}`
-        )?.withNanoHostProofHold;
-        if (!hold) throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-        reply = await hold(async (pins) => {
-          const workspace = this.openings.get(database);
-          if (!workspace?.acknowledged || workspace.host.failed || workspace.retirement)
-            throw new ControlStoreWorkerError('owner-recovery-required', 'not-committed');
-          try {
-            return await post({
-              ...pins,
-              attemptId: guard.attemptId,
-              commitmentHash: guard.commitmentHash,
-            });
-          } catch (error) {
-            if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
-              this.fail(workspace.host);
-            throw error;
-          } finally {
-            if (workspace.host.failed) await workspace.host.exited.promise;
-          }
-        });
+        reply = await this.postWorkspaceWithNanoHostProof(database, guard.dataRoot, (pins) =>
+          post({ ...pins, attemptId: guard.attemptId, commitmentHash: guard.commitmentHash })
+        );
+      } else if (input.action === 'claim') {
+        reply = await this.postWorkspaceWithNanoHostProof(
+          database,
+          this.openings.get(database)?.command.dataRoot,
+          (pins) => post(undefined, pins)
+        );
       } else reply = await post();
       return (reply as Extract<Success, { operation: 'workspace-capture' }>).result;
     } catch (error) {
@@ -8314,9 +8396,22 @@ class ControlStoreWorkerClient {
   }
 
   /** Publishes one original baseline stage and preserves its closed recovery distinctions. */
-  async workspaceBaseline(database: string, input: ControlWorkspaceBaseline): Promise<void> {
+  async workspaceBaseline(
+    database: string,
+    input: ControlWorkspaceBaseline,
+    continueReleasedPredecessorAt?: string
+  ): Promise<void> {
     try {
-      await this.request({ operation: 'workspace-baseline', database, input });
+      const post = (nanoHostPeers?: NanoHostProofPeers) =>
+        this.request({
+          operation: 'workspace-baseline',
+          database,
+          input,
+          ...(nanoHostPeers ? { nanoHostPeers } : {}),
+        });
+      if (continueReleasedPredecessorAt) {
+        await this.postWorkspaceWithNanoHostProof(database, continueReleasedPredecessorAt, post);
+      } else await post();
     } catch (error) {
       if (
         error instanceof ControlStoreWorkerError &&

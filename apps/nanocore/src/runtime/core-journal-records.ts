@@ -528,7 +528,41 @@ export function readSandboxReleaseRefusalOrder(db: CoreDb, executionId: string) 
     carriage.sequence !== null
   )
     throw new CoreJournalRefusal('Sandbox release refusal conflicts with its original order.');
-  return { executionId, targetId, physicalEpoch, bindingRef, runtimeId };
+  return {
+    executionId,
+    targetId,
+    physicalEpoch,
+    bindingRef,
+    runtimeId,
+    attemptId: control.attemptId,
+    revision: root.revision,
+  };
+}
+
+/** Finds the original release-refused attempt by its retained Core decision. */
+export function readSandboxReleaseRefusalFence(
+  db: CoreDb,
+  bindingRef: string,
+  targetId: string,
+  physicalEpoch: string,
+  attemptId?: string
+) {
+  const executionId = sandboxReleaseRefusalExecutionId(targetId, physicalEpoch, bindingRef);
+  const order = readSandboxReleaseRefusalOrder(db, executionId);
+  if (
+    !order?.attemptId ||
+    (attemptId !== undefined && order.attemptId !== attemptId) ||
+    !db.sqlite
+      .prepare(`SELECT 1 FROM scheduler_execution_attempts
+        WHERE attempt_id = ? AND phase = 'closing' AND deadline IS NULL
+          AND terminal_cause = 'sandbox-release-refusal'`)
+      .get(order.attemptId)
+  )
+    return null;
+  return {
+    ref: { execution: { owner: { kind: 'server' as const }, executionId }, stepId: 'fence' },
+    revision: order.revision,
+  };
 }
 
 /** Boot uses the durable intent itself when the original Worker cannot retry the handoff. */

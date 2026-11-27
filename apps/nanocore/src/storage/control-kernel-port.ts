@@ -36,6 +36,7 @@ export interface NanoHostCoreReads {
       readonly origin: string;
       readonly target: string;
       readonly drain: string;
+      readonly refusalDrained: boolean;
     } | null
   >;
   listDrainingResidents(

@@ -18,6 +18,7 @@ import {
   buildWorkerCanonicalTerminalEventRecord,
   WorkerCanonicalTerminalEventDataSchema,
 } from '@openkit/worker-protocol';
+import type { z } from 'zod';
 import {
   auditEventFromRow,
   prepareServerAuditEvent,
@@ -31,18 +32,22 @@ import {
   isSandboxReleaseRefusalFenced,
   localCoreJournalIntent,
   readCoreHarnessConsumption,
+  readSandboxReleaseRefusalFence,
   readSandboxReleaseRefusalOrder,
   sandboxReleaseRefusalExecutionId,
   settleCoreIdleJournal,
 } from '../runtime/core-journal-records.js';
 import {
   acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
   closeSchedulerExecutionAttemptWithoutEffects,
   EXECUTION_ATTEMPT_BUDGET_MS,
   markSchedulerExecutionAttemptClosing,
+  readReleasedSandboxRefusalPredecessor,
   recordSchedulerExecutionGrantInDb,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
+  schedulerExecutionCorrelation,
 } from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
@@ -85,9 +90,11 @@ import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target-rec
 import {
   getWorkerBackendSession,
   getWorkerBackendSessionByPackage,
+  markWorkerBackendWorkspaceHandoffComplete,
   readNanoHostSubmissionPlacement,
   readNanoHostWorkerLease,
   readNanoHostWorkerRouteBinding,
+  transitionWorkerBackendSessionState,
 } from '../runtime/worker-backend-session-records.js';
 import { isWorkerCancellationFinalCause } from '../runtime/worker-control-final-receipt.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
@@ -96,7 +103,12 @@ import {
   matchesAcceptedWorkerControlSequence,
 } from '../runtime/worker-control-sequences.js';
 import {
+  getWorkerStorageBindingForSandbox,
+  releaseWorkerStorageAttachment,
+} from '../runtime/worker-storage-binding-records.js';
+import {
   type CoreSchedulerQueueEntry,
+  requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import type {
@@ -108,7 +120,7 @@ import type {
 } from './control-kernel-port.js';
 import type { KernelExecutionEvidence } from './control-kernel-proof-codecs.js';
 import { commandInputHash } from './control-store-input.js';
-import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { ControlProductPreconditionError, readProduct } from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreImageResult,
@@ -124,10 +136,12 @@ import {
   CoreJournalRefusal,
   CoreNanoHostFinalIntakeSchema,
   readCoreJournalLineage,
+  type SandboxReleaseRefusalAttachmentSchema,
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import { createNanoHostCoreReads } from './nanohost-core-reads.js';
 import {
   type NanoHostRecoveryLease,
   readNanoHostPhysicalCleanupReceipt,
@@ -156,10 +170,12 @@ import {
   type StorageResult,
   storageRequestId,
 } from './storage-owner.js';
+import { BackendSessionRefusal } from './worker-backend-session-codecs.js';
 import {
   type ControlWorkerFinalStatusCommand,
   WorkerFinalStatusRefusal,
 } from './worker-control-final-status-codecs.js';
+import { AgentSessionRecordSchema } from './workspace-file-records.js';
 import { requireCompleteBackendWorkspaceHandleHandoff } from './workspace-handoff-read.js';
 
 function requireNanoHostEvidence<T>(result: StorageResult<'nanohost', T> | undefined): T {
@@ -1728,6 +1744,21 @@ function readTerminalReleaseWorkspace(
   const execution = { owner, executionId: input.workspaceExecutionId };
   const root = readExecutionJournalRoot(workspace, execution);
   const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  const rootFingerprint = (
+    identity: Pick<SchedulerExecutionAttemptRecord, 'attemptId' | 'bindingRef' | 'inputRef'>
+  ) =>
+    commandInputHash({
+      turnId: grant.turnId,
+      attemptId: identity.attemptId,
+      bindingRef: identity.bindingRef,
+      packageSnapshotId: identity.inputRef,
+    });
+  // Same-Turn handoff keeps its original Workspace root. Only its exact released predecessor
+  // can provide the root fingerprint; all deciding steps below still belong to this attempt.
+  const predecessor =
+    root.fingerprint === rootFingerprint(attempt)
+      ? null
+      : readReleasedSandboxRefusalPredecessor(db, attempt, attempt.attemptId);
   if (
     workspace.dataRoot !== db.dataRoot ||
     workspace.workspaceId !== attempt.workspaceId ||
@@ -1736,13 +1767,7 @@ function readTerminalReleaseWorkspace(
     root.phase !== 'closed' ||
     root.openSteps.length !== 0 ||
     root.exclusionRefs.length !== 0 ||
-    root.fingerprint !==
-      commandInputHash({
-        turnId: grant.turnId,
-        attemptId: grant.attemptId,
-        bindingRef: grant.bindingRef,
-        packageSnapshotId: grant.inputRef,
-      })
+    root.fingerprint !== rootFingerprint(predecessor ?? attempt)
   )
     throw new CoreJournalRefusal('Original Workspace release is unresolved.');
   const inspect = (
@@ -2204,9 +2229,19 @@ export function reserveCoreIdleCleanupInDb(
     stagingDirectoryRef: anchor.stagingDirectoryRef,
     transientProviderInstanceId: anchor.transientProviderInstanceId,
   };
+  const { operation, requestId } = intent.carriage;
+  const cleanup = operation === 'bridge.close' || operation === 'sandbox.delete';
+  const refusal =
+    cleanup &&
+    readSandboxReleaseRefusalFence(
+      db,
+      input.sandboxBindingRef,
+      input.identity.runtimeTargetId,
+      input.originPhysicalEpoch,
+      attempt.attemptId
+    );
   if (
-    attempt.phase !== 'closed' ||
-    !attempt.fenceRef ||
+    (!refusal && (attempt.phase !== 'closed' || !attempt.fenceRef)) ||
     attempt.backendId !== input.backendId ||
     !anchor ||
     !isDeepStrictEqual(identity, input.identity) ||
@@ -2240,8 +2275,6 @@ export function reserveCoreIdleCleanupInDb(
       'Core idle cleanup immutable package actor or physical lineage conflicts.'
     );
 
-  const { operation, requestId } = intent.carriage;
-  const cleanup = operation === 'bridge.close' || operation === 'sandbox.delete';
   const sandboxId = nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId);
   const resident = native
     .prepare(`SELECT sandbox_runtime_id AS id, drain_state AS drain FROM sandbox_runtime_records
@@ -2250,9 +2283,14 @@ export function reserveCoreIdleCleanupInDb(
     .get(input.sandboxBindingRef, target.targetId, input.originPhysicalEpoch, sandboxId) as
     | { id: string; drain: string }
     | undefined;
+  const nativeRead = createNanoHostCoreReads({
+    read: (query) => ({ state: 'ready', value: query(native) }),
+  });
+  const originalDrain = refusal ? nativeRead.readResident(input.sandboxBindingRef) : undefined;
   if (
     !resident ||
     (cleanup && resident.drain !== 'draining') ||
+    (refusal && (originalDrain?.state !== 'ready' || !originalDrain.value?.refusalDrained)) ||
     (input.sandboxId !== undefined && input.sandboxId !== sandboxId) ||
     nonClosedSandboxAttempts(
       db,
@@ -2262,16 +2300,17 @@ export function reserveCoreIdleCleanupInDb(
       input.originPhysicalEpoch,
       sandboxId,
       nanoHost
-    ).length !== 0 ||
-    native
-      .prepare(`SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id = ?
+    ).some((active) => !refusal || active.attemptId !== attempt.attemptId) ||
+    (!refusal &&
+      native
+        .prepare(`SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id = ?
         AND (h.schema_version <> 1 OR h.active_turn_count <> 0
           OR h.operation_state NOT IN ('idle', 'settled')
           OR EXISTS (SELECT 1 FROM agent_session_runtime_bindings b
             WHERE b.harness_instance_id = h.harness_instance_id
             AND (b.schema_version <> 1 OR b.current_turn_id IS NOT NULL
               OR b.current_attempt_id IS NOT NULL))) LIMIT 1`)
-      .get(resident.id)
+        .get(resident.id))
   )
     throw new CoreJournalRefusal('Core idle cleanup resident is stale or has live work.');
 
@@ -2320,13 +2359,66 @@ export function reserveCoreIdleCleanupInDb(
       'idle_cleanup_result_only'
     );
   if (operation === 'sandbox.delete') requireIdleDeletePredecessor(db, input, sandboxId);
-  else if (input.predecessor)
-    throw new CoreJournalRefusal('Idle cleanup predecessor changed before delete admission.');
+  else if (
+    input.predecessor &&
+    !(operation === 'bridge.close' && refusal && isDeepStrictEqual(input.predecessor, refusal))
+  )
+    throw new CoreJournalRefusal('Idle cleanup predecessor changed before admission.');
 
   return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent, input.processWitness));
 }
 
-/** Orders retirement and fences ingress on the original live Sandbox before the admitted Native drain. */
+/** Finds the sole possible pre-submission handoff owner of the exact physical Sandbox. */
+function readReleaseRefusalPredecessor(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  sandboxBindingRef: string,
+  targetId: string,
+  physicalEpoch: string
+): string | null {
+  const active = db.sqlite
+    .prepare(`SELECT a.attempt_id AS attemptId FROM scheduler_execution_attempts a
+      WHERE a.binding_ref = ? AND a.phase <> 'closed'
+      ORDER BY a.attempt_id LIMIT 2`)
+    .all(sandboxBindingRef) as { attemptId: string }[];
+  if (active.length !== 1) return null;
+  const attempt = requireSchedulerExecutionAttempt(db, active[0]!.attemptId);
+  const session = getWorkerBackendSession({ sqlite: native }, attempt.attemptId);
+  if (
+    attempt.phase !== 'open' ||
+    attempt.terminalCause !== null ||
+    attempt.deadline !== null ||
+    readRetainedNanoHostSubmission(db, attempt.attemptId) !== null ||
+    !attempt.operationId ||
+    !session ||
+    session.state === 'cleaned' ||
+    session.backendKind !== 'openshell' ||
+    session.runtimeTargetId !== targetId ||
+    session.originPhysicalEpoch !== physicalEpoch ||
+    session.workspaceId !== attempt.workspaceId ||
+    session.threadId !== attempt.threadId ||
+    session.turnId !== attempt.turnId ||
+    session.agentSessionId !== attempt.agentSessionId ||
+    session.packageSnapshotId !== attempt.inputRef ||
+    session.sandboxBindingRef !== attempt.bindingRef
+  )
+    return null;
+  const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attempt.attemptId);
+  const final = getWorkerControlAcceptedFinalStatus(
+    { sqlite: native },
+    {
+      workspaceId: session.workspaceId,
+      threadId: session.threadId,
+      turnId: session.turnId,
+      agentSessionId: session.agentSessionId,
+      packageSnapshotId: session.packageSnapshotId,
+      requestId: admission.requestId,
+    }
+  );
+  return final ? null : attempt.attemptId;
+}
+
+/** Orders retirement and fences ingress on the original live Sandbox in the same Core write. */
 function recordSandboxReleaseRefusal(
   db: CoreDb,
   input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>,
@@ -2379,6 +2471,13 @@ function recordSandboxReleaseRefusal(
   )
     throw new CoreJournalRefusal('Sandbox release refusal cannot order a different retirement.');
 
+  const attemptId = readReleaseRefusalPredecessor(
+    db,
+    native,
+    sandboxBindingRef,
+    targetId,
+    physicalEpoch
+  );
   const intent = localCoreJournalIntent({
     definitionVersion: definition,
     executionId,
@@ -2397,15 +2496,271 @@ function recordSandboxReleaseRefusal(
     },
     timestamp: new Date().toISOString(),
   });
+  if (attemptId !== null)
+    markSchedulerExecutionAttemptClosing(db, {
+      attemptId,
+      cause: 'sandbox-release-refusal',
+      requireUnsubmitted: true,
+    });
   writeExecutionJournalIntent(db, {
     ...intent,
     control: {
       ...intent.control,
+      attemptId,
       target: { backendKind: 'openshell', targetId, allocationRef: sandboxBindingRef },
       physicalFenceRefs: [physicalEpoch],
     },
   });
   return executionId;
+}
+
+type ReleaseRefusalHandoff = Extract<
+  ControlCoreJournalInput,
+  { kind: 'sandbox-release-refusal-handoff' }
+>;
+
+/** Both writers address the order's original attempt, including after a lost ACK. */
+function requireReleaseRefusalHandoff(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff
+) {
+  const executionId = input.ref.execution.executionId;
+  const order = readSandboxReleaseRefusalOrder(db, executionId);
+  if (
+    !order?.attemptId ||
+    input.ref.execution.owner.kind !== 'server' ||
+    input.ref.stepId !== 'fence'
+  )
+    throw new CoreJournalRefusal('Sandbox handoff has no exact refusal order.');
+  const attempt = requireSchedulerExecutionAttempt(db, order.attemptId);
+  const anchor = getWorkerBackendSession({ sqlite: native }, attempt.attemptId);
+  if (
+    !anchor ||
+    anchor.backendKind !== 'openshell' ||
+    order.bindingRef !== anchor.sandboxBindingRef ||
+    order.targetId !== anchor.runtimeTargetId ||
+    order.physicalEpoch !== anchor.originPhysicalEpoch ||
+    workspace.workspaceId !== input.workspaceFence.workspaceId ||
+    workspace.workspaceId !== attempt.workspaceId ||
+    anchor.workspaceId !== attempt.workspaceId ||
+    anchor.threadId !== attempt.threadId ||
+    anchor.turnId !== attempt.turnId ||
+    anchor.agentSessionId !== attempt.agentSessionId ||
+    anchor.packageSnapshotId !== attempt.inputRef ||
+    anchor.sandboxBindingRef !== attempt.bindingRef ||
+    workspace.dataRoot !== db.dataRoot
+  )
+    throw new CoreJournalRefusal('Sandbox handoff attempt lineage changed.');
+  const execution = {
+    owner: { kind: 'workspace' as const, workspaceId: workspace.workspaceId },
+    executionId: input.workspaceFence.executionId,
+  };
+  const root = readExecutionJournalRoot(workspace, execution);
+  const terminal = readExecutionJournalInvocation(workspace, {
+    execution,
+    stepId: input.workspaceFence.stepId,
+  });
+  if (
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== attempt.turnId ||
+    terminal.control.kind !== 'terminal-publication' ||
+    terminal.state !== 'cancelled' ||
+    terminal.control.attemptId !== attempt.attemptId ||
+    !isDeepStrictEqual(terminal.control.outputRefs, [executionId])
+  )
+    throw new CoreJournalRefusal('Sandbox handoff lacks its original Workspace terminal fence.');
+  if (
+    attempt.phase === 'closed' &&
+    attempt.terminalCause === 'sandbox-release-refusal' &&
+    attempt.fenceRef === executionId &&
+    anchor.state === 'cleaned'
+  )
+    return { state: 'replayed' } as const;
+  const refusal = readSandboxReleaseRefusalFence(
+    db,
+    order.bindingRef,
+    order.targetId,
+    order.physicalEpoch,
+    attempt.attemptId
+  );
+  const target = getNanoHostRuntimeTarget({ sqlite: native }, anchor.runtimeTargetId);
+  const resident = native
+    .prepare(`SELECT 1 FROM sandbox_runtime_records AS s
+      WHERE sandbox_runtime_id=? AND sandbox_binding_ref=? AND runtime_target_id=?
+        AND origin_physical_epoch=? AND drain_state='draining' AND NOT EXISTS (
+          SELECT 1 FROM harness_instance_records h WHERE h.sandbox_runtime_id=s.sandbox_runtime_id
+            AND (h.drain_state <> 'draining' OR h.lifecycle_state <> 'failed')
+        )`)
+    .get(order.runtimeId, order.bindingRef, order.targetId, order.physicalEpoch);
+  if (
+    !refusal ||
+    !isDeepStrictEqual(refusal.ref, input.ref) ||
+    !resident ||
+    !target?.ready ||
+    !target.freshEmpty ||
+    !target.predecessorFenced ||
+    target.deploymentId !== anchor.deploymentId ||
+    !target.physicalEpoch ||
+    !/^[0-9a-f]{64}$/.test(target.physicalEpoch)
+  )
+    throw new CoreJournalRefusal('Sandbox handoff has no exact retirement authority.');
+  if (target.physicalEpoch === anchor.originPhysicalEpoch) {
+    const request = createNanoHostEffectRequest(anchor, attempt.attemptId, 'sandbox.delete', {
+      attemptId: attempt.attemptId,
+      sandboxId: nanoHostSandboxIdFromBackendSessionId(anchor.backendSessionId),
+    });
+    const original = readExecutionJournalInvocation(db, {
+      execution: { owner: { kind: 'server' }, executionId: `idle-cleanup:${request.requestId}` },
+      stepId: `effect:${request.requestId}`,
+    });
+    if (
+      original.state !== 'completed' ||
+      original.carriage.operation !== 'sandbox.delete' ||
+      original.carriage.bindingRef !== order.bindingRef ||
+      original.control.attemptId !== attempt.attemptId ||
+      !isDeepStrictEqual(original.control.physicalFenceRefs, [anchor.originPhysicalEpoch]) ||
+      !hasCoreIdleCleanupConsumption(db, original)
+    )
+      throw new CoreJournalRefusal('Sandbox handoff is missing the original Delete proof.');
+  }
+  const entry = requireSchedulerAdmissionEntry(db, attempt.queueEntryId, {
+    workspaceId: attempt.workspaceId,
+  });
+  if (
+    root.phase !== 'open' ||
+    !workspace.sqlite
+      .prepare(`SELECT 1 FROM control_turns
+      WHERE id=? AND thread_id=? AND agent_session_id=? AND status='running'`)
+      .get(attempt.turnId, attempt.threadId, attempt.agentSessionId) ||
+    entry.status !== 'admitted' ||
+    entry.threadId !== attempt.threadId ||
+    entry.turnId !== attempt.turnId
+  )
+    throw new CoreJournalRefusal(
+      'Sandbox handoff lacks its original Workspace fence and admission.'
+    );
+  return { state: 'ready', attempt, anchor } as const;
+}
+
+/** The only writer of the linked backend's terminal edge also clears the exact attachment. */
+export function detachSandboxReleaseRefusalInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff,
+  expected: z.output<typeof SandboxReleaseRefusalAttachmentSchema> | null
+): void {
+  assertControlProductWriter(native);
+  const proof = requireReleaseRefusalHandoff(db, native, workspace, input);
+  if (proof.state === 'replayed' || proof.anchor.state === 'cleaned') return;
+  const { anchor } = proof;
+  const owner = { sqlite: native };
+  const storage = getWorkerStorageBindingForSandbox(owner, anchor);
+  const snapshot = findNamedAgentEnvironmentPackageSnapshot(
+    workspace,
+    anchor.workspaceId,
+    anchor.agentSessionId,
+    anchor.packageSnapshotId
+  )?.snapshot;
+  const agentSession = AgentSessionRecordSchema.safeParse(
+    readProduct(
+      workspace.sqlite,
+      { kind: 'workspace', workspaceId: workspace.workspaceId },
+      'agent-session',
+      anchor.agentSessionId
+    )?.record
+  );
+  const workSlotRef = (
+    snapshot?.extensions.openkit as { workerStorage?: { workSlotRef?: string } } | undefined
+  )?.workerStorage?.workSlotRef;
+  if (
+    !expected ||
+    !storage ||
+    storage.state !== 'attached' ||
+    storage.storageRef !== expected.storageRef ||
+    agentSession.data?.retainedStorage?.storageRef !== expected.storageRef ||
+    agentSession.data.retainedStorage.workSlotRef !== expected.workSlotRef ||
+    storage.workspaceId !== anchor.workspaceId ||
+    storage.runtimeTargetId !== anchor.runtimeTargetId ||
+    storage.deploymentId !== anchor.deploymentId ||
+    storage.currentAgentSessionId !== anchor.agentSessionId ||
+    storage.currentThreadId !== anchor.threadId ||
+    snapshot?.scope.turnId !== anchor.turnId ||
+    snapshot.scope.threadId !== anchor.threadId ||
+    !workSlotRef ||
+    storage.currentWorkSlotRef !== workSlotRef ||
+    workSlotRef !== expected.workSlotRef ||
+    storage.attachmentGeneration !== expected.attachmentGeneration ||
+    storage.revision !== expected.revision ||
+    !storage.contributors.some(
+      (contributor) =>
+        contributor.threadId === anchor.threadId &&
+        contributor.workSlotRef === workSlotRef &&
+        contributor.attachmentGeneration === expected.attachmentGeneration
+    )
+  )
+    throw new CoreJournalRefusal('Sandbox handoff has no exact attached writer.');
+  releaseWorkerStorageAttachment(owner, {
+    cleanupProved: true,
+    storageRef: expected.storageRef,
+    sandboxBindingRef: anchor.sandboxBindingRef,
+    attachmentGeneration: expected.attachmentGeneration,
+    expectedRevision: expected.revision,
+  });
+  let { state } = anchor;
+  const transition = (toState: typeof state) =>
+    transitionWorkerBackendSessionState(owner, {
+      attemptId: anchor.attemptId,
+      fromState: state,
+      toState,
+    }).state;
+  if (state !== 'cleanup-pending' && state !== 'physical-cleaned')
+    state = transition('cleanup-pending');
+  if (state === 'cleanup-pending') state = transition('physical-cleaned');
+  if (anchor.workspaceHandoffState === 'pending')
+    markWorkerBackendWorkspaceHandoffComplete(owner, { attemptId: anchor.attemptId });
+  transition('cleaned');
+}
+
+/** Replays the Native terminal edge by the original attempt, with both owner proofs pinned. */
+export function handoffSandboxReleaseRefusalInDb(
+  db: CoreDb,
+  native: CoreDb['sqlite'],
+  workspace: WorkspaceDb,
+  input: ReleaseRefusalHandoff
+): void {
+  assertControlProductWriter(db.sqlite);
+  const proof = requireReleaseRefusalHandoff(db, native, workspace, input);
+  if (proof.state === 'replayed') return;
+  if (proof.anchor.state !== 'cleaned')
+    throw new CoreJournalRefusal('Exact Native refusal detach proof is unavailable.');
+  const { attempt } = proof;
+  closeSchedulerExecutionAttemptWithFence(db, {
+    correlation: schedulerExecutionCorrelation(attempt),
+    fenceRef: input.ref.execution.executionId,
+    proof: {
+      terminalHandoff: true,
+      output: true,
+      evidence: true,
+      outsideWorkspaceCollection: true,
+      integrationDrain: true,
+      routesRevoked: true,
+    },
+  });
+  const queued = db.sqlite
+    .prepare(`UPDATE scheduler_admission_entries SET status='queued'
+      WHERE queue_entry_id=? AND status='admitted'`)
+    .run(attempt.queueEntryId);
+  if (queued.changes !== 1)
+    throw new CoreJournalRefusal('Sandbox handoff lost its Core admission ownership.');
+}
+
+/** Ordinary finish callbacks cannot supply the cleaned edge used by the Core handoff. */
+export function refuseOrdinaryLinkedBackendFinish(db: CoreDb, attemptId: string): void {
+  if (requireSchedulerExecutionAttempt(db, attemptId).terminalCause === 'sandbox-release-refusal')
+    throw new BackendSessionRefusal('Sandbox release refusal owns the linked backend finish.');
 }
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
@@ -2420,6 +2775,8 @@ export function applyControlCoreJournal(
   if (input.kind === 'image-result') return applyControlCoreImageResult(db, input, nanoHost);
   if (input.kind === 'sandbox-release-refusal')
     return recordSandboxReleaseRefusal(db, input, idleCleanupNative);
+  if (input.kind === 'sandbox-release-refusal-handoff')
+    throw new CoreJournalRefusal('Exact Native refusal detach proof is unavailable.');
   if (
     input.kind === 'containment-inspect' ||
     input.kind === 'containment-intent' ||

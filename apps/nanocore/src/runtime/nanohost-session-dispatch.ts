@@ -339,9 +339,19 @@ interface NanoHostImageResultOnlyExpectation {
   readonly requestId: string;
 }
 
+/** One accepted Create recovered by its original acknowledgement owner. */
+interface NanoHostCreateResultOnlyExpectation {
+  readonly imageSettlement?: never;
+  readonly kind: 'sandbox.create';
+  readonly originPhysicalEpoch: string;
+  readonly requestId: string;
+  readonly consumeResult: (result: Readonly<Record<string, unknown>>) => Promise<void>;
+}
+
 /** One exact accepted effect identity reconstructed without replay authority. */
 export type NanoHostResultOnlyExpectation =
   | NanoHostCleanupResultOnlyExpectation
+  | NanoHostCreateResultOnlyExpectation
   | NanoHostImageResultOnlyExpectation;
 
 /** One exact retained result matched to its reconstructed effect identity. */
@@ -1136,12 +1146,19 @@ export function createNanoHostSessionDispatch(
         throw new Error('NanoHost result-only expectations are empty, duplicate, or unbounded.');
       }
       for (const expectation of expectations) {
+        const create = expectation.kind === 'sandbox.create';
         const cleanupExpectation =
           expectation.kind === 'bridge.close' || expectation.kind === 'sandbox.delete';
-        if (cleanupExpectation !== (expectation.originPhysicalEpoch !== undefined)) {
-          throw new Error('NanoHost result-only cleanup physical Epoch origin is invalid.');
+        if ((create || cleanupExpectation) !== (expectation.originPhysicalEpoch !== undefined)) {
+          throw new Error('NanoHost result-only physical Epoch origin is invalid.');
         }
-        if (cleanupExpectation) {
+        if (
+          create &&
+          (expectations.length !== 1 || typeof expectation.consumeResult !== 'function')
+        ) {
+          throw new Error('NanoHost Create recovery requires one exact acknowledgement owner.');
+        }
+        if (create || cleanupExpectation) {
           requireStoredNanoHostPhysicalEpoch(expectation.originPhysicalEpoch);
         }
         if (!expectation.imageSettlement) continue;
@@ -1186,9 +1203,13 @@ export function createNanoHostSessionDispatch(
         requireImageDecidingStorage();
       for (const expectation of expectations) {
         if (
-          !['bridge.close', 'image.acquire', 'image.build', 'sandbox.delete'].includes(
-            expectation.kind
-          ) ||
+          ![
+            'bridge.close',
+            'image.acquire',
+            'image.build',
+            'sandbox.create',
+            'sandbox.delete',
+          ].includes(expectation.kind) ||
           !/^[0-9a-f]{64}$/.test(expectation.requestId) ||
           (pendingEffects.has(expectation.kind) &&
             !canAdoptCleanupResult(
@@ -2163,6 +2184,15 @@ async function settleNanoHostCorrelatedResult(
       await sessionAuthority.closePhysicalConnection(physicalConnection);
     }
     throw new Error('NanoHost effect result requestId or operation does not match.');
+  }
+  // A retained reply can arrive before an effect poll checks the original Epoch.
+  if (pending.resultOnlyGroup && pending.originPhysicalEpoch !== undefined) {
+    const readiness = readyPhysicalConnections.get(physicalConnection);
+    if (!readiness || requireCurrentReadiness(readiness) !== pending.originPhysicalEpoch)
+      throw effectTransportError(
+        409,
+        'NanoHost retained effect result has a different physical Epoch.'
+      );
   }
   if (
     isExactFileRefusal &&

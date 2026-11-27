@@ -94,14 +94,20 @@ import {
   readSandboxReleaseRefusalOrder,
   recordCoreIdleHarnessConsumptionInDb,
 } from '../runtime/core-journal-records.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import {
+  readReleasedSandboxRefusalPredecessor,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
 import {
   applyControlExecutionJournal,
   decodeExecutionJournalIntent,
   decodeExecutionJournalSettlement,
+  readExecutionJournalInvocation,
   readExecutionJournalRoot,
   readKernelSchedulerGrantInDb,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from '../runtime/execution-journal.js';
+import type { ExecutionJournalIntent } from '../runtime/execution-step-journal.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import {
   advanceGoalRevision,
@@ -290,6 +296,7 @@ import {
   type NanoHostOwnerMutation,
   type NanoHostOwnerMutationResult,
   NanoHostOwnerRefusalSchema,
+  type NanoHostProofPeers,
   readControlSchemaApplicationInput,
   type ServerOwnerDescriptor,
   type ServerWorkKernelReply,
@@ -308,9 +315,12 @@ import {
   admitNanoHostFirstSubmissionInDb,
   admitNanoHostWorkerFinalInDb,
   applyControlCoreJournal,
+  detachSandboxReleaseRefusalInDb,
+  handoffSandboxReleaseRefusalInDb,
   inspectAcceptedNanoHostFinalInDb,
   observeAcceptedNanoHostFinalInDb,
   readNanoHostFinalCloseDecision,
+  refuseOrdinaryLinkedBackendFinish,
   releaseCoreNanoHostTerminalInDb,
   verifyNanoHostCleanupSubmitPlacement,
 } from './core-journal-native.js';
@@ -321,6 +331,7 @@ import {
   type CoreDb,
   inspectServerOwnerFile,
   openAdmittedWorkspaceReadDb,
+  openCoreReadDb,
   openSupportedScopeReadOnlySqlite,
   serverStoragePath,
   type WorkspaceDb,
@@ -1567,6 +1578,62 @@ function apply(
   });
 }
 
+/** Additional root obligations require the exact Core release and native Workspace predecessor fence. */
+function requireOriginalWorkspaceTurnOwner(
+  db: WorkspaceDb,
+  intent: ExecutionJournalIntent,
+  agentSessionId: string
+): void {
+  const { control, carriage, execution } = intent;
+  if (
+    execution.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    !['materialize', 'terminal-publication', 'release'].includes(control.kind) ||
+    carriage.operation !== `worker.${control.kind}`
+  )
+    return;
+  const existing = db.sqlite
+    .prepare(`SELECT step_id AS id FROM control_execution_steps
+    WHERE execution_id=? AND json_extract(invocation_json,'$.carriage.operation')=?
+    AND json_extract(control_json,'$.attemptId') IS NOT ?`)
+    .all(execution.ref.executionId, carriage.operation, control.attemptId) as { id: string }[];
+  if (existing.length === 0) return;
+  if (existing.length !== 1 || !control.attemptId)
+    throw new Error('Workspace successor conflicts with its original obligations.');
+  const core = openCoreReadDb(db.dataRoot);
+  try {
+    const attempt = requireSchedulerExecutionAttempt(core, control.attemptId);
+    const prior = readReleasedSandboxRefusalPredecessor(core, attempt, attempt.attemptId);
+    const steps = db.sqlite
+      .prepare(`SELECT step_id AS id FROM control_execution_steps
+      WHERE execution_id=? AND json_extract(control_json,'$.attemptId')=?
+      AND json_extract(invocation_json,'$.carriage.operation') IN ('worker.terminal-publication','worker.release')`)
+      .all(execution.ref.executionId, prior?.attemptId ?? null) as { id: string }[];
+    const proofs = steps.map(({ id }) =>
+      readExecutionJournalInvocation(db, { execution: execution.ref, stepId: id })
+    );
+    if (
+      !prior ||
+      attempt.phase !== 'open' ||
+      attempt.turnId !== execution.workId ||
+      attempt.workspaceId !== db.workspaceId ||
+      attempt.agentSessionId !== agentSessionId ||
+      prior.agentSessionId !== agentSessionId ||
+      !attempt.inputRef ||
+      !control.inputRefs.includes(attempt.inputRef) ||
+      carriage.bindingRef !== attempt.bindingRef ||
+      proofs.length !== 2 ||
+      !proofs.some(
+        (proof) => proof.control.kind === 'terminal-publication' && proof.state === 'cancelled'
+      ) ||
+      !proofs.some((proof) => proof.control.kind === 'release' && proof.state === 'completed') ||
+      proofs.some((proof) => !isDeepStrictEqual(proof.control.outputRefs, [prior.fenceRef]))
+    )
+      throw new Error('Workspace successor lacks the original native release and terminal fence.');
+  } finally {
+    core.sqlite.close();
+  }
+}
+
 /** Uses the exact current Core opening for receipt inspection and authority. */
 function requireCurrentKernelOpening(owner: OwnedDatabase, openingRequestId: number): CoreDb {
   const db = owner.scopeDb;
@@ -1668,6 +1735,21 @@ function withCurrentPeerRead<Value>(
   } finally {
     sqlite.close();
   }
+}
+
+/** Reads the admitted Core and Native owners while the Workspace write holds both. */
+function withWorkspaceNanoHostProof<Value>(
+  db: WorkspaceDb,
+  peers: NanoHostProofPeers,
+  apply: (proof: { core: CoreDb; native: Database.Database }) => Value
+): Value {
+  return withCurrentPeerRead(coreDbPath(db.dataRoot), peers.coreIdentity, (core) =>
+    withCurrentPeerRead(
+      serverStoragePath(db.dataRoot, 'nanohost'),
+      peers.nanoHostIdentity,
+      (native) => apply({ core: bindCoreSqlite(core, db.dataRoot), native })
+    )
+  );
 }
 
 /**
@@ -2130,6 +2212,24 @@ function applyNanoHostOwnerMutation(
         applySandboxReleaseRefusalDrain({ sqlite }, coreDb, mutation.executionId);
         return { kind: mutation.kind, value: null };
       });
+    case 'sandbox-release-refusal-detach':
+      return withNanoHostCore(owner, mutation.coreIdentity, (core) => {
+        const workspaceId = mutation.input.workspaceFence.workspaceId;
+        return withCurrentPeerRead(
+          workspaceDbPath(core.dataRoot, workspaceId),
+          mutation.workspaceIdentity,
+          (workspace) => {
+            detachSandboxReleaseRefusalInDb(
+              core,
+              sqlite,
+              bindWorkspaceSqlite(workspace, core.dataRoot, workspaceId),
+              mutation.input,
+              mutation.attachment
+            );
+            return { kind: mutation.kind, value: null };
+          }
+        );
+      });
     case 'harness-idle-sandbox':
       return withNanoHostCore(owner, mutation.coreIdentity, (coreDb) => {
         const value = applyControlHarnessLifecycle({ sqlite }, mutation.input, {
@@ -2159,11 +2259,19 @@ function applyNanoHostOwnerMutation(
       );
       return { kind: mutation.kind, value: null };
     }
-    case 'backend-session':
+    case 'backend-session': {
+      const input = mutation.input;
+      if (input.kind === 'transition' && input.toState === 'cleaned') {
+        return withNanoHostCore(owner, mutation.coreIdentity, (core) => {
+          refuseOrdinaryLinkedBackendFinish(core, input.attemptId);
+          return { kind: mutation.kind, value: applyControlBackendSession({ sqlite }, input) };
+        });
+      }
       return {
         kind: mutation.kind,
         value: applyControlBackendSession({ sqlite }, mutation.input),
       };
+    }
     case 'backend-session-materialize':
       return withNanoHostCore(owner, mutation.coreIdentity, (core) => ({
         kind: mutation.kind,
@@ -2180,6 +2288,8 @@ function applyNanoHostOwnerMutation(
       return withCurrentPeerRead(coreDbPath(input.dataRoot), input.coreIdentity, (coreSqlite) =>
         coreSqlite.transaction(() => {
           const core = bindCoreSqlite(coreSqlite, input.dataRoot);
+          if (input.classification.kind === 'finish-cleanup')
+            refuseOrdinaryLinkedBackendFinish(core, input.attemptId);
           const lease = requireNanoHostRecoveryLease(core, input.attemptId);
           const { session, proof } = readNanoHostRecoveryLease(sqlite, lease);
           if (
@@ -2342,6 +2452,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else if (request.input.kind === 'sandbox-release-refusal') {
         lanes.add(`runtime-target:${request.input.target.targetId}`);
+      } else if (request.input.kind === 'sandbox-release-refusal-handoff') {
+        lanes.add(request.input.ref.execution.executionId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
       break;
     case 'server-work-owner': {
@@ -3468,7 +3580,11 @@ function flush(owner: OwnedDatabase): void {
             }
             for (const inputJson of request.transition.journalIntents ?? []) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-              applyControlExecutionJournal(owner.scopeDb, { kind: 'intent', inputJson });
+              applyControlExecutionJournal(
+                owner.scopeDb,
+                { kind: 'intent', inputJson },
+                requireOriginalWorkspaceTurnOwner
+              );
             }
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -3514,7 +3630,11 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'journal') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            const resultJson = applyControlExecutionJournal(owner.scopeDb, request.input);
+            const resultJson = applyControlExecutionJournal(
+              owner.scopeDb,
+              request.input,
+              requireOriginalWorkspaceTurnOwner
+            );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -3763,6 +3883,25 @@ function flush(owner: OwnedDatabase): void {
                         }
                       },
                     });
+                    const input = request.input;
+                    if (input.kind === 'sandbox-release-refusal-handoff') {
+                      const workspaceId = input.workspaceFence.workspaceId;
+                      if (!request.workspaceOwnerIdentity)
+                        throw new ControlProductPreconditionError();
+                      return withCurrentPeerRead(
+                        workspaceDbPath(db.dataRoot, workspaceId),
+                        request.workspaceOwnerIdentity,
+                        (workspace) => {
+                          handoffSandboxReleaseRefusalInDb(
+                            db,
+                            sqlite,
+                            bindWorkspaceSqlite(workspace, db.dataRoot, workspaceId),
+                            input
+                          );
+                          return null;
+                        }
+                      );
+                    }
                     if (
                       request.input.kind === 'idle-intent' ||
                       request.input.kind === 'sandbox-release-refusal'
@@ -4033,11 +4172,13 @@ function flush(owner: OwnedDatabase): void {
                 request,
                 request.nanoHostFinalGuard
               );
-            const result = applyWorkspaceCaptureInDb(
-              owner.scopeDb,
-              request.input,
-              request.preparedWorkspaceCapture ?? null
-            );
+            const db = owner.scopeDb;
+            const source = request.preparedWorkspaceCapture ?? null;
+            const result = request.nanoHostPeers
+              ? withWorkspaceNanoHostProof(db, request.nanoHostPeers, (proof) =>
+                  applyWorkspaceCaptureInDb(db, request.input, source, proof)
+                )
+              : applyWorkspaceCaptureInDb(db, request.input, source);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -4051,7 +4192,12 @@ function flush(owner: OwnedDatabase): void {
               owner.scopeDb.workspaceId !== request.input.identity.workspaceId
             )
               throw new ControlProductPreconditionError();
-            applyWorkspaceBaselineInDb(owner.scopeDb, request.input);
+            const db = owner.scopeDb;
+            if (request.nanoHostPeers) {
+              withWorkspaceNanoHostProof(db, request.nanoHostPeers, (proof) =>
+                applyWorkspaceBaselineInDb(db, request.input, proof)
+              );
+            } else applyWorkspaceBaselineInDb(db, request.input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,

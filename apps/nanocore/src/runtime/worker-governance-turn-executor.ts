@@ -159,6 +159,7 @@ import {
   resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import { readReleasedSandboxRefusalPredecessor } from './execution-attempt-records.js';
 import {
   acceptSchedulerExecutionObservation,
   bindNanoHostAttemptPreparation,
@@ -178,6 +179,7 @@ import {
   createExecutionStepJournalReader,
   decodeExecutionJournalSpan,
   readExecutionJournalInvocation,
+  readExecutionJournalRoot,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 } from './execution-journal.js';
 import type {
@@ -232,6 +234,7 @@ import type {
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
   getWorkerBackendSession,
+  getWorkerBackendSessionByPackage,
   listWorkerBackendSessions,
   type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
@@ -273,6 +276,7 @@ import { WorkerReleaseIncompatibleError } from './worker-release-identity.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
   getWorkerStorageBinding,
+  getWorkerStorageBindingForSandbox,
   resolveWorkerStorageWorkSlotRef,
   WorkerStorageBindingError,
   workerStorageDefaultWorkSlotRef,
@@ -1267,6 +1271,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
+    const recycle = this.readReleasedSandboxRefusal(store, input.turn, input.attemptId);
+    if (recycle) {
+      const { agentSessionId, workerStorageChoice } = recycle;
+      input = { ...input, workerStorageChoice };
+      await this.requireMaterializationCapacity(agentSessionId, input);
+      return {
+        agentSessionId,
+        workerStorageChoice,
+        currentAgentSession: null,
+        replacementRequired: false,
+        sessionCompatibilityKey: this.previewAgentSessionCompatibilityKey(agentSessionId, input),
+      };
+    }
     let workerStorageChoice = this.selectContinuationStorage(
       store,
       input,
@@ -1408,7 +1425,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         proofInspection = await this.backend.prepareAgentSessionContinuity({
           agentSessionId: current.id,
           recordNativeHandleDigest: (digest, retainedStorage) =>
-            this.recordNativeHandleDigest(store, current!.id, digest, retainedStorage),
+            this.recordNativeHandleDigest(
+              store,
+              current!.id,
+              digest,
+              retainedStorage,
+              current!.environmentPackageSnapshotId ?? undefined
+            ),
           reuseAllowed: true,
           threadId: input.turn.threadId,
           workspaceId: workspaceIdForOwner(input.turn.owner),
@@ -1613,10 +1636,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       prepared.agentSessionId
     );
+    const recycle = this.readReleasedSandboxRefusal(store, input.preparation.turn, input.attemptId);
+    if (
+      recycle &&
+      (prepared.agentSessionId !== recycle.agentSessionId ||
+        !isDeepStrictEqual(prepared.workerStorageChoice, recycle.workerStorageChoice))
+    )
+      throw new Error('Prepared successor no longer owns the original Volume selection.');
     const preparationBinding = {
       attemptId: input.attemptId,
       agentSessionId: prepared.agentSessionId,
-      inputRef: `aepsnap_${input.preparation.turn.id}_${prepared.agentSessionId}`,
+      inputRef:
+        recycle?.packageSnapshotId ??
+        `aepsnap_${input.preparation.turn.id}_${prepared.agentSessionId}`,
       bindingRef: `attempt-binding:${input.attemptId}`,
     };
     if (this.readNanoHostEnvironment) {
@@ -1628,6 +1660,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         sessionCompatibilityKey: prepared.sessionCompatibilityKey,
       });
     }
+    if (recycle) return recycle.workerStorageChoice;
     // Keep the captured revision; a revalidation must never rebase a caller or prepared choice.
     const workerStorageChoice = this.selectContinuationStorage(
       store,
@@ -2017,6 +2050,74 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     return committedWorkerStorageChoice;
   }
 
+  /** A released pre-submit attempt can continue only its original Turn and Volume selection. */
+  private readReleasedSandboxRefusal(
+    store: FsStore,
+    turn: PrepareAgentSessionForTurnInput['turn'],
+    attemptId: string | undefined
+  ) {
+    if (turn.status !== 'running' || !this.coreDb || !attemptId || !turn.agentSessionId)
+      return null;
+    const core = this.coreDb;
+    const attempt = requireSchedulerExecutionAttempt(core, attemptId);
+    if (attempt.phase !== 'open' || attempt.turnId !== turn.id) return null;
+    const predecessor = readReleasedSandboxRefusalPredecessor(core, attempt, attemptId);
+    if (!predecessor) return null;
+    const session = store.getAgentSession(turn.agentSessionId);
+    const storage = session.retainedStorage;
+    const { anchor, hold } = requireNanoHostObservation(
+      core,
+      (sqlite) => ({
+        anchor: getWorkerBackendSession({ sqlite }, predecessor.attemptId),
+        hold: storage && getWorkerStorageBinding({ sqlite }, storage),
+      }),
+      this.readNanoHostEnvironment
+    );
+    if (
+      !anchor ||
+      anchor.state !== 'cleaned' ||
+      anchor.agentSessionId !== session.id ||
+      anchor.packageSnapshotId !== session.environmentPackageSnapshotId ||
+      predecessor.agentSessionId !== session.id ||
+      session.threadId !== turn.threadId ||
+      session.workspaceId !== workspaceIdForOwner(turn.owner) ||
+      session.agentId !== turn.agentId ||
+      session.stale ||
+      !storage ||
+      hold?.state !== 'idle' ||
+      hold.workspaceId !== anchor.workspaceId ||
+      hold.runtimeTargetId !== anchor.runtimeTargetId ||
+      hold.deploymentId !== anchor.deploymentId ||
+      !hold.contributors.some(
+        ({ threadId, workSlotRef, attachmentGeneration }) =>
+          threadId === session.threadId &&
+          workSlotRef === storage.workSlotRef &&
+          attachmentGeneration === hold.attachmentGeneration
+      )
+    )
+      throw new Error('Released predecessor has no exact original Volume and AgentSession.');
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(core, attemptId);
+    const original = admission.workerStorageChoice;
+    const workerStorageChoice: SchedulerWorkerStorageChoice = {
+      kind: 'selected',
+      storageRef: storage.storageRef,
+      reuseWorkSlotRef: storage.workSlotRef,
+      expectedRevision: hold.revision,
+      purpose: original?.kind === 'selected' ? original.purpose : 'work',
+      goalId: original?.goalId ?? null,
+      taskId: original?.taskId ?? null,
+      ...(original?.kind === 'selected' && original.adjudicatedThreadIds
+        ? { adjudicatedThreadIds: original.adjudicatedThreadIds }
+        : {}),
+    };
+    return {
+      predecessor,
+      agentSessionId: session.id,
+      packageSnapshotId: `aepsnap_${turn.id}_${session.id}_${attemptId}`,
+      workerStorageChoice,
+    };
+  }
+
   /** Joins native proof to its exact storage selection before package planning or replacement. */
   private selectContinuationStorage(
     store: FsStore,
@@ -2221,9 +2322,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: PrepareAgentSessionForTurnInput
   ): AgentEnvironmentPackagePreview {
     this.recheckPreparedLogin(input, agentSessionId);
+    const preparedSnapshot =
+      this.coreDb && input.attemptId && input.turn.status === 'running'
+        ? requireSchedulerExecutionAttempt(this.coreDb, input.attemptId).inputRef
+        : null;
     const resolvePackage = (workSlotRef: string) =>
       resolveAgentEnvironmentPackageMetadata({
         agentSessionId,
+        ...(preparedSnapshot ? { packageSnapshotId: preparedSnapshot } : {}),
         agentSetup: input.agentSetup,
         supportedRequiredFeatures: readSupportedAgentSetupFeatures(this.executionBackend),
         backend: { kind: 'openshell' },
@@ -3455,6 +3561,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error('Governed execution has no prepared attempt binding.');
     context = { ...context, sandboxBindingRef: executionAttempt.bindingRef };
     const turn = store.getTurnById(turnId);
+    const recycle = this.readReleasedSandboxRefusal(store, turn, executionAttempt.attemptId);
+    if (
+      recycle &&
+      (context.agentSessionId !== recycle.agentSessionId ||
+        executionAttempt.inputRef !== recycle.packageSnapshotId ||
+        !isDeepStrictEqual(context.workerStorageChoice, recycle.workerStorageChoice))
+    )
+      throw new Error('Successor launch changed its exact preparation.');
     let workerInput = input;
     try {
       const scope = {
@@ -3529,6 +3643,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? { harnessLoginSelection: context.harnessLoginSelection }
           : {}),
         agentSetup: context.agentSetup,
+        ...(recycle ? { attemptId: executionAttempt.attemptId } : {}),
         freshAgentSessionId: resolvedAgentSessionId,
         requestId,
         turn,
@@ -3660,6 +3775,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSetup: context.agentSetup,
         supportedRequiredFeatures: readSupportedAgentSetupFeatures(this.executionBackend),
         agentSessionId: resolvedAgentSessionId,
+        ...(recycle ? { packageSnapshotId: recycle.packageSnapshotId } : {}),
         backend: { kind: 'openshell' },
         ...(preparedWorkerContext
           ? {
@@ -3758,10 +3874,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         (existingAgentSession.workspaceId !== workspaceIdForOwner(turn.owner) ||
           existingAgentSession.threadId !== turn.threadId ||
           existingAgentSession.agentId !== manifest.id ||
-          existingAgentSession.status !== 'idle' ||
+          (!recycle && existingAgentSession.status !== 'idle') ||
           existingAgentSession.stale ||
-          existingAgentSession.sessionCompatibilityKey !==
-            sessionWorkspace.compatibilityKey.digest ||
+          (!recycle &&
+            existingAgentSession.sessionCompatibilityKey !==
+              sessionWorkspace.compatibilityKey.digest) ||
           existingAgentSession.policySnapshotId !== WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID)
       ) {
         agentSessionId = null;
@@ -3784,16 +3901,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       let nativeResume: WorkerGovernanceNativeResume | null;
       try {
-        const source = selectThreadNativeResumeSource(
-          threadAgentSessions,
-          resolvedAgentSessionId,
-          {
-            agentId: manifest.id,
-            runtimeKind: manifest.runtime.kind,
-            adapter: manifest.runtime.adapter,
-          },
-          workspaceDb
-        );
+        const source =
+          recycle && existingAgentSession?.nativeHandleDigest
+            ? existingAgentSession
+            : selectThreadNativeResumeSource(
+                threadAgentSessions,
+                resolvedAgentSessionId,
+                {
+                  agentId: manifest.id,
+                  runtimeKind: manifest.runtime.kind,
+                  adapter: manifest.runtime.adapter,
+                },
+                workspaceDb
+              );
         nativeResume = source ? { digest: source.nativeHandleDigest!, locator: source.id } : null;
       } catch (error) {
         agentSessionId = null;
@@ -3836,20 +3956,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           throw new Error('Worker materialization publication may occur only once.');
         materializationPublished = true;
         // Recovery must have the exact initiating Item before its checkpoint names a Session.
-        const userItem = await store.createItem({
-          actor: outcomeInitiated
-            ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
-            : launchContext.triggerActor,
-          completedAt: timestamp,
-          createdAt: timestamp,
-          id: deriveEntityId('it', ['task-user', turnId]),
-          status: 'completed',
-          text: contextRequest,
-          threadId: turn.threadId,
-          turnId,
-          type: 'user-message',
-          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-        });
+        const userItem = recycle
+          ? null
+          : await store.createItem({
+              actor: outcomeInitiated
+                ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
+                : launchContext.triggerActor,
+              completedAt: timestamp,
+              createdAt: timestamp,
+              id: deriveEntityId('it', ['task-user', turnId]),
+              status: 'completed',
+              text: contextRequest,
+              threadId: turn.threadId,
+              turnId,
+              type: 'user-message',
+              owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+            });
         // Durable package bytes must precede every Session or journal reference to this snapshot.
         this.recheckPreparedLogin(launchPreparation, resolvedAgentSessionId);
         if (workspaceDb) {
@@ -3894,6 +4016,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               workspaceRoots: launchContext.workspaceRoots,
             });
         if (!workspaceDb) throw new Error('Worker journal admission requires its Workspace owner.');
+        if (recycle) {
+          await endWorkerTurnJournalRelease(
+            store,
+            workspaceDb,
+            turnId,
+            recycle.predecessor.fenceRef!,
+            { attemptId: recycle.predecessor.attemptId, keepOpen: true }
+          );
+        }
         const journalIntents = prepareWorkerTurnJournalIntents(
           workspaceDb,
           launchPackage,
@@ -3902,7 +4033,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             backendKind: launchLifecycle.identity.backendKind,
             targetId: launchLifecycle.identity.runtimeTargetId,
             allocationRef: executionAttempt.bindingRef,
-          }
+          },
+          recycle?.predecessor
         );
         await store.updateTurn(
           turnId,
@@ -3914,8 +4046,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
         journalAdmitted = true;
 
-        await this.emitTurnStarted(store, launchPackage, requestId);
-        await this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
+        if (userItem) {
+          await this.emitTurnStarted(store, launchPackage, requestId);
+          await this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
+        }
         await this.emitAgentSession(store, launchPackage, requestId, agentSession);
 
         if (this.coreDb && launchContext.sandboxBindingRef) {
@@ -3971,7 +4105,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           })
       ).catch(async (error) => {
         if (journalAdmitted)
-          await endWorkerTurnMaterialization(store, workspaceDb!, turnId, 'unknown');
+          await endWorkerTurnMaterialization(
+            store,
+            workspaceDb!,
+            turnId,
+            'unknown',
+            [],
+            executionAttempt.attemptId
+          );
         throw error;
       });
       if (!materializationPublished)
@@ -3981,8 +4122,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         workspaceDb!,
         turnId,
         'completed',
-        materialization.sandbox ? [materialization.sandbox.name] : []
+        materialization.sandbox ? [materialization.sandbox.name] : [],
+        executionAttempt.attemptId
       );
+      if (recycle && !materialization.retainedStorage)
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Successor materialization has no admitted retained Volume.',
+          409
+        );
       if (materialization.retainedStorage) {
         const retainedStorage = AgentSessionRetainedStorageSchema.parse(
           materialization.retainedStorage
@@ -3993,9 +4141,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             'Materialization has no original retained-storage attachment generation.',
             409
           );
-        const sourceStorage = nativeResume
-          ? store.getAgentSession(nativeResume.locator).retainedStorage
-          : null;
+        const sourceStorage = recycle
+          ? existingAgentSession!.retainedStorage
+          : nativeResume
+            ? store.getAgentSession(nativeResume.locator).retainedStorage
+            : null;
         // A successor preserves the association and slot, but receives its own admitted generation.
         if (
           sourceStorage &&
@@ -4004,19 +4154,28 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ) {
           throw new TurnStartValidationError(
             'recovery_required',
-            'The admitted storage differs from the native resume attachment.',
+            recycle
+              ? 'The successor did not attach the original Volume and work slot.'
+              : 'The admitted storage differs from the native resume attachment.',
             409
           );
         }
-        await store.updateAgentSession(agentSessionId, {
-          // Materialization must not backfill an older immutable fact from current binding state.
-          retainedStorage:
-            existingAgentSession?.retainedStorage &&
-            existingAgentSession.retainedStorage.attachmentGeneration === undefined
-              ? { storageRef: retainedStorage.storageRef, workSlotRef: retainedStorage.workSlotRef }
-              : { ...retainedStorage, attachmentGeneration: retainedStorage.attachmentGeneration },
-          updatedAt: this.currentTime(),
-        });
+        if (!recycle)
+          await store.updateAgentSession(agentSessionId, {
+            // Materialization must not backfill an older immutable fact from current binding state.
+            retainedStorage:
+              existingAgentSession?.retainedStorage &&
+              existingAgentSession.retainedStorage.attachmentGeneration === undefined
+                ? {
+                    storageRef: retainedStorage.storageRef,
+                    workSlotRef: retainedStorage.workSlotRef,
+                  }
+                : {
+                    ...retainedStorage,
+                    attachmentGeneration: retainedStorage.attachmentGeneration,
+                  },
+            updatedAt: this.currentTime(),
+          });
       }
       await this.bindNativeHandleRecorder(store, environmentPackage);
       if (backendLifecycle.session) {
@@ -4107,7 +4266,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const deliverPreparedBindings = async (
         credentials: readonly { planId: string; receiptId: string; materialVersion: number }[]
       ) => {
-        if (existingAgentSession || credentials.length === 0) return;
+        if ((!recycle && existingAgentSession) || credentials.length === 0) return;
         const dependencies = {
           coreDb: this.coreDb!,
           store,
@@ -4200,7 +4359,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               const observed = await this.executionBackend.submit({
                 ...schedulerExecutionCorrelation(submission),
                 deadline: submission.deadline!,
-                ...(!existingAgentSession && runtimeFileCredentials.length > 0
+                ...((recycle || !existingAgentSession) && runtimeFileCredentials.length > 0
                   ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
                   : {}),
               });
@@ -4240,7 +4399,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         this.currentTime()
       );
       // Credential material is delivered once at `session.open`; a reused binding receives none.
-      if (!existingAgentSession) {
+      if (recycle || !existingAgentSession) {
         const realized = requireExecutionCredentialReceipts(
           runtimeFileCredentials.map(workerCredentialFileBinding),
           observation.credentialReceipts
@@ -4360,6 +4519,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw primaryError;
       }
       if (primaryFailed) errors.unshift(primaryError);
+      const beforeFailure = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
+      if (
+        primaryFailed &&
+        beforeFailure.terminalCause === 'sandbox-release-refusal' &&
+        beforeFailure.deadline === null
+      )
+        return;
       failedAttempt = primaryFailed
         ? await requireWorkerFailureClose(
             this.coreDb!,
@@ -4402,7 +4568,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         errors.push(new Error('The governed worker turn is missing its AgentSession id.'));
       } else {
         try {
-          await this.completeTurn(store, turn, agentSessionId, requestId);
+          if (workerFinalStatus) {
+            await this.recordAcceptedWorkerOutcome(
+              store,
+              turn,
+              agentSessionId,
+              requestId,
+              workerFinalStatus,
+              environmentPackage?.snapshotId ?? null
+            );
+          } else {
+            await this.completeTurn(
+              store,
+              turn,
+              agentSessionId,
+              requestId,
+              'completed',
+              executionAttempt.attemptId
+            );
+          }
         } catch (error) {
           errors.push(error);
           terminalObserved = store
@@ -4449,6 +4633,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               requestId,
               store,
               turnId: turn.id,
+              attemptId: executionAttempt.attemptId,
             });
           } else {
             await this.failTurn(
@@ -4468,7 +4653,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 this.backend.readThreadAgentSessionBinding?.({
                   threadId: turn.threadId,
                   workspaceId: workspaceIdForOwner(turn.owner),
-                })?.agentSessionId === agentSessionId
+                })?.agentSessionId === agentSessionId,
+              executionAttempt.attemptId
             );
           }
         } catch (failureError) {
@@ -4733,7 +4919,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const workspaceDb = this.openWorkspaceDb(original.workspaceId);
       if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
       try {
-        await endWorkerTurnJournalRelease(store, workspaceDb, original.turnId, fenceRef);
+        await endWorkerTurnJournalRelease(store, workspaceDb, original.turnId, fenceRef, {
+          attemptId,
+        });
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -5514,7 +5702,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await this.backend.bindNativeHandleRecorder?.(
       environmentPackage.snapshotId,
       (digest, retainedStorage) =>
-        this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage)
+        this.recordNativeHandleDigest(
+          store,
+          agentSessionId,
+          digest,
+          retainedStorage,
+          environmentPackage.snapshotId
+        )
     );
   }
 
@@ -5531,18 +5725,28 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     agentSessionId: string,
     digest: string,
-    retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
+    retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number },
+    packageSnapshotId?: string
   ): Promise<void> {
     const session = store.getAgentSession(agentSessionId);
     const recordedStorage = AgentSessionRetainedStorageSchema.safeParse(session.retainedStorage);
     const actualStorage = AgentSessionRetainedStorageSchema.safeParse(retainedStorage);
+    const successorAttachment = this.readRefusalSuccessorAttachment(
+      session,
+      packageSnapshotId,
+      retainedStorage
+    );
     if (
       !recordedStorage.success ||
       !actualStorage.success ||
+      (packageSnapshotId !== undefined &&
+        session.environmentPackageSnapshotId !== packageSnapshotId) ||
       actualStorage.data.attachmentGeneration === undefined ||
       recordedStorage.data.storageRef !== actualStorage.data.storageRef ||
       recordedStorage.data.workSlotRef !== actualStorage.data.workSlotRef ||
-      (recordedStorage.data.attachmentGeneration !== undefined &&
+      successorAttachment === false ||
+      (successorAttachment === null &&
+        recordedStorage.data.attachmentGeneration !== undefined &&
         recordedStorage.data.attachmentGeneration !== actualStorage.data.attachmentGeneration)
     ) {
       throw new TurnStartValidationError(
@@ -5634,6 +5838,56 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     };
   }
 
+  /** A successor ready proof must use the exact selected package and its attached writer. */
+  private readRefusalSuccessorAttachment(
+    session: ReturnType<FsStore['getAgentSession']>,
+    packageSnapshotId: string | undefined,
+    storage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
+  ): boolean | null {
+    const db = this.coreDb;
+    if (!db || !packageSnapshotId || session.environmentPackageSnapshotId !== packageSnapshotId)
+      return null;
+    const read = this.readNanoHostEnvironment;
+    if (!read) return false;
+    const placement = read((sqlite) =>
+      getWorkerBackendSessionByPackage({ sqlite }, packageSnapshotId)
+    );
+    if (placement.state !== 'ready') return false;
+    const original = placement.value;
+    if (!original) return null;
+    const attempt = requireSchedulerExecutionAttempt(db, original.attemptId);
+    if (!readReleasedSandboxRefusalPredecessor(db, attempt, attempt.attemptId)) return null;
+    if (
+      original.workspaceId !== session.workspaceId ||
+      original.threadId !== session.threadId ||
+      original.agentSessionId !== session.id ||
+      original.packageSnapshotId !== packageSnapshotId
+    )
+      return false;
+    const evidence = read((sqlite) => ({
+      target: getNanoHostRuntimeTarget({ sqlite }, original.runtimeTargetId),
+      hold: getWorkerStorageBindingForSandbox({ sqlite }, original),
+    }));
+    if (evidence.state !== 'ready') return false;
+    const { target, hold } = evidence.value;
+    return (
+      target?.deploymentId === original.deploymentId &&
+      target.physicalEpoch === original.originPhysicalEpoch &&
+      target.ready &&
+      attempt.bindingRef === original.sandboxBindingRef &&
+      attempt.inputRef === packageSnapshotId &&
+      hold?.state === 'attached' &&
+      hold.deploymentId === original.deploymentId &&
+      hold.runtimeTargetId === original.runtimeTargetId &&
+      hold.workspaceId === session.workspaceId &&
+      hold.currentThreadId === session.threadId &&
+      hold.currentAgentSessionId === session.id &&
+      hold.currentWorkSlotRef === storage.workSlotRef &&
+      hold.storageRef === storage.storageRef &&
+      hold.attachmentGeneration === storage.attachmentGeneration
+    );
+  }
+
   /**
    * Physically cleans one exact backend identity and atomically projects only proven success.
    *
@@ -5713,7 +5967,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         store,
         workspaceDb,
         environmentPackage.scope.turnId,
-        'inspect-cleanup'
+        'inspect-cleanup',
+        undefined,
+        lifecycle.session && this.coreDb
+          ? requireSchedulerExecutionAttempt(this.coreDb, lifecycle.session.attemptId)
+          : undefined
       );
       if (closeout)
         requireNanoHostCleanupInspection(workspaceDb, cleanupJournal, lifecycle.session!, 'intent');
@@ -6208,7 +6466,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     accepted: AcceptedWorkerFinalStatus,
     packageSnapshotId: string | null
   ): Promise<void> {
-    const terminalCause = this.coreDb
+    const attempt = this.coreDb
       ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
           workspaceId: workspaceIdForOwner(turnScope.owner),
           threadId: turnScope.threadId,
@@ -6216,8 +6474,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }).find(
           (attempt) =>
             attempt.agentSessionId === agentSessionId && attempt.inputRef === packageSnapshotId
-        )?.terminalCause
+        )
       : null;
+    if (attempt?.terminalCause === 'sandbox-release-refusal')
+      throw new Error('The retired attempt cannot publish the Turn outcome.');
+    const terminalCause = attempt?.terminalCause;
     const cancellationWon = terminalCause === 'turn-cancelled';
     // Native final evidence proves stop; the exact attempt's durable cause owns product meaning.
     const stopReason = canonicalStopReasonForAcceptedWorkerFinalStatus(accepted, terminalCause);
@@ -6233,7 +6494,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       stopReason === 'length' ||
       stopReason === 'budget_exhausted'
     ) {
-      await this.completeTurn(store, turnScope, agentSessionId, requestId, stopReason);
+      await this.completeTurn(
+        store,
+        turnScope,
+        agentSessionId,
+        requestId,
+        stopReason,
+        attempt?.attemptId
+      );
       return;
     }
     if (stopReason === 'aborted') {
@@ -6255,6 +6523,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         requestId,
         store,
         turnId: turnScope.id,
+        ...(attempt ? { attemptId: attempt.attemptId } : {}),
       });
       return;
     }
@@ -6333,7 +6602,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       requestId,
       failure,
       failure,
-      agentSessionRetained
+      agentSessionRetained,
+      attempt?.attemptId
     );
   }
 
@@ -6351,7 +6621,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string,
     requestId: string | null,
-    stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed'
+    stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed',
+    attemptId?: string
   ): Promise<void> {
     const completedAt = this.currentTime();
     const projection = {
@@ -6378,7 +6649,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       turnScope.id,
       { completedAt, error: null, status: 'completed' },
       {
-        ...(await this.readTerminalPublication(store, turnScope.id)),
+        ...(await this.readTerminalPublication(store, turnScope.id, 'completed', attemptId)),
         ...(composeSession ? { agentSession: projection } : {}),
         precedingEvents: [sessionEvent],
         requestId,
@@ -6416,7 +6687,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private async readTerminalPublication(
     store: FsStore,
     turnId: string,
-    outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
+    outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed',
+    attemptId?: string
   ): Promise<TerminalTurnPublication> {
     if (!this.coreDb) throw new Error('Worker terminal journal requires Core lineage.');
     const turn = store.getTurnById(turnId);
@@ -6428,7 +6700,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
     const workspaceDb = bindWorkspaceSqlite(reader.sqlite, this.coreDb.dataRoot, workspaceId);
     try {
-      return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
+      return await workerTurnTerminalPublication(workspaceDb, turnId, outcome, attemptId);
     } finally {
       reader.close();
     }
@@ -6453,7 +6725,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     error: unknown,
     primaryError: unknown = error,
-    agentSessionRetained = false
+    agentSessionRetained = false,
+    attemptId?: string
   ): Promise<void> {
     const attempts =
       this.coreDb && agentSessionId !== null
@@ -6481,7 +6754,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             publication: await this.readTerminalPublication(
               store,
               turnScope.id,
-              interrupted ? 'interrupted' : 'failed'
+              interrupted ? 'interrupted' : 'failed',
+              attemptId
             ),
           }
         : {}),
@@ -6734,7 +7008,8 @@ export function prepareWorkerTurnJournalIntents(
   workspaceDb: WorkspaceDb,
   environmentPackage: AgentEnvironmentPackage,
   attempt: ReturnType<typeof requireSchedulerExecutionAttempt>,
-  target: ExecutionStepControl['target']
+  target: ExecutionStepControl['target'],
+  predecessor?: ReturnType<typeof requireSchedulerExecutionAttempt>
 ): ExecutionJournalIntent[] {
   const turnId = environmentPackage.scope.turnId;
   if (
@@ -6742,12 +7017,43 @@ export function prepareWorkerTurnJournalIntents(
     attempt.workspaceId !== workspaceDb.workspaceId ||
     attempt.agentSessionId !== environmentPackage.scope.agentSessionId ||
     !attempt.bindingRef ||
-    attempt.phase !== 'open' ||
-    workspaceDb.sqlite.prepare('SELECT 1 FROM control_executions WHERE work_id=?').get(turnId)
+    attempt.phase !== 'open'
   )
     throw new Error('Worker journal requires its original unexecuted admission.');
+  const rows = workspaceDb.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=?')
+    .all(turnId) as { id: string }[];
+  let original: ReturnType<typeof readExecutionJournalRoot> | undefined;
+  if (predecessor) {
+    if (rows.length !== 1) throw new Error('Successor requires one original Workspace execution.');
+    const execution = {
+      owner: { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId },
+      executionId: rows[0]!.id,
+    };
+    original = readExecutionJournalRoot(workspaceDb, execution);
+    const steps = workspaceDb.sqlite
+      .prepare(
+        `SELECT step_id AS stepId FROM control_execution_steps
+       WHERE execution_id=? AND json_extract(control_json,'$.kind')='terminal-publication'`
+      )
+      .all(execution.executionId) as { stepId: string }[];
+    const terminal =
+      steps.length === 1
+        ? readExecutionJournalInvocation(workspaceDb, { execution, stepId: steps[0]!.stepId })
+        : null;
+    if (
+      original.phase !== 'open' ||
+      original.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+      terminal?.state !== 'cancelled' ||
+      terminal.control.attemptId !== predecessor.attemptId ||
+      !isDeepStrictEqual(terminal.control.outputRefs, [predecessor.fenceRef])
+    )
+      throw new Error('Successor requires the exact predecessor Workspace fence.');
+  } else if (rows.length !== 0) {
+    throw new Error('Worker journal requires its original unexecuted admission.');
+  }
   const startTimeUnixNano = BigInt(Date.now()) * 1_000_000n;
-  const span: ExecutionJournalAdmission['span'] = {
+  const newSpan: ExecutionJournalAdmission['span'] = {
     traceId: randomBytes(16).toString('hex'),
     spanId: randomBytes(8).toString('hex'),
     flags: 0,
@@ -6769,20 +7075,25 @@ export function prepareWorkerTurnJournalIntents(
     },
     resource: { attributes: [], droppedAttributesCount: 0 },
   };
+  const span: ExecutionJournalAdmission['span'] = original
+    ? { ...original.span, endTimeUnixNano: null }
+    : newSpan;
   const admission: ExecutionJournalAdmission = {
-    ref: {
+    ref: original?.ref ?? {
       owner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
       executionId: randomUUID(),
     },
     definitionVersion: WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
     workId: turnId,
-    fingerprint: commandInputHash({
-      turnId,
-      attemptId: attempt.attemptId,
-      bindingRef: attempt.bindingRef,
-      packageSnapshotId: environmentPackage.snapshotId,
-    }),
-    exclusionRefs: [attempt.attemptId, attempt.bindingRef],
+    fingerprint:
+      original?.fingerprint ??
+      commandInputHash({
+        turnId,
+        attemptId: attempt.attemptId,
+        bindingRef: attempt.bindingRef,
+        packageSnapshotId: environmentPackage.snapshotId,
+      }),
+    exclusionRefs: original?.exclusionRefs ?? [attempt.attemptId, attempt.bindingRef],
     span,
   };
   const control: ExecutionStepControl = {
@@ -6894,17 +7205,30 @@ export async function hasCompletedWorkerTurnCollection(
 async function readWorkerTurnJournalObligation(
   workspaceDb: WorkspaceDb,
   turnId: string,
-  kind: 'materialize' | 'terminal-publication' | 'release'
+  kind: 'materialize' | 'terminal-publication' | 'release',
+  selector?: { attemptId?: string; bindingRef?: string }
 ) {
   const journal = await readWorkerTurnJournal(workspaceDb, turnId);
-  const rows = workspaceDb.sqlite
+  const candidates = workspaceDb.sqlite
     .prepare(
-      "SELECT step_id,span_json FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind')=? AND json_extract(invocation_json,'$.carriage.operation')=?"
+      "SELECT step_id,span_json,control_json,invocation_json FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind')=? AND json_extract(invocation_json,'$.carriage.operation')=?"
     )
     .all(journal.root.ref.executionId, kind, `worker.${kind}`) as {
     step_id: string;
     span_json: string;
+    control_json: string;
+    invocation_json: string;
   }[];
+  const rows =
+    selector && (selector.attemptId !== undefined || candidates.length > 1)
+      ? candidates.filter(
+          (row) =>
+            (selector.attemptId === undefined ||
+              JSON.parse(row.control_json).attemptId === selector.attemptId) &&
+            (selector.bindingRef === undefined ||
+              JSON.parse(row.invocation_json).carriage.bindingRef === selector.bindingRef)
+        )
+      : candidates;
   if (rows.length !== 1) throw new Error('Worker journal requires its original unique obligation.');
   const invocation = await journal.reader.readInvocation({
     execution: journal.root.ref,
@@ -6936,6 +7260,7 @@ export async function beginWorkerTurnJournalStep(
     | 'consume-receipt',
   carriage?: ExecutionJournalIntent['carriage'],
   correlation?: {
+    attemptId?: string;
     operationId: string | null;
     deadline: string | null;
     parent?: ExecutionJournalIntent;
@@ -6949,7 +7274,16 @@ export async function beginWorkerTurnJournalStep(
   );
   let intent: ExecutionJournalIntent;
   try {
-    const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
+    const original = await readWorkerTurnJournalObligation(
+      workspaceDb,
+      turnId,
+      'materialize',
+      correlation?.attemptId
+        ? { attemptId: correlation.attemptId }
+        : carriage?.bindingRef
+          ? { bindingRef: carriage.bindingRef }
+          : undefined
+    );
     const { root, invocation } = original;
     if (root.phase === 'closed') throw new Error('Worker journal execution is already closed.');
     const parent = correlation?.parent;
@@ -7123,9 +7457,15 @@ export async function endWorkerTurnMaterialization(
   workspaceDb: WorkspaceDb,
   turnId: string,
   state: 'completed' | 'unknown',
-  outputRefs: readonly string[] = []
+  outputRefs: readonly string[] = [],
+  attemptId?: string
 ): Promise<void> {
-  const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
+  const original = await readWorkerTurnJournalObligation(
+    workspaceDb,
+    turnId,
+    'materialize',
+    attemptId ? { attemptId } : undefined
+  );
   if (original.invocation.state !== 'intent')
     throw new Error('Worker materialization obligation is already ended.');
   await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
@@ -7149,19 +7489,24 @@ export async function endWorkerTurnJournalRelease(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   turnId: string,
-  fenceRef: string
+  fenceRef: string,
+  selection?: { attemptId: string; keepOpen?: true }
 ): Promise<void> {
-  let release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  let release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release', selection);
   if (release.invocation.state === 'completed') {
     if (!isDeepStrictEqual(release.invocation.control.outputRefs, [fenceRef]))
       throw new Error('Worker release fence conflicts with its retained result.');
-    if (release.root.phase === 'closed') return;
+    if (release.root.phase === 'closed' || selection?.keepOpen) return;
   } else if (release.invocation.state !== 'intent')
     throw new Error('Worker release obligation conflicts with its result.');
   const ended = await release.reader.readEndedSteps(release.root.ref);
   // This entry is reached only after releaseTerminalAttempt verifies output, collection,
   // drain, route revocation and the exact backend fence. Link that later proof separately.
-  for (const unknown of ended.filter((step) => step.state === 'unknown')) {
+  for (const unknown of ended.filter(
+    (step) =>
+      step.state === 'unknown' &&
+      (selection === undefined || step.control.attemptId === selection.attemptId)
+  )) {
     const linked = await release.reader.readLinkedInspections(unknown.ref);
     if (
       linked.some(
@@ -7182,11 +7527,11 @@ export async function endWorkerTurnJournalRelease(
         operation: 'worker.release-inspection',
         requestId: fenceRef,
       },
-      { operationId: fenceRef, deadline: null, inspectedStep: unknown.ref }
+      { ...selection, operationId: fenceRef, deadline: null, inspectedStep: unknown.ref }
     );
     await endWorkerTurnJournalStep(store, workspaceDb, inspection, 'completed', [fenceRef]);
   }
-  release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release', selection);
   let ref = release.invocation.ref;
   let span = release.span;
   if (release.invocation.state === 'completed') {
@@ -7200,13 +7545,14 @@ export async function endWorkerTurnJournalRelease(
         operation: 'worker.release-inspection',
         requestId: fenceRef,
       },
-      { operationId: fenceRef, deadline: null, inspectedStep: release.invocation.ref }
+      { ...selection, operationId: fenceRef, deadline: null, inspectedStep: release.invocation.ref }
     );
     ref = { execution: inspection.execution.ref, stepId: inspection.stepId };
     span = inspection.span;
-    release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+    release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release', selection);
   }
-  const canClose = release.root.openSteps.every((step) => step.stepId === ref.stepId);
+  const canClose =
+    !selection?.keepOpen && release.root.openSteps.every((step) => step.stepId === ref.stepId);
   await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
     ref,
     expectedExecutionRevision: release.root.revision,
@@ -7217,7 +7563,7 @@ export async function endWorkerTurnJournalRelease(
       endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
       status: { code: 'OK' },
     },
-    nextPhase: canClose ? 'closed' : 'closing',
+    nextPhase: selection?.keepOpen ? 'open' : canClose ? 'closed' : 'closing',
     terminalCause: release.root.terminalCause,
     exclusionRefs: canClose ? [] : release.root.exclusionRefs,
   });

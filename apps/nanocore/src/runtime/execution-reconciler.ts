@@ -3,7 +3,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { NanoHostCoreReads } from '../storage/control-kernel-port.js';
 import type { CoreDb } from '../storage/db.js';
-import { hasCoreIdleCleanupConsumption } from './core-journal-records.js';
+import {
+  hasCoreIdleCleanupConsumption,
+  readSandboxReleaseRefusalFence,
+} from './core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
@@ -23,7 +26,7 @@ import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance
 export interface IdleCleanupSelection {
   readonly candidate: ExecutionCandidate;
   readonly identity: WorkerGovernanceBackendSessionIdentity;
-  readonly action: 'result-only' | 'delete' | 'release';
+  readonly action: 'retire-refusal' | 'result-only' | 'delete' | 'release';
   readonly originPhysicalEpoch: string;
   readonly sandboxBindingRef: string;
 }
@@ -186,7 +189,8 @@ export class ExecutionReconciler {
     const root = await reader.readExecution(candidate.ref.execution);
     const original = await reader.readInvocation(candidate.ref);
     const operation = original.carriage.operation;
-    if (operation !== 'bridge.close' && operation !== 'sandbox.delete') return;
+    const startsRefusal = operation === 'sandbox.release-refusal';
+    if (operation !== 'bridge.close' && operation !== 'sandbox.delete' && !startsRefusal) return;
     const originalSession = original.control.attemptId
       ? nanoHost.readBackendSession({ attemptId: original.control.attemptId })
       : null;
@@ -194,11 +198,22 @@ export class ExecutionReconciler {
     if (!session) throw new Error('Idle cleanup has no original backend anchor.');
     const attempt = requireSchedulerExecutionAttempt(db, session.attemptId);
     const admission = requireSchedulerExecutionAttemptAdmissionContext(db, session.attemptId);
+    const binding = original.carriage.bindingRef;
+    const refusal =
+      binding &&
+      readSandboxReleaseRefusalFence(
+        db,
+        binding,
+        session.runtimeTargetId,
+        session.originPhysicalEpoch,
+        attempt.attemptId
+      );
     if (
-      root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-      root.workId !== original.carriage.requestId ||
-      attempt.phase !== 'closed' ||
-      !attempt.fenceRef ||
+      (startsRefusal
+        ? !refusal || !isDeepStrictEqual(refusal.ref, candidate.ref)
+        : root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+          root.workId !== original.carriage.requestId ||
+          (!refusal && (attempt.phase !== 'closed' || !attempt.fenceRef))) ||
       session.backendKind !== 'openshell' ||
       session.workspaceId !== attempt.workspaceId ||
       session.threadId !== attempt.threadId ||
@@ -209,9 +224,9 @@ export class ExecutionReconciler {
       original.control.operationId !== original.carriage.requestId ||
       original.control.target?.targetId !== session.runtimeTargetId ||
       original.control.target.allocationRef !== original.carriage.bindingRef ||
-      !original.control.authorityRefs.includes(session.sandboxBindingRef) ||
+      (!startsRefusal && !original.control.authorityRefs.includes(session.sandboxBindingRef)) ||
       !original.control.physicalFenceRefs.includes(session.originPhysicalEpoch) ||
-      !isDeepStrictEqual(original.control.actor, admission.triggerActor)
+      (!startsRefusal && !isDeepStrictEqual(original.control.actor, admission.triggerActor))
     )
       throw new Error('Idle cleanup selection conflicts with original authority.');
     if (!original.carriage.bindingRef) throw new NanoHostCleanupFencePendingError();
@@ -224,7 +239,11 @@ export class ExecutionReconciler {
       resident.target !== session.runtimeTargetId
     )
       throw new Error('Idle cleanup selected a different resident incarnation.');
-    if (resident.drain !== 'draining') return;
+    if (
+      resident.drain !== 'draining' ||
+      (refusal && !resident.refusalDrained && session.state !== 'cleaned')
+    )
+      return;
     const selected: Omit<IdleCleanupSelection, 'action'> = {
       candidate: { ...candidate, revision: root.revision },
       identity: {
@@ -255,6 +274,7 @@ export class ExecutionReconciler {
       throw new NanoHostCleanupFencePendingError();
     if (target.physicalEpoch !== session.originPhysicalEpoch)
       return { ...selected, action: 'release' };
+    if (startsRefusal) return { ...selected, action: 'retire-refusal' };
     const consumed = hasCoreIdleCleanupConsumption(db, original);
     if (original.state === 'completed' && consumed) {
       if (operation === 'sandbox.delete') return { ...selected, action: 'release' };

@@ -249,6 +249,23 @@ export const SECURITY_OBSERVATION_LIMITS = Object.freeze({
 });
 
 /** Closed existing Core producer decisions; callers cannot provide permission or capacity results. */
+export const ControlSandboxReleaseRefusalHandoffSchema = z.strictObject({
+  kind: z.literal('sandbox-release-refusal-handoff'),
+  ref: stepRef,
+  workspaceFence: z.strictObject({
+    workspaceId: WorkspaceIdSchema,
+    executionId: text,
+    stepId: text,
+  }),
+});
+
+export const SandboxReleaseRefusalAttachmentSchema = z.strictObject({
+  storageRef: text,
+  workSlotRef: text,
+  attachmentGeneration: z.number().int().safe().positive(),
+  revision: z.number().int().safe().positive(),
+});
+
 export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -326,6 +343,7 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
         .strict(),
     })
     .strict(),
+  ControlSandboxReleaseRefusalHandoffSchema,
   z
     .object({
       kind: z.literal('idle-intent'),

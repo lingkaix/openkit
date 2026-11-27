@@ -7,7 +7,10 @@ import type {
 } from '../auth/nanohost-transport-codecs.js';
 import type { NanoHostRuntimeTargetRecord } from '../runtime/nanohost-runtime-target-records.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
-import type { ControlCoreJournalInput } from './core-journal-codecs.js';
+import type {
+  ControlCoreJournalInput,
+  SandboxReleaseRefusalAttachmentSchema,
+} from './core-journal-codecs.js';
 import type { ControlHarnessLifecycleInputSchema } from './harness-lifecycle-codecs.js';
 import type { NanoHostRuntimeTargetEpochKernel } from './nanohost-epoch-invalidation.js';
 import {
@@ -25,6 +28,10 @@ export interface NanoHostReleaseRefusal {
     input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal' }>
   ): Promise<void>;
   reconcile(): Promise<readonly string[]>;
+  handoff(
+    input: Extract<ControlCoreJournalInput, { kind: 'sandbox-release-refusal-handoff' }>,
+    attachment: z.output<typeof SandboxReleaseRefusalAttachmentSchema> | null
+  ): Promise<void>;
   withCarriage<Value>(
     integrationBindingRef: string,
     sandboxBindingRef: string,

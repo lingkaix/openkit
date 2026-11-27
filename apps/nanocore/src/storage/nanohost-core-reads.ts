@@ -18,6 +18,7 @@ const resident = z.object({
   origin: z.string().transform(requireStoredNanoHostPhysicalEpoch),
   target: z.string().min(1),
   drain: z.enum(['accepting', 'draining']),
+  refusalDrained: z.union([z.literal(0), z.literal(1)]).transform((value) => value === 1),
 });
 
 /** The owning admission rechecks the captured query-only opening for each read. */
@@ -38,8 +39,14 @@ export function createNanoHostCoreReads(owner: {
         const row = sqlite
           .prepare(
             `SELECT sandbox_binding_ref AS binding, origin_physical_epoch AS origin,
-               runtime_target_id AS target, drain_state AS drain
-             FROM sandbox_runtime_records WHERE sandbox_binding_ref = ?`
+               runtime_target_id AS target, drain_state AS drain,
+               lifecycle_state='open' AND health_state='ready' AND cleanup_state='clean'
+               AND drain_state='draining' AND NOT EXISTS (
+                 SELECT 1 FROM harness_instance_records h
+                 WHERE h.sandbox_runtime_id=s.sandbox_runtime_id AND
+                   (h.drain_state <> 'draining' OR h.lifecycle_state <> 'failed')
+               ) AS refusalDrained
+             FROM sandbox_runtime_records s WHERE sandbox_binding_ref = ?`
           )
           .get(bindingRef.parse(binding));
         return row === undefined ? null : resident.parse(row);

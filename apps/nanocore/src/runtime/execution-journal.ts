@@ -122,17 +122,41 @@ export function listExecutionCandidates(
       AND json_extract(s.control_json, '$.kind') <> 'consume-receipt'
     ORDER BY s.execution_id, s.step_id`);
   return {
-    candidates: page.value.bindings.flatMap((binding) =>
-      (originals.all(binding) as { executionId: string; stepId: string; revision: number }[]).map(
-        (row) => ({
-          ref: {
-            execution: { owner: { kind: 'server' }, executionId: row.executionId },
-            stepId: row.stepId,
-          },
-          revision: row.revision,
-        })
-      )
-    ),
+    candidates: page.value.bindings.flatMap((binding) => {
+      const candidates: ExecutionCandidate[] = (
+        originals.all(binding) as { executionId: string; stepId: string; revision: number }[]
+      ).map((row) => ({
+        ref: {
+          execution: { owner: { kind: 'server' }, executionId: row.executionId },
+          stepId: row.stepId,
+        },
+        revision: row.revision,
+      }));
+      if (candidates.length > 0) return candidates;
+      const refusal = db.sqlite
+        .prepare(`SELECT r.id AS executionId, r.revision
+        FROM control_executions r JOIN control_execution_steps s
+          ON s.execution_id = r.id AND s.step_id = 'fence'
+        JOIN scheduler_execution_attempts a
+          ON a.attempt_id = json_extract(s.control_json, '$.attemptId')
+        WHERE r.definition_version = ? AND r.work_id = ? AND r.phase = 'open'
+          AND a.phase = 'closing' AND a.deadline IS NULL
+          AND a.terminal_cause = 'sandbox-release-refusal' LIMIT 1`)
+        .get(CORE_SANDBOX_RELEASE_REFUSAL_DEFINITION, binding) as
+        | { executionId: string; revision: number }
+        | undefined;
+      return refusal
+        ? [
+            {
+              ref: {
+                execution: { owner: { kind: 'server' }, executionId: refusal.executionId },
+                stepId: 'fence',
+              },
+              revision: refusal.revision,
+            },
+          ]
+        : [];
+    }),
     next: page.value.next,
   };
 }
@@ -588,7 +612,8 @@ export function decodeEndedExecutionStep(value: string): EndedExecutionStep {
 /** Applies one existing Workspace journal mutation on the admitted writer, with exact Turn lineage. */
 export function applyControlExecutionJournal(
   db: WorkspaceDb,
-  value: ControlExecutionJournalInput
+  value: ControlExecutionJournalInput,
+  verifyIntent: (db: WorkspaceDb, intent: ExecutionJournalIntent, agentSessionId: string) => void
 ): string {
   if (isMainThread || !db.sqlite.inTransaction)
     throw new Error('Workspace execution mutations require the native writer transaction.');
@@ -616,10 +641,11 @@ export function applyControlExecutionJournal(
     .all(workId) as { id: string }[];
   if (roots.some((root) => root.id !== ref.executionId))
     throw new Error('Workspace execution root conflicts.');
-  if (command.kind === 'intent')
-    return encodeExecutionJournalValue(
-      writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
-    );
+  if (command.kind === 'intent') {
+    const intent = input as ExecutionJournalIntent;
+    verifyIntent(db, intent, record.agentSessionId);
+    return encodeExecutionJournalValue(writeExecutionJournalIntent(db, intent));
+  }
   const settlement = input as ExecutionJournalSettlement;
   const ended = settleExecutionJournalStep(
     db,
@@ -1364,6 +1390,23 @@ export function settleExecutionJournalStep(
         )
         .all(input.ref.execution.executionId) as { step_id: string }[]
     ).every((unknown) => {
+      const original = storedStep(db, { execution: input.ref.execution, stepId: unknown.step_id });
+      let originalReleaseRefs = outputRefs;
+      if (
+        stored.root.definitionVersion === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION &&
+        original.control.attemptId !== stored.control.attemptId
+      ) {
+        const prior = db.sqlite
+          .prepare(`SELECT step_id AS id FROM control_execution_steps
+          WHERE execution_id=? AND json_extract(control_json,'$.attemptId')=?
+            AND json_extract(invocation_json,'$.carriage.operation')='worker.release'
+            AND state='completed'`)
+          .all(input.ref.execution.executionId, original.control.attemptId) as { id: string }[];
+        if (prior.length !== 1) return false;
+        const release = storedStep(db, { execution: input.ref.execution, stepId: prior[0]!.id });
+        if (release.control.outputRefs.length !== 1) return false;
+        originalReleaseRefs = [...release.control.outputRefs];
+      }
       const proofs = db.sqlite
         .prepare(
           "SELECT step_id FROM control_execution_steps WHERE execution_id = ? AND inspected_execution_id = ? AND inspected_step_id = ? AND state = 'completed'"
@@ -1375,7 +1418,8 @@ export function settleExecutionJournalStep(
         const observed = storedStep(db, { execution: input.ref.execution, stepId: proof.step_id });
         return (
           observed.control.kind === 'inspect-cleanup' &&
-          isDeepStrictEqual(observed.control.outputRefs, outputRefs)
+          observed.control.attemptId === original.control.attemptId &&
+          isDeepStrictEqual(observed.control.outputRefs, originalReleaseRefs)
         );
       });
     });
