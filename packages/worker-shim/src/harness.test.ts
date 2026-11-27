@@ -1,8 +1,9 @@
 const TEST_WORKER_RELEASE_IDENTITY = { sourceCommit: 'a'.repeat(40), releaseTag: null };
 
 // openkit-test-platform: posix
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -14,12 +15,15 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import * as files from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createBridgeServer, type ServerHttp2Stream } from 'node:http2';
 import { type AddressInfo, connect, createServer as createListener } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import {
   type AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackageSchema,
@@ -27,7 +31,10 @@ import {
 import { allocateEntityId, isRecord } from '@openkit/protocol';
 
 import {
+  type HarnessSessionOpenBody,
   HarnessSuccessBodySchemas,
+  type HarnessTurnStartBody,
+  type HarnessTurnSteerBody,
   WorkerControlHeartbeatRequestSchema,
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -36,21 +43,42 @@ import type {
   WorkerNativeHandle,
   WorkerResidentAdapter,
   WorkerResidentOpenInput,
+  WorkerResidentSession,
   WorkerResidentTurnInput,
 } from './adapter-registry.js';
+import { openCodexResidentSession } from './adapters/codex.js';
+import { CodexAppServer } from './adapters/codex-app-server.js';
 import { deepseekResidentAdapter } from './adapters/deepseek.js';
+import {
+  createOpenCodeAdapter,
+  OPENCODE_PROVIDER_ID,
+  type OpenCodeAdapterDependencies,
+} from './adapters/opencode.js';
+import { createPiResidentAdapter, PiResidentBinding } from './adapters/pi.js';
+import { CodexRuntimeCapture } from './codex-runtime-capture.js';
 import * as controlClient from './control-client.js';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
-import { runWorkerHarness, WorkerHarness } from './harness.js';
+import { runWorkerHarness, WorkerHarness, WorkerShim } from './harness.js';
 import {
   type CredentialHelperTurnBinding,
   SandboxIntegrationClient,
 } from './integration-client.js';
+import { LifecycleDeadline } from './lifecycle-deadline.js';
 import { NativeStartupAdmission } from './native-startup.js';
 import { NativeRuntimeCapture } from './runtime-capture.js';
 import { WorkerTranscriptWriter } from './transcript.js';
 import { initializeSessionWorkspace, runResidentTurn } from './turn.js';
 import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
+import type {
+  WorkerShimDesiredSet,
+  WorkerShimInterrupt,
+  WorkerShimInventory,
+  WorkerShimKeyedWork,
+  WorkerShimOperationKey,
+  WorkerShimSession,
+  WorkerShimStart,
+  WorkerShimTurnInput,
+} from './worker-shim-port.js';
 
 const fixtureEntityIds = new Map<string, string>();
 /** Allocates a logical fixture once; labels remain test correlation and never become native identity. */
@@ -70,6 +98,11 @@ const loopFixture = vi.hoisted(() => ({
 }));
 
 const schedulingClock = vi.hoisted(() => ({ controlled: false }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof files>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 vi.mock('node:timers/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:timers/promises')>();
@@ -203,6 +236,7 @@ function fakeAdapter(
     openFails?: boolean;
     readyAtOpen?: boolean;
     resumeHandle?: WorkerNativeHandle;
+    acknowledgeInput?: boolean;
   } = {}
 ) {
   const residents: FakeResident[] = [];
@@ -248,6 +282,7 @@ function fakeAdapter(
           const next = script.shift() ?? { kind: 'complete' };
           if (next.kind === 'reject') throw next.error ?? new Error('native turn refused');
           resident.turns.push(turnInput);
+          if (options.acknowledgeInput) turnInput.onInputAccepted?.();
           let interrupt!: () => void;
           const interrupted = new Promise<WorkerAdapterResult>((resolve) => {
             resident.finish = (text = `answer-${turnInput.turnId}`) =>
@@ -428,6 +463,7 @@ function harnessFixture(
     adapter?: ReturnType<typeof fakeAdapter>;
     /** Declares generated outputs for the output materialization regression. */
     outputSlot?: boolean;
+    adapterId?: string;
     /** Uses the production registry instead of injecting the fake under this id. */
     registryAdapterId?: string;
     environment?: Record<string, string>;
@@ -435,7 +471,7 @@ function harnessFixture(
     root?: string;
   } = {}
 ) {
-  const adapterId = options.registryAdapterId ?? ADAPTER;
+  const adapterId = options.registryAdapterId ?? options.adapterId ?? ADAPTER;
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'openkit-worker-harness-'));
   if (options.root === undefined) fixtureRoots.add(root);
   const sandboxRoot = join(root, 'openkit');
@@ -443,14 +479,15 @@ function harnessFixture(
   const privateRoot = join(root, 'private');
   const fake = options.adapter ?? fakeAdapter();
   const integration = options.integration ?? fakeIntegration();
-  const harness = new WorkerHarness({
-    ...(options.registryAdapterId ? {} : { adapters: { [ADAPTER]: fake.adapter } }),
+  const harnessOptions = {
+    ...(options.registryAdapterId ? {} : { adapters: { [adapterId]: fake.adapter } }),
     environment: options.environment ?? {},
     integration: integration.client,
     threadRootDirectory: nativeRoot,
     rootDirectory: privateRoot,
     sandboxRoot,
-  });
+  };
+  const harness = new WorkerHarness(harnessOptions);
   let sequence = 0;
   const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
     harness.handle({
@@ -465,7 +502,7 @@ function harnessFixture(
     agentSessionId,
     agentSessionRuntimeBindingId: `binding-${agentSessionId}`,
   });
-  const open = (
+  const openBody = (
     agentSessionId: string,
     extra: {
       resume?: { digest: string; locator: string } | null;
@@ -475,13 +512,13 @@ function harnessFixture(
       nativeEnvironment?: Record<string, string>;
       threadId?: string;
     } = {}
-  ) => {
+  ): HarnessSessionOpenBody => {
     if (extra.initialPackage !== false && !existsSync(packagePath(agentSessionId)))
       writePackage(agentSessionId, 'initial', {
         threadId: extra.threadId,
         runtimeEnvNames: Object.keys(extra.runtimeEnvironment ?? {}),
       });
-    return send('session.open', {
+    return {
       ...selector(agentSessionId),
       adapterId,
       agentSessionCompatibilityKey: DIGEST,
@@ -494,8 +531,10 @@ function harnessFixture(
       ...(extra.nativeEnvironment ? { nativeEnvironment: extra.nativeEnvironment } : {}),
       threadId: extra.threadId ?? 'th_00000000-0000-730e-88b8-d76794f39a2f',
       workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
-    });
+    };
   };
+  const open = (agentSessionId: string, extra?: Parameters<typeof openBody>[1]) =>
+    send('session.open', openBody(agentSessionId, extra));
   const packagePath = (agentSessionId: string) =>
     join(sandboxRoot, 'sessions', agentSessionId, 'config', 'package.json');
   const contextRoot = (agentSessionId: string) =>
@@ -672,14 +711,17 @@ function harnessFixture(
       agentSessionId
     );
   return {
+    adapterId,
     capturePath: (turnId: string, threadId = 'th_00000000-0000-730e-88b8-d76794f39a2f') =>
       join(nativeRoot, threadId, adapterId, 'capture', turnId),
     contextRoot,
     fake,
     harness,
+    harnessOptions,
     integration,
     nativeRoot,
     open,
+    openBody,
     packagePath,
     privateRoot,
     referencePath,
@@ -704,6 +746,1744 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
     sequence,
   };
 }
+
+/** Supplies the exact local start materials already admitted by the embedding owner. */
+function workerLifetimeFixture(fixture = harnessFixture(), incarnationId = 'fixture-incarnation') {
+  const authorizations = new Map<
+    string,
+    { worker: WorkerShimStart; body: HarnessSessionOpenBody }
+  >();
+  const inputs = new Map<string, { work: WorkerShimTurnInput; body: HarnessTurnStartBody }>();
+  const steers = new Map<string, { work: WorkerShimKeyedWork; body: HarnessTurnSteerBody }>();
+  const session: WorkerShimSession = {
+    sandboxIncarnationId: incarnationId,
+    connectionGeneration: 1,
+  };
+  const shim = new WorkerShim(
+    fixture.harnessOptions,
+    incarnationId,
+    (workerId) => authorizations.get(workerId),
+    {
+      input: (id) => inputs.get(id),
+      steer: (id) => steers.get(id),
+    }
+  );
+  let revision = 0;
+  const pollWork = async (
+    work: Partial<Omit<WorkerShimDesiredSet, 'session' | 'revision'>>,
+    carrier = session
+  ) => {
+    let report!: WorkerShimInventory;
+    expect(
+      await shim.poll(carrier, async (inventory) => {
+        report = inventory;
+        return {
+          session: carrier,
+          revision: ++revision,
+          workers: [],
+          inputs: [],
+          steers: [],
+          interrupts: [],
+          acknowledgedOperations: [],
+          ...work,
+        };
+      })
+    ).toBe('applied');
+    return report;
+  };
+  const poll = (workers: WorkerShimDesiredSet['workers'] = [], carrier = session) =>
+    pollWork({ workers }, carrier);
+  const admit = (
+    name: string,
+    workSlotRef = 'fixture-slot',
+    resume: WorkerShimStart['resume'] = null,
+    threadId?: string
+  ) => {
+    const agentSessionId = fixtureId('as', name);
+    const worker = {
+      workerId: name,
+      adapterId: fixture.adapterId,
+      agentSessionId,
+      workSlotRef,
+      resume,
+    };
+    authorizations.set(name, {
+      worker,
+      body: fixture.openBody(agentSessionId, { resume, threadId }),
+    });
+    return worker;
+  };
+  const admitInput = (
+    worker: WorkerShimStart,
+    name: string,
+    options: { materialize?: boolean; digest?: string } = {}
+  ): WorkerShimTurnInput => {
+    const turnId = fixtureId('tu', name);
+    const threadId = authorizations.get(worker.workerId)?.body.threadId;
+    const body = {
+      ...fixture.startBody(worker.agentSessionId, turnId),
+      ...(threadId ? { threadId } : {}),
+    };
+    if (options.materialize !== false)
+      fixture.writePackage(worker.agentSessionId, turnId, { threadId });
+    const work = {
+      operationId: name,
+      workerId: worker.workerId,
+      turnId,
+      attemptId: `attempt-${name}`,
+      inputRef: `input-${name}`,
+      payloadDigest: options.digest ?? sha256(`input for ${turnId}`),
+      routeGrant: `grant-${name}`,
+    };
+    inputs.set(name, { work, body });
+    return work;
+  };
+  const admitSteer = (
+    worker: WorkerShimStart,
+    target: WorkerShimTurnInput,
+    name: string,
+    attemptId = target.attemptId
+  ): WorkerShimKeyedWork => {
+    const input = `steer ${name}`;
+    const inputItemId = fixtureId('it', name);
+    const work = {
+      operationId: name,
+      workerId: worker.workerId,
+      turnId: target.turnId,
+      attemptId,
+      inputRef: inputItemId,
+      payloadDigest: sha256(input),
+    };
+    const current = fixture.startBody(worker.agentSessionId, target.turnId);
+    const body = {
+      ...fixture.selector(worker.agentSessionId),
+      workspaceId: current.workspaceId,
+      threadId: authorizations.get(worker.workerId)?.body.threadId ?? current.threadId,
+      turnId: target.turnId,
+      leaseId: current.leaseId,
+      packageSnapshotId: current.packageSnapshotId,
+      turnSequence: current.turnSequence,
+      inputItemId,
+      inputDigest: work.payloadDigest,
+      input,
+    };
+    steers.set(name, { work, body });
+    return work;
+  };
+  return { ...fixture, admit, admitInput, admitSteer, session, shim, poll, pollWork };
+}
+
+/** Projects the three deciding Core acknowledgement fields. */
+function shimKey({ operationId, workerId, payloadDigest }: WorkerShimOperationKey) {
+  return { operationId, workerId, payloadDigest };
+}
+
+describe('Worker Shim keyed work', () => {
+  it('2.2–2.3 retains a verified first input ACK across a lost report, reconnect and exact Core ACK', async () => {
+    const f = workerLifetimeFixture(
+      harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) })
+    );
+    const worker = f.admit('first-ack-worker');
+    const receiverAccepted = observation();
+    const handoff = observation();
+    const contacts = vi.fn();
+    const open = f.fake.adapter.openSession.bind(f.fake.adapter);
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (options) => {
+      const child = await open(options);
+      return {
+        ...child,
+        async startTurn(turn) {
+          contacts(turn.turnInput);
+          const handle = await child.startTurn(turn);
+          turn.onInputAccepted?.();
+          receiverAccepted.resolve();
+          await handoff.promise;
+          return handle;
+        },
+      };
+    });
+    await f.shim.start(worker);
+    f.fake.script.push({ kind: 'hold' });
+    const original = f.admitInput(worker, 'first-ack-input');
+    const receipt = { kind: 'input', key: shimKey(original), disposition: 'accepted' };
+    const pending = f.shim.keyedTurnInput(original);
+    await receiverAccepted.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const beforeHandoff = await f.poll();
+    handoff.resolve();
+    const native = f.fake.residents[0]!;
+    try {
+      expect(await pending).toBe('accepted');
+      expect(beforeHandoff.receipts).toEqual([receipt]);
+      await expect(
+        f.shim.poll(f.session, async (report) => {
+          expect(report.receipts).toEqual([receipt]);
+          throw new Error('fixture lost the accepted inventory');
+        })
+      ).rejects.toThrow('fixture lost the accepted inventory');
+      const carrier = { ...f.session, connectionGeneration: 2 };
+      expect(
+        (
+          await f.pollWork(
+            {
+              inputs: [original],
+              acknowledgedOperations: [
+                { ...shimKey(original), workerId: 'foreign-worker' },
+                { ...shimKey(original), payloadDigest: DIGEST },
+              ],
+            },
+            carrier
+          )
+        ).receipts
+      ).toEqual([receipt]);
+      expect(
+        (await f.pollWork({ acknowledgedOperations: [shimKey(original)] }, carrier)).receipts
+      ).toEqual([receipt]);
+      await f.pollWork({ inputs: [original] }, carrier);
+      expect((await f.pollWork({}, carrier)).receipts).toEqual([]);
+      expect(await f.shim.keyedTurnInput(original)).toBe('accepted');
+      expect(contacts).toHaveBeenCalledTimes(1);
+      expect((await f.pollWork({}, carrier)).workers.map(({ state }) => state)).toEqual([
+        'running',
+      ]);
+    } finally {
+      native.finish();
+      await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
+    }
+    await vi.waitFor(() => expect(existsSync(f.packagePath(worker.agentSessionId))).toBe(false));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const next = f.admitInput(worker, 'first-ack-next-input');
+    expect(await f.shim.keyedTurnInput(next)).toBe('accepted');
+    expect(contacts).toHaveBeenCalledTimes(2);
+    expect(native.closed).toBe(false);
+  });
+
+  it.each(['accepted', 'lost'] as const)(
+    '2.4 uses the exact active native steer outcome after a verified input ACK (%s)',
+    async (outcome) => {
+      const entered = observation();
+      const release = observation();
+      const ready = observation();
+      let heldItem: string;
+      const steer = vi.fn<NonNullable<import('./adapter-registry.js').WorkerResidentTurn['steer']>>(
+        async ({ inputItemId, inputDigest }) => {
+          if (inputItemId === heldItem) {
+            entered.resolve();
+            await release.promise;
+          }
+          if (outcome === 'lost') throw new Error('fixture lost the steer reply after contact');
+          return { disposition: 'accepted', inputItemId, inputDigest };
+        }
+      );
+      const fake = fakeAdapter({ acknowledgeInput: true, readyAtOpen: true, steer });
+      const f = workerLifetimeFixture(harnessFixture({ adapter: fake }));
+      const fetch = f.integration.client.workerControlFetch.bind(f.integration.client);
+      vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(
+        async (path, init) => {
+          if (String(init.body).includes('"worker.ready"')) ready.resolve();
+          return fetch(path, init);
+        }
+      );
+      const worker = f.admit(`keyed-ack-steer-${outcome}-worker`);
+      await f.shim.start(worker);
+      fake.script.push({ kind: 'hold' });
+      const initial = f.admitInput(worker, `keyed-ack-steer-${outcome}-input`);
+      expect(await f.shim.keyedTurnInput(initial)).toBe('accepted');
+      await ready.promise;
+      const foreign = f.admitSteer(
+        worker,
+        initial,
+        `keyed-ack-steer-${outcome}-old`,
+        'old-attempt'
+      );
+      expect(await f.shim.keyedSteer(foreign)).toBe('refused');
+      const work = f.admitSteer(worker, initial, `keyed-ack-steer-${outcome}-first`);
+      heldItem = work.inputRef;
+      const pending = f.shim.keyedSteer(work);
+      await entered.promise;
+      const duplicate = f.shim.keyedSteer(work);
+      release.resolve();
+      const expected = outcome === 'accepted' ? 'accepted' : 'unknown';
+      expect(await pending).toBe(expected);
+      expect(await duplicate).toBe(expected);
+      expect(steer).toHaveBeenCalledTimes(1);
+      expect(steer).toHaveBeenCalledWith(
+        {
+          input: `steer ${work.operationId}`,
+          inputDigest: work.payloadDigest,
+          inputItemId: work.inputRef,
+        },
+        expect.any(LifecycleDeadline)
+      );
+      expect((await f.poll()).receipts).toContainEqual({
+        kind: 'steer',
+        key: shimKey(work),
+        disposition: expected,
+      });
+      if (outcome === 'lost') {
+        const next = f.admitSteer(worker, initial, 'keyed-ack-steer-after-loss');
+        expect(await f.shim.keyedSteer(next)).toBe('refused');
+      }
+      expect(steer).toHaveBeenCalledTimes(1);
+      fake.residents[0]!.finish();
+      await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
+    }
+  );
+
+  it('2.1 refuses a conflicting grant arriving first without reserving the authorized operation', async () => {
+    const f = workerLifetimeFixture();
+    const worker = f.admit('keyed-grant-first-worker');
+    await f.shim.start(worker);
+    const original = f.admitInput(worker, 'keyed-grant-first-input');
+    expect(await f.shim.keyedTurnInput({ ...original, routeGrant: 'wrong-grant' })).toBe('refused');
+    expect((await f.poll()).receipts).toEqual([]);
+    expect(await f.shim.keyedTurnInput(original)).toBe('unknown');
+    expect(await f.shim.keyedTurnInput(original)).toBe('unknown');
+    expect(f.fake.residents[0]?.turns).toHaveLength(1);
+    expect((await f.poll()).receipts).toEqual([
+      { kind: 'input', key: shimKey(original), disposition: 'unknown' },
+    ]);
+  });
+
+  it('2.2 fences fresh input and steer before reporting unknown while settlement is held', async () => {
+    const steer = vi.fn<NonNullable<import('./adapter-registry.js').WorkerResidentTurn['steer']>>(
+      async ({ inputItemId, inputDigest }) => ({
+        disposition: 'accepted',
+        inputItemId,
+        inputDigest,
+      })
+    );
+    const fake = fakeAdapter({ readyAtOpen: true, steer });
+    const f = workerLifetimeFixture(harnessFixture({ adapter: fake }));
+    const worker = f.admit('keyed-held-unknown-worker');
+    await f.shim.start(worker);
+    fake.script.push({ kind: 'hold' });
+    const original = f.admitInput(worker, 'keyed-held-unknown-input');
+    expect(await f.shim.keyedTurnInput(original)).toBe('unknown');
+    const native = f.fake.residents[0]!;
+    try {
+      expect(f.integration.finalStatuses).toHaveLength(0);
+      const next = f.admitInput(worker, 'keyed-held-unknown-next', { materialize: false });
+      expect(await f.shim.keyedTurnInput(next)).toBe('refused');
+      const work = f.admitSteer(worker, original, 'keyed-held-unknown-steer');
+      const disposition = await f.shim.keyedSteer(work);
+      expect(steer).toHaveBeenCalledTimes(0);
+      expect(disposition).toBe('refused');
+      expect((await f.poll()).workers.map(({ state }) => state)).toEqual(['stopping']);
+      expect(await f.shim.keyedTurnInput(original)).toBe('unknown');
+      expect(native.turns).toHaveLength(1);
+      expect(native.interrupts).toBe(0);
+    } finally {
+      native.finish();
+      await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
+    }
+  });
+
+  it('2.1 reserves the original input and active Turn while materialized work awaits contact', async () => {
+    const f = workerLifetimeFixture(
+      harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) })
+    );
+    const worker = f.admit('keyed-original-worker');
+    expect(await f.shim.start(worker)).toBe('accepted');
+    const input = f.admitInput(worker, 'keyed-original-input');
+    const contender = f.admitInput(worker, 'keyed-contender', { materialize: false });
+    const beforeContact = observation();
+    const release = observation();
+    const fetch = f.integration.client.workerControlFetch.bind(f.integration.client);
+    vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(async (path, init) => {
+      if (String(path).endsWith('/heartbeat') && String(init.body).includes(input.turnId)) {
+        beforeContact.resolve();
+        await release.promise;
+      }
+      return fetch(path, init);
+    });
+    const original = f.shim.keyedTurnInput(input);
+    await beforeContact.promise;
+    f.writePackage(worker.agentSessionId, contender.turnId);
+    const replay = f.shim.keyedTurnInput({ ...input });
+    const conflicts = [
+      { ...input, workerId: 'foreign-worker' },
+      { ...input, turnId: contender.turnId },
+      { ...input, attemptId: contender.attemptId },
+      { ...input, inputRef: contender.inputRef },
+      { ...input, payloadDigest: contender.payloadDigest },
+      { ...input, routeGrant: contender.routeGrant },
+    ];
+    const conflictResults = conflicts.map((work) => f.shim.keyedTurnInput(work));
+    const wrongKind = f.shim.keyedSteer(input);
+    const native = f.fake.residents[0]!;
+    try {
+      const competing = await f.shim.keyedTurnInput(contender);
+      expect(native.turns).toHaveLength(0);
+      expect(competing).toBe('refused');
+      expect((await f.pollWork({ acknowledgedOperations: [shimKey(input)] })).receipts).toEqual([
+        { kind: 'input', key: shimKey(contender), disposition: 'refused' },
+      ]);
+      f.fake.script.push({ kind: 'hold' });
+    } finally {
+      release.resolve();
+    }
+    expect(await Promise.all([original, replay])).toEqual(['unknown', 'unknown']);
+    expect(await Promise.all(conflictResults)).toEqual(Array(conflicts.length).fill('refused'));
+    expect(await wrongKind).toBe('refused');
+    expect(native.turns.map(({ turnInput }) => turnInput)).toEqual([`input for ${input.turnId}`]);
+    expect((await f.poll()).receipts[0]).toEqual({
+      kind: 'input',
+      key: shimKey(input),
+      disposition: 'unknown',
+    });
+    native.finish();
+    await vi.waitFor(() => expect(native.closed).toBe(true));
+  });
+
+  it('2.1 refuses a digest mismatch in the actual materialized bytes before contact', async () => {
+    const f = workerLifetimeFixture();
+    const worker = f.admit('keyed-digest-worker');
+    await f.shim.start(worker);
+    const input = f.admitInput(worker, 'keyed-digest-input', { digest: DIGEST });
+    await f.pollWork({ inputs: [input] });
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+    expect((await f.poll()).receipts).toEqual([
+      { kind: 'input', key: shimKey(input), disposition: 'refused' },
+    ]);
+    expect((await f.poll()).workers.map(({ state }) => state)).toEqual(['running']);
+  });
+
+  it('2.1 refuses materialized bytes from a different Turn even with the right digest', async () => {
+    const f = workerLifetimeFixture();
+    const worker = f.admit('keyed-wrong-package-worker');
+    await f.shim.start(worker);
+    const input = f.admitInput(worker, 'keyed-wrong-package-input');
+    const path = f.packagePath(worker.agentSessionId);
+    const aep = JSON.parse(readFileSync(path, 'utf8'));
+    aep.scope.turnId = fixtureId('tu', 'keyed-foreign-package');
+    writeFileSync(path, JSON.stringify(aep));
+    expect(await f.shim.keyedTurnInput(input)).toBe('refused');
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+  });
+
+  it.each(['throw', 'returned-handle'] as const)(
+    '2.2–2.3 keeps a lost original native reply unknown through reconnect and exact ACK (%s)',
+    async (lost) => {
+      const f = workerLifetimeFixture(
+        harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) })
+      );
+      const worker = f.admit(`keyed-lost-${lost}-worker`);
+      const entered = observation();
+      const reply = observation();
+      const close = observation();
+      const open = f.fake.adapter.openSession.bind(f.fake.adapter);
+      const contacts = vi.fn();
+      let childExited!: Promise<void>;
+      vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+        const child = await open(input);
+        childExited = child.exited;
+        return {
+          ...child,
+          async startTurn(turn) {
+            contacts(turn.turnInput);
+            entered.resolve();
+            await reply.promise;
+            if (lost === 'throw') throw new Error('fixture lost the reply after contact');
+            return {
+              interrupt: async () => undefined,
+              settled: Promise.resolve({
+                assistantText: null,
+                status: 'failed',
+                stopReason: 'error',
+              }),
+            };
+          },
+          async close() {
+            await close.promise;
+            await child.close();
+          },
+          nativeEvidence: () => ({ nativeTerminal: false }),
+        };
+      });
+      await f.shim.start(worker);
+      const original = f.admitInput(worker, `keyed-lost-${lost}-input`);
+      const receipt = { kind: 'input', key: shimKey(original), disposition: 'unknown' };
+      const pending = f.shim.keyedTurnInput(original);
+      await entered.promise;
+      try {
+        expect((await f.poll()).receipts).toEqual([]);
+        reply.resolve();
+        expect(await pending).toBe('unknown');
+        await vi.waitFor(async () =>
+          expect((await f.poll()).workers.map(({ state }) => state)).toEqual(['stopping'])
+        );
+        await expect(
+          f.shim.poll(f.session, async (report) => {
+            expect(report.receipts).toEqual([receipt]);
+            throw new Error('fixture lost the inventory report');
+          })
+        ).rejects.toThrow('fixture lost the inventory report');
+        const carrier = { ...f.session, connectionGeneration: 2 };
+        const wrongAck = [
+          { ...shimKey(original), workerId: 'wrong-worker' },
+          { ...shimKey(original), payloadDigest: DIGEST },
+        ];
+        expect(
+          (
+            await f.pollWork(
+              {
+                acknowledgedOperations: wrongAck,
+                inputs: [original],
+              },
+              carrier
+            )
+          ).receipts
+        ).toEqual([receipt]);
+        expect((await f.pollWork({}, carrier)).receipts).toEqual([receipt]);
+        const next = f.admitInput(worker, `keyed-lost-${lost}-next`);
+        expect(await f.shim.keyedTurnInput(next)).toBe('refused');
+        expect(
+          await f.shim.keyedSteer(f.admitSteer(worker, original, `keyed-lost-${lost}-steer`))
+        ).toBe('refused');
+        await f.shim.stop(worker.workerId);
+        f.fake.residents[0]!.exit();
+        await childExited;
+        const report = await f.pollWork({ acknowledgedOperations: [shimKey(original)] }, carrier);
+        expect(report.workers.map(({ state }) => state)).toEqual(['exited']);
+        expect(report.receipts.find(({ key }) => key.operationId === original.operationId)).toEqual(
+          receipt
+        );
+        await f.pollWork({ inputs: [original] }, carrier);
+        expect(
+          (await f.pollWork({}, carrier)).receipts.some(
+            ({ key }) => key.operationId === original.operationId
+          )
+        ).toBe(false);
+        expect(await f.shim.keyedTurnInput(original)).toBe('unknown');
+        expect(contacts).toHaveBeenCalledTimes(1);
+      } finally {
+        reply.resolve();
+        close.resolve();
+      }
+    }
+  );
+
+  it('2.4 preserves the exact refused steer receipt for an unproved OpenCode input', async () => {
+    const f = workerLifetimeFixture(harnessFixture({ adapterId: 'opencode' }));
+    const worker = f.admit('keyed-opencode-worker');
+    await f.shim.start(worker);
+    f.fake.script.push({ kind: 'hold' });
+    const input = f.admitInput(worker, 'keyed-opencode-input');
+    await f.pollWork({ inputs: [input] });
+    const steer = f.admitSteer(worker, input, 'keyed-opencode-steer');
+    await f.pollWork({ steers: [steer] });
+    const native = f.fake.residents[0]!;
+    expect(await f.shim.keyedSteer(steer)).toBe('refused');
+    expect((await f.poll()).receipts).toContainEqual({
+      kind: 'steer',
+      key: shimKey(steer),
+      disposition: 'refused',
+    });
+    expect(native.turns).toHaveLength(1);
+    expect(native.interrupts).toBe(0);
+    native.finish();
+    await vi.waitFor(() => expect(native.closed).toBe(true));
+  });
+});
+
+/** Names the original desired cutoff for an exact Worker Turn and attempt. */
+function desiredCutoff(
+  input: WorkerShimTurnInput,
+  requestId = 'cutoff-request'
+): WorkerShimInterrupt {
+  return {
+    workerId: input.workerId,
+    turnId: input.turnId,
+    attemptId: input.attemptId,
+    requestId,
+    cause: 'observation_limit_reached',
+  };
+}
+
+/** Separates contact, handoff, signal reply, and exact terminal proof on a real resident Turn. */
+async function shimInterruptFixture(name: string, acknowledgeInput = false) {
+  const f = workerLifetimeFixture(harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) }));
+  const worker = f.admit(`interrupt-worker-${name}`);
+  const contacted = observation();
+  const handoff = observation();
+  const signalReply = Promise.withResolvers<void>();
+  const signalFinished = observation();
+  const native = Promise.withResolvers<WorkerAdapterResult>();
+  const contacts = vi.fn();
+  const signals = vi.fn();
+  const steers = vi.fn();
+  const ready = observation();
+  if (acknowledgeInput) {
+    const fetch = f.integration.client.workerControlFetch.bind(f.integration.client);
+    vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(async (path, init) => {
+      if (String(init.body).includes('"worker.ready"')) ready.resolve();
+      return fetch(path, init);
+    });
+  }
+  const open = f.fake.adapter.openSession.bind(f.fake.adapter);
+  vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (options) => {
+    const child = await open(options);
+    if (options.agentSessionId !== worker.agentSessionId) return child;
+    return {
+      ...child,
+      async startTurn(turn) {
+        contacts(turn.turnInput);
+        contacted.resolve();
+        await handoff.promise;
+        if (acknowledgeInput) turn.onInputAccepted?.();
+        return {
+          async steer({ inputItemId, inputDigest }) {
+            steers();
+            return { disposition: 'accepted', inputItemId, inputDigest };
+          },
+          async interrupt() {
+            signals();
+            try {
+              await signalReply.promise;
+            } finally {
+              signalFinished.resolve();
+            }
+          },
+          settled: native.promise,
+        };
+      },
+    };
+  });
+  void signalReply.promise.catch(() => undefined);
+  await f.shim.start(worker);
+  const input = f.admitInput(worker, `interrupt-input-${name}`);
+  const request = desiredCutoff(input);
+  return {
+    ...f,
+    worker,
+    input,
+    request,
+    contacted,
+    contacts,
+    handoff,
+    native,
+    signals,
+    signalReply,
+    signalFinished,
+    steers,
+    ready,
+  };
+}
+
+const ordinaryNativeTerminal: WorkerAdapterResult = {
+  status: 'completed',
+  stopReason: 'completed',
+  assistantText: null,
+};
+const cancelledNativeTerminal: WorkerAdapterResult = {
+  status: 'interrupted',
+  stopReason: 'aborted',
+  assistantText: null,
+  interruptRequested: true,
+};
+
+interface CutoffPeerControls {
+  readonly alreadySent: boolean;
+  readonly pause: (point: string) => Promise<void> | undefined;
+  readonly sent: () => void;
+  readonly interrupted: () => void;
+}
+
+/** Delays selected replies from a local native Codex protocol peer. */
+function openCodexCutoffPeer(
+  options: WorkerResidentOpenInput,
+  sandboxRoot: string,
+  login: boolean | undefined,
+  resumed: boolean | undefined,
+  holdOutbound: boolean,
+  { alreadySent, pause, sent, interrupted }: CutoffPeerControls
+): Promise<WorkerResidentSession> {
+  const nativeThreadId = '10e81453-53bc-4f1d-8b3e-d8a7b7312991';
+  const nativeTurn = { id: 'codex-preparation-turn', status: 'inProgress', items: [] };
+  const accountId = 'fixture-account';
+  const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.pid = 1_000_000_001;
+  child.exitCode = null;
+  child.signalCode = null;
+  if (holdOutbound) {
+    const write = child.stdin.write.bind(child.stdin);
+    vi.spyOn(child.stdin, 'write').mockImplementation((...args) => {
+      const written = write(...args);
+      // Keep the native approval response in the real outbound queue until the test drains it.
+      return JSON.parse(String(args[0])).id === 'held-approval' ? false : written;
+    });
+    const request = CodexAppServer.prototype.request;
+    vi.spyOn(CodexAppServer.prototype, 'request').mockImplementation(function (
+      this: CodexAppServer,
+      method,
+      ...args
+    ) {
+      const pending = request.call(this, method, ...args);
+      if (method === 'turn/start')
+        void pause('outbound write')?.then(() => child.stdin.emit('drain'));
+      return pending;
+    });
+  }
+  child.stdin.once('finish', () => {
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    child.stdout.end();
+    child.stderr.end();
+  });
+  child.stdin.on('data', (chunk: Buffer) => {
+    const { id, method, params } = JSON.parse(chunk.toString());
+    if (id === undefined) return;
+    if (method === 'turn/start') sent();
+    if (method === 'turn/interrupt') interrupted();
+    const results: Record<string, unknown> = {
+      'account/login/start': { type: 'chatgptAuthTokens' },
+      'account/read': { account: { type: 'chatgpt', id: accountId } },
+      'config/read': { config: { mcp_servers: {} } },
+      'thread/read': { thread: { id: nativeThreadId, cwd: sandboxRoot } },
+      'thread/resume': { thread: { id: nativeThreadId } },
+      'thread/start': { thread: { id: nativeThreadId } },
+      'turn/start': {
+        turn: {
+          ...nativeTurn,
+          status: alreadySent ? 'inProgress' : 'completed',
+        },
+      },
+    };
+    void (async () => {
+      await pause(method);
+      child.stdout.write(`${JSON.stringify({ id, result: results[method] ?? {} })}\n`);
+      if (method === 'skills/extraRoots/set' && holdOutbound) {
+        child.stdout.write(
+          `${JSON.stringify({
+            id: 'held-approval',
+            method: 'item/commandExecution/requestApproval',
+            params: {},
+          })}\n`
+        );
+      }
+      if (
+        method === 'turn/interrupt' &&
+        params.threadId === nativeThreadId &&
+        params.turnId === nativeTurn.id
+      ) {
+        const terminal = {
+          method: 'turn/completed',
+          params: { threadId: nativeThreadId, turn: { ...nativeTurn, status: 'interrupted' } },
+        };
+        child.stdout.write(`${JSON.stringify(terminal)}\n`);
+      }
+    })();
+  });
+  return openCodexResidentSession(
+    {
+      ...options,
+      ...(resumed ? { resumeReference: Buffer.from(nativeThreadId) } : {}),
+      ...(login
+        ? {
+            hostManagedLogin: {
+              acquire: async () => {
+                await pause('login acquire');
+                return {
+                  accessToken: fixtureId('it', 'codex-preparation-login'),
+                  accountId,
+                  planType: null,
+                  receiptId: 'fixture-receipt',
+                  materialGeneration: 1,
+                };
+              },
+              complete: async () => {
+                await pause('login complete');
+              },
+              observe: async () => {},
+            },
+          }
+        : {}),
+    },
+    { spawnProcess: () => child }
+  );
+}
+
+/** Uses the existing private Pi channel peer and leaves its terminal pending for the interrupt case. */
+function openPiCutoffPeer(
+  input: WorkerResidentOpenInput,
+  { alreadySent, pause, sent, interrupted }: CutoffPeerControls
+): Promise<WorkerResidentSession> {
+  const peer = fileURLToPath(new URL('./test-support/pi-channel-peer.mjs', import.meta.url));
+  const adapter = createPiResidentAdapter({
+    hostCommand: [process.execPath, peer],
+    requestTimeoutMs: 1_500,
+    closeExitTimeoutMs: 500,
+    observeChannel(channel) {
+      const write = channel.write.bind(channel);
+      vi.spyOn(channel, 'write').mockImplementation((...args) => {
+        const wrote = write(...args);
+        const { op } = JSON.parse(String(args[0]));
+        if (op === 'turn') {
+          sent();
+          void pause('op: turn');
+        }
+        if (op === 'interrupt') interrupted();
+        return wrote;
+      });
+    },
+  });
+  return adapter.openSession({
+    ...input,
+    environment: {
+      ...input.environment,
+      PI_PEER_MODE: alreadySent ? 'interrupt-proved' : 'ordinary',
+    },
+  });
+}
+
+/** Supplies the minimum OpenCode SDK replies for a qualified first prompt and its terminal. */
+function openOpenCodeCutoffPeer(
+  input: WorkerResidentOpenInput,
+  { alreadySent, pause, sent, interrupted }: CutoffPeerControls
+): Promise<WorkerResidentSession> {
+  let outcome: 'succeeded' | 'interrupted' | undefined;
+  let prompted = false;
+  const terminal = observation();
+  const sessionId = 'cutoff-session';
+  const promptId = 'cutoff-prompt';
+  const model = { id: 'model-a', providerID: OPENCODE_PROVIDER_ID, enabled: true };
+  const client = {
+    agent: { get: async () => ({ data: { permissions: [] } }) },
+    config: { get: async () => [] },
+    debug: { location: { evict: async () => undefined } },
+    location: { reload: async () => undefined },
+    model: { list: async () => ({ data: [model] }) },
+    experimental: { session: { wait: async () => undefined } },
+    mcp: { list: async () => ({ data: [] }) },
+    permission: { list: async () => [] },
+    message: {
+      list: async () => ({
+        cursor: {},
+        data: [
+          { id: 'cutoff-terminal', type: 'idle', outcome },
+          { id: promptId, type: 'user' },
+        ],
+      }),
+    },
+    session: {
+      create: async () => ({ id: sessionId }),
+      form: { list: async () => [] },
+      get: async () => {
+        if (prompted) await terminal.promise;
+        return {
+          id: sessionId,
+          model,
+          time: { idle: outcome ? Number.MAX_SAFE_INTEGER : 0 },
+          outcome,
+        };
+      },
+      move: async () => undefined,
+      update: async () => undefined,
+      prompt: async () => {
+        prompted = true;
+        sent();
+        await pause('session.prompt');
+        if (!alreadySent) {
+          outcome = 'succeeded';
+          terminal.resolve();
+        }
+        return { id: promptId };
+      },
+      interrupt: async (target: { sessionID: string }) => {
+        interrupted();
+        if (target.sessionID !== sessionId) return { interrupted: false };
+        outcome = 'interrupted';
+        terminal.resolve();
+        return { interrupted: true };
+      },
+    },
+  };
+  const module = { OpenCode: { make: () => client } } as unknown as Awaited<
+    ReturnType<NonNullable<OpenCodeAdapterDependencies['loadClient']>>
+  >;
+  return createOpenCodeAdapter({
+    loadClient: async () => module,
+    resolveBinary: () => 'fixture-opencode',
+    spawnServer: () => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 1_000_000_001,
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        exitCode: null as number | null,
+        signalCode: null,
+        kill: () => {
+          child.stdin.end();
+          return true;
+        },
+      });
+      child.stdin.once('finish', () => {
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+        child.stdout.end();
+        child.stderr.end();
+        child.emit('close', 0, null);
+      });
+      queueMicrotask(() => child.stdout.write('server listening on http://127.0.0.1:9\n'));
+      return child as unknown as ChildProcessWithoutNullStreams;
+    },
+  }).openSession(input);
+}
+
+describe('Worker Shim desired interrupt', () => {
+  it.each(['stop', 'cutoff'] as const)(
+    '3.1 applies %s before fresh work in the same desired set',
+    async (decision) => {
+      const f = await shimInterruptFixture(`same-set-${decision}`);
+      f.handoff.resolve();
+      f.signalReply.resolve();
+      f.native.resolve(ordinaryNativeTerminal);
+      const steer = f.admitSteer(f.worker, f.input, `interrupt-same-set-steer-${decision}`);
+      const desired = {
+        inputs: [f.input],
+        steers: [steer],
+        ...(decision === 'stop'
+          ? { workers: [{ state: 'stop' as const, workerId: f.worker.workerId }] }
+          : { interrupts: [f.request] }),
+      };
+      await f.pollWork(desired);
+      await f.pollWork(desired);
+      const report = await f.poll();
+      expect(f.contacts).toHaveBeenCalledTimes(0);
+      expect(f.steers).toHaveBeenCalledTimes(0);
+      expect(f.signals).toHaveBeenCalledTimes(0);
+      expect(report.receipts.map(({ disposition }) => disposition)).toEqual(['refused', 'refused']);
+      expect(report.interrupts).toEqual(
+        decision === 'cutoff' ? [{ ...f.request, disposition: 'unknown' }] : []
+      );
+    }
+  );
+
+  it('3.1 rechecks cutoff after admitted preparation and before starting native work', async () => {
+    const f = await shimInterruptFixture('held-preparation');
+    const prepared = observation();
+    const release = observation();
+    const fetch = f.integration.client.workerControlFetch.bind(f.integration.client);
+    vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(async (path, init) => {
+      if (String(path).endsWith('/heartbeat')) {
+        prepared.resolve();
+        await release.promise;
+      }
+      return fetch(path, init);
+    });
+    f.handoff.resolve();
+    f.signalReply.resolve();
+    f.native.resolve(ordinaryNativeTerminal);
+    const pending = f.shim.keyedTurnInput(f.input);
+    await prepared.promise;
+    try {
+      await f.pollWork({ interrupts: [f.request] });
+      expect((await f.poll()).interrupts).toEqual([{ ...f.request, disposition: 'unknown' }]);
+    } finally {
+      release.resolve();
+    }
+    const disposition = await pending;
+    expect(f.contacts).toHaveBeenCalledTimes(0);
+    expect(f.signals).toHaveBeenCalledTimes(0);
+    expect(f.steers).toHaveBeenCalledTimes(0);
+    expect(disposition).toBe('refused');
+    await f.pollWork({ interrupts: [f.request], inputs: [f.input] });
+    expect(f.contacts).toHaveBeenCalledTimes(0);
+  });
+
+  it.each(
+    [
+      { stage: 'login acquire', login: true },
+      { stage: 'account/read', login: true, resumed: true },
+      { stage: 'account/login/start', login: true },
+      { stage: 'login complete', login: true },
+      { stage: 'config/read' },
+      { stage: 'thread/start' },
+      { stage: 'thread/unsubscribe', resumed: true },
+      { stage: 'thread/resume', resumed: true },
+      { stage: 'skills/extraRoots/set' },
+      { stage: 'capture create' },
+      { stage: 'capture write' },
+      { stage: 'outbound write' },
+      { stage: 'outbound write', scenario: 'no cutoff' },
+      { stage: 'thread/start', scenario: 'no cutoff' },
+      { stage: 'turn/start', scenario: 'already sent' },
+      { adapterId: 'pi', stage: 'capture origin' },
+      { adapterId: 'pi', stage: 'capture origin', scenario: 'no cutoff' },
+      { adapterId: 'pi', stage: 'op: turn', scenario: 'already sent' },
+      { adapterId: 'opencode', stage: 'capture origin' },
+      { adapterId: 'opencode', stage: 'capture origin', scenario: 'no cutoff' },
+      { adapterId: 'opencode', stage: 'session.prompt', scenario: 'already sent' },
+    ].map((row) => ({ adapterId: 'codex', scenario: 'cutoff', ...row }))
+  )(
+    'checks $adapterId input after $stage ($scenario)',
+    async ({ adapterId, stage, login, resumed, scenario }) => {
+      const f = workerLifetimeFixture(harnessFixture({ adapterId }));
+      const worker = f.admit(`${adapterId}-preparation-worker`);
+      const entered = observation();
+      const release = observation();
+      const inputSent = observation();
+      let preparing = false;
+      let nativeInput = 0;
+      let nativeInterrupt = 0;
+      let signal: AbortSignal | undefined;
+      const alreadySent = scenario === 'already sent';
+      const cutBeforeInput = scenario === 'cutoff';
+      const pause = (point: string) => {
+        if (!preparing || point !== stage) return;
+        entered.resolve();
+        return release.promise;
+      };
+
+      const controls: CutoffPeerControls = {
+        alreadySent,
+        pause,
+        sent: () => {
+          nativeInput++;
+          inputSent.resolve();
+        },
+        interrupted: () => {
+          nativeInterrupt++;
+        },
+      };
+      const holdOutbound = stage === 'outbound write';
+      let resident: WorkerResidentSession | undefined;
+      vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (options) => {
+        const session =
+          adapterId === 'codex'
+            ? await openCodexCutoffPeer(
+                options,
+                f.sandboxRoot,
+                login,
+                resumed,
+                holdOutbound,
+                controls
+              )
+            : adapterId === 'pi'
+              ? await openPiCutoffPeer(options, controls)
+              : await openOpenCodeCutoffPeer(options, controls);
+        resident = session;
+        return {
+          exited: session.exited,
+          childState: () => session.childState(),
+          close: () => session.close(),
+          nativeHandle: () => session.nativeHandle(),
+          startTurn(turn) {
+            signal = turn.signal;
+            // Keep capture delivery independent of the Shim's cancelled live event channel.
+            const runtimeCapture = {
+              ...turn.runtimeCapture,
+              emit: async ({
+                fact,
+              }: Parameters<WorkerResidentTurnInput['runtimeCapture']['emit']>[0]) => {
+                if (fact.kind === 'origin' && fact.phase === 'started')
+                  await pause('capture origin');
+              },
+            };
+            const modelParameters = {
+              contextWindow: 128_000,
+              maxOutputTokens: 16_000,
+              inputModalities: ['text' as const],
+              reasoning: false,
+            };
+            const llmRoute = {
+              ...turn.llmRoute,
+              ...(adapterId === 'pi' ? { modelParameters } : {}),
+              ...(login
+                ? {
+                    credentialVisibility: 'runtime-token' as const,
+                    endpoint: {
+                      kind: 'openai-compatible' as const,
+                      workerBaseUrl: 'https://chatgpt.com/backend-api',
+                    },
+                    modelParameters,
+                  }
+                : {}),
+            };
+            return session.startTurn({
+              ...turn,
+              ...(adapterId === 'opencode' ? { mcpServerIds: [] } : {}),
+              runtimeCapture,
+              llmRoute,
+              allowedLlmRoutes: [llmRoute],
+            });
+          },
+        };
+      });
+
+      const create = CodexRuntimeCapture.create.bind(CodexRuntimeCapture);
+      const captureCreate = vi
+        .spyOn(CodexRuntimeCapture, 'create')
+        .mockImplementation(async (...args) => {
+          await pause('capture create');
+          return create(...args);
+        });
+      const write = CodexRuntimeCapture.prototype.writeStdout;
+      const captureWrite = vi
+        .spyOn(CodexRuntimeCapture.prototype, 'writeStdout')
+        .mockImplementation(async function (this: CodexRuntimeCapture, chunk) {
+          await pause('capture write');
+          return write.call(this, chunk);
+        });
+      // Native image defaults are read only from this test's empty fixture home.
+      vi.stubEnv('HOME', join(f.root, 'image-home'));
+      try {
+        await f.shim.start(worker);
+        preparing = true;
+        const input = f.admitInput(worker, `${adapterId}-preparation-input`);
+        const request = desiredCutoff(input);
+        const pending = f.shim.keyedTurnInput(input);
+        await Promise.race([
+          entered.promise,
+          pending.then((disposition) => {
+            throw new Error(`${adapterId} settled as ${disposition} before the ${stage} barrier.`);
+          }),
+        ]);
+        expect(nativeInput).toBe(alreadySent ? 1 : 0);
+        expect(nativeInterrupt).toBe(0);
+        if (scenario !== 'no cutoff') {
+          await f.pollWork({ interrupts: [request] });
+          expect((await f.poll()).interrupts).toEqual([{ ...request, disposition: 'unknown' }]);
+          expect(signal?.aborted).toBe(true);
+        }
+        release.resolve();
+        if (cutBeforeInput) {
+          await Promise.race([pending, inputSent.promise]);
+          expect(nativeInput).toBe(0);
+        }
+        const disposition = await pending;
+        expect(nativeInput).toBe(cutBeforeInput ? 0 : 1);
+        expect(disposition).toBe(cutBeforeInput ? 'unknown' : 'accepted');
+        if (alreadySent) {
+          await vi.waitFor(async () =>
+            expect((await f.poll()).interrupts).toEqual([{ ...request, disposition: 'cancelled' }])
+          );
+        } else if (cutBeforeInput) {
+          expect((await f.poll()).interrupts).toEqual([{ ...request, disposition: 'unknown' }]);
+        }
+        expect(nativeInterrupt).toBe(alreadySent ? 1 : 0);
+      } finally {
+        release.resolve();
+        await f.shim.stop(worker.workerId);
+        if (resident instanceof PiResidentBinding) {
+          resident.kill();
+          await resident.exited;
+        } else {
+          await resident?.close().catch(() => undefined);
+        }
+        captureWrite.mockRestore();
+        captureCreate.mockRestore();
+        if (holdOutbound) vi.mocked(CodexAppServer.prototype.request).mockRestore();
+        vi.unstubAllEnvs();
+      }
+    }
+  );
+
+  it('3.1 cuts off eligible steer in the same desired set after a verified input ACK', async () => {
+    const f = await shimInterruptFixture('active-steer', true);
+    f.handoff.resolve();
+    expect(await f.shim.keyedTurnInput(f.input)).toBe('accepted');
+    await f.ready.promise;
+    const control = f.admitSteer(f.worker, f.input, 'interrupt-eligible-steer-control');
+    expect(await f.shim.keyedSteer(control)).toBe('accepted');
+    expect(f.steers).toHaveBeenCalledTimes(1);
+    const steer = f.admitSteer(f.worker, f.input, 'interrupt-active-steer');
+    try {
+      await f.pollWork({ interrupts: [f.request], steers: [steer] });
+      expect(f.contacts).toHaveBeenCalledTimes(1);
+      expect(f.steers).toHaveBeenCalledTimes(1);
+      expect(f.signals).toHaveBeenCalledTimes(1);
+      expect((await f.poll()).receipts).toContainEqual({
+        kind: 'steer',
+        key: shimKey(steer),
+        disposition: 'refused',
+      });
+    } finally {
+      f.signalReply.resolve();
+      f.native.resolve(cancelledNativeTerminal);
+      await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
+    }
+  });
+
+  it('3.2 delivers one signal to the late original handle and waits for its exact cancellation', async () => {
+    const f = await shimInterruptFixture('late-handoff');
+    const pending = f.shim.keyedTurnInput(f.input);
+    await f.contacted.promise;
+    const foreign = { ...f.request, attemptId: 'foreign-attempt' };
+    await f.pollWork({ interrupts: [f.request, foreign] });
+    await f.pollWork({ interrupts: [f.request, foreign] });
+    expect(f.signals).toHaveBeenCalledTimes(0);
+    f.handoff.resolve();
+    await pending;
+    expect(f.signals).toHaveBeenCalledTimes(1);
+    const carrier = { ...f.session, connectionGeneration: 2 };
+    f.signalReply.resolve();
+    await f.signalFinished.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const unproved = await f.pollWork({ interrupts: [f.request, foreign] }, carrier);
+    expect(unproved.interrupts).toEqual([
+      { ...f.request, disposition: 'unknown' },
+      { ...foreign, disposition: 'unknown' },
+    ]);
+    const sibling = f.admit(
+      'interrupt-foreign-worker',
+      'foreign-slot',
+      null,
+      fixtureId('th', 'foreign-settlement')
+    );
+    await f.shim.start(sibling);
+    f.fake.script.push({ kind: 'hold' });
+    const foreignInput = f.admitInput(sibling, 'interrupt-foreign-input');
+    await f.shim.keyedTurnInput(foreignInput);
+    const siblingRequest = desiredCutoff(foreignInput, f.request.requestId);
+    await f.pollWork({ interrupts: [siblingRequest] }, carrier);
+    await vi.waitFor(async () =>
+      expect((await f.pollWork({}, carrier)).interrupts).toEqual([
+        ...unproved.interrupts,
+        { ...siblingRequest, disposition: 'cancelled' },
+      ])
+    );
+    expect(
+      f.fake.residents.find(({ input }) => input.agentSessionId === sibling.agentSessionId)
+        ?.interrupts
+    ).toBe(1);
+    f.native.resolve(cancelledNativeTerminal);
+    await f.native.promise;
+    expect((await f.pollWork({}, carrier)).interrupts).toEqual([
+      { ...f.request, disposition: 'cancelled' },
+      { ...foreign, disposition: 'unknown' },
+      { ...siblingRequest, disposition: 'cancelled' },
+    ]);
+    expect(f.contacts).toHaveBeenCalledTimes(1);
+    expect(f.steers).toHaveBeenCalledTimes(0);
+    expect(f.signals).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(2));
+  });
+
+  it('3.3 preserves the ordinary terminal when it wins before a desired interrupt can signal', async () => {
+    const f = await shimInterruptFixture('terminal-wins');
+    f.handoff.resolve();
+    await f.shim.keyedTurnInput(f.input);
+    f.native.resolve(ordinaryNativeTerminal);
+    await f.native.promise;
+    await f.pollWork({ interrupts: [f.request] });
+    expect(f.signals).toHaveBeenCalledTimes(0);
+    expect(f.contacts).toHaveBeenCalledTimes(1);
+    expect(f.steers).toHaveBeenCalledTimes(0);
+    await vi.waitFor(() =>
+      expect(f.integration.finalStatuses.at(-1)?.body.status).toBe('completed')
+    );
+    expect((await f.poll()).interrupts).toEqual([{ ...f.request, disposition: 'unknown' }]);
+  });
+
+  it('3.3 does not signal a late handle whose ordinary terminal already won', async () => {
+    const f = await shimInterruptFixture('late-terminal-wins');
+    const started = f.shim.keyedTurnInput(f.input);
+    await f.contacted.promise;
+    await f.pollWork({ interrupts: [f.request] });
+    f.native.resolve(ordinaryNativeTerminal);
+    f.signalReply.resolve();
+    f.handoff.resolve();
+    await started;
+    expect(f.contacts).toHaveBeenCalledTimes(1);
+    expect(f.steers).toHaveBeenCalledTimes(0);
+    expect(f.signals).toHaveBeenCalledTimes(0);
+    expect((await f.poll()).interrupts).toEqual([{ ...f.request, disposition: 'unknown' }]);
+    await vi.waitFor(() =>
+      expect(f.integration.finalStatuses.at(-1)?.body.status).toBe('completed')
+    );
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    '3.3 keeps the original interrupt unknown across an ordinary terminal and native %s',
+    async (answer) => {
+      const f = await shimInterruptFixture(`ordinary-${answer}`);
+      f.handoff.resolve();
+      await f.shim.keyedTurnInput(f.input);
+      await f.pollWork({ interrupts: [f.request] });
+      expect(f.signals).toHaveBeenCalledTimes(1);
+      f.native.resolve(ordinaryNativeTerminal);
+      await f.native.promise;
+      const expected = [{ ...f.request, disposition: 'unknown' }];
+      expect((await f.poll()).interrupts).toEqual(expected);
+      if (answer === 'resolve') f.signalReply.resolve();
+      else f.signalReply.reject(new Error('fixture cannot prove native cancel'));
+      await f.signalFinished.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.waitFor(() =>
+        expect(f.integration.finalStatuses.at(-1)?.body.status).toBe('completed')
+      );
+      expect((await f.pollWork({ interrupts: [f.request] })).interrupts).toEqual(expected);
+      expect((await f.poll()).interrupts).toEqual(expected);
+      expect(f.signals).toHaveBeenCalledTimes(1);
+      expect(f.contacts).toHaveBeenCalledTimes(1);
+      expect(f.steers).toHaveBeenCalledTimes(0);
+    }
+  );
+
+  it('3.4 keeps conflict, reused request ID and unrelated eligible input scoped to their original Turns', async () => {
+    const f = await shimInterruptFixture('conflicts');
+    f.handoff.resolve();
+    await f.shim.keyedTurnInput(f.input);
+    const requestConflict = { ...f.request, requestId: 'conflicting-request' };
+    const { cause: _cause, ...causeConflict } = f.request;
+    const reused = {
+      ...f.request,
+      turnId: fixtureId('tu', 'unentered-turn'),
+      attemptId: 'unentered-attempt',
+    };
+    const desired = { interrupts: [f.request, requestConflict, causeConflict, reused, f.request] };
+    await f.pollWork(desired);
+    await f.pollWork(desired);
+    expect(f.signals).toHaveBeenCalledTimes(1);
+    f.signalReply.resolve();
+    f.native.resolve(cancelledNativeTerminal);
+    await f.native.promise;
+    expect((await f.poll()).interrupts).toEqual([
+      { ...f.request, disposition: 'cancelled' },
+      { ...requestConflict, disposition: 'refused' },
+      { ...causeConflict, disposition: 'refused' },
+      { ...reused, disposition: 'unknown' },
+    ]);
+    const nextWorker = f.admit(
+      'interrupt-unrelated-worker',
+      'unrelated-slot',
+      null,
+      fixtureId('th', 'unrelated-turn')
+    );
+    await f.shim.start(nextWorker);
+    const unrelated = f.admitInput(nextWorker, 'interrupt-unrelated-input');
+    await f.pollWork({ inputs: [unrelated] });
+    expect(
+      f.fake.residents.find(({ input }) => input.agentSessionId === nextWorker.agentSessionId)
+        ?.turns
+    ).toHaveLength(1);
+    expect(f.contacts).toHaveBeenCalledTimes(1);
+    expect(f.signals).toHaveBeenCalledTimes(1);
+    expect(f.steers).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe('Worker Shim lifetime', () => {
+  it('1.1 reserves the original ID and slot through suspended setup, replay and reconnect', async () => {
+    const f = workerLifetimeFixture();
+    const original = f.admit('lifetime-original');
+    const contender = f.admit('lifetime-contender');
+    const entered = observation();
+    const release = observation();
+    const open = vi.spyOn(f.fake.adapter, 'openSession');
+    const socket = f.integration.client.openCredentialAgentSocket.bind(f.integration.client);
+    const preparation = vi
+      .spyOn(f.integration.client, 'openCredentialAgentSocket')
+      .mockImplementation(async (id) => {
+        entered.resolve();
+        await release.promise;
+        return socket(id);
+      });
+
+    const first = f.shim.start(original);
+    await entered.promise;
+    const duplicate = f.shim.start({ ...original });
+    const settled = vi.fn();
+    void first.then(settled);
+    void duplicate.then(settled);
+    const changed = [
+      { ...original, adapterId: 'different' },
+      { ...original, agentSessionId: contender.agentSessionId },
+      { ...original, workSlotRef: 'different-slot' },
+      { ...original, resume: { locator: contender.agentSessionId, digest: DIGEST } },
+    ].map((worker) => f.shim.start(worker));
+    const competingStart = f.shim.start(contender);
+    try {
+      expect((await f.poll()).workers).toEqual([]);
+      expect(open).toHaveBeenCalledTimes(0);
+      expect(settled).toHaveBeenCalledTimes(0);
+    } finally {
+      release.resolve();
+    }
+    expect(await Promise.all([first, duplicate])).toEqual(['accepted', 'accepted']);
+    expect(await Promise.all([...changed, competingStart])).toEqual(Array(5).fill('refused'));
+    expect(preparation).toHaveBeenCalledTimes(1);
+    expect(readdirSync(f.privateRoot)).toHaveLength(1);
+    expect(f.fake.residents).toHaveLength(1);
+
+    let lost!: WorkerShimInventory;
+    await expect(
+      f.shim.poll(f.session, async (inventory) => {
+        lost = inventory;
+        throw new Error('fixture lost the report');
+      })
+    ).rejects.toThrow('fixture lost the report');
+    expect(lost.workers).toEqual([
+      { workerId: original.workerId, state: 'running', stop: { kind: 'best-effort' } },
+    ]);
+    const reconnected = { ...f.session, connectionGeneration: 2 };
+    expect(await f.poll([{ state: 'run', worker: original }], reconnected)).toEqual({
+      ...lost,
+      session: reconnected,
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('1.1 reserves a slot before the first retained resume read can yield', async () => {
+    const f = workerLifetimeFixture();
+    const locator = fixtureId('as', 'lifetime-shared-predecessor');
+    const reference = 'retained slot conversation';
+    const resume = { locator, digest: sha256(reference) };
+    const path = f.referencePath(locator);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, reference);
+    const original = f.admit('lifetime-slot-first', 'fixture-slot', resume);
+    const contender = f.admit('lifetime-slot-second', 'fixture-slot', resume);
+    const firstRead = observation();
+    const secondRead = observation();
+    const releaseFirst = observation();
+    const releaseSecond = observation();
+    const { readFile: read } = await vi.importActual<typeof files>('node:fs/promises');
+    let referenceReads = 0;
+    const readGate = vi.spyOn(files, 'readFile').mockImplementation(async (file, options) => {
+      if (file === path) {
+        referenceReads += 1;
+        const first = referenceReads === 1;
+        (first ? firstRead : secondRead).resolve();
+        await (first ? releaseFirst : releaseSecond).promise;
+      }
+      return read(file, options);
+    });
+    const open = vi.spyOn(f.fake.adapter, 'openSession');
+
+    const first = f.shim.start(original);
+    await firstRead.promise;
+    const second = f.shim.start(contender);
+    try {
+      await Promise.race([second, secondRead.promise]);
+      releaseFirst.resolve();
+      expect(await first).toBe('accepted');
+      releaseSecond.resolve();
+      await second;
+    } finally {
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      readGate.mockRestore();
+    }
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(await second).toBe('refused');
+    expect(readdirSync(f.privateRoot)).toHaveLength(1);
+  });
+
+  it.each(['before-start', 'before-open', 'during-open'] as const)(
+    '1.2 keeps stop monotonic %s',
+    async (cut) => {
+      const f = workerLifetimeFixture();
+      const worker = f.admit(`lifetime-stop-${cut}`);
+      const entered = observation();
+      const release = observation();
+      const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
+      const close = vi.fn();
+      const readHandle = vi.fn();
+      const open = vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+        entered.resolve();
+        if (cut === 'during-open') await release.promise;
+        const child = await openSession(input);
+        return {
+          ...child,
+          async nativeHandle() {
+            readHandle();
+            return child.nativeHandle();
+          },
+          close: async () => {
+            close();
+            await child.close();
+          },
+        };
+      });
+      if (cut === 'before-open') {
+        const socket = f.integration.client.openCredentialAgentSocket.bind(f.integration.client);
+        vi.spyOn(f.integration.client, 'openCredentialAgentSocket').mockImplementation(
+          async (id) => {
+            entered.resolve();
+            await release.promise;
+            return socket(id);
+          }
+        );
+      }
+      const start = cut === 'before-start' ? undefined : f.shim.start(worker);
+      if (start) await entered.promise;
+      try {
+        await f.shim.stop(worker.workerId);
+        await f.shim.stop(worker.workerId);
+        expect(await f.shim.start(worker)).toBe('refused');
+        expect((await f.poll()).workers.every((entry) => entry.state !== 'running')).toBe(true);
+      } finally {
+        release.resolve();
+      }
+      await start;
+      await f.shim.stop(worker.workerId);
+      expect(await f.shim.start(worker)).toBe('refused');
+      expect(open).toHaveBeenCalledTimes(cut === 'during-open' ? 1 : 0);
+      expect(close).toHaveBeenCalledTimes(cut === 'during-open' ? 1 : 0);
+      expect(readHandle).toHaveBeenCalledTimes(0);
+      expect(f.fake.residents.flatMap(({ turns }) => turns)).toEqual([]);
+      expect((await f.poll()).workers.every((entry) => entry.state !== 'running')).toBe(true);
+    }
+  );
+
+  it('1.2 does not register loopback after stop during retained resume validation', async () => {
+    const f = workerLifetimeFixture();
+    const locator = fixtureId('as', 'lifetime-stop-resume-predecessor');
+    const reference = 'retained conversation reference';
+    const path = f.referencePath(locator);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, reference);
+    const worker = f.admit('lifetime-stop-resume', 'fixture-slot', {
+      locator,
+      digest: sha256(reference),
+    });
+    const entered = observation();
+    const release = observation();
+    const { readFile: read } = await vi.importActual<typeof files>('node:fs/promises');
+    const readGate = vi.spyOn(files, 'readFile').mockImplementation(async (file, options) => {
+      if (file === path) {
+        entered.resolve();
+        await release.promise;
+      }
+      return read(file, options);
+    });
+    const register = vi.spyOn(f.integration.client, 'registerSessionLoopback');
+    const open = vi.spyOn(f.fake.adapter, 'openSession');
+    const start = f.shim.start(worker);
+    await entered.promise;
+    try {
+      expect(await f.shim.stop(worker.workerId)).toBe('stopping');
+    } finally {
+      release.resolve();
+      await start;
+      readGate.mockRestore();
+    }
+    expect(await start).toBe('refused');
+    expect(register).toHaveBeenCalledTimes(0);
+    expect(open).toHaveBeenCalledTimes(0);
+    expect(readFileSync(path, 'utf8')).toBe(reference);
+    expect((await f.poll()).workers.every(({ state }) => state !== 'running')).toBe(true);
+  });
+
+  it('1.2 closes the handed-over child once while handle inspection is held', async () => {
+    const f = workerLifetimeFixture();
+    const worker = f.admit('lifetime-stop-held-handle');
+    const inspectEntered = observation();
+    const inspectRelease = observation();
+    const closeRelease = observation();
+    const closeFinished = observation();
+    const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
+    const close = vi.fn();
+    const inspection = vi.fn();
+    const open = vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+      const child = await openSession(input);
+      return {
+        ...child,
+        async nativeHandle() {
+          inspectEntered.resolve();
+          await inspectRelease.promise;
+          inspection();
+          return { state: 'ready', reference: Buffer.from('late native handle') };
+        },
+        async close() {
+          close();
+          await closeRelease.promise;
+          await child.close();
+          closeFinished.resolve();
+        },
+      };
+    });
+    const start = f.shim.start(worker);
+    await inspectEntered.promise;
+    try {
+      expect(await f.shim.stop(worker.workerId)).toBe('stopping');
+      expect(await f.shim.stop(worker.workerId)).toBe('stopping');
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(inspection).toHaveBeenCalledTimes(0);
+      expect((await f.poll()).workers.map(({ state }) => state)).toEqual(['stopping']);
+      closeRelease.resolve();
+      await closeFinished.promise;
+      expect(inspection).toHaveBeenCalledTimes(0);
+      expect(readdirSync(f.privateRoot)).toHaveLength(1);
+    } finally {
+      closeRelease.resolve();
+      inspectRelease.resolve();
+      await start;
+    }
+    expect(await start).toBe('unknown');
+    expect(existsSync(f.referencePath(worker.agentSessionId))).toBe(false);
+    expect(await f.shim.stop(worker.workerId)).toBe('exited');
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect((await f.poll()).workers.map(({ state }) => state)).toEqual(['exited']);
+    expect(readdirSync(f.privateRoot)).toHaveLength(0);
+  });
+
+  it.each(['missing', 'changed', 'matching'] as const)(
+    '1.3 checks %s retained resume bytes before native open',
+    async (bytes) => {
+      const f = workerLifetimeFixture();
+      const locator = fixtureId('as', 'lifetime-predecessor');
+      const reference = 'retained conversation reference';
+      const worker = f.admit('lifetime-resume', 'fixture-slot', {
+        locator,
+        digest: sha256(reference),
+      });
+      const path = f.referencePath(locator);
+      const original = bytes === 'changed' ? 'different conversation reference' : reference;
+      if (bytes !== 'missing') {
+        mkdirSync(join(path, '..'), { recursive: true });
+        writeFileSync(path, original);
+      }
+      const open = vi.spyOn(f.fake.adapter, 'openSession');
+      expect(await f.shim.start(worker)).toBe(bytes === 'matching' ? 'accepted' : 'refused');
+      expect(open).toHaveBeenCalledTimes(bytes === 'matching' ? 1 : 0);
+      if (bytes === 'matching') {
+        expect(Buffer.from(f.fake.residents[0]!.input.resumeReference!).toString()).toBe(reference);
+      }
+      if (bytes !== 'missing') expect(readFileSync(path, 'utf8')).toBe(original);
+    }
+  );
+
+  it.each(['pre-child', 'unproved-cleanup'] as const)(
+    '1.3 preserves ID and keeps control material unless cleanup is proved after %s failure',
+    async (failure) => {
+      const f = workerLifetimeFixture();
+      const worker = f.admit('lifetime-refused-open');
+      const contender = f.admit('lifetime-after-refusal');
+      const entered = observation();
+      const release = observation();
+      const close = vi.fn();
+      const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
+      let controlMaterial: string | undefined;
+      const open = vi.spyOn(f.fake.adapter, 'openSession').mockImplementationOnce(async (input) => {
+        if (failure === 'pre-child') {
+          entered.resolve();
+          await release.promise;
+          throw new Error('fixture refused open before creating a child');
+        }
+        const child = await openSession(input);
+        controlMaterial = join(input.controlRoot, 'close-proof.txt');
+        writeFileSync(controlMaterial, 'original control material');
+        return {
+          ...child,
+          async nativeHandle() {
+            return { state: 'unknown' };
+          },
+          async close() {
+            close();
+            entered.resolve();
+            await release.promise;
+            throw new Error('fixture cannot prove child cleanup');
+          },
+        };
+      });
+      const first = f.shim.start(worker);
+      const concurrent = f.admit('lifetime-during-refusal');
+      await entered.promise;
+      try {
+        expect(await f.shim.start(concurrent)).toBe('refused');
+      } finally {
+        release.resolve();
+      }
+      expect(await first).toBe(failure === 'pre-child' ? 'refused' : 'unknown');
+      expect(await f.shim.start(worker)).toBe(failure === 'pre-child' ? 'refused' : 'unknown');
+      expect(readdirSync(f.privateRoot)).toHaveLength(failure === 'pre-child' ? 0 : 1);
+      if (controlMaterial) {
+        expect(readFileSync(controlMaterial, 'utf8')).toBe('original control material');
+        await f.shim.stop(worker.workerId);
+        await f.shim.stop(worker.workerId);
+      }
+      expect(close).toHaveBeenCalledTimes(failure === 'pre-child' ? 0 : 1);
+      expect(f.fake.residents).toHaveLength(failure === 'pre-child' ? 0 : 1);
+      expect(await f.shim.start(contender)).toBe(failure === 'pre-child' ? 'accepted' : 'refused');
+      expect(open).toHaveBeenCalledTimes(failure === 'pre-child' ? 2 : 1);
+    }
+  );
+
+  it.each(['spontaneous', 'after-stop'] as const)(
+    '1.4 reports %s child exit without proving tree absence or reviving the ID',
+    async (exitOrder) => {
+      const f = workerLifetimeFixture();
+      const original = f.admit('lifetime-child-exit');
+      const closeEntered = observation();
+      const closeRelease = observation();
+      const closeFinished = observation();
+      const descendantExited = observation();
+      const descendantExit = vi.fn();
+      void descendantExited.promise.then(descendantExit);
+      const pipesDrained = vi.fn();
+      const openSession = f.fake.adapter.openSession.bind(f.fake.adapter);
+      const open = vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+        const child = await openSession(input);
+        return {
+          ...child,
+          async close() {
+            closeEntered.resolve();
+            await closeRelease.promise;
+            await child.close();
+            pipesDrained();
+            closeFinished.resolve();
+          },
+          nativeEvidence: () => ({ pipesDrained: pipesDrained.mock.calls.length === 1 }),
+        };
+      });
+      expect(await f.shim.start(original)).toBe('accepted');
+      if (exitOrder === 'after-stop') {
+        expect(await f.shim.stop(original.workerId)).toBe('stopping');
+        await closeEntered.promise;
+        expect((await f.poll()).workers).toEqual([
+          { workerId: original.workerId, state: 'stopping', stop: { kind: 'best-effort' } },
+        ]);
+      }
+      try {
+        f.fake.residents[0]!.exit();
+        const time = controlSchedulingTime();
+        const deadline = new LifecycleDeadline(25);
+        try {
+          expect(await f.shim.waitUntilAbsent(original.workerId, deadline)).toEqual({
+            state: 'held',
+          });
+          expect((await f.poll()).workers).toEqual([
+            { workerId: original.workerId, state: 'exited', stop: { kind: 'best-effort' } },
+          ]);
+          await time.advance(26);
+          expect(deadline.remainingMs()).toBe(0);
+          expect(await f.shim.start(original)).toBe('refused');
+          expect(await f.shim.waitUntilAbsent(original.workerId, deadline)).toEqual({
+            state: 'held',
+          });
+          expect(descendantExit).toHaveBeenCalledTimes(0);
+        } finally {
+          time.restore();
+        }
+        if (exitOrder === 'after-stop') {
+          closeRelease.resolve();
+          await closeFinished.promise;
+          expect(pipesDrained).toHaveBeenCalledTimes(1);
+          expect(descendantExit).toHaveBeenCalledTimes(0);
+          expect(await f.shim.waitUntilAbsent(original.workerId, deadline)).toEqual({
+            state: 'held',
+          });
+        }
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(
+          (await workerLifetimeFixture(harnessFixture(), 'replacement-incarnation').poll()).workers
+        ).toEqual([]);
+      } finally {
+        descendantExited.resolve();
+        closeRelease.resolve();
+        if (exitOrder === 'after-stop') await closeFinished.promise;
+      }
+    }
+  );
+});
 
 describe('concurrent Thread Turns', () => {
   it('starts eight independent Thread Turns in one Harness without a lower convenience cap', async () => {

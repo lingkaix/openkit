@@ -1098,8 +1098,7 @@ class CodexResidentSession implements WorkerResidentSession {
         await capture.writeStdout(
           Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: threadId })}\n`)
         );
-        submitted = true;
-        this.acceptingTurn = true;
+        input.signal?.throwIfAborted();
         return (await this.nativeRequest(
           'turn/start',
           {
@@ -1110,7 +1109,15 @@ class CodexResidentSession implements WorkerResidentSession {
               ? { effort }
               : {}),
           },
-          native
+          native,
+          () => {
+            if (input.signal?.aborted) {
+              native.outstanding = false;
+              input.signal.throwIfAborted();
+            }
+            submitted = true;
+            this.acceptingTurn = true;
+          }
         )) as TurnBody;
       };
       const started = await controlDeadline(setup(), native.deadline.remainingMs(), () => {
@@ -1139,6 +1146,7 @@ class CodexResidentSession implements WorkerResidentSession {
         throw new Error('Codex item identity did not match the accepted Turn.');
       assistantTexts(started.turn);
       this.currentTurnId = turnId;
+      input.onInputAccepted?.();
       const settled = this.finishTurn(turnId, status, started.turn, capture, input);
       return {
         settled,
@@ -1386,7 +1394,8 @@ class CodexResidentSession implements WorkerResidentSession {
   private async nativeRequest(
     method: string,
     params: unknown,
-    native: { outstanding: boolean; deadline: LifecycleDeadline }
+    native: { outstanding: boolean; deadline: LifecycleDeadline },
+    beforeWrite?: () => void
   ): Promise<unknown> {
     if (this.closing || this.unusable) throw new Error('Codex binding is closing or unusable.');
     native.outstanding = true;
@@ -1395,7 +1404,8 @@ class CodexResidentSession implements WorkerResidentSession {
       params,
       native.deadline.remainingMs(
         this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
-      )
+      ),
+      beforeWrite
     );
     native.outstanding = false;
     return result;

@@ -247,12 +247,20 @@ channel.on('data', (chunk) => {
           nativeHandle: { state: 'pending' },
           compactionEntryIds: [],
         });
+      if (mode === 'interrupt-proved' && request.turnId === activeId)
+        send({
+          event: 'turn_settled',
+          turnId: activeId,
+          outcome: { status: 'interrupted', reason: 'worker-interrupted' },
+          nativeHandle: { state: 'pending' },
+          compactionEntryIds: [],
+        });
       send({
         id: request.id,
         ok: true,
         result: {
           outcome: mode.startsWith('interrupt-')
-            ? mode === 'interrupt-no-terminal'
+            ? mode === 'interrupt-no-terminal' || mode === 'interrupt-proved'
               ? 'interrupted'
               : values[mode.replace('interrupt-after-', '').replace('interrupt-', '')]
             : mode === 'length-interrupt'

@@ -1566,6 +1566,37 @@ describe('OpenCode resident adapter', () => {
     expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
   });
 
+  it('notifies OpenCode input acceptance once after the correlated prompt reply', async () => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const prompt = f.client.session.prompt.bind(f.client.session);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const contact = vi.spyOn(f.client.session, 'prompt').mockImplementation(async (...args) => {
+      const response = await prompt(...args);
+      entered.resolve();
+      await release.promise;
+      return response;
+    });
+    const onInputAccepted = vi.fn();
+    const pending = session.startTurn({
+      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+      onInputAccepted,
+    });
+    await entered.promise;
+    try {
+      expect(onInputAccepted).toHaveBeenCalledTimes(0);
+      expect(contact).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+    }
+    const turn = await pending;
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
+    await turn.settled;
+    expect(onInputAccepted).toHaveBeenCalledTimes(1);
+  });
+
   it('releases only bootstrap services after move drain and before the first prompt', async () => {
     const f = timelineFixture('new');
     const calls: string[] = [];
@@ -2732,24 +2763,34 @@ describe('OpenCode resident adapter', () => {
     expect(processAlive(Number(readFileSync(launched.pidFile, 'utf8')))).toBe(false);
   }, 120_000);
 
-  it('stops the real server before rejecting a Turn whose prompt may have been accepted', async () => {
+  it('does not notify OpenCode input acceptance when the real prompt reply is lost', async () => {
     const layout = makeRoots();
     const launched = launchWrapper(layout);
-    const creds = loopback('live-prompt', 'http://127.0.0.1:9');
+    const inference = await startSyntheticInference(() => ({ text: 'lost-reply-answer' }));
+    servers.push(inference);
+    const creds = loopback('live-prompt', inference.url);
+    const discardReply = vi.fn((_reply: Record<string, unknown>) => {
+      throw new Error('prompt acceptance is unknown');
+    });
     const adapter = createOpenCodeAdapter({
-      loadClient: () => realModuleRejecting('prompt'),
+      loadClient: () => transformingModule({ prompt: discardReply }),
       resolveBinary: () => launched.binary,
     });
     const session = await adapter.openSession(openInput(layout, creds));
     sessions.push(session);
     const pid = Number(readFileSync(launched.pidFile, 'utf8'));
     expect(processAlive(pid)).toBe(true);
-    const attempt = await session.startTurn(
-      turnInput(layout, creds, 'prompt-user', 'prompt-model')
-    );
+    const onInputAccepted = vi.fn();
+    const attempt = await session.startTurn({
+      ...turnInput(layout, creds, 'prompt-user', 'prompt-model'),
+      onInputAccepted,
+    });
     const failed = await attempt.settled;
     expect(failed.status).toBe('failed');
     expect(failed.diagnostics?.native).toMatch(/prompt acceptance is unknown/);
+    expect(discardReply).toHaveBeenCalledTimes(1);
+    expect(discardReply).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String) }));
+    expect(onInputAccepted).toHaveBeenCalledTimes(0);
     expect(session.childState()).toBe('absent');
     expect(session.nativeEvidence?.()).toMatchObject({ processExited: true });
     expect(processAlive(pid)).toBe(false);

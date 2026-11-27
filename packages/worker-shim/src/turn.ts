@@ -21,6 +21,7 @@ import {
 } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
+  WorkerAdapterResult,
   WorkerAdapterRuntimeProvenance,
   WorkerNativeEvidence,
   WorkerResidentSession,
@@ -82,12 +83,20 @@ export interface ResidentTurnOptions {
   readonly integration: SandboxIntegrationClient;
   /** Lineage of the admitted `turn.start`; the request id comes from the AEP. */
   readonly lineage: Omit<WorkerLineage, 'requestId'>;
-  /** Called after the resident runtime accepted the Turn and its routes are bound. */
+  /** Receives the resident handle for settlement and cleanup after routes are bound. */
   readonly onStarted: (turn: WorkerResidentTurn) => void;
   /** Receives closed pre-start failure metadata without changing the original rejection. */
   readonly onStartupFailure?: ((failure: WorkerStartupFailure) => void) | undefined;
   /** Called after the native Turn settled, the loopback drained, and output was published. */
   readonly onTurnBarrier?: (() => void) | undefined;
+  /** Checks the exact materialized input and current Shim admission at the adapter boundary. */
+  readonly beforeNativeInput?: ((input: string) => void) | undefined;
+  /** Receives the verified first native reply from the original adapter call. */
+  readonly onInputAccepted?: (() => void) | undefined;
+  /** Observes the actual first native call for a desired interruption. */
+  readonly onNativeInterrupt?: (() => void) | undefined;
+  /** Observes only this handle's settlement. A rejection supplies no cancellation proof. */
+  readonly onNativeSettlement?: ((result: WorkerAdapterResult | undefined) => void) | undefined;
   /** Owner-materialized AEP path of this Turn. */
   readonly packagePath: string;
   /** Resident binding that runs the Turn on its retained conversation. */
@@ -188,6 +197,15 @@ async function runResidentTurnImplementation(
   timeline: TurnTimeline
 ): Promise<ResidentTurnResult> {
   const packageManifest = await readWorkerShimPackage(options.packagePath);
+  if (
+    options.beforeNativeInput &&
+    (packageManifest.snapshotId !== options.lineage.packageSnapshotId ||
+      packageManifest.scope?.agentSessionId !== options.lineage.agentSessionId ||
+      packageManifest.scope?.threadId !== options.lineage.threadId ||
+      packageManifest.scope?.turnId !== options.lineage.turnId ||
+      packageManifest.scope?.workspaceId !== options.lineage.workspaceId)
+  )
+    throw new Error('Worker input package disagrees with the admitted Turn.');
   if (isNativeLoginPackage(packageManifest) !== (options.hostManagedLogin ?? false))
     throw new Error('Worker Login holder disagrees with the current package.');
 
@@ -305,6 +323,7 @@ async function runResidentTurnImplementation(
   let adapterDiagnostics: Record<string, string> = {};
   let workerControlReady = false;
   let residentTurn: WorkerResidentTurn | null = null;
+  let nativeSettled = false;
   let interrupted = options.signal.aborted;
   /** Only this Turn's owned cancellation can retain final publication after an ordinary closing refusal. */
   const isCancellationDeliveryFailure = (error: unknown): boolean =>
@@ -313,11 +332,14 @@ async function runResidentTurnImplementation(
   const interruptReason = new Error('Harness turn.interrupt');
   /** The one native stop of the started Turn; its result is shared by every stop request. */
   let nativeStop: Promise<boolean> | null = null;
-  const stopStartedTurn = (turn: WorkerResidentTurn): Promise<boolean> => {
-    nativeStop ??= stopNativeTurn(turn).then((proved) => {
-      timeline.record({ label: 'native_stop', reason: proved ? 'proved' : 'unknown' });
-      return proved;
-    });
+  const stopStartedTurn = (turn: WorkerResidentTurn, requested = false): Promise<boolean> => {
+    if (!nativeStop) {
+      if (requested) options.onNativeInterrupt?.();
+      nativeStop = stopNativeTurn(turn).then((proved) => {
+        timeline.record({ label: 'native_stop', reason: proved ? 'proved' : 'unknown' });
+        return proved;
+      });
+    }
     return nativeStop;
   };
   let failUnprovedStop!: (error: Error) => void;
@@ -335,7 +357,8 @@ async function runResidentTurnImplementation(
       heartbeatAbortController.abort();
     }
     if (residentTurn) {
-      void stopStartedTurn(residentTurn).then((stopped) => {
+      if (options.onNativeSettlement && nativeSettled) return;
+      void stopStartedTurn(residentTurn, true).then((stopped) => {
         if (!stopped) failUnprovedStop(new Error('Resident native interrupt was not proved.'));
       });
     } else if (!workerControlReady) {
@@ -426,11 +449,12 @@ async function runResidentTurnImplementation(
     heartbeatFailure.catch(() => undefined);
 
     progress.stage = 'native_spawn';
-    // Rejection guarantees no live native Turn. Unproved attempts must be returned with
-    // rejecting settlement so the existing bounded stop/fence path retains cleanup ownership.
+    options.beforeNativeInput?.(turnInput);
+    // A returned handle transfers cleanup ownership, even when native intake is unproved.
     const startedTurn = await options.resident.startTurn({
       signal: AbortSignal.any([options.signal, controlAbortController.signal]),
       recordLifecycleFact: timeline.record,
+      ...(options.onInputAccepted ? { onInputAccepted: options.onInputAccepted } : {}),
       llmRoute,
       allowedLlmRoutes,
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
@@ -461,6 +485,8 @@ async function runResidentTurnImplementation(
     timeline.record({ label: 'native_accepted' });
     const settlement = startedTurn.settled.then(
       (result) => {
+        nativeSettled = true;
+        options.onNativeSettlement?.(result);
         timeline.record({
           label: 'terminal',
           reason: result.status === 'length' ? 'failed' : result.status,
@@ -471,6 +497,8 @@ async function runResidentTurnImplementation(
         };
       },
       (error: unknown) => {
+        nativeSettled = true;
+        options.onNativeSettlement?.(undefined);
         timeline.record({ label: 'terminal', reason: 'rejected' });
         return { error };
       }
@@ -478,6 +506,8 @@ async function runResidentTurnImplementation(
     residentTurn = startedTurn;
     progress.stage = null;
     if (interrupted) {
+      // Observe an already-settled late handle before considering delivery to it.
+      if (options.onNativeSettlement) await Promise.resolve();
       onInterrupt();
     }
     options.onStarted(startedTurn);
@@ -724,6 +754,8 @@ function resolveRequestId(value: unknown): string | null {
 
 /** Minimal immutable AEP projection consumed by the worker shim. */
 interface WorkerShimPackageManifest {
+  /** Snapshot identity checked against the Shim input owner. */
+  snapshotId?: unknown;
   /** Exact immutable observation admission binding projected by Core. */
   observability?: { captureCoverage?: unknown; evidence?: { nativeLogMaxBytes?: number } };
   /** Authored runtime label; it provides no binary measurement. */
@@ -734,6 +766,7 @@ interface WorkerShimPackageManifest {
     requestId?: unknown;
     agentSessionId?: unknown;
     threadId?: unknown;
+    turnId?: unknown;
     workspaceId?: unknown;
   };
   /** Sandbox Integration bindings and selected adapter declaration. */

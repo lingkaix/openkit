@@ -3776,10 +3776,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 turnId,
               };
         // Model the outside active lease while delivering the actual Core command to the real receiver.
-        Reflect.get(receiver, 'sessions').set(command.body.agentSessionRuntimeBindingId, {
-          agentSessionId: f.lineage.agentSessionId,
-          activeTurn,
-        });
+        Reflect.get(Reflect.get(receiver, 'runtime'), 'sessions').set(
+          command.body.agentSessionRuntimeBindingId,
+          {
+            agentSessionId: f.lineage.agentSessionId,
+            activeTurn,
+          }
+        );
         const refusal = await receiver.handle(command);
         expect(refusal.disposition).toBe('refused');
         const reason = refusal.body.reasonCode;

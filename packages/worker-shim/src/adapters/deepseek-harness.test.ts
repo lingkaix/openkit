@@ -100,6 +100,9 @@ it.each([
       rootDirectory: join(root, 'private'),
       sandboxRoot,
     });
+    const { runtime } = harness as unknown as {
+      readonly runtime: { activeTurnCount(): number };
+    };
     let sequence = 0;
     const send = (operation: string, body: Record<string, unknown>) =>
       harness.handle({
@@ -347,7 +350,7 @@ it.each([
           cleanupState: 'clean',
         },
       });
-      expect((harness as unknown as { activeTurnCount(): number }).activeTurnCount()).toBe(0);
+      expect(runtime.activeTurnCount()).toBe(0);
       const refusedClose = await send(
         'session.close',
         selector('as_00000000-0000-70ba-9934-6a70762ca1b9')
@@ -369,7 +372,7 @@ it.each([
           nativeHandleState: 'unknown',
           nativeHandleDigest: null,
         });
-        expect((harness as unknown as { activeTurnCount(): number }).activeTurnCount()).toBe(0);
+        expect(runtime.activeTurnCount()).toBe(0);
         expect(
           await send('session.close', selector('as_00000000-0000-70ba-9934-6a70762ca1b9'))
         ).toMatchObject({
@@ -397,7 +400,7 @@ it.each([
         JSON.stringify({
           close: refusedClose.body,
           afterRefusedClose,
-          activeTurns: (harness as unknown as { activeTurnCount(): number }).activeTurnCount(),
+          activeTurns: runtime.activeTurnCount(),
         })
       ).toMatchObject({
         disposition: 'succeeded',
