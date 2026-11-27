@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname } from 'node:path';
+import { readCanonicalTextFile } from '@openkit/storage';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 
 const LOCK_FILE_NAME = 'nanocore.lock';
@@ -174,7 +175,12 @@ export function acquireDataRootLock(dataRoot: string, input: DataRootLockInput):
  * @param record Lock record to write.
  */
 function writeLockRecord(lockPath: string, record: DataRootLockRecord): void {
-  writeFileSync(lockPath, `${JSON.stringify(record, null, 2)}\n`);
+  // A linked entry fails with ELOOP instead of redirecting the write.
+  const flag = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW;
+  // Node opens this path with numeric flags; its synchronous option type lists only strings.
+  writeFileSync(lockPath, `${JSON.stringify(record, null, 2)}\n`, {
+    flag: flag as unknown as string,
+  });
 }
 
 /**
@@ -185,7 +191,7 @@ function writeLockRecord(lockPath: string, record: DataRootLockRecord): void {
  */
 function readLockRecord(lockPath: string): unknown {
   try {
-    return JSON.parse(readFileSync(lockPath, 'utf8'));
+    return JSON.parse(readCanonicalTextFile(lockPath));
   } catch {
     return null;
   }

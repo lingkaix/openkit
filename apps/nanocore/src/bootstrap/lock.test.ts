@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -198,6 +207,44 @@ describe('data-root instance lock', () => {
       lock.release();
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves unrelated bytes intact when linked lock metadata prevents acquisition',
+    () => {
+      const dataRoot = createDataRoot();
+      const lockPath = dataRootLockPath(dataRoot);
+      const otherPath = join(dataRoot, 'retained.txt');
+      writeFileSync(otherPath, 'retained bytes\n');
+      symlinkSync(otherPath, lockPath);
+      const acquire = () => acquireDataRootLock(dataRoot, { bootId: 'boot_candidate' }).release();
+
+      expect(acquire).toThrow(expect.objectContaining({ code: 'ELOOP' }));
+      expect(readFileSync(otherPath, 'utf8')).toBe('retained bytes\n');
+      unlinkSync(lockPath);
+      expect(acquire).not.toThrow();
+      expect(existsSync(lockPath)).toBe(false);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps holder details unknown when the diagnostic lock entry is linked',
+    () => {
+      const dataRoot = createDataRoot();
+      const lock = acquireDataRootLock(dataRoot, { bootId: 'boot_current' });
+      const otherPath = join(dataRoot, 'other-record.json');
+      try {
+        writeFileSync(otherPath, JSON.stringify({ bootId: 'boot_unrelated' }));
+        unlinkSync(lock.path);
+        symlinkSync(otherPath, lock.path);
+
+        expect(() => acquireDataRootLock(dataRoot, { bootId: 'boot_candidate' }).release()).toThrow(
+          expect.objectContaining({ name: 'DataRootLockError', holder: null })
+        );
+      } finally {
+        lock.release();
+      }
+    }
+  );
 
   it('breaks a stale lock whose local holder is dead', () => {
     const dataRoot = createDataRoot();
