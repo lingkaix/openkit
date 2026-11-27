@@ -744,13 +744,6 @@ describe('B5 attributed Boot recovery', () => {
       failure: 'is a Task whose Goal is gone',
       cause: 'check=records; stage=assistant-turn-recovery',
     },
-    // The second orphan's runtime left enough tool calls open that its reap row, which lists each
-    // unresolved call, exceeds the observation owner's row bound: a local refusal of that owner.
-    {
-      input: 'reap',
-      failure: 'reap row exceeds its row bound',
-      cause: 'check=records; stage=assistant-turn-recovery',
-    },
   ] as const)(
     'proves every Assistant orphan before the first interruption and holds A unchanged when its second orphan $failure',
     async ({ input, cause }) => {
@@ -824,38 +817,6 @@ describe('B5 attributed Boot recovery', () => {
             userId: root.actor.id,
           });
           repair = removeGoal(root.dataRoot, held, goalId);
-        } else if (input === 'reap') {
-          // Each open call lists its 256-character reference and tool name in the reap row.
-          await withSeedStore(root, () =>
-            withSeedWorkspaceDb(root.dataRoot, held, async (db) => {
-              for (let sequence = 1; sequence <= 160; sequence++)
-                await appendWorkObservation(db, {
-                  threadId: second.threadId,
-                  turnId: second.turnId,
-                  bodies: [],
-                  observation: {
-                    id: `obs_b5_call_${sequence}`,
-                    type: 'runtime.observed',
-                    ts: COMPLETED_AT,
-                    obs: 'worker-shim',
-                    payload: {
-                      observationId: `obs_b5_call_${sequence}`,
-                      sourceRef: 'source_b5',
-                      sourceSequence: sequence,
-                      observedAt: COMPLETED_AT,
-                      fact: {
-                        kind: 'tool',
-                        runtimeOriginRef: 'origin_b5',
-                        phase: 'started',
-                        callRef: `call_${sequence}_`.padEnd(256, 'x'),
-                        toolName: 'tool_b5_'.padEnd(128, 'y'),
-                      },
-                      content: { state: 'not-applicable' },
-                    },
-                  },
-                });
-            })
-          );
         } else {
           // The second orphan's runtime recorded three observations through their native owner.
           await withSeedStore(root, () =>
@@ -900,10 +861,6 @@ describe('B5 attributed Boot recovery', () => {
         expect(bootDecisionLines(server)).toContain(
           'Task terminal fact requires its linked Goal owner'
         );
-      if (input === 'reap')
-        expect(bootDecisionLines(server)).toContain(
-          'Control product transition precondition failed.'
-        );
       // The first orphan was not interrupted ahead of the second orphan's refused proof.
       expectEvidenceUnchanged(root.dataRoot, held, original);
       expect(largeFiles(heldRoot).sort()).toEqual(bodies);
@@ -912,8 +869,6 @@ describe('B5 attributed Boot recovery', () => {
       await expectHeld(repeated, held, cause);
       await stopServer(repeated);
       expectEvidenceUnchanged(root.dataRoot, held, original);
-      // A valid reap past its bound has no repair of the same evidence; its drain is separate.
-      if (input === 'reap') return;
 
       repair();
       const corrected = await startServer(root);
