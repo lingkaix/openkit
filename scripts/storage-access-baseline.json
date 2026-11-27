@@ -22,7 +22,7 @@
     "apps/nanocore/src/auth/nanohost-transport-sink.ts\tfs:writeFileSync\tca6df6e487c66491b2f7a0999b6762921fa786239c33e129360f43d6c4257272": 1,
     "apps/nanocore/src/auth/nanohost-transport-sink.ts\tfs:writeFileSync\tdfc7efe1baa08a59d86786e51154836ac3e8befd1bda00c7452229d4f7ebc7e0": 1,
     "apps/nanocore/src/bootstrap/lock.ts\tfs:unlinkSync\te1b0b731614d02c34f67fbd0ca5e07bf1b5d794fd9012f98c60cb9e01c1c6561": 1,
-    "apps/nanocore/src/bootstrap/lock.ts\tfs:writeFileSync\t447c6b4d250e31db1fce59f57c2daad679264f678350fdedbd7097a037f71f70": 1,
+    "apps/nanocore/src/bootstrap/lock.ts\tfs:writeFileSync\tc54fd32f24d2187855922eb07b30b9cbe47c9d939fdec7770c630073788ca45e": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t45e758a28ee073cb13955d0fc739892a81ac1b0a2f06580528f7fb2cebd9a252": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t586462bf03f76adbcb152885147b745f702a18063ff66ff9c1a036e2732c1e9a": 1,
     "apps/nanocore/src/context/worker-context-package.ts\tfs:rmSync\t09fddd394e85c7c13a2a84382ed22cb9e316259f05e1a809e156208df2760c5b": 1,
