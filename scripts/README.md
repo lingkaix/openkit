@@ -2,6 +2,8 @@
 
 Root `package.json` owns the command surface and `docs/toolchain.md` owns setup and execution placement. These scripts implement those commands; they do not supply design authority.
 
+`check-commit-msg.sh <file>` checks the Conventional Commits subject and the message metadata rules in `CONTRIBUTING.md`. `pnpm run commitmsg:check -- <file>` is the hook entry point. `bash scripts/check-commit-msg.sh --metadata-only /dev/stdin` applies the same metadata rules to a stored commit message from stdin. Error output omits message content.
+
 The Worker image smoke calls `docker/check-worker-seed.sh` to run the production NanoHost seed extractor over every stopped-container volume archive. The existing publication-input proof includes this shell check and its native entry point, extractor, capacity helper, Cargo inputs and Rust pin. Changes to that checker therefore invalidate publication-program reuse.
 
 `install-security-tools.mjs` installs only tools and platform archives in `security-tools.json`, verifying SHA-256 before extraction. Invoke it through `pnpm security:tools --tool zizmor --directory <tool-directory>` and put that directory on `PATH` for native checks. `check-workflows.mjs` runs the pinned offline `zizmor`; it prints only the finding id, severity and source location, never workflow source. `pnpm check:workflows --all`, `check:repo`, and release preflight run this check. The development image provides the same pinned tools.

@@ -120,13 +120,16 @@ Before committing, ensure:
 - The tracked `lefthook.yml` is the single canonical Git-hook configuration; the repository has no example configuration or promotion lifecycle.
 - `bash scripts/repo-init.sh` installs the Lefthook-managed hooks from that tracked configuration.
 - Pre-commit runs `lint:staged`, so only staged files are validated.
-- Commit-msg runs `commitmsg:check` to validate Conventional Commits.
+- Commit-msg runs `commitmsg:check` to validate the subject and scan the entire message for prohibited metadata.
 
 This document owns the commit syntax and allowed types. A commit
 subject is `<type>[optional scope]: <description>`, where type is one of `feat`, `fix`,
 `docs`, `test`, `refactor`, `perf`, `build`, `ci`, or `chore`, and a `!` after the type or
 scope marks a breaking change. `scripts/check-commit-msg.sh` enforces this list and is its
 executable projection, not its owner: a type added there and not here is a defect.
+
+Commit messages must omit `Co-authored-by:` and `Signed-off-by:` trailers, email addresses, and harness signature lines such as `Generated with` or `Made-with:`. This restriction applies to the subject and body.
+
 - Hooks can be skipped with `git commit --no-verify`, but that should be rare and intentional.
 
 ### 6. Submit Changes

@@ -6,6 +6,8 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 ## Layout
 
+- `check-commit-msg.test.mjs` checks the commit-message command and its metadata-only mode with in-memory fixtures.
+
 - `nanocore-storage-esm.test.mjs` imports each compiled storage library owner in a fresh Node process. Worker entrypoints are excluded because they require their native Worker launch context; no library import may depend on a prewarmed module graph.
 
 - `app-image-entrypoint.test.mjs` checks App proxy routing, shared upstream idle keep-alive ordering against NanoCore's configured timeout and socket buffer, process supervision and the packaged Node healthcheck against both public surfaces. Its lifecycle cases require Bash with `wait -n` support.
