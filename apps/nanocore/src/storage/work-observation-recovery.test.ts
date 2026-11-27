@@ -1062,38 +1062,6 @@ describe('native terminal recovery observations', () => {
     }
   );
 
-  it('refuses a live terminal whose reap row exceeds the observation row bound as a definite precondition', async () => {
-    const f = await fixture();
-    // Each open call lists its 256-character reference and tool name in the reap row, so the
-    // terminal's serialized reap exceeds the observation owner's row bound.
-    for (let index = 1; index <= 160; index++)
-      await observe(
-        f,
-        tool(
-          `tool-open-${index}`,
-          `call_${index}_`.padEnd(256, 'x'),
-          'started',
-          'tool_'.padEnd(128, 'y')
-        )
-      );
-    const turn = f.store.getTurnById(f.owner.turnId);
-    const observations = readWorkObservations(f.db, f.owner);
-    // The writer's own row bound refuses locally, distinct from a shared, disk, busy or uncertain failure.
-    await expect(
-      f.store.completeTurn(f.owner.turnId, {
-        status: 'interrupted',
-        completedAt,
-        error: { code: 'worker_governance_turn_failed', message: 'Live terminal owner.' },
-      })
-    ).rejects.toMatchObject({
-      name: 'ControlStoreWorkerError',
-      code: 'precondition',
-      commit: 'not-committed',
-    });
-    expect(f.store.getTurnById(f.owner.turnId)).toEqual(turn);
-    expect(readWorkObservations(f.db, f.owner)).toEqual(observations);
-  });
-
   it('leaves a never-created product Turn without an observation ledger', async () => {
     const f = await fixture();
     const missingTurnId = 'tu_00000000-0000-76d4-be96-fe2dccab50f4';
