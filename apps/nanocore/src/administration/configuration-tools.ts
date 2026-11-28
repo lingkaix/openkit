@@ -15,6 +15,9 @@ import {
 import { findRegisteredAgentConfiguration } from '../config/worker-git-read-correction.js';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 
+/** Exact public Policy refusal that the Administration surface may publish without disclosing private Tool output. */
+export const POLICY_SELF_WIDENING_REFUSAL = 'Policy authors cannot widen their own authority.';
+
 /** Configuration Tools fixed by the private administration contract. */
 export type AdministrationConfigurationTools = readonly [
   AgentTool,
@@ -208,8 +211,15 @@ async function catalogResult(operation: () => unknown): Promise<AgentToolResult>
   try {
     return configurationResult(await operation());
   } catch (error) {
+    const publicRefusal =
+      error instanceof Error && error.message === POLICY_SELF_WIDENING_REFUSAL
+        ? error.message
+        : null;
     return configurationFailure(
-      error instanceof RuntimeConfigFileServiceError ? error.code : 'configuration_request_rejected'
+      error instanceof RuntimeConfigFileServiceError
+        ? error.code
+        : 'configuration_request_rejected',
+      publicRefusal
     );
   }
 }
@@ -231,9 +241,10 @@ function configurationResult(value: unknown): AgentToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
-function configurationFailure(code: string): AgentToolResult {
+function configurationFailure(code: string, publicRefusal: string | null = null): AgentToolResult {
   const message =
-    code === 'configuration_recovery_required'
+    publicRefusal ??
+    (code === 'configuration_recovery_required'
       ? 'Configuration application could not be confirmed. Inspect the exact receipt, start status Item, outcome Artifact, current source revision and loaded state before a new request. Do not repeat an unknown effect.'
       : code === 'configuration_target_not_found'
         ? 'The requested Server Agent configuration is unavailable.'
@@ -241,6 +252,6 @@ function configurationFailure(code: string): AgentToolResult {
           ? 'The registered Agent schema is unavailable.'
           : code === 'policy_mcp_tool_unobserved'
             ? 'An MCP Tool permission that requires an observed name has no admitted schema observation. Restrictive prohibit and require_approval statements may name future Tools with a warning; they grant no access.'
-            : 'Configuration request was rejected. Read the current target and allowed schema before proposing again.';
+            : 'Configuration request was rejected. Read the current target and allowed schema before proposing again.');
   return { content: [{ type: 'text', text: JSON.stringify({ code, message }) }], isError: true };
 }

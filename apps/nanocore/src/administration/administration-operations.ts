@@ -70,7 +70,10 @@ import {
   recordAdministrationAuthorityDecision,
   SECURITY_INVESTIGATION_AGENT_ID,
 } from './authority-decision.js';
-import { createAdministrationConfigurationTools } from './configuration-tools.js';
+import {
+  createAdministrationConfigurationTools,
+  POLICY_SELF_WIDENING_REFUSAL,
+} from './configuration-tools.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 import { renderOperatorReportDraft } from './operator-report-draft.js';
 import { preparePrivateReportDraft } from './private-report-draft.js';
@@ -943,17 +946,41 @@ type AdministrationCommandResult = {
   readonly status: 200;
 };
 
-/** Reads publishable text only from the final response of a quiescent loop. */
+/** Chooses publishable text from a quiescent loop while retaining exact public authority refusals. */
 function finalAssistantText(messages: readonly AgentMessage[]): string {
   const message = messages.at(-1);
   if (!message || message.role !== 'assistant') return '';
-  return message.content
+  const answer = message.content
     .filter(
       (part): part is { readonly type: 'text'; readonly text: string } => part.type === 'text'
     )
     .map((part) => part.text)
     .join('')
     .trim();
+  if (
+    !messages.some(
+      (candidate) =>
+        candidate.role === 'tool' &&
+        candidate.isError &&
+        candidate.content.some((part) => {
+          if (part.type !== 'text') return false;
+          try {
+            const payload: unknown = JSON.parse(part.text);
+            return (
+              typeof payload === 'object' &&
+              payload !== null &&
+              Reflect.get(payload, 'code') === 'configuration_request_rejected' &&
+              Reflect.get(payload, 'message') === POLICY_SELF_WIDENING_REFUSAL
+            );
+          } catch {
+            return false;
+          }
+        })
+    )
+  )
+    return answer;
+  if (answer.includes(POLICY_SELF_WIDENING_REFUSAL)) return answer;
+  return answer ? `${POLICY_SELF_WIDENING_REFUSAL}\n\n${answer}` : POLICY_SELF_WIDENING_REFUSAL;
 }
 
 /** Awaits failed or interrupted publication so its live interruption handle remains owned until acknowledgement. */

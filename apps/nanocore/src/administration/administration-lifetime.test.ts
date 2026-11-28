@@ -56,7 +56,7 @@ async function admittedInference(entered: Promise<AbortSignal>, pending: Promise
 }
 
 /** A synthetic response, not a replacement for the context, loop or configuration owner. */
-function answer(): ModelResponse {
+function answer(text = 'The Policy candidate is ready for human review.'): ModelResponse {
   return {
     id: 'synthetic_administration_answer',
     object: 'response',
@@ -65,7 +65,7 @@ function answer(): ModelResponse {
       {
         type: 'message',
         role: 'assistant',
-        content: [{ type: 'output_text', text: 'The Policy candidate is ready for human review.' }],
+        content: [{ type: 'output_text', text }],
       },
     ],
   };
@@ -74,10 +74,12 @@ function answer(): ModelResponse {
 /** Real private admission, authored configuration, candidate publication and public interruption. */
 async function fixture(
   options: {
+    answerText?: string;
     blockedCall?: 1 | 2;
     deadlineMs?: number;
     defaultProfile?: boolean;
     seedInvestigation?: boolean;
+    seedSelfProhibition?: boolean;
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'administration-lifetime-'));
@@ -132,8 +134,49 @@ async function fixture(
     },
   };
   mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
+  const principal = { kind: 'human' as const, id: userId };
   const serverPath = join(dataRoot, 'config/server.jsonc');
-  writeFileSync(serverPath, JSON.stringify({ schemaVersion: 1 }));
+  writeFileSync(
+    serverPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      ...(options.seedSelfProhibition
+        ? {
+            policy: {
+              mediation: {
+                schemaVersion: 1,
+                statements: [
+                  {
+                    id: 'ordinary-self-prohibition',
+                    kind: 'permission',
+                    effect: 'prohibit',
+                    grant: { kind: 'ordinary' },
+                    author: principal,
+                    authority: { kind: 'human', userId },
+                    authoredAt: '2026-10-18T00:00:00Z',
+                    state: 'active',
+                    scope: {
+                      subjects: [principal],
+                      actions: ['tool.use'],
+                      resources: [
+                        { kind: 'mcp-tool', workspaceId, serverId: 'issues', toolName: 'read' },
+                      ],
+                    },
+                    lifetime: {
+                      anchor: {
+                        owner: { kind: 'workspace', workspaceId },
+                        kind: 'workspace',
+                        id: workspaceId,
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          }
+        : {}),
+    })
+  );
   writeFileSync(
     join(dataRoot, 'config/providers/synthetic.provider.jsonc'),
     JSON.stringify({ schemaVersion: 1, ...provider })
@@ -241,37 +284,47 @@ async function fixture(
     });
   }
   const original = readFileSync(serverPath, 'utf8');
-  const principal = { kind: 'human', id: userId };
   // An existing inactive native Policy form needs no external MCP schema or new Policy capability.
-  const proposed = {
-    schemaVersion: 1,
-    statements: [
-      {
-        id: 'review-only-tool-rule',
-        kind: 'permission',
-        effect: 'require_approval',
-        grant: { kind: 'ordinary' },
-        author: principal,
-        authority: { kind: 'human', userId },
-        authoredAt: '2026-10-18T00:00:00Z',
-        state: 'inactive',
-        scope: {
-          subjects: [principal],
-          actions: ['tool.use'],
-          resources: [{ kind: 'mcp-tool', workspaceId, serverId: 'issues', toolName: 'read' }],
-        },
-        lifetime: {
-          anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'workspace', id: workspaceId },
-          uses: 1,
-        },
-      },
-    ],
-  };
+  const proposed = options.seedSelfProhibition
+    ? { schemaVersion: 1, statements: [] }
+    : {
+        schemaVersion: 1,
+        statements: [
+          {
+            id: 'review-only-tool-rule',
+            kind: 'permission',
+            effect: 'require_approval',
+            grant: { kind: 'ordinary' },
+            author: principal,
+            authority: { kind: 'human', userId },
+            authoredAt: '2026-10-18T00:00:00Z',
+            state: 'inactive',
+            scope: {
+              subjects: [principal],
+              actions: ['tool.use'],
+              resources: [{ kind: 'mcp-tool', workspaceId, serverId: 'issues', toolName: 'read' }],
+            },
+            lifetime: {
+              anchor: {
+                owner: { kind: 'workspace', workspaceId },
+                kind: 'workspace',
+                id: workspaceId,
+              },
+              uses: 1,
+            },
+          },
+        ],
+      };
   const proposal = {
     targetFamily: 'policy',
     targetId: 'server',
     expectedRevision: files.readFile('server.jsonc').file.revision!,
-    changes: { proposed, rationale: 'Prepare an inactive rule for exact human review.' },
+    changes: {
+      proposed,
+      rationale: options.seedSelfProhibition
+        ? 'Remove the ordinary Workspace Tool restriction.'
+        : 'Prepare an inactive rule for exact human review.',
+    },
   };
   const toolResponse: ModelResponse = {
     id: 'synthetic_administration_proposal',
@@ -310,7 +363,7 @@ async function fixture(
         // Deliberately ignore cancellation so the real owners must fence late results.
         return release.promise;
       }
-      return call === 1 ? toolResponse : answer();
+      return call === 1 ? toolResponse : answer(options.answerText);
     }
   );
   const resolveGatewayProvider = (): ResolvedLLMProviderConfig => ({
@@ -602,6 +655,38 @@ describe('Administration admitted Turn lifetime', () => {
       expect(f.createResponses).toHaveBeenCalledTimes(2);
     }
   );
+
+  it('publishes and replays the public Policy refusal when the final answer is generic', async () => {
+    const refusal = 'Policy authors cannot widen their own authority.';
+    const generic = 'Read the current target and allowed schema before proposing again.';
+    const f = await fixture({ answerText: generic, seedSelfProhibition: true });
+    const pending = f.submit();
+    await admittedInference(f.entered.promise, pending);
+    f.release.resolve(f.toolResponse);
+    const response = await pending;
+    const body = (await response.json()) as SubmitAdministrationConversationResponse;
+
+    expect(response.status).toBe(200);
+    expect(body, JSON.stringify(body)).toMatchObject({
+      outcome: 'answered',
+      turn: { status: 'completed', error: null },
+    });
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.createResponses.mock.calls[1]?.[1])).toContain(refusal);
+    if (body.item.type !== 'assistant-message') throw new Error('Expected an assistant message.');
+    expect(body.item.text).toContain(refusal);
+    expect(body.item.text).toContain(generic);
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
+
+    const replay = await f.submit();
+    expect(replay.status).toBe(200);
+    const replayBody = (await replay.json()) as SubmitAdministrationConversationResponse;
+    expect(replayBody).toEqual(body);
+    if (replayBody.item.type !== 'assistant-message')
+      throw new Error('Expected a replayed assistant message.');
+    expect(replayBody.item.text).toContain(refusal);
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+  });
 
   it.each([1, 2] as const)(
     'turn.interrupt stops admitted inference %s and fences its late result',

@@ -182,6 +182,33 @@ describe('administration configuration Tools', () => {
         'An MCP Tool permission that requires an observed name has no admitted schema observation. Restrictive prohibit and require_approval statements may name future Tools with a warning; they grant no access.',
     });
   });
+
+  it('carries the public Policy self-widening refusal through the propose Tool', async () => {
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}), {
+      read: vi.fn(),
+      schema: vi.fn(),
+      propose: () => {
+        throw new Error('Policy authors cannot widen their own authority.');
+      },
+      applyDelegated: vi.fn(),
+    });
+    const result = await tools[2].execute(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: CONFIG_REVISION,
+        changes: {},
+      },
+      { callId: 'policy', toolOccurrence: 1, signal: new AbortController().signal }
+    );
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0]!.type === 'text' ? result.content[0]!.text : '{}');
+    expect(payload).toEqual({
+      code: 'configuration_request_rejected',
+      message: 'Policy authors cannot widen their own authority.',
+    });
+  });
 });
 
 const FILE_ID = 'agents/codex.agent.jsonc';
