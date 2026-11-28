@@ -128,8 +128,8 @@ export function parseReleaseNotesInput(text) {
 function checkForwardMigrationNotes(notes) {
   const heading = '### In-place forward migration';
   const changes = notes.split(`\n## ${KNOWN_ISSUES_HEADING}\n`)[0];
-  const parts = changes.split(/^### In-place forward migration$/mu);
-  const body = parts[1]?.split(/^ {0,3}#{3,}(?:[ \t]|$)/mu)[0].trim();
+  const parts = changes.split(/(?:^|[\r\n])### In-place forward migration(?=[\r\n]|$)/u);
+  const body = parts[1]?.split(/(?:^|[\r\n]) {0,3}#{3,}(?=[ \t\r\n]|$)/u)[0].trim();
   const paragraphs = body?.split('\n\n');
   const required = [
     'A Workspace operational backup restores only on the exact build that made it.',

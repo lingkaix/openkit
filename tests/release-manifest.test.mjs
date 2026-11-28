@@ -19,7 +19,7 @@ test('the invoked release-notes file matches the reviewed forward-migration admi
   // Retain an exact-byte assertion for shallow CI. Publication proofs still compare Git objects.
   assert.equal(
     createHash('sha256').update(readFileSync('scripts/release-notes.mjs')).digest('hex'),
-    '938191aaaa4b2e093d9945608bc0b864f660a708b6f948d0cab981ddb6228142'
+    '0f7c7f6a884ef13a44029ef48db75cf8b1f0baaca3de2c4bb6669eabfa9788e0'
   );
 });
 
@@ -79,6 +79,23 @@ test('release notes CLI refuses a forward migration without visible recovery ins
   const hiddenInLinkTitle = check(notes.replace(visibleRecovery, hiddenRecovery));
   assert.equal(hiddenInLinkTitle.status, 1);
   assert.match(hiddenInLinkTitle.stderr, /pre-update cold Data Root backup and recovery limits/);
+
+  const forwardMigrationOpening = [
+    '### In-place forward migration',
+    '',
+    'Make a cold Data Root backup before updating. Update an existing `v0.1.0-rc.10` deployment in place and keep its Data Root. The Workspace migration runs automatically and advances `drizzle.workspace` from 1 to 2. The update performs no data reset.',
+  ].join('\n');
+  const hiddenByReferenceDefinition = check(
+    notes.replace(
+      forwardMigrationOpening,
+      '[migration]: /notes "Release metadata\u2028### In-place forward migration\u2028Make a cold Data Root backup before updating."'
+    )
+  );
+  assert.equal(hiddenByReferenceDefinition.status, 1);
+  assert.match(
+    hiddenByReferenceDefinition.stderr,
+    /pre-update cold Data Root backup and recovery limits/
+  );
 });
 
 /** Exact synthetic image/checksum/assessment inputs from the existing producers. */
