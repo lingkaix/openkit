@@ -170,6 +170,58 @@ test('a large child result keeps its exit status and both output streams', async
   assert.equal(stderr.total(), 0);
 });
 
+for (const channel of ['stdout', 'stderr']) {
+  test(`a long ${channel} line preserves every byte and exit 7 with a 64 MiB heap`, async () => {
+    const bytes = 67174400;
+    const root = mkdtempSync(join(tmpdir(), 'openkit-biome-long-line-'));
+    try {
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'pnpm'),
+        [
+          '#!/usr/bin/env node',
+          'const chunk = Buffer.alloc(65536, 97);',
+          `let remaining = ${bytes};`,
+          'const write = () => {',
+          '  if (remaining === 0) return process.exit(7);',
+          '  remaining -= chunk.length;',
+          `  process.${channel}.write(chunk, write);`,
+          '};',
+          'write();',
+          '',
+        ].join('\n'),
+        { mode: 0o755 }
+      );
+      const child = spawn(
+        process.execPath,
+        ['--max-old-space-size=64', resolve('scripts/check-biome.mjs'), '.'],
+        { env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` } }
+      );
+      let forwarded = 0;
+      let unchanged = true;
+      let otherOutput = '';
+      child[channel].on('data', (chunk) => {
+        forwarded += chunk.length;
+        unchanged &&= chunk.every((byte) => byte === 97);
+      });
+      child[channel === 'stdout' ? 'stderr' : 'stdout'].on('data', (chunk) => {
+        otherOutput += chunk.toString('utf8');
+      });
+      const outcome = await new Promise((resolveFinished, reject) => {
+        child.once('error', reject);
+        child.once('close', (status, signal) => resolveFinished({ status, signal }));
+      });
+      assert.deepEqual(outcome, { status: 7, signal: null }, otherOutput);
+      assert.equal(forwarded, bytes);
+      assert.equal(unchanged, true);
+      assert.equal(otherOutput, '');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test('a signalled child is reported as that signal', async () => {
   const stderr = collect();
   const result = await runBiomeCheck(['.'], {
@@ -362,6 +414,26 @@ test('a summary split across the two channels is not a checked-file count', asyn
   assert.equal(result.signal, null);
   assert.match(stderr.text(), /did not report its checked-file count/u);
 });
+
+for (const channel of ['stdout', 'stderr']) {
+  test(`a ${channel} CRLF summary is recognized across chunks`, async () => {
+    const stdout = collect();
+    const stderr = collect();
+    const result = await runBiomeCheck(['.'], {
+      spawn: () => {
+        const child = fakeChild({ status: 0 });
+        child[channel] = Readable.from(['Checked ', '1 file in 2ms.', '\r', '\n']);
+        return child;
+      },
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.signal, null);
+    assert.equal((channel === 'stdout' ? stdout : stderr).text(), 'Checked 1 file in 2ms.\r\n');
+    assert.equal((channel === 'stdout' ? stderr : stdout).text(), '');
+  });
+}
 
 test('a complete summary stays valid after 5000 trailing characters in the same chunk', async () => {
   const stderr = collect();

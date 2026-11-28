@@ -14,26 +14,29 @@ function withoutDisplayColor(text) {
 
 /**
  * Recognize a checked-file summary only as a complete line.
- * The unfinished tail after the last newline is the only state kept between chunks.
+ * Keep at most 4096 characters of each line's prefix, not its unbounded unfinished tail.
+ * The summary starts at column zero; its duration and diagnostic suffix are not needed.
  */
 function createLineParser() {
-  let pending = [];
+  let pending = '';
+  let truncated = false;
   let count = null;
   return {
     push(text) {
       let rest = text;
       while (rest.length > 0) {
         const newlineAt = rest.indexOf('\n');
-        if (newlineAt === -1) {
-          pending.push(rest);
-          return;
-        }
-        pending.push(rest.slice(0, newlineAt));
-        let line = pending.join('');
-        pending = [];
-        if (line.endsWith('\r')) line = line.slice(0, -1);
-        const match = summaryLine.exec(withoutDisplayColor(line));
-        if (match) count = Number(match[1]);
+        const end = newlineAt === -1 ? rest.length : newlineAt;
+        const available = 4096 - pending.length;
+        pending += rest.slice(0, Math.min(end, available));
+        truncated ||= end > available;
+        if (newlineAt === -1) return;
+        const line = withoutDisplayColor(pending);
+        const match = summaryLine.exec(line);
+        // A truncated prefix must not manufacture the word boundary after "in".
+        if (match && (!truncated || match[0].length < line.length)) count = Number(match[1]);
+        pending = '';
+        truncated = false;
         rest = rest.slice(newlineAt + 1);
       }
     },
