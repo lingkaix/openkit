@@ -149,17 +149,6 @@ function resolveGitPath(git, commit, fromFile, relative, cache) {
   return target;
 }
 
-/** Normalize one compiler-observed path and refuse any escape from the repository. */
-function repositoryRelativePath(file) {
-  requireFact(!posix.isAbsolute(file), 'publication input escapes repository');
-  const normalized = posix.normalize(file);
-  requireFact(
-    normalized !== '..' && !normalized.startsWith('../'),
-    'publication input escapes repository'
-  );
-  return normalized;
-}
-
 /** Paths from rustc dep-info dummy rules, with Make's escaped spaces decoded. */
 function depInfoPaths(depInfo) {
   const lines = depInfo.split('\n');
@@ -167,7 +156,7 @@ function depInfoPaths(depInfo) {
   requireFact(firstBlank > 0, compilerObservation);
   const paths = [];
   for (const line of lines.slice(firstBlank + 1)) {
-    if (!line || line.startsWith('#')) continue;
+    if (!line || line.startsWith('#') || line.includes(': ')) continue;
     requireFact(line.endsWith(':'), compilerObservation);
     paths.push(line.slice(0, -1).replaceAll('\\ ', ' '));
   }
@@ -186,7 +175,8 @@ function compilerInputFailure(stderr) {
     } catch {
       requireFact(false, compilerObservation);
     }
-    if (diagnostic?.$message_type !== 'diagnostic' || diagnostic.level !== 'error') continue;
+    if ((diagnostic?.$message_type ?? 'diagnostic') !== 'diagnostic') continue;
+    if (diagnostic.level !== 'error') continue;
     const unread = /^couldn't read `([^`]+)`/.exec(diagnostic.message ?? '');
     if (unread) return { file: unread[1] };
     if (diagnostic.code?.code === 'E0583') {
@@ -197,7 +187,43 @@ function compilerInputFailure(stderr) {
   return missingModule === null ? null : { file: missingModule };
 }
 
-/** Materialize exact Git bytes and return rustc dep-info for the NanoHost test harness. */
+/** Cargo compiler artifacts, rendered diagnostics and the final build result. */
+function cargoBuildResult(stdout) {
+  const artifacts = [];
+  const diagnostics = [];
+  let finished = false;
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      requireFact(false, compilerObservation);
+    }
+    if (message.reason === 'compiler-artifact') artifacts.push(message);
+    if (message.reason === 'compiler-message') diagnostics.push(JSON.stringify(message.message));
+    if (message.reason === 'build-finished') finished = message.success === true;
+  }
+  return { artifacts, diagnostics: diagnostics.join('\n'), finished };
+}
+
+/** Dep-info files Cargo emitted for one compiler artifact. */
+function artifactDepInfoFiles(artifact) {
+  const files = new Set();
+  for (const filename of artifact.filenames ?? []) {
+    const base = posix.basename(filename);
+    const withoutExtension = base.replace(/\.(?:rlib|rmeta|so|dylib|dll|a|exe)$/u, '');
+    const stems = new Set([base, withoutExtension, withoutExtension.replace(/^lib/u, '')]);
+    for (const stem of stems) {
+      const candidate = posix.join(posix.dirname(filename), `${stem}.d`);
+      if (existsSync(candidate)) files.add(candidate);
+    }
+  }
+  requireFact(files.size > 0, compilerObservation);
+  return [...files];
+}
+
+/** Materialize exact Git bytes and return Cargo dep-info for the NanoHost test harness. */
 function nanoHostDepInfo(repoRoot, sourceCommit) {
   const scratch = mkdtempSync(posix.join(tmpdir(), 'openkit-publication-'));
   try {
@@ -217,70 +243,86 @@ function nanoHostDepInfo(repoRoot, sourceCommit) {
     gitCommand(['clone', '--quiet', '--no-checkout', '--shared', repoRoot, tree]);
     gitCommand(['-C', tree, 'config', 'core.symlinks', 'false']);
     gitCommand(['-C', tree, 'checkout', '--quiet', '--detach', sourceCommit]);
-    const manifestPath = posix.join(tree, 'apps/nanohost/Cargo.toml');
-    requireFact(
-      existsSync(manifestPath),
-      'publication input must be a regular tracked file: apps/nanohost/Cargo.toml'
-    );
-    const manifest = readFileSync(manifestPath, 'utf8');
-    const edition = /^[\t ]*edition[\t ]*=[\t ]*"([0-9]{4})"/m.exec(manifest)?.[1];
-    const version = /^[\t ]*version[\t ]*=[\t ]*"([^"\n]+)"/m.exec(manifest)?.[1];
-    requireFact(edition && version, compilerObservation);
-    const depInfoPath = posix.join(scratch, 'nanohost.d');
     const env = {};
     for (const key of ['PATH', 'HOME', 'RUSTUP_HOME', 'CARGO_HOME', 'TMPDIR', 'TEMP', 'TMP'])
       if (typeof process.env[key] === 'string') env[key] = process.env[key];
-    env.CARGO_PKG_VERSION = version;
-    env.CARGO_MANIFEST_DIR = posix.join(tree, 'apps/nanohost');
+    env.CARGO_TARGET_DIR = posix.join(scratch, 'target');
     const result = spawnSync(
-      'rustc',
+      'cargo',
       [
-        `--edition=${edition}`,
-        '--test',
-        '--crate-name',
+        'test',
+        '--locked',
+        '--offline',
+        '--manifest-path',
+        'apps/nanohost/Cargo.toml',
+        '--bin',
         'nanohost',
-        '--error-format=json',
-        `--emit=dep-info=${depInfoPath}`,
-        'apps/nanohost/src/main.rs',
+        '--no-run',
+        '--message-format=json',
       ],
       {
         cwd: tree,
         env,
         encoding: 'utf8',
-        timeout: 30000,
-        maxBuffer: 16 * 1024 * 1024,
+        timeout: 300000,
+        maxBuffer: 32 * 1024 * 1024,
       }
     );
     requireFact(!result.error && !result.signal, compilerObservation);
-    requireFact(existsSync(depInfoPath), compilerObservation);
-    return { depInfo: readFileSync(depInfoPath, 'utf8'), stderr: result.stderr ?? '' };
+    const build = cargoBuildResult(result.stdout ?? '');
+    if (result.status !== 0) return { depInfos: [], diagnostics: build.diagnostics, failed: true };
+    requireFact(build.finished, compilerObservation);
+    const manifestPath = posix.join(tree, 'apps/nanohost/Cargo.toml');
+    const artifacts = build.artifacts.filter((artifact) => artifact.manifest_path === manifestPath);
+    const testBins = artifacts.filter(
+      (artifact) =>
+        artifact.target?.name === 'nanohost' &&
+        artifact.target?.kind?.includes('bin') &&
+        artifact.profile?.test === true &&
+        typeof artifact.executable === 'string'
+    );
+    requireFact(testBins.length === 1, compilerObservation);
+    const depInfos = [];
+    for (const artifact of artifacts)
+      for (const file of artifactDepInfoFiles(artifact)) depInfos.push(readFileSync(file, 'utf8'));
+    return { depInfos, diagnostics: build.diagnostics };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
+/** Prefix one Cargo package-relative input path for validation in the repository tree. */
+function nanoHostRepositoryPath(file) {
+  requireFact(!posix.isAbsolute(file), 'publication input escapes repository');
+  return `apps/nanohost/${file}`;
+}
+
 /** Compiler-observed NanoHost inputs, re-proved as tracked Git paths. */
 function compilerObservedNanoHostInputs(repoRoot, sourceCommit, git, cache) {
   const observed = nanoHostDepInfo(repoRoot, sourceCommit);
-  const failure = compilerInputFailure(observed.stderr);
+  const failure = compilerInputFailure(observed.diagnostics);
   if (failure) {
     if (!failure.file) requireFact(false, compilerObservation);
-    resolveGitPath(git, sourceCommit, 'proof-root', failure.file, cache);
+    const failurePath = nanoHostRepositoryPath(failure.file);
+    resolveGitPath(git, sourceCommit, 'proof-root', failurePath, cache);
     requireFact(
       false,
-      `publication input must be a regular tracked file: ${repositoryRelativePath(failure.file)}`
+      `publication input must be a regular tracked file: ${posix.normalize(failurePath)}`
     );
   }
+  requireFact(!observed.failed, compilerObservation);
   const inputs = new Set();
-  for (const raw of depInfoPaths(observed.depInfo)) {
-    const target = resolveGitPath(
-      git,
-      sourceCommit,
-      'proof-root',
-      repositoryRelativePath(raw),
-      cache
-    );
-    inputs.add(target);
+  for (const depInfo of observed.depInfos) {
+    for (const raw of depInfoPaths(depInfo)) {
+      const target = resolveGitPath(
+        git,
+        sourceCommit,
+        'proof-root',
+        nanoHostRepositoryPath(raw),
+        cache
+      );
+      inputs.add(target);
+    }
   }
   return inputs;
 }
@@ -413,17 +455,18 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       pending.add(match[0]);
     // The Worker seed smoke compiles the NanoHost test harness from this checkout.
     // Bind every tracked package file and the parent manifest Cargo consults,
-    // then bind the file list rustc records for that same test harness. The
-    // compiler runs in an immutable temporary checkout with symlinks materialized
-    // as ordinary files. External-crate resolution errors are expected because
-    // this proof does not build dependencies; rustc still emits dep-info after
-    // module and macro input observation. Missing local input diagnostics refuse
-    // proof. Every listed path is normalized and re-proved as a regular tracked
-    // Git object one component at a time, so symlink, untracked and repository-
-    // escaping inputs fail closed. A baseline recorded with a smaller closure
-    // mismatches and fails closed.
+    // then run the same locked Cargo test-binary build offline in an immutable
+    // temporary checkout and bind dep-info for every same-package artifact Cargo
+    // emits, including the library target when the test binary uses it. Cargo's
+    // default feature resolution is therefore the build's own behavior rather
+    // than a parallel reimplementation. Symlinks are materialized as ordinary
+    // files, missing local input diagnostics refuse proof, and every listed path
+    // is re-proved as a regular tracked Git object one component at a time. A
+    // baseline recorded with a smaller closure mismatches and fails closed.
     if (file === 'scripts/docker/check-worker-seed.sh') {
       pending.add('Cargo.toml');
+      for (const cargoConfig of ['.cargo/config.toml', '.cargo/config'])
+        if (trackedMode(git, sourceCommit, cargoConfig, pathModes)) pending.add(cargoConfig);
       requireFact(
         !/^[\t ]*build[\t ]*=/m.test(read('apps/nanohost/Cargo.toml').bytes),
         buildScript
