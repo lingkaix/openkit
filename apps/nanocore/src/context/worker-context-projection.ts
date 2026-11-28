@@ -11,7 +11,7 @@ export class WorkerContextProjectionError extends Error {
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app-api-schemas';
+import type { ThreadTaskInput } from '@openkit/app-api-schemas';
 import { compareCodeUnits, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
@@ -155,12 +155,6 @@ export function projectThreadTaskInputs(input: WorkerContextProjectionInput): Th
     } catch {}
   }
   return summaries;
-}
-
-/** Derived S16 fields added to the Thread Material read model. */
-export interface ThreadMaterialContextProjection extends ThreadMaterialTraceProjection {
-  /** Current pending delivery for this exact Material, if any. */
-  readonly activeDelivery: ThreadMaterialActiveDelivery | null;
 }
 
 /**
@@ -340,15 +334,15 @@ function* readVerifiedThreadWorkerContextTracesWithOwners(
 }
 
 /**
- * Derives the S16 worker-seen and active-delivery fields for one bound Material.
+ * Derives the S16 worker-seen revision fields for one bound Material.
  *
  * @param input Existing authority owners, Thread scope, and bound Material identity.
- * @returns Three read-only fields backed only by current durable owners.
+ * @returns Read-only revision projections backed only by current durable owners.
  * @throws GoalSteeringAuthorityError when a trace or pending owner is contradictory.
  */
 export function projectThreadMaterialContext(
   input: WorkerContextProjectionInput & { readonly materialId: string }
-): ThreadMaterialContextProjection {
+): ThreadMaterialTraceProjection {
   const verifiedTraces = readVerifiedThreadWorkerContextTraces(input);
   const nonTerminalTurns = input.store
     .listThreadTurns(input.workspaceDb.workspaceId, input.threadId)
@@ -367,7 +361,7 @@ export function projectThreadMaterialContext(
     currentTurnId,
     traces: verifiedTraces,
   });
-  return { ...traceProjection, activeDelivery: null };
+  return traceProjection;
 }
 
 /** Creates the product-safe fail-closed error used by S16 read projections. */

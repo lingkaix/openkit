@@ -51,21 +51,6 @@ const fields = [
     derived: true,
   },
   {
-    kind: 'tu',
-    schema: material.ThreadMaterialActiveDeliverySchema.shape.pendingTurnId,
-    derived: true,
-  },
-  {
-    kind: 'tu',
-    schema: material.ThreadMaterialActiveDeliverySchema.shape.activeTurnId,
-    derived: true,
-  },
-  {
-    kind: 'it',
-    schema: material.ThreadMaterialActiveDeliverySchema.shape.contentItemId,
-    derived: true,
-  },
-  {
     kind: 'grant',
     schema: VAULT_OPERATION_DEFINITIONS['vault.grant-narrow'].inputSchema.shape.grantId,
     derived: false,
@@ -77,7 +62,6 @@ const fields = [
     material.ArtifactMaterialProposalSchema.shape.baseRevisionId,
     material.ArtifactReviewRangeFeedbackSchema.shape.revisionId,
     material.ArtifactReviewViewSchema.shape.appliedMaterialRevisionId,
-    material.ThreadMaterialActiveDeliverySchema.shape.revisionId,
     material.ThreadMaterialViewSchema.shape.latestQueuedRevisionId,
     material.ThreadMaterialViewSchema.shape.lastWorkerSeenRevisionId,
     material.ThreadMaterialViewSchema.shape.currentTurnRevisionId,

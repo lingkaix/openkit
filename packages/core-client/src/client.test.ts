@@ -2309,7 +2309,6 @@ describe('createCoreClient', () => {
       latestQueuedRevisionId: 'mrev_00000000-0000-7444-8d8f-e35a7aaa68ab',
       lastWorkerSeenRevisionId: null,
       currentTurnRevisionId: null,
-      activeDelivery: null,
     };
     const routeCases = [
       [

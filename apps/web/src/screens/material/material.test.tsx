@@ -82,7 +82,6 @@ const THREAD_MATERIAL = {
   latestQueuedRevisionId: THREAD_QUEUED_REVISION_ID,
   lastWorkerSeenRevisionId: 'mrev_00000000-0000-78ed-ba4a-524613b47324',
   currentTurnRevisionId: 'mrev_00000000-0000-750d-8a07-6d157a32106c',
-  activeDelivery: null,
 };
 
 const NULL_THREAD_MATERIAL = {

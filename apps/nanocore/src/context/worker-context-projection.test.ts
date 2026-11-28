@@ -296,7 +296,6 @@ describe('worker Context Package read projection', () => {
       const expected = {
         lastWorkerSeenRevisionId: material.revisionId,
         currentTurnRevisionId: material.revisionId,
-        activeDelivery: null,
       };
       expect
         .soft(() => expect(projectThreadMaterialContext(input)).toEqual(expected))

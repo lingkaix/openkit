@@ -152389,69 +152389,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "activeDelivery": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "state": {
-                            "type": "string",
-                            "enum": [
-                              "queued",
-                              "applied"
-                            ]
-                          },
-                          "pendingTurnId": {
-                            "type": "string",
-                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "requestId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "contentItemId": {
-                            "type": "string",
-                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "goalId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "activeTurnId": {
-                            "type": "string",
-                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "materialId": {
-                            "type": "string",
-                            "pattern": "^mat_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "revisionId": {
-                            "type": "string",
-                            "pattern": "^mrev_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "contentDigest": {
-                            "type": "string",
-                            "pattern": "^sha256:[a-f0-9]{64}$"
-                          }
-                        },
-                        "required": [
-                          "state",
-                          "pendingTurnId",
-                          "requestId",
-                          "contentItemId",
-                          "goalId",
-                          "activeTurnId",
-                          "materialId",
-                          "revisionId",
-                          "contentDigest"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
                   }
                 },
                 "required": [
@@ -152462,8 +152399,7 @@
                   "inclusionState",
                   "latestQueuedRevisionId",
                   "lastWorkerSeenRevisionId",
-                  "currentTurnRevisionId",
-                  "activeDelivery"
+                  "currentTurnRevisionId"
                 ],
                 "additionalProperties": false
               },
@@ -183464,5 +183400,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:5c23209744b5539295c5ea2f88159599965787dd4d70dd6972f41b77ef3aa265"
+  "x-openkit-source-digest": "sha256:c2f36ad53004421e58934df402a8dbf177d909f3ddb78444767ccddb9c000a9b"
 }

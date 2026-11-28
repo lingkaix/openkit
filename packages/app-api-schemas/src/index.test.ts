@@ -355,17 +355,6 @@ describe('S16 Material and Artifact Review schemas', () => {
             latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
             lastWorkerSeenRevisionId: null,
             currentTurnRevisionId: null,
-            activeDelivery: {
-              state: 'queued',
-              pendingTurnId: 'tu_00000000-0000-7840-ba75-ca03fb2115a3',
-              requestId: 'request_steering',
-              contentItemId: 'it_00000000-0000-7e2c-91ba-c8a92695b9a1',
-              goalId: 'goal_demo',
-              activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
-              materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
-              revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
-              contentDigest,
-            },
           },
         },
       ],
@@ -411,6 +400,9 @@ describe('S16 Material and Artifact Review schemas', () => {
       ).toBe(false);
     }
     expect(GetThreadMaterialResponseSchema.safeParse({ material: null }).success).toBe(true);
+    expect(GetThreadMaterialResponseSchema.shape.material.unwrap().shape).not.toHaveProperty(
+      'activeDelivery'
+    );
     expect(
       GetThreadMaterialResponseSchema.safeParse({
         material: {
@@ -422,17 +414,7 @@ describe('S16 Material and Artifact Review schemas', () => {
           latestQueuedRevisionId: 'mrev_00000000-0000-7000-8000-000000000001',
           lastWorkerSeenRevisionId: null,
           currentTurnRevisionId: null,
-          activeDelivery: {
-            state: 'queued',
-            pendingTurnId: 'tu_00000000-0000-7840-ba75-ca03fb2115a3',
-            requestId: 'import-lineage:reserved',
-            contentItemId: 'it_00000000-0000-7e2c-91ba-c8a92695b9a1',
-            goalId: 'goal_demo',
-            activeTurnId: 'tu_00000000-0000-7f6c-8538-e35e2d71b14f',
-            materialId: 'mat_00000000-0000-72f2-b4bf-036246e8e3d3',
-            revisionId: 'mrev_00000000-0000-7000-8000-000000000001',
-            contentDigest,
-          },
+          activeDelivery: null,
         },
       }).success
     ).toBe(false);

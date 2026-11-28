@@ -513,7 +513,7 @@ The Material and Artifact operations governed by this section authorize the path
 
 `ListWorkspaceMaterialsResponseSchema` returns the ordered Material list of those views. `GetWorkspaceMaterialResponseSchema` returns one such view. `ListWorkspaceMaterialRevisionsResponseSchema` returns the ordered revision list of those summaries. `GetWorkspaceMaterialRevisionResponseSchema` returns one revision view. A client compares revisions by reading the two exact immutable revisions; no comparison result becomes authority.
 
-`ThreadMaterialViewSchema` in `packages/app-api-schemas/src/material.ts` is the contained non-null Thread material record. `GetThreadMaterialResponseSchema` is the Thread material response. Its `material` is that view, or null when no Material is currently bound. Expected-base rejection is only the typed mutation response and is not retained in this read model. Clients may choose presentation actions from this projection, but command validation remains authoritative and no action list becomes another lifecycle owner. The public schema also declares `activeDelivery`. The producer emits null. That member is not an active-delivery workflow.
+`ThreadMaterialViewSchema` in `packages/app-api-schemas/src/material.ts` is the contained non-null Thread material record. `GetThreadMaterialResponseSchema` is the Thread material response. Its `material` is that view, or null when no Material is currently bound. Expected-base rejection is only the typed mutation response and is not retained in this read model. Clients may choose presentation actions from this projection, but command validation remains authoritative and no action list becomes another lifecycle owner. The Thread material read has no active-delivery member.
 
 A public read whose non-null revision, binding, Context Package, or delivery identity does not resolve to the matching Workspace owner returns `recovery_required`; it MUST NOT silently null the field, substitute the latest revision, or expose a partial projection.
 
@@ -595,7 +595,6 @@ Acceptance also exercises one binary stream and one exact text version. Fault in
 ## Implementation Gaps
 
 - Class 1 acceptance is proved by a real browser and worker run, including the Responses relay and function-tool boundary in the declared supported environment, and by the remaining governed Web, catalog, and tier acceptance - On main, that qualification is not established - #343
-- The Thread Material read has no active-delivery member - On main, the schema still declares activeDelivery and the producer emits null - #729
 - Release-scale folder and media measurement is proved on the declared host - On main, source limits do not establish that measurement - #190
 
 ## Decisions

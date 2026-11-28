@@ -378,7 +378,6 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     expect(projection.material).toMatchObject({
       lastWorkerSeenRevisionId: revisionId,
       currentTurnRevisionId: null,
-      activeDelivery: null,
       latestQueuedRevisionId: null,
     });
     const nextContent = '# Release revision two\n\nSaved without another message.\n';

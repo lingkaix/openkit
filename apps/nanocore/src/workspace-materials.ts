@@ -1103,7 +1103,6 @@ export function getThreadMaterial(
     latestQueuedRevisionId: binding.latestQueuedRevisionId,
     lastWorkerSeenRevisionId: null,
     currentTurnRevisionId: null,
-    activeDelivery: null,
   };
 }
 

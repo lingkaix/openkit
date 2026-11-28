@@ -309,7 +309,6 @@ describe('Workspace Material authority', () => {
         latestQueuedRevisionId: secondRevision.revisionId,
         lastWorkerSeenRevisionId: null,
         currentTurnRevisionId: null,
-        activeDelivery: null,
         resource: { currentRevisionId: secondRevision.revisionId },
         currentRevision: { revisionId: secondRevision.revisionId },
       });

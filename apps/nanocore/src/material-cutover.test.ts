@@ -185,7 +185,6 @@ it('reaches all eleven canonical Material outcomes and exact binding replay', as
       latestQueuedRevisionId: saved.revisionId,
       lastWorkerSeenRevisionId: null,
       currentTurnRevisionId: null,
-      activeDelivery: null,
     });
     expect(
       (

@@ -256,21 +256,6 @@ export const ArtifactReviewViewSchema = z
     }
   });
 
-/** Active delivery proof projected from the singular pending user-turn owner. */
-export const ThreadMaterialActiveDeliverySchema = z
-  .object({
-    state: z.enum(['queued', 'applied']),
-    pendingTurnId: TurnIdSchema,
-    requestId: requestIdSchema,
-    contentItemId: ItemIdSchema,
-    goalId: opaqueIdSchema,
-    activeTurnId: TurnIdSchema,
-    materialId: MaterialIdSchema,
-    revisionId: MaterialRevisionIdSchema,
-    contentDigest: contentDigestSchema,
-  })
-  .strict();
-
 /** Singular Material projection for one Thread. */
 export const ThreadMaterialViewSchema = z
   .object({
@@ -282,7 +267,6 @@ export const ThreadMaterialViewSchema = z
     latestQueuedRevisionId: MaterialRevisionIdSchema.nullable(),
     lastWorkerSeenRevisionId: MaterialRevisionIdSchema.nullable(),
     currentTurnRevisionId: MaterialRevisionIdSchema.nullable(),
-    activeDelivery: ThreadMaterialActiveDeliverySchema.nullable(),
   })
   .strict();
 
@@ -545,8 +529,6 @@ export type WorkspaceMaterialRevisionView = z.infer<typeof WorkspaceMaterialRevi
 export type ArtifactMaterialProposal = z.infer<typeof ArtifactMaterialProposalSchema>;
 /** Closed public projection of one version-keyed Artifact Review. */
 export type ArtifactReviewView = z.infer<typeof ArtifactReviewViewSchema>;
-/** Active delivery proof projected from one pending user-turn owner. */
-export type ThreadMaterialActiveDelivery = z.infer<typeof ThreadMaterialActiveDeliverySchema>;
 /** Singular Material projection for one Thread. */
 export type ThreadMaterialView = z.infer<typeof ThreadMaterialViewSchema>;
 /** App API response listing Workspace Materials. */
