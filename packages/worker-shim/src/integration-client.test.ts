@@ -19,8 +19,616 @@ import {
   SANDBOX_INTEGRATION_TARGET,
   SANDBOX_NATIVE_INFERENCE_TARGET,
   SandboxIntegrationClient,
+  WorkerShimPollCarrier,
 } from './integration-client.js';
 import { openEphemeralSandboxIntegration } from './test-support/ephemeral-integration.js';
+import { FakeWorkerShim } from './test-support/worker-shim-fake.js';
+import type {
+  WorkerShimDesiredSet,
+  WorkerShimInventory,
+  WorkerShimSession,
+  WorkerShimTurnInput,
+} from './worker-shim-port.js';
+
+describe('staged Worker Shim carrier', () => {
+  const session = {
+    sandboxIncarnationId: 'sbxi_00000000-0000-7b98-8803-ea4242ad797b',
+    connectionGeneration: 1,
+  };
+  const otherIncarnationId = 'sbxi_00000000-0000-73c3-900f-8d310e4ba201';
+  const successor = { ...session, connectionGeneration: 2 };
+  const worker = {
+    workerId: 'wkr_00000000-0000-7b98-8803-ea4242ad797b',
+    agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
+    adapterId: 'codex',
+    workSlotRef: 'slot-1',
+    resume: null,
+  };
+  const key = {
+    workerId: worker.workerId,
+    operationId: 'operation-1',
+    payloadDigest: 'a'.repeat(64),
+  };
+  const target = {
+    workerId: worker.workerId,
+    turnId: 'tu_00000000-0000-7612-9335-5946291cc91e',
+    attemptId: 'attempt_00000000-0000-7b98-8803-ea4242ad797b',
+  };
+  const input: WorkerShimTurnInput = {
+    ...key,
+    ...target,
+    inputRef: 'input-1',
+    routeGrant: 'grant-1',
+  };
+  const interrupt = { ...target, requestId: 'interrupt-1' };
+  const inventory = (current: WorkerShimSession): WorkerShimInventory => ({
+    session: current,
+    workers: [],
+    receipts: [],
+    interrupts: [],
+  });
+  const desired = (
+    current: WorkerShimSession,
+    revision: number,
+    work: Partial<WorkerShimDesiredSet> = {}
+  ): WorkerShimDesiredSet => ({
+    session: current,
+    revision,
+    workers: [],
+    inputs: [],
+    steers: [],
+    interrupts: [],
+    acknowledgedOperations: [],
+    ...work,
+  });
+  const work = { workers: [{ state: 'run' as const, worker }], inputs: [input] };
+  async function* body(value: unknown) {
+    yield Buffer.from(JSON.stringify(value));
+  }
+  const peer = (value: unknown) => async () => body(value);
+  const attach = (carrier = new WorkerShimPollCarrier(session.sandboxIncarnationId)) => {
+    carrier.attach(session);
+    return carrier;
+  };
+  const effects = () => {
+    const start = vi.fn();
+    const intake = vi.fn();
+    const apply = (set: WorkerShimDesiredSet, begin: () => void) => {
+      begin();
+      for (const item of set.workers) if (item.state === 'run') start(item.worker);
+      for (const item of set.inputs) intake(item);
+    };
+    return { start, intake, apply };
+  };
+
+  it.each([
+    'before request',
+    'during body',
+    'older revision',
+    'foreign incarnation',
+    'cancelled at EOF',
+  ] as const)('cuts stale work %s before starts or native intake', async (cut) => {
+    const carrier = attach();
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const abort = new AbortController();
+    const { start, intake, apply } = effects();
+    let current = session;
+    const wrong = { ...session, sandboxIncarnationId: otherIncarnationId };
+    if (cut === 'before request') {
+      current = successor;
+      carrier.attach(current);
+    }
+    const replySession =
+      cut === 'foreign incarnation' ? wrong : cut === 'during body' ? successor : session;
+    const reply = desired(replySession, 1, work);
+    const send = vi.fn(async function* () {
+      if (cut === 'during body' || cut === 'older revision') {
+        const text = JSON.stringify(reply);
+        yield Buffer.from(text.slice(0, 12));
+        held.resolve();
+        await release.promise;
+        yield Buffer.from(text.slice(12));
+      } else {
+        yield Buffer.from(JSON.stringify(reply));
+      }
+      if (cut === 'cancelled at EOF') abort.abort();
+    });
+    const deliver = vi.fn(apply);
+    const attempted = carrier.poll(inventory(session), async () => send(), deliver, abort.signal);
+    const refused = attempted.then(
+      () => null,
+      (error: unknown) => error
+    );
+    if (cut === 'during body' || cut === 'older revision') {
+      await held.promise;
+      if (cut === 'during body') {
+        current = successor;
+        carrier.attach(current);
+      } else {
+        await carrier.poll(inventory(current), peer(desired(current, 2)), apply);
+      }
+      release.resolve();
+    }
+    const failure = await refused;
+    expect(send).toHaveBeenCalledTimes(cut === 'before request' ? 0 : 1);
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    if (cut === 'cancelled at EOF') expect(deliver).not.toHaveBeenCalled();
+    expect(failure).toBeInstanceOf(Error);
+    const matching = desired(current, 3, work);
+    await carrier.poll(inventory(current), peer(matching), apply);
+    await expect(carrier.poll(inventory(current), peer(matching), apply)).rejects.toThrow();
+    expect(start).toHaveBeenCalledExactlyOnceWith(worker);
+    expect(intake).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
+  it('binds a held reply to the generation actually encoded even when the caller reuses its session', async () => {
+    const reused = { ...session };
+    const carrier = attach();
+    const { apply, start, intake } = effects();
+    const sent = Promise.withResolvers<string>();
+    const release = Promise.withResolvers<void>();
+    const held = carrier
+      .poll(
+        inventory(reused),
+        async (text) => {
+          sent.resolve(text);
+          await release.promise;
+          return body(desired(successor, 1, work));
+        },
+        apply
+      )
+      .catch((error: unknown) => error);
+
+    const offered = await sent.promise;
+    reused.connectionGeneration = successor.connectionGeneration;
+    carrier.attach(reused);
+    release.resolve();
+    const result = await held;
+    expect(JSON.parse(offered)).toEqual(inventory(session));
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    expect(result).toMatchObject({ message: expect.stringContaining('stale') });
+    await carrier.poll(inventory(reused), peer(desired(reused, 1, work)), apply);
+    expect(start).toHaveBeenCalledExactlyOnceWith(worker);
+    expect(intake).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
+  it('caps streamed reply bytes before applying a complete valid set', async () => {
+    const carrier = attach();
+    const { start, intake, apply } = effects();
+    const text = JSON.stringify(desired(session, 1, work));
+    const padding = Buffer.alloc(1024 * 1024 - Buffer.byteLength(text), 0x20);
+    const reply = (excess: boolean) =>
+      async function* () {
+        yield Buffer.from(text);
+        yield padding;
+        if (excess) yield Buffer.from(' ');
+      };
+    const over = await carrier
+      .poll(inventory(session), async () => reply(true)(), apply)
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    expect(over).toBeInstanceOf(TypeError);
+    expect((over as Error).message).toContain('byte bound');
+    await carrier.poll(inventory(session), async () => reply(false)(), apply);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(intake).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the original outage deadline during a same-incarnation reconnect', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const carrier = attach();
+      const { apply, start, intake } = effects();
+      const original = { kind: 'input' as const, key, disposition: 'accepted' as const };
+      const retained = { ...inventory(session), receipts: [original] };
+      await expect(
+        carrier.poll(
+          retained,
+          async () => {
+            throw new Error('outage');
+          },
+          apply
+        )
+      ).rejects.toThrow('outage');
+      now = 299_999;
+      carrier.attach(successor);
+      const next = { ...retained, session: successor };
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const exchange = vi.fn(async function* () {
+        entered.resolve();
+        await release.promise;
+        yield Buffer.from(JSON.stringify(desired(successor, 0, work)));
+      });
+      const pending = carrier.poll(
+        next,
+        async (encoded) => {
+          expect(JSON.parse(encoded)).toEqual(next);
+          return exchange();
+        },
+        apply
+      );
+      const refused = pending.then(
+        () => null,
+        (error: unknown) => error
+      );
+      await entered.promise;
+      now = 300_000;
+      release.resolve();
+      const failure = await refused;
+      expect(exchange).toHaveBeenCalledTimes(1);
+      expect(start).toHaveBeenCalledTimes(0);
+      expect(intake).toHaveBeenCalledTimes(0);
+      expect((failure as Error).message).toContain('outage');
+      expect(() => carrier.attach({ ...successor, connectionGeneration: 3 })).toThrow('outage');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('does not give a held reply a new deadline when another exchange succeeds', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const carrier = attach();
+      const { apply, start, intake } = effects();
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const heldBody = async function* () {
+        entered.resolve();
+        await release.promise;
+        yield Buffer.from(JSON.stringify(desired(session, 3, work)));
+      };
+      const pending = carrier.poll(inventory(session), async () => heldBody(), apply);
+      const rejected = pending.then(
+        () => null,
+        (error: unknown) => error
+      );
+      await entered.promise;
+      now = 299_999;
+      await carrier.poll(inventory(session), peer(desired(session, 2)), apply);
+      now = 300_000;
+      release.resolve();
+      const failure = await rejected;
+      expect(start).toHaveBeenCalledTimes(0);
+      expect(intake).toHaveBeenCalledTimes(0);
+      expect((failure as Error).message).toContain('outage');
+      carrier.attach(successor);
+      await carrier.poll(inventory(successor), peer(desired(successor, 0, work)), apply);
+      expect(start).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('aborts a peer still waiting at the original outage deadline', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] });
+    try {
+      const carrier = attach();
+      const { apply, start, intake } = effects();
+      const exchange = vi.fn(
+        async (_encoded: string, signal: AbortSignal) =>
+          new Promise<AsyncIterable<Uint8Array>>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          })
+      );
+      const pending = carrier.poll(inventory(session), exchange, apply);
+      const refused = expect(pending).rejects.toThrow('outage');
+      await vi.advanceTimersByTimeAsync(299_999);
+      const signal = exchange.mock.calls[0]?.[1];
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal?.aborted).toBe(true);
+      await refused;
+      expect(() => carrier.attach(successor)).toThrow('outage');
+      expect(start).toHaveBeenCalledTimes(0);
+      expect(intake).toHaveBeenCalledTimes(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends a half-read reply at the original outage deadline without waiting for EOF', async () => {
+    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] });
+    const release = Promise.withResolvers<void>();
+    let pending: Promise<void> | undefined;
+    try {
+      const carrier = attach();
+      const { apply, start, intake } = effects();
+      const held = Promise.withResolvers<AbortSignal>();
+      const closed = Promise.withResolvers<void>();
+      const text = JSON.stringify(desired(session, 1, work));
+      let outcome: unknown;
+      pending = carrier
+        .poll(
+          inventory(session),
+          async (_encoded, signal) => {
+            return (async function* () {
+              try {
+                yield Buffer.from(text.slice(0, 12));
+                held.resolve(signal);
+                await release.promise;
+                yield Buffer.from(text.slice(12));
+              } finally {
+                closed.resolve();
+              }
+            })();
+          },
+          apply
+        )
+        .then(
+          () => {
+            outcome = 'applied';
+          },
+          (error: unknown) => {
+            outcome = error;
+          }
+        );
+      const signal = await held.promise;
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(outcome).toBeUndefined();
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal.aborted).toBe(true);
+      expect(outcome).toMatchObject({ message: expect.stringContaining('outage') });
+      release.resolve();
+      await pending;
+      await closed.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(start).toHaveBeenCalledTimes(0);
+      expect(intake).toHaveBeenCalledTimes(0);
+    } finally {
+      release.resolve();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires the local entry after an unsupported first exchange and starts the next incarnation empty', async () => {
+    const carrier = attach();
+    const { apply, start, intake } = effects();
+    await expect(
+      carrier.poll(
+        inventory(session),
+        peer({ ...desired(session, 1, work), schemaVersion: 99 }),
+        apply
+      )
+    ).rejects.toThrow('unsupported');
+    expect(() => carrier.attach(successor)).toThrow();
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    const fresh = { sandboxIncarnationId: otherIncarnationId, connectionGeneration: 1 };
+    const newCarrier = new WorkerShimPollCarrier(fresh.sandboxIncarnationId);
+    newCarrier.attach(fresh);
+    await newCarrier.poll(
+      inventory(fresh),
+      async (sent) => {
+        expect(JSON.parse(sent)).toEqual(inventory(fresh));
+        return body(desired(fresh, 1, work));
+      },
+      apply
+    );
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(intake).toHaveBeenCalledTimes(1);
+  });
+
+  it('cuts cancellation after Shim hand-off and before the first effect', async () => {
+    const carrier = attach();
+    const shim = new FakeWorkerShim(session.sandboxIncarnationId, { input: () => 'accepted' });
+    const abort = new AbortController();
+    const cancelled = new Error('cancelled before effects');
+    const startWorker = shim.start.bind(shim);
+    let beginEffects!: () => void;
+    const start = vi.spyOn(shim, 'start').mockImplementation((request) => {
+      beginEffects();
+      return startWorker(request);
+    });
+    let atCut: { starts: number; inputs: number } | undefined;
+    const outcome = await carrier
+      .poll(
+        inventory(session),
+        peer(desired(session, 1, work)),
+        (set, begin) => {
+          beginEffects = begin;
+          return shim.poll(set.session, async () => {
+            queueMicrotask(() => {
+              atCut = { starts: shim.started.length, inputs: shim.contacted.length };
+              abort.abort(cancelled);
+            });
+            return set;
+          });
+        },
+        abort.signal
+      )
+      .catch((error: unknown) => error);
+    expect(atCut).toEqual({ starts: 0, inputs: 0 });
+    expect(shim.started).toEqual([]);
+    expect(shim.contacted).toEqual([]);
+    expect(outcome).toBe(cancelled);
+    start.mockRestore();
+    await carrier.poll(inventory(session), peer(desired(session, 2, work)), (set, begin) => {
+      begin();
+      return shim.poll(set.session, async () => set);
+    });
+    expect(shim.started).toEqual([worker.workerId]);
+    expect(shim.contacted).toEqual([input.operationId]);
+  });
+
+  it('rejects corrupt UTF-8 and preserves the valid original interrupt key byte for byte', async () => {
+    const carrier = attach();
+    const { apply, start, intake } = effects();
+    const delivered = vi.fn(apply);
+    await carrier.poll(inventory(session), peer(desired(session, 0)), delivered);
+    delivered.mockClear();
+    const requestId = 'interrupt-e\u0301-\u00e9-\u{1f642}';
+    const original = Buffer.from(requestId);
+    const valid = Buffer.from(
+      JSON.stringify(
+        desired(session, 1, {
+          ...work,
+          interrupts: [{ ...interrupt, requestId }],
+        })
+      )
+    );
+    const offset = valid.indexOf(original) + Buffer.byteLength('interrupt-e');
+    const corrupted = Buffer.from(valid);
+    corrupted[offset] = 0xff;
+    const send = (bytes: Buffer) =>
+      async function* () {
+        yield bytes.subarray(0, offset + 1);
+        yield bytes.subarray(offset + 1);
+      };
+    const result = await carrier
+      .poll(inventory(session), async () => send(corrupted)(), delivered)
+      .catch((error: unknown) => error);
+    expect(delivered).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    expect(result).toBeInstanceOf(TypeError);
+    await carrier.poll(inventory(session), async () => send(valid)(), delivered);
+    expect(delivered).toHaveBeenCalledTimes(1);
+    expect(Buffer.from(delivered.mock.calls[0]?.[0].interrupts[0]?.requestId ?? '')).toEqual(
+      original
+    );
+    expect(start).toHaveBeenCalledExactlyOnceWith(worker);
+    expect(intake).toHaveBeenCalledExactlyOnceWith(input);
+  });
+
+  it('refuses unrecognized material before any Worker or input effect', async () => {
+    const carrier = attach();
+    const { apply, start, intake } = effects();
+    await carrier.poll(inventory(session), peer(desired(session, 0)), apply);
+    const rejected = await carrier
+      .poll(
+        inventory(session),
+        peer({ ...desired(session, 1, work), unexpectedMaterial: { worker: worker.workerId } }),
+        apply
+      )
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(start).toHaveBeenCalledTimes(0);
+    expect(intake).toHaveBeenCalledTimes(0);
+    expect((rejected as Error).message).toContain('unsupported');
+    await carrier.poll(inventory(session), peer(desired(session, 2, work)), apply);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(intake).toHaveBeenCalledTimes(1);
+  });
+
+  it('exchanges a full current inventory while original settlement is held and retains an exact receipt through lost ACK', async () => {
+    const carrier = attach();
+    const shim = new FakeWorkerShim(session.sandboxIncarnationId, { input: () => 'accepted' });
+    const applicationEntered = Promise.withResolvers<void>();
+    const settlement = Promise.withResolvers<void>();
+    const lost = new Error('drop exchange before delivery');
+    const report = async (current: WorkerShimSession) => {
+      let full!: WorkerShimInventory;
+      await expect(
+        shim.poll(current, async (observed) => {
+          full = observed;
+          throw lost;
+        })
+      ).rejects.toBe(lost);
+      return full;
+    };
+    const apply = (set: WorkerShimDesiredSet, begin: () => void) => {
+      begin();
+      return shim.poll(set.session, async () => set);
+    };
+    const held = carrier.poll(
+      await report(session),
+      peer(desired(session, 1, work)),
+      async (set, begin) => {
+        await apply(set, begin);
+        applicationEntered.resolve();
+        await settlement.promise;
+      }
+    );
+    await applicationEntered.promise;
+    const original = { kind: 'input', key, disposition: 'accepted' };
+    const firstReport = await report(session);
+    expect(firstReport.workers).toHaveLength(1);
+    expect(firstReport.receipts).toEqual([original]);
+    const recorded = new Set<string>();
+    const commit = vi.fn();
+    let next: Promise<'applied' | 'stale'> | undefined;
+    try {
+      next = carrier.poll(
+        firstReport,
+        async (encoded) => {
+          expect(JSON.parse(encoded)).toEqual(firstReport);
+          recorded.add(JSON.stringify((JSON.parse(encoded) as WorkerShimInventory).receipts[0]));
+          commit();
+          return body(desired(session, 2, { interrupts: [interrupt] }));
+        },
+        apply
+      );
+      await vi.waitFor(() => expect(shim.interrupted).toEqual([interrupt.requestId]), {
+        timeout: 100,
+      });
+      await next;
+      // The original result was observed, and the Core fixture loses the acknowledgement.
+      await expect(
+        carrier.poll(
+          await report(session),
+          async () => {
+            throw lost;
+          },
+          apply
+        )
+      ).rejects.toBe(lost);
+      carrier.attach(successor);
+      const reconnect = await report(successor);
+      expect(reconnect).toEqual({
+        ...firstReport,
+        session: successor,
+        interrupts: [{ ...interrupt, disposition: 'unknown' }],
+      });
+      await carrier.poll(
+        reconnect,
+        async (encoded) => {
+          expect(JSON.parse(encoded)).toEqual(reconnect);
+          for (const item of (JSON.parse(encoded) as WorkerShimInventory).receipts) {
+            if (!recorded.has(JSON.stringify(item))) commit();
+          }
+          return body(
+            desired(successor, 1, {
+              ...work,
+              interrupts: [interrupt],
+              acknowledgedOperations: [{ ...key, payloadDigest: 'b'.repeat(64) }],
+            })
+          );
+        },
+        apply
+      );
+      const pending = await report(successor);
+      expect(pending.receipts).toEqual([original]);
+      await carrier.poll(
+        pending,
+        peer(desired(successor, 2, { acknowledgedOperations: [key] })),
+        apply
+      );
+      expect((await report(successor)).receipts).toEqual([]);
+      expect(shim.started).toEqual([worker.workerId]);
+      expect(shim.contacted).toEqual([input.operationId]);
+      expect(shim.interrupted).toEqual([interrupt.requestId]);
+      expect(commit).toHaveBeenCalledTimes(1);
+    } finally {
+      settlement.resolve();
+      await held;
+      await next;
+    }
+  });
+});
 
 describe('Sandbox Integration', () => {
   it.each(['complete', 'incomplete'] as const)(

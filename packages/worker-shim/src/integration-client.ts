@@ -26,6 +26,8 @@ import {
   WorkerCredentialHelperReplySchema,
   type WorkerLineage,
   WorkerLineageSchema,
+  WorkerShimDesiredSetSchema,
+  WorkerShimInventorySchema,
 } from '@openkit/worker-protocol';
 import type { WorkerInferenceRuntimeHintMapping } from './adapter-registry.js';
 import type { WorkerControlFetch } from './control-client.js';
@@ -35,11 +37,18 @@ import {
   selectCredentialHelper,
 } from './credential-helper-binding.js';
 import { CREDENTIAL_HELPER_NATIVE_PATH } from './credential-helper-client.js';
+import { LifecycleDeadline } from './lifecycle-deadline.js';
+import type {
+  WorkerShimDesiredSet,
+  WorkerShimInventory,
+  WorkerShimSession,
+} from './worker-shim-port.js';
 
 const INTEGRATION_READY_TIMEOUT_MS = 10_000;
 const CONNECTION_RECEIVE_WINDOW_BYTES = 5 * 1024 * 1024;
 const PER_STREAM_RECEIVE_WINDOW_BYTES = 256 * 1024;
 const WORKER_CONTROL_MAX_BYTES = 1024 * 1024;
+const WORKER_SHIM_OUTAGE_MS = 300_000;
 const INFERENCE_MAX_BYTES = 16 * 1024 * 1024;
 /** Per-request collection limit, independent of the capability family DATA reservation. */
 const CAPABILITY_MAX_BYTES = 512 * 1024;
@@ -129,6 +138,127 @@ type SandboxIntegrationResponse = {
   /** HTTP response status. */
   status: number;
 };
+
+/** One staged local exchange of an encoded inventory for a streamed desired set. */
+type WorkerShimPollPeer = (
+  inventory: string,
+  signal: AbortSignal
+) => Promise<AsyncIterable<Uint8Array>>;
+
+/** Fences and bounds local poll exchanges before the caller can apply any desired work. */
+export class WorkerShimPollCarrier {
+  private generation = -1;
+  private revision = -1;
+  private outage: LifecycleDeadline | undefined;
+  private retired = false;
+
+  /** Starts one carrier owner for the lifetime of an authenticated Sandbox incarnation. */
+  public constructor(private readonly incarnationId: string) {}
+
+  /** Installs a newer authenticated carrier while retaining the outstanding outage deadline. */
+  public attach(session: WorkerShimSession): void {
+    this.requireLive();
+    if (
+      session.sandboxIncarnationId !== this.incarnationId ||
+      !Number.isSafeInteger(session.connectionGeneration) ||
+      session.connectionGeneration <= this.generation
+    )
+      throw new Error('Worker Shim carrier is stale.');
+    this.generation = session.connectionGeneration;
+    this.revision = -1;
+  }
+
+  /** Applies one complete reply. The receiver calls begin immediately before its first effect, after any awaited preparation. */
+  public async poll<T>(
+    inventory: WorkerShimInventory,
+    exchange: WorkerShimPollPeer,
+    apply: (desired: WorkerShimDesiredSet, begin: () => void) => T | Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const sent = WorkerShimInventorySchema.parse(inventory);
+    const sentSession = sent.session;
+    this.requireCurrent(sentSession);
+    signal?.throwIfAborted();
+    const encoded = JSON.stringify(sent);
+    this.outage ??= new LifecycleDeadline(WORKER_SHIM_OUTAGE_MS);
+    const deadline = this.outage;
+    const expiry = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const reason = new Error('Worker Shim poll outage expired.');
+        expiry.abort(reason);
+        reject(reason);
+      }, Math.ceil(deadline.remainingMs()));
+    });
+    const requestSignal = signal ? AbortSignal.any([signal, expiry.signal]) : expiry.signal;
+    let desired: WorkerShimDesiredSet;
+    try {
+      const bytes = await Promise.race([
+        expired,
+        exchange(encoded, requestSignal).then((body) =>
+          collectBoundedBody(
+            body,
+            WORKER_CONTROL_MAX_BYTES,
+            'Worker Shim',
+            undefined,
+            expiry.signal
+          )
+        ),
+      ]);
+      requestSignal.throwIfAborted();
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+        const parsed = WorkerShimDesiredSetSchema.parse(JSON.parse(text));
+        desired = {
+          ...parsed,
+          interrupts: parsed.interrupts.map(({ cause, ...interrupt }) =>
+            cause === undefined ? interrupt : { ...interrupt, cause }
+          ),
+        };
+      } catch {
+        // An abandoned exchange cannot retire the current carrier.
+        this.requireCurrent(sentSession, deadline);
+        if (this.revision < 0) this.retired = true;
+        throw new TypeError('Worker Shim peer returned an unsupported desired set.');
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    const requireAdmissible = () => {
+      this.requireCurrent(sentSession, deadline);
+      this.requireCurrent(desired.session);
+      if (desired.revision <= this.revision) throw new Error('Worker Shim revision is stale.');
+    };
+    requireAdmissible();
+    return apply(desired, () => {
+      // A receiver can wait after hand-off, so claim the revision at effect entry.
+      requireAdmissible();
+      requestSignal.throwIfAborted();
+      this.revision = desired.revision;
+      this.outage = undefined;
+    });
+  }
+
+  /** Checks the authenticated identity before issuing or applying a reply. */
+  private requireCurrent(session: WorkerShimSession, deadline = this.outage): void {
+    this.requireLive(deadline);
+    if (
+      session.sandboxIncarnationId !== this.incarnationId ||
+      session.connectionGeneration !== this.generation
+    )
+      throw new Error('Worker Shim carrier is stale.');
+  }
+
+  /** An expired outage retires this incarnation's carrier owner. */
+  private requireLive(deadline = this.outage): void {
+    if (deadline?.remainingMs() === 0) {
+      if (deadline === this.outage) this.retired = true;
+      throw new Error('Worker Shim poll outage expired.');
+    }
+    if (this.retired) throw new Error('Worker Shim carrier is retired.');
+  }
+}
 
 /** One accepted socket and its single standard HTTP/2 client session. */
 export class SandboxIntegrationClient {
@@ -964,14 +1094,31 @@ async function collectBoundedResponse(
   maxBytes: number,
   label: string
 ): Promise<Awaited<ReturnType<WorkerControlFetch>>> {
+  const bytes = await collectBoundedBody(response.body, maxBytes, label, () => {
+    response.body.close(http2Constants.NGHTTP2_CANCEL);
+  });
+  const text = bytes.toString('utf8');
+  return { ok: response.ok, status: response.status, text: async () => text };
+}
+
+/** Collects the original bytes of one local or HTTP/2 response under its fixed byte limit. */
+async function collectBoundedBody(
+  body: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+  label: string,
+  onOversize?: () => void,
+  signal?: AbortSignal
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   try {
-    for await (const chunk of response.body) {
-      const buffer = Buffer.from(chunk as Uint8Array);
+    signal?.throwIfAborted();
+    for await (const chunk of body) {
+      signal?.throwIfAborted();
+      const buffer = Buffer.from(chunk);
       bytes += buffer.byteLength;
       if (bytes > maxBytes) {
-        response.body.close(http2Constants.NGHTTP2_CANCEL);
+        onOversize?.();
         throw new TypeError(`${label} response exceeds the Integration byte bound.`);
       }
       chunks.push(buffer);
@@ -980,8 +1127,7 @@ async function collectBoundedResponse(
     if (error instanceof TypeError) throw error;
     throw new TypeError(`${label} response failed.`, { cause: error });
   }
-  const text = Buffer.concat(chunks, bytes).toString('utf8');
-  return { ok: response.ok, status: response.status, text: async () => text };
+  return Buffer.concat(chunks, bytes);
 }
 
 /** Resolves one response and normalizes stream failures to fetch transport errors. */

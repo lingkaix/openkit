@@ -22,6 +22,8 @@ Runtime provenance declarations are checked before capture creation or native wo
 
 ## Sandbox Integration
 
+The staged local Worker Shim carrier binds replies to the Sandbox incarnation and carrier generation encoded in the original request. It bounds reply size and rejects invalid UTF-8. The receiver calls the carrier's admission check immediately before the first effect, including after asynchronous preparation. The check admits only a current, newer, uncancelled reply. The original monotonic outage deadline ends a stalled read and remains in force across carrier replacement. The existing binary uses the Harness exchange.
+
 Before any native work, the shim accepts the stock Supervisor connection only on its image-owned `127.0.0.1:17891` binding and establishes one standard HTTP/2 client session. That session exposes only `/worker-control/*`, `/inference/*`, and `/capabilities/*`; the Harness itself uses only the credential-free `/worker-control/harness/poll` and `/worker-control/harness/result`. The worker receives no NanoCore, Gateway, upstream MCP, or caller-selected transport address.
 
 For a keyed heartbeat already accepted before restart, the control client uses the exact-current readback to send one fresh exact-next proof. A failed fresh proof ends recovery through the existing Turn failure path.
