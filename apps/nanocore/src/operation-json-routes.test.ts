@@ -3,9 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureRetryContext } from './auth/capture-retry-context.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import type { FsStore } from './lib/store.js';
 import * as invocation from './operation-composition.js';
-import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import {
+  registerOperationJsonRoutes,
+  registerRetainedOperationRoutes,
+} from './operation-json-routes.js';
+import type { CoreDb } from './storage/db.js';
 import { operationRequest } from './test-support/operation-request.js';
 
 const requestActor: Actor = {
@@ -18,6 +23,12 @@ const otherContextActor: Actor = {
   userId: 'usr_00000000-0000-7000-8000-000000000102',
   sessionId: 'auth_00000000-0000-7000-8000-000000000102',
 };
+
+// Clone the immutable projection only in this test module so one declared access variant can be installed.
+vi.mock('./auth/operation-access.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./auth/operation-access.js')>();
+  return { ...actual, PUBLIC_OPERATION_ACCESS: { ...actual.PUBLIC_OPERATION_ACCESS } };
+});
 
 /** Builds one route-level fixture with synthetic authenticated actors and a protected-operation spy. */
 function createRouteFixture() {
@@ -99,5 +110,61 @@ describe('operation JSON capture-retry context binding', () => {
         actor: requestActor,
       })
     );
+  });
+});
+
+describe('retained Workspace operation administrator admission', () => {
+  it('maps a deployment-administrator refusal to the uniform denial before invocation', async () => {
+    const originalAccess = PUBLIC_OPERATION_ACCESS['workspace.archive-download'];
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      PUBLIC_OPERATION_ACCESS,
+      'workspace.archive-download'
+    );
+    expect(originalAccess).toMatchObject({ resolver: 'path-workspace', scope: 'workspace' });
+    Object.defineProperty(PUBLIC_OPERATION_ACCESS, 'workspace.archive-download', {
+      configurable: true,
+      enumerable: true,
+      value: { ...originalAccess, authentication: 'deployment-admin' },
+    });
+
+    try {
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (c, next) => {
+        c.set('actor', requestActor);
+        await next();
+      });
+      registerRetainedOperationRoutes({
+        app,
+        coreDb: {
+          dataRoot: '/unused',
+          sqlite: {
+            prepare: () => ({ get: () => ({ status: 'active' }) }),
+          },
+        } as unknown as CoreDb,
+        quickChatWorkspaceIdForUser: () => 'ws_00000000-0000-7000-8000-000000000001',
+        store: {} as FsStore,
+      });
+      const archiveHandler = vi.fn(() => Response.json({ downloaded: true }));
+      app.get('/api/app/workspaces/:workspaceId/exports/:exportId/archive', archiveHandler);
+
+      const response = await app.request(
+        '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/export-1/archive'
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'workspace_access_denied',
+        message: 'Workspace access denied.',
+      });
+      expect(archiveHandler).not.toHaveBeenCalled();
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(
+          PUBLIC_OPERATION_ACCESS,
+          'workspace.archive-download',
+          originalDescriptor
+        );
+      }
+    }
   });
 });
