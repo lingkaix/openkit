@@ -207,7 +207,7 @@ jobs:
             --volume "${GITHUB_WORKSPACE}:/workspace" --workdir /workspace \
             --env SECURITY_BASE --env SECURITY_HEAD \
             --env CI=true openkit-test-env:check \
-            bash -c 'bash scripts/test-env.sh any pnpm install --frozen-lockfile && node scripts/check-security.mjs --base "${SECURITY_BASE}" --head "${SECURITY_HEAD}" && pnpm -w check:repo'
+            bash -c 'bash scripts/test-env.sh any pnpm install --frozen-lockfile && node scripts/check-security.mjs --base "${SECURITY_BASE}" --head "${SECURITY_HEAD}" && pnpm -w check:repo && python3 -I -B scripts/docker/app-update-helper.test.py'
 
   nanohost-installer:
     name: NanoHost installer fixed-path gate (${{ matrix.runner }})

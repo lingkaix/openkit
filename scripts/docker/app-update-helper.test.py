@@ -1442,7 +1442,9 @@ console.log(JSON.stringify({ push: workflow.on.push, aggregate, shard, plan: sha
         self.assertEqual(workflow["shard"]["if"], f"{direct_stable_candidate} && ({condition})")
         self.assertEqual(workflow["aggregate"]["if"], f"{direct_stable_candidate} && (always() && ({condition}))")
         self.assertEqual(workflow["aggregate"]["needs"], ["l0-l2-plan", "l0-l2-shards", "l0-l2-coverage"])
-        self.assertFalse(any("app-update-helper.test.py" in step.get("run", "") for step in workflow["prSteps"]))
+        pr_commands = [step.get("run", "") for step in workflow["prSteps"] if "app-update-helper.test.py" in step.get("run", "")]
+        self.assertEqual(len(pr_commands), 1)
+        self.assertIn("pnpm -w check:repo && python3 -I -B scripts/docker/app-update-helper.test.py", pr_commands[0])
         self.assertEqual(len([shard for shard in workflow["plan"] if shard["kind"] == "root" and shard["id"] == "root"]), 1)
         helper_command = "execute(['python3', '-I', '-B', 'scripts/docker/app-update-helper.test.py'], root);"
         self.assertEqual(workflow["runner"].count(helper_command), 1)
