@@ -13,7 +13,9 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import http from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -833,6 +835,272 @@ test('accepts first-probe EPERM during the Web-group SIGKILL phase', async () =>
   });
 });
 
+test('retries Core and Web startup on fresh ports after early exits', async () => {
+  test.setTimeout(45_000);
+  const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-port-retry-'));
+  const fakeBin = join(harnessRoot, 'bin');
+  const attemptsPath = join(harnessRoot, 'web-attempts.log');
+  const originalPath = process.env.PATH;
+  mkdirSync(fakeBin);
+  writeFileSync(
+    join(fakeBin, 'pnpm'),
+    `#!${process.execPath}
+const fs = require('node:fs');
+const http = require('node:http');
+const port = process.argv[process.argv.indexOf('--port') + 1];
+fs.writeFileSync(${JSON.stringify(attemptsPath)}, port + String.fromCharCode(10), { flag: 'a' });
+const attempts = fs.readFileSync(${JSON.stringify(attemptsPath)}, 'utf8').trim().split(String.fromCharCode(10)).length;
+if (attempts === 1) {
+  process.stderr.write('forced first Web startup failure' + String.fromCharCode(10));
+  setTimeout(() => process.exit(1), 20);
+} else {
+  http.createServer((request, response) => {
+    response.writeHead(200);
+    response.end('ok');
+  }).listen(Number(port), '127.0.0.1', () => {
+    process.stdout.write('  ➜  Local:   http://127.0.0.1:' + port + '/' + String.fromCharCode(10));
+  });
+}
+`,
+    { mode: 0o700 }
+  );
+  process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+
+  const originalSpawn = childProcess.spawn;
+  const corePorts: string[] = [];
+  let replaceFirstCore = true;
+  childProcess.spawn = ((...args: Parameters<typeof childProcess.spawn>) => {
+    const [command, commandArgs] = args;
+    const isCoreSpawn =
+      command === process.execPath &&
+      Array.isArray(commandArgs) &&
+      typeof commandArgs[0] === 'string' &&
+      commandArgs[0].endsWith(join('nanocore', 'dist', 'index.js'));
+    if (!isCoreSpawn) return originalSpawn(...args);
+    const port = args[2]?.env?.PORT;
+    if (typeof port === 'string') corePorts.push(port);
+    if (!replaceFirstCore) return originalSpawn(...args);
+    replaceFirstCore = false;
+    return originalSpawn(process.execPath, ['-e', 'process.exit(1)'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }) as typeof childProcess.spawn;
+  syncBuiltinESMExports();
+
+  const startup = startIsolatedWebStack({ mode: 'local', useSimulator: true });
+  let stack: Awaited<ReturnType<typeof startIsolatedWebStack>> | undefined;
+
+  try {
+    stack = await startup;
+    const attempts = readFileSync(attemptsPath, 'utf8').trim().split('\n');
+    expect(corePorts.length).toBeGreaterThanOrEqual(2);
+    expect(corePorts.length).toBeLessThanOrEqual(3);
+    expect(new Set(corePorts).size).toBe(corePorts.length);
+    expect(new URL(stack.coreUrl).port).toBe(corePorts.at(-1));
+    expect(attempts.length).toBeGreaterThanOrEqual(2);
+    expect(attempts.length).toBeLessThanOrEqual(3);
+    expect(new Set(attempts).size).toBe(attempts.length);
+    expect(new URL(stack.webUrl).port).toBe(attempts.at(-1));
+  } finally {
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    if (stack) await stack.stop();
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    rmSync(harnessRoot, { force: true, recursive: true });
+  }
+});
+
+for (const scenario of [
+  {
+    name: 'rejects a foreign listener before this Web instance owns the candidate port',
+    core: false,
+    withholdHeaders: false,
+  },
+  {
+    name: 'aborts a pending Web probe on child exit and retries inside the test deadline',
+    core: false,
+    withholdHeaders: true,
+  },
+  {
+    name: 'rejects foreign Core health in server mode before this Core instance owns the port',
+    core: true,
+    withholdHeaders: false,
+  },
+  {
+    name: 'aborts a pending Core probe on child exit in server mode',
+    core: true,
+    withholdHeaders: true,
+  },
+  {
+    name: 'aborts a pending Web probe at its own deadline while the child stays alive',
+    core: false,
+    withholdHeaders: true,
+    expires: true,
+  },
+  {
+    name: 'aborts a pending Core probe at its own deadline while the child stays alive',
+    core: true,
+    withholdHeaders: true,
+    expires: true,
+  },
+]) {
+  test(scenario.name, async () => {
+    const expires = 'expires' in scenario && scenario.expires;
+    const startupLimit = expires ? 55_000 : 40_000;
+    const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-foreign-listener-'));
+    const fakeBin = join(harnessRoot, 'bin');
+    const attemptsPath = join(harnessRoot, 'web-attempts.log');
+    const originalPath = process.env.PATH;
+    mkdirSync(fakeBin);
+    writeFileSync(
+      join(fakeBin, 'pnpm'),
+      `#!${process.execPath}
+const fs = require('node:fs');
+const http = require('node:http');
+const port = process.argv[process.argv.indexOf('--port') + 1];
+fs.writeFileSync(${JSON.stringify(attemptsPath)}, port + String.fromCharCode(10), { flag: 'a' });
+const server = http.createServer((request, response) => {
+  response.writeHead(200);
+  response.end('ok');
+});
+server.once('error', (error) => {
+  process.stderr.write('forced Web bind failure: ' + error.message + String.fromCharCode(10));
+  process.exit(1);
+});
+const bind = () => server.listen(Number(port), '127.0.0.1', () => {
+  process.stdout.write('  ➜  Local:   http://127.0.0.1:' + port + '/' + String.fromCharCode(10));
+});
+if (${JSON.stringify(expires)} && fs.readFileSync(${JSON.stringify(attemptsPath)}, 'utf8').trim().split(String.fromCharCode(10)).length === 1) {
+  setInterval(() => {}, 1000);
+} else if (${JSON.stringify(scenario.withholdHeaders)} && !fs.existsSync(${JSON.stringify(attemptsPath)} + '.requested')) {
+  const pending = setInterval(() => {
+    if (fs.existsSync(${JSON.stringify(attemptsPath)} + '.requested')) {
+      clearInterval(pending);
+      bind();
+    }
+  }, 10);
+} else bind();
+`,
+      { mode: 0o700 }
+    );
+    process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+
+    const originalCreateServer = net.createServer;
+    const probedPorts: number[] = [];
+    const foreignRequests: string[] = [];
+    let pendingResponseClosed = false;
+    let foreignServer: http.Server | undefined;
+    let foreignBindError: Error | undefined;
+    net.createServer = ((...args: Parameters<typeof net.createServer>) => {
+      const server = originalCreateServer(...args);
+      server.once('listening', () => {
+        const address = server.address();
+        if (typeof address !== 'object' || address === null) return;
+        probedPorts.push(address.port);
+        if (probedPorts.length !== (scenario.core ? 1 : 4)) return;
+        server.once('close', () => {
+          const foreign = http.createServer((request, response) => {
+            foreignRequests.push(request.url ?? '');
+            writeFileSync(`${attemptsPath}.requested`, 'requested');
+            if (scenario.withholdHeaders) {
+              response.once('close', () => {
+                pendingResponseClosed = true;
+              });
+              return;
+            }
+            response.writeHead(200);
+            response.end('foreign listener');
+          });
+          foreign.once('error', (error) => {
+            foreignBindError = error;
+          });
+          foreignServer = foreign;
+          foreign.listen(address.port, '127.0.0.1');
+        });
+      });
+      return server;
+    }) as typeof net.createServer;
+    syncBuiltinESMExports();
+
+    const originalSpawn = childProcess.spawn;
+    if (scenario.core && expires) {
+      // Keep the losing Core child alive so only the probe deadline can cancel the request.
+      childProcess.spawn = ((...args: Parameters<typeof childProcess.spawn>) => {
+        if (
+          args[0] === process.execPath &&
+          args[1]?.[0]?.endsWith(join('nanocore', 'dist', 'index.js'))
+        ) {
+          return originalSpawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        }
+        return originalSpawn(...args);
+      }) as typeof childProcess.spawn;
+      syncBuiltinESMExports();
+    }
+    const stopChildren = captureStartupChildren();
+    const startedAt = Date.now();
+    const startup = startIsolatedWebStack({
+      mode: scenario.core ? 'server' : 'local',
+      useSimulator: true,
+    });
+    let stack: Awaited<ReturnType<typeof startIsolatedWebStack>> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const boundedStartup = Promise.race([
+        startup,
+        new Promise<never>((_, reject) => {
+          deadlineTimer = setTimeout(
+            () => reject(new Error('Stack did not settle within the test deadline.')),
+            startupLimit
+          );
+        }),
+      ]);
+      if (expires) {
+        await expect(boundedStartup).rejects.toThrow('Timed out waiting for');
+        expect(foreignBindError).toBeUndefined();
+        expect(foreignRequests).toContain(scenario.core ? '/api/health' : '/');
+        await expect.poll(() => pendingResponseClosed).toBe(true);
+        expect(Date.now() - startedAt).toBeLessThan(startupLimit);
+        return;
+      }
+      stack = await boundedStartup;
+      expect(Date.now() - startedAt).toBeLessThan(startupLimit);
+      expect(foreignBindError).toBeUndefined();
+      const webCandidates = probedPorts.slice(3, 6).map(String);
+      const attemptsDeadline = Date.now() + 1_000;
+      while (!existsSync(attemptsPath) && Date.now() < attemptsDeadline) await delay(10);
+      const attempts = readFileSync(attemptsPath, 'utf8').trim().split('\n');
+      expect(webCandidates).toHaveLength(3);
+      expect(attempts).toEqual(webCandidates.slice(0, scenario.core ? 1 : 2));
+      expect(new URL(stack.webUrl).port).toBe(webCandidates[scenario.core ? 0 : 1]);
+      if (scenario.core) expect(new URL(stack.coreUrl).port).toBe(String(probedPorts[1]));
+      expect(foreignRequests).toContain(scenario.core ? '/api/health' : '/');
+      if (scenario.withholdHeaders) await expect.poll(() => pendingResponseClosed).toBe(true);
+    } finally {
+      clearTimeout(deadlineTimer);
+      net.createServer = originalCreateServer;
+      syncBuiltinESMExports();
+      if (foreignServer) {
+        const server = foreignServer;
+        server.closeAllConnections();
+        await new Promise<void>((resolveClose) => {
+          server.close(() => resolveClose());
+        });
+      }
+      await stopChildren(startup);
+      childProcess.spawn = originalSpawn;
+      syncBuiltinESMExports();
+      if (stack) await stack.stop();
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(harnessRoot, { force: true, recursive: true });
+    }
+  });
+}
+
 test('cleans NanoCore and its temporary data root when Web startup fails', async () => {
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-stack-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
@@ -846,6 +1114,7 @@ test('cleans NanoCore and its temporary data root when Web startup fails', async
     join(fakeBin, 'pnpm'),
     `#!${process.execPath}
 require('node:fs').writeFileSync(${JSON.stringify(webStartedMarker)}, 'ready');
+process.stderr.write('fake Web stderr tail' + String.fromCharCode(10));
 setTimeout(() => process.exit(23), 2000);
 `,
     { mode: 0o700 }
@@ -879,6 +1148,7 @@ setTimeout(() => process.exit(23), 2000);
     const failure = await failurePromise;
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain('Process exited before');
+    expect((failure as Error).message).toContain('fake Web stderr tail');
 
     let nanoCoreAlive = true;
     try {

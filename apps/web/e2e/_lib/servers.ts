@@ -1,9 +1,12 @@
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { type ChildProcessByStdio, spawn } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import type { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { allocateEntityId } from '@openkit/protocol';
 import {
   confirmFixtureAssistantContext,
@@ -16,6 +19,8 @@ const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = resolve(webRoot, '../..');
 const nanoCoreRoot = join(repoRoot, 'apps', 'nanocore');
 const nanoCoreEntry = join(nanoCoreRoot, 'dist', 'index.js');
+const PORT_START_ATTEMPTS = 3;
+type HarnessChildProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 /**
  * Running isolated web e2e stack.
@@ -62,6 +67,8 @@ export interface ServerBootstrapOwner {
  *
  * Sets `VITE_CORE_BASE_URL` so the rebuilt SPA talks to the spawned NanoCore
  * (relative `/api` still proxies via `vite.config.ts` when the env is unset).
+ * Both listeners retry bounded distinct probed ports after an early exit. Web candidates
+ * are selected before Core boots so server-mode auth/CORS configuration can trust the final Web origin.
  *
  * @param options Stack options.
  * @returns Running stack metadata and cleanup function.
@@ -72,16 +79,33 @@ export async function startIsolatedWebStack(
   await assertRetrievalKernel();
   await assertNanoCoreBuilt();
 
-  const corePort = await findOpenPort();
-  const webPort = await findOpenPort();
+  const startupPorts = await findOpenPorts(PORT_START_ATTEMPTS * 2);
+  const corePorts = startupPorts.slice(0, PORT_START_ATTEMPTS);
+  const webPorts = startupPorts.slice(PORT_START_ATTEMPTS);
   const stackRoot = await mkdtemp(join(tmpdir(), 'openkit-web-e2e-'));
   const dataRoot = options.dataRoot ?? join(stackRoot, 'data-root');
   const fixtureRoot = join(stackRoot, 'fixture');
   const cleanupRoots = options.dataRoot ? [dataRoot, stackRoot] : [stackRoot];
-  const coreUrl = `http://127.0.0.1:${corePort}`;
-  const webUrl = `http://127.0.0.1:${webPort}`;
+  const webUrls = webPorts.map((port) => `http://127.0.0.1:${port}`);
   const mode = options.mode ?? 'local';
+  let corePort = corePorts[0]!;
+  let coreUrl = `http://127.0.0.1:${corePort}`;
+  let webUrl = webUrls[0]!;
   let assistantProvider: Awaited<ReturnType<typeof startFixtureAssistantProvider>> | undefined;
+  const writeServerConfig = async (): Promise<void> => {
+    await writeFile(
+      join(dataRoot, 'config', 'server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        mode: 'server',
+        server: {
+          bind: { host: '127.0.0.1', port: corePort },
+          cors: { origins: webUrls },
+          publicBaseUrl: coreUrl,
+        },
+      })
+    );
+  };
 
   try {
     await Promise.all([
@@ -91,18 +115,7 @@ export async function startIsolatedWebStack(
 
     if (mode === 'server' && !options.dataRoot) {
       await mkdir(join(dataRoot, 'config'), { recursive: true });
-      await writeFile(
-        join(dataRoot, 'config', 'server.jsonc'),
-        JSON.stringify({
-          schemaVersion: 1,
-          mode: 'server',
-          server: {
-            bind: { host: '127.0.0.1', port: corePort },
-            cors: { origins: [webUrl] },
-            publicBaseUrl: coreUrl,
-          },
-        })
-      );
+      await writeServerConfig();
     }
 
     if (mode === 'local') {
@@ -118,32 +131,39 @@ export async function startIsolatedWebStack(
     throw error;
   }
 
-  const coreEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...(mode === 'server'
-      ? { BETTER_AUTH_SECRET: 'openkit-web-e2e-server-secret-at-least-32-characters' }
-      : {}),
-    BETTER_AUTH_TRUSTED_ORIGINS: webUrl,
-    BETTER_AUTH_URL: coreUrl,
-    OPENKIT_CORE_MODE: mode,
-    OPENKIT_DATA_ROOT: dataRoot,
-    PORT: String(corePort),
-  };
-
-  if (options.useSimulator ?? true) {
-    coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
-  } else {
-    delete coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
-  }
-
   let coreFailureCode: string | undefined;
-  /** Spawns NanoCore and recognizes safe boot phase names without publishing child output or paths. */
-  const spawnCore = (): ChildProcessWithoutNullStreams => {
+  let coreInstanceOwnsPort = () => false;
+  /** Recognizes this Core child's bound App listener and safe boot failure phases without publishing its output. */
+  const spawnCore = (): HarnessChildProcess => {
     coreFailureCode = undefined;
+    const coreEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...(mode === 'server'
+        ? { BETTER_AUTH_SECRET: 'openkit-web-e2e-server-secret-at-least-32-characters' }
+        : {}),
+      BETTER_AUTH_TRUSTED_ORIGINS: webUrls.join(','),
+      BETTER_AUTH_URL: coreUrl,
+      OPENKIT_CORE_MODE: mode,
+      OPENKIT_DATA_ROOT: dataRoot,
+      PORT: String(corePort),
+    };
+    if (options.useSimulator ?? true) {
+      coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
+    } else {
+      delete coreEnv.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
+    }
     const child = spawn(process.execPath, [nanoCoreEntry], {
       cwd: nanoCoreRoot,
       env: coreEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let ownsPort = false;
+    const listenerAnnouncement = `App server is running on ${coreUrl}\n`;
+    coreInstanceOwnsPort = () => ownsPort;
+    child.stdout.on('data', (bytes: Buffer) => {
+      stdout = `${stdout}${bytes.toString('utf8')}`.slice(-4_000);
+      if (stripVTControlCharacters(stdout).includes(listenerAnnouncement)) ownsPort = true;
     });
     const phases = new Set([
       'config',
@@ -162,14 +182,14 @@ export async function startIsolatedWebStack(
     return child;
   };
   let core = spawnCore();
-  let web: ChildProcessWithoutNullStreams | null = null;
+  let web: HarnessChildProcess | null = null;
   const useWebProcessGroup = process.platform !== 'win32';
 
   /** Stops and replaces only NanoCore while preserving the stack's port and data-root owners. */
   const restartCore = async (): Promise<void> => {
     await stopProcess(core);
     core = spawnCore();
-    await waitForHttp(`${coreUrl}/api/health`, core, () => coreFailureCode);
+    await waitForHttp(`${coreUrl}/api/health`, core, coreInstanceOwnsPort, () => coreFailureCode);
     if (mode === 'local' && (options.useSimulator ?? true)) {
       await seedSyntheticLocalSchedulerTarget(dataRoot);
     }
@@ -188,37 +208,87 @@ export async function startIsolatedWebStack(
   };
 
   try {
-    await waitForHttp(`${coreUrl}/api/health`, core, () => coreFailureCode);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await waitForHttp(
+          `${coreUrl}/api/health`,
+          core,
+          coreInstanceOwnsPort,
+          () => coreFailureCode
+        );
+        break;
+      } catch (error) {
+        if ((core.exitCode === null && core.signalCode === null) || attempt + 1 >= corePorts.length)
+          throw error;
+        corePort = corePorts[attempt + 1]!;
+        coreUrl = `http://127.0.0.1:${corePort}`;
+        if (mode === 'server' && !options.dataRoot) await writeServerConfig();
+        core = spawnCore();
+      }
+    }
     if (mode === 'local' && (options.useSimulator ?? true)) {
       await seedSyntheticLocalSchedulerTarget(dataRoot);
     }
-    web = spawn(
-      'pnpm',
-      [
-        '--filter',
-        '@openkit/web',
-        'dev',
-        '--host',
-        '127.0.0.1',
-        '--port',
-        String(webPort),
-        '--strictPort',
-      ],
-      {
-        cwd: repoRoot,
-        detached: useWebProcessGroup,
-        env: {
-          ...process.env,
-          OPENKIT_WEB_E2E: '1',
-          VITE_CACHE_DIR: join(fixtureRoot, 'vite-cache'),
-          VITE_CORE_BASE_URL: coreUrl,
-          VITE_CORE_URL: coreUrl,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
+    for (let attempt = 0; attempt < webPorts.length; attempt += 1) {
+      const webPort = webPorts[attempt]!;
+      webUrl = webUrls[attempt]!;
+      const webChild = spawn(
+        'pnpm',
+        [
+          '--filter',
+          '@openkit/web',
+          'dev',
+          '--host',
+          '127.0.0.1',
+          '--port',
+          String(webPort),
+          '--strictPort',
+        ],
+        {
+          cwd: repoRoot,
+          detached: useWebProcessGroup,
+          env: {
+            ...process.env,
+            OPENKIT_WEB_E2E: '1',
+            VITE_CACHE_DIR: join(fixtureRoot, 'vite-cache'),
+            VITE_CORE_BASE_URL: coreUrl,
+            VITE_CORE_URL: coreUrl,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      );
+      web = webChild;
+      let webStdout = '';
+      let webStderr = '';
+      let webInstanceOwnsPort = false;
+      webChild.stdout.on('data', (bytes: Buffer) => {
+        webStdout = `${webStdout}${bytes.toString('utf8')}`.slice(-4_000);
+        if (stripVTControlCharacters(webStdout).includes(`http://127.0.0.1:${webPort}/`)) {
+          webInstanceOwnsPort = true;
+        }
+      });
+      webChild.stderr.on('data', (bytes: Buffer) => {
+        webStderr = `${webStderr}${bytes.toString('utf8')}`.slice(-4_000);
+      });
+      const webOwnsPort = () => webInstanceOwnsPort;
+      const webFailureDetail = () => {
+        const tail = webStderr.trim().split('\n').slice(-8).join('\n').trim();
+        return tail ? `stderr tail:\n${tail}` : undefined;
+      };
+      try {
+        await waitForHttp(webUrl, webChild, webOwnsPort, webFailureDetail);
+        await waitForHttp(`${webUrl}/src/main.tsx`, webChild, webOwnsPort, webFailureDetail);
+        break;
+      } catch (error) {
+        if (
+          (webChild.exitCode === null && webChild.signalCode === null) ||
+          attempt + 1 >= webPorts.length
+        )
+          throw error;
+        await stopProcess(webChild, useWebProcessGroup ? webChild.pid : undefined);
+        web = null;
       }
-    );
-    await waitForHttp(webUrl, web);
-    await waitForHttp(`${webUrl}/src/main.tsx`, web);
+    }
   } catch (error) {
     await stop();
     throw error;
@@ -375,38 +445,71 @@ async function assertNanoCoreBuilt(): Promise<void> {
 }
 
 /**
- * Waits until an HTTP URL returns a successful response.
+ * Waits for a successful response from this child's listener, aborting requests on exit or deadline.
  *
  * @param url URL to poll.
  * @param process Child process to monitor.
- * @param failureCode Optional recognized safe startup reason; raw child output must stay private.
+ * @param instanceOwnsListener Proof from this child's post-bind output that it owns the listener.
+ * @param failureDetail Optional startup detail that the caller has approved for publication.
  */
 async function waitForHttp(
   url: string,
-  process: ChildProcessWithoutNullStreams,
-  failureCode?: () => string | undefined
+  process: HarnessChildProcess,
+  instanceOwnsListener: () => boolean,
+  failureDetail?: () => string | undefined
 ): Promise<void> {
   const deadline = Date.now() + 30_000;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, 30_000);
+  let onClose = () => {};
+  const processClosed = new Promise<void>((resolveClose) => {
+    onClose = resolveClose;
+    process.once('close', onClose);
+  });
+  process.once('exit', abort);
 
-  while (Date.now() < deadline) {
-    if (process.exitCode !== null) {
-      throw new Error(
-        `Process exited before ${url} became ready: ${process.exitCode}; ${failureCode?.() ?? 'boot.reason-unavailable'}`
-      );
-    }
-
-    try {
-      const response = await fetch(url);
-
-      if (response.ok) {
+  try {
+    while (
+      !controller.signal.aborted &&
+      Date.now() < deadline &&
+      process.exitCode === null &&
+      process.signalCode === null
+    ) {
+      const response = await fetch(url, { signal: controller.signal }).catch(() => null);
+      // Readiness needs only headers. Do not leave a foreign or slow response body open.
+      void response?.body?.cancel().catch(() => {});
+      if (
+        response?.ok === true &&
+        !controller.signal.aborted &&
+        Date.now() < deadline &&
+        process.exitCode === null &&
+        process.signalCode === null &&
+        instanceOwnsListener()
+      ) {
         return;
       }
-    } catch {
-      await sleep(100);
+      await delay(Math.max(0, Math.min(100, deadline - Date.now())), undefined, {
+        signal: controller.signal,
+      }).catch(() => {});
     }
-  }
 
-  throw new Error(`Timed out waiting for ${url}.`);
+    const exitState = process.exitCode ?? process.signalCode;
+    if (exitState !== null) {
+      // Allow the final stderr bytes to arrive, but never extend the probe deadline.
+      await Promise.race([processClosed, sleep(Math.max(0, Math.min(100, deadline - Date.now())))]);
+      throw new Error(
+        `Process exited before ${url} became ready: ${exitState}; ${failureDetail?.() ?? 'boot.reason-unavailable'}`
+      );
+    }
+    const detail = failureDetail?.();
+    throw new Error(`Timed out waiting for ${url}${detail ? `; ${detail}` : ''}.`);
+  } finally {
+    clearTimeout(timer);
+    process.off('exit', abort);
+    process.off('close', onClose);
+    controller.abort();
+  }
 }
 
 /**
@@ -416,10 +519,7 @@ async function waitForHttp(
  * @param processGroupId Detached POSIX process-group id when descendants share cleanup ownership.
  * @throws When a detached process group remains live after the TERM and KILL cleanup deadlines.
  */
-async function stopProcess(
-  child: ChildProcessWithoutNullStreams,
-  processGroupId?: number
-): Promise<void> {
+async function stopProcess(child: HarnessChildProcess, processGroupId?: number): Promise<void> {
   if (processGroupId !== undefined) {
     for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
       try {
@@ -467,27 +567,41 @@ async function stopProcess(
 }
 
 /**
- * Finds one available localhost TCP port.
+ * Finds distinct available localhost TCP ports.
  *
- * @returns Available port.
+ * @param count Number of ports to allocate.
+ * @returns Available ports.
  */
-async function findOpenPort(): Promise<number> {
-  return await new Promise((resolvePort, reject) => {
-    const server = createServer();
+async function findOpenPorts(count: number): Promise<number[]> {
+  const servers: ReturnType<typeof createServer>[] = [];
 
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      servers.push(server);
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(0, '127.0.0.1', () => resolveListen());
+      });
+    }
+
+    return servers.map((server) => {
       const address = server.address();
-
       if (typeof address !== 'object' || address === null) {
-        server.close(() => reject(new Error('Could not allocate a TCP port.')));
-        return;
+        throw new Error('Could not allocate a TCP port.');
       }
-
-      const port = address.port;
-      server.close(() => resolvePort(port));
+      return address.port;
     });
-  });
+  } finally {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolveClose) => {
+            server.close(() => resolveClose());
+          })
+      )
+    );
+  }
 }
 
 /**

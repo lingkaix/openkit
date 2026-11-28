@@ -90,7 +90,7 @@ The built-package regression in `test/browser-package-boundary.test.ts` follows 
 
 The package `test` command remains the full-suite command. Adding `-- <file>` to it has been observed to run the full suite, so do not use that form as focused evidence.
 
-`e2e` expects a built NanoCore (`pnpm --filter @openkit/nanocore build`). Specs start an isolated stack on dynamic ports via `e2e/_lib/servers.ts` and set `VITE_CORE_BASE_URL` so the SPA talks to that Core. Run the self-contained root gate with `pnpm -w test:e2e:web`; it builds NanoCore before invoking the Web `e2e` command.
+`e2e` expects a built NanoCore (`pnpm --filter @openkit/nanocore build`). Specs start an isolated stack on dynamic ports via `e2e/_lib/servers.ts` and set `VITE_CORE_BASE_URL` so the SPA talks to that Core. Core and Web readiness require the current child's post-bind listener announcement and a successful HTTP response; child exit or the 30-second probe deadline aborts pending requests. The same checks apply to Core restart and server mode. Run `pnpm --filter @openkit/web exec playwright test e2e/_lib/servers.spec.ts` for focused harness checks. Run the self-contained root gate with `pnpm -w test:e2e:web`; it builds NanoCore before invoking the Web `e2e` command.
 
 The local simulator fixture seeds only the current native RuntimeTarget readiness evidence after Core startup; retired scheduler baseline and capacity rows are not fixture prerequisites. Scheduler fixtures use the current FIFO admission schema and its closed denial reasons.
 
