@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const { kevIds, findingsFromOsvSource, newSevereFindings, scanImage } = await import(
+const { kevIds, findingsFromOsvSource, newSevereFindings, runOsv, scanImage } = await import(
   pathToFileURL(join(process.cwd(), 'scripts/security-scan.mjs')).href
+);
+const { scanLocks } = await import(
+  pathToFileURL(join(process.cwd(), 'scripts/check-security.mjs')).href
 );
 const { assertReleaseFindingGate } = await import(
   pathToFileURL(join(process.cwd(), 'scripts/security-findings.mjs')).href
@@ -188,6 +193,159 @@ test('lock-file gate blocks new severe matches, not unchanged artifact rebinding
   assert.deepEqual(newSevereFindings([], [low]), [], 'New routine-class match must not block');
   assert.deepEqual(newSevereFindings([low], [high]), [high], 'A newly severe match must block');
   assert.deepEqual(newSevereFindings([high], []), [], 'Removed match must not block');
+});
+
+test('a named local OSV cache matches offline without network traffic', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-offline-osv-'));
+  let proxyProcess;
+  try {
+    const input = join(directory, 'input');
+    const advisories = join(directory, 'advisories');
+    const database = join(directory, 'database');
+    mkdirSync(input, { recursive: true });
+    mkdirSync(advisories);
+    mkdirSync(join(database, 'osv-scalibr', 'npm'), { recursive: true });
+    const lockfile = join(input, 'package-lock.json');
+    writeFileSync(
+      lockfile,
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { 'security-fixture': '1.0.0' },
+          },
+          'node_modules/security-fixture': {
+            version: '1.0.0',
+            resolved: 'https://registry.npmjs.org/security-fixture/-/security-fixture-1.0.0.tgz',
+            integrity: `sha512-${'A'.repeat(86)}==`,
+          },
+        },
+      })
+    );
+    const advisory = {
+      id: 'GHSA-offline-test',
+      summary: 'Synthetic offline fixture',
+      details: 'Synthetic offline fixture',
+      modified: '2026-01-01T00:00:00Z',
+      published: '2026-01-01T00:00:00Z',
+      database_specific: { severity: 'HIGH' },
+      severity: [
+        {
+          type: 'CVSS_V3',
+          score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
+        },
+      ],
+      affected: [
+        {
+          package: { ecosystem: 'npm', name: 'security-fixture' },
+          ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '2.0.0' }] }],
+          versions: ['1.0.0'],
+        },
+      ],
+    };
+    writeFileSync(join(advisories, 'GHSA-offline-test.json'), JSON.stringify(advisory));
+    const zipped = spawnSync(
+      'python3',
+      [
+        '-m',
+        'zipfile',
+        '-c',
+        join(database, 'osv-scalibr', 'npm', 'all.zip'),
+        'GHSA-offline-test.json',
+      ],
+      { cwd: advisories, encoding: 'utf8' }
+    );
+    assert.equal(zipped.status, 0, zipped.stderr);
+    const digest = `sha256:${createHash('sha256').update(readFileSync(lockfile)).digest('hex')}`;
+    const parentEnv = {
+      PATH: process.env.PATH,
+      TMPDIR: directory,
+      OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: database,
+    };
+    const proxyLog = join(directory, 'proxy-requests.txt');
+    writeFileSync(proxyLog, '');
+    const proxyScript = join(directory, 'proxy.mjs');
+    writeFileSync(
+      proxyScript,
+      `import { appendFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+const log = ${JSON.stringify(proxyLog)};
+const server = createServer((request, response) => {
+  appendFileSync(log, 'request\\n');
+  response.writeHead(502);
+  response.end();
+});
+server.on('connect', (request, socket) => {
+  appendFileSync(log, 'connect\\n');
+  socket.end('HTTP/1.1 502 Bad Gateway\\r\\n\\r\\n');
+});
+server.listen(0, '127.0.0.1', () => console.log(server.address().port));
+`
+    );
+    proxyProcess = spawn(process.execPath, [proxyScript], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const port = await new Promise((resolve, reject) => {
+      let output = '';
+      proxyProcess.stdout.on('data', (data) => {
+        output += data;
+        const value = Number(output.trim());
+        if (value) resolve(value);
+      });
+      proxyProcess.once('error', reject);
+      proxyProcess.once('exit', () => reject(new Error('Proxy fixture stopped')));
+    });
+    const proxyUrl = `http://127.0.0.1:${port}`;
+    const proxyRequests = () => readFileSync(proxyLog, 'utf8').split('\n').filter(Boolean).length;
+    const scanned = scanLocks(
+      directory,
+      [],
+      [{ path: lockfile, location: 'package-lock.json', artifact: digest }],
+      new Set(),
+      parentEnv
+    );
+    assert.equal(scanned.before.length, 0);
+    assert.equal(scanned.after.length, 1, 'The tiny local advisory must match the lock fixture');
+    assert.equal(scanned.after[0].id, 'GHSA-offline-test');
+    assert.equal(scanned.after[0].class, 'C');
+    assert.equal(scanned.after[0].fixAvailable, true);
+
+    const config = join(directory, 'direct-scanner.toml');
+    writeFileSync(config, '');
+    const scanArgs = [
+      'scan',
+      'source',
+      '--format',
+      'json',
+      '--all-packages',
+      '--config',
+      config,
+      '-L',
+      lockfile,
+    ];
+    const proxiedEnv = {
+      ...parentEnv,
+      HOME: directory,
+      DOCKER_CONFIG: directory,
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+      ALL_PROXY: proxyUrl,
+      NO_PROXY: '',
+    };
+    const report = runOsv(scanArgs, { cwd: directory, env: proxiedEnv });
+    assert.equal(proxyRequests(), 0, 'Offline matching must not contact the proxy');
+    assert.equal(report.results[0].packages[0].groups[0].ids[0], 'GHSA-offline-test');
+  } finally {
+    if (proxyProcess?.exitCode === null && proxyProcess.signalCode === null) {
+      const stopped = new Promise((resolve) => proxyProcess.once('exit', resolve));
+      proxyProcess.kill();
+      await stopped;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('image admission includes installed npm findings with exact bindings and fails closed', () => {

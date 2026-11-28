@@ -135,7 +135,9 @@ export function runOsv(args, { cwd, env }) {
     version.stdout.split('\n')[0].trim() !== `osv-scanner version: ${pins['osv-scanner'].version}`
   )
     throw Error('Pinned OSV scanner is required');
-  const scanned = spawnSync('osv-scanner', args, {
+  // OpenKit treats a named cache as an offline-match selection; upstream's variable only locates it.
+  const offline = Boolean(env?.OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY) && !args.includes('--offline');
+  const scanned = spawnSync('osv-scanner', offline ? [...args, '--offline'] : args, {
     cwd,
     env,
     encoding: 'utf8',

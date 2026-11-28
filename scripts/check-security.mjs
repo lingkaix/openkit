@@ -74,7 +74,7 @@ async function currentKev() {
 }
 
 /** One native invocation gives both sides the same advisory observation. */
-function scanLocks(root, before, after, knownCves) {
+export function scanLocks(root, before, after, knownCves, parentEnv = process.env) {
   const inputs = [
     ...before.map((value) => ({ ...value, side: 'before' })),
     ...after.map((value) => ({ ...value, side: 'after' })),
@@ -82,10 +82,13 @@ function scanLocks(root, before, after, knownCves) {
   const result = { before: [], after: [] };
   if (!inputs.length) return result;
   const env = {
-    PATH: process.env.PATH,
-    TMPDIR: process.env.TMPDIR,
+    PATH: parentEnv.PATH,
+    TMPDIR: parentEnv.TMPDIR,
     HOME: root,
     DOCKER_CONFIG: root,
+    ...(parentEnv.OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY
+      ? { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: parentEnv.OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY }
+      : {}),
   };
   const config = join(root, 'scanner.toml');
   writeFileSync(config, '', { flag: 'wx' });
@@ -197,6 +200,9 @@ export async function checkImages({ images, release = false, register, now = Dat
       TMPDIR: process.env.TMPDIR,
       HOME: process.env.HOME,
       DOCKER_CONFIG: process.env.DOCKER_CONFIG,
+      ...(process.env.OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY
+        ? { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: process.env.OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY }
+        : {}),
     };
     const findings = images.flatMap(({ image, platform }) =>
       scanImage({ image, platform, knownCves, cwd: temporary, env, config })
