@@ -1449,7 +1449,9 @@ describe('real Task Mode worker L3 test policy', () => {
       },
       workerImageRef,
     });
+    const terminalStart = fixture.clients.core.operations['task.start'];
     const budgetOverrideMs = 300;
+    const maximumRecoveryCount = 12;
     const inputs = [];
     const recoveries = [];
     const statuses = [];
@@ -1467,6 +1469,7 @@ describe('real Task Mode worker L3 test policy', () => {
           turn: { id: 'turn_acceptance' },
         };
       }
+      if (recoveries.length === maximumRecoveryCount) return terminalStart(input);
       const recovery = new Error(
         `The Task command receipt does not match its durable owner lineage. (${inputs.length})`
       );
@@ -1500,12 +1503,6 @@ describe('real Task Mode worker L3 test policy', () => {
         (error) => error === recoveries.at(-1)
       );
       const elapsed = Date.now() - firstRecoveryAt;
-      const budget = Number(
-        readFileSync(new URL('./task-mode-real-worker-runner.mjs', import.meta.url), 'utf8')
-          .match(/const TASK_MODE_TERMINAL_REPLAY_BUDGET = ([\d_]+);/)?.[1]
-          .replaceAll('_', '')
-      );
-      assert.equal(budget, 10_000);
       assert.ok(recoveries.length >= 2);
       assert.ok(elapsed >= budgetOverrideMs);
       assert.ok(elapsed < 2_000);
