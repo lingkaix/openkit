@@ -53,6 +53,8 @@ Descriptive readers strip additions recursively. Canonical event, terminal, obse
 
 Harness envelope and result readers strip descriptive additions before identity or use; command bodies remain exact effect instructions. The existing schemas remain strict producer assertions, and the separate reader schemas preserve closed values, required fields, diagnostic applicability and native-handle proofs.
 
+The staged Worker Shim poll codecs parse the existing full desired set and inventory. They check the shared Sandbox incarnation, Worker incarnation, and execution attempt identifier kinds. The downward set and inventory emitter are exact. The inventory reader strips additive descriptions, preserves the authenticated session selector, and rejects unsupported requirements and Worker-supplied identity. The retained Harness readers still own queued bodies and results.
+
 Worker lineage, capability summaries and private Harness fields that name Core entities use the shared Protocol kind validators. The Harness resume locator is the predecessor Core AgentSession ID; its native handle remains separate. Native Harness, process, request, lease and adapter identifiers retain opaque schemas. Core path helpers validate the named kind before constructing a path.
 
 `workerObservationSourceRelativePath` selects restricted redelivery material within the existing Turn capture. Source lines use the unchanged canonical event envelopes and original worker sequences. The observation request, content, and chunk bounds in `src/index.ts` give a finite per-source bound; no additional transport operation, control receipt or public record family is added.

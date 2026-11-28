@@ -10,6 +10,9 @@ import {
   HarnessResultEnvelopeSchema,
   isHarnessResultBodyValid,
   parseHarnessResultBody,
+  WorkerShimDesiredSetSchema,
+  WorkerShimInventoryReaderSchema,
+  WorkerShimInventorySchema,
   WorkerStartupFailureReaderSchema,
 } from './index.js';
 
@@ -46,6 +49,258 @@ const turnStart = {
   workerControlToken: credential('w'),
   workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
 };
+
+describe('staged Worker Shim poll codecs', () => {
+  const session = {
+    sandboxIncarnationId: 'sbxi_00000000-0000-7b98-8803-ea4242ad797b',
+    connectionGeneration: 2,
+  };
+  const key = {
+    operationId: 'input-1',
+    workerId: 'wkr_00000000-0000-7b98-8803-ea4242ad797b',
+    payloadDigest: digest,
+  };
+  const target = {
+    workerId: key.workerId,
+    turnId: turnStart.turnId,
+    attemptId: 'attempt_00000000-0000-7b98-8803-ea4242ad797b',
+  };
+  const otherWorkerId = 'wkr_00000000-0000-73c3-900f-8d310e4ba201';
+  const worker = {
+    workerId: key.workerId,
+    adapterId: 'pi',
+    agentSessionId: sessionOpen.agentSessionId,
+    workSlotRef: 'slot-1',
+    resume: { locator: 'as_00000000-0000-700c-ad9c-2f2b80087807', digest },
+  };
+  const steer = { ...key, ...target, operationId: 'steer-1', inputRef: 'steer-ref-1' };
+  const input = { ...key, ...target, inputRef: 'input-ref-1', routeGrant: 'grant-ref-1' };
+  const interrupt = { ...target, requestId: 'request-1', cause: 'observation_limit_reached' };
+  const run = { state: 'run', worker };
+  const desired = {
+    session,
+    revision: 3,
+    workers: [run, { state: 'stop', workerId: otherWorkerId }],
+    inputs: [input],
+    steers: [steer],
+    interrupts: [interrupt],
+    acknowledgedOperations: [key],
+  };
+  const bestEffort = { workerId: otherWorkerId, state: 'running', stop: { kind: 'best-effort' } };
+  const exited = {
+    workerId: key.workerId,
+    state: 'exited',
+    stop: { kind: 'exact', proofKind: 'process-tree' },
+    absence: { state: 'absent', workerId: key.workerId, proofKind: 'process-tree' },
+  };
+  const inputReceipt = { kind: 'input', key, disposition: 'accepted' };
+  const interruptReceipt = { ...interrupt, disposition: 'cancelled' };
+  const inventory = {
+    session,
+    workers: [bestEffort, exited],
+    receipts: [
+      inputReceipt,
+      { kind: 'steer', key: { ...key, operationId: steer.operationId }, disposition: 'unknown' },
+    ],
+    interrupts: [interruptReceipt],
+  };
+
+  it('round-trips the complete desired set and inventory through the exact codecs', () => {
+    expect(WorkerShimDesiredSetSchema.parse(JSON.parse(JSON.stringify(desired)))).toEqual(desired);
+    const encoded = WorkerShimInventorySchema.parse(inventory);
+    expect(encoded).toEqual(inventory);
+    expect(WorkerShimInventoryReaderSchema.parse(JSON.parse(JSON.stringify(encoded)))).toEqual(
+      inventory
+    );
+  });
+
+  it('rejects a Worker ID in the sandbox selector on both poll directions', () => {
+    const wrongSession = { ...session, sandboxIncarnationId: key.workerId };
+    expect(
+      WorkerShimDesiredSetSchema.safeParse({ ...desired, session: wrongSession }).success
+    ).toBe(false);
+    expect(
+      WorkerShimInventoryReaderSchema.safeParse({ ...inventory, session: wrongSession }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      'run Worker',
+      { workers: [{ ...run, worker: { ...worker, workerId: session.sandboxIncarnationId } }] },
+    ],
+    ['stop Worker', { workers: [{ state: 'stop', workerId: session.sandboxIncarnationId }] }],
+    ['input Worker', { inputs: [{ ...input, workerId: session.sandboxIncarnationId }] }],
+    ['input attempt', { inputs: [{ ...input, attemptId: target.turnId }] }],
+    ['steer Worker', { steers: [{ ...steer, workerId: session.sandboxIncarnationId }] }],
+    ['steer attempt', { steers: [{ ...steer, attemptId: target.turnId }] }],
+    [
+      'interrupt Worker',
+      { interrupts: [{ ...interrupt, workerId: session.sandboxIncarnationId }] },
+    ],
+    ['interrupt attempt', { interrupts: [{ ...interrupt, attemptId: target.turnId }] }],
+    [
+      'ACK Worker',
+      { acknowledgedOperations: [{ ...key, workerId: session.sandboxIncarnationId }] },
+    ],
+  ])('rejects a wrong-kind %s ID in desired work', (_name, change) => {
+    expect(WorkerShimDesiredSetSchema.safeParse({ ...desired, ...change }).success).toBe(false);
+  });
+
+  it.each([
+    ['an unknown Worker command', { ...desired, workers: [{ ...run, state: 'restart' }] }],
+    ['an unknown desired field', { ...desired, shell: 'unexpected' }],
+    ['an unknown input field', { ...desired, inputs: [{ ...input, unexpected: true }] }],
+    ['a missing route grant', { ...desired, inputs: [{ ...input, routeGrant: undefined }] }],
+    ['a missing revision', { ...desired, revision: undefined }],
+    [
+      'a missing interrupt attempt',
+      { ...desired, interrupts: [{ ...interrupt, attemptId: undefined }] },
+    ],
+    ['an unsupported cutoff', { ...desired, interrupts: [{ ...interrupt, cause: 'other' }] }],
+    [
+      'an incomplete ACK',
+      { ...desired, acknowledgedOperations: [{ ...key, payloadDigest: undefined }] },
+    ],
+  ])('refuses %s before desired work is usable', (_name, value) => {
+    expect(WorkerShimDesiredSetSchema.safeParse(value).success).toBe(false);
+  });
+
+  it('strips descriptive inventory additions and refuses those additions on emission', () => {
+    const additive = {
+      ...inventory,
+      note: 'descriptive',
+      workers: [
+        bestEffort,
+        {
+          ...exited,
+          note: 'descriptive',
+          stop: { ...exited.stop, note: 'descriptive' },
+          absence: { ...exited.absence, note: 'descriptive' },
+        },
+      ],
+      receipts: [{ ...inputReceipt, key: { ...key, note: 'descriptive' } }, inventory.receipts[1]],
+      interrupts: [{ ...interruptReceipt, note: 'descriptive' }],
+    };
+    expect(WorkerShimInventoryReaderSchema.parse(additive)).toEqual(inventory);
+    expect(WorkerShimInventorySchema.safeParse(additive).success).toBe(false);
+    expect(
+      WorkerShimInventorySchema.safeParse({ ...inventory, workers: additive.workers }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    ['observed Worker', { workers: [{ ...bestEffort, workerId: session.sandboxIncarnationId }] }],
+    [
+      'absent Worker',
+      {
+        workers: [
+          { ...exited, absence: { ...exited.absence, workerId: session.sandboxIncarnationId } },
+        ],
+      },
+    ],
+    [
+      'receipt Worker',
+      { receipts: [{ ...inputReceipt, key: { ...key, workerId: session.sandboxIncarnationId } }] },
+    ],
+    [
+      'interrupt receipt Worker',
+      { interrupts: [{ ...interruptReceipt, workerId: session.sandboxIncarnationId }] },
+    ],
+    [
+      'interrupt receipt attempt',
+      { interrupts: [{ ...interruptReceipt, attemptId: target.turnId }] },
+    ],
+  ])('rejects a wrong-kind %s ID in inventory', (_name, change) => {
+    expect(WorkerShimInventoryReaderSchema.safeParse({ ...inventory, ...change }).success).toBe(
+      false
+    );
+  });
+
+  const requirement = { requiredFeatures: ['unsupported-feature'] };
+
+  it.each([
+    ['inventory', requirement],
+    ['Worker observation', { workers: [{ ...exited, ...requirement }] }],
+    [
+      'best-effort stop',
+      { workers: [{ ...bestEffort, stop: { ...bestEffort.stop, ...requirement } }] },
+    ],
+    ['exact stop', { workers: [{ ...exited, stop: { ...exited.stop, ...requirement } }] }],
+    ['absence proof', { workers: [{ ...exited, absence: { ...exited.absence, ...requirement } }] }],
+    ['original receipt', { receipts: [{ ...inputReceipt, ...requirement }] }],
+    ['receipt key', { receipts: [{ ...inputReceipt, key: { ...key, ...requirement } }] }],
+    ['interrupt receipt', { interrupts: [{ ...interruptReceipt, ...requirement }] }],
+  ])('rejects an unsupported required feature on the %s', (_name, change) => {
+    expect(WorkerShimInventoryReaderSchema.safeParse({ ...inventory, ...change }).success).toBe(
+      false
+    );
+  });
+
+  it.each(['actor', 'responsibleUserId'])('rejects the Worker-supplied %s', (field) => {
+    const claimedUser = 'usr_00000000-0000-73c3-900f-8d310e4ba201';
+    expect(
+      WorkerShimInventoryReaderSchema.safeParse({ ...inventory, [field]: claimedUser }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      'unknown receipt disposition',
+      { ...inventory, receipts: [{ ...inputReceipt, disposition: 'queued' }] },
+    ],
+    ['missing inventory receipts', { ...inventory, receipts: undefined }],
+    ['unknown proof scope', { ...inventory, workers: [{ ...exited, stop: { kind: 'other' } }] }],
+    [
+      'missing proof kind',
+      {
+        ...inventory,
+        workers: [{ ...exited, absence: { ...exited.absence, proofKind: undefined } }],
+      },
+    ],
+  ])('rejects %s in a report', (_name, value) => {
+    expect(WorkerShimInventoryReaderSchema.safeParse(value).success).toBe(false);
+  });
+
+  it('keeps the existing retained command bodies and descriptive result readable', () => {
+    const {
+      capabilityLoopbackCredential: _c,
+      inferenceLoopbackCredential: _i,
+      ...open
+    } = sessionOpen;
+    const { capabilityToken: _p, inferenceToken: _q, workerControlToken: _w, ...start } = turnStart;
+    expect(
+      HarnessQueuedCommandBodySchemas['session.open'].parse(JSON.parse(JSON.stringify(open)))
+    ).toEqual(open);
+    expect(
+      HarnessQueuedCommandBodySchemas['turn.start'].parse(JSON.parse(JSON.stringify(start)))
+    ).toEqual(start);
+    const baseline = { commit: 'b'.repeat(40), tree: 'c'.repeat(40) };
+    const body = {
+      state: 'open',
+      nativeHandleState: 'ready',
+      nativeHandleDigest: digest,
+      maxActiveTurns: 20,
+      workspaceGitBaseline: { ...baseline, note: 'ignored by retained reader' },
+    };
+    const result = HarnessResultEnvelopeReaderSchema.parse(
+      JSON.parse(
+        JSON.stringify({
+          body,
+          disposition: 'succeeded',
+          harnessInstanceId: 'harness-1',
+          operationId: digest,
+          schemaVersion: 2,
+          sequence: 0,
+        })
+      )
+    );
+    expect(parseHarnessResultBody('session.open', result)).toEqual({
+      ...body,
+      workspaceGitBaseline: baseline,
+    });
+  });
+});
 
 describe('private Harness command bodies', () => {
   it('carries positive authored capacity and a closed exhausted-bound diagnostic', () => {

@@ -1,5 +1,7 @@
 import {
   AgentSessionIdSchema,
+  ExecutionAttemptIdSchema,
+  entityIdPattern,
   GitFailureExplanationReaderSchema,
   GitFailureExplanationSchema,
   ItemIdSchema,
@@ -512,3 +514,143 @@ export function parseHarnessResultBody(
 
 /** Reads the descriptive result envelope; the durable operation selects its body reader. */
 export const HarnessResultEnvelopeReaderSchema = HarnessResultEnvelopeSchema.strip();
+
+const WorkerShimSandboxIncarnationIdSchema = z.string().regex(entityIdPattern('sbxi'));
+const WorkerShimWorkerIdSchema = z.string().regex(entityIdPattern('wkr'));
+
+const WorkerShimSessionSchema = z
+  .object({
+    sandboxIncarnationId: WorkerShimSandboxIncarnationIdSchema,
+    connectionGeneration: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const WorkerShimOperationKeySchema = z
+  .object({
+    operationId: HarnessIdentitySchema,
+    workerId: WorkerShimWorkerIdSchema,
+    payloadDigest: HarnessSha256HexSchema,
+  })
+  .strict();
+
+const WorkerShimTurnShape = {
+  workerId: WorkerShimWorkerIdSchema,
+  turnId: TurnIdSchema,
+  attemptId: ExecutionAttemptIdSchema,
+};
+
+const WorkerShimStartSchema = z
+  .object({
+    workerId: WorkerShimWorkerIdSchema,
+    adapterId: HarnessIdentitySchema,
+    agentSessionId: AgentSessionIdSchema,
+    workSlotRef: HarnessIdentitySchema,
+    resume: HarnessResumeSchema.nullable(),
+  })
+  .strict();
+
+const WorkerShimDesiredWorkerSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('run'), worker: WorkerShimStartSchema }).strict(),
+  z.object({ state: z.literal('stop'), workerId: WorkerShimWorkerIdSchema }).strict(),
+]);
+
+const WorkerShimKeyedWorkSchema = WorkerShimOperationKeySchema.extend({
+  ...WorkerShimTurnShape,
+  inputRef: HarnessIdentitySchema,
+});
+
+const WorkerShimInterruptSchema = z
+  .object({
+    ...WorkerShimTurnShape,
+    requestId: HarnessIdentitySchema,
+    cause: z.literal('observation_limit_reached').optional(),
+  })
+  .strict();
+
+/** Exact producer and consumer codec for the Worker Shim's full desired set. */
+export const WorkerShimDesiredSetSchema = z
+  .object({
+    session: WorkerShimSessionSchema,
+    revision: z.number().int().nonnegative(),
+    workers: z.array(WorkerShimDesiredWorkerSchema),
+    inputs: z.array(WorkerShimKeyedWorkSchema.extend({ routeGrant: HarnessIdentitySchema })),
+    steers: z.array(WorkerShimKeyedWorkSchema),
+    interrupts: z.array(WorkerShimInterruptSchema),
+    acknowledgedOperations: z.array(WorkerShimOperationKeySchema),
+  })
+  .strict();
+
+const WorkerShimBestEffortSchema = z.object({ kind: z.literal('best-effort') });
+const WorkerShimExactStopSchema = z.object({
+  kind: z.literal('exact'),
+  proofKind: HarnessIdentitySchema,
+});
+const WorkerShimAbsentSchema = z
+  .object({
+    state: z.literal('absent'),
+    workerId: WorkerShimWorkerIdSchema,
+    proofKind: HarnessIdentitySchema,
+  })
+  .strict();
+
+const WorkerShimObservationSchema = z
+  .object({
+    workerId: WorkerShimWorkerIdSchema,
+    state: z.enum(['running', 'stopping', 'exited']),
+    stop: z.discriminatedUnion('kind', [
+      WorkerShimBestEffortSchema.strict(),
+      WorkerShimExactStopSchema.strict(),
+    ]),
+    absence: WorkerShimAbsentSchema.optional(),
+  })
+  .strict();
+
+const WorkerShimReceiptSchema = z
+  .object({
+    kind: z.enum(['input', 'steer']),
+    key: WorkerShimOperationKeySchema,
+    disposition: z.enum(['accepted', 'refused', 'unknown']),
+  })
+  .strict();
+
+const WorkerShimInterruptReceiptSchema = WorkerShimInterruptSchema.extend({
+  disposition: z.enum(['cancelled', 'refused', 'unknown']),
+});
+
+/** Exact emitter codec for the Worker Shim's complete inventory and original receipts. */
+export const WorkerShimInventorySchema = z
+  .object({
+    session: WorkerShimSessionSchema,
+    workers: z.array(WorkerShimObservationSchema),
+    receipts: z.array(WorkerShimReceiptSchema),
+    interrupts: z.array(WorkerShimInterruptReceiptSchema),
+  })
+  .strict();
+
+const WorkerShimUnsupportedRequirements = { requiredFeatures: z.never().optional() };
+
+/** Strips descriptive additions while refusing unsupported requirements and Worker-supplied identity. */
+export const WorkerShimInventoryReaderSchema = WorkerShimInventorySchema.extend({
+  ...WorkerShimUnsupportedRequirements,
+  actor: z.never().optional(),
+  responsibleUserId: z.never().optional(),
+  workers: z.array(
+    WorkerShimObservationSchema.extend({
+      ...WorkerShimUnsupportedRequirements,
+      stop: z.discriminatedUnion('kind', [
+        WorkerShimBestEffortSchema.extend(WorkerShimUnsupportedRequirements),
+        WorkerShimExactStopSchema.extend(WorkerShimUnsupportedRequirements),
+      ]),
+      absence: WorkerShimAbsentSchema.extend(WorkerShimUnsupportedRequirements).strip().optional(),
+    }).strip()
+  ),
+  receipts: z.array(
+    WorkerShimReceiptSchema.extend({
+      ...WorkerShimUnsupportedRequirements,
+      key: WorkerShimOperationKeySchema.extend(WorkerShimUnsupportedRequirements).strip(),
+    }).strip()
+  ),
+  interrupts: z.array(
+    WorkerShimInterruptReceiptSchema.extend(WorkerShimUnsupportedRequirements).strip()
+  ),
+}).strip();
