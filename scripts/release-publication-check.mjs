@@ -179,12 +179,23 @@ const modulePathLeaves = 'compiled module path leaves NanoHost';
 const buildScript = 'NanoHost build script is outside the supported subset';
 const pathSymlink = 'compiled path symlink is outside the supported subset';
 const pathComponent = 'compiled path component is outside the supported subset';
+/** NUL-separated Git tree rows preserve every exact path byte sequence. */
+function treeRows(output) {
+  return output.split('\0').filter(Boolean);
+}
+
+/** One exact Git tree row, or null when NUL output has no row for that path. */
+function treeEntry(output, file) {
+  return treeRows(output).find((row) => {
+    const separator = row.indexOf('\t');
+    return separator >= 0 && row.slice(separator + 1) === file;
+  });
+}
+
 /** Mode of one Git tree entry at this commit, or null when that path is absent. */
 function trackedMode(git, commit, file, cache) {
   if (cache.has(file)) return cache.get(file);
-  const line = git(['ls-tree', commit, '--', file])
-    .split('\n')
-    .find((row) => row.endsWith(`\t${file}`));
+  const line = treeEntry(git(['ls-tree', '-z', commit, '--', file]), file);
   const mode = line ? line.slice(0, line.indexOf(' ')) : null;
   cache.set(file, mode);
   return mode;
@@ -237,6 +248,7 @@ function resolveGitPath(git, commit, fromFile, relative, cache) {
   }
   const target = stack.join('/');
   requireFact(target && !target.startsWith('../'), 'publication input escapes repository');
+  requireFact(!relative.endsWith('/') || entered === '040000', `${pathComponent}: ${target}`);
   return target;
 }
 /**
@@ -356,8 +368,19 @@ function consumeMacroRules(source, index, file) {
   requireFact(stack.length === 0, `${includeIndirection}: ${file}`);
   return i;
 }
+/** Synthetic file whose dirname is the compiler base for an inline-module #[path]. */
+function inlineModuleBaseFile(file, inlineModules) {
+  if (inlineModules.length === 0) return file;
+  const base = posix.basename(file);
+  let directory = posix.dirname(file);
+  if (base !== 'main.rs' && base !== 'lib.rs' && base !== 'mod.rs')
+    directory = posix.join(directory, base.slice(0, -'.rs'.length));
+  for (const name of inlineModules) directory = posix.join(directory, name);
+  return posix.join(directory, 'module.rs');
+}
+
 /** #[path = "..."] that stays inside apps/nanohost, or null when this is not one. */
-function takeModulePath(source, index, file, resolvePath) {
+function takeModulePath(source, index, file, resolvePath, inlineModules) {
   let i = index + 1;
   if (source[i] === '!') i += 1;
   if (source[i] !== '[') return null;
@@ -373,13 +396,15 @@ function takeModulePath(source, index, file, resolvePath) {
   i = skipRustTrivia(source, literal.end);
   requireFact(i >= 0 && source[i] === ']', `${modulePathLeaves}: ${file}`);
   requireFact(!posix.isAbsolute(literal.body), `${modulePathLeaves}: ${file}`);
-  const target = resolvePath(file, literal.body);
+  const target = resolvePath(inlineModuleBaseFile(file, inlineModules), literal.body);
   requireFact(target.startsWith('apps/nanohost/'), `${modulePathLeaves}: ${file}`);
   return i + 1;
 }
 function rustIncludeTargets(source, file, resolvePath) {
   const targets = [];
   const nanohost = file.startsWith('apps/nanohost/');
+  const moduleBraces = new Map();
+  const braceStack = [];
   let i = 0;
   while (i < source.length) {
     const token = skipRustTrivia(source, i);
@@ -392,8 +417,19 @@ function rustIncludeTargets(source, file, resolvePath) {
       i = stringEnd;
       continue;
     }
+    if (source[i] === '{') {
+      braceStack.push({ module: moduleBraces.get(i) });
+      i += 1;
+      continue;
+    }
+    if (source[i] === '}') {
+      braceStack.pop();
+      i += 1;
+      continue;
+    }
     if (nanohost && source[i] === '#') {
-      const attr = takeModulePath(source, i, file, resolvePath);
+      const inlineModules = braceStack.flatMap((entry) => (entry.module ? [entry.module] : []));
+      const attr = takeModulePath(source, i, file, resolvePath, inlineModules);
       if (attr) {
         i = attr;
         continue;
@@ -417,6 +453,13 @@ function rustIncludeTargets(source, file, resolvePath) {
       if (nanohost && ident.name === 'macro_rules') {
         i = consumeMacroRules(source, ident.end, file);
         continue;
+      }
+      if (nanohost && ident.name === 'mod') {
+        const moduleNameAt = skipRustTrivia(source, ident.end);
+        const moduleName = moduleNameAt >= 0 ? readRustIdent(source, moduleNameAt) : null;
+        const brace = moduleName ? skipRustTrivia(source, moduleName.end) : -1;
+        if (moduleName && brace >= 0 && source[brace] === '{')
+          moduleBraces.set(brace, moduleName.name);
       }
       i = ident.end;
       if (includeMacros.has(ident.name)) {
@@ -454,9 +497,9 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     'publication proof must name a commit object'
   );
   const read = (file) => {
-    const entry = git(['ls-tree', sourceCommit, '--', file]);
+    const entry = treeEntry(git(['ls-tree', '-z', sourceCommit, '--', file]), file);
     requireFact(
-      /^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry),
+      entry && /^100(?:644|755) blob [a-f0-9]{40}\t/.test(entry),
       `publication input must be a regular tracked file: ${file}`
     );
     return { blob: entry.split(/\s+/)[2], bytes: git(['show', `${sourceCommit}:${file}`]) };
@@ -523,15 +566,15 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       images.flatMap((i) => [posix.dirname(i.dockerfile), posix.dirname(i.smoke)])
     );
     for (const directory of directories) {
-      for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', directory])
-        .trim()
-        .split('\n'))
-        if (file) pending.add(file);
+      for (const file of treeRows(
+        git(['ls-tree', '-z', '-r', '--name-only', sourceCommit, '--', directory])
+      ))
+        pending.add(file);
     }
     // These are image-construction programs, not the product source bundled by COPY . . .
-    for (const file of git(['ls-tree', '-r', '--name-only', sourceCommit, '--', 'scripts'])
-      .trim()
-      .split('\n'))
+    for (const file of treeRows(
+      git(['ls-tree', '-z', '-r', '--name-only', sourceCommit, '--', 'scripts'])
+    ))
       if (/^scripts\/retrieval-[^/]+\.(?:py|sh)$/.test(file)) pending.add(file);
   }
   // Stable promotion has its own tag-only workflow and must be in the same immutable input proof.
@@ -575,23 +618,15 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     // mismatches and fails closed.
     if (file === 'scripts/docker/check-worker-seed.sh') {
       pending.add('Cargo.toml');
-      for (const tracked of git([
-        'ls-tree',
-        '-r',
-        '--name-only',
-        sourceCommit,
-        '--',
-        'apps/nanohost',
-      ])
-        .trim()
-        .split('\n'))
-        if (tracked) {
-          requireFact(
-            !(tracked === 'apps/nanohost/build.rs' || /\/build\.rs$/.test(tracked)),
-            buildScript
-          );
-          pending.add(tracked);
-        }
+      for (const tracked of treeRows(
+        git(['ls-tree', '-z', '-r', '--name-only', sourceCommit, '--', 'apps/nanohost'])
+      )) {
+        requireFact(
+          !(tracked === 'apps/nanohost/build.rs' || /\/build\.rs$/.test(tracked)),
+          buildScript
+        );
+        pending.add(tracked);
+      }
     }
     if (file.endsWith('.rs')) {
       for (const target of rustIncludeTargets(bytes, file, resolvePath)) pending.add(target);

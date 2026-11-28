@@ -286,6 +286,26 @@ test('spaced include_bytes with a missing target refuses publication proof', () 
   );
 });
 
+test('UTF-8 include target changes the publication digest under quoted Git paths', () => {
+  const r = workerSeedRepository();
+  r.git('config', 'core.quotePath', 'true');
+  const target = 'fixtures/café.txt';
+  writeFileSync(path.join(r.root, target), 'original\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/utf8_include.rs'),
+    'const VALUE: &str = include_str!("../../../fixtures/café.txt");\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add UTF-8 include target');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  writeFileSync(path.join(r.root, target), 'changed\n');
+  r.git('add', target);
+  r.git('commit', '-m', 'change UTF-8 include target');
+  const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.notEqual(after.sha256, before.sha256);
+  assert.equal(after.files[target], r.git('rev-parse', `HEAD:${target}`));
+});
+
 test('absolute include literal refuses before binding its tracked namesake', () => {
   const r = workerSeedRepository();
   const source = 'apps/nanohost/src/absolute.rs';
@@ -467,6 +487,21 @@ test('cross-tree module path refuses publication proof', () => {
   );
 });
 
+test('inline-module path uses the compiler module directory', () => {
+  const r = workerSeedRepository();
+  const target = 'apps/nanohost/src/nested/module.rs';
+  mkdirSync(path.join(r.root, 'apps/nanohost/src/nested'), { recursive: true });
+  writeFileSync(path.join(r.root, target), 'pub fn support() {}\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod nested {\n    #[path = "module.rs"]\n    pub mod support;\n}\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add inline-module path');
+  const proof = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.equal(proof.files[target], r.git('rev-parse', `HEAD:${target}`));
+});
+
 test('NanoHost build script refuses publication proof', () => {
   const script = workerSeedRepository();
   refusedInclude(script, 'apps/nanohost/build.rs', 'fn main() {}\n', /NanoHost build script/);
@@ -509,6 +544,21 @@ test('include through a real parent directory still binds', () => {
     'apps/nanohost/src/parent_include.rs',
     'const VALUE: &str = include_str!("../../../fixtures/other/../value.txt");\n',
     'fixtures/value.txt'
+  );
+});
+
+test('trailing-slash include target refuses publication proof', () => {
+  const r = workerSeedRepository();
+  writeFileSync(path.join(r.root, 'fixtures/value.txt'), 'value\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/trailing_include.rs'),
+    'const VALUE: &str = include_str!("../../../fixtures/value.txt/");\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add trailing-slash include');
+  assert.throws(
+    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
+    /compiled path component is outside the supported subset: fixtures\/value\.txt/
   );
 });
 
