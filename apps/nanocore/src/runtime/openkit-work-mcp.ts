@@ -76,7 +76,7 @@ import {
   WORKER_ARTIFACT_PATH_OUTSIDE_OUTPUT_ROOTS,
   type WorkerArtifactCapture,
 } from './worker-governance-backend.js';
-import { MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
+import { MCP_RESULT_MAX_BYTES, MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
 import { preflightArtifactTuple, prepareWorkerArtifact } from './worker-transcript.js';
 
 export {
@@ -252,8 +252,17 @@ export async function dispatchOpenkitWorkTool(
             }).parse(args).content,
           });
     input.requireAdmission?.();
+    const serialized = JSON.stringify(result);
+    // The separate Knowledge path must refuse before the MCP caller retains answer-delivery evidence.
+    if (toolId === 'knowledge.ask' && Buffer.byteLength(serialized, 'utf8') > MCP_RESULT_MAX_BYTES)
+      throw new OperationError(
+        'knowledge_query_failed',
+        'Knowledge answer exceeds the response limit. Ask a narrower question.',
+        422,
+        { details: { threadId: result.threadId, turnId: result.turnId } }
+      );
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      content: [{ type: 'text' as const, text: serialized }],
       structuredContent: result as Record<string, unknown>,
       isError: false,
     };

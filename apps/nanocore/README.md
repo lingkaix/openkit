@@ -1,5 +1,7 @@
 # nanocore
 
+`src/knowledge/knowledge-agent.ts` and `src/runtime/openkit-work-mcp.ts` enforce the [Knowledge answer byte ceiling](../../docs/specs/20260704-knowledge_manager_internal_agent_runtime.md#answer-byte-ceiling) before delivery or CapabilityCall answer retention. Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge/knowledge-agent.test.ts src/worker-mcp-routes.test.ts --maxWorkers=2` for query projection bounds and native MCP refusal/retention coverage.
+
 Workspace creation and name updates publish their configuration through the existing runtime snapshot and native Policy handoff before the next command. New personal Workspaces use the same publication. Current membership and deletion state remain native Core authority. See the [configuration guide](src/config/README.md).
 
 

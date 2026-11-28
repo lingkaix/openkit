@@ -58,6 +58,10 @@ Read operations inherit `docs/specs/20260703-knowledge_store_implementation.md` 
 - `suggest-repair`: detects duplicate normalized titles and returns bounded review-required suggestions marked non-auto-applicable without applying repairs.
 - `health-check`: reports whether knowledge exists and whether duplicate-title suggestions need attention, without scheduling work, drafting proposals, or mutating knowledge.
 
+### Answer Byte Ceiling
+
+The complete `knowledge.ask` answer projection, including answer text, citations, and uncertainty, MUST NOT exceed `512 KiB` (`524,288` bytes) of UTF-8 JSON. The query owner and the Work Tool boundary MUST measure the serialized projection. If the projection exceeds this ceiling, they MUST refuse it with typed `knowledge_query_failed` before caller delivery and before CapabilityCall answer retention. They MUST NOT truncate the answer.
+
 ### Query And Maintenance Execution
 
 When addressed via `knowledge.ask` (including from a Chat Thread), Knowledge Manager creates its own isolated `knowledge-manager` Thread and Turn (`entryPath: "knowledge-manager"`) for the query run while retaining the asking Thread and Turn IDs for lineage and binding the asker's `queryContext` on the retrieval trace; copying the returned answer and citations into the asking Chat Thread is answer projection only, and the Chat Thread is not the Knowledge Manager execution owner.

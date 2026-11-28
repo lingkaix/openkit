@@ -34,6 +34,7 @@ import {
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
+import { MCP_RESULT_MAX_BYTES } from '../runtime/worker-mcp-gateway.js';
 import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { receiveContextInfluence } from '../security/context-influence.js';
 import type { WorkspaceDb } from '../storage/db.js';
@@ -753,7 +754,7 @@ export async function askKnowledgeAgent(
               ])
             )
           : new Map<string, string>();
-      return KnowledgeAskResponseSchema.parse({
+      const response = KnowledgeAskResponseSchema.parse({
         threadId: thread.id,
         turnId: turn.id,
         answer: redactInternalAgentText(answer.answer),
@@ -777,6 +778,15 @@ export async function askKnowledgeAgent(
           };
         }),
       });
+      // Bound the complete Knowledge projection; private memory.ask keeps its separate answer contract.
+      if (!memory && Buffer.byteLength(JSON.stringify(response), 'utf8') > MCP_RESULT_MAX_BYTES)
+        throw new OperationError(
+          'knowledge_query_failed',
+          'Knowledge answer exceeds the response limit. Ask a narrower question.',
+          422,
+          { details: { threadId: thread.id, turnId: turn.id } }
+        );
+      return response;
     } finally {
       workspaceDb.sqlite.close();
     }

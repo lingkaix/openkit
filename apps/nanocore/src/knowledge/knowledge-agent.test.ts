@@ -915,6 +915,63 @@ it('refuses an overview-only answer when its Server credential is revoked during
   ).toBeUndefined();
 }, 120_000);
 
+// Knowledge Manager specification, Answer Byte Ceiling: count the complete serialized projection, not model text alone.
+it.each([
+  { field: 'answer', excess: 0 },
+  { field: 'answer', excess: 1 },
+  { field: 'uncertainty', excess: 0 },
+  { field: 'uncertainty', excess: 1 },
+] as const)(
+  'enforces the answer byte ceiling with $field and $excess excess bytes',
+  async ({ field, excess }) => {
+    const f = await fixture();
+    const pageId = `openkit:${f.workspaceScope}/launch-evidence`;
+    const projection = {
+      threadId: f.thread.id,
+      turnId: f.turn.id,
+      answer: 'Use the cobalt gate.',
+      uncertainty: 'No launch date is documented.',
+      citations: [
+        {
+          reference: formatReferenceUri(
+            { scopeId: f.workspaceScope, objectId: 'launch-evidence' },
+            f.contentDigest
+          ),
+          revision: f.revision,
+          contentDigest: f.contentDigest,
+          sourceReferences: [f.sourceReference],
+        },
+      ],
+    };
+    projection[field] = '';
+    const remaining = 512 * 1024 + excess - Buffer.byteLength(JSON.stringify(projection), 'utf8');
+    // These characters occupy six serialized UTF-8 bytes, but only three UTF-16 code units.
+    projection[field] = `é"\n${'x'.repeat(remaining - 6)}`;
+    expect(Buffer.byteLength(JSON.stringify(projection), 'utf8')).toBe(512 * 1024 + excess);
+    let step = 0;
+    f.createResponses.mockImplementation(async () => {
+      if (++step === 1) return call('knowledge.retrieval', { query: 'heliotrope cobalt' });
+      if (step === 2) return call('knowledge.page.read', { pageId });
+      return message(projection.answer, [pageId], projection.uncertainty);
+    });
+    if (excess) {
+      await expect(f.ask()).rejects.toMatchObject({
+        code: 'knowledge_query_failed',
+        details: { threadId: expect.any(String), turnId: expect.any(String) },
+      });
+    } else {
+      const answer = await f.ask();
+      expect(Buffer.byteLength(JSON.stringify(answer), 'utf8')).toBe(512 * 1024);
+      expect(answer).toEqual({
+        ...projection,
+        threadId: expect.any(String),
+        turnId: expect.any(String),
+      });
+    }
+    expect(f.createResponses).toHaveBeenCalledTimes(3);
+  }
+);
+
 it('rejects an unread citation and retains a failed Knowledge Manager Turn instead of a completed answer', async () => {
   const f = await fixture();
   f.createResponses.mockResolvedValue(

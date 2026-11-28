@@ -2,11 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { operationToolName } from '@openkit/app-api-schemas';
+import { KnowledgeAskResponseSchema, operationToolName } from '@openkit/app-api-schemas';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
+import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import {
@@ -16,6 +20,7 @@ import {
 } from '../internal-agents/knowledge-manager-agent.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
@@ -397,6 +402,98 @@ it('remembers through exact review, selects the published bytes, and cites them 
   expect(trace.queryContext.turnId).toBeUndefined();
   expect(trace.queryContext.threadId).not.toBe(answer.threadId);
   expect(f.store.listThreadTurns(f.workspaceId, f.timeline.id)).toEqual([]);
+}, 120_000);
+
+// The Knowledge Manager specification's Answer Byte Ceiling names knowledge.ask, not the separate private memory.ask contract.
+it('preserves a 524,289-byte private Memory answer through the real operation entry', async () => {
+  const f = await fixture();
+  initializeScopedNotebook({
+    ...f.writer,
+    target: { kind: 'user' },
+    initialization: { requestId: randomUUID(), instructionReference: 'test:large-memory-answer' },
+  });
+  await saveMemoryPage(f.writer, {
+    requestId: randomUUID(),
+    baseRevision: f.notebook.publishedRevision(),
+    pageId: 'labels',
+    content: updateOkfFrontmatter({
+      path: 'labels.md',
+      content: f.page('', preference, 'active'),
+      updates: { review_state: 'user-authored' },
+    }),
+    summary: 'Explicitly author a personal label preference.',
+  });
+  const revision = f.notebook.publishedRevision();
+  const content = f.notebook.readRevision(revision).files['labels.md']!;
+  const contentDigest = digest(content);
+  const scopeId = `page/user/${f.userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.userId } })}`;
+  const pageId = formatReferenceUri({ scopeId, objectId: 'labels' });
+  const answerText = 'x'.repeat(524_289);
+  let step = 0;
+  f.createResponses.mockImplementation(async (_provider, request) => {
+    if (++step === 1)
+      return call('knowledge.retrieval', { query: 'meridian label ORCHID-TEAL-42' });
+    if (step === 2) {
+      expect(output(request, 'knowledge.retrieval').sources[0].selected).toEqual(
+        expect.arrayContaining([expect.objectContaining({ pageId, revision, contentDigest })])
+      );
+      return call('knowledge.page.read', { pageId });
+    }
+    expect(output(request, 'knowledge.page.read')).toMatchObject({
+      pageId,
+      revision,
+      contentDigest,
+      content,
+    });
+    return call('knowledge.result', {
+      answer: answerText,
+      citationIds: [pageId],
+      uncertainty: null,
+    });
+  });
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.dataRoot }),
+    repositoryWorkspaceDb: f.native.openWorkspace,
+    inflightCommands: new WeakMap(),
+    knowledgeAgent: {
+      ask: (question) => askKnowledgeAgent(f.native, question),
+      maintain: vi.fn(),
+    },
+  });
+  const answer = await invoke(
+    'memory.ask',
+    { workspaceId: f.workspaceId, question: 'Which meridian label color should I use?' },
+    {
+      kind: 'public',
+      actor: f.writer.actor,
+      delivery: 'model',
+      queryContext: { threadId: f.timeline.id },
+    }
+  );
+  expect(KnowledgeAskResponseSchema.safeParse(answer).success).toBe(true);
+  expect(answer).toMatchObject({
+    answer: answerText,
+    uncertainty: null,
+    citations: [{ reference: `${pageId}@${contentDigest}`, revision, contentDigest }],
+  });
+  expect(Buffer.byteLength(answer.answer, 'utf8')).toBe(524_289);
+  expect(step).toBe(3);
+  expect(f.store.listThreadTurns(f.workspaceId, f.timeline.id)).toEqual([]);
+  const db = f.native.openWorkspace(f.workspaceId);
+  try {
+    const calls = listWorkspaceCapabilityCalls(db, f.workspaceId).filter(
+      (call) => call.operation === 'memory.ask'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.status).toBe('succeeded');
+    expect(calls[0]!.extensions?.['openkit.knowledge/delivery']).toEqual({
+      answer: JSON.stringify(answer),
+    });
+  } finally {
+    db.sqlite.close();
+  }
 }, 120_000);
 
 it('preserves existing lifecycle and creation time, and changes update time only for changed content', async () => {

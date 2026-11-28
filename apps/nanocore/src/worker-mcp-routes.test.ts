@@ -46,6 +46,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
+  KnowledgeAskResponseSchema,
   operationToolName,
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
@@ -8674,7 +8675,14 @@ async function createMcpCommitFixture(
   }> = [];
   let onDiscovery: (() => Promise<void> | void) | undefined;
   let onTool: (() => Promise<void> | void) | undefined;
-  let onKnowledge: (() => Promise<void> | void) | undefined;
+  const knowledgeAnswer = KnowledgeAskResponseSchema.parse({
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
+    answer: 'The credited answer has exact bytes: é.',
+    citations: [],
+    uncertainty: 'Fixture delivery only.',
+  });
+  let onKnowledge: ((answer: typeof knowledgeAnswer) => Promise<void> | void) | undefined;
   let toolContacts = 0;
   const observe = (stage: string) => {
     const reader = openWorkspaceDb(dataRoot, workspaceId);
@@ -8725,14 +8733,8 @@ async function createMcpCommitFixture(
       workerMcpGateway: gateway,
       knowledgeAgent: {
         ask: async () => {
-          await onKnowledge?.();
-          return {
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            answer: 'The credited answer has exact bytes: é.',
-            citations: [],
-            uncertainty: 'Fixture delivery only.',
-          };
+          await onKnowledge?.(knowledgeAnswer);
+          return knowledgeAnswer;
         },
         maintain: vi.fn(),
       },
@@ -8770,7 +8772,7 @@ async function createMcpCommitFixture(
     tool(callback: () => Promise<void> | void) {
       onTool = callback;
     },
-    knowledge(callback: () => Promise<void> | void) {
+    knowledge(callback: (answer: typeof knowledgeAnswer) => Promise<void> | void) {
       onKnowledge = callback;
     },
     version(value: string) {
@@ -8844,6 +8846,61 @@ async function createMcpCommitFixture(
     },
   };
 }
+
+// Knowledge Manager specification, Answer Byte Ceiling: refuse before delivery or answer retention, without truncation.
+it.each([
+  { field: 'answer', excess: 0 },
+  { field: 'answer', excess: 1 },
+  { field: 'uncertainty', excess: 1 },
+  { field: 'citations', excess: 1 },
+] as const)(
+  'enforces the Work answer byte ceiling with $field and $excess excess bytes',
+  async ({ field, excess }) => {
+    const f = await createMcpCommitFixture();
+    let serialized = '';
+    f.knowledge((answer) => {
+      answer.citations = [
+        {
+          reference: 'openkit:page/server/kb_00000000-0000-7000-8000-000000000001/launch-evidence',
+          revision: 'observed-revision',
+          contentDigest: `sha256:${'a'.repeat(64)}`,
+          sourceReferences: ['source:launch-evidence'],
+        },
+      ];
+      const setContent = (content: string) => {
+        if (field === 'citations') answer.citations[0]!.sourceReferences[0] = content;
+        else answer[field] = content;
+      };
+      setContent('');
+      const remaining = 512 * 1024 + excess - Buffer.byteLength(JSON.stringify(answer), 'utf8');
+      setContent(`é"\n${'x'.repeat(remaining - 6)}`);
+      serialized = JSON.stringify(answer);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBe(512 * 1024 + excess);
+    });
+    try {
+      const response = await f.call(531, 'knowledge');
+      const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId).filter(
+        (call) => call.capabilityId === `mcp.call-tool.${operationToolName('knowledge.ask')}`
+      );
+      expect(calls).toHaveLength(1);
+      if (excess) {
+        expect(response).toMatchObject({ error: { data: { code: 'knowledge_query_failed' } } });
+        expect(response).not.toHaveProperty('result');
+        expect(calls[0]!.status).toBe('failed');
+        expect(calls[0]!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
+      } else {
+        expect(response).toMatchObject({ result: { isError: false } });
+        expect(response.result.content).toEqual([{ type: 'text', text: serialized }]);
+        expect(calls[0]!.status).toBe('succeeded');
+        expect(JSON.parse(calls[0]!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+          response.result
+        );
+      }
+    } finally {
+      await f.close();
+    }
+  }
+);
 
 it('keeps a native recurring Worker MCP call live without a turn.start receipt', async () => {
   const f = await createMcpCommitFixture(new PolicyInterception(), { recurring: true });
