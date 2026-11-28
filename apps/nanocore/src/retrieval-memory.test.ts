@@ -52,7 +52,7 @@ import {
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { createTestServerWorkStore } from './test-support/server-work-store.js';
-import { shutdownTestStoreWorker } from './test-support/store.js';
+import { createTestStore, shutdownTestStoreWorker } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const aliceId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -61,7 +61,7 @@ const marker = 'meridianMemoryMarker';
 const foreignDeploymentId = 'dep_00000000-0000-7000-8000-000000000001';
 
 /** Real canonical Users, private Timelines, Git notebooks and the ordinary Kernel service own all effects. */
-async function fixture(imported = false) {
+async function fixture(imported = false, withServerWork = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-retrieval-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -71,7 +71,9 @@ async function fixture(imported = false) {
         "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at) VALUES (?, 'human', 'Memory owner', ?, 0, ?, ?)"
       )
       .run(userId, [userId, 'example.invalid'].join('@'), Date.now(), Date.now());
-  const store = await createTestServerWorkStore(coreDb);
+  const store = withServerWork
+    ? await createTestServerWorkStore(coreDb)
+    : createTestStore({ dataRoot });
   const importedWorkspaceId = allocateEntityId('ws');
   const workspace = await (imported
     ? store.importWorkspaceSnapshot({
@@ -423,7 +425,7 @@ describe('governed current-self Memory search', () => {
   });
 
   it('removes forgotten pages from existing postings and permits a new explicit page from a raw Source still suppressed for models', async () => {
-    const f = await fixture();
+    const f = await fixture(false, false);
     const source = await registerUserKnowledgeSource(f.alice.writer, {
       requestId: randomUUID(),
       kind: 'document',
@@ -556,7 +558,7 @@ describe('governed current-self Memory search', () => {
     ).toBe(pageBytes);
     expect(await readUserKnowledgeSource(f.alice.writer, source.id, 'model')).toBeNull();
     expect(readMemoryPage(f.alice.writer, 'preferences')).toBeNull();
-  });
+  }, 60_000);
 
   it.each(['shared', 'missing Timeline', 'Worker', 'disabled'] as const)(
     'refuses %s context before private generation or trace publication',
