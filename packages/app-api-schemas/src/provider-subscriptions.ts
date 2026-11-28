@@ -54,11 +54,14 @@ const InferenceObservationSchema = z
   .object({
     accessRejected: InferenceObservationPartSchema.optional(),
     quotaExhausted: InferenceObservationPartSchema.optional(),
+    reloginRequired: InferenceObservationPartSchema.optional(),
   })
   .strict()
   .refine(
     (observation) =>
-      observation.accessRejected !== undefined || observation.quotaExhausted !== undefined,
+      observation.accessRejected !== undefined ||
+      observation.quotaExhausted !== undefined ||
+      observation.reloginRequired !== undefined,
     'At least one inference outcome must be observed.'
   )
   .meta({ minProperties: 1 });

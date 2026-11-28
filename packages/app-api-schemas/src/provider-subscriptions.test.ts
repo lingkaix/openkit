@@ -136,6 +136,7 @@ describe('account inference observation projection', () => {
   it.each([
     { accessRejected: { observedAt } },
     { quotaExhausted: { observedAt } },
+    { reloginRequired: { observedAt } },
     { accessRejected: { observedAt }, quotaExhausted: { observedAt } },
   ])('accepts observed parts with their own timestamps: %j', (inferenceObservation) => {
     expect(ProviderSubscriptionAccountSchema.parse({ ...account, inferenceObservation })).toEqual({
@@ -161,6 +162,7 @@ describe('account inference observation projection', () => {
       null,
       { accessRejected: {} },
       { quotaExhausted: { observedAt: 'yesterday' } },
+      { reloginRequired: {} },
       { accessRejected: { observedAt, bearer: 'secret' } },
       { accessRejected: { observedAt }, version: 'private' },
     ]) {

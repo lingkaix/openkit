@@ -5318,6 +5318,118 @@ describe('inference route same-credential rejection', () => {
 });
 
 describe('subscription refresh inference ownership', () => {
+  it.each([
+    {
+      errorClass: 'invalid_grant',
+      needsRelogin: true,
+      upstream: 'xAI OAuth token refresh failed (HTTP 400): invalid_grant',
+    },
+    {
+      errorClass: 'reused',
+      needsRelogin: true,
+      upstream:
+        'OpenAI Codex token refresh failed (400): {"error":"invalid_grant","error_description":"refresh token reused upstream-canary-never-logged"}',
+    },
+    {
+      errorClass: 'expired',
+      needsRelogin: true,
+      upstream: 'xAI OAuth token refresh failed (HTTP 400): expired_token',
+    },
+    {
+      errorClass: 'network',
+      needsRelogin: false,
+      upstream: 'OpenAI Codex token refresh error: fetch failed',
+    },
+    {
+      errorClass: 'network',
+      needsRelogin: false,
+      upstream:
+        'xAI OAuth token refresh failed (HTTP 503): {"error":"temporarily_unavailable","error_description":"Upstream request deadline expired"}',
+    },
+    {
+      errorClass: 'network',
+      needsRelogin: false,
+      upstream:
+        'xAI OAuth token refresh failed (HTTP 503): {"error":"temporarily_unavailable","error_description":"Upstream service access token expired. Retry later."}',
+    },
+    {
+      errorClass: 'unknown',
+      needsRelogin: false,
+      upstream: 'refresh dependency failed',
+    },
+  ] as const)(
+    'records a redacted $errorClass refresh failure and current relogin health',
+    async ({ errorClass, needsRelogin, upstream }) => {
+      const fixture = createFixture();
+      const pair = accountPair('refresh_evidence');
+      const referenceId = 'vault_00000000-0000-7aa8-a8aa-596000000596';
+      const handle = await createStoredPair(fixture, pair, referenceId);
+      const warnings: unknown[][] = [];
+      vi.spyOn(console, 'warn').mockImplementation(captureConsole(warnings));
+      const updaterFailure = new Error('OAuth refresh failed for provider', {
+        cause: new Error(upstream),
+      });
+
+      await expect(
+        handle.credentials.modify(pair.subscriptionProviderId, async () => {
+          throw updaterFailure;
+        })
+      ).rejects.toBe(updaterFailure);
+
+      const rotationRows = fixture.coreDb.sqlite
+        .prepare(
+          "SELECT outcome, error_code, summary, resource FROM audit_events WHERE action = 'provider_subscription.credential.rotate' ORDER BY rowid"
+        )
+        .all() as Array<{
+        readonly outcome: string;
+        readonly error_code: string | null;
+        readonly summary: string;
+        readonly resource: string;
+      }>;
+      expect(rotationRows).toEqual([
+        {
+          outcome: 'failed',
+          error_code: errorClass,
+          summary: 'Provider subscription credential rotating failed.',
+          resource: `provider-subscription:${pair.subscriptionProviderId}:${pair.accountSlotId}`,
+        },
+      ]);
+      expect(warnings).toHaveLength(1);
+      expect(JSON.parse(String(warnings[0]?.[0]))).toEqual({
+        code: 'provider_subscription_refresh_failed',
+        message: 'Provider subscription credential refresh failed.',
+        subscriptionProviderId: pair.subscriptionProviderId,
+        accountSlotId: pair.accountSlotId,
+        errorClass,
+      });
+      const evidence = JSON.stringify({ rotationRows, warnings });
+      expect(evidence).not.toContain('upstream-canary-never-logged');
+      expect(evidence).not.toContain(referenceId);
+
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const detail = await app.request(
+        ...operationRequest('provider-subscription.account-status', {
+          subscriptionProviderId: pair.subscriptionProviderId,
+          accountSlotId: pair.accountSlotId,
+        })
+      );
+      expect(detail.status).toBe(200);
+      const account = await detail.json();
+      expect(account.status).toBe('logged_in');
+      if (needsRelogin) {
+        expect(account.inferenceObservation).toEqual({
+          reloginRequired: { observedAt: DEFAULT_TIME },
+        });
+      } else {
+        expect(account).not.toHaveProperty('inferenceObservation');
+      }
+    }
+  );
+
   // Real credential storage and inference closeout need a local runner budget; provider deadlines stay unchanged.
   it.each(['openai-codex', 'xai'] as const)(
     'terminates one %s member attempt on its first stock refresh failure',

@@ -3609,6 +3609,37 @@ test('the bundled CLI rejects obsolete os-keychain Vault responses', async () =>
   assert.equal(JSON.parse(result.stdout).error.code, 'incompatible_contract');
 });
 
+test('the bundled CLI accepts current subscription account observations', async () => {
+  const observedAt = '2026-10-31T00:00:00.000Z';
+  const account = {
+    subscriptionProviderId: 'openai-codex',
+    accountSlotId: 'default',
+    boundProviderIds: ['provider_primary'],
+    createdAt: observedAt,
+    updatedAt: observedAt,
+    status: 'logged_in',
+  };
+  const input = JSON.stringify({
+    subscriptionProviderId: 'openai-codex',
+    accountSlotId: 'default',
+  });
+  const env = { OPENKIT_NANOCORE_URL: 'http://nanocore.example', OPENKIT_NANOCORE_TOKEN: '' };
+
+  for (const inferenceObservation of [
+    { accessRejected: { observedAt } },
+    { reloginRequired: { observedAt } },
+  ]) {
+    const result = await runCli(
+      ['ops', 'call', 'provider-subscription.account-status', '--input', '-'],
+      env,
+      input,
+      [commandResponseModule(200, { ...account, inferenceObservation })]
+    );
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).data.inferenceObservation, inferenceObservation);
+  }
+});
+
 test('doctor identifies the contract mismatch in its typed failure', async () => {
   const result = await runCli(
     ['doctor'],

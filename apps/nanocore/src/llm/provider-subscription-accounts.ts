@@ -109,6 +109,8 @@ export interface SubscriptionInferenceObservation {
   readonly accessRejected?: { readonly observedAt: string };
   /** Proven current inference quota exhaustion and its own observation time. */
   readonly quotaExhausted?: { readonly observedAt: string };
+  /** Proven current refresh-grant rejection requiring a new login. */
+  readonly reloginRequired?: { readonly observedAt: string };
 }
 
 /** Maximum accepted durable account record size in bytes. */
@@ -376,6 +378,14 @@ interface PairLoginState {
   /** Provider login, guarded credential persistence, and terminal projection task. */
   task: Promise<void>;
 }
+
+/** Content-free classification of one upstream refresh failure. */
+type ProviderSubscriptionRefreshErrorClass =
+  | 'invalid_grant'
+  | 'reused'
+  | 'expired'
+  | 'network'
+  | 'unknown';
 
 /** Internal wrapper that preserves a credential updater's exact rejection identity. */
 class CredentialUpdaterFailure {
@@ -1477,6 +1487,7 @@ export class ProviderSubscriptionAccountManager {
           try {
             replacement = await update(current);
           } catch (error) {
+            await this.recordRefreshFailure(pair, inspection, state, classifyRefreshFailure(error));
             throw new CredentialUpdaterFailure(error);
           }
           if (replacement === undefined) {
@@ -1742,12 +1753,14 @@ export class ProviderSubscriptionAccountManager {
               failure?.kind === 'quota_exhausted'
                 ? { observedAt: this.canonicalNow() }
                 : prior?.quotaExhausted;
+            const reloginRequired = prior?.reloginRequired;
             state.observation =
-              accessRejected || quotaExhausted
+              accessRejected || quotaExhausted || reloginRequired
                 ? {
                     version: presented.version,
                     ...(accessRejected ? { accessRejected } : {}),
                     ...(quotaExhausted ? { quotaExhausted } : {}),
+                    ...(reloginRequired ? { reloginRequired } : {}),
                   }
                 : undefined;
           });
@@ -1780,12 +1793,14 @@ export class ProviderSubscriptionAccountManager {
             const accessRejected = accepted ? undefined : state.observation.accessRejected;
             const quotaExhausted =
               availability === 'available' ? undefined : state.observation.quotaExhausted;
+            const reloginRequired = state.observation.reloginRequired;
             state.observation =
-              accessRejected || quotaExhausted
+              accessRejected || quotaExhausted || reloginRequired
                 ? {
                     version,
                     ...(accessRejected ? { accessRejected } : {}),
                     ...(quotaExhausted ? { quotaExhausted } : {}),
+                    ...(reloginRequired ? { reloginRequired } : {}),
                   }
                 : undefined;
           });
@@ -2380,6 +2395,59 @@ export class ProviderSubscriptionAccountManager {
   }
 
   /**
+   * Records one failed refresh without retaining upstream content or credential material.
+   *
+   * @param pair Provider-slot resource identity.
+   * @param inspection Pair classification captured before the updater ran.
+   * @param state Owning pair handle state.
+   * @param errorClass Content-free upstream failure class.
+   */
+  private async recordRefreshFailure(
+    pair: ProviderSubscriptionAccountPair,
+    inspection: Extract<PairInspection, { kind: 'unbound' | 'live' }>,
+    state: PairHandleState,
+    errorClass: ProviderSubscriptionRefreshErrorClass
+  ): Promise<void> {
+    try {
+      console.warn(
+        JSON.stringify({
+          code: 'provider_subscription_refresh_failed',
+          message: 'Provider subscription credential refresh failed.',
+          subscriptionProviderId: pair.subscriptionProviderId,
+          accountSlotId: pair.accountSlotId,
+          errorClass,
+        })
+      );
+    } catch {
+      // Optional operational diagnostics never replace the original refresh failure.
+    }
+
+    try {
+      await this.recordLifecycleAudit(
+        'provider_subscription.credential.rotate',
+        pair,
+        'failed',
+        errorClass
+      );
+    } catch {
+      // Evidence publication is best-effort here; the exact updater rejection remains the inference failure authority.
+    }
+
+    if (
+      inspection.kind === 'live' &&
+      (errorClass === 'invalid_grant' || errorClass === 'reused' || errorClass === 'expired')
+    ) {
+      const version = `${inspection.entry.referenceId}:${inspection.entry.currentVersion}`;
+      const prior = state.observation?.version === version ? state.observation : undefined;
+      state.observation = {
+        ...(prior ?? {}),
+        version,
+        reloginRequired: prior?.reloginRequired ?? { observedAt: this.canonicalNow() },
+      };
+    }
+  }
+
+  /**
    * Emits one exact lifecycle success or fixed redacted failure event.
    *
    * @param action Exact lifecycle action.
@@ -2431,7 +2499,7 @@ export class ProviderSubscriptionAccountManager {
     action: LifecycleAuditAction,
     pair: ProviderSubscriptionAccountPair,
     outcome: 'succeeded' | 'failed',
-    errorCode: ProviderSubscriptionAccountErrorCode | null,
+    errorCode: ProviderSubscriptionAccountErrorCode | ProviderSubscriptionRefreshErrorClass | null,
     audit?: ProviderSubscriptionAuditContext
   ): Promise<void> {
     const timestamp = new Date(this.canonicalNow());
@@ -2985,6 +3053,68 @@ function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const allowedKeys = new Set(allowed);
   return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+/**
+ * Returns bounded lowercase diagnostic text from one error chain without exposing it.
+ *
+ * @param error Caught updater failure.
+ * @returns Internal classifier input with bounded cause depth.
+ */
+function refreshFailureText(error: unknown): string {
+  const parts: string[] = [];
+  let current = error;
+  for (let depth = 0; depth < 6 && current !== null && current !== undefined; depth += 1) {
+    if (typeof current !== 'object' && typeof current !== 'function') {
+      parts.push(String(current));
+      break;
+    }
+    const candidate = current as {
+      readonly cause?: unknown;
+      readonly code?: unknown;
+      readonly message?: unknown;
+      readonly name?: unknown;
+    };
+    if (typeof candidate.name === 'string') parts.push(candidate.name);
+    if (typeof candidate.message === 'string') parts.push(candidate.message);
+    if (typeof candidate.code === 'string') parts.push(candidate.code);
+    current = candidate.cause;
+  }
+  return parts.join('\n').toLowerCase();
+}
+
+/**
+ * Classifies one refresh rejection into a closed content-free cause family.
+ *
+ * @param error Caught updater failure.
+ * @returns Safe refresh failure class.
+ */
+function classifyRefreshFailure(error: unknown): ProviderSubscriptionRefreshErrorClass {
+  const text = refreshFailureText(error);
+  const status = /(?:\bhttp\s*(\d{3})\b|\((\d{3})\))/.exec(text)?.slice(1).find(Boolean);
+  const primaryError =
+    /"error"\s*:\s*"([a-z0-9_-]+)"/.exec(text)?.[1] ??
+    /\)\s*:\s*([a-z][a-z0-9_-]*)(?=\s|$)/.exec(text)?.[1];
+  if (status === '503' || primaryError === 'temporarily_unavailable') return 'network';
+  if (/(?:refresh token\s+(?:reused|reuse|already used)|token\s+reused)/.test(text)) {
+    return 'reused';
+  }
+  if (
+    /(?:expired_token|(?:refresh\s+|access\s+|oauth\s+)?token\s+(?:is\s+|has\s+)?expired)/.test(
+      text
+    )
+  ) {
+    return 'expired';
+  }
+  if (text.includes('invalid_grant')) return 'invalid_grant';
+  if (
+    /(?:fetch failed|network|timed out|timeout|timeouterror|deadline|temporarily_unavailable|http 503|socket|econnreset|econnrefused|enotfound|etimedout|eai_again|und_err)/.test(
+      text
+    )
+  ) {
+    return 'network';
+  }
+  return 'unknown';
 }
 
 /**
