@@ -220,12 +220,17 @@ for (const platform of ['linux/amd64', 'linux/arm64'])
       const log = join(directory, 'calls.log');
       const output = join(directory, 'observations');
       const extractor = join(directory, 'seed-extractor');
+      // Publication proof reads Cargo dep-info and validates its package-relative inputs in Git.
+      writeFileSync(`${extractor}.d`, 'nanohost: src/main.rs\n\nsrc/main.rs:\n');
       writeFileSync(
         join(directory, 'cargo'),
         `#!${process.execPath}
 const fs = require('node:fs');
+// Publication proof uses a restricted environment without CALLS.
+process.env.CALLS ??= ${JSON.stringify(log)};
 fs.appendFileSync(process.env.CALLS, JSON.stringify({args:['cargo', ...process.argv.slice(2)]})+'\\n');
-console.log(JSON.stringify({reason:'compiler-artifact', target:{name:'nanohost'}, profile:{test:true}, executable:${JSON.stringify(extractor)}}));
+console.log(JSON.stringify({reason:'compiler-artifact', manifest_path:require('node:path').join(process.cwd(),'apps/nanohost/Cargo.toml'), target:{name:'nanohost',kind:['bin']}, profile:{test:true}, executable:${JSON.stringify(extractor)}, filenames:[${JSON.stringify(extractor)}]}));
+console.log(JSON.stringify({reason:'build-finished', success:true}));
 `,
         { mode: 0o755 }
       );
