@@ -799,12 +799,36 @@ describe('real Task Mode worker L3 test policy', () => {
       reviewIds: ['review_acceptance'],
       workerImageRef,
     });
+    let preflightCompleted = false;
+    const requireCompletedPreflight =
+      (operation) =>
+      async (...args) => {
+        assert.equal(
+          preflightCompleted,
+          true,
+          'durable harness work started before Worker manifest preflight completed'
+        );
+        return operation(...args);
+      };
+    for (const operationName of ['runtime.file-create', 'runtime.reload']) {
+      admin.operations[operationName] = requireCompletedPreflight(admin.operations[operationName]);
+    }
+    for (const operationName of [
+      'workspace.create',
+      'thread.create',
+      'task.start',
+      'sync.review-decide',
+    ]) {
+      core.operations[operationName] = requireCompletedPreflight(core.operations[operationName]);
+    }
     try {
       const result = await runTaskModeRealWorkerTest({
         clients: { admin, core },
         configureRuntime: async (client) => {
           adminCalls.push('configureRuntime');
           assert.equal(client, admin);
+          await new Promise((resolve) => setImmediate(resolve));
+          preflightCompleted = true;
           return { providerId: 'openai_codex' };
         },
         env: enabledTaskModeEnv({
