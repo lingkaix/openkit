@@ -7,7 +7,7 @@ Package and app unit, contract, integration, and browser tests remain with their
 ## Layout
 
 - `check-commit-msg.test.mjs` checks the commit-message command and its metadata-only mode with in-memory fixtures.
-- `biome-check.test.mjs` checks the repository Biome guard, including zero-file refusal, colored checked-file summaries, streamed large output, live progress, signal termination, and pinned Biome scope behavior in a checkout beneath `temp` with checkout-local temporary evidence excluded.
+- `biome-check.test.mjs` checks the repository Biome guard, including zero-file refusal, colored checked-file summaries, per-channel complete lines, streamed large output, live progress, signal termination, and pinned Biome scope behavior in a checkout beneath `temp` with checkout-local temporary evidence excluded.
 - `ci-shard-run.test.mjs` executes the shard evidence wrapper in temporary workspaces. It checks unchanged uninstrumented execution, preserved command output and exit status, explicit incomplete/completed/failed states, an unwritable evidence directory, a short marker write, a 64-byte file write that still exits 153, fixed disk-log labels with an unreadable private name omitted, periodic byte and inode samples, and inherited worker settings.
 
 - `nanocore-storage-esm.test.mjs` imports each compiled storage library owner in a fresh Node process. Worker entrypoints are excluded because they require their native Worker launch context; no library import may depend on a prewarmed module graph.

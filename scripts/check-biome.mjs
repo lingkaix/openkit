@@ -5,28 +5,53 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const displayColor = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'gu');
-const summaryPattern = /(?:^|\r?\n)Checked (\d+) files? in\b/u;
-const summaryLimit = 4096;
+const summaryLine = /^Checked (\d+) files? in\b/u;
 
 function withoutDisplayColor(text) {
   displayColor.lastIndex = 0;
   return text.replace(displayColor, '');
 }
 
-/** Retain only the trailing text required to recognize Biome's checked-file summary. */
-function createSummary() {
-  let carry = '';
+/**
+ * Recognize a checked-file summary only as a complete line.
+ * The unfinished tail after the last newline is the only state kept between chunks.
+ */
+function createLineParser() {
+  let pending = [];
   let count = null;
   return {
     push(text) {
-      carry = `${carry}${text}`.slice(-summaryLimit);
-      const match = summaryPattern.exec(withoutDisplayColor(carry));
-      if (match) count = Number(match[1]);
+      let rest = text;
+      while (rest.length > 0) {
+        const newlineAt = rest.indexOf('\n');
+        if (newlineAt === -1) {
+          pending.push(rest);
+          return;
+        }
+        pending.push(rest.slice(0, newlineAt));
+        let line = pending.join('');
+        pending = [];
+        if (line.endsWith('\r')) line = line.slice(0, -1);
+        const match = summaryLine.exec(withoutDisplayColor(line));
+        if (match) count = Number(match[1]);
+        rest = rest.slice(newlineAt + 1);
+      }
     },
     get count() {
       return count;
     },
   };
+}
+
+/** A positive count on either channel proves that Biome checked a file. */
+function provedCount(parsers) {
+  let sawZero = false;
+  for (const parser of parsers) {
+    if (parser.count === null) continue;
+    if (parser.count > 0) return parser.count;
+    sawZero = true;
+  }
+  return sawZero ? 0 : null;
 }
 
 function pipeForward(stream, destination, summary) {
@@ -59,8 +84,8 @@ function writeFailure(destination, stderrOpen, message) {
 
 /**
  * Execute `biome check` with the supplied arguments. Child bytes are forwarded as they arrive.
- * A zero status changes only when the forwarded summary cannot prove that Biome checked a file.
- * A signal is returned so the parent can end by that same signal.
+ * Stdout and stderr each parse their own complete lines. A zero status changes only when neither
+ * channel can prove that Biome checked a file. A signal is returned so the parent can end by it.
  */
 export function runBiomeCheck(
   args,
@@ -77,10 +102,11 @@ export function runBiomeCheck(
       resolve({ status: 1, signal: null });
       return;
     }
-    const summary = createSummary();
+    const stdoutSummary = createLineParser();
+    const stderrSummary = createLineParser();
     let stderrOpen = true;
-    const stdoutDone = pipeForward(child.stdout, stdout, summary);
-    const stderrDone = pipeForward(child.stderr, stderr, summary);
+    const stdoutDone = pipeForward(child.stdout, stdout, stdoutSummary);
+    const stderrDone = pipeForward(child.stderr, stderr, stderrSummary);
     if (child.stderr) {
       child.stderr.on('data', (chunk) => {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -105,7 +131,8 @@ export function runBiomeCheck(
           resolve({ status, signal: null });
           return;
         }
-        if (summary.count === null) {
+        const count = provedCount([stdoutSummary, stderrSummary]);
+        if (count === null) {
           writeFailure(
             stderr,
             stderrOpen,
@@ -114,7 +141,7 @@ export function runBiomeCheck(
           resolve({ status: 1, signal: null });
           return;
         }
-        if (summary.count === 0) {
+        if (count === 0) {
           writeFailure(
             stderr,
             stderrOpen,

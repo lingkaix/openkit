@@ -328,3 +328,50 @@ test('a colored Biome summary counts checked files and keeps its original bytes'
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test('an unfinished stdout line does not hide a complete stderr summary', async () => {
+  const stderr = collect();
+  const result = await runBiomeCheck(['.'], {
+    spawn: () =>
+      fakeChild({
+        status: 0,
+        stdout: 'progress',
+        stderr: 'Checked 1 file in 2ms. No fixes applied.\n',
+      }),
+    stdout: collect().stream,
+    stderr: stderr.stream,
+  });
+  assert.equal(result.status, 0, stderr.text());
+  assert.equal(result.signal, null);
+  assert.doesNotMatch(stderr.text(), /refus/iu);
+});
+
+test('a summary split across the two channels is not a checked-file count', async () => {
+  const stderr = collect();
+  const result = await runBiomeCheck(['.'], {
+    spawn: () =>
+      fakeChild({
+        status: 0,
+        stdout: 'Checked ',
+        stderr: '1 file in 2ms.',
+      }),
+    stdout: collect().stream,
+    stderr: stderr.stream,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.match(stderr.text(), /did not report its checked-file count/u);
+});
+
+test('a complete summary stays valid after 5000 trailing characters in the same chunk', async () => {
+  const stderr = collect();
+  const summary = `Checked 1 file in 2ms. No fixes applied.\n${'x'.repeat(5000)}`;
+  const result = await runBiomeCheck(['.'], {
+    spawn: () => fakeChild({ status: 0, stderr: summary }),
+    stdout: collect().stream,
+    stderr: stderr.stream,
+  });
+  assert.equal(result.status, 0, stderr.text());
+  assert.equal(result.signal, null);
+  assert.equal(stderr.text(), summary);
+});
