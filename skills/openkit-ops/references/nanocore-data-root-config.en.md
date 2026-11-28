@@ -235,7 +235,53 @@ Each Agent Manifest declares one reusable Worker Agent and its Harness configura
 
 `runtime.image` is either a published image reference or a bounded build declaration. `runtime.binaries` declares available executable paths. `models.preferredLogicalModelId` is the Agent default, while `allowedLogicalModelIds` is either a non-empty list or `all`. Profiles may refine instructions, model preference and admission, Skills, and MCP entries. Sandbox configuration declares backend requirements, credential declarations, filesystem grants, and network grants.
 
+### Verify An npm Grant Update
+
 An authorized administrator can opt an existing npm grant into scoped package reads by adding `"allowEncodedSlash": true` to its REST, read-only access grant without rules, preserving the host, port and binary list, then validating and reloading the manifest and using a newly materialized Sandbox; omission stays strict and template upgrades never edit existing manifests.
+
+Use this verification for that single-grant edit. It does not create a parallel grant, rewrite unrelated configuration, or prove that an existing Sandbox changed.
+
+1. Read the selected Agent file through `runtime.file-read`. For the shipped Codex template, the file id is `agents/codex.agent.jsonc`.
+2. Edit only the existing `npm-registry-read` object. Add `"allowEncodedSlash": true`, preserve every other field, and keep the object free of `rules`.
+3. Compare the complete edited file with the readback. Stop when anything outside that one object changed.
+4. Validate the complete edited file through `runtime.validate`. Stop when validation reports an error.
+5. Save the file through `runtime.file-update` with `update.expectedRevision = read.file.revision`. Reload with `runtime.reload` in `safe` mode.
+6. Require `valid: true` from validation and no `rejected` entry from reload. The `agents` change may be `deferred` because it applies to later composed setups and Turns.
+7. Read the file again. Confirm that the write response `file.revision` differs from the first `read.file.revision` and equals the second `read.file.revision`. Confirm that `npm-registry-read` has `"allowEncodedSlash": true`, names only `registry.npmjs.org` port `443`, keeps `access: "read-only"` and the unchanged binary list, has no `rules`, and is the only changed network grant.
+8. Start a bounded Task in a fresh Thread after reload and select the edited Agent. A network-envelope change requires Sandbox replacement, so a pre-reload Sandbox is not evidence.
+
+The verification calls have these input shapes:
+
+```bash
+printf '%s' '{"id":"agents/codex.agent.jsonc"}' | openkit ops call runtime.file-read --input -
+printf '%s' '{"dryRun":false,"mode":"safe"}' | openkit ops call runtime.reload --input -
+printf '%s' '{"workspaceId":"<workspace-id>"}' | openkit ops call evidence.runtime-list --input -
+```
+
+For the bounded Task, ask the worker to create no repository change. First check the effective registry for the scope and create fresh directories:
+
+```bash
+/usr/local/bin/npm config get @biomejs:registry --registry=https://registry.npmjs.org
+/usr/local/bin/npm config get registry --registry=https://registry.npmjs.org
+check_root=$(mktemp -d /tmp/openkit-bootstrap/npm-grant-check.XXXXXX)
+cache_dir="$check_root/cache"
+download_dir="$check_root/download"
+mkdir -p "$cache_dir" "$download_dir"
+```
+
+The effective scope registry is the first value when it is a URL, otherwise the second value. It must use `https` and host `registry.npmjs.org`; stop when it does not. Then run the metadata check:
+
+```bash
+/usr/local/bin/npm view @biomejs/biome@2.6.6 dist.tarball dist.integrity --registry=https://registry.npmjs.org --cache="$cache_dir" --loglevel=http
+```
+
+Count the metadata step only when its current-run HTTP log shows a successful `GET` for the scoped package metadata on host `registry.npmjs.org`. Before `npm pack`, check the `dist.tarball` value returned by the metadata step. Its origin must be `https://registry.npmjs.org:443`: HTTPS, host `registry.npmjs.org`, and effective port `443`. If the origin differs, stop and do not count the archive step. When both checks pass, run the archive check:
+
+```bash
+/usr/local/bin/npm pack @biomejs/biome@2.6.6 --registry=https://registry.npmjs.org --ignore-scripts --cache="$cache_dir" --pack-destination="$download_dir" --loglevel=http
+```
+
+Count the archive step only when its current-run HTTP log shows a successful `GET` for the package archive on host `registry.npmjs.org` and the command writes one tarball under the fresh download directory. For a same-origin start URL, this success log proves only the final response host, not the redirect path. To prove single-grant sufficiency, require either an effective policy that allows only the target endpoint or evidence for every hop. Every hop must use `https://registry.npmjs.org:443`. Count the whole npm proof as passed only when both the scoped metadata and the archive were read through that named endpoint in this run. A tarball URL, an exit code, or a `policyDigest` alone does not prove the endpoint. `allowEncodedSlash` widens the path syntax the endpoint accepts by admitting encoded slash bytes. It grants no additional host, port, executable scope, HTTP method, credential, or path-rule authority; host, port, binary, method, and path rules keep their old scope (`docs/specs/20260703-agent_manifest_aep_resolution.md:153-155`). Unchanged file readback is therefore the narrowness proof, and scoped success in the new Sandbox is the effective-policy proof only when the endpoint evidence above exists. After the terminal Task, match its `turnId` in `evidence.runtime-list`; when a transcript-collection record exists, its non-null `policyDigest` identifies the admitted package policy. The digest is identity evidence, not a human-readable grant or endpoint proof. Treat a sandbox policy denial as a policy result, not as an npm registry or Provider failure. Do not probe write denial against the public registry.
 
 A direct credential declaration with `vaultGrantId` is Server-specific and therefore must reference a Server-scoped grant. A reusable manifest should instead declare `requirementId`; each Workspace binds that requirement to its own Workspace-scoped VaultGrant.
 

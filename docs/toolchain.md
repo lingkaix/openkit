@@ -80,6 +80,21 @@ mise installs and pins tools. It is not the command surface, and no gate invokes
 - mise inside a sandbox serves a different question from mise on a developer machine. On a developer machine it provisions this repository's pinned toolchain. Inside a sandbox it provisions the toolchain a task repository declares for itself, as a workspace-local effect with no network authority of its own. Neither use makes mise a command surface, and neither is authority to add a repository-level tool without the present-need rule below.
 - A tool is pinned in `.mise.toml` only when something in the repository uses it. An unused pin costs install time and implies support that does not exist.
 
+### Worker Sandbox Bootstrap Network Authority
+
+`bash scripts/repo-init.sh` runs `mise install` before `pnpm install`. In a Worker Agent Sandbox, network egress is default-deny. The built-in npm grant covers `registry.npmjs.org:443` only for the declared Node package binary paths; it does not authorize mise tool discovery or download hosts. A sandbox policy denial before `pnpm install` is missing network authority, not an npm registry or Provider failure.
+
+Use image supply first. A supported worker image carries repository-pinned Node.js and pnpm supply. Verify `node -v` and `pnpm -v` against `.mise.toml` before requesting authority. Do not grant Node.js or pnpm download hosts merely because the developer-machine script would provision them.
+
+For a clean supported Sandbox with matching image supply, use this bounded bootstrap instead of `repo-init.sh`:
+
+1. Run `pnpm install --frozen-lockfile` with the image-supplied pinned pnpm. The existing npm grant covers the registry download through `/usr/local/bin/pnpm` when that path is declared.
+2. Run `pnpm run hooks:install` when the checkout is a Git clone and the workflow uses hooks.
+3. Verify Biome with `pnpm exec biome --version`. The root development dependency carries the same pin as `.mise.toml`, and package scripts resolve it without a separate mise download.
+4. Keep additional mise grants absent. The existing npm grant is the complete bootstrap network grant set on this route. Use a reviewed derived image when a workflow requires a bare mise-managed Biome without tool-download authority.
+
+The unmodified script has a larger authority footprint because it provisions every pin through mise before dependencies exist. With the current backends, tool discovery can contact `mise-versions.jdx.dev:443` and `api.github.com:443`. Node.js distributions use `nodejs.org:443`, while pnpm and Biome release archives use `github.com:443`. A release redirect can name a separate asset host; that host needs its own exact administrator-reviewed grant. Those grants must scope to `/usr/local/bin/mise`, and that binary first must be declared in `runtime.binaries`. A mise-installed pnpm path is not the `/usr/local/bin/pnpm` path in the shipped npm grant, so full mise provisioning also changes the binary scope needed by dependency installation. Do not use wildcard hosts or broaden the npm grant to every executable.
+
 ### Test Execution Environment
 
 The test-execution decision is:
