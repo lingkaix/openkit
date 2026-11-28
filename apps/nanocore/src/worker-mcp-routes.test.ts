@@ -14,7 +14,10 @@ import {
 } from './storage/control-store-worker-protocol.js';
 import { importWorkspaceVaultGrants } from './storage/test-support/vault-retained-fixtures.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
-import { schedulerFixtureInput } from './test-support/scheduler-admissions.js';
+import {
+  createTestQueueEntry,
+  schedulerFixtureInput,
+} from './test-support/scheduler-admissions.js';
 
 // openkit-test-platform: posix
 
@@ -139,6 +142,7 @@ import {
   readRetainedMcpToolSchemaSnapshot,
   recordMcpToolSchemaSnapshot,
 } from './runtime/mcp-tool-schema-snapshots.js';
+import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-records.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -4977,13 +4981,79 @@ describe('worker MCP routes', () => {
           scope: 'server-admin',
           workspaceIds: [],
         });
-        const next = await task(fresh.secret, '0190f4c8-0000-7000-8000-000000000742');
-        expect(next.status).toBe(202);
-        const secondTurn = StartTaskModeResponseSchema.parse(await next.json()).turn;
+        const secondRequestId = '0190f4c8-0000-7000-8000-000000000742';
+        const secondTriggerActor = { kind: 'user' as const, id: user.id };
+        const secondInput = 'Call MCP as admin';
+        const secondTurnId = deriveEntityId('tu', [
+          JSON.stringify(secondTriggerActor),
+          workspaceId,
+          threadId,
+          secondRequestId,
+          null,
+        ]);
+        const secondEntry = await createTestQueueEntry(coreDb, {
+          backendId: 'nanohost',
+          credentialRef: { kind: 'token', id: fresh.tokenId },
+          queueEntryId: `queue_${secondTurnId}`,
+          requestId: secondRequestId,
+          requestedAgentId: setup.manifest.id,
+          serverAdminTokenId: fresh.tokenId,
+          text: secondInput,
+          threadId,
+          triggerActor: secondTriggerActor,
+          turnId: secondTurnId,
+          workspaceCwd: null,
+          workspaceId,
+          workspaceRoots: [],
+        });
+        const { turn: secondTurn } = await createNativeCommandTurn(
+          store,
+          { requestId: secondRequestId, agentId: setup.manifest.id },
+          workspaceId,
+          threadId,
+          secondInput,
+          secondTriggerActor,
+          runtimeConfig.version,
+          {
+            agentId: setup.manifest.id,
+            agentSessionId: environmentPackage.scope.agentSessionId,
+            executorKind: 'worker',
+            status: 'running',
+            turnId: secondTurnId,
+          }
+        );
         expect(secondTurn.id).not.toBe(turn.id);
-        const second = native.executionFor(secondTurn.id);
-        await second.launched.promise;
-        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        expect(secondEntry.turnId).toBe(secondTurn.id);
+        const secondEnvironmentPackage = await resolveAgentEnvironmentPackage({
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          agentSetup: setup,
+          backend: { kind: 'openshell' },
+          captureCoverage: { scope: 'server', value: 'off' },
+          createdAt: new Date().toISOString(),
+          requestId: secondRequestId,
+          triggerActor: secondTriggerActor,
+          turn: secondTurn,
+          workspaceCwd: null,
+          workspaceMcpServerCatalog: catalog,
+          workspaceRoots: [],
+        });
+        recordMcpWorkerLineage(coreDb, secondEnvironmentPackage, fresh.tokenId);
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          environmentPackage: secondEnvironmentPackage,
+          createdAt: secondEnvironmentPackage.createdAt,
+        });
+        const secondRegistration = native.workerControlGateway.registerSession(
+          secondEnvironmentPackage,
+          { sandboxBindingRef: `binding_${secondTurn.id}` }
+        );
+        bindNanoHostAttemptRouteTokenHashes(coreDb, {
+          attemptId: testEntityId('attempt', `lease_${secondTurn.id}`),
+          sandboxBindingRef: `binding_${secondTurn.id}`,
+          workerCapabilityTokenHash: secondRegistration.workerCapabilityTokenHash,
+          workerControlTokenHash: secondRegistration.workerControlTokenHash,
+          workerInferenceTokenHash: secondRegistration.workerInferenceTokenHash,
+        });
+        native.executor.capabilityToken = secondRegistration.workerCapabilityToken;
         const secondPackage = native.workerControlGateway.authenticatePackageToken(
           `Bearer ${native.executor.capabilityToken}`,
           { tokenFamily: 'capability' }
@@ -5021,9 +5091,11 @@ describe('worker MCP routes', () => {
             .run(attempt!.inputRef, attempt!.attemptId);
         }
       } finally {
+        const preparations = [...getSchedulerPreparationClaims(coreDb).values()];
         await Promise.allSettled([client.close(), generativeClient.close(), lineageClient.close()]);
         for (const turn of store.listThreadTurns(workspaceId, threadId))
           native.executionFor(turn.id).completion.resolve();
+        await Promise.allSettled(preparations);
         await Promise.allSettled(
           taskAdmissions.mock.results
             .filter((result) => result.type === 'return')
