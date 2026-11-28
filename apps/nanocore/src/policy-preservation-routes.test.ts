@@ -2,6 +2,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { openCommunicationFixture } from './storage/communication-worker.test-support.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -87,8 +88,10 @@ it('preserves Discord signature admission through the complete server App withou
     const refused = await request(value, headers);
     expect(refused.status, name).toBe(401);
     expect(refused.headers.get('cache-control'), name).toBe('no-store');
-    expect(await refused.json(), name).toMatchObject({
-      error: { code: 'invalid_discord_signature' },
+    expect(ApiErrorSchema.parse(await refused.json()), name).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'invalid_discord_signature',
+      message: 'Discord input was refused.',
     });
   }
 

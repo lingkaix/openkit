@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from './auth/middleware.js';
@@ -70,6 +71,19 @@ describe('signed Discord HTTP entry', () => {
       headers: signature,
     });
     expect(tooLarge.status).toBe(413);
+    const tooLargeText = await tooLarge.text();
+    const tooLargeBody: unknown = (() => {
+      try {
+        return JSON.parse(tooLargeText) as unknown;
+      } catch {
+        return tooLargeText;
+      }
+    })();
+    expect(ApiErrorSchema.parse(tooLargeBody)).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'payload_too_large',
+      message: 'Discord input exceeds the size limit.',
+    });
     expect(f.handle).not.toHaveBeenCalled();
   });
 
@@ -129,5 +143,63 @@ describe('signed Discord HTTP entry', () => {
     finish({ type: 1 });
     await vi.runAllTimersAsync();
     expect(f.recoverAttention).toHaveBeenCalledOnce();
+  });
+
+  it('returns the protocol ApiError record for interaction failures', async () => {
+    const unavailable = new Hono<{ Variables: AuthVariables }>();
+    registerDiscordInteractionRoutes({
+      app: unavailable,
+      config,
+      services: () => undefined,
+    });
+    const missing = await unavailable.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      body,
+      headers: headers(),
+    });
+    expect(missing.status).toBe(503);
+    expect(missing.headers.get('cache-control')).toBe('no-store');
+    const missingBody: unknown = await missing.json();
+    expect(missingBody).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'channel_unavailable',
+      message: 'Discord is unavailable.',
+    });
+    expect(ApiErrorSchema.parse(missingBody)).toEqual(missingBody);
+
+    const refused = fixture();
+    const tampered = await refused.app.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      body: `${body} `,
+      headers: headers(),
+    });
+    expect(tampered.status).toBe(401);
+    expect(tampered.headers.get('cache-control')).toBe('no-store');
+    const tamperedBody: unknown = await tampered.json();
+    expect(tamperedBody).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'invalid_discord_signature',
+      message: 'Discord input was refused.',
+    });
+    expect(ApiErrorSchema.parse(tamperedBody)).toEqual(tamperedBody);
+    expect(refused.handle).not.toHaveBeenCalled();
+
+    const failed = fixture(async () => {
+      throw new Error('raw discord failure');
+    });
+    const processed = await failed.app.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      body,
+      headers: headers(),
+    });
+    expect(processed.status).toBe(503);
+    expect(processed.headers.get('cache-control')).toBe('no-store');
+    const processedBody: unknown = await processed.json();
+    expect(processedBody).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'discord_input_failed',
+      message: 'Discord input could not be processed.',
+    });
+    expect(ApiErrorSchema.parse(processedBody)).toEqual(processedBody);
   });
 });

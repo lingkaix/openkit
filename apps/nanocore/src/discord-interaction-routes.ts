@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { apiErrorPayload } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import type { ChannelServices } from './channel-services.js';
 import { discordPrivateReply, verifyDiscordInteraction } from './channels/discord-interaction.js';
@@ -15,13 +16,28 @@ export function registerDiscordInteractionRoutes(input: {
 }): void {
   input.app.post(
     '/api/channels/discord/interactions',
-    bodyLimit({ maxSize: 65_536 }),
+    bodyLimit({
+      maxSize: 65_536,
+      onError: (c) => {
+        c.header('Cache-Control', 'no-store');
+        return c.json(
+          apiErrorPayload({
+            code: 'payload_too_large',
+            message: 'Discord input exceeds the size limit.',
+          }),
+          413
+        );
+      },
+    }),
     async (c) => {
       c.header('Cache-Control', 'no-store');
       const discord = input.services()?.discord;
       if (!input.config || !discord)
         return c.json(
-          { error: { code: 'channel_unavailable', message: 'Discord is unavailable.' } },
+          apiErrorPayload({
+            code: 'channel_unavailable',
+            message: 'Discord is unavailable.',
+          }),
           503
         );
       // Let the body-limit owner handle streamed overflow before domain-error translation.
@@ -67,16 +83,14 @@ export function registerDiscordInteractionRoutes(input: {
       } catch (error) {
         if (error instanceof OperationError)
           return c.json(
-            { error: { code: error.code, message: 'Discord input was refused.' } },
+            apiErrorPayload({ code: error.code, message: 'Discord input was refused.' }),
             error.status as 400 | 401 | 403 | 409 | 503
           );
         return c.json(
-          {
-            error: {
-              code: 'discord_input_failed',
-              message: 'Discord input could not be processed.',
-            },
-          },
+          apiErrorPayload({
+            code: 'discord_input_failed',
+            message: 'Discord input could not be processed.',
+          }),
           503
         );
       }
