@@ -108,6 +108,11 @@ function workerSeedRepository() {
   );
   writeFileSync(path.join(r.root, 'Cargo.toml'), '[workspace]\nexclude = ["apps/nanohost"]\n');
   mkdirSync(path.join(r.root, 'apps/nanohost/src'), { recursive: true });
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/Cargo.toml'),
+    '[package]\nname = "nanohost"\nversion = "0.1.0"\nedition = "2024"\n'
+  );
+  writeFileSync(path.join(r.root, 'apps/nanohost/src/main.rs'), 'fn main() {}\n');
   mkdirSync(path.join(r.root, 'fixtures'), { recursive: true });
   return r;
 }
@@ -172,8 +177,16 @@ test('publication proof binds the production Worker seed checker and its native 
   ].map((file) => `apps/nanohost/${file}`);
   const compiled = 'apps/nanohost/src/telemetry.rs';
   writeFileSync(path.join(r.root, 'Cargo.toml'), '[workspace]\nexclude = ["apps/nanohost"]\n');
-  for (const file of native) writeFileSync(path.join(r.root, file), '# fixture native input\n');
-  writeFileSync(path.join(r.root, compiled), '# fixture compiled module\n');
+  for (const file of native) writeFileSync(path.join(r.root, file), '// fixture native input\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/Cargo.toml'),
+    '[package]\nname = "nanohost"\nversion = "0.1.0"\nedition = "2024"\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod filesystem_capacity;\nmod persistent_volume;\nmod telemetry;\nfn main() {}\n'
+  );
+  writeFileSync(path.join(r.root, compiled), '// fixture compiled module\n');
   r.git('add', '.');
   r.git('commit', '-m', 'add production seed gate');
   const proved = r.git('rev-parse', 'HEAD');
@@ -181,14 +194,19 @@ test('publication proof binds the production Worker seed checker and its native 
   assert.ok(before.files['Cargo.toml']);
   for (const file of native) {
     assert.ok(before.files[file], file);
-    writeFileSync(path.join(r.root, file), '# changed native input\n');
+    writeFileSync(
+      path.join(r.root, file),
+      file === 'apps/nanohost/Cargo.toml'
+        ? '[package]\nname = "nanohost"\nversion = "0.1.0"\nedition = "2024"\n# changed\n'
+        : '// changed native input\n'
+    );
     r.git('add', file);
     r.git('commit', '-m', 'change seed gate native input');
     assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
   }
   const compiledBase = r.git('rev-parse', 'HEAD');
   const compiledProof = publicationInputsAt(r.root, compiledBase);
-  writeFileSync(path.join(r.root, compiled), '# changed compiled module\n');
+  writeFileSync(path.join(r.root, compiled), '// changed compiled module\n');
   r.git('add', compiled);
   r.git('commit', '-m', 'change compiled module outside the old seed list');
   const compiledHead = r.git('rev-parse', 'HEAD');
@@ -204,6 +222,10 @@ test('publication proof binds the production Worker seed checker and its native 
     path.join(r.root, 'apps/nanohost/src/embed.rs'),
     'const MANIFEST: &str = include_str!("../deploy/host-manifest.json");\n' +
       'const REVISION: &str = include_str!("../../nanocore/src/auth/nanohost-transport-revision.json");\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod embed;\nmod filesystem_capacity;\nmod persistent_volume;\nmod telemetry;\nfn main() {}\n'
   );
   r.git('add', '.');
   r.git('commit', '-m', 'add embedded compile inputs');
@@ -250,15 +272,16 @@ test('publication proof binds the production Worker seed checker and its native 
 
 test('spaced include_str target changes the publication digest', () => {
   const r = workerSeedRepository();
-  const target = 'fixtures/spaced-include.txt';
+  const target = 'fixtures/spaced include.txt';
   writeFileSync(path.join(r.root, target), 'original\n');
   writeFileSync(
     path.join(r.root, 'apps/nanohost/src/spaced.rs'),
     'const VALUE: &str = include_str ! // spaced\n' +
       '(\n' +
-      '    "../../../fixtures/spaced-include.txt"\n' +
+      '    "../../../fixtures/spaced include.txt"\n' +
       ');\n'
   );
+  writeFileSync(path.join(r.root, 'apps/nanohost/src/main.rs'), 'mod spaced;\nfn main() {}\n');
   r.git('add', '.');
   r.git('commit', '-m', 'add spaced include');
   const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
@@ -278,6 +301,7 @@ test('spaced include_bytes with a missing target refuses publication proof', () 
       '    "../../../fixtures/missing-include.txt"\n' +
       ');\n'
   );
+  writeFileSync(path.join(r.root, 'apps/nanohost/src/main.rs'), 'mod spaced;\nfn main() {}\n');
   r.git('add', '.');
   r.git('commit', '-m', 'add spaced include with a missing target');
   assert.throws(
@@ -294,6 +318,10 @@ test('UTF-8 include target changes the publication digest under quoted Git paths
   writeFileSync(
     path.join(r.root, 'apps/nanohost/src/utf8_include.rs'),
     'const VALUE: &str = include_str!("../../../fixtures/café.txt");\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod utf8_include;\nfn main() {}\n'
   );
   r.git('add', '.');
   r.git('commit', '-m', 'add UTF-8 include target');
@@ -318,6 +346,7 @@ test('absolute include literal refuses before binding its tracked namesake', () 
     path.join(r.root, source),
     'const BYTES: &[u8] = include_bytes!("/tmp/namesake.bin");\n'
   );
+  writeFileSync(path.join(r.root, 'apps/nanohost/src/main.rs'), 'mod absolute;\nfn main() {}\n');
   r.git('add', '.');
   r.git('commit', '-m', 'add absolute include beside a tracked namesake');
   assert.throws(
@@ -326,13 +355,23 @@ test('absolute include literal refuses before binding its tracked namesake', () 
   );
 });
 
-function changedIncludeDigest(r, source, body, target) {
-  writeFileSync(path.join(r.root, target), 'original\n');
+function changedIncludeDigest(
+  r,
+  source,
+  body,
+  target,
+  { beforeText = 'original\n', afterText = 'changed\n' } = {}
+) {
+  writeFileSync(path.join(r.root, target), beforeText);
   writeFileSync(path.join(r.root, source), body);
+  if (source !== 'apps/nanohost/src/main.rs') {
+    const module = path.posix.basename(source, '.rs');
+    writeFileSync(path.join(r.root, 'apps/nanohost/src/main.rs'), `mod ${module};\nfn main() {}\n`);
+  }
   r.git('add', '.');
   r.git('commit', '-m', 'add include form');
   const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
-  writeFileSync(path.join(r.root, target), 'changed\n');
+  writeFileSync(path.join(r.root, target), afterText);
   r.git('add', target);
   r.git('commit', '-m', 'change include target');
   const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
@@ -369,7 +408,11 @@ test('include! source changes the publication digest', () => {
     r,
     'apps/nanohost/src/source_include.rs',
     'include!("../../../fixtures/included-source.rs");\n',
-    'fixtures/included-source.rs'
+    'fixtures/included-source.rs',
+    {
+      beforeText: 'pub const INCLUDED: &str = "one";\n',
+      afterText: 'pub const INCLUDED: &str = "two";\n',
+    }
   );
 });
 
@@ -381,6 +424,10 @@ test('bracket include delimiter changes the publication digest', () => {
     path.join(r.root, 'apps/nanohost/src/bracket_include.rs'),
     'const BRACKET: &[u8] = include_bytes ! [ "../../../fixtures/bracket-include.txt" ];\n' +
       'const BRACE: &[u8] = include_bytes ! { "../../../fixtures/brace-include.txt" };\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod bracket_include;\nfn main() {}\n'
   );
   r.git('add', '.');
   r.git('commit', '-m', 'add bracket and brace includes');
@@ -397,17 +444,13 @@ test('bracket include delimiter changes the publication digest', () => {
   );
 });
 
-test('concat! include argument refuses publication proof', () => {
+test('compiler-observed concat include target changes the publication digest', () => {
   const r = workerSeedRepository();
-  writeFileSync(
-    path.join(r.root, 'apps/nanohost/src/concat_include.rs'),
-    'include!(concat!("../../../fixtures/", "piece.rs"));\n'
-  );
-  r.git('add', '.');
-  r.git('commit', '-m', 'add concat include');
-  assert.throws(
-    () => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')),
-    /compiled include is not a plain string literal: apps\/nanohost\/src\/concat_include.rs/
+  changedIncludeDigest(
+    r,
+    'apps/nanohost/src/concat_include.rs',
+    'const VALUE: &str = include_str!(concat!("../../../fixtures/con", "cat-include.txt"));\n',
+    'fixtures/concat-include.txt'
   );
 });
 
@@ -419,71 +462,73 @@ function refusedInclude(r, source, body, pattern, extra) {
   assert.throws(() => publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')), pattern);
 }
 
-test('escaped include path refuses publication proof', () => {
+test('compiler-observed escaped include target changes the publication digest', () => {
   const r = workerSeedRepository();
-  // Outside apps/nanohost: a backslash name under that tree is C-quoted by ls-tree
-  // and the listing itself refuses. The old scanner joins this spelling and binds it.
-  const namesake = path.posix.join('fixtures', '\\x61.txt');
-  refusedInclude(
+  changedIncludeDigest(
     r,
     'apps/nanohost/src/escaped.rs',
     'const VALUE: &str = include_str!("../../../fixtures/\\x61.txt");\n',
-    /compiled include escape is outside the supported subset/,
-    (repo) => {
-      mkdirSync(path.join(repo.root, 'fixtures'), { recursive: true });
-      writeFileSync(path.join(repo.root, namesake), 'tracked escape namesake\n');
-    }
+    'fixtures/a.txt'
   );
 });
 
-test('non-rust include! target refuses publication proof', () => {
+test('compiler-observed non-rust include target changes the publication digest', () => {
   const r = workerSeedRepository();
-  refusedInclude(
-    r,
-    'apps/nanohost/src/fragment_include.rs',
-    'include!("../../../fixtures/fragment.inc");\n',
-    /compiled include source must be a Rust file/,
-    (repo) => {
-      writeFileSync(
-        path.join(repo.root, 'fixtures/fragment.inc'),
-        'const NESTED: &str = include_str!("nested.txt");\n'
-      );
-      writeFileSync(path.join(repo.root, 'fixtures/nested.txt'), 'nested\n');
-    }
+  const target = 'fixtures/fragment.inc';
+  writeFileSync(path.join(r.root, target), 'const FRAGMENT: &str = "one";\n');
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/fragment_include.rs'),
+    'include!("../../../fixtures/fragment.inc");\n'
   );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod fragment_include;\nfn main() {}\n'
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'add non-rust include target');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  writeFileSync(path.join(r.root, target), 'const FRAGMENT: &str = "two";\n');
+  r.git('add', target);
+  r.git('commit', '-m', 'change non-rust include target');
+  const after = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.notEqual(after.sha256, before.sha256);
+  assert.equal(after.files[target], r.git('rev-parse', `HEAD:${target}`));
 });
 
-test('include import and macro indirection refuse publication proof', () => {
+test('compiler-observed include aliasing and macro expansion bind their targets', () => {
   const alias = workerSeedRepository();
-  refusedInclude(
+  changedIncludeDigest(
     alias,
     'apps/nanohost/src/alias.rs',
     'use std::include_str as snapshot;\n' +
       'const VALUE: &str = snapshot!("../../../fixtures/alias.txt");\n',
-    /compiled include indirection is outside the supported subset/,
-    (repo) => writeFileSync(path.join(repo.root, 'fixtures/alias.txt'), 'alias\n')
+    'fixtures/alias.txt'
   );
   const wrapped = workerSeedRepository();
-  refusedInclude(
+  changedIncludeDigest(
     wrapped,
     'apps/nanohost/src/wrapper.rs',
     'macro_rules! read_snapshot {\n' +
-      '    ($reader:ident, $source:literal) => {\n' +
-      '        $reader!($source)\n' +
+      '    ($source:literal) => {\n' +
+      '        const WRAPPED: &str = include_str!($source);\n' +
       '    };\n' +
-      '}\n',
-    /compiled include indirection is outside the supported subset/
+      '}\n' +
+      'read_snapshot!("../../../fixtures/wrapped-include.txt");\n',
+    'fixtures/wrapped-include.txt'
   );
 });
 
-test('cross-tree module path refuses publication proof', () => {
+test('compiler-observed cross-tree module path changes the publication digest', () => {
   const r = workerSeedRepository();
-  refusedInclude(
+  changedIncludeDigest(
     r,
     'apps/nanohost/src/pathed.rs',
     '#[path = "../../../fixtures/outside_module.rs"]\nmod outside;\n',
-    /compiled module path leaves NanoHost/,
-    (repo) => writeFileSync(path.join(repo.root, 'fixtures/outside_module.rs'), 'fn outside() {}\n')
+    'fixtures/outside_module.rs',
+    {
+      beforeText: 'pub fn outside() {}\n',
+      afterText: 'pub fn outside() { println!("changed"); }\n',
+    }
   );
 });
 
@@ -553,6 +598,10 @@ test('trailing-slash include target refuses publication proof', () => {
   writeFileSync(
     path.join(r.root, 'apps/nanohost/src/trailing_include.rs'),
     'const VALUE: &str = include_str!("../../../fixtures/value.txt/");\n'
+  );
+  writeFileSync(
+    path.join(r.root, 'apps/nanohost/src/main.rs'),
+    'mod trailing_include;\nfn main() {}\n'
   );
   r.git('add', '.');
   r.git('commit', '-m', 'add trailing-slash include');

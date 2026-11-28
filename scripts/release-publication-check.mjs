@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 /** Offline pre-tag admission over retained, independently collected publication observations. */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -71,114 +72,10 @@ export function grantCoversPrerelease(tag, firstTag) {
 function requireFact(holds, name) {
   if (!holds) throw Error(`Release Management: publication refused: ${name}`);
 }
-const rustWhitespace = new Set([
-  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0x200e, 0x200f, 0x2028, 0x2029,
-]);
-const includeRefusal = 'compiled include is not a plain string literal';
-const includeMacros = new Set(['include', 'include_str', 'include_bytes']);
-const includeClosers = { '(': ')', '[': ']', '{': '}' };
-/** Rust Pattern_White_Space and comments, including nested block comments. */
-function skipRustTrivia(source, index) {
-  let i = index;
-  while (i < source.length) {
-    if (rustWhitespace.has(source.charCodeAt(i))) {
-      i += 1;
-      continue;
-    }
-    if (source.startsWith('//', i)) {
-      i += 2;
-      while (i < source.length && source.charCodeAt(i) !== 0x0a) i += 1;
-      continue;
-    }
-    if (source.startsWith('/*', i)) {
-      const end = skipRustBlockComment(source, i);
-      if (end < 0) return -1;
-      i = end;
-      continue;
-    }
-    break;
-  }
-  return i;
-}
-function skipRustBlockComment(source, index) {
-  let depth = 1;
-  let i = index + 2;
-  while (i < source.length && depth > 0) {
-    if (source.startsWith('/*', i)) {
-      depth += 1;
-      i += 2;
-      continue;
-    }
-    if (source.startsWith('*/', i)) {
-      depth -= 1;
-      i += 2;
-      continue;
-    }
-    i += 1;
-  }
-  return depth === 0 ? i : -1;
-}
-/**
- * Skip one Rust string starting at index.
- * -1 is not a string. -2 is an unterminated string.
- */
-function skipRustString(source, index) {
-  const match = /^(br|cr|b|c|r)?(#*)"/.exec(source.slice(index));
-  if (!match) return -1;
-  const prefix = match[1] ?? '';
-  const hashes = match[2] ?? '';
-  let j = index + match[0].length;
-  const raw = prefix.includes('r') || hashes.length > 0;
-  if (!raw) {
-    while (j < source.length) {
-      if (source[j] === '\\') {
-        if (j + 1 >= source.length) return -2;
-        j += 2;
-        continue;
-      }
-      if (source[j] === '"') return j + 1;
-      j += 1;
-    }
-    return -2;
-  }
-  const end = source.indexOf(`"${hashes}`, j);
-  return end < 0 ? -2 : end + hashes.length + 1;
-}
-function skipRustChar(source, index) {
-  if (source[index] !== "'") return -1;
-  let j = index + 1;
-  if (j >= source.length) return -1;
-  if (source[j] === '\\') {
-    if (source[j + 1] === 'u' && source[j + 2] === '{') {
-      const close = source.indexOf('}', j + 3);
-      if (close < 0) return -1;
-      j = close + 1;
-    } else if (j + 1 < source.length) j += 2;
-    else return -1;
-  } else if (source[j] !== "'") j += 1;
-  else return -1;
-  return source[j] === "'" ? j + 1 : -1;
-}
-function plainRustString(source, index) {
-  const match = /^"((?:\\.|[^"\\\n])*)"/.exec(source.slice(index));
-  if (!match) return null;
-  return { body: match[1], end: index + match[0].length };
-}
-/** An identifier, including a raw `r#` prefix. Raw strings are not identifiers. */
-function readRustIdent(source, index) {
-  let i = index;
-  if (source.startsWith('r#', i) && /[A-Za-z_]/.test(source[i + 2] ?? '')) i += 2;
-  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i));
-  if (!match) return null;
-  return { name: match[0], end: i + match[0].length };
-}
-const includeEscape = 'compiled include escape is outside the supported subset';
-const includeSource = 'compiled include source must be a Rust file';
-const includeIndirection = 'compiled include indirection is outside the supported subset';
-const modulePathLeaves = 'compiled module path leaves NanoHost';
 const buildScript = 'NanoHost build script is outside the supported subset';
 const pathSymlink = 'compiled path symlink is outside the supported subset';
 const pathComponent = 'compiled path component is outside the supported subset';
+const compilerObservation = 'compiler-observed publication input unavailable';
 /** NUL-separated Git tree rows preserve every exact path byte sequence. */
 function treeRows(output) {
   return output.split('\0').filter(Boolean);
@@ -251,236 +148,149 @@ function resolveGitPath(git, commit, fromFile, relative, cache) {
   requireFact(!relative.endsWith('/') || entered === '040000', `${pathComponent}: ${target}`);
   return target;
 }
-/**
- * Supported include invocation after the macro name.
- * Null when this name is not invoked. Escapes and other forms refuse.
- */
-function takeRustInclude(source, index, file, macro, resolvePath) {
-  const bang = skipRustTrivia(source, index);
-  requireFact(bang >= 0, `${includeRefusal}: ${file}`);
-  if (bang >= source.length || source.startsWith('!=', bang) || source[bang] !== '!') return null;
-  let cursor = skipRustTrivia(source, bang + 1);
-  requireFact(cursor >= 0 && includeClosers[source[cursor]], `${includeRefusal}: ${file}`);
-  const closer = includeClosers[source[cursor]];
-  cursor = skipRustTrivia(source, cursor + 1);
-  requireFact(cursor >= 0, `${includeRefusal}: ${file}`);
-  const literal = plainRustString(source, cursor);
-  requireFact(literal, `${includeRefusal}: ${file}`);
-  requireFact(!literal.body.includes('\\'), `${includeEscape}: ${file}`);
-  const close = skipRustTrivia(source, literal.end);
-  requireFact(close >= 0 && source[close] === closer, `${includeRefusal}: ${file}`);
-  // An absolute literal is rejected before any join, so it cannot bind a namesake.
-  requireFact(!posix.isAbsolute(literal.body), 'publication input escapes repository');
-  const target = resolvePath(file, literal.body);
-  if (macro === 'include') requireFact(target.endsWith('.rs'), `${includeSource}: ${file}`);
-  return { target, end: close + 1 };
-}
-/** use item. An imported include macro is outside the supported subset. */
-function consumeUseItem(source, index, file) {
-  let i = index;
-  let depth = 0;
-  while (i < source.length) {
-    const token = skipRustTrivia(source, i);
-    requireFact(token >= 0, `${includeIndirection}: ${file}`);
-    if (token >= source.length) break;
-    i = token;
-    if (source[i] === ';' && depth === 0) return i + 1;
-    if (source[i] === '{') {
-      depth += 1;
-      i += 1;
-      continue;
-    }
-    if (source[i] === '}') {
-      depth -= 1;
-      i += 1;
-      continue;
-    }
-    const stringEnd = skipRustString(source, i);
-    if (stringEnd === -2) requireFact(false, `${includeIndirection}: ${file}`);
-    if (stringEnd >= 0) {
-      i = stringEnd;
-      continue;
-    }
-    const ident = readRustIdent(source, i);
-    if (ident) {
-      requireFact(!includeMacros.has(ident.name), `${includeIndirection}: ${file}`);
-      i = ident.end;
-      continue;
-    }
-    i += 1;
-  }
-  requireFact(false, `${includeIndirection}: ${file}`);
-  return i;
-}
-/** macro_rules body. A metavariable invocation or include name is unsupported. */
-function consumeMacroRules(source, index, file) {
-  let i = skipRustTrivia(source, index);
-  requireFact(i >= 0 && source[i] === '!', `${includeIndirection}: ${file}`);
-  i = skipRustTrivia(source, i + 1);
-  const name = readRustIdent(source, i);
-  requireFact(name, `${includeIndirection}: ${file}`);
-  i = skipRustTrivia(source, name.end);
-  const closer = includeClosers[source[i]];
-  requireFact(closer, `${includeIndirection}: ${file}`);
-  const stack = [closer];
-  i += 1;
-  while (i < source.length && stack.length > 0) {
-    const token = skipRustTrivia(source, i);
-    requireFact(token >= 0, `${includeIndirection}: ${file}`);
-    if (token >= source.length) break;
-    i = token;
-    const stringEnd = skipRustString(source, i);
-    if (stringEnd === -2) requireFact(false, `${includeIndirection}: ${file}`);
-    if (stringEnd >= 0) {
-      i = stringEnd;
-      continue;
-    }
-    if (includeClosers[source[i]]) {
-      stack.push(includeClosers[source[i]]);
-      i += 1;
-      continue;
-    }
-    if (source[i] === stack.at(-1)) {
-      stack.pop();
-      i += 1;
-      continue;
-    }
-    if (source[i] === '$') {
-      const metaAt = skipRustTrivia(source, i + 1);
-      const meta = metaAt >= 0 ? readRustIdent(source, metaAt) : null;
-      if (meta) {
-        const bang = skipRustTrivia(source, meta.end);
-        if (bang >= 0 && source[bang] === '!' && !source.startsWith('!=', bang)) {
-          requireFact(false, `${includeIndirection}: ${file}`);
-        }
-      }
-      i += 1;
-      continue;
-    }
-    const ident = readRustIdent(source, i);
-    if (ident) {
-      requireFact(!includeMacros.has(ident.name), `${includeIndirection}: ${file}`);
-      i = ident.end;
-      continue;
-    }
-    i += 1;
-  }
-  requireFact(stack.length === 0, `${includeIndirection}: ${file}`);
-  return i;
-}
-/** Synthetic file whose dirname is the compiler base for an inline-module #[path]. */
-function inlineModuleBaseFile(file, inlineModules) {
-  if (inlineModules.length === 0) return file;
-  const base = posix.basename(file);
-  let directory = posix.dirname(file);
-  if (base !== 'main.rs' && base !== 'lib.rs' && base !== 'mod.rs')
-    directory = posix.join(directory, base.slice(0, -'.rs'.length));
-  for (const name of inlineModules) directory = posix.join(directory, name);
-  return posix.join(directory, 'module.rs');
+
+/** Normalize one compiler-observed path and refuse any escape from the repository. */
+function repositoryRelativePath(file) {
+  requireFact(!posix.isAbsolute(file), 'publication input escapes repository');
+  const normalized = posix.normalize(file);
+  requireFact(
+    normalized !== '..' && !normalized.startsWith('../'),
+    'publication input escapes repository'
+  );
+  return normalized;
 }
 
-/** #[path = "..."] that stays inside apps/nanohost, or null when this is not one. */
-function takeModulePath(source, index, file, resolvePath, inlineModules) {
-  let i = index + 1;
-  if (source[i] === '!') i += 1;
-  if (source[i] !== '[') return null;
-  i = skipRustTrivia(source, i + 1);
-  if (i < 0) return null;
-  const ident = readRustIdent(source, i);
-  if (!ident || ident.name !== 'path') return null;
-  i = skipRustTrivia(source, ident.end);
-  requireFact(i >= 0 && source[i] === '=', `${modulePathLeaves}: ${file}`);
-  i = skipRustTrivia(source, i + 1);
-  const literal = i >= 0 ? plainRustString(source, i) : null;
-  requireFact(literal && !literal.body.includes('\\'), `${modulePathLeaves}: ${file}`);
-  i = skipRustTrivia(source, literal.end);
-  requireFact(i >= 0 && source[i] === ']', `${modulePathLeaves}: ${file}`);
-  requireFact(!posix.isAbsolute(literal.body), `${modulePathLeaves}: ${file}`);
-  const target = resolvePath(inlineModuleBaseFile(file, inlineModules), literal.body);
-  requireFact(target.startsWith('apps/nanohost/'), `${modulePathLeaves}: ${file}`);
-  return i + 1;
-}
-function rustIncludeTargets(source, file, resolvePath) {
-  const targets = [];
-  const nanohost = file.startsWith('apps/nanohost/');
-  const moduleBraces = new Map();
-  const braceStack = [];
-  let i = 0;
-  while (i < source.length) {
-    const token = skipRustTrivia(source, i);
-    requireFact(token >= 0, `${includeRefusal}: ${file}`);
-    if (token >= source.length) break;
-    i = token;
-    const stringEnd = skipRustString(source, i);
-    if (stringEnd === -2) requireFact(false, `${includeRefusal}: ${file}`);
-    if (stringEnd >= 0) {
-      i = stringEnd;
-      continue;
-    }
-    if (source[i] === '{') {
-      braceStack.push({ module: moduleBraces.get(i) });
-      i += 1;
-      continue;
-    }
-    if (source[i] === '}') {
-      braceStack.pop();
-      i += 1;
-      continue;
-    }
-    if (nanohost && source[i] === '#') {
-      const inlineModules = braceStack.flatMap((entry) => (entry.module ? [entry.module] : []));
-      const attr = takeModulePath(source, i, file, resolvePath, inlineModules);
-      if (attr) {
-        i = attr;
-        continue;
-      }
-    }
-    if (source[i] === "'") {
-      if (/^'[A-Za-z_]/.test(source.slice(i, i + 2))) {
-        i += 1;
-        continue;
-      }
-      const charEnd = skipRustChar(source, i);
-      i = charEnd >= 0 ? charEnd : i + 1;
-      continue;
-    }
-    const ident = readRustIdent(source, i);
-    if (ident) {
-      if (nanohost && ident.name === 'use') {
-        i = consumeUseItem(source, ident.end, file);
-        continue;
-      }
-      if (nanohost && ident.name === 'macro_rules') {
-        i = consumeMacroRules(source, ident.end, file);
-        continue;
-      }
-      if (nanohost && ident.name === 'mod') {
-        const moduleNameAt = skipRustTrivia(source, ident.end);
-        const moduleName = moduleNameAt >= 0 ? readRustIdent(source, moduleNameAt) : null;
-        const brace = moduleName ? skipRustTrivia(source, moduleName.end) : -1;
-        if (moduleName && brace >= 0 && source[brace] === '{')
-          moduleBraces.set(brace, moduleName.name);
-      }
-      i = ident.end;
-      if (includeMacros.has(ident.name)) {
-        const parsed = takeRustInclude(source, i, file, ident.name, resolvePath);
-        if (parsed) {
-          targets.push(parsed.target);
-          i = parsed.end;
-        }
-      }
-      continue;
-    }
-    i += 1;
+/** Paths from rustc dep-info dummy rules, with Make's escaped spaces decoded. */
+function depInfoPaths(depInfo) {
+  const lines = depInfo.split('\n');
+  const firstBlank = lines.indexOf('');
+  requireFact(firstBlank > 0, compilerObservation);
+  const paths = [];
+  for (const line of lines.slice(firstBlank + 1)) {
+    if (!line || line.startsWith('#')) continue;
+    requireFact(line.endsWith(':'), compilerObservation);
+    paths.push(line.slice(0, -1).replaceAll('\\ ', ' '));
   }
-  return targets;
+  requireFact(paths.length > 0, compilerObservation);
+  return paths;
+}
+
+/** The first local input the compiler could not read, when JSON diagnostics name one. */
+function compilerInputFailure(stderr) {
+  let missingModule = null;
+  for (const line of stderr.split('\n')) {
+    if (!line) continue;
+    let diagnostic;
+    try {
+      diagnostic = JSON.parse(line);
+    } catch {
+      requireFact(false, compilerObservation);
+    }
+    if (diagnostic?.$message_type !== 'diagnostic' || diagnostic.level !== 'error') continue;
+    const unread = /^couldn't read `([^`]+)`/.exec(diagnostic.message ?? '');
+    if (unread) return { file: unread[1] };
+    if (diagnostic.code?.code === 'E0583') {
+      const help = (diagnostic.children ?? []).map((child) => child.message ?? '').join('\n');
+      missingModule = /create file "([^"]+)"/.exec(help)?.[1] ?? '';
+    }
+  }
+  return missingModule === null ? null : { file: missingModule };
+}
+
+/** Materialize exact Git bytes and return rustc dep-info for the NanoHost test harness. */
+function nanoHostDepInfo(repoRoot, sourceCommit) {
+  const scratch = mkdtempSync(posix.join(tmpdir(), 'openkit-publication-'));
+  try {
+    const tree = posix.join(scratch, 'tree');
+    const gitCommand = (args) => {
+      const result = spawnSync('git', args, {
+        cwd: scratch,
+        encoding: 'utf8',
+        timeout: 60000,
+        maxBuffer: 1024 * 1024,
+      });
+      requireFact(
+        !result.error && !result.signal && result.status === 0,
+        `repository publication proof unavailable: ${args[0]}`
+      );
+    };
+    gitCommand(['clone', '--quiet', '--no-checkout', '--shared', repoRoot, tree]);
+    gitCommand(['-C', tree, 'config', 'core.symlinks', 'false']);
+    gitCommand(['-C', tree, 'checkout', '--quiet', '--detach', sourceCommit]);
+    const manifestPath = posix.join(tree, 'apps/nanohost/Cargo.toml');
+    requireFact(
+      existsSync(manifestPath),
+      'publication input must be a regular tracked file: apps/nanohost/Cargo.toml'
+    );
+    const manifest = readFileSync(manifestPath, 'utf8');
+    const edition = /^[\t ]*edition[\t ]*=[\t ]*"([0-9]{4})"/m.exec(manifest)?.[1];
+    const version = /^[\t ]*version[\t ]*=[\t ]*"([^"\n]+)"/m.exec(manifest)?.[1];
+    requireFact(edition && version, compilerObservation);
+    const depInfoPath = posix.join(scratch, 'nanohost.d');
+    const env = {};
+    for (const key of ['PATH', 'HOME', 'RUSTUP_HOME', 'CARGO_HOME', 'TMPDIR', 'TEMP', 'TMP'])
+      if (typeof process.env[key] === 'string') env[key] = process.env[key];
+    env.CARGO_PKG_VERSION = version;
+    env.CARGO_MANIFEST_DIR = posix.join(tree, 'apps/nanohost');
+    const result = spawnSync(
+      'rustc',
+      [
+        `--edition=${edition}`,
+        '--test',
+        '--crate-name',
+        'nanohost',
+        '--error-format=json',
+        `--emit=dep-info=${depInfoPath}`,
+        'apps/nanohost/src/main.rs',
+      ],
+      {
+        cwd: tree,
+        env,
+        encoding: 'utf8',
+        timeout: 30000,
+        maxBuffer: 16 * 1024 * 1024,
+      }
+    );
+    requireFact(!result.error && !result.signal, compilerObservation);
+    requireFact(existsSync(depInfoPath), compilerObservation);
+    return { depInfo: readFileSync(depInfoPath, 'utf8'), stderr: result.stderr ?? '' };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Compiler-observed NanoHost inputs, re-proved as tracked Git paths. */
+function compilerObservedNanoHostInputs(repoRoot, sourceCommit, git, cache) {
+  const observed = nanoHostDepInfo(repoRoot, sourceCommit);
+  const failure = compilerInputFailure(observed.stderr);
+  if (failure) {
+    if (!failure.file) requireFact(false, compilerObservation);
+    resolveGitPath(git, sourceCommit, 'proof-root', failure.file, cache);
+    requireFact(
+      false,
+      `publication input must be a regular tracked file: ${repositoryRelativePath(failure.file)}`
+    );
+  }
+  const inputs = new Set();
+  for (const raw of depInfoPaths(observed.depInfo)) {
+    const target = resolveGitPath(
+      git,
+      sourceCommit,
+      'proof-root',
+      repositoryRelativePath(raw),
+      cache
+    );
+    inputs.add(target);
+  }
+  return inputs;
 }
 /** Observe immutable Git bytes, not checkout files or claims in the evidence snapshot. */
 export function publicationInputsAt(repoRoot, sourceCommit) {
   requireFact(commit.test(sourceCommit ?? ''), 'publication proof exact commit');
+  const repositoryRoot = posix.resolve(repoRoot);
   const git = (args, input) => {
     const result = spawnSync('git', args, {
-      cwd: repoRoot,
+      cwd: repositoryRoot,
       input,
       encoding: 'utf8',
       timeout: 10000,
@@ -602,22 +412,22 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
     for (const match of bytes.matchAll(/\bscripts\/[a-zA-Z0-9_./-]+\.(?:mjs|sh|py)\b/g))
       pending.add(match[0]);
     // The Worker seed smoke compiles the NanoHost test harness from this checkout.
-    // This is a closed supported subset, not a compiler closure. Bind every
-    // tracked package file and the parent manifest Cargo consults, then each
-    // direct include!, include_str!, or include_bytes! of one plain relative
-    // string. A raw r# prefix, a path such as std:: or core::, whitespace,
-    // comments, and () [] {} delimiters are that same direct invocation.
-    // Escapes are refused and never decoded. include! of a non-.rs file, a use
-    // import or macro_rules indirection of these macros, a #[path] module that
-    // leaves apps/nanohost, and any NanoHost build script are refused. Absolute
-    // literals are rejected before joining. Each relative path is then resolved
-    // one component at a time against this commit: a symlink is never followed,
-    // and a missing component or a non-directory that must be traversed refuses
-    // proof. Ordinary .. through a proven directory still binds. An untracked
-    // target refuses proof. A baseline recorded with a smaller closure
+    // Bind every tracked package file and the parent manifest Cargo consults,
+    // then bind the file list rustc records for that same test harness. The
+    // compiler runs in an immutable temporary checkout with symlinks materialized
+    // as ordinary files. External-crate resolution errors are expected because
+    // this proof does not build dependencies; rustc still emits dep-info after
+    // module and macro input observation. Missing local input diagnostics refuse
+    // proof. Every listed path is normalized and re-proved as a regular tracked
+    // Git object one component at a time, so symlink, untracked and repository-
+    // escaping inputs fail closed. A baseline recorded with a smaller closure
     // mismatches and fails closed.
     if (file === 'scripts/docker/check-worker-seed.sh') {
       pending.add('Cargo.toml');
+      requireFact(
+        !/^[\t ]*build[\t ]*=/m.test(read('apps/nanohost/Cargo.toml').bytes),
+        buildScript
+      );
       for (const tracked of treeRows(
         git(['ls-tree', '-z', '-r', '--name-only', sourceCommit, '--', 'apps/nanohost'])
       )) {
@@ -627,9 +437,13 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
         );
         pending.add(tracked);
       }
-    }
-    if (file.endsWith('.rs')) {
-      for (const target of rustIncludeTargets(bytes, file, resolvePath)) pending.add(target);
+      for (const observed of compilerObservedNanoHostInputs(
+        repositoryRoot,
+        sourceCommit,
+        git,
+        pathModes
+      ))
+        pending.add(observed);
     }
     if (!/\.(?:mjs|js)$/.test(file)) continue;
     for (const match of bytes.matchAll(
