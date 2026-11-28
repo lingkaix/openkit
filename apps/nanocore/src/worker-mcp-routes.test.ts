@@ -5024,6 +5024,28 @@ describe('worker MCP routes', () => {
         );
         expect(secondTurn.id).not.toBe(turn.id);
         expect(secondEntry.turnId).toBe(secondTurn.id);
+        const firstUserMessage = store
+          .getTurnById(turn.id)
+          .items.find((item) => item.id === deriveEntityId('it', ['task-user', turn.id]));
+        if (
+          firstUserMessage?.type !== 'user-message' ||
+          firstUserMessage.status !== 'completed' ||
+          firstUserMessage.completedAt === null
+        )
+          throw new Error('The first Turn has no completed user message.');
+        await store.createItem({
+          actor: firstUserMessage.actor,
+          completedAt: firstUserMessage.completedAt,
+          createdAt: firstUserMessage.createdAt,
+          id: deriveEntityId('it', ['task-user', secondTurn.id]),
+          owner: firstUserMessage.owner,
+          status: 'completed',
+          // This admission stores the same request text. The first published Item is the expanded worker request.
+          text: secondInput,
+          threadId: firstUserMessage.threadId,
+          turnId: secondTurn.id,
+          type: 'user-message',
+        });
         const secondEnvironmentPackage = await resolveAgentEnvironmentPackage({
           agentSessionId: environmentPackage.scope.agentSessionId,
           agentSetup: setup,
@@ -5090,17 +5112,52 @@ describe('worker MCP routes', () => {
             .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
             .run(attempt!.inputRef, attempt!.attemptId);
         }
+        await expect(
+          lineageClient.callTool({ arguments: { message: 'lineage allowed' }, name: 'echo' })
+        ).resolves.toMatchObject({ content: [{ text: 'lineage allowed' }] });
+        expect(callTool).toHaveBeenCalledTimes(2);
       } finally {
         const preparations = [...getSchedulerPreparationClaims(coreDb).values()];
         await Promise.allSettled([client.close(), generativeClient.close(), lineageClient.close()]);
-        for (const turn of store.listThreadTurns(workspaceId, threadId))
-          native.executionFor(turn.id).completion.resolve();
-        await Promise.allSettled(preparations);
-        await Promise.allSettled(
-          taskAdmissions.mock.results
-            .filter((result) => result.type === 'return')
-            .map((result) => result.value.closeout)
+        const admissions = taskAdmissions.mock.results.flatMap((result) =>
+          result.type === 'return' ? [result.value] : []
         );
+        const submittedTurnIds = new Set<string>();
+        for (const admission of admissions) {
+          const admitted = await Promise.race([
+            admission.accepted.then(
+              (admittedTurn) => admittedTurn,
+              () => null
+            ),
+            admission.closeout.then(
+              () => null,
+              () => null
+            ),
+          ]);
+          if (!admitted) continue;
+          submittedTurnIds.add(admitted.id);
+          const execution = native.executionFor(admitted.id);
+          // Final status is armed only after native start acceptance. Releasing earlier stalls closeout.
+          const started = await Promise.race([
+            execution.launched.promise.then(
+              () => true,
+              () => false
+            ),
+            admission.closeout.then(
+              () => false,
+              () => false
+            ),
+          ]);
+          if (!started) continue;
+          execution.completion.resolve();
+          await admission.closeout.catch(() => undefined);
+        }
+        for (const threadTurn of store.listThreadTurns(workspaceId, threadId)) {
+          if (submittedTurnIds.has(threadTurn.id)) continue;
+          native.executionFor(threadTurn.id).completion.resolve();
+        }
+        await Promise.allSettled(preparations);
+        await Promise.allSettled(admissions.map((admission) => admission.closeout));
         taskAdmissions.mockRestore();
         submitObservation.mockRestore();
         await native.restore();
