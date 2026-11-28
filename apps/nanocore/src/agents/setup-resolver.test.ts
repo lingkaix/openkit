@@ -399,6 +399,68 @@ describe('resolveAgentSetup', () => {
     );
   });
 
+  it('keeps missing supply for a fallback model as logical_model_not_found', () => {
+    const gateway = gatewayConfig();
+    const model = gateway.logicalModels[0]!;
+    const result = resolveAgentSetup(
+      agentConfig({
+        models: {
+          preferredLogicalModelId: 'reasoning',
+          allowedLogicalModelIds: ['reasoning', 'fallback'],
+        },
+      }),
+      {
+        gatewayConfig: {
+          ...gateway,
+          logicalModels: [
+            model,
+            {
+              ...model,
+              id: 'fallback',
+              displayName: 'Fallback',
+              routes: [
+                {
+                  ...model.routes[0]!,
+                  id: 'fallback-route',
+                  providerProfileId: 'missing-provider',
+                },
+              ],
+            },
+          ],
+        },
+        providerRegistry: providerRegistry(),
+      }
+    );
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      {
+        agentId: 'agent_codex_host',
+        code: 'agent_setup.logical_model_not_found',
+        message: 'Agent agent_codex_host references missing logical model: fallback.',
+        severity: 'error',
+      },
+    ]);
+  });
+
+  it('reports a disabled Gateway instead of a missing or disallowed model', () => {
+    const result = resolveAgentSetup(agentConfig(), {
+      gatewayConfig: { ...gatewayConfig(), enabled: false },
+      providerRegistry: providerRegistry(),
+    });
+
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toEqual([
+      {
+        agentId: 'agent_codex_host',
+        code: 'agent_setup.gateway_disabled',
+        message:
+          'Agent agent_codex_host cannot resolve logical models because the Gateway is disabled.',
+        severity: 'error',
+      },
+    ]);
+  });
+
   it('returns the composed manifest and worker-visible logical models only', () => {
     const manifest = agentConfig({
       requiredFeatures: ['workspace.mount.fuse'],

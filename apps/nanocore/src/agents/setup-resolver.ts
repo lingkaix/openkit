@@ -26,6 +26,7 @@ export interface AgentSetupDiagnostic {
     | 'agent_setup.missing_credential_binding'
     | 'agent_setup.logical_model_not_allowed'
     | 'agent_setup.logical_model_not_found'
+    | 'agent_setup.gateway_disabled'
     | 'agent_setup.missing_control_binary'
     | 'agent_setup.unsupported_resources'
     | 'agent_setup.unsupported_required_feature';
@@ -184,67 +185,84 @@ export function resolveAgentSetup(
       (declaration) =>
         declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
     ) ?? false;
-  let catalog: ResolvedLogicalModel[] = [];
-  try {
-    if (harnessLoginDeclared) {
-      if (config.runtime.adapter !== 'codex') {
-        throw new Error('The codex-login consumer requires the Codex runtime adapter.');
-      }
-      catalog = resolveHarnessLogicalModelCatalog(
-        dependencies.gatewayConfig,
-        dependencies.providerRegistry,
-        allowedDeclaration
-      );
-    } else {
-      catalog = resolveLogicalModelCatalog(
-        dependencies.gatewayConfig,
-        dependencies.providerRegistry,
-        dependencies.subscriptionAccounts,
-        dependencies.providerCredentialConfigured
-      ).filter((model) =>
-        // Gateway setup still requires live Server supply; native metadata grants no such readiness.
-        planLogicalModel(model, [], () => true).some((selection) => selection.selected)
-      );
-    }
-  } catch {
-    diagnostics.push({
-      agentId: config.id,
-      code: 'agent_setup.logical_model_not_found',
-      message: `Agent ${config.id} cannot resolve the current logical model catalog.`,
-      severity: 'error',
-    });
-  }
-
-  const allowed =
-    allowedDeclaration === 'all'
-      ? catalog
-      : allowedDeclaration.flatMap((id) => {
-          const logicalModel = catalog.find((candidate) => candidate.id === id);
-          if (!logicalModel) {
-            diagnostics.push({
-              agentId: config.id,
-              code: 'agent_setup.logical_model_not_found',
-              message: `Agent ${config.id} references missing logical model: ${id}.`,
-              severity: 'error',
-            });
-            return [];
-          }
-          return [logicalModel];
-        });
   const preferredLogicalModelId =
     dependencies.requestedLogicalModelId ??
     userPreference?.logicalModelId ??
     workspaceBinding?.preferredLogicalModelId ??
     profile?.preferredLogicalModelId ??
     config.models.preferredLogicalModelId;
-
-  if (!allowed.some((logicalModel) => logicalModel.id === preferredLogicalModelId)) {
+  let catalog: ResolvedLogicalModel[] = [];
+  let supplyCatalog: ResolvedLogicalModel[] = [];
+  let allowed: ResolvedLogicalModel[] = [];
+  // A disabled Gateway empties the catalog.
+  // Report that cause instead of a missing or disallowed model.
+  if (!harnessLoginDeclared && !dependencies.gatewayConfig.enabled) {
     diagnostics.push({
       agentId: config.id,
-      code: 'agent_setup.logical_model_not_allowed',
-      message: `Agent ${config.id} does not allow logical model: ${preferredLogicalModelId}.`,
+      code: 'agent_setup.gateway_disabled',
+      message: `Agent ${config.id} cannot resolve logical models because the Gateway is disabled.`,
       severity: 'error',
     });
+  } else {
+    try {
+      if (harnessLoginDeclared) {
+        if (config.runtime.adapter !== 'codex') {
+          throw new Error('The codex-login consumer requires the Codex runtime adapter.');
+        }
+        catalog = resolveHarnessLogicalModelCatalog(
+          dependencies.gatewayConfig,
+          dependencies.providerRegistry,
+          allowedDeclaration
+        );
+      } else {
+        supplyCatalog = resolveLogicalModelCatalog(
+          dependencies.gatewayConfig,
+          dependencies.providerRegistry,
+          dependencies.subscriptionAccounts,
+          dependencies.providerCredentialConfigured
+        );
+        // Gateway setup still requires live Server supply; native metadata grants no such readiness.
+        catalog = supplyCatalog.filter((model) => hasEligibleModelSupply(model));
+      }
+    } catch {
+      diagnostics.push({
+        agentId: config.id,
+        code: 'agent_setup.logical_model_not_found',
+        message: `Agent ${config.id} cannot resolve the current logical model catalog.`,
+        severity: 'error',
+      });
+    }
+
+    allowed =
+      allowedDeclaration === 'all'
+        ? catalog
+        : allowedDeclaration.flatMap((id) => {
+            const logicalModel = catalog.find((candidate) => candidate.id === id);
+            if (!logicalModel) {
+              diagnostics.push({
+                agentId: config.id,
+                code: 'agent_setup.logical_model_not_found',
+                message: `Agent ${config.id} references missing logical model: ${id}.`,
+                severity: 'error',
+              });
+              return [];
+            }
+            return [logicalModel];
+          });
+
+    if (!allowed.some((logicalModel) => logicalModel.id === preferredLogicalModelId)) {
+      const authored = supplyCatalog.find((candidate) => candidate.id === preferredLogicalModelId);
+      if (authored !== undefined && !hasEligibleModelSupply(authored)) {
+        reportMissingModelSupply(config.id, preferredLogicalModelId, diagnostics);
+      } else {
+        diagnostics.push({
+          agentId: config.id,
+          code: 'agent_setup.logical_model_not_allowed',
+          message: `Agent ${config.id} does not allow logical model: ${preferredLogicalModelId}.`,
+          severity: 'error',
+        });
+      }
+    }
   }
 
   const skillReferences = [
@@ -398,6 +416,35 @@ function mergeById<T extends { id: string }>(...lists: readonly (readonly T[])[]
   const merged = new Map<string, T>();
   for (const list of lists) for (const value of list) merged.set(value.id, value);
   return [...merged.values()];
+}
+
+/** True when one resolved logical model has a route the Gateway planner can select. */
+function hasEligibleModelSupply(model: ResolvedLogicalModel | undefined): boolean {
+  return (
+    model !== undefined &&
+    planLogicalModel(model, [], () => true).some((selection) => selection.selected)
+  );
+}
+
+/**
+ * Records one missing-supply refusal.
+ *
+ * An authored model that the planner cannot select is not an allowlist rejection.
+ * Repeating the same model keeps one diagnostic.
+ */
+function reportMissingModelSupply(
+  agentId: string,
+  logicalModelId: string,
+  diagnostics: AgentSetupDiagnostic[]
+): void {
+  const message = `Agent ${agentId} has no eligible model supply for logical model: ${logicalModelId}.`;
+  if (diagnostics.some((diagnostic) => diagnostic.message === message)) return;
+  diagnostics.push({
+    agentId,
+    code: 'agent_setup.logical_model_not_allowed',
+    message,
+    severity: 'error',
+  });
 }
 
 function rejectUnsupportedRequiredFeatures(

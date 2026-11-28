@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
+import { isAgentLaunchable } from '../agents/readiness.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations, listAppliedMigrationIds } from '../storage/migrate.js';
@@ -150,6 +151,56 @@ describe('createDiagnosticsSnapshot', () => {
 
     expect(snapshot.agents[0]?.readiness).toBe('blocked');
     expect(snapshot.agents[0]?.reasons.join('\n')).toContain('node');
+  });
+
+  it('keeps a disabled Agent disabled when model supply is missing', () => {
+    const declaredReason = 'Operator disabled this Agent.';
+    const enabled = createTestAgentSetup({
+      agentId: 'agent_enabled',
+      displayName: 'Enabled Agent',
+    }).manifest;
+    const disabled = {
+      ...createTestAgentSetup({
+        agentId: 'agent_disabled',
+        displayName: 'Disabled Agent',
+      }).manifest,
+      readiness: { message: declaredReason, status: 'disabled' as const },
+    };
+    const snapshot = createDiagnosticsSnapshot({
+      mode: 'local',
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'https://example.com/v1',
+          displayName: 'Hosted',
+          id: 'agent-openrouter',
+          kind: 'direct',
+          models: ['openai/gpt-5.2'],
+          secretRef: 'env:OPENROUTER_API_KEY',
+        },
+      ]),
+      providerCredentialConfigured: () => false,
+      gatewayConfig: createTestGatewayConfig(),
+      agentManifests: [disabled, enabled],
+    });
+    const disabledAgent = snapshot.agents.find((agent) => agent.id === 'agent_disabled');
+    const enabledAgent = snapshot.agents.find((agent) => agent.id === 'agent_enabled');
+
+    expect(disabledAgent).toMatchObject({ readiness: 'disabled', reasons: [declaredReason] });
+    expect(enabledAgent?.readiness).toBe('blocked');
+    expect(enabledAgent?.reasons.join('\n')).toMatch(/no eligible model supply/);
+    expect(enabledAgent?.reasons.join('\n')).not.toMatch(/does not allow logical model/);
+    expect(
+      isAgentLaunchable({
+        status: 'disabled',
+        reasons: disabledAgent!.reasons,
+      })
+    ).toBe(false);
+    expect(
+      isAgentLaunchable({
+        status: 'blocked',
+        reasons: enabledAgent!.reasons,
+      })
+    ).toBe(false);
   });
 });
 

@@ -144,6 +144,9 @@ function projectAgentDiagnostics(
     subscriptionAccounts: input.subscriptionAccounts,
   });
   if (setup.diagnostics.length > 0) {
+    if (declared.status === 'disabled') {
+      return { ...identity, readiness: 'disabled', reasons: declared.reasons };
+    }
     return {
       ...identity,
       readiness: 'blocked',

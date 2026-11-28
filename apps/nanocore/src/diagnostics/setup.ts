@@ -128,13 +128,22 @@ function summarizeAgentSetup(
 ): SetupDiagnosticsAgent {
   const readiness = computeReadiness(manifest);
   const setupResult = resolveAgentSetup(manifest, dependencies);
-  const setupStatus = setupResult.diagnostics.length > 0 ? 'blocked' : 'ready';
-  const readinessStatus =
-    setupStatus === 'blocked' ? 'blocked' : normalizeReadinessStatus(readiness.status);
+  // A declared disabled Agent stays disabled. Missing supply is not that state.
+  const declaredDisabled = readiness.status === 'disabled';
+  const setupStatus = declaredDisabled
+    ? 'disabled'
+    : setupResult.diagnostics.length > 0
+      ? 'blocked'
+      : 'ready';
+  const readinessStatus = declaredDisabled
+    ? 'disabled'
+    : setupStatus === 'blocked'
+      ? 'blocked'
+      : normalizeReadinessStatus(readiness.status);
   const readinessReasons = [
     ...readiness.reasons,
     ...(setupStatus === 'blocked'
-      ? (setupResult?.diagnostics.map((diagnostic) => diagnostic.message) ?? [])
+      ? setupResult.diagnostics.map((diagnostic) => diagnostic.message)
       : []),
   ];
 

@@ -4,6 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
+import { isAgentLaunchable } from '../agents/readiness.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createTestAgentSetup,
@@ -102,5 +103,62 @@ describe('createSetupDiagnostics', () => {
       reasons: ['Proved by an accepted turn.'],
       status: 'ready',
     });
+  });
+
+  it('keeps a disabled Agent disabled when model supply is missing and blocks an enabled Agent', () => {
+    const declaredReason = 'Operator disabled this Agent.';
+    const enabled = createTestAgentSetup({
+      agentId: 'agent_enabled',
+      displayName: 'Enabled Agent',
+    }).manifest;
+    const disabled = {
+      ...createTestAgentSetup({
+        agentId: 'agent_disabled',
+        displayName: 'Disabled Agent',
+      }).manifest,
+      readiness: { message: declaredReason, status: 'disabled' as const },
+    };
+    const diagnostics = SetupDiagnosticsResponseSchema.parse(
+      createSetupDiagnostics({
+        agentManifests: [disabled, enabled],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        mode: 'local',
+        openKitConfig: {},
+        providerCredentialConfigured: () => false,
+        providerRegistry: new ProviderRegistry([
+          {
+            baseUrl: 'https://example.com/v1',
+            displayName: 'Hosted',
+            id: 'agent-openrouter',
+            kind: 'direct',
+            models: ['openai/gpt-5.2'],
+            secretRef: 'env:OPENROUTER_API_KEY',
+          },
+        ]),
+        runtimeConfig: {
+          currentVersion: 1,
+          lastFailedReload: null,
+          lastReload: null,
+          loadedAt: '2026-01-01T00:00:00.000Z',
+          pendingRestart: [],
+          staleSessions: [],
+        },
+      })
+    );
+    const disabledAgent = diagnostics.agents.find((agent) => agent.id === 'agent_disabled');
+    const enabledAgent = diagnostics.agents.find((agent) => agent.id === 'agent_enabled');
+
+    expect(disabledAgent?.readiness).toEqual({ reasons: [declaredReason], status: 'disabled' });
+    expect(disabledAgent?.setup.status).toBe('disabled');
+    expect(
+      disabledAgent?.setup.diagnostics.map((diagnostic) => diagnostic.message).join('\n')
+    ).toMatch(/no eligible model supply/);
+    expect(enabledAgent?.readiness.status).toBe('blocked');
+    expect(enabledAgent?.setup.status).toBe('blocked');
+    expect(enabledAgent?.readiness.reasons.join('\n')).toMatch(/no eligible model supply/);
+    expect(enabledAgent?.readiness.reasons.join('\n')).not.toMatch(/does not allow logical model/);
+    expect(isAgentLaunchable(disabledAgent!.readiness)).toBe(false);
+    expect(isAgentLaunchable(enabledAgent!.readiness)).toBe(false);
   });
 });
