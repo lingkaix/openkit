@@ -24,7 +24,7 @@ const otherContextActor: Actor = {
   sessionId: 'auth_00000000-0000-7000-8000-000000000102',
 };
 
-// Clone the immutable projection only in this test module so one declared access variant can be installed.
+// Clone the immutable projection only in this test module so a synthetic access configuration can be installed.
 vi.mock('./auth/operation-access.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./auth/operation-access.js')>();
   return { ...actual, PUBLIC_OPERATION_ACCESS: { ...actual.PUBLIC_OPERATION_ACCESS } };

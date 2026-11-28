@@ -354,6 +354,7 @@ async function authorizeOperation(
   if (route.access.scope !== 'workspace') {
     return null;
   }
+  // Current catalog limit: 0 of 357 registrations combine Workspace scope with deployment-admin authentication.
   if (route.access.authentication === 'deployment-admin') {
     try {
       requireCurrentDeploymentAdmin(input.coreDb, actor);
