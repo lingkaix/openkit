@@ -176,6 +176,7 @@ The deployment-admin App Diagnostics response (`DiagnosticsProcessSampleSchema` 
 ## Implementation
 
 - `apps/nanocore/src/telemetry.ts`
+- `packages/worker-protocol/src/release-adapter-kinds.ts`
 - `apps/nanocore/src/telemetry-local-exporter.ts`
 - `apps/nanocore/src/storage/control-store-pressure-telemetry.ts`
 - `apps/nanocore/src/runtime/`
@@ -186,7 +187,6 @@ The deployment-admin App Diagnostics response (`DiagnosticsProcessSampleSchema` 
 ## Implementation Gaps
 
 - Stage-duration histogram journal-step sampling - `openkit.turn.stage.duration` samples process-local `withLifecycleStageTelemetry` wrappers rather than ended execution-journal stage-step rows - #742
-- Worker-kind metric dimension vocabulary - `openkit.worker.kind` in `apps/nanocore/src/telemetry.ts` omits the `deepseek` adapter and retains `claude-code`, which has no adapter - #727
 - Worker shim phase-marker transport, journal projection, and NanoHost resource-summary projection - Bounded shim phase markers (`openkit.worker.phase` with `verified: false`) and NanoHost container-lifetime resource summaries are not projected into execution-journal events - #221, #818
 - Typed journal-to-OTLP span adapter, deployment-admin Turn timeline view, and Collector round-trip fixture - Lossless typed journal-row OTLP/JSON export, the bounded deployment-admin Turn timeline view (`24 h` / `32 MiB` / `1,000` spans) with `(stage, worker.kind)` journal statistics, and the live `otelcol-contrib` file-receiver round-trip fixture are not implemented - #219, #353, #818
 - Manual Gateway/provider/storage spans, structured log bridge, and CI telemetry artifact references - Manual spans across provider/storage boundaries, full OTel log bridging, and CI test-runner telemetry references are partial or absent - #207, #818

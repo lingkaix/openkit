@@ -1,5 +1,5 @@
 import type { ReasoningEffort } from '@openkit/protocol';
-import type { WorkerLineage } from '@openkit/worker-protocol';
+import type { ReleaseAdapterKind, WorkerLineage } from '@openkit/worker-protocol';
 import { codexResidentAdapter } from './adapters/codex.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piResidentAdapter } from './adapters/pi.js';
@@ -321,4 +321,7 @@ export const WORKER_ADAPTERS: Readonly<
   codex: { ...codexResidentAdapter, stop: { kind: 'best-effort' } },
   opencode: { ...opencodeAdapter, stop: { kind: 'best-effort' } },
   pi: { ...piResidentAdapter, stop: { kind: 'best-effort' } },
-};
+} satisfies Record<
+  ReleaseAdapterKind,
+  WorkerResidentAdapter & { readonly stop: WorkerStopDeclaration }
+>;

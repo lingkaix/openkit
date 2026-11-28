@@ -12,6 +12,7 @@ import {
 } from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-registry.js';
 import { withMainLoopOperation } from './main-loop-observer.js';
 import {
   captureTelemetryContext,
@@ -22,6 +23,7 @@ import {
   shutdownTelemetry,
   startTelemetry as startProductionTelemetry,
   tracesExportUrl,
+  withLifecycleStageTelemetry,
   withTurnDispatchTelemetry,
 } from './telemetry.js';
 
@@ -435,6 +437,32 @@ describe('telemetry lifecycle', () => {
     expect(captured[0]?.body).not.toContain('leaked.example');
     expect(captured[0]?.body).not.toContain('untrusted-caller-header');
     expect(captured[0]?.body).not.toContain('host.name');
+  });
+});
+
+describe('worker-kind admission', () => {
+  it('records each registered adapter kind and internal as itself', async () => {
+    const exporter = new InMemorySpanExporter();
+    startTelemetry({
+      bootId: TEST_BOOT_ID,
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT },
+      exporter,
+    });
+    const admitted = new Set<string>([...Object.keys(WORKER_ADAPTERS), 'internal']);
+    for (const workerKind of [...admitted, 'claude-code']) {
+      await withLifecycleStageTelemetry(
+        { stage: 'validation', workerKind, turnId: `probe-${workerKind}` },
+        async () => undefined
+      );
+    }
+    for (const workerKind of [...admitted, 'claude-code']) {
+      const span = exporter
+        .getFinishedSpans()
+        .find((item) => item.attributes['openkit.turn.id'] === `probe-${workerKind}`);
+      expect(span?.attributes['openkit.worker.kind']).toBe(
+        admitted.has(workerKind) ? workerKind : 'unknown'
+      );
+    }
   });
 });
 

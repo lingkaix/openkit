@@ -12,6 +12,7 @@ export * from './adapter-supply.js';
 export * from './credential-helper.js';
 export * from './harness-control.js';
 export * from './native-environment.js';
+export * from './release-adapter-kinds.js';
 
 import { z } from 'zod';
 

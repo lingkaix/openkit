@@ -1,3 +1,4 @@
+import { RELEASE_ADAPTER_KINDS } from '@openkit/worker-protocol';
 import {
   type Context,
   type Histogram,
@@ -53,7 +54,7 @@ const STAGE_DIMENSIONS = [
 const STAGE_BUCKETS = [
   0, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 1500,
 ];
-const RELEASE_WORKER_KINDS = new Set(['codex', 'pi', 'opencode', 'claude-code', 'internal']);
+const RELEASE_WORKER_KINDS = new Set<string>([...RELEASE_ADAPTER_KINDS, 'internal']);
 const SERVICE_NAME = 'nanocore';
 const MAX_QUEUE_SIZE = 512;
 const EXPORT_TIMEOUT_MS = 1_000;
