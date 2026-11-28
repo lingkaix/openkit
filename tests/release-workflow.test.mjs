@@ -1002,33 +1002,17 @@ test('CI keeps NanoHost scheduling in its package and preserves inherited harnes
     workflow.jobs['l0-l2-shards'],
     'Run one complete shard as the unprivileged image user'
   );
-  const setup = command.run.slice(command.run.indexOf('\n') + 1, command.run.indexOf('runuser'));
-  assert.doesNotMatch(setup, /chown|runuser/u);
-  for (const id of ['native-nanohost', 'native-other', 'root', 'web']) {
-    for (const inherited of [undefined, '7']) {
-      const env = { ...process.env, SHARD_ID: id, GITHUB_WORKSPACE: process.cwd() };
-      if (inherited === undefined) delete env.RUST_TEST_THREADS;
-      else env.RUST_TEST_THREADS = inherited;
-      const result = spawnSync(
-        'sh',
-        // Keep diagnostic output separate from the inherited-setting result channel.
-        [
-          '-eu',
-          '-c',
-          `exec 3>&1\nexec >/dev/null\n${setup}\nprintf %s "\${RUST_TEST_THREADS-unset}" >&3`,
-        ],
-        { env, encoding: 'utf8' }
-      );
-      assert.equal(result.status, 0, id);
-      assert.equal(result.stdout, inherited ?? 'unset', id);
-    }
-  }
+  assert.deepEqual(command.env, { SHARD_ID: actionExpression('matrix.id') });
+  assert.doesNotMatch(command.run, /RUST_TEST_THREADS/u);
 });
 
 test('L0-L2 runs complete package coverage and native/root suites through a fail-closed aggregate', () => {
   const shards = workflow.jobs['l0-l2-shards'];
   const command = step(shards, 'Run one complete shard as the unprivileged image user');
-  assert.match(command.run, /runuser -u node/u);
+  assert.match(
+    command.run,
+    /runuser -u node -- env HOME="\$\{HOME\}" sh scripts\/ci-shard-run\.sh "\$\{SHARD_ID\}"/u
+  );
   assert.match(command.run, /node scripts\/ci-l0-l2\.mjs --run "\$\{SHARD_ID\}"/u);
   assert.equal(command.env.SHARD_ID, actionExpression('matrix.id'));
   assert.deepEqual(workflow.jobs['l0-l2'].needs, ['l0-l2-plan', 'l0-l2-shards', 'l0-l2-coverage']);

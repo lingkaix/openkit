@@ -559,15 +559,7 @@ jobs:
           SHARD_ID: ${{ matrix.id }}
         run: |
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
-          case "${SHARD_ID}" in
-            nanocore-*|native-nanohost)
-              printf 'Shard disk space before execution\n'
-              df -B1 "${GITHUB_WORKSPACE}" "${TMPDIR:-/tmp}" || true
-              du -sb target/ apps/nanohost/target "${TMPDIR:-/tmp}" || true
-              trap 'printf "Shard disk space after execution\n"; df -B1 "${GITHUB_WORKSPACE}" "${TMPDIR:-/tmp}" || true; du -sb target/ apps/nanohost/target "${TMPDIR:-/tmp}" || true' EXIT
-              ;;
-          esac
-          runuser -u node -- env HOME="${HOME}" node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"
+          runuser -u node -- env HOME="${HOME}" sh scripts/ci-shard-run.sh "${SHARD_ID}" node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"
       - name: Retain shard execution evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
