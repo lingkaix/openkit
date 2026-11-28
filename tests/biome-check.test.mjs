@@ -3,8 +3,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { delimiter, join, resolve } from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { runBiomeCheck } from '../scripts/check-biome.mjs';
 
@@ -16,6 +16,38 @@ function fakeChild({ status = 0, signal = null, stdout = '', stderr = '' }) {
     child.emit('exit', signal ? null : status, signal);
   });
   return child;
+}
+
+function collect() {
+  const chunks = [];
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  return {
+    stream,
+    text() {
+      return Buffer.concat(chunks).toString('utf8');
+    },
+  };
+}
+
+function countBytes() {
+  let total = 0;
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      total += chunk.length;
+      callback();
+    },
+  });
+  return {
+    stream,
+    total() {
+      return total;
+    },
+  };
 }
 
 test('repository Biome commands use the checked-file guard', () => {
@@ -50,19 +82,25 @@ test('pinned Biome scans a checkout beneath temp while excluding checkout temp e
 });
 
 test('a successful zero-file Biome scan is refused as source verification', async () => {
+  const stderr = collect();
   const result = await runBiomeCheck(['.'], {
     spawn: () =>
       fakeChild({
         status: 0,
         stderr: 'Checked 0 files in 1ms. No fixes applied.\n',
       }),
+    stdout: collect().stream,
+    stderr: stderr.stream,
   });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /zero files.*refus/iu);
+  assert.equal(result.signal, null);
+  assert.match(stderr.text(), /zero files.*refus/iu);
 });
 
 test('Biome arguments and a positive checked-file result pass through unchanged', async () => {
   const calls = [];
+  const stdout = collect();
+  const stderr = collect();
   const result = await runBiomeCheck(['--formatter-enabled=true', '--linter-enabled=false', '.'], {
     spawn: (...args) => {
       calls.push(args);
@@ -72,10 +110,13 @@ test('Biome arguments and a positive checked-file result pass through unchanged'
         stderr: 'Checked 2 files in 1ms. No fixes applied.\n',
       });
     },
+    stdout: stdout.stream,
+    stderr: stderr.stream,
   });
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, 'kept stdout\n');
-  assert.equal(result.stderr, 'Checked 2 files in 1ms. No fixes applied.\n');
+  assert.equal(result.signal, null);
+  assert.equal(stdout.text(), 'kept stdout\n');
+  assert.equal(stderr.text(), 'Checked 2 files in 1ms. No fixes applied.\n');
   assert.deepEqual(calls, [
     [
       'pnpm',
@@ -86,44 +127,168 @@ test('Biome arguments and a positive checked-file result pass through unchanged'
 });
 
 test('a missing checked-file count or Biome failure cannot become a pass', async () => {
+  const missingErr = collect();
   const missing = await runBiomeCheck(['.'], {
     spawn: () => fakeChild({ status: 0, stdout: '', stderr: '' }),
+    stdout: collect().stream,
+    stderr: missingErr.stream,
   });
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /did not report its checked-file count/u);
+  assert.match(missingErr.text(), /did not report its checked-file count/u);
 
+  const failedErr = collect();
   const failed = await runBiomeCheck(['.'], {
     spawn: () =>
       fakeChild({
         status: 7,
         stderr: 'Checked 0 files in 1ms. No fixes applied.\n',
       }),
+    stdout: collect().stream,
+    stderr: failedErr.stream,
   });
   assert.equal(failed.status, 7);
-  assert.doesNotMatch(failed.stderr, /zero files.*refus/iu);
+  assert.equal(failed.signal, null);
+  assert.doesNotMatch(failedErr.text(), /zero files.*refus/iu);
 });
 
 test('a large child result keeps its exit status and both output streams', async () => {
   const bytes = 67174400;
+  const stdout = countBytes();
+  const stderr = countBytes();
   const result = await runBiomeCheck(['.'], {
     spawn: () =>
       spawn(process.execPath, [
         '-e',
         `process.stdout.write(Buffer.alloc(${bytes}, 97), () => process.exit(7));`,
       ]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
   });
   assert.equal(result.status, 7);
-  assert.equal(Buffer.byteLength(result.stdout), bytes);
-  assert.equal(result.stderr, '');
-  assert.doesNotMatch(result.stderr, /ENOBUFS/u);
+  assert.equal(result.signal, null);
+  assert.equal(stdout.total(), bytes);
+  assert.equal(stderr.total(), 0);
 });
 
-test('SIGTERM keeps the signal exit status 143', async () => {
+test('a signalled child is reported as that signal', async () => {
+  const stderr = collect();
   const result = await runBiomeCheck(['.'], {
     spawn: () => spawn(process.execPath, ['-e', 'process.kill(process.pid, "SIGTERM")']),
+    stdout: collect().stream,
+    stderr: stderr.stream,
   });
-  assert.equal(result.status, 143);
-  assert.doesNotMatch(result.stderr, /terminated by signal|ENOBUFS/u);
+  assert.equal(result.status, null);
+  assert.equal(result.signal, 'SIGTERM');
+  assert.doesNotMatch(stderr.text(), /ENOBUFS/u);
+});
+
+test('the parent ends by the same signal as the child', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-biome-signal-'));
+  try {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'pnpm'),
+      '#!/usr/bin/env node\nprocess.kill(process.pid, "SIGTERM");\n',
+      { mode: 0o755 }
+    );
+    const result = spawnSync(process.execPath, [resolve('scripts/check-biome.mjs'), '.'], {
+      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, null);
+    assert.equal(result.signal, 'SIGTERM');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('progress lines are visible before the child is released', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-biome-progress-'));
+  const release = join(root, 'release');
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, 'pnpm'),
+    [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'fs.writeSync(1, "progress-1\\n");',
+      'fs.writeSync(2, "progress-2\\n");',
+      'const release = process.env.OPENKIT_BIOME_RELEASE;',
+      'const deadline = Date.now() + 5000;',
+      'const wait = () => {',
+      '  if (fs.existsSync(release)) process.exit(7);',
+      '  if (Date.now() > deadline) process.exit(9);',
+      '  setTimeout(wait, 15);',
+      '};',
+      'wait();',
+      '',
+    ].join('\n'),
+    { mode: 0o755 }
+  );
+  const child = spawn(process.execPath, [resolve('scripts/check-biome.mjs'), '.'], {
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
+      OPENKIT_BIOME_RELEASE: release,
+    },
+  });
+  let out = '';
+  let err = '';
+  let finished = null;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    out += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    err += chunk;
+  });
+  child.on('exit', (status, signal) => {
+    finished = { status, signal };
+  });
+  try {
+    const visible = await new Promise((resolveVisible) => {
+      const timer = setTimeout(() => resolveVisible(false), 3000);
+      const check = () => {
+        if (finished) {
+          clearTimeout(timer);
+          resolveVisible(false);
+          return;
+        }
+        if (out.includes('progress-1') && err.includes('progress-2') && child.exitCode === null) {
+          clearTimeout(timer);
+          resolveVisible(true);
+        }
+      };
+      child.stdout.on('data', check);
+      child.stderr.on('data', check);
+      child.on('exit', check);
+    });
+    assert.equal(visible, true, `stdout=${JSON.stringify(out)} stderr=${JSON.stringify(err)}`);
+    assert.equal(child.exitCode, null);
+    writeFileSync(release, 'go\n');
+    const outcome = await new Promise((resolveFinished) => {
+      if (finished) {
+        resolveFinished(finished);
+        return;
+      }
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        resolveFinished({ status: null, signal: 'TIMEOUT' });
+      }, 3000);
+      child.on('exit', (status, signal) => {
+        clearTimeout(timer);
+        resolveFinished({ status, signal });
+      });
+    });
+    assert.equal(outcome.signal, null);
+    assert.equal(outcome.status, 7);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a colored Biome summary counts checked files and keeps its original bytes', async () => {
@@ -131,28 +296,34 @@ test('a colored Biome summary counts checked files and keeps its original bytes'
   try {
     const file = join(base, 'example.js');
     writeFileSync(file, 'export const kept = 1;\n');
-    const direct = spawnSync('pnpm', ['exec', 'biome', 'check', '--colors=force', file], {
-      encoding: 'utf8',
+    const stdout = collect();
+    const stderr = collect();
+    const result = await runBiomeCheck(['--colors=force', file], {
+      stdout: stdout.stream,
+      stderr: stderr.stream,
     });
-    assert.equal(direct.status, 0, direct.stderr);
-    const result = await runBiomeCheck(['--colors=force', file]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, direct.stdout);
-    assert.equal(result.stderr, direct.stderr);
+    const forwarded = stderr.text();
+    assert.equal(result.status, 0, forwarded);
+    assert.equal(result.signal, null);
     const esc = String.fromCharCode(0x1b);
     const coloredCount = `${esc}[34mChecked 1 file in `;
-    assert.equal(result.stderr.includes(coloredCount), true);
+    assert.equal(forwarded.includes(coloredCount), true);
+    const plain = forwarded.replace(new RegExp(`${esc}\\[[0-9;]*m`, 'gu'), '');
+    assert.match(plain, /Checked 1 file in /u);
 
     const coloredZero = [
       `${esc}[0m${esc}[34mChecked 0 files in 3`,
       `${esc}[0m${esc}[0m${esc}[2m${esc}[34mms${esc}[0m.\n`,
     ].join('');
+    const refusedErr = collect();
     const refused = await runBiomeCheck(['.'], {
       spawn: () => fakeChild({ status: 0, stderr: coloredZero }),
+      stdout: collect().stream,
+      stderr: refusedErr.stream,
     });
     assert.equal(refused.status, 1);
-    assert.match(refused.stderr, /zero files.*refus/iu);
-    assert.equal(refused.stderr.includes(coloredZero), true);
+    assert.match(refusedErr.text(), /zero files.*refus/iu);
+    assert.equal(refusedErr.text().includes(coloredZero), true);
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

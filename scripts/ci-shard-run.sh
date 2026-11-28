@@ -13,9 +13,6 @@ case "${shard_id}" in
   *) exec "$@" ;;
 esac
 
-# A short write raises SIGXFSZ. Ignore it so the write fails and the previous marker stays complete.
-trap '' XFSZ
-
 evidence_dir='temp/ci-shards'
 state_file="${evidence_dir}/${shard_id}-execution-state.txt"
 evidence_file="${evidence_dir}/${shard_id}-disk-evidence.log"
@@ -38,35 +35,38 @@ else
   note_capture_failure
 fi
 
-# Write the full marker to a new file, then replace the previous marker only when that write is complete.
+# Ignore SIGXFSZ only in the subshell that writes evidence. The shard command keeps the default.
 write_state() {
   payload=$1
-  tmp="${state_file}.tmp"
   if [ "${capture_ok}" -ne 1 ]; then
     note_capture_failure
     return 1
   fi
-  rm -f "${tmp}" 2>/dev/null || true
-  if printf '%s\n' "${payload}" >"${tmp}" 2>/dev/null; then
-    actual=$(wc -c <"${tmp}" | tr -d '[:space:]')
-    expected=$(printf '%s\n' "${payload}" | wc -c | tr -d '[:space:]')
-    if [ "${actual}" = "${expected}" ] && mv "${tmp}" "${state_file}" 2>/dev/null; then
-      return 0
+  (
+    trap '' XFSZ
+    tmp="${state_file}.tmp"
+    rm -f "${tmp}" 2>/dev/null || true
+    if printf '%s\n' "${payload}" >"${tmp}" 2>/dev/null; then
+      actual=$(wc -c <"${tmp}" | tr -d '[:space:]')
+      expected=$(printf '%s\n' "${payload}" | wc -c | tr -d '[:space:]')
+      if [ "${actual}" = "${expected}" ] && mv "${tmp}" "${state_file}" 2>/dev/null; then
+        exit 0
+      fi
     fi
-  fi
-  rm -f "${tmp}" 2>/dev/null || true
-  note_capture_failure
-  return 1
+    rm -f "${tmp}" 2>/dev/null || true
+    exit 1
+  ) || note_capture_failure
 }
 
 append_line() {
+  line=$1
   if [ "${capture_ok}" -ne 1 ]; then
     return 1
   fi
-  if ! printf '%s\n' "$1" >>"${evidence_file}" 2>/dev/null; then
-    note_capture_failure
-    return 1
-  fi
+  (
+    trap '' XFSZ
+    printf '%s\n' "${line}" >>"${evidence_file}" 2>/dev/null
+  ) || note_capture_failure
 }
 
 # df and du text can contain paths and permission names. Keep only a fixed label and numbers.

@@ -10,7 +10,7 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
@@ -123,6 +123,48 @@ test('a short final-state write keeps the complete incomplete marker', () => {
   assert.match(result.stderr, /evidence capture failed/u);
   assert.equal(state(root, 'static'), 'execution_result=incomplete\n');
   assert.equal(existsSync(join(root, 'temp/ci-shards/static-execution-state.txt.tmp')), false);
+});
+
+function shellStatus(result) {
+  if (result.signal) return 128 + constants.signals[result.signal];
+  return result.status;
+}
+
+test('a 64-byte file write still exits 153 and keeps the complete marker', () => {
+  const directRoot = fixture().root;
+  const wrapped = fixture();
+  const launcher = [
+    'import os, resource, signal, sys',
+    'signal.signal(signal.SIGXFSZ, signal.SIG_DFL)',
+    'resource.setrlimit(resource.RLIMIT_FSIZE, (28, 28))',
+    'os.chdir(sys.argv[1])',
+    'os.execv(sys.argv[2], sys.argv[2:])',
+  ].join('\n');
+  const command = ['/bin/dd', 'if=/dev/zero', 'of=big.bin', 'bs=64', 'count=1'];
+  const direct = spawnSync('python3', ['-I', '-c', launcher, directRoot, ...command], {
+    cwd: directRoot,
+    encoding: 'utf8',
+  });
+  const result = spawnSync(
+    'python3',
+    ['-I', '-c', launcher, wrapped.root, '/bin/sh', script, 'static', ...command],
+    {
+      cwd: wrapped.root,
+      env: { ...process.env, GITHUB_WORKSPACE: wrapped.root, TMPDIR: wrapped.root },
+      encoding: 'utf8',
+    }
+  );
+  assert.equal(shellStatus(direct), 153, direct.stderr);
+  assert.equal(existsSync(join(directRoot, 'big.bin')), true);
+  assert.equal(shellStatus(result), 153, result.stderr);
+  assert.equal(result.status, 153, result.stderr);
+  assert.equal(result.signal, null);
+  assert.equal(existsSync(join(wrapped.root, 'big.bin')), true);
+  assert.equal(state(wrapped.root, 'static'), 'execution_result=incomplete\n');
+  assert.equal(
+    existsSync(join(wrapped.root, 'temp/ci-shards/static-execution-state.txt.tmp')),
+    false
+  );
 });
 
 test('disk evidence keeps fixed labels and omits an unreadable private name', () => {
