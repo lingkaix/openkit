@@ -1,7 +1,15 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -80,6 +88,72 @@ if (process.platform === 'linux') {
     assert.ok(samples.length >= 2, `expected repeated samples, got ${samples.length}`);
   });
 }
+
+test('an unwritable evidence directory still runs the shard command', () => {
+  const { root } = fixture();
+  const parent = join(root, 'temp');
+  mkdirSync(parent);
+  chmodSync(parent, 0o555);
+  try {
+    const result = run(root, 'static', ['sh', '-c', 'printf kept-output; exit 7']);
+    assert.equal(result.status, 7, result.stderr);
+    assert.equal(result.stdout, 'kept-output');
+    assert.match(result.stderr, /evidence capture failed/u);
+    assert.equal(existsSync(join(parent, 'ci-shards')), false);
+  } finally {
+    chmodSync(parent, 0o755);
+  }
+});
+
+test('a short final-state write keeps the complete incomplete marker', () => {
+  const { root } = fixture();
+  const launcher = [
+    'import os, resource, sys',
+    'resource.setrlimit(resource.RLIMIT_FSIZE, (28, 28))',
+    'os.chdir(sys.argv[1])',
+    "os.execv('/bin/sh', ['sh', sys.argv[2], 'static', 'sh', '-c', 'printf kept-output; exit 7'])",
+  ].join('\n');
+  const result = spawnSync('python3', ['-I', '-c', launcher, root, script], {
+    cwd: root,
+    env: { ...process.env, GITHUB_WORKSPACE: root, TMPDIR: root },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 7, result.stderr);
+  assert.equal(result.stdout, 'kept-output');
+  assert.match(result.stderr, /evidence capture failed/u);
+  assert.equal(state(root, 'static'), 'execution_result=incomplete\n');
+  assert.equal(existsSync(join(root, 'temp/ci-shards/static-execution-state.txt.tmp')), false);
+});
+
+test('disk evidence keeps fixed labels and omits an unreadable private name', () => {
+  const { root } = fixture();
+  const secret = 'synthetic-private-openkit-name';
+  const hidden = join(root, secret);
+  mkdirSync(hidden, { mode: 0o000 });
+  try {
+    const result = run(root, 'static', ['sh', '-c', 'printf kept-output; exit 7']);
+    assert.equal(result.status, 7, result.stderr);
+    assert.equal(result.stdout, 'kept-output');
+    assert.equal(result.stdout.includes(secret), false);
+    assert.equal(result.stderr.includes(secret), false);
+    assert.equal(result.stderr.includes(root), false);
+    const directory = join(root, 'temp/ci-shards');
+    for (const name of readdirSync(directory)) {
+      const body = readFileSync(join(directory, name));
+      const text = body.toString('utf8');
+      assert.equal(text.includes(secret), false, name);
+      assert.equal(text.includes(root), false, name);
+    }
+    const log = evidence(root, 'static');
+    assert.match(log, /df -B1 root size=\d+ used=\d+ avail=\d+/u);
+    assert.match(log, /df -B1 workspace size=\d+ used=\d+ avail=\d+/u);
+    assert.match(log, /df -B1 temporary size=\d+ used=\d+ avail=\d+/u);
+    assert.match(log, /du -sb temporary status=unavailable/u);
+    assert.doesNotMatch(log, /Permission denied/u);
+  } finally {
+    chmodSync(hidden, 0o755);
+  }
+});
 
 for (const shard of ['root', 'static']) {
   test(`${shard} preserves an inherited test-worker setting`, () => {

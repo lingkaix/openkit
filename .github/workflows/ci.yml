@@ -513,6 +513,22 @@ jobs:
           run-id: ${{ steps.reuse.outputs.run_id }}
           name: l0-l2-${{ matrix.id }}-attempt-${{ steps.reuse.outputs.attempt }}
           path: temp/ci-shards
+      - name: Mark disk-sensitive shard execution incomplete
+        if: steps.reuse.outputs.reused != 'true'
+        env:
+          SHARD_ID: ${{ matrix.id }}
+        run: |
+          case "${SHARD_ID}" in
+            static | native-nanohost | nanocore-*)
+              if mkdir -p temp/ci-shards 2>/dev/null && [ -w temp/ci-shards ]; then
+                printf '%s\n' 'execution_result=incomplete' \
+                  > "temp/ci-shards/${SHARD_ID}-execution-state.txt" \
+                  || printf '%s\n' 'evidence capture failed' >&2
+              else
+                printf '%s\n' 'evidence capture failed' >&2
+              fi
+              ;;
+          esac
       - name: Cache pnpm store
         if: steps.reuse.outputs.reused != 'true'
         # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.

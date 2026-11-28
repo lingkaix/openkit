@@ -1029,6 +1029,22 @@ test('L0-L2 runs complete package coverage and native/root suites through a fail
   assert.match(scripts['verify:l0-l2'], /pnpm run test:ci/u);
   assert.doesNotMatch(scripts['verify:l0-l2'], /test:unit|test:coverage/u);
   assert.match(scripts['test:ci'], /release-tests\.mjs/u);
+  const names = shards.steps.map((entry) => entry.name);
+  const marker = names.indexOf('Mark disk-sensitive shard execution incomplete');
+  assert.ok(marker > names.indexOf('Checkout'), 'the incomplete marker follows checkout');
+  for (const later of [
+    'Cache pnpm store',
+    'Cache locked build inputs and outputs',
+    'Install dependencies',
+    'Restore shared build cache',
+  ]) {
+    assert.ok(marker < names.indexOf(later), `incomplete marker precedes ${later}`);
+  }
+  const marked = shards.steps[marker];
+  assert.equal(marked.if, "steps.reuse.outputs.reused != 'true'");
+  assert.equal(marked.env.SHARD_ID, actionExpression('matrix.id'));
+  assert.match(marked.run, /execution_result=incomplete/u);
+  assert.match(marked.run, /static \| native-nanohost \| nanocore-\*/u);
 });
 
 test('App publication waits for exact-manifest smoke on both native hosts', () => {
