@@ -866,7 +866,7 @@ for (const [name, reply] of [
     step.itemCoverage.items[0].text = reply;
     assert.equal(evaluate(b, p).rows.find((r) => r.scenario === 'pi.A').mechanicalCode, 'N');
   });
-test('an enabled or different Agent is not submitted', async (t) => {
+test('a ready or different Agent is not submitted', async (t) => {
   const root = await temp(t),
     p = parameters(),
     threadId = 'thread-example-deepseek',
@@ -922,7 +922,7 @@ test('an enabled or different Agent is not submitted', async (t) => {
     defaultProfileId: 'default',
   };
   const records = [
-    await run('enabled', { ...disabled, status: 'enabled' }, []),
+    await run('ready', { ...disabled, status: 'ready' }, []),
     await run('other', { ...disabled, id: 'agent_other', name: 'Other Agent' }, []),
     await run('items', disabled, [{ id: 'item-example' }]),
   ];
@@ -958,6 +958,7 @@ for (const name of [
   'queued work without a Turn',
   'a pending request without a Turn',
   'a mismatched Workspace selector',
+  'contradictory setup metadata',
   'a different disabled Agent',
   'an accepted HTTP status',
   'a GET correlation',
@@ -992,7 +993,11 @@ for (const name of [
       });
     else if (name === 'a mismatched Workspace selector')
       step.after.dashboard.thread.owner.workspaceId = 'workspace-other';
-    else if (name === 'a different disabled Agent') {
+    else if (name === 'contradictory setup metadata') {
+      step.setup.operation = 'thread.create';
+      step.setup.threadId = 'thread-other';
+      step.setup.workspaceId = 'workspace-other';
+    } else if (name === 'a different disabled Agent') {
       step.agent.id = 'agent_other';
       step.agent.name = 'Other Agent';
     } else if (name === 'an accepted HTTP status') step.submission.http[0].status = 202;

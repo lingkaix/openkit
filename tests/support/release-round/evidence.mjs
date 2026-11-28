@@ -279,6 +279,9 @@ export function refusalMaySubmit({
     agentId === agent.id &&
     profileId === REFUSAL.profileId &&
     setup?.createdThreads === 0 &&
+    setup?.operation === 'thread.read' &&
+    setup?.threadId === setup?.observedThreadId &&
+    setup?.workspaceId === setup?.observedWorkspaceId &&
     setup?.observedThreadId === threadId &&
     setup?.observedWorkspaceId === workspaceId &&
     before?.dashboard?.thread?.id === threadId &&
