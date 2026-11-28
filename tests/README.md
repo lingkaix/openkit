@@ -7,6 +7,7 @@ Package and app unit, contract, integration, and browser tests remain with their
 ## Layout
 
 - `check-commit-msg.test.mjs` checks the commit-message command and its metadata-only mode with in-memory fixtures.
+- `biome-check.test.mjs` checks the repository Biome guard, including zero-file refusal and pinned Biome scope behavior in a checkout beneath `temp` with checkout-local temporary evidence excluded.
 
 - `nanocore-storage-esm.test.mjs` imports each compiled storage library owner in a fresh Node process. Worker entrypoints are excluded because they require their native Worker launch context; no library import may depend on a prewarmed module graph.
 
