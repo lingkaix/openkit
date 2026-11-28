@@ -49,14 +49,6 @@ export interface ClientTransport {
   ): Promise<z.infer<TSchema>>;
   /** Fetches a successful download response without consuming its body or metadata. */
   getDownload(path: string): Promise<Response>;
-  /** Puts a JSON body and validates a JSON response. */
-  putJson<TInput, TSchema extends z.ZodType>(
-    path: string,
-    input: TInput,
-    schema: TSchema,
-    extraHeaders?: HeadersInit,
-    options?: ClientRequestOptions
-  ): Promise<z.infer<TSchema>>;
   /** Patches a JSON body and validates a JSON response. */
   patchJson<TInput, TSchema extends z.ZodType>(
     path: string,
@@ -65,10 +57,6 @@ export interface ClientTransport {
     extraHeaders?: HeadersInit,
     options?: ClientRequestOptions
   ): Promise<z.infer<TSchema>>;
-  /** Deletes a resource with an empty successful response. */
-  deleteEmpty(path: string): Promise<void>;
-  /** Deletes a resource with a JSON command body. */
-  deleteJson<TInput>(path: string, input: TInput, options?: ClientRequestOptions): Promise<void>;
   /** Converts an API path into an absolute request URL. */
   url(path: string): string;
 }
@@ -233,7 +221,7 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
 
   /** Applies the shared wire policy for JSON mutations; each public method keeps its HTTP verb. */
   const sendJson = async <TSchema extends z.ZodType>(
-    method: 'POST' | 'PUT' | 'PATCH',
+    method: 'POST' | 'PATCH',
     path: string,
     input: unknown,
     schema: TSchema,
@@ -286,45 +274,8 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return parseJsonResponse(response, schema);
   };
 
-  const deleteEmpty: ClientTransport['deleteEmpty'] = async (path) => {
-    await admitContract();
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      headers: mergeHeaders(),
-      method: 'DELETE',
-    });
-
-    if (response.ok) {
-      return;
-    }
-
-    await parseJsonResponse(response, z.null());
-  };
-
-  const deleteJson: ClientTransport['deleteJson'] = async (path, input, requestOptions) => {
-    await admitContract(requestOptions);
-    const response = await fetchJsonRequest(
-      path,
-      {
-        credentials: 'include',
-        method: 'DELETE',
-        headers: mergeHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify(input),
-      },
-      requestOptions
-    );
-
-    if (response.ok) {
-      return;
-    }
-
-    await parseJsonResponse(response, z.null());
-  };
-
   return {
     baseUrl: normalizedBaseUrl,
-    deleteEmpty,
-    deleteJson,
     fetch: fetcher,
     getJson,
     getStream,
@@ -335,8 +286,6 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
       sendJson('POST', path, input, schema, headers, emptySuccess, requestOptions),
     getDownload,
     postStream,
-    putJson: (path, input, schema, headers, requestOptions) =>
-      sendJson('PUT', path, input, schema, headers, false, requestOptions),
     url,
   };
 }

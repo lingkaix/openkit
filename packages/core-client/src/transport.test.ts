@@ -16,7 +16,6 @@ import {
 describe('JSON mutation transport', () => {
   it.each([
     ['postJson', 'POST'],
-    ['putJson', 'PUT'],
     ['patchJson', 'PATCH'],
   ] as const)('preserves %s wire behavior and failure semantics', async (operation, method) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ value: 'accepted' }));
@@ -115,55 +114,44 @@ describe('JSON mutation transport', () => {
 });
 
 describe('contract identity admission before effects', () => {
-  it.each([
-    'postJson',
-    'putJson',
-    'patchJson',
-    'postStream',
-    'getStream',
-    'deleteEmpty',
-    'deleteJson',
-  ] as const)('refuses mismatched metadata before %s dispatch', async (operation) => {
-    const effects: string[] = [];
-    const transport = createClientTransport({
-      baseUrl: 'https://core.test',
-      fetch: async (input, init) => {
-        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (path === '/api/meta')
-          return Response.json({
-            protocolVersion: `${PROTOCOL_VERSION}-different-contract`,
-            capabilities: [],
-            eventFamilies: [],
-          });
-        effects.push(`${init?.method} ${path}`);
-        if (operation === 'getStream')
-          return new Response('fixture', {
-            headers: { 'content-type': 'application/octet-stream' },
-          });
-        if (operation === 'deleteEmpty' || operation === 'deleteJson')
-          return new Response(null, { status: 204 });
-        return Response.json({ value: 'accepted' });
-      },
-    });
-    const schema = z.object({ value: z.string() });
-    const result =
-      operation === 'postStream'
-        ? transport.postStream('/effect', new Blob(['fixture']), {}, schema)
-        : operation === 'getStream'
-          ? transport.getStream('/effect', 'application/octet-stream', {})
-          : operation === 'deleteEmpty'
-            ? transport.deleteEmpty('/effect')
-            : operation === 'deleteJson'
-              ? transport.deleteJson('/effect', {})
-              : transport[operation]('/effect', {}, schema);
-    const failure: unknown = await result.then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect.soft(effects).toEqual([]);
-    expect(failure).toBeInstanceOf(ProtocolValidationError);
-    expect(failure).toMatchObject({ code: expect.any(String) });
-  });
+  it.each(['postJson', 'patchJson', 'postStream', 'getStream'] as const)(
+    'refuses mismatched metadata before %s dispatch',
+    async (operation) => {
+      const effects: string[] = [];
+      const transport = createClientTransport({
+        baseUrl: 'https://core.test',
+        fetch: async (input, init) => {
+          const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          if (path === '/api/meta')
+            return Response.json({
+              protocolVersion: `${PROTOCOL_VERSION}-different-contract`,
+              capabilities: [],
+              eventFamilies: [],
+            });
+          effects.push(`${init?.method} ${path}`);
+          if (operation === 'getStream')
+            return new Response('fixture', {
+              headers: { 'content-type': 'application/octet-stream' },
+            });
+          return Response.json({ value: 'accepted' });
+        },
+      });
+      const schema = z.object({ value: z.string() });
+      const result =
+        operation === 'postStream'
+          ? transport.postStream('/effect', new Blob(['fixture']), {}, schema)
+          : operation === 'getStream'
+            ? transport.getStream('/effect', 'application/octet-stream', {})
+            : transport[operation]('/effect', {}, schema);
+      const failure: unknown = await result.then(
+        () => null,
+        (error: unknown) => error
+      );
+      expect.soft(effects).toEqual([]);
+      expect(failure).toBeInstanceOf(ProtocolValidationError);
+      expect(failure).toMatchObject({ code: expect.any(String) });
+    }
+  );
 
   it.each(['invalid', 'unavailable', 'network-failure'] as const)(
     'refuses %s metadata before dispatching JSON work',
@@ -218,106 +206,6 @@ describe('contract identity admission before effects', () => {
       requests.findIndex(({ path }) => path === '/effect')
     );
     expect(requests.filter(({ path }) => path === '/effect')).toHaveLength(1);
-  });
-
-  it('dispatches deleteEmpty with configured headers after contract admission and maps non-2xx errors', async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(
-        Response.json(
-          {
-            protocolVersion: PROTOCOL_VERSION,
-            code: 'resource_not_found',
-            message: 'Resource not found.',
-            path: ['resourceId'],
-            requestId: 'req-delete-empty',
-          },
-          { status: 404 }
-        )
-      );
-    const transport = createClientTransport({
-      baseUrl: 'https://core.test/',
-      headers: { 'x-base': 'base-value' },
-      fetch: async (input, init) =>
-        new URL(String(input)).pathname === '/api/meta'
-          ? Response.json({
-              protocolVersion: PROTOCOL_VERSION,
-              capabilities: [],
-              eventFamilies: [],
-            })
-          : fetcher(input, init),
-    });
-
-    await expect(transport.deleteEmpty('/resource/1')).resolves.toBeUndefined();
-    expect(fetcher.mock.calls[0]?.[0]).toBe('https://core.test/resource/1');
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
-      method: 'DELETE',
-      credentials: 'include',
-    });
-    expect(Object.fromEntries(new Headers(fetcher.mock.calls[0]?.[1]?.headers))).toEqual({
-      'x-base': 'base-value',
-    });
-
-    await expect(transport.deleteEmpty('/resource/1')).rejects.toMatchObject({
-      name: ApiCallError.name,
-      status: 404,
-      code: 'resource_not_found',
-      message: 'Resource not found.',
-      path: ['resourceId'],
-      requestId: 'req-delete-empty',
-    });
-  });
-
-  it('dispatches deleteJson with JSON body after contract admission and maps non-2xx errors', async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(
-        Response.json(
-          {
-            protocolVersion: PROTOCOL_VERSION,
-            code: 'revision_conflict',
-            message: 'Revision changed.',
-          },
-          { status: 409 }
-        )
-      );
-    const transport = createClientTransport({
-      baseUrl: 'https://core.test/',
-      headers: { 'x-base': 'base-value' },
-      fetch: async (input, init) =>
-        new URL(String(input)).pathname === '/api/meta'
-          ? Response.json({
-              protocolVersion: PROTOCOL_VERSION,
-              capabilities: [],
-              eventFamilies: [],
-            })
-          : fetcher(input, init),
-    });
-
-    await expect(
-      transport.deleteJson('/resource/1', { expectedRevision: 'rev-1' })
-    ).resolves.toBeUndefined();
-    expect(fetcher.mock.calls[0]?.[0]).toBe('https://core.test/resource/1');
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
-      method: 'DELETE',
-      credentials: 'include',
-      body: '{"expectedRevision":"rev-1"}',
-    });
-    expect(Object.fromEntries(new Headers(fetcher.mock.calls[0]?.[1]?.headers))).toEqual({
-      'content-type': 'application/json',
-      'x-base': 'base-value',
-    });
-
-    await expect(
-      transport.deleteJson('/resource/1', { expectedRevision: 'rev-1' })
-    ).rejects.toMatchObject({
-      name: ApiCallError.name,
-      status: 409,
-      code: 'revision_conflict',
-      message: 'Revision changed.',
-    });
   });
 
   it('throws when createClientTransport is called without a fetch implementation', () => {
