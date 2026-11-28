@@ -623,9 +623,10 @@ function assertPathOutsideRoot(path: string, root: string, message: string): voi
  * Invariant: after resolving aliases, the backup and every entry its supplied path traverses lie
  * outside each restore root, and the restore roots lie outside the backup and each other. A parent
  * component applies to the directory reached after the preceding alias, as the operating system does.
- * Publication renames staging away, so no entry the supplied target traverses is staging or lies
- * inside it. Every entry the derived predecessor traverses before its leaf is also a target entry,
- * and the root comparisons cover that leaf.
+ * Publication renames staging and the target away, so no entry the supplied target traverses is
+ * staging or lies inside it, and no entry its parent traverses is the target or lies inside it.
+ * Every entry the derived predecessor traverses before its leaf is also a target entry, and the
+ * root comparisons cover that leaf.
  *
  * @param backupInput Backup root as supplied.
  * @param backupRoot Resolved backup root.
@@ -667,6 +668,11 @@ async function assertRestorePathsSeparate(
   const message = 'Target data root lookup must not pass through the restore staging root.';
   for (const entry of await traversedPathEntries(targetRoot)) {
     assertPathOutsideRoot(entry, stagingRoot, message);
+  }
+  const targetEntry = join(await resolveRestorePath(dirname(targetRoot)), basename(targetRoot));
+  const targetMessage = 'Target data root lookup must not pass through the target data root.';
+  for (const entry of await traversedPathEntries(dirname(targetRoot))) {
+    assertPathOutsideRoot(entry, targetEntry, targetMessage);
   }
 }
 

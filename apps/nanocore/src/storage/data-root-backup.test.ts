@@ -1205,6 +1205,12 @@ describe('data-root backup manifest', () => {
         'Target data root lookup must not pass through the restore staging root.',
         raw(c.staging, '..', 'data'),
       ],
+      'target through target/..': (c) => [
+        c.backupRoot,
+        undefined,
+        'Target data root lookup must not pass through the target data root.',
+        raw(c.dataRoot, '..', 'data'),
+      ],
     };
 
     for (const [pathForm, selectPaths] of Object.entries(restorePathForms)) {
